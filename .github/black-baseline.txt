@@ -522,7 +522,6 @@ test/test_bootstrap.py
 test/test_brand_name_gate.py
 test/test_browser_cli_launch.py
 test/test_browser_cli_snapshots.py
-test/test_browser_cli_view.py
 test/test_browser_recording_skill.py
 test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py

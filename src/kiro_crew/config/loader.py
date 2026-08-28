@@ -467,6 +467,18 @@ def _safe_nonnegative_int(value: object, default: int) -> int:
     return result if result >= 0 else default
 
 
+def _port_or_unset(value: object) -> int:
+    """A TCP port, or 0 (unset) when the value is malformed or out of range.
+
+    Deliberately NOT the clamp convention used for bounded knobs: a clamped
+    port is as wrong as a malformed one — a tunnel that forwards 8080 does not
+    forward 65535 either — so anything outside 1..65535 falls back to unset
+    (ephemeral) rather than becoming a live pin the operator never named.
+    """
+    result = _safe_int(value, 0)
+    return result if 0 < result <= 65535 else 0
+
+
 #: Bounds of a context-threshold percentage, and the single statement of the range.
 #: The floor is 1, not 0, because a 0% threshold means "always over" and would fire the
 #: notice/compaction on every turn. Public because the dashboard's channel-config
@@ -3151,6 +3163,20 @@ class DashboardConfig:
             "Use Built-in Browser",
             "When on, the browser tool opens pages in Kiro Crew's built-in panel "
             "(desktop app only). When off, the agent browses via playwright-cli.",
+        ),
+    )
+    browser_view_port: int = field(
+        default=0,
+        metadata=_meta(
+            "Browser Live-View Port",
+            "Pin the browser live-view server (playwright-cli show) to this "
+            "loopback port. 0 (the default) picks a fresh OS-assigned ephemeral "
+            "port on every start. Set a fixed port when the dashboard is viewed "
+            "remotely through an SSH tunnel that forwards a fixed set of ports, "
+            "so the Browser panel can always reach the view. The server binds "
+            "loopback-only either way. A value outside 1-65535 is treated as "
+            "unset. A changed pin applies the next time the view server "
+            "(re)starts; an already-running server keeps its current port.",
         ),
     )
     verbosity: str = field(
@@ -7894,6 +7920,7 @@ class KiroCrewConfig:
                 auto_open_git_panel=_safe_bool(dashboard_data.get("auto_open_git_panel"), False),
                 widget_density=dashboard_data.get("widget_density", "more"),
                 use_builtin_browser=_safe_bool(dashboard_data.get("use_builtin_browser"), True),
+                browser_view_port=_port_or_unset(dashboard_data.get("browser_view_port", 0)),
                 verbosity=dashboard_data.get("verbosity", "default"),
                 link_previews=_safe_bool(dashboard_data.get("link_previews"), False),
                 usage_text_scrape_enabled=_safe_bool(

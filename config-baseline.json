@@ -5664,6 +5664,7 @@
         "cautious_boot": true,
         "widget_density": "more",
         "use_builtin_browser": true,
+        "browser_view_port": 0,
         "verbosity": "default",
         "link_previews": false,
         "usage_text_scrape_enabled": false,
@@ -6004,6 +6005,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.browser_view_port",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser Live-View Port",
+      "help": "Pin the browser live-view server (playwright-cli show) to this loopback port. 0 (the default) picks a fresh OS-assigned ephemeral port on every start. Set a fixed port when the dashboard is viewed remotely through an SSH tunnel that forwards a fixed set of ports, so the Browser panel can always reach the view. The server binds loopback-only either way. A value outside 1-65535 is treated as unset. A changed pin applies the next time the view server (re)starts; an already-running server keeps its current port.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "dashboard.verbosity",

@@ -302,7 +302,15 @@ rather than relative to whatever working directory an agent happened to have.
 ### Dashboard integration
 
 `playwright-cli show --port <n> --host 127.0.0.1` serves the CLI's own dashboard
-over loopback HTTP, and the panel embeds that in an iframe. The served dashboard
+over loopback HTTP, and the panel embeds that in an iframe. The port is
+OS-assigned by default; `dashboard.browser_view_port` pins the public port, for
+remote-gateway deployments where the viewer reaches loopback through an SSH
+tunnel that forwards a fixed set of ports. The pin is never handed to the
+child: the supervisor claims the pinned port itself with a bound listener it
+keeps holding, an atomic ownership proof that makes the deterministic,
+operator-named port race-free, and relays byte-for-byte to the child's own
+ephemeral port. The child's OS-assigned port keeps the unpinned path's
+advisory bind window (unpredictable, loopback-local); both bind loopback only. The served dashboard
 provides the session grid with live screencast, a session detail view with tab bar
 and navigation controls, and full remote mouse and keyboard input, so a human can
 take over a session directly: this is the path for a CAPTCHA or a 2FA prompt that

@@ -3214,7 +3214,9 @@ async def api_browser_view_start(request: web.Request) -> web.Response:
 
     Idempotent, and off-loaded to a thread because starting the dashboard waits on
     a child process becoming healthy, which would otherwise stall the event loop
-    and with it every other dashboard request.
+    and with it every other dashboard request. Honors
+    ``dashboard.browser_view_port`` when set, so a remote-gateway operator can
+    keep the port inside their tunnel's forwarded set.
 
     App-token denied: this both LAUNCHES a browser process and returns the
     unauthenticated dashboard URL, so it is the stronger half of the same hole
@@ -3223,7 +3225,14 @@ async def api_browser_view_start(request: web.Request) -> web.Response:
     denied = _deny_non_owner_browser_request(request, "browser_view_start")
     if denied is not None:
         return denied
-    await asyncio.to_thread(browser_cli_view.ensure_running)
+
+    def _start_view() -> None:
+        # Config read stays in the worker thread with the child-process wait:
+        # both are blocking I/O that must not run on the event loop.
+        pinned = KiroCrewConfig.load().dashboard.browser_view_port
+        browser_cli_view.ensure_running(pinned or None)
+
+    await asyncio.to_thread(_start_view)
     return web.json_response(await asyncio.to_thread(browser_cli_view.status))
 
 
