@@ -20,7 +20,8 @@ not been re-audited since 2026-08-03. The durable-run-coordinator row was added
 `c4f253891`; the `rfc-token-efficient-monitors` row was added 2026-08-22 and
 verified against `6d3e30bbbd`. The `rfc-global-workflow-library` row was added
 2026-08-25 and audited against `749468d42`; its implementation exists only in
-the active detached worktree.
+the active detached worktree. The `rfc-agentcore-identity-gateway` row
+was added 2026-08-27.
 
 | Document | Status | What is actually on main |
 |---|---|---|
@@ -53,6 +54,7 @@ the active detached worktree.
 | [rfc-amend-tenets-everything-is-an-app.md](rfc-amend-tenets-everything-is-an-app.md) | `draft` | Nothing. `TENETS.md` still carries seven tenets on main. `git log --follow` on it shows two commits and no prior amendment, and `grep -i tenet` returns zero hits in `GOVERNANCE.md` |
 | [rfc-crew-projects.md](rfc-crew-projects.md) | `draft` | Nothing. Verified at `5cd92ff99`: no project manifest format exists, `slot.project` is a bare directory path, and `grep -ril "confluence\|servicenow" src/kiro_crew` returns zero hits |
 | [rfc-tool-derived-diff-cards.md](rfc-tool-derived-diff-cards.md) | `in-progress` | Ships with [#5012](https://github.com/kirodotdev/KiroCrew/pull/5012): dashboard diff-card/summary promotion + runtime-selected prompt rule. The messaging `OutputEvent` extension (§3.3) is unstarted |
+| [rfc-agentcore-identity-gateway.md](rfc-agentcore-identity-gateway.md) | `in-progress` | First stack PR lands the `agent_identity` CPP slot, `DefaultAgentIdentityProvider` no-op, `capabilities.agentcore` catalog row, and AWS-free policy validators. No AWS extra, no Gateway inject, no login attach, no Settings UI |
 
 Nothing in this directory is `implemented` or `superseded` today.
 

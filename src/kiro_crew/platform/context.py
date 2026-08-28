@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.platform.interfaces import (
         AgentCatalogProvider,
         AgentExecutableResolver,
+        AgentIdentityProvider,
         AgentRuntime,
         AppRegistryPolicy,
         AppsLoader,
@@ -64,7 +65,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
 # incrementing this only after the first public release, when a separately-built
 # companion can pin against a frozen contract.  (Every seam added pre-launch —
 # the ``governance`` carrier, then the ``knowledge``/``dashboard``/``jail``
-# extension points — landed under this same v1, no bump.)
+# extension points, then ``agent_identity`` — landed under this same v1, no bump.)
 CONTRACT_VERSION = 1
 
 _logger = logging.getLogger(__name__)
@@ -283,6 +284,9 @@ class PlatformContext:
     slack_gate: "SlackEnterpriseGate"
     # ``whoami``/``issuer`` are [RESERVED] — see RESERVED_METHODS.
     identity: "IdentityProvider"
+    # Agent workload identity / token vending. Distinct from ``identity``
+    # (operator SSO). v1 addition (no CONTRACT_VERSION bump).
+    agent_identity: "AgentIdentityProvider"
     embeddings: "EmbeddingSource"  # [RESERVED] — see RESERVED_SLOTS
     mcp_tooling: "McpToolingProvider"
     agent_catalog: "AgentCatalogProvider"

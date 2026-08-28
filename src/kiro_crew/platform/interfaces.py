@@ -374,6 +374,81 @@ class IdentityProvider(Protocol):
     def credential_watch_paths(self) -> List[Path]: ...
 
 
+@dataclass(frozen=True)
+class WorkloadIdentity:
+    """The agent process's registered workload (name + ARN).
+
+    Public Default never has one. A companion fills this from the edition's
+    workload registration; core code must not invent an ARN.
+    """
+
+    name: str
+    arn: str
+
+
+@dataclass(frozen=True)
+class SessionPrincipal:
+    """Trusted caller for agent-identity token vending.
+
+    Core-derived (surface + already-partitioned subject + session key). Never
+    taken from tool input. ``user_jwt`` is set only by a companion after IdP
+    verify; the public Default leaves it ``None``.
+    """
+
+    surface: str
+    subject: str
+    session_key: str
+    user_jwt: str | None = None
+
+
+@dataclass(frozen=True)
+class InboundToken:
+    """A short-lived inbound credential a companion vends for Gateway MCP.
+
+    ``token`` is bearer material: it must never enter ``status()``, SEL
+    payloads, or transcripts. Public Default never vends one.
+    """
+
+    scheme: str
+    token: str
+    expires_at: float
+    audience: str
+
+
+class AgentIdentityProvider(Protocol):
+    """Agent workload identity and token vending — not operator SSO.
+
+    ``IdentityProvider`` is the operator-SSO slot (status line, preflight,
+    credential watch). This slot is the edition concern for a process-level
+    workload identity and for vending tokens *as that workload*. Same reason
+    ``AgentCatalogProvider`` is not folded into ``McpToolingProvider``.
+
+    Public Default is disabled (``enabled() -> False``; every other method
+    returns ``None`` / ``{}`` / the input principal unchanged) so a standalone
+    process stays byte-identical. ``IdentityProvider.whoami`` / ``issuer`` stay
+    RESERVED — do not consume them to satisfy this seam.
+
+    v1 field addition (no ``CONTRACT_VERSION`` bump); same landing as
+    ``knowledge`` / ``dashboard`` / ``jail``.
+    """
+
+    def enabled(self) -> bool: ...
+
+    def workload_identity(self) -> WorkloadIdentity | None: ...
+
+    def status(self) -> dict[str, object]: ...
+
+    def gateway_mcp_spec(self) -> dict[str, object] | None: ...
+
+    async def annotate_principal(self, principal: SessionPrincipal) -> SessionPrincipal: ...
+
+    async def vend_workload_access_token(self, principal: SessionPrincipal) -> str | None: ...
+
+    async def vend_gateway_inbound_token(
+        self, principal: SessionPrincipal
+    ) -> InboundToken | None: ...
+
+
 class EmbeddingSource(Protocol):
     """**RESERVED extension point — not consumed by the core.**
 

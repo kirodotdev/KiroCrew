@@ -1076,6 +1076,13 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.script_hooks": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),
+    # Agent workload identity + Gateway MCP (opt-in, like messaging/publish).
+    # Inner ``posture`` is policy data (``workload`` | ``login``), not a second
+    # scope and not an evaluator input. An ``enabled: true`` document with a
+    # missing or unknown posture fails closed — treated as disabled, or
+    # boot-abort when ``boot.fail_closed``. Data row only; CONTRACT_VERSION
+    # and the evaluator are untouched.
+    "capabilities.agentcore": ScopeSpec(CAPABILITY, capability_default=False),
     # Publishing an artifact's bytes to an external destination is an
     # exfil/external-side-effect surface (like messaging), so it is opt-in
     # (capability_default=False): a policy that names ``publish`` while omitting
@@ -1705,6 +1712,22 @@ class GovernanceCeiling:
     # fallback is still intersected with this ceiling, so it can only ever narrow
     # it — it trades strict fail-closed for keeping the unlisted planes available.
     fallback_profile: "Optional[Profile]" = None
+    # Policy-only composed posture for ``capabilities.agentcore``
+    # (``workload`` | ``login``). Not a CapabilityGate field — that type stays
+    # ``enabled`` + ``scopes``. Read through :func:`agentcore_posture`, which
+    # returns ``None`` when the capability is off, omitted, or fail-closed
+    # disabled. A profile cannot compose a different posture onto this field
+    # (policy-wins).
+    agentcore_identity_posture: Optional[str] = None
+    # Policy-only Gateway MCP URL (``capabilities.agentcore.gateway_url``).
+    # Empty when omitted or the capability is off. Not a CapabilityGate field.
+    # A profile cannot carry this key. Read through
+    # :func:`agentcore_gateway_url`.
+    agentcore_gateway_url: str = ""
+    # Policy-only workload identity name (``capabilities.agentcore.workload_name``).
+    # Empty when omitted — runtime then uses env or a later default. A profile
+    # cannot carry this key. Read through :func:`agentcore_workload_name`.
+    agentcore_workload_name: str = ""
 
     def get(self, scope: str) -> Optional[object]:
         return self.controls.get(scope)
@@ -1825,6 +1848,173 @@ def _command_deny_patterns(control: object) -> Tuple[str, ...]:
     return ()
 
 
+_AGENTCORE_SCOPE = "capabilities.agentcore"
+_AGENTCORE_POSTURES = frozenset({"workload", "login"})
+_AGENTCORE_POLICY_ONLY = frozenset({"posture", "gateway_url", "workload_name"})
+
+
+def _capability_raw_for_gate(
+    scope: str, raw: Mapping[str, object], *, is_policy: bool
+) -> Mapping[str, object]:
+    """Drop inner policy data that is not a CapabilityGate field.
+
+    ``capabilities.agentcore.posture``, ``gateway_url``, and
+    ``workload_name`` are policy data, not a second scope and not an
+    evaluator input. Strip them on a policy document so
+    ``CapabilityGate.from_dict`` stays ``additionalProperties: false``.
+    A profile (or policy fallback body) that carries either key is
+    rejected — Rule 6, same fail-closed raise as ``ScopedMap.posture``.
+    """
+    if scope != _AGENTCORE_SCOPE:
+        return raw
+    extra = _AGENTCORE_POLICY_ONLY.intersection(raw)
+    if not extra:
+        return raw
+    if not is_policy:
+        name = "posture" if "posture" in extra else next(iter(extra))
+        raise PlatformCompositionError(
+            f"capabilities.agentcore.{name} is policy-only; not allowed on a profile"
+        )
+    return {key: value for key, value in raw.items() if key not in _AGENTCORE_POLICY_ONLY}
+
+
+def _apply_agentcore_posture(
+    data: Mapping[str, object],
+    controls: Dict[str, object],
+    boot: "BootControls",
+) -> Optional[str]:
+    """Validate agentcore posture and return the value to persist on the ceiling.
+
+    Missing or unknown ``posture`` with ``enabled: true`` aborts when
+    ``boot.fail_closed``; otherwise the row is treated as disabled. Disabled
+    (or unnamed) rows do not require a posture and yield ``None``.
+    """
+    raw_caps = data.get("capabilities")
+    if not isinstance(raw_caps, dict):
+        return None
+    raw = raw_caps.get("agentcore")
+    if not isinstance(raw, dict):
+        return None
+    control = controls.get(_AGENTCORE_SCOPE)
+    if not isinstance(control, CapabilityGate) or not control.enabled:
+        return None
+    posture = raw.get("posture")
+    if isinstance(posture, str) and posture in _AGENTCORE_POSTURES:
+        return posture
+    reason = (
+        f"capabilities.agentcore is enabled but posture is {posture!r}; "
+        "expected 'workload' or 'login'"
+    )
+    if boot.fail_closed:
+        raise PlatformCompositionError(reason)
+    controls[_AGENTCORE_SCOPE] = CapabilityGate(enabled=False, scopes=control.scopes)
+    return None
+
+
+def agentcore_posture(ceiling: Optional[GovernanceCeiling]) -> Optional[str]:
+    """Return the policy posture if ``capabilities.agentcore`` is enabled.
+
+    ``\"workload\"`` or ``\"login\"`` when the ceiling enables the capability
+    with a known posture. ``None`` when there is no ceiling, the capability is
+    omitted, disabled, or fail-closed-disabled. The single reader later work
+    must use — do not re-parse raw policy JSON for this field.
+    """
+    if ceiling is None:
+        return None
+    stored = ceiling.agentcore_identity_posture
+    if stored not in _AGENTCORE_POSTURES:
+        return None
+    control = ceiling.controls.get(_AGENTCORE_SCOPE)
+    if not isinstance(control, CapabilityGate) or not control.enabled:
+        return None
+    return stored
+
+
+def _apply_agentcore_gateway_url(
+    data: Mapping[str, object],
+    controls: Dict[str, object],
+    boot: "BootControls",
+) -> str:
+    """Validate and return the policy Gateway URL, or empty.
+
+    Missing / empty is legal (the crew may still name a posture and add
+    the URL later). A present but unusable value aborts when
+    ``boot.fail_closed``; otherwise it is ignored.
+    """
+    from kiro_crew.platform.agentcore_schema import normalize_agentcore_gateway_url
+
+    raw_caps = data.get("capabilities")
+    if not isinstance(raw_caps, dict):
+        return ""
+    raw = raw_caps.get("agentcore")
+    if not isinstance(raw, dict):
+        return ""
+    control = controls.get(_AGENTCORE_SCOPE)
+    if not isinstance(control, CapabilityGate) or not control.enabled:
+        return ""
+    value = raw.get("gateway_url")
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        reason = "capabilities.agentcore.gateway_url must be a string"
+        if boot.fail_closed:
+            raise PlatformCompositionError(reason)
+        return ""
+    try:
+        return normalize_agentcore_gateway_url(value)
+    except ValueError as exc:
+        if boot.fail_closed:
+            raise PlatformCompositionError(str(exc)) from exc
+        return ""
+
+
+def agentcore_gateway_url(ceiling: Optional[GovernanceCeiling]) -> str:
+    """Return the policy Gateway URL if ``capabilities.agentcore`` is enabled."""
+    if ceiling is None or agentcore_posture(ceiling) is None:
+        return ""
+    return str(ceiling.agentcore_gateway_url or "")
+
+
+def _apply_agentcore_workload_name(
+    data: Mapping[str, object],
+    controls: Dict[str, object],
+    boot: "BootControls",
+) -> str:
+    """Validate and return the policy workload name, or empty."""
+    from kiro_crew.platform.agentcore_schema import normalize_agentcore_workload_name
+
+    raw_caps = data.get("capabilities")
+    if not isinstance(raw_caps, dict):
+        return ""
+    raw = raw_caps.get("agentcore")
+    if not isinstance(raw, dict):
+        return ""
+    control = controls.get(_AGENTCORE_SCOPE)
+    if not isinstance(control, CapabilityGate) or not control.enabled:
+        return ""
+    value = raw.get("workload_name")
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        reason = "capabilities.agentcore.workload_name must be a string"
+        if boot.fail_closed:
+            raise PlatformCompositionError(reason)
+        return ""
+    try:
+        return normalize_agentcore_workload_name(value)
+    except ValueError as exc:
+        if boot.fail_closed:
+            raise PlatformCompositionError(str(exc)) from exc
+        return ""
+
+
+def agentcore_workload_name(ceiling: Optional[GovernanceCeiling]) -> str:
+    """Return the policy workload name if ``capabilities.agentcore`` is enabled."""
+    if ceiling is None or agentcore_posture(ceiling) is None:
+        return ""
+    return str(ceiling.agentcore_workload_name or "")
+
+
 def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool) -> object:
     """Parse one raw JSON control value into its archetype, per the catalog."""
     if not isinstance(raw, dict):
@@ -1841,8 +2031,9 @@ def _parse_control(scope: str, spec: ScopeSpec, raw: object, *, is_policy: bool)
             raise PlatformCompositionError(f"ordinal scope {scope!r} needs a string value")
         return OrdinalControl(scale=spec.ordinal_scale, value=value)
     if spec.kind == CAPABILITY:
+        gate_raw: Mapping[str, object] = _capability_raw_for_gate(scope, raw, is_policy=is_policy)
         return CapabilityGate.from_dict(
-            raw, default_enabled=spec.capability_default, scope_matchers=spec.scope_matchers
+            gate_raw, default_enabled=spec.capability_default, scope_matchers=spec.scope_matchers
         )
     if spec.kind == SCOPEDMAP:
         return ScopedMap.from_dict(raw, allow_posture=is_policy)
@@ -2110,6 +2301,9 @@ def parse_policy(
         fail_closed=bool(boot_raw.get("fail_closed", True)),
     )
     controls = _parse_controls(data, is_policy=True)
+    composed_posture = _apply_agentcore_posture(data, controls, boot)
+    composed_gateway_url = _apply_agentcore_gateway_url(data, controls, boot)
+    composed_workload_name = _apply_agentcore_workload_name(data, controls, boot)
     identity = data.get("identity") or {}
     issuer = str(identity.get("issuer", "")) if isinstance(identity, dict) else ""
     signature = str(identity.get("signature", "")) if isinstance(identity, dict) else ""
@@ -2157,6 +2351,9 @@ def parse_policy(
         updates=UpdatePins.from_dict(raw_updates or {}),
         distribution=PolicyDistribution.from_dict(raw_distribution or {}),
         fallback_profile=fallback_profile,
+        agentcore_identity_posture=composed_posture,
+        agentcore_gateway_url=composed_gateway_url,
+        agentcore_workload_name=composed_workload_name,
     )
 
 

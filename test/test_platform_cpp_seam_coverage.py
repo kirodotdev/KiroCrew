@@ -45,13 +45,23 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import (
     RESERVED_METHODS,
     RESERVED_SLOTS,
+    PlatformCompositionError,
     build_default_context,
+    reset_context,
+    set_context,
 )
 from kiro_crew.platform.context import (
     _RESERVED_DEFAULT_ADAPTERS,
     _RESERVED_WARNED,
     PlatformContext,
     _reserved_slot_is_default,
+)
+from kiro_crew.platform.governance import (
+    CAPABILITY,
+    SCOPE_CATALOG,
+    parse_policy,
+    parse_profile,
+    resolve,
 )
 
 # ── Static-analysis configuration ──
@@ -560,3 +570,213 @@ class TestReservedDefaultAdapterMap:
         ctx = build_default_context(KiroCrewConfig())
         for field in RESERVED_SLOTS:
             assert _reserved_slot_is_default(field, getattr(ctx, field)) is True
+
+
+# ── Agent identity CPP slot + capabilities.agentcore (public no-ops) ──
+
+_TOKEN_LIKE_STATUS_NEEDLES = (
+    "token",
+    "jwt",
+    "bearer",
+    "authorization",
+    "secret",
+    "password",
+    "credential",
+)
+
+
+def _agentcore_policy_body(
+    *,
+    fail_closed: bool = True,
+    agentcore: Optional[dict] = None,
+) -> dict:
+    body: dict = {
+        "version": 1,
+        "boot": {"fail_closed": fail_closed},
+    }
+    if agentcore is not None:
+        body["capabilities"] = {"agentcore": agentcore}
+    return body
+
+
+class TestAgentIdentitySeam:
+    """Public no-op slot: disabled Default + opt-in catalog row + fail-closed posture."""
+
+    def test_platform_context_has_agent_identity_slot(self) -> None:
+        names = {f.name for f in dataclasses.fields(PlatformContext)}
+        assert "agent_identity" in names
+        ctx = build_default_context(KiroCrewConfig())
+        assert hasattr(ctx, "agent_identity")
+
+    def test_default_agent_identity_is_disabled(self) -> None:
+        ctx = build_default_context(KiroCrewConfig())
+        adapter = ctx.agent_identity
+        assert adapter.enabled() is False
+        assert adapter.workload_identity() is None
+        assert adapter.gateway_mcp_spec() is None
+        status = adapter.status()
+        assert isinstance(status, dict)
+        for key in status:
+            lowered = str(key).lower()
+            assert not any(
+                needle in lowered for needle in _TOKEN_LIKE_STATUS_NEEDLES
+            ), f"agent_identity.status() must not expose token-like key {key!r}"
+
+    def test_agent_identity_capability_is_opt_in(self) -> None:
+        spec = SCOPE_CATALOG["capabilities.agentcore"]
+        assert spec.kind == CAPABILITY
+        assert spec.capability_default is False
+
+    def test_agent_identity_enabled_without_posture_aborts_when_fail_closed(self) -> None:
+        with pytest.raises(PlatformCompositionError, match="posture"):
+            parse_policy(_agentcore_policy_body(agentcore={"enabled": True}))
+
+    def test_agent_identity_enabled_unknown_posture_aborts_when_fail_closed(self) -> None:
+        with pytest.raises(PlatformCompositionError, match="posture"):
+            parse_policy(
+                _agentcore_policy_body(agentcore={"enabled": True, "posture": "federated"})
+            )
+
+    def test_agent_identity_enabled_without_posture_disables_when_not_fail_closed(
+        self,
+    ) -> None:
+        ceiling = parse_policy(
+            _agentcore_policy_body(fail_closed=False, agentcore={"enabled": True})
+        )
+        decision = resolve(ceiling, None, "capabilities.agentcore", "")
+        assert not decision.permitted
+
+    def test_agent_identity_enabled_with_known_posture_parses(self) -> None:
+        for posture in ("workload", "login"):
+            ceiling = parse_policy(
+                _agentcore_policy_body(
+                    agentcore={"enabled": True, "posture": posture},
+                )
+            )
+            decision = resolve(ceiling, None, "capabilities.agentcore", "")
+            assert decision.permitted, f"posture={posture!r} must remain enabled"
+
+    def test_agent_identity_known_posture_is_stored_on_ceiling(self) -> None:
+        from kiro_crew.platform.governance import agentcore_posture
+
+        for posture in ("workload", "login"):
+            ceiling = parse_policy(
+                _agentcore_policy_body(agentcore={"enabled": True, "posture": posture})
+            )
+            assert agentcore_posture(ceiling) == posture
+
+    def test_agent_identity_omitted_capability_has_no_stored_posture(self) -> None:
+        from kiro_crew.platform.governance import agentcore_posture
+
+        ceiling = parse_policy(_agentcore_policy_body())
+        assert agentcore_posture(ceiling) is None
+        assert agentcore_posture(None) is None
+
+    def test_agent_identity_disabled_row_does_not_require_posture(self) -> None:
+        from kiro_crew.platform.governance import agentcore_posture
+
+        ceiling = parse_policy(_agentcore_policy_body(agentcore={"enabled": False}))
+        assert not resolve(ceiling, None, "capabilities.agentcore", "").permitted
+        assert agentcore_posture(ceiling) is None
+
+    def test_agent_identity_fail_closed_disabled_has_no_stored_posture(self) -> None:
+        from kiro_crew.platform.governance import agentcore_posture
+
+        ceiling = parse_policy(
+            _agentcore_policy_body(fail_closed=False, agentcore={"enabled": True})
+        )
+        assert agentcore_posture(ceiling) is None
+
+    def test_agent_identity_profile_enabled_without_posture_parses(self) -> None:
+        """A profile may toggle enabled; posture is policy-only and not required."""
+        from kiro_crew.platform.governance import CapabilityGate
+
+        profile = parse_profile({"name": "host", "capabilities": {"agentcore": {"enabled": True}}})
+        gate = profile.controls["capabilities.agentcore"]
+        assert isinstance(gate, CapabilityGate)
+        assert gate.enabled is True
+
+    def test_agent_identity_profile_carrying_posture_is_rejected(self) -> None:
+        """Carrying posture on a profile is a silent lie — reject like ScopedMap.posture."""
+        with pytest.raises(PlatformCompositionError, match="posture"):
+            parse_profile(
+                {
+                    "name": "host",
+                    "capabilities": {
+                        "agentcore": {"enabled": True, "posture": "login"},
+                    },
+                }
+            )
+
+    def test_agent_identity_policy_gateway_url_is_stored(self) -> None:
+        from kiro_crew.platform.governance import agentcore_gateway_url
+
+        ceiling = parse_policy(
+            _agentcore_policy_body(
+                agentcore={
+                    "enabled": True,
+                    "posture": "workload",
+                    "gateway_url": "https://gw.example.test/mcp",
+                }
+            )
+        )
+        assert agentcore_gateway_url(ceiling) == "https://gw.example.test/mcp"
+
+    def test_agent_identity_policy_rejects_http_gateway_url(self) -> None:
+        with pytest.raises(PlatformCompositionError, match="https"):
+            parse_policy(
+                _agentcore_policy_body(
+                    agentcore={
+                        "enabled": True,
+                        "posture": "workload",
+                        "gateway_url": "http://insecure.example/mcp",
+                    }
+                )
+            )
+
+    def test_agent_identity_profile_carrying_gateway_url_is_rejected(self) -> None:
+        with pytest.raises(PlatformCompositionError, match="gateway_url"):
+            parse_profile(
+                {
+                    "name": "host",
+                    "capabilities": {
+                        "agentcore": {
+                            "enabled": True,
+                            "gateway_url": "https://gw.example.test/mcp",
+                        },
+                    },
+                }
+            )
+
+    def test_agent_identity_profile_disabled_row_does_not_require_posture(self) -> None:
+        profile = parse_profile({"name": "host", "capabilities": {"agentcore": {"enabled": False}}})
+        gate = profile.controls["capabilities.agentcore"]
+        assert gate.enabled is False
+
+    def test_agent_identity_seam_stays_off_when_capability_is_off(self) -> None:
+        """Adapter-on is not enough: capability off / no posture keeps the seam off."""
+        from kiro_crew.agent import _agent_identity_enabled
+        from kiro_crew.platform.defaults import DefaultAgentIdentityProvider
+
+        class _ForcedOn(DefaultAgentIdentityProvider):
+            def enabled(self) -> bool:
+                return True
+
+        base = build_default_context(KiroCrewConfig())
+        off_ceiling = parse_policy(_agentcore_policy_body(agentcore={"enabled": False}))
+        on_ceiling = parse_policy(
+            _agentcore_policy_body(agentcore={"enabled": True, "posture": "workload"})
+        )
+        try:
+            set_context(dataclasses.replace(base, agent_identity=_ForcedOn(), governance=None))
+            assert _agent_identity_enabled() is False
+            set_context(
+                dataclasses.replace(base, agent_identity=_ForcedOn(), governance=off_ceiling)
+            )
+            assert _agent_identity_enabled() is False
+            set_context(
+                dataclasses.replace(base, agent_identity=_ForcedOn(), governance=on_ceiling)
+            )
+            assert _agent_identity_enabled() is True
+        finally:
+            reset_context()

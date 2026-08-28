@@ -43,6 +43,7 @@ boot holding the chosen adapter for every extension point, plus three carriers:
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
 | `slack_gate` | adapter | `DefaultSlackEnterpriseGate` (default-open) | fail-closed enterprise allowlist |
 | `identity` | adapter | `DefaultIdentityProvider` (`sso_status.py` stub; `whoami`/`issuer` **RESERVED**) | enterprise SSO / directory |
+| `agent_identity` | adapter | `DefaultAgentIdentityProvider` (disabled: `enabled() -> False`; no workload, no Gateway spec, no tokens). Distinct from operator-SSO `identity`. `IdentityProvider.whoami` / `issuer` stay RESERVED and are not consumed to satisfy this seam. A later stack PR may swap this adapter when an optional extra opts in; this PR composes only the Default. | edition workload identity + token vending |
 | `embeddings` | adapter | **RESERVED** — `DefaultEmbeddingSource`; the public runtime is the bundled in-process llama-cpp model, so no method is consumed (swap via `embeddings.register_embedding_backend`) | — (slot inert) |
 | `mcp_tooling` | adapter | `DefaultMcpToolingProvider` (all methods empty) | enterprise MCP server + skills + provider MCP scopes |
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
@@ -297,6 +298,8 @@ added pre-launch landed under this same `1`, with no bump:
   before the core applies its sandbox);
 - the `knowledge` (connector registry), `dashboard` (route/service/login-handler
   contributor), and `jail` (process-isolation) extension points;
+- the `agent_identity` slot (`AgentIdentityProvider` — agent workload identity
+  and token vending, distinct from operator-SSO `identity`);
 - wiring an *existing* but previously-unconsumed Protocol method into a call site
   (e.g. `ProviderRegistry.create_factory` going live, `AppsLoader` bundling
   feature apps) — no shape change, so no bump regardless;

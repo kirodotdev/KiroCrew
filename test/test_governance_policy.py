@@ -1727,6 +1727,8 @@ class TestValidateReportsUngovernedCapabilities:
 
     def test_fully_enumerated_block_reports_no_gap(self, capsys):
         body = {scope.split(".", 1)[1]: {"enabled": True} for scope in _capability_scopes()}
+        # agentcore requires a known inner posture when enabled.
+        body["agentcore"] = {"enabled": True, "posture": "workload"}
         out = self._validate(capsys, parse_policy(_policy_body(capabilities=body)))
         assert "UNGOVERNED" not in out
         assert "✅ valid" in out

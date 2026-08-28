@@ -79,9 +79,11 @@ from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.platform import safe_context_call
 from kiro_crew.platform.governance import (
     CU_MCP_SERVER,
+    agentcore_posture,
     may_skip_gate_now,
     strip_ungoverned_auto_approve,
 )
+from kiro_crew.platform.governance_profiles import governance_permits
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import (  # circular import: sel imports config which imports agent
     SecurityEvent,
@@ -90,6 +92,62 @@ from kiro_crew.sel import (  # circular import: sel imports config which imports
 from kiro_crew.validation import _AGENT_NAME_RE
 
 logger = logging.getLogger(__name__)
+
+
+def _agentcore_capability_permitted() -> bool:
+    """Whether the governance ceiling permits ``capabilities.agentcore``.
+
+    Independent of the CPP adapter. An omitted capability is ungoverned
+    (permitted); a transient lookup degrades to False. Used by the
+    three-conjunct identity probe (adapter AND this AND known posture).
+    """
+    return bool(
+        safe_context_call(
+            lambda: getattr(
+                governance_permits(
+                    "capabilities.agentcore",
+                    "",
+                    fail_closed=True,
+                    log_warning=False,
+                ),
+                "permitted",
+                False,
+            ),
+            fallback=False,
+            log_message="agentcore governance lookup failed; treating as disabled",
+        )
+    )
+
+
+def _agent_identity_enabled() -> bool:
+    """Whether the composed agent-identity seam is on.
+
+    True only when the adapter is on AND governance permits
+    ``capabilities.agentcore`` AND the ceiling stores a known posture.
+    Standalone Default returns False without consulting governance, so
+    Gateway/token work stays off. An omitted capability is ungoverned
+    (permitted), so the known-posture conjunct is what keeps a forced-on
+    adapter off when no row is present. A transient adapter/governance
+    error degrades to False (never to enabled) via ``safe_context_call``.
+    """
+    adapter_on = bool(
+        safe_context_call(
+            lambda: current_context().agent_identity.enabled(),
+            fallback=False,
+            log_message="agent_identity.enabled lookup failed; treating as disabled",
+        )
+    )
+    if not adapter_on:
+        return False
+    if not _agentcore_capability_permitted():
+        return False
+    return bool(
+        safe_context_call(
+            lambda: agentcore_posture(current_context().governance) is not None,
+            fallback=False,
+            log_message="agentcore posture lookup failed; treating as disabled",
+        )
+    )
 
 
 def _atomic_json_write(path: Path, data: dict) -> None:

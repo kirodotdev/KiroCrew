@@ -2073,6 +2073,8 @@ default on; a deny makes the tool refuse outright, and it does NOT fall back to
 the `commands` scope, so denying browsing wholesale means denying both this
 capability AND the `playwright-cli` command),
 `capabilities.publish` (artifact publish chokepoint — see below),
+`capabilities.agentcore` (opt-in agent workload identity + Gateway MCP —
+see below),
 `capabilities.theme_persona` / `capabilities.theme_install`, and
 `capabilities.telemetry` (the anonymous beacon: send gate + both write
 chokepoints — **policy layer only**, see below). Only the live `approval_mode`
@@ -2113,6 +2115,39 @@ surface-agnostic Settings > Security snapshot + the builtin-toggle 409 check, so
 a rule pinned by any profile renders locked and rejects a disable rather than
 surfacing a no-op opt-out (UI success while the bound-profile gate still denies).
 Display-only union — it does not widen enforcement.
+
+`capabilities.agentcore` is a `CapabilityGate` (opt-in: `capability_default=False`,
+like `capabilities.publish` / `capabilities.messaging`). It is a catalog data row
+only — the evaluator is untouched. The inner `posture` field is policy data, not
+a second scope and not a `CapabilityGate` field (`additionalProperties: false`
+stays `enabled` + `scopes`): `workload` or `login`. An `enabled: true` document
+with a missing or unknown `posture` fails closed — the row is treated as
+disabled, or boot aborts when `boot.fail_closed`. A disabled or omitted row
+does not require `posture`.
+
+The composed posture is a **policy-only** ceiling side field
+(`GovernanceCeiling.agentcore_identity_posture`, Rule 6 — same shape as Slack
+`channels.posture` and `updates`). A profile may enable or disable the
+capability (tightest-wins on `enabled`) but cannot carry `posture`,
+`gateway_url`, or `workload_name`: those keys are rejected at parse, the same
+fail-closed raise as `ScopedMap.posture` / `updates` / `fallback`.
+Enable-without-posture is the legal profile shape; it cannot turn the seam on
+alone, because an omitted policy has no stored posture. Read the composed
+value through the public helper
+`agentcore_posture(ceiling) -> "workload" | "login" | None` — do not re-parse
+raw policy JSON. The helper returns the stored posture only when the
+capability is enabled with a known value; `None` when the ceiling is missing,
+the capability is omitted, disabled, or fail-closed-disabled.
+
+`gateway_url` (https MCP URL, no credentials, no fragment) and `workload_name`
+(3–255 of `[A-Za-z0-9_.-]`) are the same policy-only shape. Validators live
+in `platform/agentcore_schema.py` so policy parse does not import AWS.
+Consumption ANDs three conjuncts: the `agent_identity` adapter is on,
+governance permits `capabilities.agentcore`, and `agentcore_posture(ceiling)`
+is a known value. The public `DefaultAgentIdentityProvider` is disabled, so a
+standalone host with no policy is unchanged. Later stack PRs consult this row
+at rebuild / Gateway injection; naming it here is what lets a policy pin the
+capability before those chokepoints land.
 
 `capabilities.publish` is a `CapabilityGate` (opt-in: `capability_default=False`)
 with an inner `destinations` `ScopedRuleset` (`identifier` matcher) bounding
