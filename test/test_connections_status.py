@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew import mcp_grant
 from kiro_crew.connections import mint, status
@@ -535,6 +536,7 @@ async def _client() -> TestClient:
     app = web.Application()
     app.router.add_get("/api/connections/status", connections.api_connections_status)
     app.router.add_post("/api/connections/cancel", connections.api_connections_cancel)
+    as_owner(app)
     client = TestClient(TestServer(app))
     await client.start_server()
     return client

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.chat import _dequeue_next_message
 from kiro_crew.dashboard.chat_utils import (
@@ -255,7 +256,7 @@ def _make_config_app(tmp_path):
     app["state"] = state
     app.router.add_get("/api/dashboard/config", api_dashboard_config)
     app.router.add_put("/api/dashboard/config", api_dashboard_config)
-    return app
+    return as_owner(app)
 
 
 class TestDashboardConfigMergeQueued:

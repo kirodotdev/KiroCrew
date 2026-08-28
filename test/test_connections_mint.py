@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from conftest import requires_symlinks
 from kiro_crew import hooks, mcp_grant
@@ -1642,6 +1643,7 @@ async def _client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = web.Application()
     app.router.add_post("/api/connections/mint", connections.api_connections_mint)
     app.router.add_get("/api/connections/mint", connections.api_connections_mint_state)
+    as_owner(app)
     client = TestClient(TestServer(app))
     await client.start_server()
     return client

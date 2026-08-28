@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 import kiro_crew
 from kiro_crew.config.loader import KiroCrewConfig
@@ -546,7 +547,7 @@ def handler_app(cfg_file, mock_sel):
     app = web.Application()
     app.router.add_put("/api/dashboard/config", api_dashboard_config)
     app.router.add_get("/api/dashboard/config", api_dashboard_config)
-    return app
+    return as_owner(app)
 
 
 @pytest.mark.asyncio

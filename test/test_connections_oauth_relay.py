@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.handlers import connections
 
@@ -57,6 +58,7 @@ async def test_relay_delivers_to_loopback_without_following_redirects(monkeypatc
 
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     audit = MagicMock()
@@ -87,6 +89,7 @@ async def test_relay_delivers_to_loopback_without_following_redirects(monkeypatc
 async def test_relay_rejects_valid_non_object_json(body):
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     try:
@@ -122,6 +125,7 @@ async def test_relay_rejects_malformed_slug_before_network(monkeypatch, slug):
     """
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     audit = MagicMock()
@@ -156,6 +160,7 @@ async def test_relay_accepts_user_added_name_shapes(monkeypatch, name):
     """
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     audit = MagicMock()
@@ -196,6 +201,7 @@ async def test_relay_delivers_for_a_user_added_non_registry_server(monkeypatch):
 
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     audit = MagicMock()
@@ -228,6 +234,7 @@ async def test_relay_delivers_for_a_user_added_non_registry_server(monkeypatch):
 async def test_relay_rejects_non_loopback_before_network(monkeypatch):
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     audit = MagicMock()
@@ -263,6 +270,7 @@ async def test_relay_sends_bracketed_ipv6_host_header(monkeypatch):
 
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     audit = MagicMock()
@@ -287,6 +295,7 @@ async def _post_relay(port: int) -> tuple[int, dict]:
     """Drive the relay endpoint against a loopback port and return (status, body)."""
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
+    as_owner(relay_app)
     relay_client = TestClient(TestServer(relay_app))
     await relay_client.start_server()
     try:

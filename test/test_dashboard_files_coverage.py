@@ -992,10 +992,74 @@ def cfg_file(tmp_path):
 
 @pytest.fixture()
 def config_client_app(cfg_file, mock_sel) -> web.Application:
-    app = web.Application()
+    """The endpoint under an OWNER caller, so the body-validation paths are reachable.
+
+    ``PUT`` is owner-gated, and the gate reads ``request.app["state"]`` plus the
+    authenticated claims the token middleware normally populates. Without both,
+    every PUT below would answer 403 (or 500 on the missing state) and stop
+    testing what it names. ``owner_id = ""`` with the caller defaulting to the
+    signed local bootstrap subject is the standalone-local shape, matching
+    ``test_agent_config_owner_gate_invariant``; a test that wants a non-owner
+    sends ``X-Test-User``.
+    """
+
+    class _State:
+        owner_id = ""
+
+    @web.middleware
+    async def _identity(request, handler):
+        request["user"] = request.headers.get("X-Test-User", "local-app")
+        request["app"] = request.headers.get("X-Test-App", "")
+        return await handler(request)
+
+    app = web.Application(middlewares=[_identity])
+    app["state"] = _State()
     app.router.add_get("/api/dashboard/config", files_mod.api_dashboard_config)
     app.router.add_put("/api/dashboard/config", files_mod.api_dashboard_config)
     return app
+
+
+class TestDashboardConfigPutOwnerGate:
+    """The PUT gate fires ahead of body parsing and ahead of the config load."""
+
+    @pytest.mark.asyncio
+    async def test_non_owner_put_is_refused(self, config_client_app):
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.put(
+                "/api/dashboard/config",
+                json={"gitlab_hosts": ["gitlab.example.com"]},
+                headers={"X-Test-User": "someone-else"},
+            )
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "owner_only"
+
+    @pytest.mark.asyncio
+    async def test_non_owner_is_refused_before_the_body_is_parsed(self, config_client_app):
+        """A body that would 400 still answers 403: the gate runs first.
+
+        This is the observable form of "the gate fires BEFORE config-load I/O" —
+        an unparseable body cannot reach the 400 branch, so nothing downstream of
+        the gate ran.
+        """
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.put(
+                "/api/dashboard/config",
+                data="{",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Test-User": "someone-else",
+                },
+            )
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_get_stays_open_to_non_owner(self, config_client_app):
+        """Only PUT is gated — the settings UI polls GET on an interval."""
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.get(
+                "/api/dashboard/config", headers={"X-Test-User": "someone-else"}
+            )
+            assert resp.status == 200
 
 
 class TestDashboardConfigPut:
@@ -1147,9 +1211,19 @@ class TestDashboardConfigPut:
             mock_sel.reset_mock()
             req = MagicMock()
             req.method = method
-            with patch("asyncio.to_thread", side_effect=asyncio.CancelledError):
-                with pytest.raises(asyncio.CancelledError):
-                    await files_mod.api_dashboard_config(req)
+            # PUT is owner-gated ahead of the load. This test is about what the
+            # LOAD does when it is cancelled, so the caller is the owner here;
+            # the gate's own behaviour is covered by
+            # TestDashboardConfigPutOwnerGate. Without this the MagicMock request
+            # reads as a non-owner and the gate answers before the load runs.
+            with patch(
+                "kiro_crew.dashboard.handlers.source_providers."
+                "is_owner_dashboard_request",
+                return_value=True,
+            ):
+                with patch("asyncio.to_thread", side_effect=asyncio.CancelledError):
+                    with pytest.raises(asyncio.CancelledError):
+                        await files_mod.api_dashboard_config(req)
             mock_sel.log_tool_invocation.assert_called_once_with(
                 session_key="dashboard",
                 tool_name=tool,

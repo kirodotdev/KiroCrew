@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import NoConfiguredOwner, as_owner
 
 from kiro_crew.config.loader import KiroCrewConfig
 
@@ -48,7 +49,7 @@ def handler_app(cfg_file, mock_sel):
     app = web.Application()
     app.router.add_put("/api/dashboard/config", api_dashboard_config)
     app.router.add_get("/api/dashboard/config", api_dashboard_config)
-    return app
+    return as_owner(app)
 
 
 @pytest.mark.asyncio
@@ -142,8 +143,28 @@ async def test_cancellation_during_config_load_is_audited(
     monkeypatch.setattr(files_mod.asyncio, "to_thread", cancel_load)
 
     class _FakeRequest:
+        """Owner-shaped: ``PUT`` is owner-gated ahead of the load cancelled here.
+
+        The gate reads ``request.app["state"]`` and the authenticated claims, so a
+        stub carrying neither would be refused before ``to_thread`` is ever
+        awaited and this test would assert against the denial instead of the
+        cancellation. The gate's own behaviour is covered in
+        ``test_dashboard_files_coverage.TestDashboardConfigPutOwnerGate``.
+        """
+
         def __init__(self, http_method: str) -> None:
             self.method = http_method
+            self.app = {"state": NoConfiguredOwner()}
+            self._claims = {"user": "local-app", "app": ""}
+
+        def __contains__(self, key: str) -> bool:
+            return key in self._claims
+
+        def __getitem__(self, key: str) -> str:
+            return self._claims[key]
+
+        def get(self, key: str, default: str = "") -> str:
+            return self._claims.get(key, default)
 
         async def json(self):
             return {}

@@ -2785,9 +2785,9 @@ def _deny_non_owner_browser_request(request: web.Request, operation: str) -> web
     """
     # Deferred import: source_providers imports chat state helpers from this
     # module's sibling, so a top-level import would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
     from kiro_crew.dashboard.handlers.source_providers import (
         is_owner_dashboard_request,
-        stale_owner_session_response,
     )
 
     if is_owner_dashboard_request(request):
@@ -2824,13 +2824,7 @@ def _deny_non_owner_browser_request(request: web.Request, operation: str) -> web
     )
     # Deny decision made above; only the response label changes for a signed
     # pre-owner bootstrap subject (see stale_owner_session_response).
-    stale = stale_owner_session_response(request)
-    if stale is not None:
-        return stale
-    return web.json_response(
-        {"error": "dashboard user required", "code": "dashboard_user_required"},
-        status=403,
-    )
+    return _owner_denial_response(request, "dashboard user required", "dashboard_user_required")
 
 
 async def api_browser_token_put(request: web.Request) -> web.Response:

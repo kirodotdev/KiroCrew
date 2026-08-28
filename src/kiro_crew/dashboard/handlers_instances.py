@@ -705,22 +705,21 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
     # so it requires the positively-identified OWNER: not an app token, and not
     # a Slack user who minted a dashboard token via `!dashboard` (app == "" but
     # a non-owner subject).
-    from kiro_crew.dashboard.handlers.source_providers import (
-        is_owner_dashboard_request,
-        stale_owner_session_response,
-    )
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
     if not is_owner_dashboard_request(request):
+        # Domain audit stays here rather than delegating to
+        # ``require_owner_dashboard_request``: ``_audit`` emits
+        # ``log_tool_invocation`` under ``instances_search_sessions`` /
+        # ``dashboard:instances``, which is the record this module's SEL consumers
+        # watch, and the shared helper's generic ``log_api_access`` /
+        # ``non_owner_block`` would silently drop this route out of that stream.
+        # Only the denial TAIL is shared -- see ``_owner_denial_response``.
         _audit("search_sessions", "denied", error="non-owner identity rejected")
         # Deny decision made above; only the response label changes for a signed
         # pre-owner bootstrap subject (see stale_owner_session_response).
-        stale = stale_owner_session_response(request)
-        if stale is not None:
-            return stale
-        return web.json_response(
-            {"error": "federated session search is owner-only", "code": "owner_only"},
-            status=403,
-        )
+        return _owner_denial_response(request, "federated session search is owner-only")
     state: DashboardState = request.app["state"]
     q = sanitize_string(request.query.get("q", "")).strip()[:256]
     if len(q) < SEARCH_MIN_CHARS:
@@ -1140,19 +1139,17 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
     # with the OWNER's manager-held credential, so it requires the positively
     # identified owner — the same bar api_instances_search_sessions sets, for
     # the same reason.
-    from kiro_crew.dashboard.handlers.source_providers import (
-        is_owner_dashboard_request,
-        stale_owner_session_response,
-    )
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
     if not is_owner_dashboard_request(request):
+        # Domain audit stays here for the same reason as
+        # api_instances_search_sessions above: ``_audit`` is this module's
+        # ``instances_*`` SEL stream. Only the denial tail is shared.
         _audit("proxy", "denied", error="non-owner identity rejected")
-        stale = stale_owner_session_response(request)
-        if stale is not None:
-            return stale
-        return web.json_response(
-            {"error": "remote-crew proxy is owner-only", "code": "owner_only"}, status=403
-        )
+        # Deny decision made above; only the response label changes for a signed
+        # pre-owner bootstrap subject (see stale_owner_session_response).
+        return _owner_denial_response(request, "remote-crew proxy is owner-only")
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
     path = request.match_info.get("path", "")

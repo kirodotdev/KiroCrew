@@ -61,10 +61,6 @@ from kiro_crew.dashboard.handlers._shared import (
     apply_skill_mapping,
 )
 from kiro_crew.dashboard.handlers.discover import _redact_external
-from kiro_crew.dashboard.handlers.source_providers import (
-    is_owner_dashboard_request,
-    stale_owner_session_response,
-)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
@@ -139,34 +135,9 @@ async def _require_owner(request: web.Request, operation: str) -> web.Response |
     never from a client-set header. Returns the 403 to send, or ``None`` when
     the caller is the owner.
     """
-    if is_owner_dashboard_request(request):
-        return None
-    # Off the loop: the FIRST sel() of a process CONSTRUCTS the log — trust-dir
-    # creation, key validation, and on Windows the owner-only DACL — so on a
-    # fresh gateway whose first mutating request is non-owner this would stall
-    # every other request. Same reasoning as connections._audit_started.
-    caller = str(request.get("user") or "unknown")
-    try:
-        await asyncio.to_thread(
-            lambda: _sel().log_api_access(
-                caller=caller,
-                operation=operation,
-                outcome="denied",
-                source="dashboard",
-                resources="non_owner_block",
-            )
-        )
-    except Exception:  # pragma: no cover — audit must never change the outcome
-        logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)
-    # Deny decision made above; only the response label changes for a signed
-    # pre-owner bootstrap subject (see stale_owner_session_response).
-    stale = stale_owner_session_response(request)
-    if stale is not None:
-        return stale
-    return web.json_response(
-        {"error": "owner authorization required", "code": "owner_only"},
-        status=403,
-    )
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    return await require_owner_dashboard_request(request, operation)
 
 
 # ── Agent Config ──

@@ -25,10 +25,7 @@ import uuid
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
-from kiro_crew.dashboard.handlers.source_providers import (
-    is_owner_dashboard_request,
-    stale_owner_session_response,
-)
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 from kiro_crew.validation import (
@@ -115,8 +112,15 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
     is configured. That matches the identity the ``ask_question`` MCP tool
     itself carries, since its token is minted as ``owner_id or "local-app"``.
     """
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+
     if is_owner_dashboard_request(request):
         return None
+    # Domain-specific audit kept here rather than delegated to
+    # ``require_owner_dashboard_request``: this record carries the endpoint as
+    # ``resources`` plus an ``error`` reason, which the shared helper's generic
+    # ``non_owner_block`` record does not. Only the denial TAIL (stale-session
+    # relabel + 403) is shared -- see ``_owner_denial_response``.
     try:
         sel().log_api_access(
             caller=str(request.get("user") or "anonymous"),
@@ -130,10 +134,7 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
         logger.warning("SEL audit failed for non-owner denial", exc_info=True)
     # Deny decision made above; only the response label changes for a signed
     # pre-owner bootstrap subject (see stale_owner_session_response).
-    stale = stale_owner_session_response(request)
-    if stale is not None:
-        return stale
-    return web.json_response({"error": "forbidden", "code": "owner_only"}, status=403)
+    return _owner_denial_response(request, "forbidden", "owner_only")
 
 
 async def api_ask_question(request: web.Request) -> web.Response:

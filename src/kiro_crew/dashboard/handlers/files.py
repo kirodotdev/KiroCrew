@@ -3460,6 +3460,17 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     """GET/PUT /api/dashboard/config — read or write dashboard settings."""
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
 
+    # Owner gate for PUT: reject non-owner writes before paying the config-load
+    # I/O cost. The check is cheap (in-memory predicate + optional off-thread
+    # SEL audit on denial) compared to the KiroCrewConfig.load() thread hop
+    # below, so non-owner PUT requests are rejected immediately.
+    if request.method == "PUT":
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "dashboard_config.write")
+        if owner_denied is not None:
+            return owner_denied
+
     # Offloaded: KiroCrewConfig.load() stats, reads, parses, and validates config
     # files. The client polls this endpoint on an interval to pick up externally
     # edited dashboard.gitlab_hosts, so a slow or network-backed config directory

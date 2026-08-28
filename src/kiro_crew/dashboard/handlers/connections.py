@@ -157,6 +157,11 @@ def _approval_superseded(error: str, code: str) -> web.Response:
 
 async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
     """POST /api/mcp/oauth/relay — deliver a failed browser redirect locally."""
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "mcp_oauth_relay")
+    if owner_denied is not None:
+        return owner_denied
     try:
         body = await request.json()
     except Exception:
@@ -291,6 +296,11 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     Returns as soon as the mint is scheduled. The URL is not ready yet: the
     caller polls :func:`api_connections_mint_state` for it.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "connections_mint")
+    if owner_denied is not None:
+        return owner_denied
     parsed = await _mint_request(request)
     if isinstance(parsed, web.Response):
         return parsed
@@ -409,6 +419,11 @@ async def api_connections_cancel(request: web.Request) -> web.Response:
     keeps the working connection. Idempotent -- cancelling a provider with no
     live mint answers ``dropped=false``.
     """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "connections_cancel")
+    if owner_denied is not None:
+        return owner_denied
     parsed = await _mint_request(request)
     if isinstance(parsed, web.Response):
         return parsed

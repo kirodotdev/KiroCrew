@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.dashboard.chat import restore_recent_sessions
 from kiro_crew.dashboard.state import DashboardState
@@ -59,7 +60,7 @@ def _make_config_app(tmp_path):
     app["state"] = state
     app.router.add_get("/api/dashboard/config", api_dashboard_config)
     app.router.add_put("/api/dashboard/config", api_dashboard_config)
-    return app
+    return as_owner(app)
 
 
 # ── restore_recent_sessions tests ──

@@ -1821,6 +1821,84 @@ def _read_memory_mode(path: "Path") -> str | None:
     return normalized
 
 
+async def require_owner_dashboard_request(
+    request: web.Request, operation: str
+) -> web.Response | None:
+    """Owner gate shared across dashboard handler modules.
+
+    Returns ``None`` when the caller IS the dashboard owner, allowing the
+    request to proceed.  Otherwise audits the denial via SEL (off-thread so a
+    first-process SEL construction cannot stall the event loop), checks for
+    a stale pre-owner bootstrap subject (relabelling the denial to a 401), and
+    falls back to a 403 with the standard ``owner_only`` code.
+
+    Imports ``is_owner_dashboard_request`` and ``stale_owner_session_response``
+    inside the function body to avoid a circular import: ``source_providers``
+    imports chat-state helpers that reach back into sibling handler modules.
+    """
+    import asyncio
+
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+    )
+
+    if is_owner_dashboard_request(request):
+        return None
+
+    # Off the loop: the FIRST sel() of a process CONSTRUCTS the log (trust-dir
+    # creation, key validation, on Windows an icacls subprocess), so on a fresh
+    # gateway whose first mutating request is non-owner this would stall every
+    # other request.
+    caller = str(request.get("user") or "unknown")
+    try:
+        from kiro_crew.sel import sel as _sel
+
+        await asyncio.to_thread(
+            lambda: _sel().log_api_access(
+                caller=caller,
+                operation=operation,
+                outcome="denied",
+                source="dashboard",
+                resources="non_owner_block",
+            )
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)
+
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    return _owner_denial_response(request)
+
+
+def _owner_denial_response(
+    request: web.Request,
+    error_message: str = "owner authorization required",
+    error_code: str = "owner_only",
+) -> web.Response:
+    """Stale-session relabel + 403 denial -- the tail of every owner gate.
+
+    Synchronous: ``stale_owner_session_response`` is a pure predicate over
+    request attributes, so no I/O is involved.  Domain-specific wrappers that
+    perform their own SEL/audit logging before reaching the denial response can
+    call this directly instead of going through the full async
+    ``require_owner_dashboard_request`` helper.
+
+    Imports ``stale_owner_session_response`` inside the function body to avoid
+    a circular import (same reason as the async helper above).
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (
+        stale_owner_session_response,
+    )
+
+    stale = stale_owner_session_response(request)
+    if stale is not None:
+        return stale
+    return web.json_response(
+        {"error": error_message, "code": error_code},
+        status=403,
+    )
+
+
 def _probe_persisted_session(slot_name: str) -> tuple[bool, str | None]:
     """``(file_exists, memory_mode_or_None)`` for *slot_name*.
 

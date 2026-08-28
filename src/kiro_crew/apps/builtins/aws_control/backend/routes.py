@@ -71,9 +71,9 @@ from kiro_crew.apps.builtins.aws_control.backend import library as library_mod
 from kiro_crew.apps.builtins.aws_control.backend import shares as shares_mod
 from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
-    stale_owner_session_response,
 )
 from kiro_crew.deploy import profiles as deploy_profiles
 from kiro_crew.deploy.engine import AWSError
@@ -206,10 +206,10 @@ def _guarded(handler: Handler) -> Handler:
                 "denied",
                 error=f"non-owner caller (app={request.get('app') or ''})",
             )
-            stale = stale_owner_session_response(request)
-            if stale is not None:
-                return stale
-            return _forbidden("dashboard owner required", "dashboard_owner_required")
+            # Stale-session relabel + 403 via the shared helper's tail pattern.
+            return _owner_denial_response(
+                request, "dashboard owner required", "dashboard_owner_required"
+            )
         return await handler(request)
 
     return _wrapped
