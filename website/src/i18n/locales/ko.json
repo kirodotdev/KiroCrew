@@ -4725,7 +4725,8 @@
         "add_accounts_error": "해당 프로필을 등록할 수 없습니다. 아무것도 추가되지 않았습니다. 다시 시도하세요.",
         "search_placeholder": "계정 검색",
         "search_none": "‘{{query}}’과(와) 일치하는 계정이 없습니다.",
-        "paid_services_title": "유료 서비스"
+        "paid_services_title": "유료 서비스",
+        "orphan_consent": "여기에 등록되지 않은 AWS 계정에 대해 확인되었습니다. 아래에서 확인을 철회하거나, 해당 계정을 다시 등록해 전용 페이지에서 관리하세요."
       }
     }
   },

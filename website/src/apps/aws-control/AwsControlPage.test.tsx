@@ -207,21 +207,69 @@ describe('AwsControlPage', () => {
     expect(screen.queryByTestId('account-card')).toBeNull()
   })
 
-  it('keeps the paid-service gates page-wide, without the paragraphs', async () => {
-    // Page-wide is the scope a confirmation actually has: the endpoint takes a
-    // service and derives the connection itself. This is also the ONLY surface
-    // that can show them - the settings cards mount polly and transcribe, never
-    // s3 or ce - so a granted confirmation would otherwise have nowhere to be
-    // seen or withdrawn. What went away is the three paragraphs above the cards.
+  it('keeps every paid-service confirmation off the account list', async () => {
+    // The account list is accounts and nothing else. A confirmation is not an
+    // account, and both paid services (s3 behind the drive, ce behind the cost
+    // figure) are reached from an account's console, so the ask and the receipt
+    // both belong there. Asserting on the CALL is not available here because the
+    // page now reads consent itself to detect an orphaned grant, so this pins
+    // that a grant OWNED by a listed account renders nothing on the list.
     vi.mocked(awsControlApi.accounts).mockResolvedValue(accountsPayload())
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      { granted: true, grant: { account: accountsPayload().accounts[0].account } } as never,
+    )
     renderWithProviders(<AwsControlPage />)
 
-    const section = await screen.findByTestId('paid-services')
-    await waitFor(() => {
-      expect(api.awsConsent).toHaveBeenCalledWith('s3')
-      expect(api.awsConsent).toHaveBeenCalledWith('ce')
-    })
-    expect(within(section).queryByTestId('paid-services-scope')).toBeNull()
+    await screen.findByTestId('accounts-list')
+    await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('s3'))
+    expect(screen.queryByTestId('paid-services')).toBeNull()
+    expect(screen.queryByTestId('orphan-consent')).toBeNull()
+  })
+
+  it('rescues a grant whose account is not registered here', async () => {
+    // A grant is keyed on the service, so it outlives the account it was
+    // recorded for. The console only shows a receipt matching its own account,
+    // so a grant matching NO registered account has no console to live on and
+    // revoke has no caller anywhere — money confirmed with no way to unconfirm
+    // it. Two ways to reach that, and the second is why the condition is not
+    // "the list is empty":
+    //   1. no accounts registered at all
+    //   2. the grant's account deregistered while others remain
+    for (const accounts of [[], accountsPayload().accounts]) {
+      vi.mocked(awsControlApi.accounts).mockResolvedValue({ supported: true, accounts } as never)
+      vi.mocked(api.awsConsent).mockResolvedValue(
+        { granted: true, grant: { account: '999988887777' } } as never,
+      )
+      const r = renderWithProviders(<AwsControlPage />)
+      expect(await screen.findByTestId('orphan-consent')).toBeTruthy()
+      // The rescue's only control is destructive and the card names an account
+      // that matches nothing on the list, so it never renders bare.
+      expect(screen.getByTestId('orphan-consent-note')).toBeTruthy()
+      r.unmount()
+    }
+  })
+
+  it('never flashes the rescue while the account list is still unknown', async () => {
+    // `orphaned` asks whether any listed account owns the grant. An in-flight
+    // accounts query has no list, and reading that as "nobody owns it" would put
+    // a withdraw control on the ordinary accounts page on every load where the
+    // consent read resolves first. The list must be KNOWN before the question
+    // can be answered.
+    let releaseAccounts: (v: unknown) => void = () => {}
+    vi.mocked(awsControlApi.accounts).mockReturnValue(
+      new Promise((res) => { releaseAccounts = res }) as never,
+    )
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      { granted: true, grant: { account: accountsPayload().accounts[0].account } } as never,
+    )
+
+    renderWithProviders(<AwsControlPage />)
+    await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('s3'))
+    expect(screen.queryByTestId('orphan-consent')).toBeNull()
+
+    releaseAccounts(accountsPayload())
+    await screen.findByTestId('accounts-list')
+    expect(screen.queryByTestId('orphan-consent')).toBeNull()
   })
 
   it('drops the list, and says so, when a search filters every account out', async () => {

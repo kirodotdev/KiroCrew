@@ -4809,7 +4809,8 @@
         "add_accounts_error": "Diese Profile konnten nicht registriert werden. Es wurde nichts hinzugefügt. Versuche es erneut.",
         "search_placeholder": "Konten suchen",
         "search_none": "Keine Konten stimmen mit „{{query}}“ überein.",
-        "paid_services_title": "Kostenpflichtige Dienste"
+        "paid_services_title": "Kostenpflichtige Dienste",
+        "orphan_consent": "Bestätigt für ein AWS-Konto, das hier nicht registriert ist. Ziehen Sie die Bestätigung unten zurück, oder registrieren Sie das Konto erneut, um es auf seiner eigenen Seite zu verwalten."
       }
     }
   },

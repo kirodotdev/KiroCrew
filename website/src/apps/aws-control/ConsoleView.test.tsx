@@ -266,6 +266,28 @@ describe('ConsoleView', () => {
     await waitFor(() => expect(awsControlApi.driveBootstrapConfirm).toHaveBeenCalledWith(ACCOUNT.account))
   })
 
+  it('offers the cost confirmation when nothing has ever been confirmed', async () => {
+    // The state a never-confirmed account is always in: no cached cost reading
+    // for the backend to attach `consentMissing` to, so the costs request is a
+    // bare 409 and that field never exists. Keying the ask on it left Cost
+    // Explorer with no confirmation control anywhere in the product, so the ask
+    // is driven by the consent status instead.
+    vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
+    const { AwsControlError } = await import('./api')
+    vi.mocked(awsControlApi.costs).mockRejectedValue(
+      new AwsControlError('aws_consent_required', 409),
+    )
+    vi.mocked(awsControlApi.library).mockResolvedValue(emptyLibrary)
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
+    vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
+    vi.mocked(awsControlApi.shares).mockResolvedValue(noShares)
+    vi.mocked(api.awsConsent).mockResolvedValue({ granted: false } as never)
+
+    renderWithProviders(<ConsoleView account={ACCOUNT} onBack={() => {}} />)
+
+    expect(await screen.findByTestId('costs-consent-gate')).toBeTruthy()
+  })
+
   it('shows the cost-consent nudge when costs report consentMissing', async () => {
     vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
     vi.mocked(awsControlApi.costs).mockResolvedValue({
@@ -276,12 +298,54 @@ describe('ConsoleView', () => {
     vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
     vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
     vi.mocked(awsControlApi.shares).mockResolvedValue(noShares)
+    vi.mocked(api.awsConsent).mockResolvedValue({ granted: false } as never)
 
     renderWithProviders(<ConsoleView account={ACCOUNT} onBack={() => {}} />)
 
     expect(await screen.findByTestId('costs-consent-gate')).toBeTruthy()
     // The consent gate fetches the ce service status.
     await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('ce'))
+  })
+
+  it('carries the granted confirmations, and no empty heading without them', async () => {
+    // This section is why the account list no longer shows confirmations: it is
+    // the surface that keeps a granted one readable and withdrawable. It must
+    // not exist when there is nothing to show, or it becomes exactly the
+    // always-present placeholder this page was cleaned of.
+    vi.mocked(awsControlApi.library).mockResolvedValue(emptyLibrary)
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
+    vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
+    vi.mocked(awsControlApi.shares).mockResolvedValue(noShares)
+    vi.mocked(api.awsConsent).mockResolvedValue({ granted: false } as never)
+
+    const nothing = renderWithProviders(<ConsoleView account={ACCOUNT} onBack={() => {}} />)
+    await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('s3'))
+    expect(nothing.container.querySelector('[data-testid="paid-services"]')).toBeNull()
+    nothing.unmount()
+
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      { granted: true, grant: { account: ACCOUNT.account } } as never,
+    )
+    renderWithProviders(<ConsoleView account={ACCOUNT} onBack={() => {}} />)
+    expect(await screen.findByTestId('paid-services')).toBeTruthy()
+  })
+
+  it('never shows a receipt for a grant recorded under a different account', async () => {
+    // The withdraw control is GLOBAL: one grant per service. So a receipt shown
+    // on the wrong account's console is not a cosmetic mislabel — clicking it
+    // revokes the grant the OTHER account's drive and cost figure run on. The
+    // grant carries the account it was confirmed for, and that is the test.
+    vi.mocked(awsControlApi.library).mockResolvedValue(emptyLibrary)
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
+    vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
+    vi.mocked(awsControlApi.shares).mockResolvedValue(noShares)
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      { granted: true, grant: { account: '999988887777' } } as never,
+    )
+
+    renderWithProviders(<ConsoleView account={ACCOUNT} onBack={() => {}} />)
+    await waitFor(() => expect(api.awsConsent).toHaveBeenCalledWith('s3'))
+    expect(screen.queryByTestId('paid-services')).toBeNull()
   })
 
   /* ── Cost-strip failure branches ──────────────────────────────────────────

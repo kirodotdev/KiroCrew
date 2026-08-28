@@ -43,6 +43,26 @@ beforeEach(() => {
 })
 
 describe('AwsConsentGate', () => {
+  it('lets the caller invalidate the surfaces a grant gates', async () => {
+    // A grant decides content this component cannot name. The AWS Control
+    // console decides whether to show the ask from a CACHED drive 409 and a
+    // cached consentMissing, so without this callback a withdraw would unmount
+    // the receipt and leave no ask behind it - nothing on screen offering the
+    // confirm back.
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      status({
+        granted: true,
+        grant: { account: '111122223333', region: 'us-east-1', profile: '', granted_at: '2026-08-21T00:00:00+00:00' },
+      }),
+    )
+    const onConsentChange = vi.fn()
+    renderWithProviders(<AwsConsentGate service="polly" onConsentChange={onConsentChange} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /withdraw confirmation/i }))
+    await waitFor(() => expect(api.revokeAwsConsent).toHaveBeenCalledWith('polly'))
+    await waitFor(() => expect(onConsentChange).toHaveBeenCalled())
+  })
+
   it('shows the service, region, credential source and account before confirming', async () => {
     vi.mocked(api.awsConsent).mockResolvedValue(status())
     renderWithProviders(<AwsConsentGate service="polly" />)

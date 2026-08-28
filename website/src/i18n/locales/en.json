@@ -3709,7 +3709,8 @@
         "add_accounts_error": "Couldn't register those profiles. Nothing was added. Try again.",
         "search_placeholder": "Search accounts",
         "search_none": "No accounts match “{{query}}”.",
-        "paid_services_title": "Paid services"
+        "paid_services_title": "Paid services",
+        "orphan_consent": "Confirmed for an AWS account that is not registered here. Withdraw it below, or register that account again to manage it from its own page."
       }
     }
   },

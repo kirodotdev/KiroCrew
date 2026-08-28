@@ -4725,7 +4725,8 @@
         "add_accounts_error": "それらのプロファイルを登録できませんでした。何も追加されていません。もう一度お試しください。",
         "search_placeholder": "アカウントを検索",
         "search_none": "「{{query}}」に一致するアカウントはありません。",
-        "paid_services_title": "有料サービス"
+        "paid_services_title": "有料サービス",
+        "orphan_consent": "ここに登録されていない AWS アカウントに対して確認済みです。下で確認を取り消すか、そのアカウントを再登録して専用ページから管理してください。"
       }
     }
   },

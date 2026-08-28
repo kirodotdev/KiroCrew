@@ -4725,7 +4725,8 @@
         "add_accounts_error": "无法注册这些配置文件。没有添加任何内容。请重试。",
         "search_placeholder": "搜索账户",
         "search_none": "没有匹配“{{query}}”的账户。",
-        "paid_services_title": "付费服务"
+        "paid_services_title": "付费服务",
+        "orphan_consent": "已为一个未在此注册的 AWS 账号确认。可在下方撤回确认，或重新注册该账号以在它自己的页面上管理。"
       }
     }
   },

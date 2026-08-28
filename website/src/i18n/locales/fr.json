@@ -4893,7 +4893,8 @@
         "aggregate_healthy_many": "{{count}} saines",
         "keys_summary_many": "{{count}} clés",
         "add_accounts_count_many": "{{count}} sur {{max}} enregistrés",
-        "paid_services_title": "Services payants"
+        "paid_services_title": "Services payants",
+        "orphan_consent": "Confirmé pour un compte AWS qui n'est pas enregistré ici. Retirez la confirmation ci-dessous, ou enregistrez à nouveau ce compte pour le gérer depuis sa propre page."
       }
     }
   },

@@ -54,6 +54,10 @@ const CONSENT = (service) => ({
   account: '217681647555',
   identityResolved: true,
   revokedOnAccountChange: false,
+  // The account the grant was RECORDED for. The console only shows a receipt
+  // whose grant matches the console's own account, so this has to be the first
+  // account in ACCOUNTS or the console captures would show no receipt at all.
+  grant: { account: '217681647555', region: 'us-west-2', profile: 'personal', granted_at: '2026-08-28T00:00:00+00:00' },
 })
 
 const COSTS = { monthToDate: 2.25, currency: 'USD', fetchedAt: new Date().toISOString(), fresh: true, consentMissing: false }
@@ -141,7 +145,13 @@ const expectCount = async (t, want) => {
   if (!ok) failures.push(`${t}: want ${want}, got ${got}`)
 }
 await expectCount('aggregate-line', 0)
-await expectCount('paid-services', 1)
+// The account list is accounts and nothing else. The confirmation surface moved
+// to the console, so a non-zero count here is the regression this pins.
+await expectCount('paid-services', 0)
+// The rescue mount fires only for a grant no registered account owns. The
+// fixture's grant belongs to the first account, so it must stay absent - a hit
+// here means the general condition regressed into always-on.
+await expectCount('orphan-consent', 0)
 await expectCount('accounts-search', 1)
 await expectCount('accounts-list', 1)
 
@@ -163,6 +173,9 @@ if (await row.count()) {
 await expectCount('general-section', 0)
 await expectCount('console-ghosts', 0)
 await expectCount('console-guard', 0)
+// The other half of the move: with both fixtures granted, the console is where
+// the confirmations are readable and withdrawable.
+await expectCount('paid-services', 1)
 await expectCount('console-payments-toggle', 0)
 await expectCount('console-copy-id', 1)
 // The four inline sections are gone; ONE capability row stands for the drive.

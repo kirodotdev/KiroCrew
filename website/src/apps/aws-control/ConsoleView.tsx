@@ -24,6 +24,7 @@ import { CopyBtn, SectionHeader } from './shared'
 import type { LiveDrive } from './DrivePage'
 import { fmtBytes, fmtCurrency, fmtDate } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
+import { api, type AwsConsentStatus } from '../../api/client'
 import type {
   AwsAccount, AwsProfile, ProfileKind, ReconnectPlan, DriveStatus,
 } from './types'
@@ -284,6 +285,41 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
 
   const drive: DriveStatus | undefined = driveQ.data
   const costs = costsQ.data
+  // The drive read's refusal states, named once so the receipt below and the ask
+  // further down cannot drift apart.
+  const driveErr = driveQ.error instanceof AwsControlError ? driveQ.error : null
+  const drive409 = driveQ.isError && driveErr?.status === 409 ? driveErr : null
+  const driveConsentRefused = drive409?.message === 'aws_consent_required'
+  // A receipt belongs on THIS console only when the grant it shows was recorded
+  // for THIS account. A grant is service-scoped and carries the account it was
+  // confirmed for, so mounting it under every console would claim a scope it
+  // does not have AND put a withdraw control for one account's drive on another
+  // account's page - the withdraw is global, so that misfire is destructive, not
+  // cosmetic.
+  //
+  // It is also suppressed while that service's own refusal is still on screen:
+  // granting invalidates the consent query but not the drive or costs caches, so
+  // for the renders between a grant and the next refetch the ask and the receipt
+  // would both be visible, saying opposite things about the same service.
+  const s3ConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 's3'],
+    queryFn: () => api.awsConsent('s3'),
+  })
+  const ceConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 'ce'],
+    queryFn: () => api.awsConsent('ce'),
+  })
+  const confirmedHere = (c: AwsConsentStatus | undefined) =>
+    c?.granted === true && c.grant?.account === id
+  const s3Receipt = confirmedHere(s3ConsentQ.data) && !driveConsentRefused
+  const ceReceipt = confirmedHere(ceConsentQ.data) && !costs?.consentMissing
+  // Both surfaces whose content a grant decides. The ask reads a cached refusal
+  // and the drive row reads a cached listing, so a grant change has to reach
+  // them or the page keeps rendering the previous answer.
+  const refetchGated = () => {
+    qcTop.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })
+    qcTop.invalidateQueries({ queryKey: ['aws-control', 'costs', id] })
+  }
   // Fallback region for the setup preview, sourced the same way GeneralSection
   // sources the one it displays: the default key's region, else the first key's.
   // The Payments row bills through this same key, so it reads its region and
@@ -377,11 +413,11 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
         {/* A 409 is not one condition: storage-not-confirmed renders the
             confirmation card (the fix is right here), while a dead
             connection points back at Reconnect on the Accounts page. */}
-        {driveQ.isError && driveQ.error instanceof AwsControlError && driveQ.error.status === 409 && (
-          driveQ.error.message === 'aws_consent_required' ? (
+        {drive409 && (
+          driveConsentRefused ? (
             <div className="mt-6" data-testid="console-storage-consent">
               <p className="mb-2 text-[13px] text-muted">{i18nT('apps.awsControl.console.storage_consent_needed')}</p>
-              <AwsConsentGate service="s3" />
+              <AwsConsentGate service="s3" onConsentChange={refetchGated} />
               <div className="mt-2">
                 <Btn onClick={() => qcTop.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })} data-testid="console-consent-recheck">
                   <RefreshCw size={13} />{i18nT('apps.awsControl.page.refresh')}
@@ -439,11 +475,42 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
             that used to sit in the stats strip. A capability appears on this
             page when it exists. */}
 
-        {/* Cost Explorer consent nudge when the gate is missing. */}
-        {costs?.consentMissing && (
+        {/* Cost Explorer ask, driven by the CONSENT state rather than by
+            `costs.consentMissing`. That field only arrives when the backend has
+            a cached cost reading to attach it to; with no cache - the state a
+            never-confirmed account is always in - the costs request is a bare
+            409 and the field never exists, so keying the ask on it left Cost
+            Explorer with no confirmation control anywhere in the product. */}
+        {ceConsentQ.data?.granted === false && (
           <div className="mt-6" data-testid="costs-consent-gate">
-            <AwsConsentGate service="ce" />
+            <AwsConsentGate service="ce" onConsentChange={refetchGated} />
           </div>
+        )}
+
+        {/* The confirmations recorded for THIS account, once each is granted and
+            its ask has cleared. Each card is mounted on its own condition rather
+            than the section's, because the two services are granted separately
+            and a receipt for one must not be implied by the other. Withdrawing
+            here revokes the one grant this account's drive and cost figure run
+            on - which is why a grant recorded for a DIFFERENT account never
+            renders here, and why this is the only surface that calls revoke for
+            s3 and ce.
+
+            `onConsentChange` is what makes a withdraw recoverable: the ask above
+            is decided by a CACHED drive 409 and a cached `consentMissing`, so
+            without invalidating them the receipt would unmount and no ask would
+            take its place - a mistaken withdraw with nothing on screen offering
+            the confirm back. */}
+        {(s3Receipt || ceReceipt) && (
+          <section className="mt-8" data-testid="paid-services">
+            <h2 className="text-sm font-semibold text-text-strong">
+              {i18nT('apps.awsControl.page.paid_services_title')}
+            </h2>
+            <div className="mt-3 flex flex-col gap-3">
+              {s3Receipt && <AwsConsentGate service="s3" onConsentChange={refetchGated} />}
+              {ceReceipt && <AwsConsentGate service="ce" onConsentChange={refetchGated} />}
+            </div>
+          </section>
         )}
       </div>
     </div>
