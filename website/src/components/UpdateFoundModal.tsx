@@ -11,6 +11,7 @@ import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
 import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord } from '../utils/updateNudge'
+import { foldStableStamp } from '../utils/displayVersion'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 
 /**
@@ -59,6 +60,11 @@ function desktopCanDownload(): boolean {
 type Candidate = {
   source: 'desktop' | 'gateway'
   version: string
+  /** What the popup PRINTS — the promoted-stamp fold of `version` on the
+   *  stable channel. `version` itself stays raw: it keys the per-version
+   *  snooze/skip records, and a fold there would make dismissing `0.4.0`
+   *  swallow the next release's `0.4.0rcN` candidate too. */
+  displayVersion: string
   notes?: string
   /** Gateway only: which action the primary slot offers. */
   affordance?: 'apply' | 'command'
@@ -78,6 +84,9 @@ export default function UpdateFoundModal() {
 
   const gwAvailable = useAppSelector(s => s.dashboard.status?.update_available === true)
   const gwVersion = useAppSelector(s => s.dashboard.status?.update_latest_version) || ''
+  // Backend-folded sibling for DISPLAY (clean base on the stable channel).
+  // Raw fallback below covers a gateway that predates the field.
+  const gwVersionDisplay = useAppSelector(s => s.dashboard.status?.update_latest_version_display) || ''
   const gwCanApply = useAppSelector(s => s.dashboard.status?.update_can_apply)
   const gwCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
 
@@ -90,7 +99,7 @@ export default function UpdateFoundModal() {
   const { data: bridgeInfo } = useQuery({
     queryKey: ['update-info'],
     queryFn: async () =>
-      (window as unknown as { updateAPI?: { getInfo?: () => Promise<{ autoDownload?: boolean }> } })
+      (window as unknown as { updateAPI?: { getInfo?: () => Promise<{ autoDownload?: boolean; channel?: string | null }> } })
         .updateAPI?.getInfo?.() ?? null,
     enabled: !!desktop && (desktop.state === 'found' || desktop.state === 'available'),
     staleTime: Infinity,
@@ -104,11 +113,21 @@ export default function UpdateFoundModal() {
   // vanishes when an auto-download preference lands.
   let candidate: Candidate | null = null
   if (desktop && (desktop.state === 'found' || desktop.state === 'available') && !desktop.replayed && desktop.version && desktopCanDownload() && bridgeInfo !== undefined && bridgeInfo?.autoDownload !== true) {
-    candidate = { source: 'desktop', version: desktop.version, notes: desktop.notes }
+    // Desktop-reported version never crosses the gateway, so the fold is
+    // computed locally, keyed on the followed channel like the backend's.
+    candidate = {
+      source: 'desktop', version: desktop.version,
+      displayVersion: foldStableStamp(desktop.version, bridgeInfo?.channel),
+      notes: desktop.notes,
+    }
   } else if (gwAvailable && gwVersion) {
     const afford = updateAffordance({ updateAvailable: true, canApply: gwCanApply, command: gwCommand })
     if (afford !== 'none') {
-      candidate = { source: 'gateway', version: gwVersion, affordance: afford, command: gwCommand }
+      candidate = {
+        source: 'gateway', version: gwVersion,
+        displayVersion: gwVersionDisplay || gwVersion,
+        affordance: afford, command: gwCommand,
+      }
     }
   }
 
@@ -312,7 +331,7 @@ export default function UpdateFoundModal() {
                 letter-named closing tags in values. */}
             <Trans
               i18nKey="components.updateFoundModal.version_is_available"
-              values={{ version: candidate.version }}
+              values={{ version: candidate.displayVersion }}
               components={[<span key="v" className="font-semibold" />]}
             />
           </p>

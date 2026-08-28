@@ -17,6 +17,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
+import { foldStableStamp } from '../../utils/displayVersion'
 
 /** Human-readable transfer rate for the progress label. */
 function formatRate(bps: number): string {
@@ -355,7 +356,16 @@ export function AboutPanel() {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
   })
 
-  const version = info?.version || gatewayVersion || '—'
+  // The version chip's DISPLAY text. For a gateway install the fold is the
+  // backend's (`version_display`, raw `version` fallback for a gateway that
+  // predates the field); for a desktop build it is computed locally, because
+  // the Electron-reported version never crosses the gateway. Every functional
+  // reader (`versionLooksPrerelease`, the updater compare gate, the SPA's
+  // reload-on-upgrade comparison) keeps its raw source.
+  const gatewayVersionDisplay = useAppSelector(s => s.dashboard.status?.version_display) || ''
+  const versionDisplay = info?.version
+    ? foldStableStamp(info.version, info.channel)
+    : (gatewayVersionDisplay || gatewayVersion || '—')
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   // An externally-managed install (a distro/enterprise package) has no channel
@@ -793,7 +803,7 @@ export function AboutPanel() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
-              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}>{i18nT('pages.settings.aboutPanel.v')}{version}</span>
+              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}>{i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
               {!isDesktop && (heroDiverged
                 // Diverged outranks BOTH other verdicts: `update_available` is
                 // false here BY DESIGN (the no-auto-apply property), and a

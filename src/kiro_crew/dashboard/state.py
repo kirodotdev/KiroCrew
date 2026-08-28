@@ -5243,10 +5243,12 @@ class DashboardState:
         update_check_status: str = "unchecked",
         update_command: str = "",
         update_latest_version: str = "",
+        update_latest_version_display: str = "",
         update_channel: str = "",
         update_managed_by: str = "",
         update_commits_ahead: int = 0,
         update_commits_behind: int = 0,
+        version_display: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -5284,6 +5286,10 @@ class DashboardState:
             # snooze/skip on this, so it rides the hot-path subset; the
             # changelog text deliberately does not.
             "update_latest_version": update_latest_version,
+            # DISPLAY-ONLY fold of the candidate above (clean base on the
+            # stable channel); the popup's snooze/skip records key on the raw
+            # value. Empty string on emitters that don't pass it.
+            "update_latest_version_display": update_latest_version_display,
             # The release channel this INSTALL follows (the ``channel`` file
             # cli.sh wrote), empty when the layout has no channel at all (a git
             # checkout tracks a remote; a desktop bundle or container is updated
@@ -5306,6 +5312,14 @@ class DashboardState:
             # tell the two apart. 0/0 on non-git layouts and before any check.
             "update_commits_ahead": update_commits_ahead,
             "update_commits_behind": update_commits_behind,
+            # The RUNNING build's version folded for display (clean base on
+            # the stable channel; see `_display_version` in
+            # handlers/updates.py). DISPLAY-ONLY sibling of the raw `version`
+            # the WS frame appends after this snapshot — that one is what the
+            # SPA compares across pushes to force a reload over a gateway
+            # upgrade, so it must never be folded. Empty string on emitters
+            # that don't pass it (they render the raw version, as before).
+            "version_display": version_display,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,

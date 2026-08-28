@@ -235,9 +235,17 @@ def status_update_fields() -> dict[str, object]:
         # the shadow-venv apply step compares it byte-for-byte against the
         # installed ``kiro_crew.__version__``, which is never folded either
         # (promotion never re-stamps the bytes). For a display-only clean
-        # version, use the ``/api/update/check`` endpoint's
-        # ``latest_version_display`` instead.
+        # version, use ``update_latest_version_display`` below (or the
+        # ``/api/update/check`` endpoint's ``latest_version_display``).
         "update_latest_version": str(_update_info.get("latest_version") or ""),
+        # DISPLAY-ONLY fold of the candidate above (clean base on the stable
+        # channel), consumed by the proactive update popup's "vX is available"
+        # text. The popup's per-version snooze/skip records and every arm
+        # path keep keying on the RAW `update_latest_version`.
+        "update_latest_version_display": _display_version(
+            str(_update_info.get("latest_version") or ""),
+            str(_update_info.get("channel") or ""),
+        ),
         "update_channel": str(_update_info.get("channel") or ""),
         # The panel needs WHO manages the update to speak honestly: a
         # command-managed host must not render the self-managed installer
@@ -250,6 +258,17 @@ def status_update_fields() -> dict[str, object]:
         # manual check. 0/0 everywhere except a successful git-checkout check.
         "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
         "update_commits_behind": behind if isinstance(behind, int) else 0,
+        # The RUNNING build's version folded for display (clean base on the
+        # stable channel), so the About page's version chip can show `0.4.0`
+        # instead of the promoted candidate's baked-in `0.4.0rc14` stamp.
+        # DISPLAY-ONLY sibling of the raw `version` the WS frame and
+        # /api/status carry: that one is functional — the SPA compares it
+        # across pushes to force a reload over a gateway upgrade, and folding
+        # it would collapse e.g. `0.4.1rc1` -> `0.4.1` and `0.4.1rc2` ->
+        # `0.4.1`, masking the very upgrade the reload detection exists to
+        # catch. Falls back to the raw version until a check has resolved the
+        # channel (`_display_local_version` keys on it; only stable folds).
+        "version_display": _display_local_version(),
     }
 
 

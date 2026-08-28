@@ -169,10 +169,12 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_check_status",
             "update_command",
             "update_latest_version",
+            "update_latest_version_display",
             "update_channel",
             "update_managed_by",
             "update_commits_ahead",
             "update_commits_behind",
+            "version_display",
         }
 
     def test_the_shared_reader_never_flattens_a_missing_verdict(self) -> None:
@@ -184,6 +186,37 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             assert status_fields_of(updates)["update_available"] is None
             updates._update_info.update({"update_available": False})
             assert status_fields_of(updates)["update_available"] is False
+        finally:
+            updates._update_info.clear()
+            updates._update_info.update(original)
+
+    def test_version_display_folds_the_running_stamp_on_stable_only(self, monkeypatch) -> None:
+        """The About page's version chip reads ``version_display`` — the
+        RUNNING build's promoted-stamp fold. The raw ``version`` the WS frame
+        appends is NOT part of this reader and stays untouched: the SPA
+        compares it across pushes to force a reload over a gateway upgrade,
+        and folding it would collapse two RCs of the same release into one
+        string, masking the very upgrade that comparison exists to catch."""
+        from kiro_crew.dashboard.handlers import updates
+
+        original = dict(updates._update_info)
+        monkeypatch.setattr(updates, "_local_version", "0.4.0rc14")
+        try:
+            updates._update_info.clear()
+            updates._update_info.update({"channel": "stable", "latest_version": "0.5.0rc3"})
+            fields = status_fields_of(updates)
+            assert fields["version_display"] == "0.4.0"
+            # The candidate's fold rides the same rule; its raw sibling (the
+            # snooze/skip key) is untouched.
+            assert fields["update_latest_version_display"] == "0.5.0"
+            assert fields["update_latest_version"] == "0.5.0rc3"
+            updates._update_info.update({"channel": "insider"})
+            fields = status_fields_of(updates)
+            assert fields["version_display"] == "0.4.0rc14"
+            assert fields["update_latest_version_display"] == "0.5.0rc3"
+            # Channel not yet resolved (no check has run): raw, never "".
+            updates._update_info.clear()
+            assert status_fields_of(updates)["version_display"] == "0.4.0rc14"
         finally:
             updates._update_info.clear()
             updates._update_info.update(original)

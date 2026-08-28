@@ -79,6 +79,26 @@ describe('AboutPanel gateway update check', () => {
     store.dispatch(sseStatus({ ...BLANK_STATUS } as never))
   })
 
+  it('the version chip shows the folded running version, raw fallback for an older gateway', async () => {
+    // A promoted stable build's bytes keep the RC stamp; the gateway folds it
+    // into `version_display` and the chip must render THAT, never the raw
+    // `version` (which stays raw for the SPA's reload-on-upgrade comparison).
+    stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
+    store.dispatch(sseStatus({
+      ...BLANK_STATUS, version: '0.4.0rc14', version_display: '0.4.0',
+    } as never))
+    mountWeb()
+    expect(await screen.findByText('v0.4.0')).toBeTruthy()
+    expect(screen.queryByText('v0.4.0rc14')).toBeNull()
+    cleanup()
+
+    // An older gateway sends no `version_display`: the chip falls back to the
+    // raw version rather than rendering an empty chip.
+    store.dispatch(sseStatus({ ...BLANK_STATUS, version: '0.4.0rc14' } as never))
+    mountWeb()
+    expect(await screen.findByText('v0.4.0rc14')).toBeTruthy()
+  })
+
   it('a check that could not run reports the failure, not "up to date"', async () => {
     stubFetch({ check_status: 'failed', update_available: null, error_code: 'feed_unreachable', managed_by: 'kirocrew' })
     mountWeb()

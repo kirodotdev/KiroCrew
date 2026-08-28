@@ -2,6 +2,21 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.4.1] — 2026-08-28
+
+A display fix for stable-channel installs: the About page no longer shows the
+running build or an available update under its internal release-candidate stamp.
+
+### Notable fixes
+
+- **Available updates show their release version** — On the stable channel, the About panel's "a new version is available" line now shows the clean release number (0.4.0) instead of the internal candidate stamp it was built from (0.4.0rc14). The update mechanism itself is unchanged and keeps using the exact published version.
+- **The version chip shows the release you installed** — The About page's version badge and the Settings footer now show the clean release number on the stable channel too, instead of the candidate stamp baked into the published build.
+- **The update popup names the release, not the candidate stamp** — The "a new version is available" popup now announces the clean release number on the stable channel. Skipping or snoozing a version keeps working exactly as before.
+
+### Contributors
+
+@bolichen97
+
 ## [0.4.0] — 2026-08-25
 
 Windows and Linux stop being second-class: both get signed, self-updating native
