@@ -886,18 +886,35 @@ class TestTrashBatchNamesAreLogSafe:
             def is_dir() -> bool:
                 return True
 
-        manifests: dict[str, tuple[dict[str, object], list[dict[str, object]]] | None] = {
+        # Shaped for `_summarize_manifest` — (header, sessions, staged_bytes) —
+        # because that is the seam `list_trash` reads since #6312. Patching
+        # `_read_manifest` instead lets the real `_summarize_manifest` run, and it
+        # does `batch / MANIFEST_NAME`, which a name-only double cannot support.
+        manifests: dict[str, tuple[dict[str, object], int, int] | None] = {
             "missing": None,
-            "disagreeing": ({"batch_id": "someone-else", "created_at": _NOW}, []),
+            "disagreeing": ({"batch_id": "someone-else", "created_at": _NOW}, 0, 0),
         }
+
+        # Forge ONLY the trash root's own enumeration, via a Path subclass whose
+        # `iterdir` yields the double. Patching `session_storage.Path.iterdir`
+        # (i.e. `pathlib.Path.iterdir`) globally leaks across the xdist worker:
+        # a sibling test in the same process that legitimately iterates a real
+        # directory then reaches the unpatched `_summarize_manifest`, which does
+        # `<_ForgedDir> / MANIFEST_NAME` and raises TypeError (refs #6425).
+        class _ForgedRoot(type(session_storage.trash_root())):
+            def iterdir(self):  # type: ignore[override]
+                return iter([_ForgedDir()])
+
+        forged_root = _ForgedRoot(session_storage.trash_root())
+
         for label, parsed in manifests.items():
             caplog.clear()
-            monkeypatch.setattr(session_storage.Path, "iterdir", lambda self: iter([_ForgedDir()]))
+            monkeypatch.setattr(session_storage, "trash_root", lambda: forged_root)
             monkeypatch.setattr(
                 session_storage.platform_compat, "is_link_or_junction", lambda p: False
             )
             monkeypatch.setattr(
-                session_storage, "_read_manifest", lambda batch, parsed=parsed: parsed
+                session_storage, "_summarize_manifest", lambda batch, parsed=parsed: parsed
             )
 
             with caplog.at_level(logging.DEBUG, logger="kiro_crew.session_storage"):
