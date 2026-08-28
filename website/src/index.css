@@ -1756,6 +1756,40 @@ file-tree-container{
 @container (max-width:530px){ .tb-drop-metrics{display:none} }
 @container (max-width:392px){ .tb-drop-usage{display:none} }
 @container (max-width:340px){ .tb-drop-feedback{display:none} }
+/* The update pill shifts the ladder. The pill is a conditional sibling of the
+   ladder (present only while an update exists) and it never shrinks, so while
+   it is mounted the group's fixed content is wider by the pill's footprint and
+   each rung has to fire that much earlier. `tb-has-update` is set on the group
+   by App.tsx alongside mounting the pill.
+
+   The footprint has TWO bases, keyed on the SAME viewport gate as the pill's
+   own label (`hidden sm:inline`, 640px):
+   - ≥640px the label shows, and the shift clears the pill's widest steady form
+     ACROSS EVERY SHIPPED LOCALE, measured in capture/topbar-search-variants.tsx
+     (?update=on&updatelabel=…): de downloading_percent
+     "Wird heruntergeladen 100 %" 201.7px + the group's 6px gap = 208. One
+     static shift for all locales deliberately over-reserves for the narrower
+     ones (an English pill is ~134px, so its readouts yield ~68px early) —
+     a rung cannot key on the active language, and early is recoverable while
+     the squeeze band is not. The dev-only en-XA pseudolocale is excluded from
+     the budget; the segments' nowrap backstop degrades it to a clean
+     leading-edge clip.
+   - <640px the pill is icon-only (34px measured + 6px gap = 40), so only the
+     terminal rung shifts, and by that footprint — an unconditional 208 there
+     would blank the whole capsule on phones for nothing. The named readout
+     rungs need no <640 form: their elements render only on the desktop layout,
+     which never exists below the 768px form switch.
+
+   Without the shift, the band between the base rung and the true content width
+   kept the readouts while the content no longer fit, and flex squeeze wrapped
+   them into two clipped lines inside the h-7 capsule. */
+@container (max-width:240px){ .tb-has-update .tb-capsule > *:not(:first-child){display:none} }
+@media (min-width:640px){
+  @container (max-width:738px){ .tb-has-update .tb-drop-metrics{display:none} }
+  @container (max-width:600px){ .tb-has-update .tb-drop-usage{display:none} }
+  @container (max-width:548px){ .tb-has-update .tb-drop-feedback{display:none} }
+  @container (max-width:408px){ .tb-has-update .tb-capsule > *:not(:first-child){display:none} }
+}
 /* Terminal rung: the capsule keeps only its first child, the connection dot.
    The rungs above name the built-in readouts one by one, but the capsule is also
    an extension slot (`getCapsuleSegments`) whose registered segments cannot be
@@ -1765,8 +1799,15 @@ file-tree-container{
 @container (max-width:200px){ .tb-capsule > *:not(:first-child){display:none} }
 /* The counterpart: a form that exists ONLY on the narrow rungs (e.g. the metric
    readout's icon stand-in). Both forms ship in the DOM because the rung is a
-   container query — no JS branch here can observe the group's own width. */
+   container query — no JS branch here can observe the group's own width. With
+   the update pill the metrics rung fires at 738px, so the stand-in must stay
+   visible through the shifted band; the descendant selector out-specifies the
+   base hide rule. `block` matches what preflight gives the SVG, so the rule
+   stays inert if the button ever stops blockifying its flex children. */
 @container (min-width:531px){ .tb-narrow-only{display:none} }
+@media (min-width:640px){
+  @container (min-width:531px) and (max-width:738px){ .tb-has-update .tb-narrow-only{display:block} }
+}
 
 /* The identity group's own rung. The group holds the nav button (phone only) plus
    the crew switcher -- active-crew chip, the pinned chips, then the dropdown --

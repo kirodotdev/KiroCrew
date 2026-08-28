@@ -349,12 +349,13 @@ through `registerTopBarWidgets` instead.
 
 **Rung thresholds are locale-measured.** The container-query breakpoints in
 `.topbar`'s ladder (`src/index.css`) are the measured content width of each
-readout tier plus a margin, taken in one locale through
-`website/capture/topbar-search-variants.tsx`. A wider locale can push a tier past
-its own threshold, in which case the group squeezes or truncates its text before
-the rung fires — graceful, but it means the constants are an approximation, not a
-guarantee. Re-measure with that harness when readout content or the catalogs
-change materially.
+readout tier plus a margin, taken through
+`website/capture/topbar-search-variants.tsx`. The base rungs are measured in one
+locale; the update-pill shift (below) is measured across every shipped locale. A
+wider-than-measured tier squeezes or truncates its text before the rung fires —
+graceful, but it means the constants are an approximation, not a guarantee.
+Re-measure with that harness when readout content or the catalogs change
+materially.
 
 
 **Width budget for both top-bar seams.** The header is a three-track grid whose
@@ -371,6 +372,24 @@ wider than the remainder is clipped from the group's leading edge (the group
 clips deliberately rather than pushing the notifications bell out of the
 header), and at the terminal rung the capsule is reduced to its connection dot,
 which hides registered segments along with the core readouts.
+
+**The budget has TWO bases.** While an update is pending, the top bar mounts the
+update pill — a non-shrinking sibling of the ladder — and the actions group
+carries `tb-has-update`, which shifts the rungs by the pill's footprint (see the
+rung comments in `src/index.css`). The footprint follows the pill's own label
+gate (`hidden sm:inline`, 640px viewport): at ≥640px it is the widest
+shipped-locale label form plus the group gap (201.7px + 6px = 208) and every
+rung shifts, terminal included (408px instead of 200px); below 640px the pill
+is icon-only (34px + 6px gap = 40) and only the terminal rung shifts (240px).
+The ≥640 shift is a deliberate over-reservation for every narrower-label
+locale — static CSS cannot key a rung on the active language, so an English
+pill (~134px) gives up readouts ~68px earlier than its own width requires, in
+exchange for no locale ever re-entering the squeeze band. For a registered
+segment that means the ~40px collapsed-form budget above holds only in the
+no-update state; with an update pending the same window width leaves up to
+208px less, and at the narrowest desktop widths the remainder for registered
+content is zero. Treat the update-pending state as one of the widths your own
+`@container` rule must survive.
 
 **Overview status cards.** `registerOverviewStatCards([{ id, order?, component }])`
 adds a self-contained `StatCard` (owning its own query and state, like the core

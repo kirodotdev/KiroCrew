@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { safeSetItem } from '../utils/safeStorage'
+import { setDesktopUpdateAvailable } from '../store/dashboardSlice'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -100,6 +101,50 @@ describe('App top bar — readout capsule collapse', () => {
     const dot = await screen.findByLabelText('Gateway connected')
     expect(dot.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByLabelText('System metrics')).toBeNull()
+  })
+})
+
+describe('App top bar — update pill shifts the collapse-ladder budget', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setWindowWidth(1400)
+  })
+
+  it('puts tb-has-update on the actions group exactly while an update exists', async () => {
+    // The class is what arms the shifted @container rungs in index.css: the
+    // update pill is a non-shrinking sibling of the ladder, so while it is
+    // mounted the group's fixed content is wider by the pill's footprint and
+    // every rung must fire earlier. Class and pill must move together — a class
+    // without the pill evicts readouts for nothing, a pill without the class is
+    // the two-line clipped-wrap defect this guards against — and the two
+    // conditions are computed independently (App.tsx vs UpdatePill.tsx), so the
+    // pill's own mount is asserted alongside the class at every step.
+    const { container, store } = renderWithProviders(<App />, { route: '/chat' })
+    await screen.findByLabelText('Gateway connected')
+    const group = container.querySelector('.tb-right') as HTMLElement
+    expect(group).toBeTruthy()
+    expect(group.classList.contains('tb-has-update')).toBe(false)
+    expect(screen.queryByTestId('update-pill')).toBeNull()
+
+    act(() => { store.dispatch(setDesktopUpdateAvailable(true)) })
+    expect(group.classList.contains('tb-has-update')).toBe(true)
+    expect(await screen.findByTestId('update-pill')).toBeTruthy()
+
+    act(() => { store.dispatch(setDesktopUpdateAvailable(false)) })
+    expect(group.classList.contains('tb-has-update')).toBe(false)
+    expect(screen.queryByTestId('update-pill')).toBeNull()
+  })
+
+  it('keeps the nowrap backstop on the capsule segments', async () => {
+    // The other half of the fix: if the group is ever narrower than its
+    // contents (a locale wider than the measured budget, the dev-only
+    // pseudolocale), a squeezed built-in segment must clip at the group's
+    // edge, never wrap into two lines that the capsule's fixed h-7 crops.
+    // The class lives on the shared `seg` string, so one rendered segment
+    // pins them all.
+    renderWithProviders(<App />, { route: '/chat' })
+    const metrics = await screen.findByLabelText('System metrics')
+    expect(metrics.className).toContain('whitespace-nowrap')
   })
 })
 

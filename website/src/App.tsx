@@ -2556,7 +2556,15 @@ export default function App() {
             </ErrorBoundary>
           ) : null
         })()}
-        <div className="tb-right relative">
+        {/* `tb-has-update` shifts the collapse ladder's rungs (index.css): the
+            update pill is a conditional, non-shrinking sibling of the ladder,
+            so while it is mounted the group's fixed content is wider by the
+            pill's footprint and every rung must fire that much earlier. The
+            class keys off the same selector the pill itself reads, so they
+            move together; during the pill's lazy-chunk fetch the class can
+            lead the pill by a moment, which costs readout room briefly and
+            harms nothing. */}
+        <div className={`tb-right relative${updateAvailable ? ' tb-has-update' : ''}`}>
 
           {/* Theme decoration: extra aside control (e.g. a stardate / clock). */}
           {branding?.topBarAside && !(branding?.topBarHideOnMobile && isMobile) && (
@@ -2575,7 +2583,14 @@ export default function App() {
               this fork's usage pill is Kiro-credits-only.) */}
           {(() => {
             const offline = !connected
-            const seg = `flex items-center gap-1 -my-0.5 px-1.5 py-0.5 rounded-md bg-transparent border-none cursor-pointer transition-colors hover:bg-bg-hover ${offline ? 'opacity-70' : ''}`
+            // whitespace-nowrap is the ladder's backstop for the BUILT-IN
+            // segments that share this class string: if the group is ever
+            // narrower than its contents (a locale wider than the measured
+            // budget, the dev-only pseudolocale), a squeezed segment must clip
+            // at the edge, never wrap into two lines the capsule's fixed h-7
+            // then crops. Extension segments bring their own class strings and
+            // are bounded by the capsule's terminal rung instead.
+            const seg = `flex items-center gap-1 -my-0.5 px-1.5 py-0.5 rounded-md bg-transparent border-none cursor-pointer transition-colors hover:bg-bg-hover whitespace-nowrap ${offline ? 'opacity-70' : ''}`
             const segments: ReactNode[] = []
             // The dot doubles as the capsule's collapse toggle: click to
             // fold the readouts down to just the dot, click again to expand.
