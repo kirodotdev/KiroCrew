@@ -19,6 +19,7 @@
  * Usage: node scripts/capture-chatpane-queue-edit.mjs <baseUrl> <outDir>
  */
 import { chromium } from 'playwright'
+import { prepareSplitChatPage } from './lib/prepare-split-chat-page.mjs'
 import { mkdirSync } from 'node:fs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:3000'
@@ -92,32 +93,14 @@ const FIXTURES = {
 }
 
 async function preparePage(context) {
-  const page = await context.newPage()
-  await page.routeWebSocket(/\/api\/ws/, () => {})
-  await page.route(url => url.pathname.startsWith('/api/'), async route => {
-    const path = new URL(route.request().url()).pathname
-    if (path in FIXTURES) return json(route, FIXTURES[path])
-    // Queue mutations (PATCH edit, DELETE cancel, reorder) get a plain ack —
-    // answering them with a slot-detail body would feed the client a bogus
-    // shape at exactly the moment this capture exercises the edit path.
-    if (route.request().method() !== 'GET') return json(route, { ok: true })
-    const slotMatch = path.match(/^\/api\/chat\/slots\/([^/]+)/)
-    if (slotMatch) return json(route, decodeURIComponent(slotMatch[1]) === 'pane-b' ? detailB : detailA)
-    if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-    return json(route, objectish ? {} : [])
+  // Queue mutations (PATCH edit, DELETE cancel, reorder) ride the shared
+  // helper's plain-ack branch — answering them with a slot-detail body would
+  // feed the client a bogus shape at exactly the moment this capture
+  // exercises the edit path. Readiness is gated by the Pencil waitFor in
+  // main(), not a fixed sleep.
+  return prepareSplitChatPage(context, {
+    base: BASE, fixtures: FIXTURES, detailA, detailB, splitLayouts, json,
   })
-  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 200)))
-  await page.addInitScript((layouts) => {
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot', 'pane-a')
-    localStorage.setItem('mc-split-layouts', layouts)
-  }, JSON.stringify(splitLayouts))
-  await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' })
-  // Readiness is gated by the Pencil waitFor in main(), not a fixed sleep —
-  // fixed sleeps are the usual source of harness flake on a loaded runner.
-  return page
 }
 
 async function main() {

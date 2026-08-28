@@ -30,6 +30,7 @@
  * Usage: node scripts/capture-chatpane-upload-error.mjs [outDir]
  */
 import { chromium } from 'playwright'
+import { prepareSplitChatPage } from './lib/prepare-split-chat-page.mjs'
 import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -99,32 +100,17 @@ const FIXTURES = {
 }
 
 async function preparePage(context) {
-  const page = await context.newPage()
-  await page.routeWebSocket(/\/api\/ws/, () => {})
-  await page.route(url => url.pathname.startsWith('/api/'), async route => {
-    const path = new URL(route.request().url()).pathname
+  return prepareSplitChatPage(context, {
+    base, fixtures: FIXTURES, detailA, detailB, splitLayouts, json,
     // THE POINT OF THIS HARNESS: the server refuses the upload with a non-2xx
     // carrying an `error`. api.uploadFiles turns that into a RESOLVED
     // { paths: [], error } -- never a throw -- which is exactly the shape that
     // used to vanish in this pane.
-    if (path === '/api/upload/file') return json(route, { error: REFUSAL }, 400)
-    if (path in FIXTURES) return json(route, FIXTURES[path])
-    if (route.request().method() !== 'GET') return json(route, { ok: true })
-    const slotMatch = path.match(/^\/api\/chat\/slots\/([^/]+)/)
-    if (slotMatch) return json(route, decodeURIComponent(slotMatch[1]) === 'pane-b' ? detailB : detailA)
-    if (path.startsWith('/api/instances')) return json(route, { instances: [], active: '' })
-    const objectish = /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
-    return json(route, objectish ? {} : [])
+    pre: async (path, route) => {
+      if (path === '/api/upload/file') { await json(route, { error: REFUSAL }, 400); return true }
+      return false
+    },
   })
-  page.on('pageerror', err => console.log('PAGEERROR:', String(err).slice(0, 200)))
-  await page.addInitScript((layouts) => {
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot', 'pane-a')
-    localStorage.setItem('mc-split-layouts', layouts)
-  }, JSON.stringify(splitLayouts))
-  await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
-  return page
 }
 
 const { srv, base } = await serveDist()
