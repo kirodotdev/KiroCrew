@@ -2501,7 +2501,9 @@ class TestCotenantRefusalTextIsForgeSafe:
         monkeypatch.delenv("KIRO_HOME", raising=False)
         monkeypatch.setattr(paths, "_resolved_home", paths._default_home())
         monkeypatch.setattr(paths, "_config_dir_memo", None)
-        monkeypatch.setattr(session_storage, "cotenant_sids", lambda: (frozenset(), self._REFUSALS))
+        monkeypatch.setattr(
+            session_storage, "cotenant_sids", lambda *, cached=False: (frozenset(), self._REFUSALS)
+        )
 
         reason = session_storage.reclaim_block_reason()
 
@@ -2521,7 +2523,9 @@ class TestCotenantRefusalTextIsForgeSafe:
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
-        monkeypatch.setattr(session_storage, "cotenant_sids", lambda: (frozenset(), self._REFUSALS))
+        monkeypatch.setattr(
+            session_storage, "cotenant_sids", lambda *, cached=False: (frozenset(), self._REFUSALS)
+        )
 
         with pytest.raises(SessionStorageError, match="make reclaiming unsafe") as excinfo:
             session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)

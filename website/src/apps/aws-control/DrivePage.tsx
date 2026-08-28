@@ -23,14 +23,6 @@
  * react-query key. All AWS access runs through the gateway's audited CLI
  * chokepoint; this surface never talks to AWS from the browser.
  */
-/* eslint-disable jsx-a11y/control-has-associated-label --
-   The two inline confirm strips render as a <td colSpan={5}>, which jsx-a11y
-   treats as a gridcell needing an accessible name and then searches only two
-   levels deep for one. The strips DO name their controls (Cancel, Delete file,
-   Delete folder, each with its own i18n text) - they just sit one level further
-   in, behind the flex wrapper the strip needs, because a <td> cannot itself be
-   the flex container: display:flex drops display:table-cell and the strip stops
-   spanning the row. */
 import { Fragment, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
