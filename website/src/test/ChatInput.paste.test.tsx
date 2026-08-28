@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useState } from 'react'
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
@@ -332,18 +333,87 @@ describe('ChatInput paste: strip trailing blank lines', () => {
     expect(elapsed).toBeLessThan(1000)
   })
 
-  it('uses the native execCommand insertText path when available (fires the real onChange, not a direct splice)', () => {
+  it('uses the native execCommand insertText path when it verifiably inserted (keeps the real input pipeline)', () => {
     const onChange = vi.fn()
-    const exec = vi.fn(() => true)
+    const textarea = () => screen.getByRole('textbox') as HTMLTextAreaElement
+    // A truthful stub: the real execCommand mutates the field. Anything that
+    // only returns true without touching the DOM is the iOS shape covered below.
+    const exec = vi.fn((_cmd: unknown, _ui: unknown, text: unknown) => {
+      textarea().value = String(text)
+      return true
+    })
+    ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = exec
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(textarea(), 'just one line\n\n\n')
+    // Inserted via the native input pipeline with the trimmed text …
+    expect(exec).toHaveBeenCalledWith('insertText', false, 'just one line')
+    // … and the controlled value is reconciled to exactly what landed in the
+    // DOM. In a browser the textarea's own onChange has already reported this
+    // same string, so React bails; asserting it here is what keeps a native
+    // insert React never saw from being reverted to the stale `value` prop.
+    expect(onChange).toHaveBeenCalledWith('just one line')
+  })
+
+  it('still lands the paste when execCommand reports success but inserts NOTHING (iOS native paste callout)', () => {
+    // The regression this guards: handlePaste has already called
+    // preventDefault(), so returning on the strength of the boolean alone means
+    // the tap on iOS's "Paste" produces no text and no error — the paste just
+    // vanishes. Verified against the DOM, the controlled splice must still run.
+    const onChange = vi.fn()
+    const exec = vi.fn(() => true) // reports success, leaves the field empty
     ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = exec
     renderWithProviders(
       <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
     )
     pasteText(screen.getByRole('textbox'), 'just one line\n\n\n')
-    // Inserted via the native input pipeline with the trimmed text …
-    expect(exec).toHaveBeenCalledWith('insertText', false, 'just one line')
-    // … so handlePaste does NOT splice onChange itself (the textarea's own
-    // onChange handles state + picker detection + user-edit flag).
-    expect(onChange).not.toHaveBeenCalled()
+    expect(exec).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith('just one line')
+  })
+
+  it('positions the caret itself when the native insert only CLAIMED to work (the DOM read-back is load-bearing)', async () => {
+    // The other two cases pin that the text lands. This one pins the read-back
+    // that decides it: `inserted && ta.value === next`. Trusting the boolean
+    // alone still lands the text (onChange runs before the early return) but
+    // skips our caret placement, leaving the caret wherever the browser left
+    // it — so without a caret assertion that half of the fix is untested.
+    //
+    // The paste goes at the START of existing text on purpose. Assigning to
+    // `.value` parks the caret at the end, which is exactly where our own
+    // placement would land for an end-of-field paste — the two outcomes would
+    // coincide and the assertion would prove nothing.
+    const Host = () => {
+      const [v, setV] = useState('AB')
+      return <ChatInput value={v} onChange={setV} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />
+    }
+    // The iOS shape: reports success, never touches the field.
+    ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = vi.fn(() => true)
+    renderWithProviders(<Host />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    ta.focus() // the rAF is gated on document.activeElement === ta
+    ta.setSelectionRange(0, 0)
+    pasteText(ta, 'x\n\n')
+    await vi.waitFor(() => expect(ta.value).toBe('xAB'))
+    // Caret sits after the inserted text, not at the end of the field.
+    await vi.waitFor(() => expect(ta.selectionStart).toBe(1))
+    expect(ta.selectionEnd).toBe(1)
+  })
+
+  it('reconciles against the DOM, not the requested text (a partial native insert is not success)', () => {
+    // A native path that inserts something OTHER than what was asked for must
+    // not be treated as authoritative either — the controlled value is the one
+    // the send path reads, so it has to be written explicitly.
+    const onChange = vi.fn()
+    const textarea = () => screen.getByRole('textbox') as HTMLTextAreaElement
+    ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = vi.fn(() => {
+      textarea().value = 'just one'
+      return true
+    })
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={vi.fn()} />,
+    )
+    pasteText(textarea(), 'just one line\n\n\n')
+    expect(onChange).toHaveBeenCalledWith('just one line')
   })
 })

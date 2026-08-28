@@ -2210,6 +2210,7 @@ function ChatInput({
     // the browser so the paste is never a silent no-op.
     if (cleaned !== pasted && cleaned !== '') {
       e.preventDefault()
+      const next = before + cleaned + after
       // Insert through the native input path so the textarea's own onChange runs:
       // that fires the /, @, $ picker detection, marks the edit user-driven, and
       // keeps native undo. Fall back to a controlled-value splice where
@@ -2218,9 +2219,19 @@ function ChatInput({
       try {
         inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, cleaned)
       } catch { inserted = false }
-      if (inserted) return
+      // That boolean is not evidence on its own. iOS Safari's native paste
+      // callout reports success on a <textarea> and can leave the field
+      // untouched, and this branch has ALREADY called preventDefault() — so
+      // trusting the return value drops the paste with no visible trace at all.
+      // Read the DOM back instead, and reconcile the controlled value either
+      // way: after a real insert this is the same string the textarea's own
+      // onChange already pushed up (React bails), while an insert React never
+      // saw would otherwise be reverted to the stale `value` prop on the next
+      // render — the same silent vanish by a different route.
+      const nativeOk = inserted && ta.value === next
       valueFromUserRef.current = true
-      onChange(before + cleaned + after)
+      onChange(next)
+      if (nativeOk) return // the native insert placed the caret itself
       requestAnimationFrame(() => {
         if (ta && document.activeElement === ta) {
           const pos = before.length + cleaned.length
