@@ -407,6 +407,13 @@ The backend `POST /api/memory/migrate` endpoint and the `kirocrew memory migrate
 
 macOS (Apple Silicon and Intel), Linux (x86_64, arm64/Graviton), and Windows supported. All paths use `pathlib.Path`. GGUF model downloaded over sha256-pinned HTTPS from the Kiro Crew CDN. No runtime install step — native llama.cpp libraries are vendored per platform in `_vendor/llama_cpp_libs/` and selected via `LLAMA_CPP_LIB_PATH` (the old Docker fallback is gone).
 
+Before the vendored runtime becomes usable, `embeddings._load_llama_class()`
+reconfigures llama-cpp-python's import-time stdout/stderr null streams to UTF-8
+with backslash replacement. The upstream suppressor temporarily installs those
+streams process-wide while the GGUF loads on `kc-embed-load`; keeping the same
+handles preserves its native fd suppression while preventing unrelated Unicode
+gateway output from failing under a locale encoding such as Windows cp1252.
+
 | Platform | Vendored libs | GPU | Notes |
 |----------|--------------|-----|-------|
 | macOS (Apple Silicon) | `macos_arm64/` | Metal (shader embedded in dylib) | Fastest |

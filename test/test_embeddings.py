@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import os
 import sys
 import threading
@@ -236,6 +237,35 @@ class TestBundledLinuxX86CpuGate:
         assert active_lib_path is not None
         assert Path(active_lib_path).parts[-2:] == ("llama_cpp_libs", "linux_x86_64")
         assert embeddings_mod._LIB_PATH_ENV not in os.environ
+
+    def test_runtime_import_hardens_locale_encoded_null_streams(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_bundled_linux_libs(tmp_path)
+        fake_llama_cpp = ModuleType("llama_cpp")
+        expected = object()
+        setattr(fake_llama_cpp, "Llama", expected)
+        monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+
+        fake_utils = ModuleType("llama_cpp._utils")
+        stdout_sink = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        stderr_sink = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        setattr(fake_utils, "outnull_file", stdout_sink)
+        setattr(fake_utils, "errnull_file", stderr_sink)
+        monkeypatch.setitem(sys.modules, "llama_cpp._utils", fake_utils)
+
+        result, _active_lib_path = _load_bundled_linux_llama(
+            monkeypatch,
+            tmp_path,
+            lambda: embeddings_mod._LINUX_X86_64_REQUIRED_CPU_FLAGS,
+        )
+
+        assert result is expected
+        assert stdout_sink.encoding == "utf-8"
+        assert stderr_sink.encoding == "utf-8"
+        stdout_sink.write("👻")
+        stderr_sink.write("👻")
 
     def test_missing_cpu_features_refuse_before_native_import(
         self, tmp_path: Path, monkeypatch, caplog

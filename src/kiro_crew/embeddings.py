@@ -345,6 +345,25 @@ def _install_diskcache_stub() -> None:
     sys.modules["diskcache"] = stub
 
 
+def _harden_llama_null_streams() -> None:
+    """Make llama-cpp-python's process-global suppression streams Unicode-safe.
+
+    The vendored suppressor temporarily assigns its import-time ``os.devnull``
+    handles to ``sys.stdout`` and ``sys.stderr`` while a model loads. That load
+    runs on a background thread, so unrelated gateway output can reach those
+    handles. Reconfiguring the existing wrappers preserves the native ``dup2``
+    suppression while removing the host locale from that process-wide window.
+    """
+    llama_utils = sys.modules.get("llama_cpp._utils")
+    if llama_utils is None:
+        return
+    for name in ("outnull_file", "errnull_file"):
+        stream = getattr(llama_utils, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 @functools.lru_cache(maxsize=1)
 def _load_llama_class():
     """Import the vendored llama-cpp-python runtime. Returns the Llama class or None.
@@ -432,6 +451,7 @@ def _load_llama_class():
     try:
         from llama_cpp import Llama  # noqa: F811
 
+        _harden_llama_null_streams()
         return Llama
     except Exception:
         logger.warning("Vendored llama-cpp-python failed to import", exc_info=True)
