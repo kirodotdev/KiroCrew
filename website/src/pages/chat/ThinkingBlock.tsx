@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Sparkles } from 'lucide-react'
 import { useRowDisclosure } from './rowDisclosure'
@@ -18,6 +18,16 @@ const LIVE_TAIL_CHARS = 240
  *  there a late hand-off shows a redundant indicator, here a short window makes
  *  the line appear and vanish across the gap between two reasoning bursts. */
 const PREVIEW_IDLE_MS = 1200
+
+/** Slack, in px, for "is the expanded trace at its end". An exact test never
+ *  re-arms following: sub-pixel offsets leave scrollTop a hair short, stranding
+ *  a reader who scrolled back down. Same value as ActivityViewer's log pane. */
+const TAIL_SLACK_PX = 20
+
+/** Within a line's slack of the bottom -- the one test both the scroll listener
+ *  and the pin effect latch on, so they cannot drift apart. */
+const isAtEnd = (el: HTMLElement) =>
+  el.scrollTop + el.clientHeight >= el.scrollHeight - TAIL_SLACK_PX
 
 /** The tail of the trace as a single line: whatever the model just wrote, with
  *  newlines collapsed so a multi-line thought still reads as one line. */
@@ -49,6 +59,9 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
   const [clipped, setClipped] = useState(false)
   const lastContent = useRef<string | null>(null)
   const ticker = useRef<HTMLSpanElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  // A ref, not state: it changes on every scroll event and must not repaint.
+  const autoScroll = useRef(true)
 
   // Liveness is derived from the content GROWING rather than from the slot's
   // running flag: one turn keeps a single reasoning block, so a burst that
@@ -83,6 +96,33 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
     const overflowing = el.scrollWidth > el.clientWidth
     setClipped(c => (c === overflowing ? c : overflowing))
   }, [tail])
+
+  // Reasoning is APPENDED, so the newest text sits at the bottom and an
+  // unmanaged container shows the oldest. Follow the tail WHILE LIVE, yield as
+  // soon as the reader scrolls up, re-arm when they return -- the same contract
+  // as the subagent output pane in ActivityViewer.
+  // useEffect is safe despite writing scroll position: the panel mounts inside an
+  // AnimatePresence animating height in from 0, so there is no painted frame for
+  // a scrollTop-0 flash to land on.
+  useEffect(() => {
+    if (!expanded || !streaming) return
+    const el = bodyRef.current
+    if (el && autoScroll.current) el.scrollTop = el.scrollHeight
+  }, [expanded, content, streaming])
+
+  // Latch on where the reader IS -- deliberately NOT on `content`: an append
+  // commits a taller box before liveness flips, so re-deriving would stop follow.
+  useEffect(() => {
+    if (!expanded) { autoScroll.current = true; return }
+    const el = bodyRef.current
+    if (el && !streaming) autoScroll.current = isAtEnd(el)
+  }, [expanded, streaming])
+
+  const onBodyScroll = useCallback(() => {
+    const el = bodyRef.current
+    if (!el) return
+    autoScroll.current = isAtEnd(el)
+  }, [])
 
   if (!content) return null
 
@@ -170,7 +210,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
                 opacity modifier: the theme colours are raw var() references,
                 so Tailwind opacity variants silently generate nothing. */}
             <div className={`${ROW_RAIL_CLASS} border-l-[color-mix(in_srgb,var(--accent)_70%,transparent)]`}>
-              <div className="max-h-[360px] overflow-auto">
+              <div ref={bodyRef} onScroll={onBodyScroll} data-testid="thinking-body" className="max-h-[360px] overflow-auto">
                 {/* The RAIL spans the row so its edge aligns with the tool
                     payload box, but the prose inside is capped at a readable
                     measure — reasoning is sentences, not code, and ~140-char

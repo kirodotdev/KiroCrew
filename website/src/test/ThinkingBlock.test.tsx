@@ -6,7 +6,7 @@
  * stream event (the transcript is virtualised and recycles finished rows), and
  * the preview settles back off once chunks stop.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import ThinkingBlock from '../pages/chat/ThinkingBlock'
 import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS, ROW_RAIL_CLASS } from '../pages/chat/rowPill'
@@ -193,5 +193,200 @@ describe('ThinkingBlock live preview', () => {
     // The old 550px container cap made reasoning text mysteriously narrower
     // than the tool payload box beside it; the container must span the row.
     expect(document.querySelector('[class*="max-w-[550px]"]')).toBeNull()
+  })
+})
+
+/**
+ * Follow-tail behaviour of the EXPANDED reasoning panel.
+ *
+ * Reasoning is appended, so the newest text is at the BOTTOM. These cases pin the
+ * contract: pinned to the end WHILE LIVE, top-down once settled, released when the
+ * reader scrolls up, re-armed on return.
+ *
+ * jsdom has no layout, so the geometry is stubbed and scrollTop is backed by a
+ * real value the component can read back -- as the scrollLeft case above does.
+ */
+describe('ThinkingBlock expanded follow-tail', () => {
+  const CONTENT_H = 1000
+  const VIEWPORT_H = 360        // matches the panel's max-h-[360px]
+  const BOTTOM = CONTENT_H - VIEWPORT_H
+
+  let scrollTop = 0
+  let writes: number[] = []
+
+  const body = () => screen.getByTestId('thinking-body')
+  const expand = () => fireEvent.click(screen.getByRole('button'))
+  /** Move the panel as a READER would, then let the component observe it. */
+  const readerScrollsTo = (px: number) => {
+    body().scrollTop = px
+    fireEvent.scroll(body())
+    writes = []
+  }
+
+  beforeEach(() => {
+    scrollTop = 0
+    writes = []
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(CONTENT_H)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(VIEWPORT_H)
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set(v: number) { scrollTop = v; writes.push(v) },
+    })
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop')
+    vi.restoreAllMocks()
+  })
+
+  it('opens at the END of the trace, not the beginning', () => {
+    // The defect this pins: an untouched container shows the OLDEST reasoning,
+    // so opening a LIVE trace lands the reader away from the newest words.
+    const { rerender } = render(<ThinkingBlock content="a long reasoning" />)
+    rerender(<ThinkingBlock content="a long reasoning trace" />)
+
+    expand()
+
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('stays at the end as new reasoning arrives', () => {
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expand()
+    writes = []
+
+    rerender(<ThinkingBlock content="first second third" />)
+
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('stops following once the reader scrolls up', () => {
+    // Following must yield to the reader: being yanked back down mid-sentence is
+    // the same class of annoyance as never following at all.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expand()
+    // Assert following is ACTIVE first. Without this the test passes against a
+    // component that never scrolls at all -- no writes either way.
+    expect(writes).toContain(CONTENT_H)
+
+    readerScrollsTo(100)
+    rerender(<ThinkingBlock content="first second third" />)
+
+    expect(writes).toEqual([])
+  })
+
+  it('resumes following when the reader returns to the end', () => {
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    readerScrollsTo(100)
+    rerender(<ThinkingBlock content="first second" />)
+    expect(writes).toEqual([])
+
+    readerScrollsTo(BOTTOM)
+
+    rerender(<ThinkingBlock content="first second third" />)
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('counts a sub-pixel shortfall as still at the end', () => {
+    // Without TAIL_SLACK_PX an exact test never re-arms, stranding a reader who
+    // scrolled back down for the rest of the turn -- silent, not visible.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    readerScrollsTo(100)
+
+    readerScrollsTo(BOTTOM - 10)
+
+    rerender(<ThinkingBlock content="first second" />)
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('re-pins to the end when a scrolled-up panel is closed and reopened', () => {
+    // Re-opening is a fresh "show me this" gesture, so a LIVE trace should land
+    // at the newest reasoning regardless of where the reader left the panel.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expand()
+    readerScrollsTo(100)
+
+    expand()   // collapse
+    expand()   // reopen
+
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('opens a SETTLED trace at the TOP, so finished prose reads top-down', () => {
+    // Tail-pinning is a LOG contract. Reasoning is prose, so a finished trace
+    // opened to be read must not start at its last paragraph.
+    render(<ThinkingBlock content="a long finished reasoning trace" />)
+
+    expand()
+
+    expect(writes).toEqual([])
+    expect(body().scrollTop).toBe(0)
+  })
+
+  it('starts following a settled trace once it resumes streaming', () => {
+    // The reader opted in by returning to the end, so a resume should follow --
+    // also the positive control that the component CAN write in this setup.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    expect(writes).toEqual([])
+    readerScrollsTo(BOTTOM)
+
+    rerender(<ThinkingBlock content="first second" />)
+
+    expect(writes).toContain(CONTENT_H)
+  })
+
+  it('does NOT yank a reader who opened a settled trace and stayed at the top', () => {
+    // The regression this pins: pinning on the settled->live edge jumps a reader
+    // mid-sentence, with no scroll of their own to release it.
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    expect(writes).toEqual([])
+
+    rerender(<ThinkingBlock content="first second" />)
+
+    expect(writes).toEqual([])
+    expect(body().scrollTop).toBe(0)
+  })
+
+  it('leaves the reader alone when a live trace settles', () => {
+    // Liveness is a dependency of the pin effect, so its falling edge re-runs
+    // the effect -- that must not be a jump.
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<ThinkingBlock content="first" />)
+      rerender(<ThinkingBlock content="first second" />)
+      expand()
+      expect(writes).toContain(CONTENT_H)
+      writes = []
+
+      act(() => { vi.advanceTimersByTime(1500) })
+
+      expect(writes).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps following when a paused trace resumes with a chunk taller than the slack', () => {
+    // The suite stubs scrollHeight to a CONSTANT, so an append never grows the box
+    // and this case cannot arise; give this one a height that actually grows.
+    const CHUNK_H = 200          // comfortably more than the 20px tail slack
+    let height = CONTENT_H
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => height)
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    expand()
+    readerScrollsTo(height - VIEWPORT_H)   // legitimately AT the end
+    height = CONTENT_H + CHUNK_H           // the append lands before liveness flips
+
+    rerender(<ThinkingBlock content="first second" />)
+
+    expect(writes).toContain(height)
   })
 })
