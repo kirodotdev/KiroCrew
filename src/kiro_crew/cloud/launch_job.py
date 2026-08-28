@@ -631,13 +631,23 @@ def run_launch(
         # 2) Provision (create instance + install; blocks until healthy)
         _check_cancel()
         s = _activate(STEP_PROVISION)
+        # The AgentCore kwargs ride along only when the job carries a posture:
+        # an edition's provisioner engine may implement the base four-kwarg
+        # ``provision`` and never see a posture, and a plain launch must not
+        # fail on an engine that predates the two optional parameters. A URL
+        # without a posture has nothing to sign against, so it never travels.
+        agentcore_kw: dict = {}
+        if job.agentcore_posture != "none":
+            agentcore_kw = {
+                "agentcore_posture": job.agentcore_posture,
+                "agentcore_gateway_url": job.agentcore_gateway_url,
+            }
         job.instance_id = engine.provision(
             tag=job.tag,
             size_key=job.size_key,
             profile=job.profile,
             region=job.region,
-            agentcore_posture=job.agentcore_posture,
-            agentcore_gateway_url=job.agentcore_gateway_url,
+            **agentcore_kw,
         )
         s.detail = job.instance_id
         s.state = STEP_DONE

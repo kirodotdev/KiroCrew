@@ -326,7 +326,10 @@ def launch(
     default-VPC preference would otherwise never pick. ``hold_tunnel=False``
     closes the SSM tunnel and returns instead of blocking on it — used when the
     wizard is embedded in a larger flow (``kirocrew setup``) that still has
-    steps to print after this one. ``agentcore_posture`` of ``workload`` or
+    steps to print after this one. An existing stack plus a non-default
+    ``agentcore_posture`` or ``agentcore_gateway_url`` fails closed and
+    asks for ``--new`` — resume cannot apply or reject those settings
+    in place. ``agentcore_posture`` of ``workload`` or
     ``login`` has CloudFormation create an Amazon Bedrock AgentCore
     WorkloadIdentity and attach it to the instance.
     ``agentcore_gateway_url`` is the existing Gateway MCP URL written into
@@ -442,6 +445,18 @@ def launch(
                 return 1
             ui.warn("--subnet is ignored for an existing stack (its network is fixed).")
             ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
+        if agentcore_posture != "none" or agentcore_gateway_url:
+            # Identity settings are baked into the stack at create time.
+            # Resuming and silently ignoring --agentcore-* would leave the
+            # operator on a workload they did not request.
+            ui.fail(
+                "--agentcore-posture / --agentcore-gateway-url cannot apply "
+                "to the existing stack."
+            )
+            ui.detail(
+                "Use `kirocrew cloud launch --new --agentcore-posture …` " "for a fresh instance."
+            )
+            return 1
 
     # ── 4. Launch ─────────────────────────────────────────────────────────
     steps.step("Launching")

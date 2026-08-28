@@ -464,8 +464,11 @@ def ensure_instance_boundary(
 ) -> str:
     """Create (once, idempotently) a shared instance permissions boundary; return its ARN.
 
-    Default ``name`` is :data:`iam.BOUNDARY_NAME` (the default launch path).
-    AgentCore launches pass :data:`iam.AGENTCORE_BOUNDARY_NAME`. Never
+    Default ``name`` is :data:`iam.BOUNDARY_NAME` (none-posture CreateRole).
+    The successor :data:`iam.AGENTCORE_BOUNDARY_NAME` is
+    administrator-pre-created (``iam-boundary --agentcore``) and
+    resolved by :func:`require_agentcore_boundary` for AgentCore
+    launches. Never
     ``CreatePolicyVersion`` — an existing boundary is left untouched and
     fail-closed if its content does not match the content-fixed document for
     that name.
@@ -568,6 +571,46 @@ def ensure_instance_boundary(
         returncode=rc,
         stderr=err or "",
     )
+
+
+def require_agentcore_boundary(profile: str = "", region: str = "") -> str:
+    """Return the successor boundary ARN. Does not create it.
+
+    AgentCore-posture CreateRole passes this ARN so the instance is
+    born able to vend WAT. The generated launcher can only GetPolicy
+    this name — ``iam-boundary --agentcore`` must have created it.
+    CreateRole under this boundary requires admin credentials (the
+    generated launcher grant is original-name only).
+    """
+    from kiro_crew.cloud import iam
+
+    account = _account_id(profile, region)
+    if not account:
+        raise aws.AWSError(
+            "could not resolve the AWS account id (sts:GetCallerIdentity) — "
+            "check your credentials/profile and retry.",
+            action="sts:GetCallerIdentity",
+        )
+    arn = iam.boundary_arn(account, iam.AGENTCORE_BOUNDARY_NAME)
+    rc, _out, err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
+    if rc != 0:
+        missing = aws.map_missing_action(err)
+        hint = f" — grant `{missing}` and retry" if missing else ""
+        raise aws.AWSError(
+            "AgentCore launches require the administrator-created successor "
+            f"boundary '{iam.AGENTCORE_BOUNDARY_NAME}'. Run "
+            "`kirocrew cloud iam-boundary --agentcore` then retry with "
+            "credentials that can CreateRole under that boundary."
+            f"{hint}",
+            action="iam:GetPolicy",
+            missing_action=missing,
+            returncode=rc,
+            stderr=err or "",
+        )
+    _verify_instance_boundary_content(
+        arn, account, profile, region, name=iam.AGENTCORE_BOUNDARY_NAME
+    )
+    return arn
 
 
 def _verify_instance_boundary_content(

@@ -192,6 +192,43 @@ class TestStoreDurability:
 
 
 class TestRunLaunch:
+    def test_posture_none_never_hands_agentcore_kwargs_to_the_engine(self, tmp_path):
+        """An edition engine written to the base four-kwarg ``provision`` must
+        keep working for a plain launch -- even one whose job carries a stray
+        Gateway URL -- because a URL without a posture has nothing to sign."""
+
+        class FourArgEngine(FakeEngine):
+            def provision(self, *, tag, size_key, profile, region):
+                self.calls.append(("provision", tag, size_key))
+                return "i-0four00000000000"
+
+        s = _store(tmp_path)
+        job = s.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        eng = FourArgEngine(handle=FakeHandle(already=True))
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.DONE
+        assert out.instance_id == "i-0four00000000000"
+
+    def test_postured_job_hands_both_agentcore_kwargs_to_the_engine(self, tmp_path):
+        s = _store(tmp_path)
+        job = s.create(
+            profile="dev",
+            region="us-east-1",
+            size_key="balanced",
+            agentcore_posture="workload",
+            agentcore_gateway_url="https://gw.example.test/mcp",
+        )
+        eng = FakeEngine(handle=FakeHandle(already=True))
+        out = lj.run_launch(job, s, eng)
+        assert out.status == lj.DONE
+        provision = next(c for c in eng.calls if c[0] == "provision")
+        assert provision[3:] == ("workload", "https://gw.example.test/mcp")
+
     def test_happy_path_already_signed_in(self, tmp_path):
         s = _store(tmp_path)
         job = s.create(profile="dev", region="us-east-1", size_key="balanced")
@@ -711,7 +748,9 @@ class TestProvisionerOnTheJob:
         """Another provisioner's ``size_key`` is its own vocabulary; refusing it here
         against ``sizes.py`` would refuse every non-EC2 launch."""
         job = _store(tmp_path).create(
-            profile="", region="us-west-2", size_key="dev.standard1.large",
+            profile="",
+            region="us-west-2",
+            size_key="dev.standard1.large",
             provider_id="devspace",
         )
         assert job.provider_id == "devspace"
@@ -719,14 +758,20 @@ class TestProvisionerOnTheJob:
 
     def test_step_labels_override_only_known_keys(self, tmp_path):
         job = _store(tmp_path).create(
-            profile="", region="", size_key="s", provider_id="devspace",
+            profile="",
+            region="",
+            size_key="s",
+            provider_id="devspace",
             step_labels={lj.STEP_PROVISION: "Create the DevSpace", "bogus": "ignored"},
         )
         labels = {st.key: st.label for st in job.steps}
         assert labels[lj.STEP_PROVISION] == "Create the DevSpace"
         assert labels[lj.STEP_PREFLIGHT] == "Check your AWS setup"  # untouched core label
         assert [st.key for st in job.steps] == [
-            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+            lj.STEP_PREFLIGHT,
+            lj.STEP_PROVISION,
+            lj.STEP_SIGNIN,
+            lj.STEP_CONNECT,
         ]
 
     def test_default_steps_with_no_overrides_are_the_core_labels(self):

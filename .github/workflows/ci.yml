@@ -1645,8 +1645,9 @@ jobs:
   cfn-lint:
     name: CloudFormation Lint
     needs: [changes, await-fast-gate]
-    # The templates it lints live under src/kiro_crew/deploy/, which the
-    # paths-filter counts as backend, so a frontend-only diff cannot touch one.
+    # The templates it lints live under src/kiro_crew/deploy/ and
+    # src/kiro_crew/cloud/, which the paths-filter counts as backend, so a
+    # frontend-only diff cannot touch one.
     if: needs.changes.outputs.only_frontend != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1661,11 +1662,18 @@ jobs:
 
       - name: Install cfn-lint
         # Pinned: an unpinned lint tool silently changes the gate's behaviour on
-        # every upstream release. Bump deliberately.
-        run: pip install "cfn-lint==1.22.3"
+        # every upstream release. Bump deliberately. 1.56 is the floor that
+        # carries the AWS::BedrockAgentCore resource schemas and the current
+        # EC2 LaunchTemplate schema (1.22 rejects MetadataOptions).
+        run: pip install "cfn-lint==1.56.1"
 
       - name: Lint deploy templates
-        run: cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml
+        # The EC2 launch template is what every `kirocrew cloud launch`
+        # deploys, so a malformed edit there fails change-set creation for the
+        # whole provisioning surface; lint it with the same gate.
+        run: |
+          cfn-lint src/kiro_crew/deploy/skills/artifact-deploy/templates/*.yaml \
+            src/kiro_crew/cloud/templates/kirocrew-ec2.yaml
 
   # The Electron shell (website/electron) has its own 460+ test node:test suite,
   # and until now NOTHING ran it on a PR — its only runner was ota-test.yml,

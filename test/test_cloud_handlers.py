@@ -148,7 +148,9 @@ class TestGuards:
         # Provisioning itself stays refused — the deploy engine needs bash/aws.
         created = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -324,7 +326,7 @@ class TestLaunch:
         assert resp.status == 202
         assert seen["tid"] != loop_tid, "create() ran on the event loop thread"
 
-    async def test_create_bad_gateway_url_400(self, tmp_path):
+    async def test_create_rejects_dashboard_agentcore_posture(self, tmp_path):
         resp = await hc.api_cloud_launch_create(
             _req(
                 "POST",
@@ -334,12 +336,33 @@ class TestLaunch:
                     "profile": "dev",
                     "region": "us-east-1",
                     "size_key": "balanced",
-                    "agentcore_gateway_url": "http://insecure.example/mcp",
+                    "agentcore_posture": "workload",
                 },
             )
         )
         assert resp.status == 400
-        assert _body(resp)["code"] == "invalid_agentcore_gateway_url"
+        assert _body(resp)["code"] == "dashboard_agentcore_posture_forbidden"
+
+    async def test_create_gateway_url_400(self, tmp_path):
+        """Dashboard launches carry no posture, so a Gateway URL -- valid or not --
+        is refused rather than persisted onto a job that would hand a provisioner
+        engine a kwarg it never declared."""
+        for url in ("http://insecure.example/mcp", "https://gw.example.test/mcp"):
+            resp = await hc.api_cloud_launch_create(
+                _req(
+                    "POST",
+                    "/api/cloud/launch",
+                    state=_state(tmp_path),
+                    body={
+                        "profile": "dev",
+                        "region": "us-east-1",
+                        "size_key": "balanced",
+                        "agentcore_gateway_url": url,
+                    },
+                )
+            )
+            assert resp.status == 400
+            assert _body(resp)["code"] == "dashboard_agentcore_gateway_url_forbidden"
 
     async def test_create_bad_size_400(self, tmp_path):
         resp = await hc.api_cloud_launch_create(
@@ -891,7 +914,10 @@ class TestProvisionerSeam:
         assert rows[0]["kind"] == "aws_ec2"
         assert rows[0]["posix_only"] is True
         assert [s["key"] for s in rows[0]["steps"]] == [
-            lj.STEP_PREFLIGHT, lj.STEP_PROVISION, lj.STEP_SIGNIN, lj.STEP_CONNECT,
+            lj.STEP_PREFLIGHT,
+            lj.STEP_PROVISION,
+            lj.STEP_SIGNIN,
+            lj.STEP_CONNECT,
         ]
 
     async def test_listing_answers_on_windows(self, tmp_path, monkeypatch):
@@ -914,7 +940,9 @@ class TestProvisionerSeam:
             [
                 _Provisioner("aws_ec2"),
                 _Provisioner(
-                    "devspace", kind="amazon_devspace", label="Amazon DevSpace",
+                    "devspace",
+                    kind="amazon_devspace",
+                    label="Amazon DevSpace",
                     posix_only=False,
                     step_labels=((lj.STEP_PROVISION, "Create the DevSpace"), ("bogus", "x")),
                 ),
@@ -954,7 +982,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
             )
         )
@@ -967,7 +997,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "nope", "profile": "", "region": "", "size_key": "x"},
             )
         )
@@ -981,10 +1013,14 @@ class TestProvisionerSeam:
         ladder, and the job's steps carry the provisioner's labels."""
         engine = RecordingEngine()
         provider = _Provider(
-            [_Provisioner("aws_ec2"), _Provisioner(
-                "devspace", kind="amazon_devspace",
-                step_labels=((lj.STEP_PROVISION, "Create the DevSpace"),),
-            )],
+            [
+                _Provisioner("aws_ec2"),
+                _Provisioner(
+                    "devspace",
+                    kind="amazon_devspace",
+                    step_labels=((lj.STEP_PROVISION, "Create the DevSpace"),),
+                ),
+            ],
             engines={"devspace": engine},
         )
         _compose(monkeypatch, provider)
@@ -992,9 +1028,13 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None  # let the seam, not the test hook, answer
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={
-                    "provider_id": "devspace", "profile": "", "region": "us-west-2",
+                    "provider_id": "devspace",
+                    "profile": "",
+                    "region": "us-west-2",
                     "size_key": "dev.standard1.large",
                 },
             )
@@ -1004,7 +1044,9 @@ class TestProvisionerSeam:
         assert job["provider_id"] == "devspace"
         assert job["status"] == lj.DONE
         assert job["instance_id"] == "ds-devspace-0001"
-        assert {s["key"]: s["label"] for s in job["steps"]}[lj.STEP_PROVISION] == "Create the DevSpace"
+        assert {s["key"]: s["label"] for s in job["steps"]}[
+            lj.STEP_PROVISION
+        ] == "Create the DevSpace"
         assert provider.asked == ["devspace"]
         assert engine.calls == [("provision", job["tag"], "dev.standard1.large", "", "us-west-2")]
 
@@ -1015,7 +1057,9 @@ class TestProvisionerSeam:
         _compose(monkeypatch, provider)
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
                 body={"provider_id": "aws_ec2", "profile": "", "region": "", "size_key": "nope"},
             )
         )
@@ -1029,7 +1073,9 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "ghost", "profile": "", "region": "", "size_key": "x"},
             )
         )
@@ -1051,15 +1097,24 @@ class TestProvisionerSeam:
         state.cloud_launch_engine = None
         ok = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"provider_id": "devspace", "profile": "", "region": "", "size_key": "s"},
             )
         )
         assert ok.status == 202, _body(ok)
         refused = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=_state(tmp_path),
-                body={"provider_id": "aws_ec2", "profile": "", "region": "", "size_key": "balanced"},
+                "POST",
+                "/api/cloud/launch",
+                state=_state(tmp_path),
+                body={
+                    "provider_id": "aws_ec2",
+                    "profile": "",
+                    "region": "",
+                    "size_key": "balanced",
+                },
             )
         )
         assert refused.status == 400
@@ -1073,7 +1128,9 @@ class TestProvisionerSeam:
         state = _state(tmp_path)  # carries FakeEngine via the hook
         resp = await hc.api_cloud_launch_create(
             _req(
-                "POST", "/api/cloud/launch", state=state,
+                "POST",
+                "/api/cloud/launch",
+                state=state,
                 body={"profile": "", "region": "", "size_key": "balanced"},
             )
         )

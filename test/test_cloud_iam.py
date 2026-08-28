@@ -13,7 +13,7 @@ class TestPolicyDocument:
         assert doc["Version"] == "2012-10-17"
         assert isinstance(doc["Statement"], list)
         for st in doc["Statement"]:
-            assert st["Effect"] == "Allow"
+            assert st["Effect"] in ("Allow", "Deny")
             assert "Action" in st and "Resource" in st and "Sid" in st
 
     def test_covers_core_launch_actions(self):
@@ -110,6 +110,8 @@ class TestPolicyDocument:
         # aws:ResourceTag/kirocrew:managed=true gate — an unconditioned TagRole
         # (e.g. re-added to IamRoleForInstance) re-opens the tag-spoofing hole.
         for st in iam.policy_document()["Statement"]:
+            if st["Effect"] != "Allow":
+                continue  # a Deny on TagRole only tightens; the guard is about grants
             if "iam:TagRole" in st.get("Action", []):
                 se = st.get("Condition", {}).get("StringEquals", {})
                 assert se.get(f"aws:ResourceTag/{iam.MANAGED_TAG_KEY}") == "true", (
@@ -174,9 +176,11 @@ class TestPolicyDocument:
         assert "StringEquals" not in st["Condition"], "must be ArnLike, not StringEquals"
         cond = st["Condition"]["ArnLike"]["iam:PermissionsBoundary"]
         values = [cond] if isinstance(cond, str) else list(cond)
-        # Either shared boundary name, no trailing wildcard on the policy name.
-        assert f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}" in values
-        assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" in values
+        # Original shared boundary only — no trailing wildcard on the policy
+        # name. The successor ceiling includes token verbs the launcher can
+        # still PutRolePolicy, so CreateRole must not attach it.
+        assert values == [f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}"]
+        assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" not in values
         assert all(v.startswith("arn:aws:iam::") for v in values)
         assert not any(v.endswith("*") for v in values)
 
@@ -237,8 +241,8 @@ class TestPolicyDocument:
         resources = st["Resource"]
         if isinstance(resources, str):
             resources = [resources]
-        assert f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}" in resources
-        assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" in resources
+        assert resources == [f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}"]
+        assert f"arn:aws:iam::*:policy/{iam.AGENTCORE_BOUNDARY_NAME}" not in resources
         # No trailing wildcard on the policy name (would let CreatePolicy target
         # other, e.g. permissive, boundary-prefixed names).
         assert not any(r.endswith("*") for r in resources)
@@ -465,6 +469,8 @@ class TestPolicyDocument:
         # Guard against a regression that re-adds AttachRolePolicy without an
         # iam:PolicyARN condition anywhere in the policy.
         for st in iam.policy_document()["Statement"]:
+            if st["Effect"] != "Allow":
+                continue  # a Deny on AttachRolePolicy is not a grant to cap
             if "iam:AttachRolePolicy" in st.get("Action", []):
                 cond = st.get("Condition", {})
                 assert (

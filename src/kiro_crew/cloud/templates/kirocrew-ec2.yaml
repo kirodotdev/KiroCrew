@@ -9,6 +9,17 @@ Description: >-
 # --parameter-overrides. The wizard resolves VpcId/SubnetId from the account's
 # default VPC and passes them, so the user never picks networking by hand.
 # ---------------------------------------------------------------------------
+Metadata:
+  cfn-lint:
+    config:
+      # W1030 resolves AgentCoreWorkloadName's "" default into
+      # CrewWorkloadIdentity.Name and reports it too short. That resource only
+      # exists under HasAgentCore, and the AgentCoreNameRequired rule refuses a
+      # non-none posture with an empty name, so the empty value can never reach
+      # the property. The rule cannot see across Conditions and Rules, so it is
+      # silenced here rather than by widening the parameter's default.
+      ignore_checks:
+        - W1030
 Parameters:
   InstanceType:
     Type: String
@@ -140,6 +151,11 @@ Parameters:
     Type: String
     Default: ""
     MaxLength: 512
+    # Unquoted user-data heredoc interpolates this into Environment=. Reject
+    # `$`, backticks, parentheses, whitespace, quotes, and `@` so a direct
+    # `aws cloudformation deploy` cannot land `$(command)` or
+    # `https://user:secret@host` in the unit file.
+    AllowedPattern: "^$|^https://[A-Za-z0-9._~:/%!=+&,-]{1,504}$"
     Description: >-
       MCP URL of an existing Amazon Bedrock AgentCore Gateway this crew
       should call. Empty means identity is created but no Gateway spec is
@@ -220,6 +236,12 @@ Resources:
       Tags:
         - { Key: "kirocrew:managed", Value: "true" }
         - { Key: "kirocrew:instance", Value: !Ref StackTag }
+        # Which ceiling this role was created under. The launcher IAM policy
+        # denies its own PutRolePolicy / PassRole / (Un)TagRole on roles tagged
+        # `agentcore`, so a leaked launcher credential cannot rewrite a posture
+        # role's grant toward a sibling identity. Applied at CreateRole, so the
+        # tag is present before CFN attaches the inline posture policy.
+        - { Key: "kirocrew:boundary", Value: !If [HasAgentCore, "agentcore", "base"] }
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -252,21 +274,15 @@ Resources:
             Effect: Allow
             Action:
               - bedrock-agentcore:GetWorkloadAccessToken
-              - bedrock-agentcore:GetWorkloadAccessTokenForUserId
             Resource:
               - !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:workload-identity-directory/default"
               - !GetAtt CrewWorkloadIdentity.WorkloadIdentityArn
-          - Sid: AgentCoreGateway
-            Effect: Allow
-            Action: [bedrock-agentcore:InvokeGateway]
-            Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/kirocrew-*"
           - Sid: AgentCoreGatewayInspect
             Effect: Allow
             Action:
               - bedrock-agentcore:GetGateway
               - bedrock-agentcore:ListGatewayTargets
               - bedrock-agentcore:GetGatewayTarget
-              - bedrock-agentcore:SynchronizeGatewayTargets
             Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
           - Sid: DenyJwtPathOnWorkloadPosture
             Effect: Deny
@@ -294,7 +310,6 @@ Resources:
               - bedrock-agentcore:GetGateway
               - bedrock-agentcore:ListGatewayTargets
               - bedrock-agentcore:GetGatewayTarget
-              - bedrock-agentcore:SynchronizeGatewayTargets
             Resource: !Sub "arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:gateway/*"
           - Sid: DenyUserIdAndIamGateway
             Effect: Deny
@@ -552,15 +567,12 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           # Kiro Crew EC2 bootstrap (cloud-init, first boot, root). EC2 caps
-          # decoded UserData at 16384 bytes AFTER !Sub expansion, so this
-          # script carries only what the instance needs: the rationale for
-          # every non-obvious choice lives in the template comments right
-          # above UserData, keyed by the section names quoted below.
-          # No pipefail + plain-file logging: see "Logging" above.
+          # decoded UserData at 16384 bytes after !Sub expansion, so rationale
+          # for each non-obvious choice lives in the keyed comments above
+          # UserData. No pipefail + plain-file logging: see "Logging" above.
           set -u
 
-          # cloud-init runs UserData once. Persist the already-rendered script and
-          # hand off immediately so a managed patch reboot can resume it on boot.
+          # cloud-init runs UserData once; persist + hand off so a patch reboot resumes it.
           BOOTSTRAP_SCRIPT=/usr/local/sbin/kirocrew-bootstrap
           BOOTSTRAP_STATE=/var/lib/kirocrew-bootstrap
           INSTALL_DONE=$BOOTSTRAP_STATE/install-complete
@@ -611,12 +623,11 @@ Resources:
           }
 
           if [ ! -f "$INSTALL_DONE" ]; then
-            # A reboot after the gateway unit was enabled but before checkpointing
-            # can queue both units. Stop it before replacing the checkout.
+            # A reboot mid-bootstrap can queue both units; stop before recheckout.
             systemctl stop kirocrew.service 2>/dev/null || true
 
-            # The stock AL2023 reboot would SIGTERM the build mid-install: see
-            # "SELinux reboot" above. Best-effort, never fails the bootstrap.
+            # Suppress the AL2023 first-boot reboot that SIGTERMs the build.
+            # Best-effort. See "SELinux reboot" above.
           echo "--- suppressing AL2023 first-boot SELinux reboot ---"
           rm -f /run/cloud-init-selinux-reboot 2>/dev/null || true
           rm -f /etc/cloud/cloud.cfg.d/40_selinux-reboot.cfg 2>/dev/null || true
@@ -627,7 +638,7 @@ Resources:
           RUN_USER=ec2-user
           RUN_HOME=/home/$RUN_USER
 
-          # Insurance against a first-boot memory spike: see "Swap" above.
+          # First-boot memory-spike insurance. See "Swap" above.
           echo "--- provisioning swap (headroom for the vite build) ---"
           if [ ! -e /swapfile ] && [ "$(free -m | awk '/^Swap:/ {print $2}')" = "0" ]; then
             ( fallocate -l 4G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=4096 ) 2>/dev/null \
@@ -643,20 +654,15 @@ Resources:
           dnf install -y git tmux python3 python3-pip \
             unzip tar gzip which \
             || fail "essential package install failed (git/python3/unzip)"
-          # python3.12 explicitly: install.sh needs >= 3.12, AL2023's default
-          # python3 is 3.9 (see "System packages" above). Best-effort -- if the
-          # repos carry no python3.12, install.sh's _bootstrap_python provisions
-          # one via mise rather than failing the boot.
+          # python3.12 explicit (AL2023 default is 3.9); best-effort, install.sh
+          # provisions its own if absent. See "System packages" above.
           dnf install -y python3.12 python3.12-pip \
             || echo "python3.12 unavailable from dnf; install.sh will provision one"
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
           echo "--- installing Node.js ---"
-          # The frontend build (vite 8 + rolldown) needs Node >=22; AL2023 ships
-          # node 18 (build dies with node:util/styleText). Try AppStream first, then
-          # fall back to a pinned official nodejs.org tarball -- we AVOID
-          # dnf/NodeSource because AL2023's modular filtering kept reinstalling the
-          # distro node 18. /usr/local/bin precedes /usr/bin so the tarball shadows it.
+          # Node >=22 required; AppStream ships 18. Pinned nodejs.org tarball
+          # in /usr/local/bin shadows it. See "Node.js" above.
           NODE_MAJOR_MIN=22
           command -v node >/dev/null 2>&1 || dnf install -y nodejs npm || true
           NODE_MAJOR=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p' | head -1)
@@ -671,9 +677,8 @@ Resources:
             NODE_TARB=node-$NODE_V-$NODE_ARCH
             echo "installing Node $NODE_V ($NODE_ARCH) from the official nodejs.org tarball"
             curl --proto '=https' --tlsv1.2 -fsSL "https://nodejs.org/dist/$NODE_V/$NODE_TARB.tar.gz" -o /tmp/node.tar.gz || fail "Node download failed"
-            # Verify the PINNED SHA-256 before extracting as root: TLS protects the
-            # transport, not the artifact, so a tampered/compromised mirror must not
-            # get its Node extracted and run. Fails closed on any mismatch.
+            # Verify PINNED SHA-256 before extracting as root (TLS guards the
+            # transport, not the artifact); fails closed on mismatch.
             echo "$NODE_SHA  /tmp/node.tar.gz" | sha256sum -c - || fail "Node tarball checksum mismatch (possible tampering)"
             tar -xzf /tmp/node.tar.gz -C /usr/local || fail "Node extract failed"
             ln -sf /usr/local/$NODE_TARB/bin/node /usr/local/bin/node
@@ -699,20 +704,17 @@ Resources:
             unzip -o -q kirocli.zip
             ./kirocli/install.sh --no-confirm || yes | ./kirocli/install.sh || true
           " || echo 'kiro-cli install returned nonzero (verifying the binary below)'
-          # The install tolerates nonzero exits, so verify the binary landed;
-          # without it every chat would error (see "kiro-cli" above).
+          # Install tolerates nonzero exits, so verify the binary. See "kiro-cli".
           sudo -u $RUN_USER bash -lc 'command -v kiro-cli >/dev/null 2>&1 || [ -x "$HOME/.local/bin/kiro-cli" ] || [ -x /usr/local/bin/kiro-cli ]' \
             || fail "kiro-cli did not install (the chat backend would not work)"
 
           echo "--- fetching + installing KiroCrew ---"
-          # S3 source preferred, git clone fallback. Values are inlined into a
-          # script file to dodge sudo env_reset: see "Source fetch" above.
+          # S3 source preferred, git-clone fallback. See "Source fetch" above.
           cat > /tmp/kcfetch.sh <<KCFETCH
           #!/bin/bash
           set -e
-          # sudo resets PATH to secure_path, which can resolve `node` to the distro
-          # node 18 in /usr/bin over the Node 22 tarball in /usr/local/bin -- so the
-          # vite build would still fail. Prepend /usr/local/bin so the build sees 22.
+          # Prepend /usr/local/bin so the build sees Node 22, not sudo
+          # secure_path's distro node 18. See "Node.js" above.
           export PATH="/usr/local/bin:\$PATH"
           cd "$RUN_HOME"
           rm -rf kirocrew && mkdir kirocrew
@@ -729,14 +731,13 @@ Resources:
           cd kirocrew
           # Make a failed frontend build fatal so the retry below re-runs it.
           export KIROCREW_REQUIRE_FRONTEND=1
-          # One retry: first-boot contention can signal-kill the first build;
-          # the warm re-run reliably succeeds (see "Source fetch" above).
+          # One retry: first-boot contention can kill the first build. See "Source fetch".
           AC_EXTRA=""
           if [ "${AgentCorePosture}" != "none" ]; then AC_EXTRA="--agentcore"; fi
-          if ! bash install.sh --voice $AC_EXTRA; then
+          if ! bash install.sh --voice \$AC_EXTRA; then
             echo "install.sh failed on first attempt - settling then retrying once"
             sleep 20
-            bash install.sh --voice $AC_EXTRA
+            bash install.sh --voice \$AC_EXTRA
           fi
           KCFETCH
           chmod +x /tmp/kcfetch.sh
@@ -744,11 +745,10 @@ Resources:
           sudo -u $RUN_USER bash /tmp/kcfetch.sh || fail "kirocrew source fetch or install failed"
 
           echo "--- verifying the dashboard SPA was actually built ---"
-          # A missing SPA means a green stack serving a dead dashboard, so it
-          # is FATAL, with the real build error grepped from the setup log
-          # into the failure reason: see "Dashboard build verification" above.
-          # NB: plain "$var" only in this whole script; any dollar-brace token,
-          # even in a comment, is parsed by !Sub and breaks change-set creation.
+          # A missing SPA is FATAL (a green stack serving a dead dashboard);
+          # the real build error is grepped into the reason. See
+          # "Dashboard build verification" above.
+          # Plain "$var" only; a dollar-brace token breaks !Sub. See "Editing hazard".
           DIST_INDEX="$RUN_HOME/kirocrew/src/kiro_crew/static/dist/index.html"
           if [ ! -f "$DIST_INDEX" ]; then
             fe_err="$(grep -aiE 'npm error|npm ERR|error TS[0-9]|vite|Killed|Cannot find module|ENOSPC|no space left|out of memory|FATAL ERROR|Skipping frontend build' "$LOG" 2>/dev/null | tr -d '\r"\\' | tail -n 12 | tr '\n' '|' | tail -c 500)"
@@ -766,6 +766,8 @@ Resources:
 
           # System-level unit so the gateway survives reboots and runs as ec2-user.
           KIROCREW_BIN=$(sudo -u $RUN_USER bash -lc 'command -v kirocrew || echo $HOME/.local/bin/kirocrew')
+          # Double % (systemd Environment= specifier) so a %-encoded URL survives.
+          AC_GW_ESC=$(printf '%s' '${AgentCoreGatewayUrl}' | sed 's/%/%%/g')
           cat > /etc/systemd/system/kirocrew.service <<UNIT
           [Unit]
           Description=KiroCrew AI Agent Gateway
@@ -785,7 +787,7 @@ Resources:
           Environment=KIROCREW_PORT=${DashboardPort}
           Environment=KIROCREW_AGENTCORE_POSTURE=${AgentCorePosture}
           Environment=KIROCREW_AGENTCORE_WORKLOAD_NAME=${AgentCoreWorkloadName}
-          Environment=KIROCREW_AGENTCORE_GATEWAY_URL=${AgentCoreGatewayUrl}
+          Environment=KIROCREW_AGENTCORE_GATEWAY_URL=$AC_GW_ESC
 
           [Install]
           WantedBy=multi-user.target
