@@ -911,9 +911,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # probe is to read the HOST's own macOS TCC grants, which a sandbox that
         # rewrites the process identity would answer wrongly.
         "dashboard/handlers/computer_use.py::_probe_permissions",
-        "dashboard/handlers/core.py::_is_apple_silicon",
-        "dashboard/handlers/core.py::_stt_prereq_commands",
-        "dashboard/handlers/core.py::api_stt_install",
         "dashboard/handlers/files.py::_run",
         "dashboard/handlers/files.py::api_screenshot",
         "dashboard/handlers/files.py::api_upload",
@@ -1146,7 +1143,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # compiled, or ffmpeg — and every variable part is a positional argument to
         # execve (no shell), so a hostile value can only be a bad filename, not a
         # second command. `_to_native_audio` mirrors the already-allowlisted
-        # `transcribe.py::_run_whisper_cli`: same ffmpeg invocation on the same
+        # `transcribe.py::_pcm_via_ffmpeg`: same ffmpeg invocation on the same
         # user-supplied audio path. `_build_helper` runs swiftc over a file that ships
         # inside the package, writing to the data home's `run/` dir (sensitive-path
         # fenced, 0700). The three spawns that EXECUTE the compiled helper
@@ -1168,7 +1165,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # (`transcribe.py::_python3_bin_dir` is absent: its scripts-dir probe
         # routes through `dep_sync.py::_probe_interpreter`, so an entry here
         # would be stale.)
-        "transcribe.py::_run_whisper_cli",
+        # `_pcm_via_ffmpeg` decodes a container the stdlib cannot read (a Slack
+        # voice memo's ogg/Opus, an uploaded m4a) down to the 16 kHz mono PCM the
+        # recogniser takes. Fixed argv, ffmpeg only; the sole variable part is a
+        # positional audio path that `_is_sensitive_audio_path` has already
+        # cleared, so a hostile value can only name a bad file, not a command.
+        "transcribe.py::_pcm_via_ffmpeg",
         "transcribe.py::_transcribe_aws",
         # JSON-Schema ``pattern`` validation for MCP app→gateway tool-call args
         # (validate_mcp_tool_arguments). The spawn's command surface is FULLY

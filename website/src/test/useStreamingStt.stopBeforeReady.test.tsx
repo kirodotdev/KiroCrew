@@ -136,6 +136,33 @@ describe('streaming stop before the server is ready', () => {
     expect(ws.kinds().indexOf('stop')).toBe(ws.sent.length - 1)
   })
 
+  it('keeps a cold local model load\'s worth of speech, not just Transcribe\'s', async () => {
+    // The local recogniser's first load is ~7.4s of GPU-pipeline compile after up to
+    // ~4s of digest verification, and the cap used to be 8s of audio. Past it the
+    // OLDEST frames go, so the user lost the words they opened with while the UI
+    // showed a live mic. Twelve seconds of speech is inside the real wait and well
+    // past the old ceiling.
+    const { hook } = await startRecording()
+    const ws = lastSocket()
+
+    // 32 KB per second at 16 kHz mono Int16. One frame per second keeps the loop
+    // cheap while still crossing the old cap by 50%.
+    const ONE_SECOND = 32 * 1024
+    await act(async () => {
+      for (let i = 0; i < 12; i++) lastNode().speak(ONE_SECOND)
+    })
+    expect(ws.kinds(), 'nothing may ship before ready').toEqual([])
+
+    await act(async () => { ws.becomeReady() })
+    await waitFor(() => expect(ws.kinds().length).toBeGreaterThan(0))
+
+    const shipped = ws.sent.filter(s => s.kind === 'audio')
+    expect(shipped.length, 'the opening seconds were dropped').toBe(12)
+    const bytes = shipped.reduce((n, s) => n + (s.raw as ArrayBuffer).byteLength, 0)
+    expect(bytes).toBe(12 * ONE_SECOND)
+    void hook
+  })
+
   it('still stops immediately when the server is already ready', async () => {
     const { hook } = await startRecording()
     const ws = lastSocket()

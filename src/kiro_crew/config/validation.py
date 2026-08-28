@@ -319,7 +319,11 @@ def validate_config_data(data: dict) -> dict:
     # circular import: schema.py imports KiroCrewConfig from config.loader, which
     # re-exports this module — importing schema at module level here would close
     # a config.loader -> validation -> schema -> loader cycle at import time.
-    from kiro_crew.config.loader import CONFIG_RESERVED_TOP_KEYS
+    from kiro_crew.config.loader import (
+        CONFIG_RESERVED_TOP_KEYS,
+        _validated_stt_model,
+        _validated_stt_provider,
+    )
     from kiro_crew.config.schema import JSON_SCHEMA, SCHEMA_REGISTRY
 
     # 1. Detect unrecognized top-level keys. The schema registry models only the
@@ -356,6 +360,22 @@ def validate_config_data(data: dict) -> dict:
     agent = data.get("agent")
     if isinstance(agent, dict) and isinstance(agent.get("log_level"), str):
         agent["log_level"] = agent["log_level"].upper()
+
+    # 3a. Resolve the STT provider and model through the loader's own degradation
+    # rules before the enum check can discard them. Both fields accept values that
+    # are deliberately absent from their enum (a retired provider, and a model name
+    # the catalog maps onto a current entry), and the loader answers each with a
+    # specific warning and a specific replacement. An enum violation instead
+    # deletes the key, so the parse site would fall back to the plain default and
+    # the operator would be told only that a value was rejected. Normalizing here
+    # makes the resolved value and the log identical whether or not ``jsonschema``
+    # is installed, which is the whole point: this function is a no-op without it.
+    stt = data.get("stt")
+    if isinstance(stt, dict):
+        if "provider" in stt:
+            stt["provider"] = _validated_stt_provider(stt["provider"])
+        if "model" in stt:
+            stt["model"] = _validated_stt_model(stt["model"])
 
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)

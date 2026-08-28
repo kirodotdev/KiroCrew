@@ -403,6 +403,22 @@ def pytest_internalerror(excrepr, excinfo) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _release_stt_engine():
+    """Never let a loaded speech model outlive the test that loaded it.
+
+    ``kiro_crew.stt.engine`` keeps ONE recogniser per process on purpose: the
+    whole point of the module is that an utterance does not pay for a model load.
+    Under xdist that same property makes it cross-test state, and the instance
+    carries the idle-eviction window the first caller passed, so a later test
+    reading a different setting would silently get the earlier one.
+    """
+    yield
+    from kiro_crew.stt import engine as stt_engine
+
+    stt_engine._engine = None
+
+
+@pytest.fixture(autouse=True)
 def _reset_safety_override_between_tests():
     """Reset the SafetyOverride singleton between tests to prevent state leaking."""
     _reset_safety_override()

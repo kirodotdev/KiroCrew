@@ -336,6 +336,15 @@ The gateway's writers (`store.claim` / `update_fields`, and `ledger_sync`'s `git
 schedule) open these paths directly and do not route through the tool gate, so the app and team
 sync keep working.
 
+**Downloaded model weights** (`<data home>/models`) — write-protected on both layers, with the same read/write asymmetry, because the weights are an **input to a trust decision** rather than a setting. `stt.models` (and `embeddings`) verify a file against a pinned sha256 and then hand its **path** to a native loader that re-opens it by name, so a writable directory leaves a window between the digest and the open. Re-hashing cannot close it — the loader re-opens by name — and neither can a metadata memo, since `os.utime` is available to anything that can write the file. Removing the writability is what closes it.
+
+- **Tool path**: `models` is in `_WRITE_PROTECTED_HOME_PATHS` under every `_CREW_HOME_PREFIXES` entry. A directory rather than a leaf, so the trailing separator the pattern already accepts covers everything beneath it — the trust decision needs *any* file the loader might open, not one filename. Reads stay allowed (`is_sensitive_path` is `False`): the settings surface and `kirocrew doctor` both report what is installed, and weights hold no secret.
+- **Bash gate, anchored**: the same entry in `_WRITE_PROTECTED_BASH_LEAVES`, matched verb-independently.
+- **Bash gate, anchor-INDEPENDENT**: `_WHISPER_WEIGHT_NAME` (`ggml-*.bin`) is matched as a bare path **segment**, the same tier as `_BARE_TOKEN_PROTECTED_LEAVES`, because the anchored entry alone falls to a single `cd`: `cd ~/.kiro/crew/models; cp evil.bin ggml-base.bin` names no home, no crew prefix and no separator, and decides what a C++ GGML parser reads. Anchoring is therefore not part of this contract. A **pattern** rather than the four catalog filenames, so a row added to `stt.models.CATALOG` is fenced without a second edit in `security`. It is deliberately wider than the crew home (an unrelated GGML checkout cannot be copied from the agent's shell either); that is a denial, the safe direction, and the file tools are untouched. `models` itself must **never** join this tier — the SCOPE note there forbids generic names, and an unanchored `models` would refuse a large fraction of ordinary commands.
+- **Shared terminator boundary** (`path_end`): this tier's patterns accepted only `/`, whitespace, end-of-string or a quote after a fenced path, which made flush punctuation a bypass for **every** entry — `cd ~/.aws;`, `cd ~/.ssh;` and `cd ~/.kiro/crew/profiles;` were allowed while the same commands written with `&&` were blocked, purely because `&&` is preceded by a space. The class is now every character a shell treats as the end of a word (`; & | ( ) < > , :` and a backtick). Widening a deny boundary can only deny more; the rule it enforces is unchanged. This is what catches the archive form (`cd <models>; tar -xf evil.tar`), where the weight name is inside the tarball and so unavailable to a name match.
+
+`test_security.py::TestModelWeightsAreWriteProtected` pins all of it, including the false-positive cost of both widenings.
+
 **Load-time resource-limit clamp** (`config/loader.py`) — defends against a config-loader bound bypass: the dashboard config API rejects out-of-range writes, but a direct edit of `config.json` (any process as the same OS user, or a prompt-injected agent with file-write access) bypassed that gate.
 - `KiroCrewConfig.load()` calls `_clamp_security_bounds(data)` on the disk-read path (before caching) so cache hits and the `GET /api/config/kirocrew` serialization both report clamped values.
 - Clamped knobs: `agent.subagent_auto_max` ≤ `SUBAGENT_AUTO_MAX_CEILING` (64), `agent.max_subagents` ≤ 64, `agent.subagent_max_turns` ≤ `SUBAGENT_MAX_TURNS_CEILING` (200), `session.pool_size` ≤ `POOL_SIZE_MAX` (10). Mins match existing runtime floors (0/1); `bool` and non-int values are left untouched for dataclass coercion.
@@ -954,6 +963,16 @@ re-parsed into GUI sub-effects; and the **web terminal PTY**
 (`dashboard/handlers/terminal.py`) contains no `is_denied` /
 `is_sensitive_bash_command` / governance call at all, so it is an operator-only,
 ungoverned plane today.
+
+### A variable LEAF under the keystone (`security.py`, `win_crew_var_leaf_path`)
+
+`~/.kiro/crew` is not fenced as a directory — only its leaves are — so a read whose *filename* is unresolvable (`cat "$HOME/.kiro/crew/$F"`) can only be refused by asking whether the DIRECTORY holds a protected leaf. The token-level rule does that, but it needs a token: POSIX `shlex` destroys an unquoted Windows-native path before any token rule runs, so a raw-text branch matches the same shape directly on the command text, anchored to the crew home and its leaf-bearing subdirectories.
+
+**The bracketing expansion forms match their OPENER and do not describe a body.** This gate only ever asks "does an unresolved expansion start here", and any answer that models the contents can be out-nested. Both failures were real: a body permitting one level of nesting (`(?:[^()]|\([^()]*\))*`) missed `$(a $(b $(c)))`, and `\$\{[^}\s]+\}` missed `${My Var}` because a PowerShell variable name may legally contain a space. `$(`, `@(` and `${` are therefore matched bare — that cannot be out-nested, and it can only deny more, which costs nothing here because a *resolvable* leaf under the keystone is already fenced by name.
+
+The delimited forms keep their closers on purpose: an unterminated `%`, `!` or backtick is a **literal** to cmd, PowerShell and `sh` respectively, so it names no expansion and matching it would refuse ordinary filenames. Anchoring is what bounds the false-positive cost of the opener-only forms — `echo $(date)` and `type %APPDATA%\$(x)\config.ini` are unaffected, because neither names the keystone directory.
+
+`test_security.py::TestKeystoneVariableLeafNativeSpellings` parametrises every anchor, both separators, both crew-home spellings and both variable and computed leaves; restoring either depth-limited body fails 48 of its cases.
 
 ### Suspicious Bash Patterns (`security.py`)
 

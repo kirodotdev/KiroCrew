@@ -1,12 +1,24 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Hourglass, Info, Package } from 'lucide-react'
+import { Download, Info } from 'lucide-react'
 import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { api, ApiError } from '../../api/client'
 import { RestartGatewayButton } from './AboutPanel'
 import { listMicrophones, getPreferredMicId, setPreferredMicId, acquireMicStream, reportIfMicDenied } from '../../hooks/mic'
 import { isEmbeddedPane } from '../../lib/embedded'
+import { fmtBytes, fmtUnit } from '../../i18n/format'
+import {
+  CATALOG_MODEL_PROVIDERS,
+  downloadLabel,
+  downloadRatio,
+  FALLBACK_PROVIDERS,
+  FALLBACK_STREAMING_PROVIDERS,
+  PROVIDER_LOCAL,
+  PROVIDER_TRANSCRIBE,
+  providerLabel,
+  unavailableMessage,
+} from '../../lib/sttProviders'
 import { PttTestStrip } from '../../components/PttTestStrip'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import {
@@ -32,96 +44,103 @@ interface SttConfig {
   enabled: boolean
   provider: string
   model: string
-  mlx_model?: string
   available: boolean
   streaming?: boolean
+  silence_ms?: number
+  partial_interval_ms?: number
   endpointing?: boolean
   dictation_panel?: boolean
   transcribe_region?: string
   transcribe_profile?: string
   language_code?: string
-  models: Record<string, string>
-  mlx_models?: Record<string, string>
   providers?: string[]
   streaming_providers?: string[]
   language_codes?: string[]
-  install_step: string
-  install_detail: string
-  install_error: string
   prereqs: string[]
   transcribe_unsupported?: boolean
-  faster_unsupported?: boolean
   bundled_interpreter?: boolean
   ffmpeg_missing?: boolean
 }
 
+/** One model the recogniser can load, as served by `GET /api/stt/status`. */
+interface SttModel {
+  name: string
+  /** Wire size of the weights. Rendered through `fmtBytes`, never preformatted
+   *  server-side, so the size follows the dashboard's language. */
+  size_bytes: number
+  /** Whether the file is already on the gateway's disk. */
+  present: boolean
+}
+
+/** Progress of the one model transfer a gateway runs at a time. */
+interface SttDownload {
+  /** `idle` | `downloading` | `ready` | `failed` | `skipped`. */
+  step: string
+  /** Which model this progress belongs to. The gateway runs one transfer at a
+   *  time, so after a mid-download switch it can be a model nobody is looking at. */
+  model: string
+  downloaded_bytes: number
+  total_bytes: number
+  error: string
+}
+
+interface SttStatus {
+  available: boolean
+  /** Machine-readable refusal reason; '' when available. See `unavailableMessage`. */
+  code: string
+  /** The backend's own sentence, shown only for a code this build cannot name. */
+  detail: string
+  models: SttModel[]
+  download: SttDownload
+}
+
+const DOWNLOAD_STEP_RUNNING = 'downloading'
+const DOWNLOAD_STEP_FAILED = 'failed'
+
 /**
- * Catalog KEY for each install-progress step reported by the backend
- * (`SttConfig.install_step`).
+ * How often the status endpoint is re-read while a model transfer runs.
  *
- * Keys, not strings: this table is evaluated at module load, so an `i18nT()` call
- * here would freeze the boot language and never re-resolve on a language switch.
- * The lookup happens in `stepLabel()`, which runs during render. Flat `Record` of
- * full literal keys indexed inline at the `i18nT()` call — the only shape
- * `scripts/check-i18n-keys.mjs` can resolve statically.
+ * The bar is the only evidence a multi-hundred-megabyte transfer is progressing,
+ * so it has to advance at a rate a person reads as motion. The poll is armed only
+ * while `step` is `downloading`, so it costs nothing at rest.
  */
-export const STEP_LABEL_KEY: Record<string, string> = {
-  starting: 'pages.settings.sttSettings.step_starting',
-  checking: 'pages.settings.sttSettings.step_checking',
-  installing_xcode: 'pages.settings.sttSettings.step_installing_xcode',
-  installing_brew: 'pages.settings.sttSettings.step_installing_brew',
-  installing_python: 'pages.settings.sttSettings.step_installing_python',
-  installing_ffmpeg: 'pages.settings.sttSettings.step_installing_ffmpeg',
-  installing_whisper: 'pages.settings.sttSettings.step_installing_whisper',
-  installing_mlx: 'pages.settings.sttSettings.step_installing_mlx',
-  installing_faster: 'pages.settings.sttSettings.step_installing_faster',
-  done: 'pages.settings.sttSettings.step_done',
-  error: 'pages.settings.sttSettings.step_error',
-}
-
-/** Localised progress label for an install step, or '' for an unknown/idle step. */
-function stepLabel(step: string): string {
-  // `hasOwnProperty`, not `in`: `install_step` comes off the wire, so a backend
-  // reporting `toString` would otherwise resolve to an inherited
-  // Object.prototype member and hand a function to i18next.
-  return Object.prototype.hasOwnProperty.call(STEP_LABEL_KEY, step)
-    ? i18nT(STEP_LABEL_KEY[step])
-    : ''
-}
+const DOWNLOAD_POLL_MS = 1000
 
 /**
- * Catalog KEY for each STT provider's dropdown label. Same keys-not-strings
- * reasoning as `STEP_LABEL_KEY`; resolved by `providerLabel()` during render.
- * The provider *names* (Whisper, MLX, Transcribe) are DNT — only the
- * parenthetical qualifier is copy.
- */
-export const PROVIDER_LABEL_KEY: Record<string, string> = {
-  whisper: 'pages.settings.sttSettings.provider_whisper',
-  mlx: 'pages.settings.sttSettings.provider_mlx',
-  apple: 'pages.settings.sttSettings.provider_apple',
-  transcribe: 'pages.settings.sttSettings.provider_transcribe',
-  faster: 'pages.settings.sttSettings.provider_faster',
-}
-
-/**
- * Providers that name their model with a Whisper size (`turbo`, `small`, …) and so
- * share the `model` field and its picker. `mlx` is excluded: it takes a
- * HuggingFace repo id in `mlx_model` instead, which is a different control.
+ * Bounds and step for the endpointing pause, in milliseconds.
  *
- * File scope so `check-i18n-keys.mjs` can resolve it, same as `PROVIDER_LABEL_KEY`.
+ * Floor: below roughly a quarter second an ordinary between-word gap ends the
+ * phrase, so dictation cuts sentences in half. Ceiling: past two seconds the
+ * pause is longer than the silence most speakers leave at the end of a thought,
+ * and the transcript feels stuck. 50 ms steps because the perceptible difference
+ * is coarse and a finer step turns a small adjustment into a dozen clicks.
  */
-export const WHISPER_MODEL_PROVIDERS = ['whisper', 'faster']
+const SILENCE_MS_MIN = 250
+const SILENCE_MS_MAX = 2000
+const SILENCE_MS_STEP = 50
 
-/** Localised dropdown label for a provider id, falling back to the raw id. */
-function providerLabel(provider: string): string {
-  // `hasOwnProperty`, not `in`: the id list comes from `SttConfig.providers`.
-  return Object.prototype.hasOwnProperty.call(PROVIDER_LABEL_KEY, provider)
-    ? i18nT(PROVIDER_LABEL_KEY[provider])
-    : provider
-}
+/**
+ * What the gateway uses when configuration carries no pause of its own. Mirrors
+ * the backend default so a config written before the field existed renders the
+ * value that is actually in effect, rather than the picker's floor.
+ */
+const SILENCE_MS_DEFAULT = 700
 
-const TERMINAL_STEPS = ['idle', 'done', 'error']
-const isInstalling = (s?: SttConfig) => !!s?.install_step && !TERMINAL_STEPS.includes(s.install_step)
+/**
+ * Bounds and step for the partial-transcript refresh interval, in milliseconds.
+ *
+ * Floor: a re-decode costs tens of milliseconds and the text churns faster than
+ * it can be read below ~150 ms. Ceiling: past a second the transcript stops
+ * reading as live, which is the entire point of streaming.
+ */
+const PARTIAL_INTERVAL_MS_MIN = 150
+const PARTIAL_INTERVAL_MS_MAX = 1000
+const PARTIAL_INTERVAL_MS_STEP = 50
+
+/** The gateway's own refresh interval, for the same reason as `SILENCE_MS_DEFAULT`. */
+const PARTIAL_INTERVAL_MS_DEFAULT = 400
+
+const clampMs = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
 /** A read-only info row that lines up with SettingsToggle / SettingsField rows. */
 function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -129,6 +148,35 @@ function InfoRow({ label, children }: { label: string; children: React.ReactNode
     <div className="flex items-center justify-between py-1.5">
       <div className="text-[13px] font-semibold text-text">{label}</div>
       {children}
+    </div>
+  )
+}
+
+/**
+ * Byte progress for a model transfer in flight.
+ *
+ * A real determinate bar, not a pulse: the transfer is between 78 MB and 1.6 GB
+ * and the whole reason this surface exists is that a silent download of that size
+ * is indistinguishable from a hang. Percent AND absolute bytes, because percent
+ * alone hides how much is left on a slow link.
+ *
+ * A zero `total_bytes` means the transfer has been announced but its size has not
+ * been reported yet, so the bar stays at zero rather than dividing by it.
+ */
+function ModelDownloadProgress({ download }: { download: SttDownload }) {
+  const progress = { done: download.downloaded_bytes, total: download.total_bytes }
+  return (
+    <div className="-mt-1 mb-1 animate-rise" aria-live="polite">
+      {/* The same sentence the recording chrome shows, from the same helper: two
+          copies of "downloading N of M" would be two keys a translator renders
+          differently for one event. */}
+      <p className="text-[12px] text-muted mb-1.5">{downloadLabel(progress)}</p>
+      <div className="h-1.5 bg-border rounded-full overflow-hidden">
+        <div
+          className="h-full bg-accent rounded-full transition-all duration-500"
+          style={{ width: `${Math.round(downloadRatio(progress) * 100)}%` }}
+        />
+      </div>
     </div>
   )
 }
@@ -278,9 +326,9 @@ function PushToTalkConfig() {
 
 /**
  * Speech-to-Text settings in the standard settings style, so the Voice page
- * reads consistently. Covers enable, status,
- * provider, model/MLX model, streaming, language, Transcribe AWS creds, and
- * the local-install flow (Whisper / MLX).
+ * reads consistently. Covers enable, availability, provider, the local model and
+ * its download, streaming and its two timing knobs, language, and Transcribe's
+ * AWS credentials.
  */
 export default function SttSettings({ cardIndex }: {
   /** Ordinal of this component's card in the hosting panel's stagger ladder. */
@@ -322,46 +370,48 @@ export default function SttSettings({ cardIndex }: {
   const sttQ = useQuery<SttConfig>({
     queryKey: ['sttConfig'],
     queryFn: () => api.sttConfig(),
-    // Poll while an install is in progress so the progress bar advances.
-    refetchInterval: q => (isInstalling(q.state.data) ? 2000 : false),
+  })
+
+  // Availability, the model catalog and any transfer in flight. A second query
+  // rather than more fields on the config: this one POLLS during a download, and
+  // the config endpoint re-reads and re-probes configuration on every read.
+  const statusQ = useQuery<SttStatus>({
+    queryKey: ['sttStatus'],
+    queryFn: () => api.sttStatus(),
+    refetchInterval: q =>
+      q.state.data?.download?.step === DOWNLOAD_STEP_RUNNING ? DOWNLOAD_POLL_MS : false,
   })
 
   const initRef = useRef(false)
-  // Tracks the last error the user dismissed so a refetch (which re-runs this
-  // effect) doesn't immediately re-surface the same install_error — otherwise
-  // the banner is impossible to dismiss while install_error persists.
-  const dismissedErrorRef = useRef('')
   useEffect(() => {
     if (sttQ.data && !initRef.current) {
       initRef.current = true
       setLocalProfile(sttQ.data.transcribe_profile || '')
       setLocalRegion(sttQ.data.transcribe_region || '')
     }
-    if (sttQ.data?.install_error && sttQ.data.install_error !== dismissedErrorRef.current) {
-      setErr(sttQ.data.install_error)
-    }
   }, [sttQ.data])
 
   const mut = useMutation({
     mutationFn: (patch: Partial<SttConfig>) => api.saveSttConfig(patch),
-    onSuccess: data => qc.setQueryData(['sttConfig'], data),
+    onSuccess: data => {
+      qc.setQueryData(['sttConfig'], data)
+      // Provider, model and enablement all change what the availability probe
+      // answers, so the status card would otherwise keep describing the previous
+      // selection until something else happened to refetch it.
+      qc.invalidateQueries({ queryKey: ['sttStatus'] })
+    },
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.failed_to_save_stt_config')),
   })
   const set = (patch: Partial<SttConfig>) => mut.mutate(patch)
   const saving = mut.isPending
 
-  const installMut = useMutation({
-    mutationFn: () => api.sttInstall(),
-    onMutate: () => {
-      setErr('')
-      // Flip to a non-terminal step immediately so polling kicks in.
-      qc.setQueryData<SttConfig>(['sttConfig'], prev => (prev ? { ...prev, install_step: 'starting' } : prev))
-    },
-    onSuccess: (res: { ok?: boolean; ffmpeg?: boolean }) => {
-      if (res?.ok && res.ffmpeg === false) setErr(i18nT('pages.settings.sttSettings.whisper_installed_but_ffmpeg_is_missing_voice_tr'))
-      qc.invalidateQueries({ queryKey: ['sttConfig'] })
-    },
-    onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.install_failed')),
+  const prepareMut = useMutation({
+    mutationFn: (model: string) => api.sttPrepare(model),
+    onMutate: () => setErr(''),
+    // The transfer outlives the request, so the response only says it started.
+    // Progress arrives through the polled status query.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
+    onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
   const [restarting, setRestarting] = useState(false)
   const restartMut = useMutation({
@@ -385,25 +435,43 @@ export default function SttSettings({ cardIndex }: {
     </SettingsCard>
   )
 
-  const installing = isInstalling(stt)
-  const isTranscribe = stt.provider === 'transcribe'
-  const provider = stt.provider || 'whisper'
-  // `faster` on a platform with no CTranslate2 wheel: the Install button can only
-  // ever fail here (the backend refuses the request outright), so it is hidden and
-  // replaced with the alternatives — the same reasoning that hides it for
-  // Transcribe, whose requirement the button also cannot satisfy.
-  const fasterUnsupported = provider === 'faster' && !!stt.faster_unsupported
-  const providerOptions = stt.providers?.length ? stt.providers : ['whisper', 'transcribe']
+  const isTranscribe = stt.provider === PROVIDER_TRANSCRIBE
+  const provider = stt.provider || PROVIDER_LOCAL
+  const providerOptions = stt.providers?.length ? stt.providers : FALLBACK_PROVIDERS
   // Gate the streaming controls on the CAPABILITY, not on a provider name. The
   // backend owns the list (`stt_stream._STREAMING_PROVIDERS`) and serves it, so
   // adding a streaming provider cannot silently hide its own toggle — which is
   // exactly what happened when `apple` was added while this read `isTranscribe`.
   const streamingProviders = stt.streaming_providers?.length
     ? stt.streaming_providers
-    : ['transcribe']
+    : FALLBACK_STREAMING_PROVIDERS
   const canStream = streamingProviders.includes(provider)
   const languageOptions = stt.language_codes?.length ? stt.language_codes : ['en-US']
-  const installStepLabel = stepLabel(stt.install_step)
+
+  // The catalog and the availability verdict. Treated as absent rather than as
+  // "nothing to download" while the status query is in flight, so a slow probe
+  // shows no model rows instead of claiming a model is missing.
+  const status = statusQ.data
+  const models = status?.models ?? []
+  const selectedModel = models.find(m => m.name === stt.model)
+  // Progress is only shown for the model on screen. The gateway runs one transfer
+  // at a time, so switching models mid-download leaves the store reporting the
+  // PREVIOUS model, and attributing that byte count to the new selection would
+  // claim a download that has not started.
+  // Optional chaining on `download` is load-bearing, not defensive habit: a status
+  // body without it threw during render, and the error boundary then replaced the
+  // entire settings page rather than this one card.
+  const download =
+    status?.download?.model === stt.model ? status?.download : undefined
+  const downloading = download?.step === DOWNLOAD_STEP_RUNNING
+  // Availability comes from the status endpoint when it has answered, because it
+  // carries the machine-readable reason. The config's plain boolean is the
+  // fallback for the window before the first status response lands.
+  const available = status ? status.available : stt.available
+  const unavailableText = status ? unavailableMessage(status.code, status.detail) : ''
+  const usesCatalogModel = CATALOG_MODEL_PROVIDERS.includes(provider)
+  const silenceMs = stt.silence_ms ?? SILENCE_MS_DEFAULT
+  const partialIntervalMs = stt.partial_interval_ms ?? PARTIAL_INTERVAL_MS_DEFAULT
 
   // Moving to a streaming-capable provider turns streaming on by default (one click
   // to undo) — a provider chosen FOR its live partials should not need a second
@@ -418,9 +486,12 @@ export default function SttSettings({ cardIndex }: {
 
   return (
     <>
+      {/* Only mutation failures reach here, so dismissing simply clears it. There
+          is no server-held error to re-read: a failed model download reports
+          itself through the status query's own `download.error`. */}
       <ErrorNotice
         message={err}
-        onDismiss={() => { dismissedErrorRef.current = err; setErr(''); sttQ.refetch() }}
+        onDismiss={() => setErr('')}
         className="mb-4 animate-rise"
       />
       {isEmbeddedPane() && (
@@ -435,8 +506,18 @@ export default function SttSettings({ cardIndex }: {
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} description={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
 
         <InfoRow label={i18nT('pages.settings.sttSettings.status')}>
-          {stt.available ? <Badge variant="ok">{i18nT('pages.settings.sttSettings.ready')}</Badge> : <Badge variant="warn">{i18nT('pages.settings.sttSettings.not_installed')}</Badge>}
+          {available
+            ? <Badge variant="ok">{i18nT('pages.settings.sttSettings.ready')}</Badge>
+            : <Badge variant="warn">{i18nT('pages.settings.sttSettings.not_installed')}</Badge>}
         </InfoRow>
+        {/* The REASON, not just the badge. Every refusal has a different remedy
+            (install an extra, install a compiler, upgrade macOS, fetch a model),
+            so a bare "not installed" sends the user looking for the wrong thing.
+            Rendered from the backend's machine-readable `code`; see
+            `lib/sttProviders.unavailableMessage`. */}
+        {!available && unavailableText && (
+          <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
+        )}
 
         <SettingsSelect
           label={i18nT('pages.settings.sttSettings.microphone')}
@@ -457,22 +538,88 @@ export default function SttSettings({ cardIndex }: {
           </button>
         )}
 
-        <SettingsSelect label={i18nT('pages.settings.sttSettings.provider')} description={i18nT('pages.settings.sttSettings.whisper_and_mlx_run_locally_transcribe_calls_aws')} value={provider} options={providerOptions} optionLabels={providerOptions.map(providerLabel)} onChange={handleProvider} disabled={saving} />
+        <SettingsSelect label={i18nT('pages.settings.sttSettings.provider')} description={i18nT('pages.settings.sttSettings.provider_desc')} value={provider} options={providerOptions} optionLabels={providerOptions.map(providerLabel)} onChange={handleProvider} disabled={saving} configKey="stt.provider" />
 
-        {WHISPER_MODEL_PROVIDERS.includes(provider) && (
-          <SettingsSelect label={i18nT('pages.settings.sttSettings.model')} description={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')} value={stt.model} options={Object.keys(stt.models)} optionLabels={Object.entries(stt.models).map(([n, s]) => `${n} (${s})`)} onChange={v => set({ model: v })} disabled={saving} />
-        )}
-
-        {provider === 'mlx' && (
-          <SettingsSelect label={i18nT('pages.settings.sttSettings.mlx_model')} hint={i18nT('pages.settings.sttSettings.whisper_model_running_on_apple_mlx_metal_gpu_dow')} value={stt.mlx_model || ''} options={Object.keys(stt.mlx_models || {})} optionLabels={Object.entries(stt.mlx_models || {}).map(([n, s]) => `${n.replace('mlx-community/', '')} (${s})`)} onChange={v => set({ mlx_model: v })} disabled={saving} />
+        {/* Gated on a NON-EMPTY catalog, not just on the provider: the catalog is
+            the status endpoint's to serve, and a picker with no options is worse
+            than no picker at all: it reads as "this model list is empty" rather
+            than "the list has not arrived". */}
+        {usesCatalogModel && models.length > 0 && (
+          <>
+            {/* Options come from the served catalog, never a list in this file:
+                the sizes and the set of models are the backend's to change, and a
+                hardcoded copy here would offer a model the gateway cannot load.
+                The size rides in the option label so the download cost is visible
+                BEFORE the click that commits to it. */}
+            <SettingsSelect
+              label={i18nT('pages.settings.sttSettings.model')}
+              description={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
+              value={stt.model}
+              options={models.map(m => m.name)}
+              optionLabels={models.map(m => i18nT('pages.settings.sttSettings.model_option', { name: m.name, size: fmtBytes(m.size_bytes) }))}
+              onChange={v => set({ model: v })}
+              disabled={saving}
+              configKey="stt.model"
+            />
+            {downloading && download ? (
+              <ModelDownloadProgress download={download} />
+            ) : selectedModel?.present ? (
+              <p className="text-[12px] text-muted -mt-1 mb-1">
+                {i18nT('pages.settings.sttSettings.model_downloaded')}
+              </p>
+            ) : selectedModel ? (
+              // Offered BEFORE the first dictation on purpose. The alternative is
+              // that the download starts when the user is already talking, where a
+              // multi-hundred-megabyte transfer is indistinguishable from a hang.
+              <div className="-mt-1 mb-1 flex flex-col gap-1.5 items-start">
+                <p className="text-[12px] text-muted">
+                  {i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })}
+                </p>
+                <Btn onClick={() => prepareMut.mutate(selectedModel.name)} disabled={prepareMut.isPending}>
+                  <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_model')}
+                </Btn>
+              </div>
+            ) : null}
+            {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
+              <p className="text-[12px] text-danger -mt-1 mb-1">
+                {i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
+              </p>
+            )}
+          </>
         )}
 
         {canStream && (
-          <SettingsToggle label={i18nT('pages.settings.sttSettings.streaming')} description={i18nT('pages.settings.sttSettings.stream_live_partial_transcripts_into_the_input_b')} checked={!!stt.streaming} onChange={v => set({ streaming: v })} disabled={saving} />
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.streaming')} description={i18nT('pages.settings.sttSettings.streaming_desc')} checked={!!stt.streaming} onChange={v => set({ streaming: v })} disabled={saving} configKey="stt.streaming" />
         )}
 
         {canStream && stt.streaming && (
-          <SettingsToggle label={i18nT('pages.settings.sttSettings.endpointing')} description={i18nT('pages.settings.sttSettings.endpointing_desc')} checked={!!stt.endpointing} onChange={v => set({ endpointing: v })} disabled={saving} />
+          <>
+            <SettingsToggle label={i18nT('pages.settings.sttSettings.endpointing')} description={i18nT('pages.settings.sttSettings.endpointing_desc')} checked={!!stt.endpointing} onChange={v => set({ endpointing: v })} disabled={saving} configKey="stt.endpointing" />
+
+            {/* Both values are milliseconds, and both are named as such in the
+                label rather than only in the rendered value: the number in the
+                stepper is what the user adjusts, and a unit that appears only
+                there is easy to misread as seconds. */}
+            <SettingsStepper
+              label={i18nT('pages.settings.sttSettings.silence_ms')}
+              description={i18nT('pages.settings.sttSettings.silence_ms_desc')}
+              value={fmtUnit(silenceMs, 'millisecond')}
+              onIncrement={() => set({ silence_ms: clampMs(silenceMs + SILENCE_MS_STEP, SILENCE_MS_MIN, SILENCE_MS_MAX) })}
+              onDecrement={() => set({ silence_ms: clampMs(silenceMs - SILENCE_MS_STEP, SILENCE_MS_MIN, SILENCE_MS_MAX) })}
+              disabled={saving}
+              configKey="stt.silence_ms"
+            />
+
+            <SettingsStepper
+              label={i18nT('pages.settings.sttSettings.partial_interval_ms')}
+              description={i18nT('pages.settings.sttSettings.partial_interval_ms_desc')}
+              value={fmtUnit(partialIntervalMs, 'millisecond')}
+              onIncrement={() => set({ partial_interval_ms: clampMs(partialIntervalMs + PARTIAL_INTERVAL_MS_STEP, PARTIAL_INTERVAL_MS_MIN, PARTIAL_INTERVAL_MS_MAX) })}
+              onDecrement={() => set({ partial_interval_ms: clampMs(partialIntervalMs - PARTIAL_INTERVAL_MS_STEP, PARTIAL_INTERVAL_MS_MIN, PARTIAL_INTERVAL_MS_MAX) })}
+              disabled={saving}
+              configKey="stt.partial_interval_ms"
+            />
+          </>
         )}
 
         <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} description={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
@@ -490,8 +637,11 @@ export default function SttSettings({ cardIndex }: {
         )}
 
         {/* No Runtime row: the `/api/config/stt` response has no `docker_mode`
-            field — STT has no Docker runtime, so there is nothing to display. */}
-        {!stt.available && (
+            field, so STT has no Docker runtime and nothing to display.
+            No install button either: the recogniser ships in the `voice` extra
+            and its weights are fetched by the model download above, so the only
+            thing left that a terminal can fix is listed as a command. */}
+        {!available && (
           <div className="mt-2">
             {isTranscribe && stt.transcribe_unsupported && (
               // No install channel can make the `voice` extra importable in
@@ -508,85 +658,31 @@ export default function SttSettings({ cardIndex }: {
                 </p>
               </div>
             )}
-            {fasterUnsupported && (
-              // No CTranslate2 wheel exists for this platform and there is no
-              // sdist to build from, so pip cannot resolve the dependency at all.
-              // Nothing the user does to this machine changes that, so name the
-              // providers that DO work instead of leaving an Install button whose
-              // every press returns the same 400.
-              <div className="mb-3 bg-warn-subtle border border-border rounded-lg p-3 animate-rise">
-                <p className="text-sm text-text">
-                  {i18nT('pages.settings.sttSettings.faster_unsupported_windows_arm')}
-                </p>
-              </div>
-            )}
-            {stt.prereqs?.length > 0 && !installing && (
+            {stt.prereqs?.length > 0 && (
               <div className="mb-3 bg-accent/10 border border-accent/20 rounded-lg p-3 animate-rise">
                 <p className="text-sm text-text font-medium mb-2">{i18nT('pages.settings.sttSettings.run_these_commands_in_your_terminal_first')}</p>
                 {stt.prereqs.map((cmd, i) => (
                   <code key={i} className="block bg-bg-elevated rounded px-3 py-1.5 text-[13px] font-mono text-accent mb-1 select-all">{cmd}</code>
                 ))}
-                {/* Transcribe has no Install button below (its requirement is
-                    the `voice` extra, whose import is retried only on a fresh
-                    process), so the trailer names the real next step instead of
-                    a button that is not there. The restart hint is tied to the
-                    pip command: an ffmpeg-only list needs no restart, since the
-                    PATH probe re-runs on every settings read — and for
-                    Transcribe it gets no trailer at all, because the Install
-                    button the default trailer points at is hidden. */}
-                {isTranscribe ? (
-                  stt.prereqs.some(c => c.includes('kirocrew[voice]')) && (
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <p className="text-muted text-[13px]">{i18nT('pages.settings.sttSettings.then_restart_the_gateway_so_it_can_import_the_ne')}</p>
-                      <RestartGatewayButton
-                        pending={restartMut.isPending}
-                        restarting={restarting}
-                        onConfirm={() => restartMut.mutate()}
-                        testId="stt-restart-gateway"
-                      />
-                    </div>
-                  )
-                ) : (
-                  <p className="text-muted text-[13px] mt-2">{i18nT('pages.settings.sttSettings.then_click_install_below')}</p>
+                {/* The restart hint is tied to the pip command, not to the
+                    provider: a package only becomes importable in a fresh
+                    process, while an ffmpeg-only list needs no restart because
+                    the PATH probe re-runs on every settings read. The button is
+                    now the ONLY next step, because the in-dashboard installer it
+                    used to sit beside is gone; whichever provider asked for the
+                    extra, restarting is what makes it importable. */}
+                {stt.prereqs.some(c => c.includes('kirocrew[voice]')) && (
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <p className="text-muted text-[13px]">{i18nT('pages.settings.sttSettings.then_restart_the_gateway_so_it_can_import_the_ne')}</p>
+                    <RestartGatewayButton
+                      pending={restartMut.isPending}
+                      restarting={restarting}
+                      onConfirm={() => restartMut.mutate()}
+                      testId="stt-restart-gateway"
+                    />
+                  </div>
                 )}
               </div>
-            )}
-            {installing ? (
-              <div className="animate-rise">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-[13px] animate-pulse"><Hourglass className="lucide-inline" /></span>
-                  <span className="text-sm text-text font-medium">{installStepLabel}</span>
-                </div>
-                {stt.install_detail && <p className="text-muted text-[13px] font-mono truncate">{stt.install_detail}</p>}
-                <div className="mt-2 h-1.5 bg-border rounded-full overflow-hidden">
-                  <div className="h-full bg-accent rounded-full transition-all duration-500 animate-pulse"
-                    style={{ width: stt.install_step === 'checking' ? '10%' : stt.install_step === 'installing_xcode' ? '15%' : stt.install_step === 'installing_brew' ? '25%' : stt.install_step === 'installing_python' ? '35%' : stt.install_step === 'installing_ffmpeg' ? '50%' : stt.install_step === 'installing_whisper' || stt.install_step === 'installing_faster' ? '70%' : '5%' }} />
-                </div>
-              </div>
-            ) : !isTranscribe && !fasterUnsupported && (
-              // Hidden for Transcribe: the button installs a local Whisper
-              // runtime, which cannot change Transcribe's availability — its
-              // requirement is the `voice` extra surfaced in the prereq block
-              // above, and the backend rejects the install for this provider.
-              // Hidden for an unsupported `faster` platform for the same reason:
-              // the backend refuses that request too, so the button could only
-              // ever produce the notice already shown above.
-              <>
-                <Btn onClick={() => installMut.mutate()}>
-                  {provider === 'mlx'
-                    ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_mlx_whisper')}</>
-                    : provider === 'faster'
-                      ? <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_faster_whisper')}</>
-                      : <><Package className="lucide-inline" /> {i18nT('pages.settings.sttSettings.install_whisper')}</>}
-                </Btn>
-                <p className="text-muted text-[13px] mt-2">
-                  {provider === 'mlx'
-                    ? i18nT('pages.settings.sttSettings.installs_mlx_whisper_via_pipx_ffmpeg_apple_silic')
-                    : provider === 'faster'
-                      ? i18nT('pages.settings.sttSettings.installs_faster_whisper_no_ffmpeg_needed')
-                      : i18nT('pages.settings.sttSettings.installs_openai_whisper_ffmpeg_uses_system_pytho')}
-                </p>
-              </>
             )}
           </div>
         )}
@@ -596,7 +692,7 @@ export default function SttSettings({ cardIndex }: {
             transcoding the browser's recordings), so a missing ffmpeg would
             otherwise surface only as a silent dictation failure. `prereqs`
             carries the platform install command(s) for exactly this state. */}
-        {stt.available && !!stt.ffmpeg_missing && stt.prereqs?.length > 0 && (
+        {available && !!stt.ffmpeg_missing && stt.prereqs?.length > 0 && (
           <div className="mt-2 bg-warn-subtle border border-border rounded-lg p-3 animate-rise">
             <p className="text-sm text-text font-medium mb-2">{i18nT('pages.settings.sttSettings.ffmpeg_is_missing_voice_recordings_from_the_brow')}</p>
             {stt.prereqs.map((cmd, i) => (

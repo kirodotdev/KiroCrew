@@ -1,16 +1,16 @@
 /**
- * The Whisper model picker's description must disclose that a model downloads
- * on FIRST use, and what that looks like from the outside.
+ * The model picker must disclose what a model costs BEFORE the click, and it must
+ * offer a way to pay that cost at a moment the user chose.
  *
- * The weight download happens inside the whisper CLI subprocess on the first
- * transcription with a given model, bounded only by `stt.timeout_secs` — so the
- * first dictation after switching models can appear to hang and then return no
- * transcript while the download continues unseen. The picker's description is
- * the one place a user scanning model sizes can learn this before hitting it,
- * so its presence is pinned here rather than left to copy drift.
+ * Weights are fetched once per model, and the smallest is 78 MB while the largest
+ * is 1.6 GB. If that transfer starts inside the first dictation, the session looks
+ * identical to a hung microphone. Three things prevent that, and all three are
+ * pinned here because each fails silently: the per-option size, the description
+ * naming the first-use download, and the explicit download control with the size
+ * on it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -22,26 +22,42 @@ vi.mock('../api/client', () => ({
   api: {
     sttConfig: vi.fn(),
     saveSttConfig: vi.fn(),
-    sttInstall: vi.fn(),
+    sttStatus: vi.fn(),
+    sttPrepare: vi.fn(),
   },
 }))
 
 const mockApi = api as unknown as {
   sttConfig: ReturnType<typeof vi.fn>
+  sttStatus: ReturnType<typeof vi.fn>
+  sttPrepare: ReturnType<typeof vi.fn>
 }
 
-function mount() {
+/** 148 MB and 1.6 GB, the catalog's real `base` and `large-v3-turbo` sizes. */
+const BASE_BYTES = 147_951_465
+const TURBO_BYTES = 1_624_555_275
+
+function mount(status: Record<string, unknown> = {}) {
   mockApi.sttConfig.mockResolvedValue({
     enabled: true,
-    provider: 'whisper',
+    provider: 'local',
+    model: 'base',
     streaming: false,
-    providers: ['whisper', 'transcribe'],
-    streaming_providers: ['transcribe'],
-    models: { turbo: '~1.6 GB' },
-    mlx_models: {},
+    providers: ['local', 'transcribe'],
+    streaming_providers: ['local', 'transcribe'],
     language_codes: ['en-US'],
-    install_step: '',
     prereqs: [],
+  })
+  mockApi.sttStatus.mockResolvedValue({
+    available: true,
+    code: '',
+    detail: '',
+    models: [
+      { name: 'base', size_bytes: BASE_BYTES, present: false },
+      { name: 'large-v3-turbo', size_bytes: TURBO_BYTES, present: false },
+    ],
+    download: { step: 'idle', model: '', downloaded_bytes: 0, total_bytes: 0, error: '' },
+    ...status,
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -53,7 +69,9 @@ function mount() {
   )
 }
 
-describe('SttSettings model picker first-use download disclosure', () => {
+const modelSelect = () => screen.getByRole('combobox', { name: /model/i })
+
+describe('SttSettings model download disclosure', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     await initI18n('en')
@@ -66,12 +84,9 @@ describe('SttSettings model picker first-use download disclosure', () => {
 
   it('discloses the first-use download and its visible symptom on the Model row', async () => {
     mount()
-    await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: /model/i })).toBeTruthy(),
-    )
+    await waitFor(() => expect(modelSelect()).toBeTruthy())
     // The fact: weights download on first use, not at install or save time.
     const desc = screen.getByText(/downloads on first use/i)
-    expect(desc).toBeTruthy()
     // The symptom, in the same description: without it the fact reads as
     // harmless trivia instead of explaining a hung-then-empty first dictation.
     expect(desc.textContent).toMatch(/hang or time out/i)
@@ -79,16 +94,68 @@ describe('SttSettings model picker first-use download disclosure', () => {
     expect(desc.textContent).toMatch(/larger models are more accurate/i)
   })
 
-  it('the MLX picker hint carries the same symptom, not the bare download fact', async () => {
-    // Same runner, same stt.timeout_secs budget: the MLX model also downloads
-    // inside the first transcription. A bare "Downloads on first use." reads
-    // as harmless trivia (see the header comment), so the hint must carry the
-    // hang/time-out symptom too. Pinned at the catalog level because the MLX
-    // row only mounts on Apple Silicon.
-    const en = (await import('../i18n/locales/en.json')) as Record<string, any>
-    const hint: string =
-      en.pages.settings.sttSettings.whisper_model_running_on_apple_mlx_metal_gpu_dow
-    expect(hint).toMatch(/downloads on first use/i)
-    expect(hint).toMatch(/hang or time out/i)
+  it('states each model size in its own option, from the served catalog', async () => {
+    // The size is what makes the choice informed, and it has to be visible in the
+    // list rather than after the commit. Sizes are formatted for the active locale
+    // (SI, so 148 MB rather than a 1024-based mislabel).
+    mount()
+    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    fireEvent.click(modelSelect())
+    await waitFor(() => expect(screen.getByRole('option', { name: /^base/ })).toBeTruthy())
+    expect(screen.getByRole('option', { name: /base \(148MB\)/ })).toBeTruthy()
+    expect(screen.getByRole('option', { name: /large-v3-turbo \(1\.6GB\)/ })).toBeTruthy()
+  })
+
+  it('offers a download control naming the one-time cost, and calls prepare', async () => {
+    mount()
+    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    // The cost, before the press.
+    expect(screen.getByText(/one-time 148MB download/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /download now/i }))
+    // The SELECTED model, explicitly: sending no id would race the config write.
+    await waitFor(() => expect(mockApi.sttPrepare).toHaveBeenCalledWith('base'))
+  })
+
+  it('shows byte progress instead of the offer while the transfer runs', async () => {
+    mount({
+      download: {
+        step: 'downloading',
+        model: 'base',
+        downloaded_bytes: 74_000_000,
+        total_bytes: BASE_BYTES,
+        error: '',
+      },
+    })
+    await waitFor(() => expect(screen.getByText(/downloading the speech model/i)).toBeTruthy())
+    // Percent AND absolute bytes: percent alone hides how much is left.
+    expect(screen.getByText(/50%/)).toBeTruthy()
+    expect(screen.getByText(/74MB of 148MB/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /download now/i })).toBeNull()
+  })
+
+  it('does not attribute another model transfer to the selected one', async () => {
+    // The gateway runs one transfer at a time, so a switch mid-download leaves the
+    // store reporting the PREVIOUS model. Claiming that progress here would show a
+    // download the selected model never started.
+    mount({
+      download: {
+        step: 'downloading',
+        model: 'large-v3-turbo',
+        downloaded_bytes: 800_000_000,
+        total_bytes: TURBO_BYTES,
+        error: '',
+      },
+    })
+    await waitFor(() => expect(modelSelect()).toBeTruthy())
+    expect(screen.queryByText(/downloading the speech model/i)).toBeNull()
+    expect(screen.getByRole('button', { name: /download now/i })).toBeTruthy()
+  })
+
+  it('reports a model already on disk instead of offering it again', async () => {
+    mount({
+      models: [{ name: 'base', size_bytes: BASE_BYTES, present: true }],
+    })
+    await waitFor(() => expect(screen.getByText(/already on this machine/i)).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /download now/i })).toBeNull()
   })
 })

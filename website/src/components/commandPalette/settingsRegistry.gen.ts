@@ -1628,7 +1628,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Use a fast model to detect when you've finished a complete request and send it automatically. Streaming providers only.",
     "tab": "voice",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "stt.endpointing"
   },
   {
     "id": "voice.aws-profile-amazon-polly",
@@ -1710,18 +1711,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "voice.live-transcript-refresh-ms",
+    "label": "Live transcript refresh (ms)",
+    "labelKey": "pages.settings.sttSettings.partial_interval_ms",
+    "description": "How often the transcript is redrawn while you speak. Lower feels more immediate and costs more processing.",
+    "tab": "voice",
+    "type": "stepper",
+    "occurrence": 1,
+    "configKey": "stt.partial_interval_ms"
+  },
+  {
     "id": "voice.microphone",
     "label": "Microphone",
     "labelKey": "pages.settings.sttSettings.microphone",
     "description": "Input device used to capture your voice",
-    "tab": "voice",
-    "type": "select",
-    "occurrence": 1
-  },
-  {
-    "id": "voice.mlx-model",
-    "label": "MLX Model",
-    "labelKey": "pages.settings.sttSettings.mlx_model",
     "tab": "voice",
     "type": "select",
     "occurrence": 1
@@ -1733,7 +1736,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Larger models are more accurate but slower to run. A model downloads on first use, so the first dictation after switching models may appear to hang or time out while the download completes.",
     "tab": "voice",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "stt.model"
+  },
+  {
+    "id": "voice.pause-that-ends-a-phrase-ms",
+    "label": "Pause that ends a phrase (ms)",
+    "labelKey": "pages.settings.sttSettings.silence_ms",
+    "description": "How much silence commits what you just said. Lower reacts sooner; higher tolerates thinking pauses.",
+    "tab": "voice",
+    "type": "stepper",
+    "occurrence": 1,
+    "configKey": "stt.silence_ms"
   },
   {
     "id": "voice.piper-binary",
@@ -1757,10 +1771,11 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.provider",
     "label": "Provider",
     "labelKey": "pages.settings.sttSettings.provider",
-    "description": "Whisper, MLX and Apple Speech run locally; Transcribe calls AWS",
+    "description": "Local speech recognition runs on this machine and sends nothing anywhere. Transcribe uploads your audio to AWS.",
     "tab": "voice",
     "type": "select",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "stt.provider"
   },
   {
     "id": "voice.provider-2",
@@ -1801,10 +1816,11 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.streaming",
     "label": "Streaming",
     "labelKey": "pages.settings.sttSettings.streaming",
-    "description": "Stream live partial transcripts into the input box as you speak. Supported by Transcribe (AWS) and Apple Speech (on-device).",
+    "description": "Show the transcript in the input box as you speak, instead of only when you stop.",
     "tab": "voice",
     "type": "toggle",
-    "occurrence": 1
+    "occurrence": 1,
+    "configKey": "stt.streaming"
   },
   {
     "id": "voice.tap-vs-hold-cutoff",

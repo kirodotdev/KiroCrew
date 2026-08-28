@@ -315,6 +315,35 @@ build_backend() {
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check "$ROOT"
 
+  # The voice extras, in TWO steps.
+  #
+  # They have to be in the bundle at all because `local` is the default
+  # speech-to-text provider and nothing in the app can install it later: the
+  # pip-invoking endpoint was deliberately removed, so a bundle without them
+  # reports the default provider as unavailable with no in-app way to fix it.
+  #
+  # Two steps because pip resolves an extra ATOMICALLY, and this bundle is
+  # UNIVERSAL on macOS where Intel has no published pywhispercpp wheel. A single
+  # `[voice]` install there fails as a whole and omits boto3 and amazon-transcribe
+  # with it, taking the `transcribe` provider down alongside the `local` one it has
+  # nothing to do with. So the cloud half goes in first and unconditionally, then
+  # the recogniser is attempted on its own.
+  #
+  # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
+  # installs from this checkout) turns the no-wheel case into a clean skip rather
+  # than a from-source whisper.cpp build needing CMake and a C++ toolchain, which
+  # would fail the whole release. `kiro_crew.stt.engine` reports the resulting state
+  # as `stt_no_wheel_for_platform` rather than as a missing extra.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/bin/python3.12" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check "$ROOT[voice-aws]"
+  if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+      "$out/bin/python3.12" -m pip install --prefer-binary \
+      --only-binary pywhispercpp \
+      --no-warn-script-location --disable-pip-version-check "$ROOT[voice]"; then
+    log "No prebuilt speech recogniser for this arch — bundling without it."
+  fi
+
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
   log "Staging dashboard dist into kiro_crew/static/dist…"
@@ -400,6 +429,35 @@ build_backend_windows() {
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/python.exe" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check "$ROOT"
+
+  # The voice extras, in TWO steps.
+  #
+  # They have to be in the bundle at all because `local` is the default
+  # speech-to-text provider and nothing in the app can install it later: the
+  # pip-invoking endpoint was deliberately removed, so a bundle without them
+  # reports the default provider as unavailable with no in-app way to fix it.
+  #
+  # Two steps because pip resolves an extra ATOMICALLY, and this bundle is
+  # UNIVERSAL on macOS where Intel has no published pywhispercpp wheel. A single
+  # `[voice]` install there fails as a whole and omits boto3 and amazon-transcribe
+  # with it, taking the `transcribe` provider down alongside the `local` one it has
+  # nothing to do with. So the cloud half goes in first and unconditionally, then
+  # the recogniser is attempted on its own.
+  #
+  # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
+  # installs from this checkout) turns the no-wheel case into a clean skip rather
+  # than a from-source whisper.cpp build needing CMake and a C++ toolchain, which
+  # would fail the whole release. `kiro_crew.stt.engine` reports the resulting state
+  # as `stt_no_wheel_for_platform` rather than as a missing extra.
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/python.exe" -m pip install --prefer-binary \
+    --no-warn-script-location --disable-pip-version-check "$ROOT[voice-aws]"
+  if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+      "$out/python.exe" -m pip install --prefer-binary \
+      --only-binary pywhispercpp \
+      --no-warn-script-location --disable-pip-version-check "$ROOT[voice]"; then
+    log "No prebuilt speech recogniser for this arch — bundling without it."
+  fi
 
   sp="$out/Lib/site-packages"
   log "Staging dashboard dist into kiro_crew/static/dist…"

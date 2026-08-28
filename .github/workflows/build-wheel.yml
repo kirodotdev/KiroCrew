@@ -88,6 +88,45 @@ jobs:
       - name: Verify vendored native libs survived into the wheel + sdist
         run: python scripts/verify_vendored_payload.py
 
+      # `local` is the default speech-to-text provider, so `kirocrew[voice]` has to
+      # resolve to a PREBUILT wheel wherever we claim one: a platform that silently
+      # falls back to a source build needs CMake and a C++ toolchain, which a desktop
+      # bundle does not have. Checked against the index rather than asserted in the
+      # test suite, because the answer lives on PyPI and changes without us.
+      #
+      # `stt/engine.py`'s `_WHEEL_ARCHS` is the in-code copy of this matrix and
+      # decides which availability code a user sees, so the two must agree in BOTH
+      # directions — hence the negative case below.
+      - name: The voice extra resolves to a prebuilt recogniser wheel
+        run: |
+          set -euo pipefail
+          # The specifier from setup.cfg's `voice` extra, NOT a bare name. Without it
+          # pip happily resolves an OLD release that does have a wheel for a platform
+          # the shipped range does not: bare `pywhispercpp` finds a 1.2.0 Intel macOS
+          # wheel, which predates the abort-callback and log arguments the engine
+          # depends on and is excluded by `>=1.5`. Testing the wrong version would have
+          # made this whole step report on software nobody installs.
+          SPEC='pywhispercpp>=1.5,<2'
+          for plat in macosx_11_0_arm64 manylinux_2_28_x86_64 \
+                      manylinux_2_28_aarch64 musllinux_1_2_x86_64 win_amd64; do
+            echo "── $plat"
+            python -m pip download "$SPEC" --no-deps --only-binary :all: \
+              --python-version 3.12 --platform "$plat" -d "$RUNNER_TEMP/pwc-$plat"
+          done
+          # Intel macOS has no wheel in that range, which is why `_WHEEL_ARCHS`
+          # excludes it and the probe reports `stt_no_wheel_for_platform` there. If one
+          # appears, the table is wrong in the pessimistic direction and the desktop
+          # build can stop skipping the extra on that arch.
+          if python -m pip download "$SPEC" --no-deps --only-binary :all: \
+              --python-version 3.12 --platform macosx_11_0_x86_64 \
+              -d "$RUNNER_TEMP/pwc-intel" >/dev/null 2>&1; then
+            echo "::error::An Intel macOS pywhispercpp wheel now exists for $SPEC. Add" \
+                 "x86_64 to _WHEEL_ARCHS['Darwin'] in src/kiro_crew/stt/engine.py and" \
+                 "revisit the wheel-only skip in packaging/build-desktop.sh."
+            exit 1
+          fi
+          echo "Intel macOS still has no wheel for $SPEC, as _WHEEL_ARCHS records."
+
       - name: Upload wheel artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

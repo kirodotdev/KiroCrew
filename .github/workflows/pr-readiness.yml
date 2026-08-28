@@ -619,7 +619,15 @@ jobs:
                 esac
               else
                 case "$conclusion" in
-                  success|neutral|skipped) passed+=("$label") ;;
+                  success|neutral) passed+=("$label") ;;
+                  # A workflow-level skip stays NON-BLOCKING -- the paths filters
+                  # skip lanes on purpose, so failing here would redden ordinary
+                  # PRs -- but it is reported as "Not eligible" rather than folded
+                  # into the passed count. Counting it as passed made an absent
+                  # matrix leg indistinguishable from a green one, which is exactly
+                  # how a platform nobody builds for reads as covered. `skipped[]`
+                  # feeds only the summary, never the verdict.
+                  skipped) skipped+=("$label (skipped)") ;;
                   *) failed+=("$label ($conclusion)") ;;
                 esac
               fi

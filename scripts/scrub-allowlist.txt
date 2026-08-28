@@ -17,7 +17,6 @@ src/kiro_crew/midway.py
 # Brazil-aware runtime detection (checks if installed via brazil or pip)
 src/kiro_crew/slack/gateway.py:.*[Bb]razil
 src/kiro_crew/mcp_discovery.py:.*brazil
-src/kiro_crew/transcribe.py:.*brazil
 
 # Deny-pattern strings and security config (reference internal names as blocklist)
 src/kiro_crew/dashboard/state.py:.*brazil

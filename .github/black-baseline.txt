@@ -273,7 +273,6 @@ src/kiro_crew/deploy/webapp_types.py
 src/kiro_crew/diagnostics.py
 src/kiro_crew/discord/attachments.py
 src/kiro_crew/doc_parser.py
-src/kiro_crew/embeddings.py
 src/kiro_crew/emoji_list.py
 src/kiro_crew/env.py
 src/kiro_crew/eval/bench/adapters/longmemeval.py
@@ -396,7 +395,6 @@ src/kiro_crew/suggestions.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
 src/kiro_crew/tips.py
-src/kiro_crew/transcribe.py
 src/kiro_crew/validation.py
 src/kiro_crew/vector_memory.py
 src/kiro_crew/webhooks.py
@@ -1055,7 +1053,6 @@ test/test_sandbox_unsandboxed_exec_consent.py
 test/test_scenarios_v2.py
 test/test_scenarios_v2_logic.py
 test/test_search_sessions_cost.py
-test/test_security.py
 test/test_seed.py
 test/test_sel.py
 test/test_sel_dashboard_offload.py
@@ -1111,7 +1108,6 @@ test/test_skill_versioning.py
 test/test_skills.py
 test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py
-test/test_slack_events_coverage.py
 test/test_slack_gateway.py
 test/test_slack_gateway_coverage.py
 test/test_slack_handler_coverage_branches.py
@@ -1195,7 +1191,6 @@ test/test_title_refresh.py
 test/test_to_dict_board_fields.py
 test/test_todo_list_surface.py
 test/test_toolbox_migration.py
-test/test_transcribe.py
 test/test_trusted_apps_api.py
 test/test_turn_duration_hooks.py
 test/test_turn_duration_recorded.py

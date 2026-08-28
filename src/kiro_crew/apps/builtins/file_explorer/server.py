@@ -157,6 +157,52 @@ _KIROCREW_SAFE_SUBDIRS = {
     "crons",
 }
 
+_SENSITIVE_DIRS_CF = frozenset(d.casefold() for d in SENSITIVE_DIRS)
+
+# ── Why one of these folds case and the other must not ──
+#
+# The two lists point in opposite directions, so the same operation is safe on one
+# and unsafe on the other. Folding a DENY-list can only ever deny more, which is
+# harmless on every filesystem. Folding an ALLOW-list can only ever allow more --
+# and on a case-SENSITIVE filesystem ``crew/Skills`` is a genuinely different
+# directory from the safe ``crew/skills``, so folding would hand out a path that
+# deny-by-default is there to withhold.
+#
+# The rule is therefore about the direction of failure, not about whether the
+# volume happens to be case-insensitive: fold the deny-list, never the allow-list.
+
+
+def _is_sensitive_dir_name(name: str) -> bool:
+    """Is *name* one of the credential directories, in ANY letter case?
+
+    Folded because this is a DENY-list (see above). Every membership test against
+    `SENSITIVE_DIRS` goes through here rather than comparing directly, because the
+    read gate and the listing/search filters have to agree: `_is_sensitive` fenced
+    ``~/.kube/admin.conf`` while the tree walker happily descended into ``~/.KUBE``
+    and searched its contents, which on a case-insensitive volume is the same
+    directory. Casing is a property of the lookup, not of each caller, so it belongs
+    in one predicate -- a fix applied at eight call sites is a fix that the ninth
+    silently misses.
+    """
+    return name.casefold() in _SENSITIVE_DIRS_CF
+
+
+def _is_safe_crew_subdir(name: str) -> bool:
+    """Is *name* an allowed subdirectory of the crew data home? EXACT match.
+
+    Deliberately NOT case-folded, for the reason above: this is the allow-list half,
+    so folding it would open ``crew/Skills`` on Linux, where that is a different
+    directory from the safe ``crew/skills`` and one the deny-by-default policy should
+    withhold. On a case-insensitive volume the capitalised spelling is denied instead,
+    which is a spurious denial rather than an exposure -- the correct direction to err
+    for this list.
+
+    Still a single predicate rather than inline membership, so every call site asks
+    the same question.
+    """
+    return name in _KIROCREW_SAFE_SUBDIRS
+
+
 # The KiroCrew data home is ~/.kiro/crew (nested under kiro-cli's ~/.kiro), with
 # a legacy location at ~/.kirocrew. The granular deny-by-default listing policy
 # must recognize the home wherever it lives: the current ~/.kiro/crew, and the
@@ -357,7 +403,16 @@ def _is_sensitive(p: Path) -> bool:
     ``_KIROCREW_SAFE_SUBDIRS`` are accessible; everything else (keys, tokens,
     DB, sessions) is blocked.
     """
-    if any(part in SENSITIVE_DIRS for part in p.parts):
+    # Casefolded for the reason `_crew_home_index` documents: on a case-insensitive
+    # volume (macOS and Windows by default) ``~/.KUBE/admin.conf`` is the same inode
+    # as ``~/.kube/admin.conf``, and ``Path.resolve()`` preserves the case that was
+    # typed rather than the case on disk. A case-sensitive compare here therefore
+    # denied the lowercase spelling and served the uppercase one -- and because
+    # ``.kube`` and ``.docker`` reach `is_sensitive_path` only through the specific
+    # leaves it fences (``.kube/config``, ``.docker/config.json``), a kubeconfig
+    # named anything else had no second gate to fall back on. Invisible on Linux,
+    # where the uppercase path simply does not exist.
+    if any(_is_sensitive_dir_name(part) for part in p.parts):
         return True
     # Granular data-home policy: block unless the path descends into a safe
     # subdir of the crew home (~/.kiro/crew or the legacy variant).
@@ -367,8 +422,11 @@ def _is_sensitive(p: Path) -> bool:
         # use _kirocrew_safe_children() to enumerate only safe subdirs.
         if after >= len(p.parts):
             return True
-        next_part = p.parts[after]
-        if next_part not in _KIROCREW_SAFE_SUBDIRS:
+        # Casefolded against a casefolded set for the same reason, in the other
+        # direction: this one is an ALLOW-list, so a case-sensitive compare failed
+        # closed and denied ``crew/Skills`` on a volume where that is the safe
+        # ``skills`` directory.
+        if not _is_safe_crew_subdir(p.parts[after]):
             return True
     return is_sensitive_path(str(p))
 
@@ -390,7 +448,7 @@ def _kirocrew_safe_children(kirocrew_dir: Path) -> list[dict]:
     except (OSError, PermissionError):
         return out
     for child in children:
-        if child.name in _KIROCREW_SAFE_SUBDIRS and child.is_dir():
+        if _is_safe_crew_subdir(child.name) and child.is_dir():
             out.append(_entry_meta(child))
     return out
 
@@ -481,17 +539,14 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
                     {"name": "...", "path": str(d), "type": "truncated", "size": 0, "mtime": 0}
                 )
                 break
-            if child.name in SENSITIVE_DIRS:
+            if _is_sensitive_dir_name(child.name):
                 continue
             # Deny-by-default for the crew data-home root listing: show ONLY the
             # safe subdirs. Even exposing the *names* of credential material
             # (config.json, *.key, memory.db) is an information leak. ``d`` is
             # the crew home when its own path parts end exactly at a marker (so
             # the next-segment index points one past the end).
-            if (
-                _crew_home_index(d.parts) == len(d.parts)
-                and child.name not in _KIROCREW_SAFE_SUBDIRS
-            ):
+            if _crew_home_index(d.parts) == len(d.parts) and not _is_safe_crew_subdir(child.name):
                 continue
             if ignore and child.name in IGNORE_DIRS:
                 continue
@@ -672,9 +727,15 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
             g = g.strip()
             if g:
                 cmd += ["--glob", f"!{g}"]
-    # Sensitive exclusions LAST — always enforced, cannot be overridden by user globs
+    # Sensitive exclusions LAST — always enforced, cannot be overridden by user globs.
+    #
+    # ``--iglob``, not ``--glob``: ripgrep matches globs case-SENSITIVELY by default,
+    # so ``!**/.kube`` left ``~/.KUBE`` searchable — and unlike the listing filters,
+    # a content search returns the bytes themselves, so a case-variant spelling
+    # meant ripgrep printed the kubeconfig this exclusion exists to withhold. Same
+    # case-insensitive-volume reasoning as `_is_sensitive_dir_name`.
     for sd in SENSITIVE_DIRS:
-        cmd += ["--glob", f"!**/{sd}"]
+        cmd += ["--iglob", f"!**/{sd}"]
     # Crew data-home handling. NOTE: in ripgrep, the presence of ANY non-negated
     # --glob turns the glob set into an allowlist (only matching files are
     # searched), so we must use ONLY negated globs here or every file outside
@@ -686,8 +747,11 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
     #    directly, which takes the branch above). Cover both home spellings:
     #    ~/.kiro/crew and the legacy home.
     if not _under_crew_home(root):
-        cmd += ["--glob", "!**/.kiro/crew/**"]
-        cmd += ["--glob", "!**/.kirocrew/**"]
+        # ``--iglob`` for the same reason, and doubly so here: `_crew_home_index`
+        # already matches this home casefold-insensitively, so a case-sensitive
+        # glob is the one place the crew home stopped being recognized.
+        cmd += ["--iglob", "!**/.kiro/crew/**"]
+        cmd += ["--iglob", "!**/.kirocrew/**"]
     # macOS TCC: when the search root is the bare $HOME, exclude the gated
     # top-level folders so ripgrep never descends into ~/Pictures (the Photos
     # library) or ~/Music (the media library). Recursing into them makes macOS
@@ -768,7 +832,9 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
         if time.monotonic() > deadline:
             break
         # In-place prune ignored dirs
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and d not in SENSITIVE_DIRS]
+        dirnames[:] = [
+            d for d in dirnames if d not in IGNORE_DIRS and not _is_sensitive_dir_name(d)
+        ]
         # macOS TCC: at the bare $HOME root, drop the gated top-level folders so
         # the walk never descends into ~/Pictures (Photos library) or ~/Music
         # (media library) and macOS never pops a per-folder consent dialog. Only
@@ -790,7 +856,7 @@ def _search_python(root: Path, query: str, include: str, exclude: str) -> list[d
                 dirnames[:] = []
             else:
                 # Root is inside the crew home — allow safe subdirs only
-                dirnames[:] = [d for d in dirnames if d in _KIROCREW_SAFE_SUBDIRS]
+                dirnames[:] = [d for d in dirnames if _is_safe_crew_subdir(d)]
             filenames[:] = []  # never surface crew-home root files
         for fn in filenames:
             if len(out) >= MAX_SEARCH_RESULTS:
@@ -1150,11 +1216,11 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             name = child.name
             if name in IGNORE_DIRS:
                 continue
-            if name in SENSITIVE_DIRS:
+            if _is_sensitive_dir_name(name):
                 continue
             # Deny-by-default for the crew data-home root: only safe subdir names
             # may appear in completions (see _list_dir for rationale).
-            if _is_crew_home_root(parent) and name not in _KIROCREW_SAFE_SUBDIRS:
+            if _is_crew_home_root(parent) and not _is_safe_crew_subdir(name):
                 continue
             if plower and not name.lower().startswith(plower):
                 continue

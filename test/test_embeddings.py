@@ -1305,3 +1305,87 @@ class TestEmbedPriority:
         assert done.wait(timeout=5), "_submit_infer hung on a retired backend"
         assert out[0].error is not None
         assert "retired" in str(out[0].error)
+
+
+class TestBundledWindowsMsvcRuntimeGate:
+    """The vendored Windows libs import an MSVC runtime that is not shipped with them.
+
+    All four DLLs in ``win_amd64`` import ``MSVCP140``, ``VCRUNTIME140`` and
+    ``VCRUNTIME140_1``; ``ggml-base``/``ggml-cpu`` add ``VCOMP140`` (MSVC OpenMP).
+    Both Linux payloads DO vendor their OpenMP equivalent, so the omission is on the
+    Windows lane rather than a deliberate asymmetry — and on a host without the
+    redistributable the load failed as a bare ``WinError 126`` naming the library
+    being opened rather than the runtime it needs, which reads as an unsupported
+    platform. CI cannot see any of this: the ``windows-latest`` runner ships the
+    redistributable preinstalled.
+    """
+
+    def test_the_probe_is_a_no_op_off_windows(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.embeddings.sys.platform", "linux")
+        assert embeddings_mod._missing_windows_msvc_runtime() == []
+
+    def test_every_named_runtime_dll_is_probed(self, monkeypatch) -> None:
+        """Absence is reported per DLL, so the message can name what to install."""
+        monkeypatch.setattr("kiro_crew.embeddings.sys.platform", "win32")
+        asked: list[str] = []
+
+        def _fail(name):
+            asked.append(name)
+            raise OSError("[WinError 126] The specified module could not be found")
+
+        monkeypatch.setattr(embeddings_mod.ctypes, "WinDLL", _fail, raising=False)
+        missing = embeddings_mod._missing_windows_msvc_runtime()
+        assert asked == list(embeddings_mod._WINDOWS_MSVC_RUNTIME_DLLS)
+        assert missing == list(embeddings_mod._WINDOWS_MSVC_RUNTIME_DLLS)
+
+    def test_a_present_runtime_reports_nothing_missing(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.embeddings.sys.platform", "win32")
+        monkeypatch.setattr(embeddings_mod.ctypes, "WinDLL", lambda name: object(), raising=False)
+        assert embeddings_mod._missing_windows_msvc_runtime() == []
+
+    def test_the_loader_refuses_and_names_the_redistributable(
+        self, monkeypatch, tmp_path: Path, caplog
+    ) -> None:
+        """Refused BEFORE the import, so the log carries the fix rather than a WinError."""
+        libs = tmp_path / embeddings_mod._LIBS_DIR_NAME / "win_amd64"
+        libs.mkdir(parents=True)
+        for name in embeddings_mod._REQUIRED_VENDORED_LIBS["win_amd64"]:
+            (libs / name).write_bytes(b"MZ")
+        monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", tmp_path)
+        monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "win_amd64")
+        monkeypatch.setattr(
+            embeddings_mod, "_missing_windows_msvc_runtime", lambda: ["VCOMP140.DLL"]
+        )
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        embeddings_mod._load_llama_class.cache_clear()
+        try:
+            with caplog.at_level("WARNING"):
+                assert embeddings_mod._load_llama_class() is None
+        finally:
+            embeddings_mod._load_llama_class.cache_clear()
+            os.environ.pop(embeddings_mod._LIB_PATH_ENV, None)
+        assert "VCOMP140.DLL" in caplog.text
+        assert "Visual C++" in caplog.text
+        assert "keyword search" in caplog.text
+
+    def test_a_complete_runtime_does_not_refuse_on_the_windows_branch(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """Mutation guard: the refusal must be conditional on something real."""
+        libs = tmp_path / embeddings_mod._LIBS_DIR_NAME / "win_amd64"
+        libs.mkdir(parents=True)
+        for name in embeddings_mod._REQUIRED_VENDORED_LIBS["win_amd64"]:
+            (libs / name).write_bytes(b"MZ")
+        monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", tmp_path)
+        monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "win_amd64")
+        monkeypatch.setattr(embeddings_mod, "_missing_windows_msvc_runtime", lambda: [])
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        embeddings_mod._load_llama_class.cache_clear()
+        try:
+            # Reaches the import (which then resolves the real vendored copy on this
+            # host); the point is only that the runtime gate did not short-circuit it.
+            embeddings_mod._load_llama_class()
+            assert os.environ.get(embeddings_mod._LIB_PATH_ENV) == str(libs)
+        finally:
+            embeddings_mod._load_llama_class.cache_clear()
+            os.environ.pop(embeddings_mod._LIB_PATH_ENV, None)

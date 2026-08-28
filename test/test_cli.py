@@ -101,11 +101,23 @@ def _pin_default_config(monkeypatch) -> None:
     concurrent worker's config write races these reads: a polluted/foreign config
     flips a check and ``_doctor()`` exits 1. xdist worker interleaving differs per
     interpreter, so the flake surfaced only on python3.10. Pin both to a pristine
-    default (Slack-less, STT disabled) so doctor runs are deterministic and isolated.
+    default (Slack-less) so doctor runs are deterministic and isolated.
+
+    Speech-to-Text is switched off on top of the defaults, where it ships ON. Its
+    section reports the recogniser, which lives in the optional ``voice`` extra, so
+    leaving it enabled makes every doctor test in this file depend on whether the
+    runner installed that wheel, and on POSIX an absent one is a hard issue: the
+    tests asserting ``_doctor()`` does not exit would then report the host rather
+    than the behaviour they name. The STT arms pin it back on for themselves.
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
-    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cls()))
+    def _pristine() -> KiroCrewConfig:
+        cfg = KiroCrewConfig()
+        cfg.stt.enabled = False
+        return cfg
+
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
     monkeypatch.setattr(KiroCrewConfig, "load_credentials", lambda self: {})
 
 
@@ -153,34 +165,51 @@ class TestDoctor:
         ):
             _doctor()
 
-    def test_doctor_windows_missing_whisper_ffmpeg_is_non_fatal(self, tmp_path, monkeypatch):
-        """On Windows, STT ships enabled-by-default but whisper/ffmpeg are not
-        dependencies there. Reporting them as hard issues made `doctor` exit 1
-        on a healthy install and broke the guide's `doctor && gateway` chain, so
-        they must be non-fatal notes: doctor exits 0."""
-        import kiro_crew.cli_doctor as _doc
+    @staticmethod
+    def _stt_config(monkeypatch, **fields):
+        """Re-enable STT on the pinned default config, with *fields* applied.
+
+        The autouse ``_hermetic_config`` fixture pins STT OFF so unrelated doctor
+        tests never reach this section, so any test that wants it has to ask.
+        """
         from kiro_crew.config.loader import KiroCrewConfig
+
+        def _cfg() -> KiroCrewConfig:
+            cfg = KiroCrewConfig()
+            cfg.stt.enabled = True
+            for name, value in fields.items():
+                setattr(cfg.stt, name, value)
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg()))
+
+    def test_doctor_windows_missing_stt_engine_and_ffmpeg_is_non_fatal(
+        self, tmp_path, monkeypatch
+    ):
+        """On Windows, STT ships enabled-by-default but the recogniser extra and
+        ffmpeg are not dependencies there. Reporting them as hard issues made
+        `doctor` exit 1 on a healthy install and broke the guide's
+        `doctor && gateway` chain, so they must be non-fatal notes: doctor exits 0."""
+        import kiro_crew.cli_doctor as _doc
 
         agent_file = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_file)
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", True)
-
-        # STT enabled with whisper provider (the shipped default), but neither
-        # binary present — the autouse fixture pins STT OFF, so re-enable here.
-        def _cfg_with_stt() -> KiroCrewConfig:
-            cfg = KiroCrewConfig()
-            cfg.stt.enabled = True
-            cfg.stt.provider = "whisper"
-            return cfg
-
-        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg_with_stt()))
-        monkeypatch.setattr(_doc, "_find_whisper", lambda path=None: None)
+        self._stt_config(monkeypatch, provider="local")
+        monkeypatch.setattr(
+            _doc,
+            "availability_detail",
+            lambda cfg=None: _doc.stt.Availability(
+                False, _doc.stt.CODE_EXTRA_MISSING, "needs the voice extra"
+            ),
+        )
+        # Left unpatched this mutates the process PATH for every later test.
         monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
 
         def _which(binary, **_kw):
-            # Everything resolves EXCEPT the two STT binaries.
-            if binary in ("whisper", "ffmpeg"):
+            # Everything resolves EXCEPT ffmpeg.
+            if binary == "ffmpeg":
                 return None
             return f"C:\\tools\\{binary}.exe"
 
@@ -193,7 +222,7 @@ class TestDoctor:
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
         ):
-            # Must NOT raise SystemExit(1): the two STT gaps are notes on Windows.
+            # Must NOT raise SystemExit(1): both STT gaps are notes on Windows.
             _doctor()
 
     @pytest.mark.parametrize(
@@ -204,35 +233,32 @@ class TestDoctor:
     def test_doctor_stt_marker_arms_match_platform(
         self, tmp_path, capsys, monkeypatch, is_windows, expected_mark
     ):
-        """The whisper/ffmpeg severity marker is derived once (stt_mark) from
+        """The engine/ffmpeg severity marker is derived once (stt_mark) from
         stt_fatal: a hard-issue mark on POSIX, a note mark on Windows. Pins
         both arms byte-for-byte — including the note mark's trailing pad
         space, which keeps the report columns aligned — AND that the twin
         report lines can never disagree, so a one-arm edit to either site
         fails here (issue #5096)."""
         import kiro_crew.cli_doctor as _doc
-        from kiro_crew.config.loader import KiroCrewConfig
 
         agent_file = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_file)
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", is_windows)
-
-        # STT enabled with whisper provider, neither binary present — the
-        # autouse fixture pins STT OFF, so re-enable here.
-        def _cfg_with_stt() -> KiroCrewConfig:
-            cfg = KiroCrewConfig()
-            cfg.stt.enabled = True
-            cfg.stt.provider = "whisper"
-            return cfg
-
-        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg_with_stt()))
-        monkeypatch.setattr(_doc, "_find_whisper", lambda path=None: None)
+        self._stt_config(monkeypatch, provider="local")
+        # Neither the recogniser nor ffmpeg is present, which is what routes both
+        # report lines through the marker under test.
+        monkeypatch.setattr(
+            _doc,
+            "availability_detail",
+            lambda cfg=None: _doc.stt.Availability(
+                False, _doc.stt.CODE_EXTRA_MISSING, "no recogniser here"
+            ),
+        )
         monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
 
         def _which(binary, **_kw):
-            # Everything resolves EXCEPT the two STT binaries.
-            if binary in ("whisper", "ffmpeg"):
+            if binary == "ffmpeg":
                 return None
             return f"/usr/local/bin/{binary}"
 
@@ -255,77 +281,8 @@ class TestDoctor:
         out = capsys.readouterr().out
         # Exact literals from the production f-strings: any drift in glyph,
         # variation selector, or the note arm's padding space fails here.
-        assert f"  whisper:     {expected_mark} not found" in out
+        assert f"  engine:      {expected_mark} no recogniser here" in out
         assert f"  ffmpeg:      {expected_mark} not found" in out
-
-    @pytest.mark.parametrize(
-        "win_arm, expect_fatal_glyph, expect_alternatives",
-        [(True, True, True), (False, False, False)],
-        ids=["windows-arm-unfixable", "windows-x64-installable"],
-    )
-    def test_doctor_faster_windows_arm_is_fatal_even_on_windows(
-        self, tmp_path, capsys, monkeypatch, win_arm, expect_fatal_glyph, expect_alternatives
-    ):
-        """The `faster` win-arm arm deliberately does NOT follow ``stt_mark``.
-
-        That Windows downgrade exists because whisper and ffmpeg are absent from a
-        stock Windows box yet trivially installable, so failing a first-run doctor
-        over them is noise. This is the opposite case: `faster` is never the default,
-        so reaching it means the user explicitly selected a provider that CANNOT be
-        made to work here, and the run must not exit 0 as if nothing were wrong. The
-        ordinary not-installed arm (win_arm=False) still follows the convention,
-        because the install button does fix that one.
-        """
-        import kiro_crew.cli_doctor as _doc
-        from kiro_crew.config.loader import KiroCrewConfig
-
-        agent_file = tmp_path / "kirocrew.json"
-        _healthy_agent_file(agent_file)
-        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
-        # Windows in BOTH arms: the point is what differs while IS_WINDOWS is true.
-        monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(_doc.platform_compat, "is_windows_on_arm", lambda: win_arm)
-
-        def _cfg_with_faster() -> KiroCrewConfig:
-            cfg = KiroCrewConfig()
-            cfg.stt.enabled = True
-            cfg.stt.provider = "faster"
-            return cfg
-
-        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg_with_faster()))
-        monkeypatch.setattr(_doc, "_find_whisper", lambda path=None: None)
-        monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
-        # The library is absent, which is what routes into the two arms.
-        monkeypatch.setattr(_doc, "_faster_whisper_model", lambda: None)
-
-        with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_k: f"/bin/{b}"),
-            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
-            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
-            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
-            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
-            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
-        ):
-            exited = False
-            try:
-                _doctor()
-            except SystemExit as e:
-                exited = bool(e.code)
-        out = capsys.readouterr().out
-        if expect_fatal_glyph:
-            assert "  faster:      ❌ not available (Windows on ARM" in out
-            # An unfixable configuration must fail the run even on Windows.
-            assert exited is True
-        else:
-            assert "  faster:      ⚠️  not installed" in out
-        if expect_alternatives:
-            # Naming the working providers IS the deliverable — a bare refusal
-            # leaves the user with no next step.
-            assert "stt.provider to 'whisper'" in out
-            assert "'transcribe'" in out
-        else:
-            assert "stt.provider to 'whisper'" not in out
 
     def test_doctor_reports_platform_boot_error_without_crashing(self, tmp_path, capsys):
         """A PlatformCompositionError from boot must be REPORTED by the doctor,
@@ -3764,231 +3721,324 @@ class TestDoctorMcpTools:
 
 
 class TestDoctorStt:
-    """Tests for doctor Speech-to-Text section."""
+    """Doctor's Speech-to-Text section, driven through ``_doctor()``.
 
-    def test_doctor_stt_enabled_all_found(self, tmp_path, capsys):
-        from kiro_crew.config.loader import KiroCrewConfig, SttConfig
+    Every arm goes through the real entry point rather than a unit call, because
+    what is being pinned is both halves of the contract: the report a user reads
+    and the exit status their ``kirocrew doctor && kirocrew gateway`` chain
+    depends on.
+    """
 
-        agent_file = tmp_path / "kirocrew.json"
-        agent_data = {
-            "tools": ["@kirocrew-core", "@kirocrew-cron"],
-            "allowedTools": ["@kirocrew-core", "@kirocrew-cron"],
-            "mcpServers": {
-                "kirocrew-core": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-core"]},
-                "kirocrew-cron": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-cron"]},
-            },
-        }
-        agent_file.write_text(json.dumps(agent_data))
+    @pytest.fixture(autouse=True)
+    def _hermetic_doctor(self, monkeypatch):
+        """Pin every section EXCEPT Speech-to-Text.
+
+        Same reasoning as ``TestDoctor``'s fixtures: the vendored embedding runtime
+        and the sandbox backend are host facts, and each is a genuine issue on a
+        machine that lacks it, which would make an exit-status assertion here report
+        the runner instead of the STT arm under test.
+        """
+        import kiro_crew.cli_doctor as _doc
+
+        _pin_default_config(monkeypatch)
+        monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
+        monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
+        monkeypatch.setattr(
+            _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
+        )
+        # POSIX severity: a missing prerequisite is a hard issue. The Windows note
+        # arm is pinned in ``TestDoctor::test_doctor_stt_marker_arms_match_platform``.
+        monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", False)
+        # Left real, this prepends to the process PATH for every later test.
+        monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
+
+    @staticmethod
+    def _stt(monkeypatch, **fields):
+        """Enable STT with *fields* applied over the shipped defaults.
+
+        Applied last, so a test that wants the off arm asks for it explicitly
+        (``enabled=False``) rather than relying on what the autouse pin left behind.
+        """
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        def _cfg() -> KiroCrewConfig:
+            cfg = KiroCrewConfig()
+            cfg.stt.enabled = True
+            for name, value in fields.items():
+                setattr(cfg.stt, name, value)
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg()))
+
+    @staticmethod
+    def _engine(monkeypatch, availability):
+        """Answer the recogniser probe without depending on the optional wheel."""
+        import kiro_crew.cli_doctor as _doc
+
+        monkeypatch.setattr(_doc, "availability_detail", lambda cfg=None: availability)
+
+    @staticmethod
+    def _model_on_disk(monkeypatch, present):
+        """Say whether the resolved catalog model is downloaded.
+
+        Patched on the ``kiro_crew.stt`` namespace the doctor actually reads. The
+        real predicate compares the file's size to the catalog's, and the smallest
+        entry is 77 MB, so writing one is not an option a test has.
+        """
+        import kiro_crew.cli_doctor as _doc
+
+        monkeypatch.setattr(_doc.stt, "is_present", lambda model: present)
+
+    @staticmethod
+    def _stt_section(out: str) -> str:
+        """Just the Speech-to-Text block.
+
+        The embeddings section prints its own ``model:`` line, so an assertion
+        about the ABSENCE of one has to be scoped or it proves nothing.
+        """
+        return out.split("Speech-to-Text", 1)[1].split("Slack Integration", 1)[0]
+
+    def _report(self, tmp_path, capsys, *, ffmpeg=True, modules=None):
+        """Run the doctor with everything outside STT stubbed.
+
+        Returns the captured report and the exit status, so a test can assert that
+        an STT gap does or does not fail the run.
+        """
+        _healthy_agent_file(tmp_path / "kirocrew.json")
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
-        cfg = KiroCrewConfig.load()
-        cfg.stt = SttConfig(enabled=True, provider="whisper")
+
+        def _which(binary, **_kw):
+            if binary == "ffmpeg" and not ffmpeg:
+                return None
+            return f"/usr/local/bin/{binary}"
+
+        code = 0
         with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=_which),
             patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
             patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
             patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
             patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_doctor._find_whisper", return_value="/usr/local/bin/whisper"),
-            patch("kiro_crew.cli_doctor.ensure_ffmpeg_in_path"),
-            patch("kiro_crew.cli_doctor.KiroCrewConfig.load", return_value=cfg),
-            patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
+            patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
+            patch.dict("sys.modules", modules or {}),
         ):
             try:
                 _doctor()
-            except SystemExit:
-                pass
-        out = capsys.readouterr().out
-        assert "Speech-to-Text" in out
-        assert "provider:    ✅ whisper" in out
-        assert "whisper:     ✅" in out
-        assert "ffmpeg:      ✅" in out
+            except SystemExit as exc:
+                code = int(exc.code or 0)
+        return capsys.readouterr().out, code
 
-    def test_doctor_stt_disabled(self, tmp_path, capsys):
-        from kiro_crew.config.loader import KiroCrewConfig, SttConfig
+    def test_doctor_stt_local_engine_and_model_ready(self, tmp_path, capsys, monkeypatch):
+        """The ready state names the resolved catalog model AND where it sits, so
+        an operator can see which weights a dictation will actually use."""
+        import kiro_crew.cli_doctor as _doc
 
-        agent_file = tmp_path / "kirocrew.json"
-        agent_data = {
-            "tools": ["@kirocrew-core", "@kirocrew-cron"],
-            "allowedTools": ["@kirocrew-core", "@kirocrew-cron"],
-            "mcpServers": {
-                "kirocrew-core": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-core"]},
-                "kirocrew-cron": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-cron"]},
+        self._stt(monkeypatch, provider="local", model="small")
+        self._engine(monkeypatch, _doc.stt.Availability(True))
+        self._model_on_disk(monkeypatch, True)
+
+        out, code = self._report(tmp_path, capsys)
+
+        section = self._stt_section(out)
+        assert "provider:    ✅ local" in section
+        assert "engine:      ✅ local recogniser loadable (whisper.cpp, in-process)" in section
+        expected = _doc.stt.models_dir() / "ggml-small.bin"
+        assert f"model:       ✅ small at {expected}" in section
+        assert "ffmpeg:      ✅ /usr/local/bin/ffmpeg" in section
+        assert code == 0
+
+    def test_doctor_stt_local_model_not_downloaded_is_a_note(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """The weights are fetched on first use, so "not downloaded" is the normal
+        first-run state and never an issue. Naming the size is the useful part,
+        because that transfer is what a first dictation waits on."""
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="local", model="base")
+        self._engine(monkeypatch, _doc.stt.Availability(True))
+        self._model_on_disk(monkeypatch, False)
+
+        out, code = self._report(tmp_path, capsys)
+
+        # Derived from the catalog entry the doctor resolved, not restated: a
+        # literal here goes stale the moment the pinned artifact changes.
+        megabytes = _doc.stt.resolve_model("base").size_bytes // 1_000_000
+        section = self._stt_section(out)
+        assert (
+            f"model:       ⏹ base not downloaded yet "
+            f"({megabytes} MB, fetched on first use)" in section
+        )
+        assert code == 0
+
+    def test_doctor_stt_local_engine_failure_names_its_code(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """An unloadable recogniser is a hard issue on POSIX, and the summary
+        carries the machine-readable code.
+
+        The code is what distinguishes "install the extra" from "this platform has
+        no wheel", so a report that only said "speech recogniser" would send the
+        user to the wrong fix.
+        """
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="local")
+        self._engine(
+            monkeypatch,
+            _doc.stt.Availability(
+                False,
+                _doc.stt.CODE_NO_WHEEL,
+                "no prebuilt speech recogniser for Intel macOS",
+            ),
+        )
+
+        out, code = self._report(tmp_path, capsys)
+
+        assert "engine:      ❌ no prebuilt speech recogniser for Intel macOS" in out
+        assert "❌ Fix these issues: " in out
+        assert "speech recogniser (stt_no_wheel_for_platform)" in out
+        assert code == 1
+
+    def test_doctor_stt_disabled(self, tmp_path, capsys, monkeypatch):
+        """Disabled is a choice, not a gap: no engine or model line is printed,
+        and ffmpeg is reported as something this install does not need."""
+        self._stt(monkeypatch, enabled=False)
+
+        out, code = self._report(tmp_path, capsys, ffmpeg=False)
+
+        section = self._stt_section(out)
+        assert "status:      ⏹ disabled" in section
+        assert "ffmpeg:      ⏭  not installed (not needed)" in section
+        assert "engine:" not in section
+        assert "model:" not in section
+        # A prerequisite nothing needs cannot fail the run.
+        assert code == 0
+
+    def test_doctor_stt_ffmpeg_is_a_prerequisite_of_every_provider(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Reported for a cloud provider too. A Slack voice memo arrives as
+        ogg/Opus and the dashboard records webm, so the only input that reaches
+        any recogniser without ffmpeg is a 16 kHz mono WAV."""
+        self._stt(monkeypatch, provider="transcribe")
+
+        out, code = self._report(
+            tmp_path,
+            capsys,
+            ffmpeg=False,
+            modules={
+                "amazon_transcribe": MagicMock(),
+                "amazon_transcribe.client": MagicMock(),
+                "boto3": MagicMock(),
             },
-        }
-        agent_file.write_text(json.dumps(agent_data))
-        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
-        cfg = KiroCrewConfig.load()
-        cfg.stt = SttConfig(enabled=False)
-        with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
-            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
-            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
-            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
-            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
-            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_doctor.KiroCrewConfig.load", return_value=cfg),
-            patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
-            patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
-            patch("kiro_crew.cli_doctor._find_whisper", return_value=None),
-            patch("kiro_crew.cli_doctor.ensure_ffmpeg_in_path"),
-        ):
-            try:
-                _doctor()
-            except SystemExit:
-                pass
-        out = capsys.readouterr().out
-        assert "Speech-to-Text" in out
-        assert "disabled" in out
-        assert "not needed" in out
+        )
 
-    def test_doctor_stt_transcribe_provider(self, tmp_path, capsys):
-        from kiro_crew.config.loader import KiroCrewConfig, SttConfig
+        assert "ffmpeg:      ❌ not found" in out
+        assert "❌ Fix these issues: " in out
+        assert "ffmpeg" in out.split("❌ Fix these issues: ", 1)[1]
+        assert code == 1
 
-        agent_file = tmp_path / "kirocrew.json"
-        agent_data = {
-            "tools": ["@kirocrew-core", "@kirocrew-cron"],
-            "allowedTools": ["@kirocrew-core", "@kirocrew-cron"],
-            "mcpServers": {
-                "kirocrew-core": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-core"]},
-                "kirocrew-cron": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-cron"]},
+    def test_doctor_stt_transcribe_provider(self, tmp_path, capsys, monkeypatch):
+        """The local-only lines belong to the local provider. Printing an engine or
+        model row for a cloud provider would advertise a dependency the operator's
+        configuration does not have."""
+        self._stt(monkeypatch, provider="transcribe", transcribe_region="us-west-2")
+        # boto3 and amazon-transcribe are the OPTIONAL 'voice' extra and are not
+        # ambiently importable in a clean env, so the ✅ arm has to be faked or the
+        # assertion below depends on what the host happens to have installed.
+        out, code = self._report(
+            tmp_path,
+            capsys,
+            modules={
+                "amazon_transcribe": MagicMock(),
+                "amazon_transcribe.client": MagicMock(),
+                "boto3": MagicMock(),
             },
-        }
-        agent_file.write_text(json.dumps(agent_data))
-        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
-        cfg = KiroCrewConfig.load()
-        cfg.stt = SttConfig(enabled=True, provider="transcribe", transcribe_region="us-west-2")
-        # boto3 is an OPTIONAL dep (moved to the [voice] extra; modern
-        # amazon-transcribe no longer pulls the full boto3). It is not
-        # ambiently importable in a clean env / CI, so fake it here to keep
-        # this test hermetic — otherwise the "boto3: ✅" assertion depends on
-        # the host happening to have boto3 installed.
-        fake_modules = {
-            "amazon_transcribe": MagicMock(),
-            "amazon_transcribe.client": MagicMock(),
-            "boto3": MagicMock(),
-        }
-        with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
-            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
-            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
-            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
-            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
-            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_doctor.KiroCrewConfig.load", return_value=cfg),
-            patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
-            patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
-            patch("kiro_crew.cli_doctor._find_whisper", return_value=None),
-            patch("kiro_crew.cli_doctor.ensure_ffmpeg_in_path"),
-            patch.dict("sys.modules", fake_modules),
-        ):
-            try:
-                _doctor()
-            except SystemExit:
-                pass
-        out = capsys.readouterr().out
-        assert "Speech-to-Text" in out
-        assert "transcribe" in out
-        assert "whisper:     ⏭" in out
-        assert "ffmpeg:      ✅" in out
-        # Happy-path deps should report ✅ — guards against a regression
-        # where the emission is silently dropped. (Cloud STT is optional now;
-        # the AWS region is no longer printed on a public install.)
-        assert "transcribe:  ✅" in out
-        assert "boto3:       ✅" in out
+        )
 
-    def test_doctor_stt_transcribe_amazon_transcribe_missing(self, tmp_path, capsys, monkeypatch):
+        section = self._stt_section(out)
+        assert "provider:    ✅ transcribe" in section
+        assert "transcribe:  ✅" in section
+        assert "boto3:       ✅" in section
+        assert "engine:" not in section
+        assert "model:" not in section
+        assert code == 0
+
+    def test_doctor_stt_transcribe_amazon_transcribe_missing(
+        self, tmp_path, capsys, monkeypatch
+    ):
         """When provider=transcribe and amazon_transcribe is not importable,
         doctor reports it as an OPTIONAL gap (public pip extra) and does NOT
         treat it as a hard failure."""
-        from kiro_crew.config.loader import KiroCrewConfig, SttConfig
+        self._stt(monkeypatch, provider="transcribe", transcribe_region="us-west-2")
+        # setitem(sys.modules, ..., None) is the documented way to make an import
+        # raise for a package that is already loaded at test time.
+        out, code = self._report(tmp_path, capsys, modules={"amazon_transcribe.client": None})
 
-        agent_file = tmp_path / "kirocrew.json"
-        agent_data = {
-            "tools": ["@kirocrew-core", "@kirocrew-cron"],
-            "allowedTools": ["@kirocrew-core", "@kirocrew-cron"],
-            "mcpServers": {
-                "kirocrew-core": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-core"]},
-                "kirocrew-cron": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-cron"]},
-            },
-        }
-        agent_file.write_text(json.dumps(agent_data))
-        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
-        cfg = KiroCrewConfig.load()
-        cfg.stt = SttConfig(enabled=True, provider="transcribe", transcribe_region="us-west-2")
-        # Force `import amazon_transcribe.client` inside _doctor() to raise
-        # ImportError even though the package is already loaded at test time.
-        # setitem(sys.modules, ..., None) is the documented hook for this.
-        monkeypatch.setitem(sys.modules, "amazon_transcribe.client", None)
-        with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
-            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
-            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
-            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
-            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
-            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_doctor.KiroCrewConfig.load", return_value=cfg),
-            patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
-            patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
-            patch("kiro_crew.cli_doctor._find_whisper", return_value=None),
-            patch("kiro_crew.cli_doctor.ensure_ffmpeg_in_path"),
-        ):
-            # Optional cloud STT missing is NOT a hard failure — _doctor may
-            # still sys.exit on unrelated env checks, so tolerate either.
-            try:
-                _doctor()
-            except SystemExit:
-                pass
-        out = capsys.readouterr().out
         assert "transcribe:  ⏹ optional cloud STT not installed" in out
         assert "pip install 'kirocrew[voice]'" in out
+        assert code == 0
 
     def test_doctor_stt_transcribe_boto3_missing(self, tmp_path, capsys, monkeypatch):
         """When provider=transcribe and boto3 is not importable, doctor
         reports it as an OPTIONAL gap (public pip extra), not a hard failure."""
-        from kiro_crew.config.loader import KiroCrewConfig, SttConfig
-
-        agent_file = tmp_path / "kirocrew.json"
-        agent_data = {
-            "tools": ["@kirocrew-core", "@kirocrew-cron"],
-            "allowedTools": ["@kirocrew-core", "@kirocrew-cron"],
-            "mcpServers": {
-                "kirocrew-core": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-core"]},
-                "kirocrew-cron": {"command": "/usr/local/bin/kirocrew", "args": ["mcp-cron"]},
+        self._stt(monkeypatch, provider="transcribe", transcribe_region="us-west-2")
+        out, code = self._report(
+            tmp_path,
+            capsys,
+            modules={
+                # amazon_transcribe importable, to isolate the boto3 gap.
+                "amazon_transcribe": MagicMock(),
+                "amazon_transcribe.client": MagicMock(),
+                "boto3": None,
             },
-        }
-        agent_file.write_text(json.dumps(agent_data))
-        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
-        cfg = KiroCrewConfig.load()
-        cfg.stt = SttConfig(enabled=True, provider="transcribe", transcribe_region="us-west-2")
-        # amazon_transcribe importable (isolate the boto3 gap), boto3 missing.
-        monkeypatch.setitem(sys.modules, "amazon_transcribe", MagicMock())
-        monkeypatch.setitem(sys.modules, "amazon_transcribe.client", MagicMock())
-        # Force `import boto3` inside _doctor() to raise ImportError.
-        monkeypatch.setitem(sys.modules, "boto3", None)
-        with (
-            patch("kiro_crew.cli_doctor.shutil.which", side_effect=lambda b, **_kw: f"/usr/local/bin/{b}"),
-            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
-            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
-            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
-            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
-            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
-            patch("kiro_crew.cli_doctor.KiroCrewConfig.load", return_value=cfg),
-            patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
-            patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
-            patch("kiro_crew.cli_doctor._find_whisper", return_value=None),
-            patch("kiro_crew.cli_doctor.ensure_ffmpeg_in_path"),
-        ):
-            # Optional AWS SDK missing is NOT a hard failure — tolerate either
-            # a clean return or an unrelated env-driven sys.exit.
-            try:
-                _doctor()
-            except SystemExit:
-                pass
-        out = capsys.readouterr().out
+        )
+
         assert "boto3:       ⏹ optional AWS SDK not installed" in out
         assert "pip install 'kirocrew[voice]'" in out
+        assert code == 0
+
+    def test_doctor_stt_apple_unsupported_host_names_its_code(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Reaching a not-ok state here means the operator selected a provider this
+        machine does not support, which is a real configuration fault rather than a
+        first-run state, so it carries its code into the summary."""
+        import kiro_crew.cli_doctor as _doc
+        from kiro_crew.transcribe import CODE_APPLE_UNSUPPORTED
+
+        self._stt(monkeypatch, provider="apple")
+        self._engine(
+            monkeypatch,
+            _doc.stt.Availability(
+                False,
+                CODE_APPLE_UNSUPPORTED,
+                "Apple on-device speech is macOS only",
+            ),
+        )
+
+        out, code = self._report(tmp_path, capsys)
+
+        section = self._stt_section(out)
+        assert "apple:       ❌ Apple on-device speech is macOS only" in section
+        # The local provider's rows must not appear for a host capability.
+        assert "engine:" not in section
+        assert "apple speech (stt_apple_unsupported)" in out
+        assert code == 1
+
+    def test_doctor_stt_apple_available(self, tmp_path, capsys, monkeypatch):
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="apple")
+        self._engine(monkeypatch, _doc.stt.Availability(True))
+
+        out, code = self._report(tmp_path, capsys)
+
+        assert "apple:       ✅ on-device SpeechAnalyzer available" in out
+        assert code == 0
 
 
 class TestConfigDirOverride:

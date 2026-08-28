@@ -82,10 +82,16 @@ class TestDecrypt:
             assert decrypt_media(_encrypt(plain, key), key) == plain
 
     def test_the_wrong_key_is_reported_as_a_key_problem(self) -> None:
-        key = os.urandom(32)
-        blob = _encrypt(b"hello", key)
+        # Fixed keys, NOT `os.urandom`. Decrypting with a wrong key yields random
+        # bytes, and whether the PKCS7 unpad rejects them depends on what the final
+        # byte happens to be, so the random version failed for real at a measured
+        # 0.37% (11 of 3000 trials) with "DID NOT RAISE". AES-CBC is deterministic, so
+        # a fixed pair settles the outcome permanently while testing the same thing.
+        right = bytes(range(32))
+        wrong = bytes(range(32, 64))
+        blob = _encrypt(b"hello", right)
         with pytest.raises(WeComMediaError, match="wrong aeskey"):
-            decrypt_media(blob, os.urandom(32))
+            decrypt_media(blob, wrong)
 
     def test_a_short_key_is_refused(self) -> None:
         with pytest.raises(WeComMediaError, match="32-byte key"):

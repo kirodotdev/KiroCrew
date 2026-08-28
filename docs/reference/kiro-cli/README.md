@@ -12,7 +12,7 @@ Offline mirror of https://kiro.dev/docs/cli/ — fetched 2026-02-27.
 | [chat/model-selection.md](chat/model-selection.md) | /docs/cli/chat/model-selection/ |
 | [chat/session-management.md](chat/session-management.md) | /docs/cli/chat/session-management/ |
 | [chat/subagents.md](chat/subagents.md) | /docs/cli/chat/subagents/ |
-| [chat/voice.md](chat/voice.md) | Voice input (Whisper STT) & output (Polly TTS) |
+| [chat/voice.md](chat/voice.md) | **Not a mirror**, and the one page here with no upstream source: Kiro Crew's own voice setup, speech-to-text in (local by default) and text-to-speech out (local Piper, or Amazon Polly). The tree's do-not-author rule therefore does not reach it. Its behavioral contracts live in [stt-streaming](../../system-specs/features/stt-streaming.md) and [voice-streaming](../../system-specs/features/voice-streaming.md); its settings reference is [configuration](../../../src/kiro_crew/docs/configuration.md). |
 | [steering.md](steering.md) | /docs/cli/steering/ |
 | [skills.md](skills.md) | /docs/cli/skills/ |
 | [hooks.md](hooks.md) | /docs/cli/hooks/ |

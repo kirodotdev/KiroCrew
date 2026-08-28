@@ -1590,19 +1590,6 @@ export async function getSttConfig(): Promise<SttConfig | undefined> {
   }
 }
 
-export async function installStt(): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch('/api/stt/install', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
-  })
-  // The settings UI shows the failure reason, so the status text is carried
-  // through rather than collapsed into a bare boolean.
-  if (res.ok) return { ok: true }
-  return { ok: false, error: `install failed (${res.status})` }
-}
-
 /** Transcribe one recorded clip. `audio` is a base64 payload, as core expects. */
 export async function transcribeAudio(
   audio: string,

@@ -152,6 +152,7 @@ import { useSessionTabs } from '../hooks/useSessionTabs'
 import { anchorForSlot, loadLayout, sessionSlots } from '../hooks/splitLayoutStore'
 import { modelSupportsEffort } from '../lib/effort'
 import { isEmbeddedPane } from '../lib/embedded'
+import { providerLabel } from '../lib/sttProviders'
 import { countCompletedTurns } from '../lib/completedTurns'
 import { displayModel, pinIsWithheld } from '../lib/model'
 import FollowUpCard from '../components/FollowUpCard'
@@ -1898,7 +1899,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Default true so a not-yet-loaded config doesn't flash the modal; the
   // separate sttConfigLoaded guard already covers the pre-load case.
   const sttAvailable = sttCfg?.available !== false
-  const sttProvider = sttCfg?.provider || ''
+  // The LOCALISED provider name, not the wire id: the modal puts it in a
+  // sentence, and a bare id reads as a typo there ("local is not installed").
+  const sttProvider = providerLabel(sttCfg?.provider || '')
   // Default true so the panel is the standard recording surface; the backend
   // sends an explicit boolean, so `undefined` here means "config not loaded yet"
   // rather than "off", and a pre-load recording would otherwise flash the bar.
@@ -7712,6 +7715,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               voiceStreaming={voice.streamEnabled}
               voiceSampleRef={voice.sampleRef}
               voicePartial={voiceOwned ? voice.partial : ''}
+              voiceDownload={voiceOwned ? voice.download : null}
               voiceCaretRef={voiceCaretRef}
               voicePendingCaretRef={voicePendingCaretRef}
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}

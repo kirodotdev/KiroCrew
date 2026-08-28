@@ -120,6 +120,26 @@ from kiro_crew.instances.constants import (
 )
 from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path
 
+# The speech-to-text defaults and the model catalog come from the package that
+# owns them, so the model menu this schema advertises cannot name a model that
+# cannot be downloaded, and a tuning knob cannot document a default the session
+# does not use. No cycle: the only config dependency anywhere under
+# ``kiro_crew.stt`` is the leaf ``config.paths``, never this module.
+from kiro_crew.stt.limits import DEFAULT_IDLE_EVICT_SECS as _STT_DEFAULT_IDLE_EVICT_SECS
+from kiro_crew.stt.limits import DEFAULT_PARTIAL_INTERVAL_MS as _STT_DEFAULT_PARTIAL_INTERVAL_MS
+from kiro_crew.stt.limits import DEFAULT_SILENCE_MS as _STT_DEFAULT_SILENCE_MS
+from kiro_crew.stt.limits import DEFAULT_TIMEOUT_SECS as _STT_DEFAULT_TIMEOUT_SECS
+from kiro_crew.stt.limits import MAX_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MAX
+from kiro_crew.stt.limits import MAX_INTERVAL_MS as _STT_INTERVAL_MS_MAX
+from kiro_crew.stt.limits import MAX_TIMEOUT_SECS as _STT_MAX_TIMEOUT_SECS
+from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
+from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
+from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
+from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
+from kiro_crew.stt.models import CATALOG as _STT_CATALOG
+from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
+from kiro_crew.stt.models import resolve as _resolve_stt_model
+
 logger = logging.getLogger(__name__)
 
 # Top-level config.json keys that save() stamps itself rather than modelling as
@@ -4472,54 +4492,75 @@ class ChannelConfig:
         )
 
 
-_VALID_STT_PROVIDERS = ("whisper", "mlx", "apple", "parakeet", "transcribe", "faster")
+#: The provider an unusable ``stt.provider`` degrades to, and the default. It is
+#: the only one with no precondition: recognition runs in this process on every
+#: supported OS, with no account, no platform floor, and no separate install.
+STT_PROVIDER_LOCAL = "local"
 
-#: Whisper model sizes accepted for ``stt.model``.
-#:
-#: Shared by the ``whisper`` and ``faster`` providers, which both name models this
-#: way. (``mlx`` uses ``stt.mlx_model`` and ``parakeet`` uses
-#: ``stt.parakeet_model``, HuggingFace repo ids, instead.)
-#:
-#: ``turbo`` stays the default: it is the only entry the dashboard offered before,
-#: and it is the best accuracy-per-second of the set. The smaller sizes exist
-#: because they are the difference between usable and unusable on a machine
-#: without much RAM, and ``large-v3`` because it is the accuracy ceiling.
-_VALID_STT_MODELS = ("tiny", "base", "small", "medium", "large-v3", "turbo")
+#: The recognisers a user can select. ``local`` runs whisper.cpp in-process,
+#: ``apple`` uses macOS 26+ on-device recognition, and ``transcribe`` sends audio
+#: to AWS Transcribe (billed, and gated on the AWS consent prompt). All three
+#: produce partial results, so streaming is not a per-provider capability.
+_VALID_STT_PROVIDERS = (STT_PROVIDER_LOCAL, "apple", "transcribe")
+
+#: Providers a stored config may still name. Each of these needed an out-of-band
+#: install the user had to perform themselves (a whisper CLI on ``PATH``, or an
+#: ``mlx``/``faster-whisper`` wheel), which is precisely the cost the resident
+#: local engine removes, so a stored value degrades to ``local`` instead of
+#: leaving voice input pointing at something that is no longer dispatchable.
+_RETIRED_STT_PROVIDERS = ("whisper", "mlx", "parakeet", "faster")
+
+#: Model names accepted for ``stt.model``, derived from the catalog that owns the
+#: download and its sha256 pin rather than restated here. Restating it is how the
+#: advertised menu comes to offer a model that cannot be fetched.
+_VALID_STT_MODELS = tuple(m.name for m in _STT_CATALOG)
+
+
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 
 
-def _validated_stt_provider(value: str) -> str:
-    """Return *value* if recognised, else warn and default to whisper."""
+def _validated_stt_provider(value: object) -> str:
+    """Return *value* if it is selectable, else degrade to ``local`` with a reason.
+
+    Degrades and logs; never raises. This value arrives from ``config.json``, so
+    an unusable one must leave voice input working the way
+    :func:`_normalize_acp_backend` degrades an unusable persisted backend, rather
+    than failing the load that read it.
+    """
     if value in _VALID_STT_PROVIDERS:
-        return value
-    logger.warning("Unknown STT provider '%s', falling back to whisper", value)
-    return "whisper"
+        return str(value)
+    if value in _RETIRED_STT_PROVIDERS:
+        logger.warning(
+            "STT provider %r is retired; using %r instead. It needed a separate "
+            "out-of-band install, which the bundled local engine removes while "
+            "recognising the same speech.",
+            value,
+            STT_PROVIDER_LOCAL,
+        )
+    else:
+        logger.warning(
+            "Unknown STT provider %r; using %r instead. Selectable providers: %s",
+            value,
+            STT_PROVIDER_LOCAL,
+            ", ".join(_VALID_STT_PROVIDERS),
+        )
+    return STT_PROVIDER_LOCAL
 
 
 def _validated_stt_model(value: object) -> str:
-    """Return *value* as the STT model name, warning when it is off the menu.
+    """Return the catalog name *value* selects, falling back to the default.
 
-    Unknown STRINGS pass through with a warning rather than being coerced: the
-    old loader accepted any string, and openai-whisper legitimately takes names
-    outside the dashboard's size menu (``tiny.en``/``base.en``/``small.en``/
-    ``medium.en``/``large-v2``), so coercing a hand-edited config to ``turbo``
-    would silently remove a real capability. Providers degrade safely on a bad
-    name anyway: the whisper CLI errors per-recording, and faster-whisper
-    resolves an unknown name to a download error, both logged, neither fatal.
-    Only a NON-STRING (numbers, null, nested json from a mangled edit) falls
-    back to ``turbo``, since it cannot be passed to any provider at all.
+    Canonicalized here rather than passed through, so every consumer sees a name
+    that names a real catalog entry: the model becomes a filename under the
+    models directory, and an arbitrary string must not reach a path. ``resolve``
+    also maps the names older configuration used onto their current entries, so a
+    stored ``turbo`` keeps the model it asked for instead of silently moving to
+    the default.
     """
-    if isinstance(value, str) and value:
-        if value not in _VALID_STT_MODELS:
-            logger.warning(
-                "STT model '%s' is not in the dashboard menu %s; passing it through"
-                " — the provider will reject it per-recording if it is invalid",
-                value,
-                list(_VALID_STT_MODELS),
-            )
-        return value
-    logger.warning("Non-string STT model %r, falling back to turbo", value)
-    return "turbo"
+    if not isinstance(value, str) or not value:
+        logger.warning("Non-string STT model %r; using %r", value, _STT_DEFAULT_MODEL)
+        return _STT_DEFAULT_MODEL
+    return _resolve_stt_model(value).name
 
 
 _VALID_COMPLETION_KEEP = ("head", "tail", "both")
@@ -4830,45 +4871,100 @@ class ResolvedBindings:
 
 @dataclass
 class SttConfig:
-    """Speech-to-text configuration (opt-in, disabled by default)."""
+    """Speech-to-text configuration.
+
+    Enabled by default. Recognition runs on this machine through the bundled
+    engine, so having voice input available costs one model download the first
+    time it is used and nothing after that.
+    """
 
     enabled: bool = field(
         default=True,
-        metadata=_meta("Enabled", "Enable voice memo transcription."),
+        metadata=_meta("Enabled", "Turn spoken input into text you can send."),
     )
     provider: str = field(
-        default="whisper",
-        metadata=_meta("Provider", "STT provider.", enum=list(_VALID_STT_PROVIDERS)),
-    )
-    whisper_path: str = field(
-        default="",
-        metadata=_meta("Whisper Path", "Path to whisper binary (auto-detected if empty)."),
+        default=STT_PROVIDER_LOCAL,
+        metadata=_meta(
+            "Provider",
+            "Where speech is recognised. `local` runs on this machine and needs no "
+            "account (it downloads one model the first time you dictate), `apple` "
+            "uses the on-device recogniser built into macOS 26 and later, and "
+            "`transcribe` sends your audio to AWS Transcribe, which bills your AWS "
+            "account.",
+            enum=list(_VALID_STT_PROVIDERS),
+        ),
     )
     model: str = field(
-        default="turbo",
+        default=_STT_DEFAULT_MODEL,
         metadata=_meta(
             "Model",
-            "Whisper model size (whisper and faster providers).",
+            "Which speech model the local provider downloads and runs. Bigger is "
+            "more accurate and a longer first-time download: `tiny` on a machine "
+            "short of memory, `base` for everyone, `small` when accents or jargon "
+            "are being misheard, `large-v3-turbo` for the best accuracy available.",
             enum=list(_VALID_STT_MODELS),
         ),
     )
-    mlx_model: str = field(
-        default="mlx-community/whisper-large-v3-turbo",
+    language_code: str = field(
+        default="en-US",
         metadata=_meta(
-            "MLX Model",
-            "Hugging Face repo for the mlx_whisper model (mlx provider only).",
+            "Language Code", "Language for speech recognition (e.g. en-US, fr-FR, es-ES)."
         ),
     )
-    parakeet_model: str = field(
-        default="mlx-community/parakeet-tdt-0.6b-v3",
+    streaming: bool = field(
+        default=True,
         metadata=_meta(
-            "Parakeet Model",
-            "Hugging Face repo for the parakeet-mlx model (parakeet provider only).",
+            "Streaming",
+            "Show words in the message box while you are still speaking rather than "
+            "only once you stop. Every provider supports it; turning it off spends "
+            "less CPU on the local provider and fewer API calls on `transcribe`.",
         ),
     )
-    device: str = field(
-        default="cpu",
-        metadata=_meta("Device", "Computation device.", enum=["cpu", "cuda"]),
+    silence_ms: int = field(
+        default=_STT_DEFAULT_SILENCE_MS,
+        metadata=_meta(
+            "End-of-phrase silence",
+            "How long a pause has to last, in milliseconds, before what you said is "
+            "treated as a finished phrase. Raise it if you are being cut off "
+            "mid-sentence; lower it if the text lags behind you.",
+        ),
+    )
+    partial_interval_ms: int = field(
+        default=_STT_DEFAULT_PARTIAL_INTERVAL_MS,
+        metadata=_meta(
+            "Live update interval",
+            "How often the live transcript is refreshed while you speak, in "
+            "milliseconds. Lower feels more immediate and costs a little more CPU "
+            "per second of speech; higher is steadier to read.",
+        ),
+    )
+    idle_evict_secs: int = field(
+        default=_STT_DEFAULT_IDLE_EVICT_SECS,
+        metadata=_meta(
+            "Release model after",
+            "How long the local model stays loaded in memory after your last "
+            "recording, in seconds. It holds roughly 150 MB at the default model, "
+            "and reloading it takes a fraction of a second, so lower this on a "
+            "machine short of memory. 0 releases it as soon as you stop speaking.",
+        ),
+    )
+    endpointing: bool = field(
+        default=False,
+        metadata=_meta(
+            "Semantic endpointing",
+            "While dictating, run a fast background model on each finished phrase to "
+            "detect when you have asked a complete question, then send it without "
+            "you pressing anything. Needs streaming; off by default.",
+        ),
+    )
+    dictation_panel: bool = field(
+        default=True,
+        metadata=_meta(
+            "Dictation Panel",
+            "Show the animated dictation panel while recording instead of the thin status bar. "
+            "Ignored when the browser lacks WebGL2 or the OS requests reduced motion — both "
+            "fall back to the status bar.",
+        ),
     )
     timeout_secs: int = field(
         default=300,
@@ -4881,41 +4977,6 @@ class SttConfig:
     transcribe_profile: str = field(
         default="",
         metadata=_meta("Transcribe Profile", "AWS profile for Transcribe API."),
-    )
-    language_code: str = field(
-        default="en-US",
-        metadata=_meta(
-            "Language Code", "Language for speech recognition (e.g. en-US, fr-FR, es-ES)."
-        ),
-    )
-    streaming: bool = field(
-        default=False,
-        metadata=_meta(
-            "Streaming",
-            "Stream partial transcripts live to the dashboard input. Supported by the "
-            "streaming providers only: `transcribe` (AWS, cloud) and `apple` "
-            "(on-device, macOS 26+). The whisper/mlx CLIs have no partial-result "
-            "channel.",
-        ),
-    )
-    endpointing: bool = field(
-        default=False,
-        metadata=_meta(
-            "Semantic endpointing",
-            "While streaming dictation, run a fast background model on each stable "
-            "transcript segment to detect when you have finished a complete request, "
-            "then auto-submit. Streaming providers only (transcribe, apple); "
-            "off by default.",
-        ),
-    )
-    dictation_panel: bool = field(
-        default=True,
-        metadata=_meta(
-            "Dictation Panel",
-            "Show the animated dictation panel while recording instead of the thin status bar. "
-            "Ignored when the browser lacks WebGL2 or the OS requests reduced motion — both "
-            "fall back to the status bar.",
-        ),
     )
 
 
@@ -7968,23 +8029,45 @@ class KiroCrewConfig:
             default_workspace=data.get("default_workspace", "default"),
             memory_stores=memory_stores,
             default_memory_store=default_memory_store_val,
+            # Every default below restates its dataclass default, and the two must
+            # stay equal: the branch above returns bare dataclass defaults when
+            # neither config file exists, so a disagreement gives one field two
+            # different defaults depending on whether a config.json is present, and
+            # the schema, the docs and the doctor can only describe one of them.
             stt=SttConfig(
-                enabled=stt_data.get("enabled", False),
-                provider=_validated_stt_provider(stt_data.get("provider", "whisper")),
-                whisper_path=stt_data.get("whisper_path", ""),
-                # Default "turbo" — faster and recommended for most users
-                # (809M vs 74M, but much better latency).
-                model=_validated_stt_model(stt_data.get("model", "turbo")),
-                mlx_model=stt_data.get("mlx_model", "mlx-community/whisper-large-v3-turbo"),
-                parakeet_model=stt_data.get("parakeet_model", "mlx-community/parakeet-tdt-0.6b-v3"),
-                device=stt_data.get("device", "cpu"),
-                timeout_secs=stt_data.get("timeout_secs", 300),
-                transcribe_region=stt_data.get("transcribe_region", "us-east-1"),
-                transcribe_profile=stt_data.get("transcribe_profile", ""),
+                enabled=_safe_bool(stt_data.get("enabled"), True),
+                provider=_validated_stt_provider(stt_data.get("provider", STT_PROVIDER_LOCAL)),
+                model=_validated_stt_model(stt_data.get("model", _STT_DEFAULT_MODEL)),
                 language_code=stt_data.get("language_code", "en-US"),
-                streaming=stt_data.get("streaming", False),
+                streaming=_safe_bool(stt_data.get("streaming"), True),
+                silence_ms=_safe_int(
+                    stt_data.get("silence_ms"),
+                    _STT_DEFAULT_SILENCE_MS,
+                    lo=_STT_MIN_SILENCE_MS,
+                    hi=_STT_INTERVAL_MS_MAX,
+                ),
+                partial_interval_ms=_safe_int(
+                    stt_data.get("partial_interval_ms"),
+                    _STT_DEFAULT_PARTIAL_INTERVAL_MS,
+                    lo=_STT_MIN_PARTIAL_INTERVAL_MS,
+                    hi=_STT_INTERVAL_MS_MAX,
+                ),
+                idle_evict_secs=_safe_int(
+                    stt_data.get("idle_evict_secs"),
+                    _STT_DEFAULT_IDLE_EVICT_SECS,
+                    lo=_STT_IDLE_EVICT_SECS_MIN,
+                    hi=_STT_IDLE_EVICT_SECS_MAX,
+                ),
                 endpointing=_safe_bool(stt_data.get("endpointing"), False),
                 dictation_panel=_safe_bool(stt_data.get("dictation_panel"), True),
+                timeout_secs=_safe_int(
+                    stt_data.get("timeout_secs"),
+                    _STT_DEFAULT_TIMEOUT_SECS,
+                    lo=_STT_MIN_TIMEOUT_SECS,
+                    hi=_STT_MAX_TIMEOUT_SECS,
+                ),
+                transcribe_region=stt_data.get("transcribe_region", "us-east-1"),
+                transcribe_profile=stt_data.get("transcribe_profile", ""),
             ),
             # Every numeric knob is clamped to the same ceiling the MCP tool
             # schemas enforce, so a hand-edited config.json cannot ask for an

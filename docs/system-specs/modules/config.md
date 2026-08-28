@@ -209,8 +209,13 @@ release that changed it. `superseded_default_drift(base_data)` returns the entri
 whose stored value equals the old default, comparing type as well as value so a
 stored `0` is not read as `False`.
 
-Registered so far: `mcp_gateway.forward_declared_env` (False -> True, #4566) and
-`session.autocompact_pct` (90.0 -> 70.0, #4388).
+Registered so far: `mcp_gateway.forward_declared_env` (False -> True, #4566),
+`session.autocompact_pct` (90.0 -> 70.0, #4388), `stt.streaming` (False -> True,
+0.5.0) and `stt.model` ("turbo" -> "base", 0.5.0).
+
+`stt.provider` is deliberately absent even though its default moved to `local`:
+`_validated_stt_provider` coerces a retired value at parse time, so the stored
+value never wins and there is no drift for an operator to adopt.
 
 Both sides of an entry are **history**, so both are literals: a later change to
 the same key APPENDS a new entry rather than editing an existing one, which keeps
@@ -731,11 +736,19 @@ class ChannelConfig:
 
 @dataclass
 class SttConfig:
-    enabled: bool = True           # enabled by default; gated by whisper availability
-    whisper_path: str = ""         # auto-detected if empty
-    model: str = "turbo"           # turbo (~1.6 GB, 809M params, ~8x faster than large)
-    device: str = "cpu"            # "cpu" or "cuda"
+    enabled: bool = True           # on by default: the default provider needs no account
+    provider: str = "local"        # "local" | "apple" | "transcribe"; a retired value degrades to "local"
+    model: str = "base"            # a kiro_crew.stt.models CATALOG name; a superseded name resolves via its alias table
+    language_code: str = "en-US"
+    streaming: bool = True         # live partials; every provider produces them
+    silence_ms: int = 700          # end-of-phrase pause; clamped to _STT_INTERVAL_MS_MIN.._MAX
+    partial_interval_ms: int = 400 # live-transcript refresh cadence; same clamp
+    idle_evict_secs: int = 600     # release the resident local model after this idle; 0 = at end of recording
+    endpointing: bool = False      # semantic auto-submit on a complete utterance; needs streaming
+    dictation_panel: bool = True   # animated recording panel; falls back to the status bar
     timeout_secs: int = 300
+    transcribe_region: str = "us-east-1"   # transcribe provider only
+    transcribe_profile: str = ""           # transcribe provider only; empty = default credential chain
 
 @dataclass
 class ComputerUseConfig:

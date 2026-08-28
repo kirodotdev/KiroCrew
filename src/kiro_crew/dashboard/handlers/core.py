@@ -13,15 +13,15 @@ import platform
 import re
 import shlex
 import shutil
-import subprocess
-import sys
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
-from kiro_crew import beacon, dep_sync, platform_compat
+from kiro_crew import beacon, platform_compat, stt
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -42,17 +42,25 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
-from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS
+from kiro_crew.dashboard.stt_stream import _STREAMING_PROVIDERS, PROVIDER_LOCAL
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token, parse_duration
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
+from kiro_crew.stt import models as stt_models
+from kiro_crew.stt.limits import (
+    MAX_IDLE_EVICT_SECS,
+    MAX_INTERVAL_MS,
+    MIN_IDLE_EVICT_SECS,
+    MIN_PARTIAL_INTERVAL_MS,
+    MIN_SILENCE_MS,
+)
 from kiro_crew.transcribe import (
-    BREW_PATH_DIRS,
-    _faster_whisper_model,
+    _find_ffmpeg,
+    _whisper_language,
+    availability_detail,
     ensure_ffmpeg_in_path,
-    find_brew,
     is_available,
 )
 
@@ -484,83 +492,25 @@ async def pwa_file(request: web.Request) -> web.StreamResponse:
 # ── STT (Speech-to-Text) ──
 
 
-#: Whisper model sizes offered in the STT picker and accepted on PUT.
-#:
-#: Maps model -> approximate on-disk download size, which is the number that
-#: actually decides the choice on a laptop. Keys MUST stay in step with
-#: ``_VALID_STT_MODELS`` in the config loader: this dict is the PUT allowlist, so a
-#: model the loader accepts but this omits would be silently rejected by the API.
-#: ``test_stt_model_sizes_cover_valid_models`` pins that.
-_STT_MODEL_SIZES: dict[str, str] = {
-    "tiny": "~75 MB",
-    "base": "~145 MB",
-    "small": "~484 MB",
-    "medium": "~1.5 GB",
-    "large-v3": "~3.1 GB",
-    "turbo": "~1.6 GB",
-}
-
-# Curated MLX model repos surfaced in the STT picker and accepted on PUT.
-# Maps Hugging Face repo -> approximate on-disk download size.
-_STT_MLX_MODELS: dict[str, str] = {
-    "mlx-community/whisper-large-v3-turbo": "~809 MB",
-}
-
-# Curated parakeet-mlx model repos surfaced in the STT picker and accepted on
-# PUT. Maps Hugging Face repo -> approximate on-disk download size. Parakeet TDT
-# 0.6b v3 is multilingual (25 languages) and streams far faster than Whisper for
-# a fraction of the RAM, which is why it is the default.
-_STT_PARAKEET_MODELS: dict[str, str] = {
-    "mlx-community/parakeet-tdt-0.6b-v3": "~600 MB",
-}
-
-
-def _is_apple_silicon() -> bool:
-    """True if running on Apple Silicon hardware.
-
-    ``platform.machine()`` reports ``x86_64`` when the interpreter runs under
-    Rosetta 2 — which KiroCrew's bundled Python does — so it cannot be used to
-    detect the host CPU. The ``hw.optional.arm64`` sysctl reports the true
-    hardware capability regardless of translation.
-    """
-    if platform.system() != "Darwin":
-        return False
-    if platform.machine() == "arm64":
-        return True
-    try:
-        out = subprocess.run(
-            ["sysctl", "-n", "hw.optional.arm64"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        return out.stdout.strip() == "1"
-    except (OSError, subprocess.SubprocessError):
-        return False
+#: Speech models accepted on PUT, mapped to their download size in BYTES — the
+#: number that actually decides the choice on a laptop. DERIVED from the
+#: sha256-pinned catalog rather than restated, so a model the recogniser can fetch
+#: cannot be rejected by the API (or the reverse). Bytes rather than a formatted
+#: label because the dashboard is translated into 12 languages: a server-side
+#: "~148 MB" cannot follow the reader's locale, and the frontend formats it.
+_STT_MODEL_SIZES: dict[str, int] = {m.name: m.size_bytes for m in stt_models.CATALOG}
 
 
 def _stt_providers() -> list[str]:
     """STT provider values offered to the UI.
 
-    ``mlx`` (Whisper on Apple's MLX framework) only runs on Apple Silicon, and
-    ``apple`` (the on-device SpeechAnalyzer framework) needs macOS 26 or later plus
-    a Swift toolchain — both are omitted entirely elsewhere rather than being shown
-    as unusable options. ``parakeet`` (NVIDIA Parakeet via parakeet-mlx) is likewise
-    Apple-Silicon-only and gated the same way as ``mlx``. This is the single source
-    of truth for which providers are advertised (GET) and accepted (PUT).
+    ``local`` (the resident whisper.cpp recogniser) and ``transcribe`` (paid AWS)
+    run everywhere. ``apple`` (the on-device SpeechAnalyzer framework) needs
+    macOS 26 or later plus a Swift toolchain, so it is omitted entirely rather
+    than shown as an option that cannot be selected. This is the single source of
+    truth for which providers are advertised (GET) and accepted (PUT).
     """
     providers = list(_VALID_STT_PROVIDERS)
-    is_apple_silicon = _is_apple_silicon()
-    if not is_apple_silicon and "mlx" in providers:
-        providers.remove("mlx")
-    # `parakeet` shares the exact same Apple-Silicon gate as `mlx`. Reuse the
-    # result computed above rather than calling `_is_apple_silicon()` again —
-    # off Apple Silicon (e.g. under Rosetta) that call shells out to `sysctl`
-    # synchronously, and `_stt_providers()` runs on the dashboard's event loop
-    # (GET/PUT /api/config/stt), so a second call doubles that blocking cost
-    # on every request.
-    if not is_apple_silicon and "parakeet" in providers:
-        providers.remove("parakeet")
     if "apple" in providers:
         from kiro_crew import apple_speech
 
@@ -588,7 +538,80 @@ _STT_LANGUAGE_CODES: tuple[str, ...] = (
 )
 
 
-_stt_install_status: dict[str, str] = {"step": "idle", "detail": "", "error": ""}
+#: Machine-readable reasons on the STT endpoints' non-2xx bodies. The dashboard
+#: renders localised text and cannot key off an English sentence, so the prose is
+#: advisory and these are the contract. Codes the stt package already owns
+#: (``stt_extra_missing``, ``stt_model_missing``, …) are forwarded unchanged.
+_CODE_DASHBOARD_USER_REQUIRED = "dashboard_user_required"
+_CODE_STT_UNAVAILABLE = "stt_unavailable"
+_CODE_STT_MISSING_AUDIO = "stt_missing_audio_field"
+_CODE_STT_AUDIO_TOO_LARGE = "stt_audio_too_large"
+_CODE_STT_FAILED = "stt_transcription_failed"
+
+#: Background model-download and prewarm tasks, held ONLY so the loop keeps a
+#: strong reference: a task nobody references can be collected mid-await. Both
+#: endpoints answer 202 and let the caller poll ``GET /api/stt/status``, because
+#: the whole point of the pair is that a 148 MB fetch is not on the request the
+#: user is waiting behind.
+_stt_background_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _spawn_stt_background(coro: Coroutine[Any, Any, Any]) -> None:
+    """Run *coro* detached, keeping a reference until it finishes."""
+    task = asyncio.create_task(coro)
+    _stt_background_tasks.add(task)
+    task.add_done_callback(_stt_background_tasks.discard)
+
+
+def _deny_app_token(request: web.Request, operation: str) -> web.Response | None:
+    """Refuse an app token on the dashboard-only STT endpoints. 403 or None.
+
+    ``request["user"]`` is truthy for an app token too, so a cookie check alone
+    does not separate a browser from an app that declared this path in its
+    manifest's ``permissions.api``. These endpoints start a model download and
+    warm a resident model inside the gateway, which is operator setup rather than
+    something an app earns by naming a path. The live transcription surfaces
+    (``/api/ws/stt``, ``POST /api/stt/transcribe``) are deliberately NOT gated
+    this way: shipped apps reach them on an app token.
+
+    An absent ``app`` key is refused along with a non-empty one, so an
+    unauthenticated route can only ever fail closed here.
+    """
+    if request.get("app") == "":
+        return None
+    # Best-effort: an unwrapped SEL failure here would replace the intended 403
+    # with a 500, which is the one outcome a refusal must never turn into.
+    try:
+        _sel().log_api_access(
+            caller=str(request.get("app") or request.get("user") or "unknown"),
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="dashboard user required",
+        )
+    except Exception:
+        logger.warning("SEL logging failed for %s", operation, exc_info=True)
+    return web.json_response(
+        {"error": "dashboard user required", "code": _CODE_DASHBOARD_USER_REQUIRED},
+        status=403,
+    )
+
+
+def _stt_positive_int(body: dict, key: str, *, minimum: int, maximum: int) -> int | None:
+    """*body*'s value for *key* when it is an int inside the range, else None.
+
+    Both ends are required rather than defaulted, because a knob accepted here and
+    then clamped by the config loader is worse than one refused: the value the user
+    reads back would not be the value in force.
+
+    ``bool`` is excluded explicitly because it subclasses ``int``: without the
+    check a client sending a checkbox value would persist ``True`` as ``1``.
+    """
+    value = body.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return value if minimum <= value <= maximum else None
 
 
 async def api_stt_config(request: web.Request) -> web.Response:
@@ -622,60 +645,74 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 # unparseable config instead of silently resetting it.
                 logger.warning("STT config PUT: config.json is unparseable", exc_info=True)
                 return web.json_response({"error": "failed to read config file"}, status=500)
-            stt = data.setdefault("stt", {})
+            stt_section = data.setdefault("stt", {})
             if "enabled" in body:
-                stt["enabled"] = bool(body["enabled"])
+                stt_section["enabled"] = bool(body["enabled"])
             if "provider" in body and body["provider"] in _stt_providers():
-                stt["provider"] = body["provider"]
+                stt_section["provider"] = body["provider"]
             if "model" in body and body["model"] in _STT_MODEL_SIZES:
-                stt["model"] = body["model"]
-            if (
-                "mlx_model" in body
-                and isinstance(body["mlx_model"], str)
-                and body["mlx_model"] in _STT_MLX_MODELS
-            ):
-                stt["mlx_model"] = body["mlx_model"]
-            if (
-                "parakeet_model" in body
-                and isinstance(body["parakeet_model"], str)
-                and body["parakeet_model"] in _STT_PARAKEET_MODELS
-            ):
-                stt["parakeet_model"] = body["parakeet_model"]
+                stt_section["model"] = body["model"]
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
-                stt["transcribe_region"] = body["transcribe_region"]
+                stt_section["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
-                stt["transcribe_profile"] = body["transcribe_profile"]
+                stt_section["transcribe_profile"] = body["transcribe_profile"]
             if "language_code" in body and isinstance(body["language_code"], str):
-                stt["language_code"] = body["language_code"]
+                stt_section["language_code"] = body["language_code"]
             if "streaming" in body and isinstance(body["streaming"], bool):
-                stt["streaming"] = body["streaming"]
+                stt_section["streaming"] = body["streaming"]
             if "endpointing" in body and isinstance(body["endpointing"], bool):
-                stt["endpointing"] = body["endpointing"]
+                stt_section["endpointing"] = body["endpointing"]
             if "dictation_panel" in body and isinstance(body["dictation_panel"], bool):
-                stt["dictation_panel"] = body["dictation_panel"]
+                stt_section["dictation_panel"] = body["dictation_panel"]
+            # Every bound comes from kiro_crew.stt.limits, which is what the
+            # recogniser itself reads, and the endpoint accepts exactly the range
+            # the config loader will keep. Refusing here rather than storing a
+            # value the loader then clamps is the whole point: a setting a user
+            # reads back has to be the setting in force. MIN_IDLE_EVICT_SECS is 0
+            # and it means "release the model as soon as it goes idle", not
+            # "never release".
+            silence_ms = _stt_positive_int(
+                body, "silence_ms", minimum=MIN_SILENCE_MS, maximum=MAX_INTERVAL_MS
+            )
+            if silence_ms is not None:
+                stt_section["silence_ms"] = silence_ms
+            partial_interval = _stt_positive_int(
+                body,
+                "partial_interval_ms",
+                minimum=MIN_PARTIAL_INTERVAL_MS,
+                maximum=MAX_INTERVAL_MS,
+            )
+            if partial_interval is not None:
+                stt_section["partial_interval_ms"] = partial_interval
+            idle_evict = _stt_positive_int(
+                body,
+                "idle_evict_secs",
+                minimum=MIN_IDLE_EVICT_SECS,
+                maximum=MAX_IDLE_EVICT_SECS,
+            )
+            if idle_evict is not None:
+                stt_section["idle_evict_secs"] = idle_evict
             await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(_atomic_json_write, path, data)
         cfg = KiroCrewConfig.load()
 
     provider = cfg.stt.provider
-    # _stt_prereq_commands probes for a system python/brew via subprocess; run it
-    # off the event loop so a slow/again-spawned interpreter check can't stall the
-    # gateway (observed as "event-loop heartbeat: lag" on Windows where the probe
-    # is heavier). The GET is read-only, so threading it is safe. The ffmpeg and
-    # install-channel probes ride in the same thread: ensure_ffmpeg_in_path,
-    # find_spec and the PEP 668 marker check all touch the filesystem, which
-    # does not belong on the loop either. is_available() rides here too for the
-    # same reason and not as an afterthought: EVERY provider branch of it reaches
-    # the filesystem — a real `import amazon_transcribe` plus shutil.which for
-    # `transcribe`, find_spec for `faster`, and a stats-only lookup for `mlx`,
-    # `parakeet` and `apple` — so leaving it on the loop would put the heaviest
-    # probe of the set outside the thread that exists to hold the lighter ones.
+    # Every probe below touches the filesystem or imports an optional extra, so
+    # none of them belongs on the event loop, and they ride one thread rather than
+    # several: _stt_prereq_commands resolves ffmpeg and Homebrew, the
+    # install-channel probe reads the PEP 668 marker, and availability_detail
+    # imports the recogniser (`local`) or the AWS client (`transcribe`). Leaving
+    # the availability probe out of the thread would put the heaviest one of the
+    # set outside the thread that exists to hold the lighter ones. Windows was
+    # where this first showed up, as "event-loop heartbeat: lag".
 
     def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool, bool]:
         cmds = _stt_prereq_commands(provider)
         ensure_ffmpeg_in_path()
-        no_ffmpeg = shutil.which("ffmpeg") is None
-        unsupported = not _voice_extra_importable() and not _pip_install_channel_available()
+        # `_find_ffmpeg`, not a bare `which`: the settings panel must report on the
+        # binary the transcode path would actually run, and that one ignores PATH.
+        no_ffmpeg = _find_ffmpeg() is None
+        unsupported = not _transcribe_extra_importable() and not _pip_install_channel_available()
         # The bundled desktop app is the one unsupported cause with different
         # user guidance (no Python environment of the user's own to fix), so
         # the UI needs to distinguish it from the pip-less/PEP 668 causes.
@@ -694,8 +731,6 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "enabled": cfg.stt.enabled,
             "provider": provider,
             "model": cfg.stt.model,
-            "mlx_model": cfg.stt.mlx_model,
-            "parakeet_model": cfg.stt.parakeet_model,
             "available": available,
             "streaming": cfg.stt.streaming,
             "endpointing": cfg.stt.endpointing,
@@ -703,9 +738,15 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
             "language_code": cfg.stt.language_code,
+            "silence_ms": cfg.stt.silence_ms,
+            "partial_interval_ms": cfg.stt.partial_interval_ms,
+            "idle_evict_secs": cfg.stt.idle_evict_secs,
+            # The PUT allowlist, so a picker built from it cannot offer a value
+            # this endpoint would reject. Which of them are already on disk is
+            # runtime state and belongs to GET /api/stt/status, which is also what
+            # a panel polls during a transfer — probing four files on every config
+            # read would put that cost on the wrong request.
             "models": _STT_MODEL_SIZES,
-            "mlx_models": _STT_MLX_MODELS,
-            "parakeet_models": _STT_PARAKEET_MODELS,
             "providers": _stt_providers(),
             # Which of those providers can stream partial results. Served from the
             # backend's own `_STREAMING_PROVIDERS` so the Settings UI gates the
@@ -713,9 +754,6 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # name — the latter silently hid the toggle when `apple` was added.
             "streaming_providers": list(_STREAMING_PROVIDERS),
             "language_codes": list(_STT_LANGUAGE_CODES),
-            "install_step": _stt_install_status["step"],
-            "install_detail": _stt_install_status["detail"],
-            "install_error": _stt_install_status["error"],
             "prereqs": prereqs,
             # True when no install channel can make Transcribe's import
             # requirement (`boto3` + `amazon-transcribe`) satisfiable in this
@@ -725,28 +763,139 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # threaded probe above: find_spec and the marker check touch the
             # filesystem.
             "transcribe_unsupported": transcribe_unsupported,
-            # True when this platform has no CTranslate2 wheel at all, so the
-            # faster-whisper install can only ever fail. Mirrors
-            # `transcribe_unsupported` so the Settings card can show the notice and
-            # the alternatives BEFORE the user presses Install, rather than turning
-            # every press into an identical 400. Deliberately NOT in the threaded
-            # probe above: `is_windows_on_arm()` short-circuits on a module constant
-            # off Windows and otherwise reads a cached `platform.uname()` — no
-            # filesystem, no subprocess, so it is loop-safe as the probes are not.
-            "faster_unsupported": platform_compat.is_windows_on_arm(),
             "bundled_interpreter": bundled_app,
-            # ffmpeg is required to remux the browser's .webm for the
-            # non-streaming path, but is_available() only logs a warning when
-            # it is absent — so availability can read "ready" while dictation
-            # would fail. Served separately so the UI can surface the gap even
-            # when the provider is otherwise available.
+            # ffmpeg is required to decode the browser's .webm on the batch upload
+            # path, but is_available() only logs a warning when it is absent — so
+            # availability can read "ready" while an upload would fail. Served
+            # separately so the UI can surface the gap even when the provider is
+            # otherwise available.
             "ffmpeg_missing": ffmpeg_missing,
         }
     )
 
 
-def _voice_extra_importable() -> bool:
-    """True when the ``voice`` extra actually imported in this process.
+async def api_stt_status(request: web.Request) -> web.Response:
+    """GET /api/stt/status — whether speech recognition can run, and what it needs.
+
+    Distinct from ``GET /api/config/stt``, which serves the operator's settings:
+    this is the runtime state a panel polls — the availability reason as a code
+    rather than prose, whether the configured model is on disk, whether a model is
+    resident right now, and the live progress of a transfer started by
+    ``POST /api/stt/prepare``.
+    """
+    denied = _deny_app_token(request, "stt.status")
+    if denied is not None:
+        return denied
+    cfg = KiroCrewConfig.load()
+    model = stt_models.resolve(cfg.stt.model)
+
+    # availability_detail imports the recogniser (or the AWS client), and each
+    # is_present stats a model file: none of it belongs on the loop.
+    def _probe() -> tuple[stt.Availability, list[dict[str, object]], bool]:
+        # kiro_crew.stt.engine is imported HERE rather than at module scope: it
+        # pulls numpy, and this module is imported on the gateway boot path, where
+        # a gateway with speech-to-text switched off would otherwise pay for an
+        # array library before it binds its socket.
+        from kiro_crew.stt import engine as stt_engine
+
+        catalog = [
+            {"name": m.name, "size_bytes": m.size_bytes, "present": stt_models.is_present(m)}
+            for m in stt_models.CATALOG
+        ]
+        return availability_detail(cfg.stt), catalog, stt_engine.shared_engine().loaded
+
+    detail, catalog, engine_loaded = await asyncio.to_thread(_probe)
+    present = {str(row["name"]): bool(row["present"]) for row in catalog}
+    return web.json_response(
+        {
+            "provider": cfg.stt.provider,
+            "available": detail.ok,
+            "code": detail.code,
+            "detail": detail.detail,
+            "model": model.name,
+            "model_present": present.get(model.name, False),
+            "model_bytes": model.size_bytes,
+            # The whole catalog, in the order the picker offers it (smallest
+            # first), with sizes as bytes so the dashboard formats them in the
+            # reader's locale. `present` is why this cannot be a static frontend
+            # table: it is per-host state that changes as models are fetched.
+            "models": catalog,
+            # Whether a model is resident in this process, which is what decides
+            # between a 30 ms transcription and one that pays a load first.
+            "engine_loaded": engine_loaded,
+            "download": dict(stt_models.store().status),
+        }
+    )
+
+
+async def api_stt_prepare(request: web.Request) -> web.Response:
+    """POST /api/stt/prepare — start, or join, the one-time speech-model download.
+
+    Answers 202 immediately with the current transfer state; the caller polls
+    ``GET /api/stt/status`` for progress. Concurrent callers share one transfer:
+    the model store serialises them behind its own lock, so pressing this twice
+    cannot start two downloads of the same file.
+
+    An optional ``{"model": name}`` body fetches a model the operator has not
+    saved yet, so the picker can offer the weights BEFORE the selection is
+    committed. Only catalog names reach the network: an unknown one resolves to
+    the default with a logged reason, the same as the configured value does.
+    """
+    denied = _deny_app_token(request, "stt.prepare")
+    if denied is not None:
+        return denied
+    cfg = KiroCrewConfig.load()
+    try:
+        body = await request.json()
+    except Exception:
+        # No body, or an unparseable one. Both mean "the configured model", which
+        # is the only reading that makes this endpoint useful without a client.
+        body = {}
+    requested = body.get("model") if isinstance(body, dict) else None
+    name = requested if isinstance(requested, str) and requested else cfg.stt.model
+    model = stt_models.resolve(name)
+    if stt_models.store().status.get("step") != "downloading":
+        # Skipped while a transfer is already running purely so a polling panel
+        # cannot accumulate tasks; the store's lock, not this check, is what makes
+        # concurrent callers safe.
+        _spawn_stt_background(stt.ensure_model(name))
+    return web.json_response(
+        {"model": model.name, "download": dict(stt_models.store().status)}, status=202
+    )
+
+
+async def api_stt_prewarm(request: web.Request) -> web.Response:
+    """POST /api/stt/prewarm — load and warm the recogniser ahead of the microphone.
+
+    Fire-and-forget, and called when the user reaches for the mic rather than when
+    they release it: a first-ever model load compiles a GPU pipeline (measured at
+    7.4 s) and the first decode after any load allocates its graph (154-528 ms), so
+    both are paid while the user is still speaking instead of after.
+    """
+    denied = _deny_app_token(request, "stt.prewarm")
+    if denied is not None:
+        return denied
+    cfg = KiroCrewConfig.load()
+    if cfg.stt.provider != PROVIDER_LOCAL:
+        # Prewarming is specific to the resident whisper.cpp model. Running it under
+        # `apple` or `transcribe` loaded — and on a first run DOWNLOADED — 148 MB of
+        # weights the configured provider will never decode with, triggered by
+        # nothing more than the user reaching for the microphone.
+        return web.json_response(
+            {"ok": True, "skipped": "provider_not_local"},
+            status=202,
+        )
+    _spawn_stt_background(
+        stt.prewarm(
+            model_name=cfg.stt.model,
+            language=_whisper_language(cfg.stt.language_code),
+        )
+    )
+    return web.json_response({"ok": True}, status=202)
+
+
+def _transcribe_extra_importable() -> bool:
+    """True when AWS Transcribe's half of the ``voice`` extra imported here.
 
     Reads ``kiro_crew.transcribe``'s own import outcome (its module-level
     try/except sets ``boto3 = None`` on failure) rather than probing specs: a
@@ -769,7 +918,7 @@ def _voice_extra_importable() -> bool:
 def _ffmpeg_install_commands() -> list[str]:
     """Platform command(s) that put ffmpeg on PATH, or ``[]`` when it already is."""
     ensure_ffmpeg_in_path()
-    if shutil.which("ffmpeg"):
+    if _find_ffmpeg():
         return []
     system = platform.system()
     if system == "Darwin":
@@ -791,579 +940,70 @@ def _ffmpeg_install_commands() -> list[str]:
     return ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
 
 
-def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
-    """Return shell commands the user must run manually (need sudo/GUI).
+def _stt_prereq_commands(provider: str = "local") -> list[str]:
+    """Shell commands the user has to run themselves (they need sudo, a GUI, or a shell).
 
-    The ``mlx`` and ``parakeet`` providers have their own lightweight prerequisite
-    (``pipx install mlx-whisper`` / ``pipx install parakeet-mlx``) and only need
-    ffmpeg beyond that — they do not require the system-python/whisper toolchain.
-    The ``faster`` provider needs nothing manual at all.
+    Deliberately short, and there is no install button behind it any more: the
+    only thing a provider can need beyond an already-installed Kiro Crew is the
+    optional ``voice`` extra in this interpreter, plus ffmpeg for the batch upload
+    path (the browser records WebM, which has to be decoded before recognition).
+    ``local`` fetches its own model, and ``apple`` compiles its own helper on
+    demand, so neither has anything else to install.
+
+    An empty list means "nothing to do", which is the steady state.
     """
-    if provider == "faster":
-        # Nothing manual: faster-whisper is a pip install of prebuilt wheels, and it
-        # decodes audio through PyAV's bundled FFmpeg — so neither the system ffmpeg
-        # nor the brew/Xcode toolchain the CLI providers need applies here. Returned
-        # before ensure_ffmpeg_in_path() so this path does no filesystem probing for
-        # a binary it will not use.
-        return []
-    if provider == "transcribe":
-        # AWS Transcribe's availability is "boto3 + amazon-transcribe importable
-        # by THIS gateway process" (see kiro_crew.transcribe.is_available); the
-        # optional ``voice`` extra provides both, and there is no separate
-        # binary, so the Install button flow does not apply.
-        cmds: list[str] = []
-        if not _voice_extra_importable():
-            if not _pip_install_channel_available():
-                # No install channel can make the extra importable in this
-                # build/interpreter — the Settings page shows an unsupported
-                # notice (`transcribe_unsupported`) instead of a command that
-                # cannot succeed.
-                return []
-            # The command targets the gateway's own interpreter: the import
-            # happens in-process, so a system python or ``--user`` install is
-            # not importable here.
-            cmds.append(pip_extra_install_command("voice"))
-        # The non-streaming path remuxes the browser's .webm through ffmpeg, and
-        # is_available() only logs a warning when ffmpeg is absent — this list
-        # is the one user-visible surface for that gap.
-        cmds.extend(_ffmpeg_install_commands())
-        return cmds
-
-    ensure_ffmpeg_in_path()
-
-    system = platform.system()
-    cmds = []
-    has_ffmpeg = shutil.which("ffmpeg") is not None
-
-    if provider in ("mlx", "parakeet"):
-        # mlx/parakeet are only advertised on Apple Silicon (see _stt_providers);
-        # on any other platform there are no prerequisites to surface.
-        if not _is_apple_silicon():
-            return []
-        # The Install button (see _build_stt_install_script) installs ffmpeg,
-        # pipx, and the mlx-based CLI itself. The only thing it cannot bootstrap
-        # non-interactively is Homebrew, so that is the sole manual prereq —
-        # listing the others here would duplicate the button. ``find_brew``
-        # rather than ``shutil.which``: the desktop app's gateway inherits
-        # PATH=/usr/bin:/bin:/usr/sbin:/sbin, so which() would claim Homebrew is
-        # missing on every DMG install that has it.
-        if not find_brew():
-            return [
-                '/bin/bash -c "$(curl -fsSL'
-                ' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-            ]
-        # ffmpeg is still surfaced when missing: the Install button covers it
-        # during setup, but a ready mlx install that later loses ffmpeg has no
-        # button — this list is what the ready-state warning renders.
-        return _ffmpeg_install_commands()
-
-    has_python = _find_suitable_python() is not None
-
-    if system == "Darwin":
-        try:
-            subprocess.run(["/usr/bin/xcrun", "--show-sdk-path"], capture_output=True, timeout=5)
-        except Exception:
-            cmds.append("sudo xcodebuild -license accept")
-        if not find_brew():
-            cmds.append(
-                '/bin/bash -c "$(curl -fsSL'
-                ' https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-            )
-        pkgs: list[str] = []
-        if not has_python:
-            pkgs.append("python@3.12")
-        if not has_ffmpeg:
-            pkgs.append("ffmpeg")
-        if pkgs:
-            cmds.append("brew install " + " ".join(pkgs))
+    cmds: list[str] = []
+    if provider == PROVIDER_LOCAL:
+        # Only the missing-extra case is actionable by pip. A platform with no
+        # prebuilt wheel needs a C++ toolchain instead, and the availability
+        # `detail` on GET /api/stt/status is what says so.
+        needs_extra = stt.availability().code == stt.CODE_EXTRA_MISSING
+    elif provider == "transcribe":
+        needs_extra = not _transcribe_extra_importable()
     else:
-        is_al2023 = _is_al2023()
-        if not has_python:
-            if shutil.which("apt-get"):
-                cmds.append("sudo apt-get install -y python3 python3-pip python3-dev gcc g++")
-            elif is_al2023:
-                cmds.append(
-                    "sudo dnf install -y python3.11 python3.11-pip python3.11-devel gcc gcc-c++"
-                )
-            else:
-                # AL2: python3.7 is too old for whisper; Docker mode handles it
-                pass
-        if not has_ffmpeg:
-            cmds.extend(_ffmpeg_install_commands())
+        needs_extra = False
+    # Suppressed where no pip channel into this interpreter exists — frozen build,
+    # code-signed app bundle, pip-less or PEP 668 python. The Settings page shows
+    # an unsupported notice there instead of a command that cannot succeed.
+    if needs_extra and _pip_install_channel_available():
+        cmds.append(pip_extra_install_command("voice"))
+    cmds.extend(_ffmpeg_install_commands())
     return cmds
 
 
-def _is_al2023() -> bool:
-    """Return True if running on Amazon Linux 2023."""
-    try:
-        return "2023" in Path("/etc/system-release").read_text(encoding="utf-8")
-    except Exception:
-        return False
-
-
-def _find_suitable_python() -> str | None:
-    """Find a non-free-threaded python3 >= 3.10 with pip.
-
-    Delegates interpreter resolution to platform_compat.find_python_interpreter,
-    which rejects internal build-system paths and — on Windows — the Microsoft Store alias
-    stub (spawning that stub is what prints "Python was not found" and is why
-    this probe must never touch it). This caller adds two requirements the shared
-    helper does not: the interpreter must NOT be free-threaded (whisper wheels
-    are unavailable) and MUST have pip (this is an install target). Those are
-    passed as the ``reject`` predicate so the resolver FALLS THROUGH to the next
-    candidate when one fails them, rather than giving up: a free-threaded/pip-less
-    interpreter winning the name race must not mask a usable later one.
-
-    Both probes run through :func:`dep_sync._probe_interpreter` (``-I``, neutral
-    cwd) because this predicate picks the INSTALL TARGET: each answer must
-    describe the candidate interpreter itself, never the process asking.
-    Unisolated children inherit ``PYTHONPATH`` and take the caller's CWD as
-    ``sys.path[0]``, so a ``sitecustomize.py`` on either route can edit
-    ``sys.version`` — vetoing every candidate or waving a genuinely
-    free-threaded build through — and probing pip with ``-m pip`` would IMPORT
-    AND EXECUTE whatever ``pip`` those routes resolve, running planted code and
-    forging the verdict at once. ``find_spec`` under ``-I`` answers "does this
-    interpreter's own site-packages have pip" without executing it.
-    """
-
-    def _unusable(p: str) -> bool:
-        # True => skip this interpreter and keep searching. A probe failure
-        # (non-zero exit, timeout, unrunnable interpreter) also counts as
-        # unusable: _probe_interpreter reports a failed child via returncode
-        # rather than raising, so translate that explicitly — falling through
-        # would hand the STT installer a pip-less interpreter.
-        try:
-            ver = dep_sync._probe_interpreter(Path(p), "import sys; print(sys.version)", timeout=5)
-            if ver.returncode != 0 or "free-threading" in ver.stdout:
-                return True
-            pip = dep_sync._probe_interpreter(
-                Path(p),
-                "import importlib.util as u; raise SystemExit(0 if u.find_spec('pip') else 1)",
-                timeout=5,
-            )
-            return pip.returncode != 0
-        except Exception:
-            return True
-
-    return platform_compat.find_python_interpreter(reject=_unusable)
-
-
-async def api_stt_install(request: web.Request) -> web.Response:
-    """POST /api/stt/install — install openai-whisper + ffmpeg."""
-    global _stt_install_status
-    caller = request.get("user", "dashboard")
-    if _stt_install_status["step"] not in ("idle", "done", "error"):
-        _sel().log_api_access(
-            caller=caller,
-            operation="stt.install",
-            outcome="denied",
-            error=f"install already in progress: {_stt_install_status['step']}",
-        )
-        return web.json_response(
-            {"error": f"Install already in progress: {_stt_install_status['step']}"}, status=409
-        )
-
-    # RESERVE the slot before anything can yield: the busy check above and the
-    # probes below would otherwise race — an `await` between check and set lets
-    # two concurrent requests both pass the 409 gate and launch pip twice
-    # against the same environment. Every rejection path below must roll this
-    # back to idle.
-    _stt_install_status = {"step": "starting", "detail": "", "error": ""}
-
-    # Native install via shell script, tailored to the configured provider.
-    # Transcribe has no local runtime to install (its requirement is the
-    # ``voice`` extra importable by this process, surfaced as a prerequisite
-    # command) — reject rather than installing a Whisper runtime, which cannot
-    # change Transcribe's availability.
-    provider = KiroCrewConfig.load().stt.provider
-    if provider == "transcribe":
-        _stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        _sel().log_api_access(
-            caller=caller,
-            operation="stt.install",
-            outcome="denied",
-            error="no local install for provider=transcribe",
-        )
-        return web.json_response(
-            {
-                "code": "stt_no_local_install",
-                "error": (
-                    "AWS Transcribe has no local install;"
-                    " run the prerequisite command to add the 'voice' extra instead"
-                ),
-            },
-            status=400,
-        )
-
-    # Windows on ARM has NO CTranslate2 wheel — faster-whisper's inference backend —
-    # and no sdist either, so pip fails while RESOLVING rather than while building.
-    # That distinction is why this check exists: the failure surfaces as a resolver
-    # error naming ``ctranslate2``, a package the user never asked for, which reads
-    # like a transient registry problem and invites retrying forever. Nothing about
-    # the machine can change the outcome, so refuse up front and name the two
-    # providers that do work here — the same alternatives ``cli_doctor`` prints,
-    # which a dashboard user never sees.
-    #
-    # Checked SERVER-SIDE rather than inside the generated shell script, and that is
-    # not a style preference: ``api_stt_install`` launches the script through
-    # ``bash -c``, so on a stock native-Windows gateway the run dies with
-    # ``FileNotFoundError`` ("bash not found") before any line of it executes. An
-    # in-script guard would be unreachable on precisely the platform it is for.
-    #
-    # ``is_windows_on_arm()`` keys off the PROCESS architecture, so an x86-64
-    # interpreter under emulation is correctly left alone: it installs the
-    # ``win_amd64`` wheel and works.
-    if provider == "faster" and platform_compat.is_windows_on_arm():
-        _stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        _sel().log_api_access(
-            caller=caller,
-            operation="stt.install",
-            outcome="denied",
-            error="no ctranslate2 wheel for provider=faster on windows-arm64",
-        )
-        return web.json_response(
-            {
-                "code": "stt_unsupported_platform",
-                "error": (
-                    "faster-whisper is not available on Windows on ARM"
-                    " (no CTranslate2 wheel exists for this platform)."
-                    " Alternatives: set stt.provider to 'whisper' (local)"
-                    " or 'transcribe' (AWS)."
-                ),
-            },
-            status=400,
-        )
-
-    # ``faster`` is imported in-process, so its install must land in the
-    # gateway's own interpreter (see _build_stt_install_script). Where no pip
-    # channel into that interpreter exists — frozen build, bundled desktop
-    # interpreter, pip-less python — the script below cannot succeed, and
-    # running it anyway recreates the press-and-nothing-changes failure.
-    if provider == "faster" and not await asyncio.to_thread(_pip_install_channel_available):
-        _stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        _sel().log_api_access(
-            caller=caller,
-            operation="stt.install",
-            outcome="denied",
-            error="no pip install channel for provider=faster",
-        )
-        return web.json_response(
-            {
-                "code": "stt_no_install_channel",
-                "error": "This gateway's Python can't install extra packages, so"
-                " faster-whisper can't be enabled here. Run the gateway from a"
-                " Python environment where pip can install faster-whisper.",
-            },
-            status=400,
-        )
-
-    _sel().log_api_access(
-        caller=caller,
-        operation="stt.install",
-        outcome="started",
-        resources=f"provider={provider}",
-    )
-    script = _build_stt_install_script(provider)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "bash",
-            "-c",
-            script,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        # Read output line by line to update progress
-        lines: list[str] = []
-        assert proc.stdout is not None
-        while True:
-            line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=600)
-            if not line_bytes:
-                break
-            line = line_bytes.decode(errors="replace").rstrip()
-            lines.append(line)
-            # Update status based on output
-            if "Xcode" in line or "xcode" in line:
-                _stt_install_status = {"step": "installing_xcode", "detail": line, "error": ""}
-            elif ("Homebrew" in line or "brew" in line.lower()) and "Installing" in line:
-                _stt_install_status = {"step": "installing_brew", "detail": line, "error": ""}
-            elif "Installing ffmpeg" in line:
-                _stt_install_status = {"step": "installing_ffmpeg", "detail": line, "error": ""}
-            elif "Installing openai-whisper" in line:
-                _stt_install_status = {"step": "installing_whisper", "detail": line, "error": ""}
-            elif "Installing mlx-whisper" in line:
-                _stt_install_status = {"step": "installing_mlx", "detail": line, "error": ""}
-            elif "Installing parakeet-mlx" in line:
-                # Reuse the mlx progress step: same pipx phase and bar position.
-                # The detail line carries the accurate "parakeet-mlx" text, so a
-                # dedicated step (and its 14-locale i18n key) is not warranted.
-                _stt_install_status = {"step": "installing_mlx", "detail": line, "error": ""}
-            elif "Installing faster-whisper" in line:
-                _stt_install_status = {"step": "installing_faster", "detail": line, "error": ""}
-            elif "No suitable python3" in line:
-                _stt_install_status = {"step": "installing_python", "detail": line, "error": ""}
-            elif "Using:" in line:
-                _stt_install_status = {"step": "checking", "detail": line, "error": ""}
-            elif "Done." in line:
-                _stt_install_status["detail"] = line
-            elif line.startswith("ERROR:") or line.startswith("error:"):
-                _stt_install_status["detail"] = line
-
-        await proc.wait()
-        output = "\n".join(lines[-20:])
-        if proc.returncode != 0:
-            _stt_install_status = {"step": "error", "detail": "", "error": output[-500:]}
-            _sel().log_api_access(
-                caller=caller,
-                operation="stt.install",
-                outcome="failed",
-                resources=f"provider={provider}",
-                error=output[-500:],
-            )
-            return web.json_response({"ok": False, "error": output[-500:]}, status=500)
-
-        _stt_install_status = {"step": "done", "detail": "Whisper ready", "error": ""}
-        if provider == "faster":
-            # Warm the import cache OFF the event loop so the next is_available()
-            # (a cached read, loop-safe) reports ready without a gateway restart.
-            # Importing here would load CTranslate2's native extension on the
-            # loop, which is exactly what the cached-read design avoids.
-            await asyncio.to_thread(_faster_whisper_model)
-        _sel().log_api_access(
-            caller=caller,
-            operation="stt.install",
-            outcome="success",
-            resources=f"provider={provider}",
-        )
-        return web.json_response(
-            {
-                "ok": True,
-                # `ffmpeg: false` makes the Settings page show an
-                # "installed but ffmpeg missing" error toast. The faster
-                # provider decodes through PyAV's bundled FFmpeg and never
-                # uses the system binary, so a missing system ffmpeg is not an
-                # error for it — always report True to keep the toast away.
-                "ffmpeg": provider == "faster"
-                or shutil.which("ffmpeg") is not None
-                or os.path.isfile(os.path.expanduser("~/ffmpeg/ffmpeg")),
-            }
-        )
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-            await proc.communicate()
-        except OSError:
-            pass
-        _stt_install_status = {"step": "error", "detail": "", "error": "Install timed out (10min)"}
-        _sel().log_api_access(
-            caller=caller,
-            operation="stt.install",
-            outcome="failed",
-            resources=f"provider={provider}",
-            error="install timed out",
-        )
-        return web.json_response({"ok": False, "error": "Install timed out"}, status=500)
-    except FileNotFoundError:
-        _stt_install_status = {"step": "error", "detail": "", "error": "bash not found"}
-        _sel().log_api_access(
-            caller=caller,
-            operation="stt.install",
-            outcome="failed",
-            resources=f"provider={provider}",
-            error="bash not found",
-        )
-        return web.json_response({"ok": False, "error": "bash not found"}, status=500)
-
-
-def _stt_install_path_prelude() -> str:
-    """Shell prelude that makes Homebrew (and pipx's bin dir) reachable.
-
-    The install script runs as ``bash -c`` from the gateway process, which is
-    neither a login nor an interactive shell — so the ``eval "$(brew shellenv)"``
-    line in the user's ``~/.zprofile`` never executes. On a desktop-app install
-    the inherited PATH is launchd's ``/usr/bin:/bin:/usr/sbin:/sbin``, which
-    contains no Homebrew prefix at all. Without this prelude the script's first
-    ``command -v brew`` check fails on a machine that HAS Homebrew and the whole
-    install aborts with "ERROR: Homebrew required".
-
-    Prepends the known prefixes (only those that exist), then defers to
-    ``brew shellenv`` for the authoritative prefix once ``brew`` itself resolves.
-    """
-    dirs = " ".join(shlex.quote(d) for d in BREW_PATH_DIRS)
-    return f"""
-for _d in {dirs}; do
-    case ":$PATH:" in
-        *":$_d:"*) ;;
-        *) [ -d "$_d" ] && PATH="$_d:$PATH" ;;
-    esac
-done
-export PATH
-if command -v brew >/dev/null 2>&1; then eval "$(brew shellenv)" 2>/dev/null || true; fi
-"""
-
-
-def _build_stt_install_script(provider: str = "whisper") -> str:
-    """Shell script that installs the runtime for the selected STT provider.
-
-    - ``faster``: installs faster-whisper via pip (CTranslate2, no system ffmpeg)
-      into the GATEWAY'S OWN interpreter — unlike the CLI providers below, the
-      library is imported in-process by ``kiro_crew.transcribe``, so a system
-      python's user-site would be invisible here and the install would report
-      "Done" while transcription stayed unavailable.
-    - ``mlx``: installs mlx-whisper via pipx (Apple Silicon only) plus ffmpeg.
-    - ``parakeet``: installs parakeet-mlx via pipx (Apple Silicon only) plus ffmpeg.
-    - ``whisper`` (default): installs openai-whisper + ffmpeg via brew or pip.
-
-    The ``whisper`` pip fallback deliberately targets a SYSTEM python with
-    ``--user`` (never the gateway's own venv, which is replaced on every
-    upgrade): the CLI binary lands in ``~/.local/bin``, which
-    :func:`kiro_crew.transcribe._find_whisper` probes via its
-    ``_WHISPER_SEARCH_PATHS`` (and via ``shutil.which`` when that dir is on
-    PATH). It also constrains the resolve so pip can never drop into a source
-    build — see the ``BINARY_ONLY`` comment in the script for why an incompatible
-    wheel otherwise reports itself as a compiler error.
-    """
-    prelude = _stt_install_path_prelude()
-    if provider == "faster":
-        # No $PY probe and no --user: the import happens in THIS process, so the
-        # one interpreter whose environment matters is sys.executable. --user is
-        # doubly wrong for it — inside a venv pip refuses the flag outright
-        # ("Can not perform a '--user' install ..."), and outside one it lands in
-        # a user-site this gateway may not even scan. api_stt_install gates this
-        # provider on _pip_install_channel_available(), so the command below is
-        # only reached where a pip install into sys.executable can succeed.
-        gateway_py = shlex.quote(sys.executable)
-        return prelude + f"""
-# faster-whisper (CTranslate2 backend) — no system ffmpeg required, because audio
-# is decoded in-process through PyAV's bundled FFmpeg.
-# CTranslate2 publishes wheels for Linux x86-64/AArch64, macOS x86-64/ARM64 and
-# Windows x86-64. Windows on ARM has NO wheel, so this script is unreachable
-# there: api_stt_install refuses the request before building it (see the
-# is_windows_on_arm gate) rather than letting pip fail with a resolver error that
-# names ctranslate2 and reads as a transient problem worth retrying.
-PY={gateway_py}
-echo "Using: $PY ($($PY --version))"
-echo "Installing faster-whisper..."
-"$PY" -m pip install -q faster-whisper || {{ echo "ERROR: pip install faster-whisper failed"; exit 1; }}
-# The import is the real check, so it must be able to FAIL this script: pip can
-# report success while the package is unusable, and a CTranslate2 wheel whose
-# native extension will not load is the common case.
-if ! FW_PATH=$("$PY" -c "import faster_whisper; print(faster_whisper.__file__)" 2>&1); then
-  echo "ERROR: faster-whisper installed but is not importable:"
-  echo "$FW_PATH"
-  exit 1
-fi
-echo "Done. faster_whisper=$FW_PATH"
-"""
-    if provider in ("mlx", "parakeet"):
-        pipx_pkg = "parakeet-mlx" if provider == "parakeet" else "mlx-whisper"
-        verify_bin = "parakeet-mlx" if provider == "parakeet" else "mlx_whisper"
-        return prelude + rf"""
-[ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
-
-if ! command -v brew >/dev/null 2>&1; then
-    echo "ERROR: Homebrew required. Install from https://brew.sh/"
-    exit 1
-fi
-
-echo "Installing ffmpeg via brew..."
-brew install ffmpeg 2>&1 || true
-
-if ! command -v pipx >/dev/null 2>&1; then
-    echo "Installing pipx via brew..."
-    brew install pipx 2>&1 || {{ echo "ERROR: pipx install failed"; exit 1; }}
-fi
-
-echo "Installing {pipx_pkg} via pipx..."
-pipx install --force {pipx_pkg} 2>&1 || {{ echo "ERROR: pipx install {pipx_pkg} failed"; exit 1; }}
-
-echo "Done. {verify_bin}=$(command -v {verify_bin} 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
-"""
-    return prelude + r"""
-# Pick up ffmpeg from ~/ffmpeg if installed there
-[ -d "$HOME/ffmpeg" ] && export PATH="$HOME/ffmpeg:$PATH"
-
-# Prefer brew install (avoids externally-managed-environment errors)
-if command -v brew >/dev/null 2>&1; then
-    echo "Installing openai-whisper via brew..."
-    if brew install openai-whisper 2>&1; then
-        echo "Installing ffmpeg via brew..."
-        brew install ffmpeg 2>&1 || true
-        echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
-        exit 0
-    fi
-    echo "brew install failed, falling back to pip..."
-fi
-
-# Fallback: pip install (AL2023 / systems without brew)
-PY=""
-for py in python3.11 python3.12 python3 python3.13 python3.10; do
-    p=$(command -v "$py" 2>/dev/null) || continue
-    "$p" -c "import sys; sys.exit(0 if 'free-threading' not in sys.version else 1)" 2>/dev/null || continue
-    "$p" -m pip --version >/dev/null 2>&1 || continue
-    PY="$p"; break
-done
-
-if [ -z "$PY" ]; then
-    echo "ERROR: python3 with pip not found. Install brew first: https://brew.sh/"
-    exit 1
-fi
-echo "Using: $PY ($($PY --version))"
-
-# openai-whisper itself is a pure-Python sdist, but its dependency tree is not:
-# numpy / numba / llvmlite / torch / triton / tiktoken all ship COMPILED wheels.
-# When pip finds no wheel matching the host it silently falls back to the source
-# tarball and starts a compile — which is why a wheel-compatibility problem
-# surfaces as a toolchain error ("GCC >= 9.3", "metadata-generation-failed")
-# that names numpy and looks unrelated to the missing wheel. Amazon Linux 2 ships
-# glibc 2.26, so pip accepts at most manylinux_2_17, while current numpy publishes
-# manylinux_2_28 only — the default resolve therefore fetches numpy-2.5.1.tar.gz
-# and dies on the system GCC (7.3 on AL2).
-#
-# --only-binary removes sdists from the candidate set for exactly these packages,
-# so the resolver BACKTRACKS to the newest version that does have a compatible
-# wheel instead of compiling (verified on glibc 2.26: numpy 2.5.1 -> 2.2.6
-# manylinux_2_17, exit 0). Deliberately NO pinned version ceiling: a hardcoded cap
-# would rot as hosts and wheel tags move, while letting pip choose the newest
-# wheel-compatible release stays correct on both old and current hosts.
-BINARY_ONLY="numpy,numba,llvmlite,torch,triton,tiktoken,regex"
-
-# torch's default Linux wheels are the CUDA builds, so a plain resolve drags ~2.5 GB
-# of nvidia-* packages onto a machine that has no GPU to use them. --extra-index-url
-# would not help: it only ADDS a source, and pip still prefers the higher-versioned
-# default build. So the CPU wheel gets its own step from the CPU-only index, and the
-# whisper resolve below then sees torch already satisfied and leaves it alone.
-# Non-fatal: if the CPU index is unreachable, fall through and let whisper resolve
-# torch itself rather than failing an install that would otherwise succeed.
-if [ "$(uname -s)" = "Linux" ] && ! command -v nvidia-smi >/dev/null 2>&1; then
-    echo "No NVIDIA GPU detected, installing CPU-only torch..."
-    "$PY" -m pip install -q --user --only-binary=torch \
-        --index-url https://download.pytorch.org/whl/cpu torch 2>&1 \
-        || echo "CPU-only torch unavailable; letting openai-whisper resolve torch"
-fi
-
-echo "Installing openai-whisper..."
-"$PY" -m pip install -q --user --only-binary="$BINARY_ONLY" openai-whisper 2>&1 \
-    || { echo "ERROR: pip install openai-whisper failed"; exit 1; }
-
-echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpeg=$(command -v ffmpeg 2>/dev/null || echo 'MISSING')"
-"""
-
-
 async def api_stt_transcribe(request: web.Request) -> web.Response:
-    """POST /api/stt/transcribe — transcribe uploaded audio via whisper."""
+    """POST /api/stt/transcribe — transcribe one uploaded recording.
+
+    The batch counterpart to ``/api/ws/stt``, for a client that records first and
+    uploads afterwards. It accepts every provider: ``local`` shares the resident
+    model with live sessions, so a voice memo lands on a model that is already
+    loaded.
+    """
     import tempfile  # noqa: F811
     import uuid
 
     from kiro_crew.dashboard import part_stream
-    from kiro_crew.transcribe import is_available, transcribe_audio  # noqa: F811
+    from kiro_crew.transcribe import transcribe_audio  # noqa: F811
 
-    if not is_available():
-        return web.json_response({"error": "STT not available"}, status=503)
+    cfg = KiroCrewConfig.load()
+    # Off the loop: every provider branch of the probe reaches the filesystem, and
+    # `local` and `transcribe` each import an optional extra the first time.
+    detail = await asyncio.to_thread(availability_detail, cfg.stt)
+    if not detail.ok:
+        return web.json_response(
+            {
+                "error": detail.detail or "STT not available",
+                "code": detail.code or _CODE_STT_UNAVAILABLE,
+            },
+            status=503,
+        )
 
     reader = await request.multipart()
     field = await reader.next()
     if field is None or not hasattr(field, "name") or field.name != "audio":  # type: ignore[union-attr]
-        return web.json_response({"error": "missing audio field"}, status=400)
+        return web.json_response(
+            {"error": "missing audio field", "code": _CODE_STT_MISSING_AUDIO}, status=400
+        )
 
     # Use uploaded filename extension (recording.webm / .mp4 / .ogg)
     fname = getattr(field, "filename", None) or "recording.webm"
@@ -1380,7 +1020,9 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
                 max_bytes=25 * 1024 * 1024,
             )
         except part_stream.PartTooLarge:
-            return web.json_response({"error": "audio too large"}, status=413)
+            return web.json_response(
+                {"error": "audio too large", "code": _CODE_STT_AUDIO_TOO_LARGE}, status=413
+            )
 
         text = await transcribe_audio(tmp)
         if text:
@@ -1394,7 +1036,9 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
         return web.json_response({"text": text or ""})
     except Exception:
         logger.exception("STT transcribe failed")
-        return web.json_response({"error": "transcription failed"}, status=500)
+        return web.json_response(
+            {"error": "transcription failed", "code": _CODE_STT_FAILED}, status=500
+        )
     finally:
         try:
             os.unlink(tmp)

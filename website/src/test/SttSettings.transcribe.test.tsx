@@ -1,16 +1,15 @@
 /**
- * The install surface must be provider-aware.
+ * The unavailable surface must name a remedy the user can actually carry out.
  *
- * With `stt.provider = "transcribe"` the page used to offer "Install Whisper" —
- * a button that installs a different engine and can never change Transcribe's
- * availability (which is "boto3 + amazon-transcribe importable by the gateway
- * process"). Pressing it appeared to work and changed nothing, leaving no
- * in-app path to a working state. These tests pin that:
- *
- *  - Transcribe gets the prerequisite commands plus a restart hint, no button;
- *  - Whisper keeps its Install button (regression guard);
- *  - the Runtime row is gone — the backend never served `docker_mode`, so the
- *    row could only ever display "Native".
+ * Transcribe's availability is "boto3 + amazon-transcribe importable by the
+ * gateway process", which nothing inside the dashboard can change: a package
+ * becomes importable only in a fresh interpreter. So the page renders the
+ * backend's prerequisite commands plus the restart that makes them take effect,
+ * and it says so cause-neutrally when NO install channel exists at all (a frozen
+ * build, a pip-less interpreter, an externally-managed python). These tests pin
+ * that, plus the ffmpeg gap, which is deliberately reported even when the status
+ * reads ready: the availability probe treats ffmpeg as optional, so a missing
+ * one would otherwise surface only as a silent dictation failure.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
@@ -25,8 +24,9 @@ vi.mock('../api/client', () => ({
   api: {
     sttConfig: vi.fn(),
     saveSttConfig: vi.fn(),
-    sttInstall: vi.fn(),
     restartGateway: vi.fn(),
+    sttStatus: vi.fn(),
+    sttPrepare: vi.fn(),
   },
 }))
 
@@ -34,20 +34,19 @@ const mockApi = api as unknown as {
   sttConfig: ReturnType<typeof vi.fn>
   saveSttConfig: ReturnType<typeof vi.fn>
   restartGateway: ReturnType<typeof vi.fn>
+  sttStatus: ReturnType<typeof vi.fn>
 }
 
 function payload(over: Record<string, unknown> = {}) {
   return {
     enabled: true,
-    provider: 'whisper',
+    provider: 'local',
+    model: 'base',
     streaming: false,
     available: false,
-    providers: ['whisper', 'transcribe'],
-    streaming_providers: ['transcribe'],
-    models: { turbo: '1.5 GB' },
-    mlx_models: {},
+    providers: ['local', 'transcribe'],
+    streaming_providers: ['local', 'transcribe'],
     language_codes: ['en-US'],
-    install_step: '',
     prereqs: [],
     ...over,
   }
@@ -57,6 +56,16 @@ function mount(over: Record<string, unknown> = {}) {
   const data = payload(over)
   mockApi.sttConfig.mockResolvedValue(data)
   mockApi.saveSttConfig.mockImplementation(async (p: Record<string, unknown>) => ({ ...data, ...p }))
+  // The status endpoint answers the SAME verdict as the config fixture. The two
+  // are served from one backend probe, so a fixture where they disagree would
+  // exercise a state the gateway cannot produce.
+  mockApi.sttStatus.mockResolvedValue({
+    available: data.available !== false,
+    code: data.available === false ? 'stt_extra_missing' : '',
+    detail: '',
+    models: [{ name: 'base', size_bytes: 147951465, present: true }],
+    download: { step: 'idle', model: '', downloaded_bytes: 0, total_bytes: 0, error: '' },
+  })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <Provider store={store}>
@@ -67,8 +76,13 @@ function mount(over: Record<string, unknown> = {}) {
   )
 }
 
-/** Wait for the loaded card (the Status row only renders post-fetch). */
-const loaded = () => screen.findByText(/not installed/i)
+/**
+ * Wait for the loaded card (the Status row only renders post-fetch).
+ *
+ * Exact text, not a regex: the reason line beneath the badge also contains "not
+ * installed", so a loose match finds two nodes and fails on the ambiguity.
+ */
+const loaded = () => screen.findByText('not installed')
 
 describe('SttSettings provider-aware install surface', () => {
   beforeEach(async () => {
@@ -88,10 +102,9 @@ describe('SttSettings provider-aware install surface', () => {
     expect(screen.queryByRole('button', { name: /install/i })).toBeNull()
     // The prerequisite command from the backend is rendered verbatim…
     expect(screen.getByText(/kirocrew\[voice\]/)).toBeTruthy()
-    // …with the transcribe-specific next step, not the button trailer.
+    // …with the next step that makes it take effect.
     expect(screen.getByText(/restart the gateway/i)).toBeTruthy()
     expect(screen.getByRole('button', { name: /restart gateway/i })).toBeTruthy()
-    expect(screen.queryByText(/then click install below/i)).toBeNull()
   })
 
   it('confirms before restarting and disables the action in flight', async () => {
@@ -114,10 +127,15 @@ describe('SttSettings provider-aware install surface', () => {
     finish()
   })
 
-  it('keeps the Install Whisper button for the whisper provider', async () => {
-    mount({ provider: 'whisper' })
+  it('offers the restart for the local provider too, which also needs the extra', async () => {
+    // The restart follows the pip command rather than the provider: `local` needs
+    // the same extra, and the in-dashboard installer that used to cover it is gone.
+    mount({
+      provider: 'local',
+      prereqs: ["/opt/kirocrew/bin/python -m pip install 'kirocrew[voice]'"],
+    })
     await loaded()
-    expect(screen.getByRole('button', { name: /install whisper/i })).toBeTruthy()
+    expect(screen.getByTestId('stt-restart-gateway')).toBeTruthy()
   })
 
   it('shows the unsupported notice when no install channel can get the voice extra', async () => {
@@ -152,22 +170,20 @@ describe('SttSettings provider-aware install surface', () => {
     expect(screen.getByText('sudo apt-get install -y ffmpeg')).toBeTruthy()
   })
 
-  it('renders no trailer for a Transcribe ffmpeg-only prereq list', async () => {
-    // Extra installed but STT disabled and ffmpeg missing: the list carries
-    // only the ffmpeg command. Neither trailer fits — no install button
-    // exists for Transcribe, and ffmpeg needs no restart.
+  it('renders no restart hint for an ffmpeg-only prereq list', async () => {
+    // The list carries only the ffmpeg command. ffmpeg needs no restart: the PATH
+    // probe re-runs on every settings read, so promising one would be busywork.
     mount({ provider: 'transcribe', prereqs: ['sudo apt-get install -y ffmpeg'] })
     await loaded()
     expect(screen.getByText('sudo apt-get install -y ffmpeg')).toBeTruthy()
-    expect(screen.queryByText(/then click install below/i)).toBeNull()
     expect(screen.queryByText(/restart the gateway/i)).toBeNull()
   })
 
-  it('surfaces the ffmpeg gap for whisper too', async () => {
+  it('surfaces the ffmpeg gap for the local provider too', async () => {
     // The availability checks skip ffmpeg for every provider, so the warning
     // is not Transcribe-gated.
     mount({
-      provider: 'whisper',
+      provider: 'local',
       available: true,
       ffmpeg_missing: true,
       prereqs: ['sudo apt-get install -y ffmpeg'],
@@ -182,7 +198,7 @@ describe('SttSettings provider-aware install surface', () => {
   })
 
   it('renders no Runtime row for any provider', async () => {
-    mount({ provider: 'whisper' })
+    mount({ provider: 'local' })
     await loaded()
     // The backend never serves `docker_mode`, so the row could only ever
     // read "Native" — it conveys nothing and is gone.

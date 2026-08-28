@@ -13,9 +13,12 @@ import { i18nT } from '../i18n/t'
  * batch hook.
  */
 
-/** Wire frame that tells the backend to end the Transcribe stream. Protocol,
+/** Wire frame that tells the backend to end the transcription stream. Protocol,
  *  not copy — it is never shown to anyone. */
 const STOP_FRAME = JSON.stringify({ type: 'stop' })
+
+/** `status.stage` reported while model weights are still being fetched. */
+const STAGE_DOWNLOADING = 'downloading'
 
 export const streamingSupported =
   typeof window !== 'undefined' &&
@@ -39,11 +42,21 @@ interface Opts {
   onDevice?: (label: string, id: string) => void
   /** Fired when the backend semantic endpointer judges the utterance complete. */
   onEndpoint?: () => void
+  /**
+   * Byte progress of a one-time model download the session is waiting on, or
+   * `null` once the recogniser is ready.
+   *
+   * The local recogniser fetches its weights on first use, and that is between
+   * 78 MB and 1.6 GB. Without this the user holds the mic against a session that
+   * looks identical to a hang, which is the worst possible first run, so the
+   * backend reports byte progress and the recording surface shows it.
+   */
+  onDownload?: (progress: { done: number; total: number } | null) => void
   /** Unthrottled per-frame audio features for canvas consumers (see mic.ts). */
   sampleRef?: { current: AudioSample }
 }
 
-export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevice, onEndpoint, sampleRef }: Opts) {
+export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevice, onEndpoint, onDownload, sampleRef }: Opts) {
   const [recording, setRecording] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
@@ -90,10 +103,16 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
   onDeviceRef.current = onDevice
   const onEndpointRef = useRef(onEndpoint)
   onEndpointRef.current = onEndpoint
+  const onDownloadRef = useRef(onDownload)
+  onDownloadRef.current = onDownload
 
   const cleanup = useCallback(() => {
     try { levelStopRef.current?.() } catch { /* ignore */ }
     levelStopRef.current = null
+    // Clear the download line on every teardown, including a cancel and the
+    // force-cleanup path: a progress figure left on screen after the session it
+    // described is gone reads as a transfer that is still running.
+    onDownloadRef.current?.(null)
     if (pendingStopTimerRef.current !== null) {
       clearTimeout(pendingStopTimerRef.current)
       pendingStopTimerRef.current = null
@@ -179,7 +198,10 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
       if (typeof ev.data !== 'string') return
       try {
         const msg = JSON.parse(ev.data)
-        if (msg.type === 'ready') resolveReady()
+        // `ready` also clears any download line: it is the one frame guaranteed
+        // to follow preparation, so the progress cannot be left on screen by a
+        // backend that reports no closing `status`.
+        if (msg.type === 'ready') { onDownloadRef.current?.(null); resolveReady() }
         else if (msg.type === 'partial') {
           const text = msg.text || ''
           lastPartial = text
@@ -203,6 +225,15 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
           // The composer already holds the streamed transcript (via onPartial),
           // so the caller can submit directly.
           if (msg.complete) onEndpointRef.current?.()
+        } else if (msg.type === 'status') {
+          // Preparation progress, ahead of `ready`. The only stage with anything
+          // to show is the weight download; every other stage is instant, so it
+          // clears the line rather than adding a message nobody can act on.
+          onDownloadRef.current?.(
+            msg.stage === STAGE_DOWNLOADING
+              ? { done: Number(msg.downloaded_bytes) || 0, total: Number(msg.total_bytes) || 0 }
+              : null,
+          )
         }
       } catch { /* ignore */ }
     }
@@ -268,12 +299,25 @@ export function useStreamingStt ({ onPartial, onFinal, onError, onLevel, onDevic
     const node = new AudioWorkletNode(ctx, 'pcm-worklet')
     sourceRef.current = source
     workletRef.current = node
-    // PCM routing: buffer until server is ready (Transcribe start-up is
-    // ~2-3s), then flush and switch to live send. Cap buffer at ~8s of
-    // audio (16 kHz mono Int16 = 32 KB/s) so a never-arriving `ready`
-    // can't grow memory unbounded. If we hit the cap before ready,
-    // drop the oldest frames FIFO — user's most recent speech wins.
-    const MAX_BUFFERED_BYTES = 8 * 32 * 1024
+    // PCM routing: buffer until the server is ready, then flush and switch to live
+    // send. The cap bounds memory so a `ready` that never arrives cannot grow it
+    // without limit, and the FIFO drop keeps the user's most RECENT speech when the
+    // cap is hit.
+    //
+    // Sized for the slowest READINESS, not for one provider's connect time. At 8s
+    // this was calibrated for Transcribe's ~2-3s spin-up, and the local recogniser
+    // goes straight through it: a cold resident load compiles a GPU pipeline
+    // (measured 7.4s) after verifying the weights' digest (up to ~4s for the largest
+    // model), so the first press after a gateway start silently lost the opening
+    // seconds of the sentence — the OLDEST frames, which is the half the user said
+    // first, and nothing in the UI said so. 16 kHz mono Int16 is 32 KB/s, so 40s of
+    // headroom costs 1.25 MB of ArrayBuffers.
+    //
+    // Deliberately NOT sized against the server's own 1800s prepare ceiling: that
+    // covers a multi-hundred-megabyte model DOWNLOAD, which the client is told about
+    // with a `downloading` status and would not expect the user to talk through.
+    const MAX_BUFFERED_SECS = 40
+    const MAX_BUFFERED_BYTES = MAX_BUFFERED_SECS * 32 * 1024
     let ready = false
     let bufferedBytes = 0
     const buffer: ArrayBuffer[] = []

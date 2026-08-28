@@ -1949,14 +1949,15 @@ def unpinned_agent_spec_home(_isolate_agent_spec_home, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_model_download(monkeypatch, _isolation_dirs):
-    """Never let a test trigger the 610MB embedding-model download.
+    """Never let a test download model weights over the network.
 
     Embeddings are always-on, so any test that boots the gateway/server
     startup path would otherwise kick ``start_background_model_download()``.
-    The env escape hatch is honored by ``ModelDownloadManager.ensure_model``
-    and ``start_background_model_download`` — a test that wants to exercise
-    the download path monkeypatches the manager's HTTP calls directly
-    (see test_embeddings.py) rather than unsetting this.
+    The env escape hatch is honored by ``ModelDownloadManager.ensure_model``,
+    ``start_background_model_download`` and ``stt.models.ModelStore.ensure`` (the
+    whisper weights, 148MB at the default) — a test that wants to exercise a
+    download path monkeypatches that manager's HTTP calls directly (see
+    test_embeddings.py, test_stt_engine.py) rather than unsetting this.
 
     ``OLLAMA_MODELS`` is additionally pinned to an empty tmp dir so the
     legacy-blob salvage fast-path (``_salvage_legacy_ollama_blob``) can never

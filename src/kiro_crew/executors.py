@@ -47,9 +47,9 @@ Three pools, deliberately split:
   and can never occupy the :func:`maintenance_executor` workers the orphan
   sweeps need to recover from a wedge.
 * :func:`stt_executor` -- in-process speech-to-text inference
-  (:func:`kiro_crew.transcribe._run_faster_whisper_sync`).  Minutes of CPU per
-  call on a long recording, and the first call for a model size may block on a
-  multi-GB weight download inside the library's constructor.  It cannot share
+  (:mod:`kiro_crew.stt.engine`, which loads the model here and decodes on it).
+  A warm decode is tens of milliseconds, but a model load is seconds and the
+  first ever load also compiles a GPU pipeline.  It cannot share
   :func:`subprocess_executor`: a ``run_in_executor`` future cannot be
   cancelled, so a wedged model load would hold one of the eight PTY-teardown
   workers indefinitely -- and those exist precisely so a teardown storm has

@@ -23,6 +23,34 @@ export const voiceInputSupported =
 /** Release a pre-warmed mic if the user presses but doesn't start within this window. */
 const WARM_IDLE_MS = 15000
 
+/**
+ * Shortest gap between two recogniser prewarm requests.
+ *
+ * The gateway keeps a loaded model resident for its own idle-eviction window
+ * (ten minutes by default), so one request a minute is more than enough to keep
+ * it hot, while a repeated press or a nervous hover costs nothing. Module scope
+ * rather than a ref: residency is a property of the GATEWAY, not of a component
+ * instance, so remounting the chat page must not re-issue the request.
+ */
+const MODEL_WARM_THROTTLE_MS = 60000
+let lastModelWarmAt = 0
+
+/**
+ * Ask the gateway to load the speech model and run one throwaway decode.
+ *
+ * Fire-and-forget, and deliberately not awaited by any caller: the point is to
+ * move a cost that is paid ONCE (a cold load compiles a GPU pipeline, measured at
+ * 7.4 s, and the first decode after a load allocates its graph) out of the moment
+ * the user stops speaking. A failure means only that the first utterance pays what
+ * it would have paid anyway, so it must never block or fail capture.
+ */
+function warmModel(): void {
+  const now = Date.now()
+  if (now - lastModelWarmAt < MODEL_WARM_THROTTLE_MS) return
+  lastModelWarmAt = now
+  api.sttPrewarm().catch(() => { /* the first utterance pays the load instead */ })
+}
+
 interface Opts {
   streaming?: boolean
   onPartial?: (text: string, sessionId: string | null) => void
@@ -64,6 +92,10 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // Latest partial hypothesis, mirrored so the dictation panel can render it
   // muted. Cleared on final/stop so a stale partial can't linger as grey text.
   const [partial, setPartial] = useState('')
+  // Byte progress of a one-time model download the live session is waiting on.
+  // Surfaced to the recording chrome because otherwise the wait is
+  // indistinguishable from a hung microphone.
+  const [download, setDownload] = useState<{ done: number; total: number } | null>(null)
   // Unthrottled per-frame audio features, written in place by the level meter
   // and read by the shader's render loop. A ref (not state) on purpose: this
   // updates ~60x/sec and must never trigger a React render.
@@ -145,6 +177,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     onLevel: setLevel,
     onDevice: streamOnDevice,
     onEndpoint: streamOnEndpoint,
+    onDownload: setDownload,
     sampleRef,
   })
 
@@ -288,10 +321,20 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     setDeviceLabel(''); setDeviceId('')
   }, [])
 
-  // Pre-warm the mic on pointer-down so the click that follows starts capture
-  // instantly. Auto-releases if recording doesn't start within WARM_IDLE_MS so
-  // a press-without-record doesn't hold the mic open.
+  // Pre-warm on pointer-down so the click that follows starts capture instantly.
+  //
+  // TWO warmups with different owners. The recogniser is warmed for BOTH capture
+  // paths, because the model load and its first graph allocation are paid by
+  // whichever path speaks first and they are the same cost either way. The
+  // microphone is warmed only on the batch path (getUserMedia + the first audio
+  // frame have noticeable latency there); the streaming path acquires the mic
+  // inside its own start() and warming here would open a second stream.
+  //
+  // Auto-releases the MIC if recording doesn't start within WARM_IDLE_MS so a
+  // press-without-record doesn't hold it open. The model needs no such release:
+  // the gateway evicts it on its own idle timer.
   const prewarm = useCallback(() => {
+    warmModel()
     if (streamEnabled || !voiceInputSupported || startingRef.current || mediaRef.current) return
     acquireWarm().catch(() => { /* error is surfaced on the actual start() */ })
     if (warmTimerRef.current) clearTimeout(warmTimerRef.current)
@@ -532,5 +575,5 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   /** True when `switchDevice` takes effect immediately rather than next recording. */
   const deviceSwitchIsLive = streamEnabled && streamRecording
 
-  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, sampleRef, switchDevice, deviceSwitchIsLive }
+  return { recording: isRecording, transcribing, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
 }

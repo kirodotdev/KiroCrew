@@ -1,15 +1,16 @@
 """Coverage for ``dashboard/handlers/core.py`` error branches and cold paths.
 
 Targets the parts of the module the rest of the suite never reaches: the STT
-prerequisite/install/transcribe surface, the SEL + security read endpoints,
-the agent-settings PUT validators, the loopback-gated local endpoints
+prerequisite/status/prepare/prewarm/transcribe surface, the SEL + security read
+endpoints, the agent-settings PUT validators, the loopback-gated local endpoints
 (token / logout), the app-secret exchange, and the session sub-agent routes.
 
 Style follows ``test_api_health.py`` (direct handler calls against a
 ``MagicMock(spec=web.Request)``) and ``test_config_patch.py`` (real aiohttp
 ``TestClient`` when the handler needs a genuine request body or streaming
 response). Every write lands under the autouse-isolated ``KIROCREW_HOME``
-from ``conftest.py``; nothing here touches the network or spawns a process.
+from ``conftest.py``; nothing here touches the network, downloads a model, or
+spawns a process.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ import asyncio
 import json
 import os
 import platform
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +37,8 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.handlers import _shared as shared_mod
 from kiro_crew.dashboard.handlers import core as core_mod
 from kiro_crew.sel import SelVerification as _SelVerification
+from kiro_crew.stt import models as stt_models
+from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS, MIN_SILENCE_MS
 
 # ── shared helpers ───────────────────────────────────────────────────────
 
@@ -49,16 +51,48 @@ def _req(
     app: dict | None = None,
     match_info: dict | None = None,
     user: str | None = "dashboard",
+    app_token: str | None = "",
 ) -> web.Request:
-    """A stub request carrying only what these handlers read."""
+    """A stub request carrying only what these handlers read.
+
+    ``app_token`` is the verified app claim the auth middleware publishes, and it
+    is a different thing from ``app`` (the aiohttp application): ``""`` means the
+    dashboard user, a name means an app token, and ``None`` reproduces a path
+    where no auth middleware ran and the claim is absent.
+    """
     req = MagicMock(spec=web.Request)
     req.remote = remote
     req.headers = headers or {}
     req.query = query or {}
     req.app = app if app is not None else {}
     req.match_info = match_info or {}
-    req.get = lambda key, default=None: (user if key == "user" else default)
+    claims: dict = {"user": user, "app": app_token}
+    req.get = lambda key, default=None: claims.get(key, default)
     return req
+
+
+def _json_req(body: object = None, *, raises: bool = False, **kwargs) -> web.Request:
+    """A stub request whose ``await request.json()`` yields *body*.
+
+    ``raises=True`` reproduces an absent or unparseable body, which the prepare
+    endpoint has to read as "the configured model" rather than as an error.
+    """
+    req = _req(**kwargs)
+    req.json = AsyncMock(side_effect=ValueError("no body") if raises else None, return_value=body)
+    return req
+
+
+async def _drain_stt_background() -> list:
+    """Await the handler's detached tasks and return their outcomes.
+
+    The prepare/prewarm endpoints answer before their work finishes, so the task
+    is still pending when the handler returns. Draining it here is both the
+    assertion (it really was scheduled) and the hygiene: an un-awaited task
+    outlives the test's event loop, and an unretrieved exception surfaces later
+    as a warning attributed to whichever test happened to run next.
+    """
+    tasks = list(core_mod._stt_background_tasks)
+    return await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.fixture
@@ -87,11 +121,30 @@ def seeded_config() -> Path:
 
 
 @pytest.fixture
-def stt_status(monkeypatch):
-    """Restore the module-level install-status global after each test."""
-    saved = dict(core_mod._stt_install_status)
-    yield
-    core_mod._stt_install_status = saved
+def model_store(monkeypatch) -> stt_models.ModelStore:
+    """Give the test its own model store.
+
+    The real one is a process global holding live download state, so a test that
+    let a handler touch it would hand its progress block to whatever test ran
+    next on the same xdist worker.
+    """
+    store = stt_models.ModelStore()
+    monkeypatch.setattr(stt_models, "_store", store)
+    return store
+
+
+@pytest.fixture
+def stt_background(monkeypatch) -> set:
+    """Give the test its own detached-task set.
+
+    ``_stt_background_tasks`` is a module global, so "no work was scheduled"
+    assertions would otherwise be answerable by a task some other file left
+    pending on the same worker. Production reads the global on every add, so
+    swapping the object is enough.
+    """
+    tasks: set = set()
+    monkeypatch.setattr(core_mod, "_stt_background_tasks", tasks)
+    return tasks
 
 
 # ── Page + static assets ─────────────────────────────────────────────────
@@ -205,108 +258,188 @@ class TestPageAndAssets:
 # ── STT capability probes ────────────────────────────────────────────────
 
 
-class TestAppleSiliconProbe:
-    def test_non_darwin_is_never_apple_silicon(self, monkeypatch) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Linux")
-        assert core_mod._is_apple_silicon() is False
-
-    def test_native_arm64_short_circuits(self, monkeypatch) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(platform, "machine", lambda: "arm64")
-        assert core_mod._is_apple_silicon() is True
-
-    def test_rosetta_falls_back_to_sysctl(self, monkeypatch) -> None:
-        """Under Rosetta ``platform.machine()`` lies, so the hardware sysctl is
-        the authority."""
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *a, **k: SimpleNamespace(stdout="1\n", returncode=0),
-        )
-        assert core_mod._is_apple_silicon() is True
-
-    def test_sysctl_failure_is_not_apple_silicon(self, monkeypatch) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
-
-        def _boom(*_a, **_k):
-            raise OSError("no sysctl")
-
-        monkeypatch.setattr(subprocess, "run", _boom)
-        assert core_mod._is_apple_silicon() is False
-
-
 class TestSttProviders:
-    def test_mlx_hidden_off_apple_silicon(self, monkeypatch) -> None:
-        monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: False)
-        monkeypatch.setattr(
-            "kiro_crew.apple_speech.availability",
-            lambda: SimpleNamespace(ok=True),
-        )
-        providers = core_mod._stt_providers()
-        assert "mlx" not in providers
-        assert "whisper" in providers
-
     def test_apple_hidden_when_framework_unavailable(self, monkeypatch) -> None:
-        monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: True)
+        """`apple` needs macOS 26 plus a Swift toolchain, so a host without them
+        must not be offered a provider it cannot select. `local` has no
+        precondition at all and stays advertised everywhere."""
         monkeypatch.setattr(
             "kiro_crew.apple_speech.availability",
             lambda: SimpleNamespace(ok=False),
         )
         providers = core_mod._stt_providers()
         assert "apple" not in providers
-        assert "mlx" in providers
+        assert "local" in providers
+
+    def test_apple_appears_once_the_framework_answers_yes(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.apple_speech.availability",
+            lambda: SimpleNamespace(ok=True),
+        )
+        assert "apple" in core_mod._stt_providers()
+
+    def test_retired_providers_are_never_advertised(self, monkeypatch) -> None:
+        """A persisted retired value degrades to `local` at load. Advertising one
+        here would hand it straight back, and with it the out-of-band install
+        (a whisper CLI on PATH, an mlx or faster-whisper wheel) that the resident
+        local engine exists to remove."""
+        monkeypatch.setattr(
+            "kiro_crew.apple_speech.availability",
+            lambda: SimpleNamespace(ok=True),
+        )
+        offered = set(core_mod._stt_providers())
+        assert not offered & {"whisper", "mlx", "parakeet", "faster"}
+
+
+class TestFfmpegInstallCommands:
+    """ffmpeg is the one dependency no provider can supply for itself.
+
+    The browser records WebM, so the batch upload path has to decode before it
+    can recognise, and nothing in the package can install a codec for the user.
+    Each branch names the package manager the host actually has, because a
+    command for the wrong one is indistinguishable from no guidance at all.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_ffmpeg_probe(self, monkeypatch):
+        """Pin the PATH-augmenting probe: it stats the operator's real disks."""
+        monkeypatch.setattr(core_mod, "ensure_ffmpeg_in_path", lambda: None)
+
+    def test_present_ffmpeg_asks_for_nothing(self, monkeypatch) -> None:
+        # Stubbed at `_find_ffmpeg`, which is the seam the production code now asks:
+        # ffmpeg is resolved from fixed directories rather than from PATH, so a
+        # `shutil.which` stub no longer decides the answer (and, being a module-global
+        # patch, the real resolver would receive it and reject its `path=` argument).
+        monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: "/usr/local/bin/ffmpeg")
+        assert core_mod._ffmpeg_install_commands() == []
+
+    def test_darwin_uses_brew(self, monkeypatch) -> None:
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
+        assert core_mod._ffmpeg_install_commands() == ["brew install ffmpeg"]
+
+    def test_windows_uses_winget(self, monkeypatch) -> None:
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
+        assert core_mod._ffmpeg_install_commands() == ["winget install --id Gyan.FFmpeg"]
+
+    def test_debian_uses_apt_get(self, monkeypatch) -> None:
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
+        monkeypatch.setattr(
+            core_mod.shutil,
+            "which",
+            lambda n, path=None: "/usr/bin/apt-get" if n == "apt-get" else None,
+        )
+        assert core_mod._ffmpeg_install_commands() == ["sudo apt-get install -y ffmpeg"]
+
+    def test_a_checkout_with_the_build_script_builds_from_source(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Amazon Linux ships no ffmpeg in its repos, so the only honest answer
+        there is the toolchain plus a source build. Offered only when the script
+        is actually present, since naming a path that does not exist is worse
+        than pointing at upstream."""
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n, path=None: None)
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "build-ffmpeg.sh").write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        cmds = core_mod._ffmpeg_install_commands()
+        assert any("dnf install -y gcc make nasm diffutils" in c for c in cmds)
+        assert any("build-ffmpeg.sh" in c for c in cmds)
+
+    def test_without_a_build_script_points_at_upstream(self, monkeypatch) -> None:
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        monkeypatch.setattr(core_mod, "_find_ffmpeg", lambda: None)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n, path=None: None)
+        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
+        cmds = core_mod._ffmpeg_install_commands()
+        assert cmds == ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
 
 
 class TestSttPrereqCommands:
+    """What the user still has to run themselves, per provider.
+
+    There is no install button behind this list any more: the only thing a
+    provider can need beyond an installed Kiro Crew is the optional ``voice``
+    extra in this interpreter, plus ffmpeg. An empty list is the steady state.
+
+    The pip command's shell quoting is `_shared.pip_extra_install_command`'s, not
+    this module's; these assertions cover the prereq LIST's contract end to end,
+    which is what a Settings reader actually receives. `sys` is patched directly
+    rather than through `core_mod` because the command is built where that helper
+    lives, and both modules share the one `sys` object anyway.
+    """
+
     @pytest.fixture(autouse=True)
-    def _no_ffmpeg_probe(self, monkeypatch):
-        monkeypatch.setattr(core_mod, "ensure_ffmpeg_in_path", lambda: None)
+    def _no_ffmpeg_tail(self, monkeypatch):
+        """Neutralise the ffmpeg tail so each test measures the extra alone.
 
-    def test_mlx_off_apple_silicon_has_no_prereqs(self, monkeypatch) -> None:
-        monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: False)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
-        assert core_mod._stt_prereq_commands("mlx") == []
+        The platform branches it appends have their own class; folding them in
+        here would make every assertion below depend on the host's PATH.
+        """
+        monkeypatch.setattr(core_mod, "_ffmpeg_install_commands", lambda: [])
 
-    def test_mlx_needs_only_homebrew(self, monkeypatch) -> None:
-        """The Install button bootstraps everything except Homebrew itself."""
-        monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: True)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(core_mod, "find_brew", lambda: None)
-        cmds = core_mod._stt_prereq_commands("mlx")
+    @staticmethod
+    def _local_availability(monkeypatch, *, ok: bool, code: str = "") -> None:
+        """Pin the recogniser probe, which imports an optional native extension.
+
+        Left real it would answer differently on a host with the extra installed
+        than on one without, which is the whole verdict under test.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.stt.availability",
+            lambda: core_mod.stt.Availability(ok, code, ""),
+        )
+
+    def test_local_needs_the_voice_extra_when_the_recogniser_is_absent(self, monkeypatch) -> None:
+        """The recogniser is an optional extra imported IN THIS PROCESS, so the
+        command must name the gateway's own interpreter: a system python or a
+        --user install elsewhere would not be importable here."""
+        self._local_availability(monkeypatch, ok=False, code=core_mod.stt.CODE_EXTRA_MISSING)
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        monkeypatch.setattr(core_mod.os, "name", "posix")
+        cmds = core_mod._stt_prereq_commands("local")
         assert len(cmds) == 1
-        assert "install.sh" in cmds[0]
+        assert "kirocrew[voice]" in cmds[0]
+        assert "-m pip install" in cmds[0]
+        assert core_mod.shlex.quote(sys.executable) in cmds[0]
 
-    def test_mlx_with_homebrew_and_ffmpeg_present_is_clean(self, monkeypatch) -> None:
-        monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: True)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "/usr/local/bin/ffmpeg")
-        monkeypatch.setattr(core_mod, "find_brew", lambda: "/opt/homebrew/bin/brew")
-        assert core_mod._stt_prereq_commands("mlx") == []
+    def test_local_with_the_recogniser_present_has_no_prereqs(self, monkeypatch) -> None:
+        self._local_availability(monkeypatch, ok=True)
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        assert core_mod._stt_prereq_commands("local") == []
 
-    def test_mlx_surfaces_ffmpeg_when_missing(self, monkeypatch) -> None:
-        """A ready mlx install that later loses ffmpeg has no Install button —
-        the prereq list is what the ready-state warning renders."""
-        monkeypatch.setattr(core_mod, "_is_apple_silicon", lambda: True)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(core_mod, "find_brew", lambda: "/opt/homebrew/bin/brew")
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        assert core_mod._stt_prereq_commands("mlx") == ["brew install ffmpeg"]
+    def test_a_platform_without_a_wheel_is_not_offered_a_pip_command(self, monkeypatch) -> None:
+        """Only the missing-extra case is actionable by pip. Intel macOS has no
+        prebuilt wheel, so `pip install` there starts a source build that needs a
+        C++ toolchain, which the availability `detail` says; repeating the pip
+        command would send the user round the same failure."""
+        self._local_availability(monkeypatch, ok=False, code=core_mod.stt.CODE_NO_WHEEL)
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        assert core_mod._stt_prereq_commands("local") == []
+
+    def test_apple_has_nothing_to_install(self, monkeypatch) -> None:
+        """The on-device recogniser is part of the OS and compiles its own helper
+        on demand, so the only thing this provider can ever surface is ffmpeg."""
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        assert core_mod._stt_prereq_commands("apple") == []
 
     def test_transcribe_prereq_targets_the_gateway_interpreter(self, monkeypatch) -> None:
         """Transcribe's requirement is the `voice` extra importable by THIS
         process, so the command must name the gateway's own interpreter — a
         system python or --user install would not be importable here."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
-        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod.os, "name", "posix")
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert len(cmds) == 1
         assert "kirocrew[voice]" in cmds[0]
         assert "-m pip install" in cmds[0]
-        assert core_mod.shlex.quote(core_mod.sys.executable) in cmds[0]
+        assert core_mod.shlex.quote(sys.executable) in cmds[0]
 
     def test_transcribe_prereq_windows_is_powershell_literal_quoted(self, monkeypatch) -> None:
         """The user's shell is unknowable on Windows (the command may be pasted
@@ -318,10 +451,9 @@ class TestSttPrereqCommands:
         included, so the all-users ``C:\\Program Files`` layout works), and cmd
         rejects the leading ``&`` loudly rather than corrupting anything."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
-        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "C:\\ffmpeg\\ffmpeg.exe")
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod.os, "name", "nt")
-        monkeypatch.setattr(core_mod.sys, "executable", "C:\\Program Files\\Python312\\python.exe")
+        monkeypatch.setattr(sys, "executable", "C:\\Program Files\\Python312\\python.exe")
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert cmds == [
             "& 'C:\\Program Files\\Python312\\python.exe' -m pip install kirocrew[voice]"
@@ -336,10 +468,9 @@ class TestSttPrereqCommands:
         quote in the path is escaped by doubling — PowerShell's own rule — so
         the interpreter reaches pip byte-for-byte."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
-        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "C:\\ffmpeg\\ffmpeg.exe")
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod.os, "name", "nt")
-        monkeypatch.setattr(core_mod.sys, "executable", "C:\\tools\\$python\\o'brien.exe")
+        monkeypatch.setattr(sys, "executable", "C:\\tools\\$python\\o'brien.exe")
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert cmds == ["& 'C:\\tools\\$python\\o''brien.exe' -m pip install kirocrew[voice]"]
 
@@ -349,90 +480,28 @@ class TestSttPrereqCommands:
         recreate the press-and-nothing-changes dead end — the UI shows the
         unsupported notice via `transcribe_unsupported` instead."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: False)
-        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: False)
         assert core_mod._stt_prereq_commands("transcribe") == []
 
     def test_transcribe_prereq_self_suppresses_when_extra_present(self, monkeypatch) -> None:
         """Like every other branch of this function, the pip command must not
         be shown once the requirement is met (e.g. STT merely disabled)."""
-        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: True)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: True)
         assert core_mod._stt_prereq_commands("transcribe") == []
 
     def test_transcribe_prereq_includes_ffmpeg_when_missing(self, monkeypatch) -> None:
-        """Transcribe needs ffmpeg to remux the browser's .webm, and
-        is_available() only logs a warning when it is absent — this list is the
-        one user-visible surface for that gap."""
+        """Transcribe needs ffmpeg to decode the browser's .webm, and
+        availability_detail() reports ready without it, so this list is the one
+        user-visible surface for that gap, and it comes after the extra so the
+        blocking requirement is read first."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
-        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod, "_ffmpeg_install_commands", lambda: ["brew install ffmpeg"])
         monkeypatch.setattr(core_mod.os, "name", "posix")
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert len(cmds) == 2
         assert "kirocrew[voice]" in cmds[0]
         assert cmds[1] == "brew install ffmpeg"
-
-    def test_darwin_lists_license_brew_and_packages(self, monkeypatch) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(core_mod, "find_brew", lambda: None)
-        monkeypatch.setattr(core_mod, "_find_suitable_python", lambda: None)
-
-        def _no_xcrun(*_a, **_k):
-            raise FileNotFoundError("xcrun")
-
-        monkeypatch.setattr(subprocess, "run", _no_xcrun)
-        cmds = core_mod._stt_prereq_commands()
-        assert any("xcodebuild -license" in c for c in cmds)
-        assert any("install.sh" in c for c in cmds)
-        assert any(c.startswith("brew install ") and "ffmpeg" in c for c in cmds)
-
-    def test_darwin_fully_provisioned_has_no_prereqs(self, monkeypatch) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "/usr/bin/" + _n)
-        monkeypatch.setattr(core_mod, "find_brew", lambda: "/opt/homebrew/bin/brew")
-        monkeypatch.setattr(core_mod, "_find_suitable_python", lambda: "/usr/bin/python3")
-        monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="")
-        )
-        assert core_mod._stt_prereq_commands() == []
-
-    def test_debian_uses_apt_get(self, monkeypatch) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Linux")
-        monkeypatch.setattr(core_mod, "_is_al2023", lambda: False)
-        monkeypatch.setattr(core_mod, "_find_suitable_python", lambda: None)
-        monkeypatch.setattr(
-            core_mod.shutil,
-            "which",
-            lambda n: "/usr/bin/apt-get" if n == "apt-get" else None,
-        )
-        cmds = core_mod._stt_prereq_commands()
-        assert any("apt-get install -y python3" in c for c in cmds)
-        assert any(c == "sudo apt-get install -y ffmpeg" for c in cmds)
-
-    def test_al2023_uses_dnf_and_ffmpeg_build_script(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Linux")
-        monkeypatch.setattr(core_mod, "_is_al2023", lambda: True)
-        monkeypatch.setattr(core_mod, "_find_suitable_python", lambda: None)
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
-        scripts = tmp_path / "scripts"
-        scripts.mkdir()
-        (scripts / "build-ffmpeg.sh").write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
-        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
-        cmds = core_mod._stt_prereq_commands()
-        assert any("dnf install -y python3.11" in c for c in cmds)
-        assert any("build-ffmpeg.sh" in c for c in cmds)
-
-    def test_al2_without_build_script_points_at_upstream(self, monkeypatch) -> None:
-        monkeypatch.setattr(platform, "system", lambda: "Linux")
-        monkeypatch.setattr(core_mod, "_is_al2023", lambda: False)
-        monkeypatch.setattr(core_mod, "_find_suitable_python", lambda: "/usr/bin/python3")
-        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: None)
-        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-        cmds = core_mod._stt_prereq_commands()
-        assert cmds == ["echo 'Build ffmpeg from source: https://ffmpeg.org/releases/'"]
 
 
 class TestPipInstallChannel:
@@ -484,188 +553,6 @@ class TestPipInstallChannel:
         assert core_mod._pip_install_channel_available() is True
 
 
-class TestAl2023Detection:
-    def test_release_file_naming_2023(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            core_mod,
-            "Path",
-            lambda _p: SimpleNamespace(read_text=lambda **_k: "Amazon Linux release 2023"),
-        )
-        assert core_mod._is_al2023() is True
-
-    def test_unreadable_release_file_is_false(self, monkeypatch) -> None:
-        def _raise(**_k):
-            raise OSError("no such file")
-
-        monkeypatch.setattr(core_mod, "Path", lambda _p: SimpleNamespace(read_text=_raise))
-        assert core_mod._is_al2023() is False
-
-
-class TestFindSuitablePython:
-    """The reject predicate must SKIP an unusable interpreter, never abort.
-
-    Since #5535 both probes run through ``dep_sync._probe_interpreter`` so the
-    verdict describes the CANDIDATE interpreter, never the gateway's
-    environment. The decoy tests run a real child against ``sys.executable``
-    to prove the two attack routes (an inherited ``PYTHONPATH``, and ``-m``'s
-    import-and-execute of a planted ``pip``) stay closed.
-    """
-
-    @staticmethod
-    def _capture(monkeypatch):
-        captured: dict = {}
-
-        def _fake(reject=None):
-            captured["reject"] = reject
-            return "/usr/bin/python3"
-
-        monkeypatch.setattr("kiro_crew.platform_compat.find_python_interpreter", _fake)
-        assert core_mod._find_suitable_python() == "/usr/bin/python3"
-        return captured["reject"]
-
-    @staticmethod
-    def _fake_probe(monkeypatch, version_rc=0, version_out="3.12.1 (main)", pip_rc=0):
-        """Stub ``dep_sync._probe_interpreter``: find_spec code = pip probe."""
-
-        def _fake(_py, code, timeout=None):
-            assert timeout == 5, "each probe must keep the 5s bound"
-            if "find_spec" in code:
-                return SimpleNamespace(returncode=pip_rc, stdout="", stderr="")
-            return SimpleNamespace(returncode=version_rc, stdout=version_out, stderr="")
-
-        monkeypatch.setattr(core_mod.dep_sync, "_probe_interpreter", _fake)
-
-    def test_free_threaded_build_is_rejected(self, monkeypatch) -> None:
-        reject = self._capture(monkeypatch)
-        self._fake_probe(monkeypatch, version_out="3.14.0 free-threading build")
-        assert reject("/usr/bin/python3.14t") is True
-
-    def test_interpreter_with_pip_is_accepted(self, monkeypatch) -> None:
-        reject = self._capture(monkeypatch)
-        self._fake_probe(monkeypatch)
-        assert reject("/usr/bin/python3.12") is False
-
-    def test_missing_pip_is_rejected(self, monkeypatch) -> None:
-        reject = self._capture(monkeypatch)
-        self._fake_probe(monkeypatch, pip_rc=1)
-        assert reject("/usr/bin/python3.12") is True
-
-    def test_failed_version_probe_is_rejected(self, monkeypatch) -> None:
-        """_probe_interpreter reports failure via returncode, not an exception:
-        an implicit fall-through would hand the installer a broken target."""
-        reject = self._capture(monkeypatch)
-        self._fake_probe(monkeypatch, version_rc=1, version_out="")
-        assert reject("/usr/bin/python3.12") is True
-
-    def test_unspawnable_interpreter_is_rejected(self, monkeypatch) -> None:
-        def _boom(*_a, **_k):
-            raise OSError("exec format error")
-
-        reject = self._capture(monkeypatch)
-        monkeypatch.setattr(core_mod.dep_sync, "_probe_interpreter", _boom)
-        assert reject("/usr/bin/broken") is True
-
-    def test_hung_probe_is_rejected(self, monkeypatch) -> None:
-        def _hang(*_a, **_k):
-            raise subprocess.TimeoutExpired(cmd="python", timeout=5)
-
-        reject = self._capture(monkeypatch)
-        monkeypatch.setattr(core_mod.dep_sync, "_probe_interpreter", _hang)
-        assert reject("/usr/bin/python3.12") is True
-
-    def test_both_probes_run_isolated_bounded_and_without_dash_m(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        """Structural pin on the child argv: ``-I`` (no PYTHONPATH / user-site /
-        CWD entry), the 5s bound, a neutral cwd — and never ``-m``, whose
-        import-and-execute is the half of #5535 that runs planted code."""
-        target = tmp_path / "bin" / "python3"
-        target.parent.mkdir(parents=True)
-        seen = []
-
-        def _fake_run(cmd, **kwargs):
-            seen.append((cmd, kwargs))
-            return SimpleNamespace(returncode=0, stdout="3.12.1 (main)", stderr="")
-
-        reject = self._capture(monkeypatch)
-        monkeypatch.setattr(core_mod.dep_sync.subprocess, "run", _fake_run)
-        assert reject(str(target)) is False
-        assert len(seen) == 2, "version probe + pip probe"
-        for cmd, kwargs in seen:
-            assert cmd[0] == str(target)
-            assert cmd[1] == "-I", "probe must run the interpreter isolated"
-            assert "-m" not in cmd, "-m imports and executes; probes must use -c"
-            assert kwargs.get("timeout") == 5, "the per-probe 5s bound must survive"
-            assert kwargs.get("cwd") == target.parent, "probe needs a neutral cwd"
-            assert "env" not in kwargs, "-I owns isolation; no env forwarding"
-
-    def test_a_sitecustomize_decoy_on_pythonpath_cannot_forge_free_threading(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        """A ``sitecustomize.py`` on the caller's PYTHONPATH edits ``sys.version``
-        in every unisolated child — vetoing all candidates (Whisper reported
-        unavailable) or waving a genuinely free-threaded build through as the
-        install target. ``-I`` drops PYTHONPATH, so the verdict must not move."""
-        decoy = tmp_path / "decoy-path"
-        decoy.mkdir()
-        (decoy / "sitecustomize.py").write_text(
-            "import sys; sys.version += ' free-threading build'\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("PYTHONPATH", str(decoy))
-        reject = self._capture(monkeypatch)
-
-        # sys.executable (this test venv) has pip and is not free-threaded:
-        # the decoy must not flip its verdict to "unusable".
-        assert reject(sys.executable) is False
-
-    def test_a_decoy_pip_package_neither_executes_nor_forges_the_verdict(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        """``-m pip`` IMPORTS AND EXECUTES the ``pip`` the child resolves, so a
-        decoy package on the caller's PYTHONPATH both runs planted code in the
-        probe child and answers "pip present/absent" regardless of reality.
-        The fixed probe asks ``find_spec`` under ``-I``: the decoy must never
-        run (no canary file) and must not flip the verdict (this interpreter's
-        real pip still wins)."""
-        decoy = tmp_path / "decoy-path"
-        canary = tmp_path / "canary"
-        pkg = decoy / "pip"
-        pkg.mkdir(parents=True)
-        (pkg / "__init__.py").write_text(
-            f"import pathlib, sys\n"
-            f"pathlib.Path({str(canary)!r}).write_text('ran', encoding='utf-8')\n"
-            f"sys.exit(1)\n",
-            encoding="utf-8",
-        )
-        (pkg / "__main__.py").write_text("", encoding="utf-8")
-        monkeypatch.setenv("PYTHONPATH", str(decoy))
-        reject = self._capture(monkeypatch)
-
-        assert reject(sys.executable) is False
-        assert not canary.exists(), "decoy pip must never be imported or executed"
-
-
-class TestInstallScript:
-    def test_path_prelude_defers_to_brew_shellenv(self) -> None:
-        prelude = core_mod._stt_install_path_prelude()
-        assert "brew shellenv" in prelude
-        assert "export PATH" in prelude
-
-    def test_mlx_script_installs_via_pipx(self) -> None:
-        script = core_mod._build_stt_install_script("mlx")
-        assert "pipx install --force mlx-whisper" in script
-        assert "openai-whisper" not in script
-
-    def test_default_script_prefers_brew_then_pip_user(self) -> None:
-        script = core_mod._build_stt_install_script()
-        assert "brew install openai-whisper" in script
-        # The pip fallback must target a SYSTEM python with --user, never the
-        # gateway venv (which is replaced on every upgrade).
-        assert "--user" in script
-        assert "--only-binary" in script
-
-
 # ── STT config endpoint ─────────────────────────────────────────────────
 
 
@@ -702,34 +589,45 @@ class TestSttConfigEndpoint:
 
     @pytest.mark.asyncio
     async def test_put_persists_recognised_fields_only(self, seeded_config) -> None:
+        """The allowlist is the contract, and the retired keys are part of it.
+
+        ``whisper_path``, ``mlx_model``, ``parakeet_model`` and ``device`` belonged
+        to the out-of-band runtimes that are gone. Persisting one would leave a key
+        in ``config.json`` that nothing reads, which reads to the next person as a
+        setting that stopped working rather than one that was withdrawn.
+        """
         async with TestClient(TestServer(_stt_app())) as client:
             resp = await client.put(
                 "/api/config/stt",
                 json={
                     "enabled": True,
-                    "provider": "whisper",
-                    "model": "turbo",
-                    "mlx_model": "mlx-community/whisper-large-v3-turbo",
+                    "provider": "local",
+                    "model": "small",
                     "transcribe_region": "us-west-2",
                     "transcribe_profile": "default",
                     "language_code": "en-US",
                     "streaming": True,
                     "endpointing": False,
                     "dictation_panel": True,
+                    "whisper_path": "/usr/local/bin/whisper",
+                    "mlx_model": "mlx-community/whisper-large-v3-turbo",
+                    "parakeet_model": "mlx-community/parakeet-tdt-0.6b-v2",
+                    "device": "cuda",
                     "provider_bogus": "ignored",
                 },
             )
             assert resp.status == 200
         stt = json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]
         assert stt["enabled"] is True
-        assert stt["provider"] == "whisper"
-        assert stt["model"] == "turbo"
+        assert stt["provider"] == "local"
+        assert stt["model"] == "small"
         assert stt["transcribe_region"] == "us-west-2"
         assert stt["language_code"] == "en-US"
         assert stt["streaming"] is True
         assert stt["endpointing"] is False
         assert stt["dictation_panel"] is True
-        assert "provider_bogus" not in stt
+        for retired in ("whisper_path", "mlx_model", "parakeet_model", "device", "provider_bogus"):
+            assert retired not in stt
         # The pre-existing unrelated section survived the read-modify-write.
         agent = json.loads(seeded_config.read_text(encoding="utf-8"))["agent"]
         assert agent["approval_mode"] == "auto"
@@ -747,24 +645,142 @@ class TestSttConfigEndpoint:
         assert stt.get("model") != "not-a-model"
 
     @pytest.mark.asyncio
+    async def test_put_refuses_a_retired_provider_name(self, seeded_config) -> None:
+        """A retired name reaching the file would be read back and degraded to
+        `local` with a warning on every load, so the picker would show a selection
+        that is silently not the one in force.
+
+        The starting value is a DIFFERENT selectable provider on purpose: had the
+        endpoint accepted `mlx`, the loader would degrade it to `local`, which is
+        indistinguishable from a refusal if the test starts from the default.
+        """
+        async with TestClient(TestServer(_stt_app())) as client:
+            seeded = await client.put("/api/config/stt", json={"provider": "transcribe"})
+            assert seeded.status == 200
+            resp = await client.put("/api/config/stt", json={"provider": "mlx"})
+            assert resp.status == 200
+            assert (await resp.json())["provider"] == "transcribe"
+        stt = json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]
+        assert stt["provider"] == "transcribe"
+
+    @pytest.mark.asyncio
+    async def test_put_accepts_only_a_catalog_model_name(self, seeded_config) -> None:
+        """The allowlist is the download catalog, so a superseded alias is refused
+        even though the loader's resolver still understands it: the picker offers
+        catalog names, and a name outside the catalog is one whose size and digest
+        this endpoint cannot state."""
+        assert "turbo" not in core_mod._STT_MODEL_SIZES
+        async with TestClient(TestServer(_stt_app())) as client:
+            assert (await client.put("/api/config/stt", json={"model": "small"})).status == 200
+            refused = await client.put("/api/config/stt", json={"model": "turbo"})
+            assert refused.status == 200
+            assert (await refused.json())["model"] == "small"
+            accepted = await client.put("/api/config/stt", json={"model": "large-v3-turbo"})
+            assert (await accepted.json())["model"] == "large-v3-turbo"
+        stt = json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]
+        assert stt["model"] == "large-v3-turbo"
+
+    @pytest.mark.asyncio
+    async def test_put_persists_the_millisecond_knobs_at_their_floors(self, seeded_config) -> None:
+        """Each floor is owned by the module that enforces it at runtime, and a
+        value AT the floor has to survive: it is the whole point of publishing the
+        floor. Zero is legal for the idle window and means "release the model as
+        soon as it goes idle", which is the right trade on a small machine."""
+        async with TestClient(TestServer(_stt_app())) as client:
+            resp = await client.put(
+                "/api/config/stt",
+                json={
+                    "silence_ms": MIN_SILENCE_MS,
+                    "partial_interval_ms": MIN_PARTIAL_INTERVAL_MS,
+                    "idle_evict_secs": 0,
+                },
+            )
+            assert resp.status == 200
+            body = await resp.json()
+        assert body["silence_ms"] == MIN_SILENCE_MS
+        assert body["partial_interval_ms"] == MIN_PARTIAL_INTERVAL_MS
+        assert body["idle_evict_secs"] == 0
+        stt = json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]
+        assert stt["silence_ms"] == MIN_SILENCE_MS
+        assert stt["partial_interval_ms"] == MIN_PARTIAL_INTERVAL_MS
+        assert stt["idle_evict_secs"] == 0
+
+    @pytest.mark.asyncio
+    async def test_put_ignores_values_below_the_floors(self, seeded_config) -> None:
+        """A silence window under the detector's floor lets the pause between two
+        words end the utterance, so the phrase commits mid-sentence. A negative
+        cadence or idle window is not a setting at all."""
+        async with TestClient(TestServer(_stt_app())) as client:
+            seeded = await client.put(
+                "/api/config/stt",
+                json={"silence_ms": 900, "partial_interval_ms": 250, "idle_evict_secs": 30},
+            )
+            assert (await seeded.json())["silence_ms"] == 900
+            resp = await client.put(
+                "/api/config/stt",
+                json={
+                    "silence_ms": MIN_SILENCE_MS - 1,
+                    "partial_interval_ms": -1,
+                    "idle_evict_secs": -1,
+                },
+            )
+            assert resp.status == 200
+            body = await resp.json()
+        assert body["silence_ms"] == 900
+        assert body["partial_interval_ms"] == 250
+        assert body["idle_evict_secs"] == 30
+
+    @pytest.mark.asyncio
+    async def test_the_served_partial_cadence_is_never_below_the_readable_floor(
+        self, seeded_config
+    ) -> None:
+        """Below the floor the text churns faster than it can be read, so whatever
+        a client asks for, the cadence the panel is told to expect has to be one a
+        human can follow."""
+        async with TestClient(TestServer(_stt_app())) as client:
+            resp = await client.put("/api/config/stt", json={"partial_interval_ms": 1})
+            assert resp.status == 200
+            assert (await resp.json())["partial_interval_ms"] >= MIN_PARTIAL_INTERVAL_MS
+
+    @pytest.mark.asyncio
+    async def test_put_refuses_a_boolean_numeric_value(self, seeded_config) -> None:
+        """``bool`` subclasses ``int`` in Python, so a checkbox value sent to one of
+        these fields would otherwise persist as ``1``.
+
+        Asserted on ``idle_evict_secs`` because that is where it is observable: its
+        floor is zero, so ``True`` passes the range check on its own and only the
+        explicit type guard stands between a JSON ``true`` and a one-second idle
+        window. On ``silence_ms`` the 200 ms floor would hide the bug.
+        """
+        async with TestClient(TestServer(_stt_app())) as client:
+            assert (await client.put("/api/config/stt", json={"idle_evict_secs": 30})).status == 200
+            resp = await client.put("/api/config/stt", json={"idle_evict_secs": True})
+            assert resp.status == 200
+            assert (await resp.json())["idle_evict_secs"] == 30
+        stt = json.loads(seeded_config.read_text(encoding="utf-8"))["stt"]
+        assert stt["idle_evict_secs"] == 30
+        assert not isinstance(stt["idle_evict_secs"], bool)
+
+    @pytest.mark.asyncio
     async def test_get_advertises_capabilities(self, seeded_config) -> None:
         async with TestClient(TestServer(_stt_app())) as client:
             resp = await client.get("/api/config/stt")
             assert resp.status == 200
             body = await resp.json()
         # Streaming capability is served from the backend's own set so the
-        # Settings UI gates on a CAPABILITY rather than a provider name.
-        assert body["streaming_providers"] == ["transcribe", "apple"]
+        # Settings UI gates on a CAPABILITY rather than a provider name. `local`
+        # streams too, so every advertised provider is in it.
+        assert body["streaming_providers"] == ["local", "apple", "transcribe"]
         # Tracks _STT_MODEL_SIZES (the PUT allowlist) rather than pinning one
-        # literal: the faster-whisper work widened the enum from `turbo` alone
-        # to the full Whisper size ladder, and a test pinned to yesterday's
-        # ladder fails on every legitimate widening.
+        # literal, so a catalog entry added or resized cannot make the picker
+        # offer a value this endpoint would reject.
         assert body["models"] == core_mod._STT_MODEL_SIZES
-        assert "turbo" in body["models"]
+        # Sizes are BYTES, not a formatted label: the dashboard is translated
+        # into 12 languages, so only the frontend can format them for a reader.
+        assert body["models"][stt_models.DEFAULT_MODEL] > 0
         assert body["language_codes"][0] == "en-US"
         assert body["available"] is False
         assert body["prereqs"] == []
-        assert body["install_step"] in ("idle", "done", "error")
         # This test venv has a working pip channel, so the unsupported flag
         # must be False regardless of installed extras.
         assert body["transcribe_unsupported"] is False
@@ -773,272 +789,365 @@ class TestSttConfigEndpoint:
         # venv is never the bundled app.
         assert body["bundled_interpreter"] is False
         # Served independently of `available` so the UI can flag the .webm
-        # remux gap even when the provider reads ready.
+        # decode gap even when the provider reads ready.
         assert isinstance(body["ffmpeg_missing"], bool)
 
     @pytest.mark.asyncio
-    async def test_get_serves_faster_unsupported_for_pre_click_gating(self, monkeypatch):
-        """Mirrors `transcribe_unsupported`. Without this the Settings card can only
-        learn the platform is unsupported by pressing Install and reading a 400 — the
-        same dead end on every press, which is the failure this flag removes."""
-        monkeypatch.setattr(core_mod.platform_compat, "is_windows_on_arm", lambda: True)
-        resp = await core_mod.api_stt_config(_req())
-        assert json.loads(resp.body)["faster_unsupported"] is True
+    async def test_get_defaults_to_the_local_provider_with_streaming_on(
+        self, seeded_config
+    ) -> None:
+        """The default is in-process recognition with words appearing while the
+        user is still speaking: `local` needs no account and no separate install,
+        so there is nothing to configure before dictation works, and a dictation
+        surface that only updates after a pause reads as lag."""
+        async with TestClient(TestServer(_stt_app())) as client:
+            body = await (await client.get("/api/config/stt")).json()
+        assert body["provider"] == "local"
+        assert body["streaming"] is True
+        assert body["enabled"] is True
+        assert body["model"] == stt_models.DEFAULT_MODEL
 
     @pytest.mark.asyncio
-    async def test_get_reports_faster_supported_elsewhere(self, monkeypatch):
-        monkeypatch.setattr(core_mod.platform_compat, "is_windows_on_arm", lambda: False)
-        resp = await core_mod.api_stt_config(_req())
-        assert json.loads(resp.body)["faster_unsupported"] is False
+    async def test_get_serves_the_millisecond_knobs_the_panel_renders(self, seeded_config) -> None:
+        async with TestClient(TestServer(_stt_app())) as client:
+            body = await (await client.get("/api/config/stt")).json()
+        assert body["silence_ms"] >= MIN_SILENCE_MS
+        assert isinstance(body["partial_interval_ms"], int)
+        assert isinstance(body["idle_evict_secs"], int)
 
 
-# ── STT install endpoint ────────────────────────────────────────────────
+# ── STT status / prepare / prewarm ──────────────────────────────────────
 
 
-def _proc(lines: list[bytes], returncode: int = 0) -> MagicMock:
-    proc = MagicMock()
-    proc.stdout = SimpleNamespace(readline=AsyncMock(side_effect=[*lines, b""]))
-    proc.wait = AsyncMock(return_value=returncode)
-    proc.communicate = AsyncMock(return_value=(b"", b""))
-    proc.returncode = returncode
-    return proc
+def _availability(ok: bool, code: str = "", detail: str = ""):
+    """Build the shape ``availability_detail`` returns, without probing the host."""
+    return core_mod.stt.Availability(ok, code, detail)
 
 
-class TestSttInstall:
+def _seed_stt(path: Path, **fields) -> None:
+    """Merge *fields* into the ``stt`` section of the config at *path*.
+
+    Used to give a test a configured value that is NOT the default, so "used the
+    configured model" is distinguishable from "fell back to the catalog default".
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.setdefault("stt", {}).update(fields)
+    path.write_text(json.dumps(data) + "\n", encoding="utf-8", newline="\n")
+
+
+class TestSttStatus:
+    """``GET /api/stt/status`` is the runtime half of the settings surface.
+
+    ``GET /api/config/stt`` serves what the operator chose; this serves what the
+    host can currently do about it: the availability reason as a code the
+    dashboard can localise, whether the chosen model is on disk, whether one is
+    resident right now, and the progress of a transfer in flight.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _quiet_probes(self, monkeypatch):
+        monkeypatch.setattr(core_mod, "availability_detail", lambda _cfg: _availability(True))
+        monkeypatch.setattr("kiro_crew.stt.models.is_present", lambda _m: False)
+        monkeypatch.setattr(
+            "kiro_crew.stt.engine.shared_engine", lambda *a, **k: SimpleNamespace(loaded=False)
+        )
+
     @pytest.mark.asyncio
-    async def test_concurrent_install_is_refused(self, fake_sel, stt_status) -> None:
-        core_mod._stt_install_status = {
-            "step": "installing_ffmpeg",
-            "detail": "",
+    async def test_status_reports_the_resolved_model_and_the_whole_catalog(
+        self, seeded_config, model_store
+    ) -> None:
+        """The catalog cannot be a static frontend table: `present` is per-host
+        state that changes as models are fetched, and it is the only thing that
+        tells the picker which choice costs a download."""
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert body["provider"] == "local"
+        assert body["model"] == stt_models.DEFAULT_MODEL
+        assert body["model_present"] is False
+        assert body["model_bytes"] == stt_models.resolve(stt_models.DEFAULT_MODEL).size_bytes
+        # Smallest first, which is the order the picker offers them in.
+        assert [row["name"] for row in body["models"]] == [m.name for m in stt_models.CATALOG]
+        assert all(row["present"] is False for row in body["models"])
+        assert all(row["size_bytes"] > 0 for row in body["models"])
+
+    @pytest.mark.asyncio
+    async def test_status_reports_a_present_model_as_present(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        monkeypatch.setattr("kiro_crew.stt.models.is_present", lambda _m: True)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert body["model_present"] is True
+        assert all(row["present"] is True for row in body["models"])
+
+    @pytest.mark.asyncio
+    async def test_status_reads_presence_through_the_owning_module(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """A materialised package attribute must not shadow the real function.
+
+        ``kiro_crew.stt`` re-exports its surface through a lazy ``__getattr__``, and
+        that indirection stops working for any name the package itself comes to
+        hold: a ``monkeypatch.setattr(stt, "is_present", ...)`` anywhere in the
+        suite writes the original back as a real attribute on teardown, after which
+        every reader of ``stt.is_present`` is pinned to the value captured then.
+
+        This handler therefore reads ``stt.models.is_present``. The test recreates
+        the materialised attribute deliberately, because the bug it guards against
+        was order-dependent and silent: the endpoint reported every model absent on
+        a host where the files were present, and only in a full-suite run.
+        """
+        monkeypatch.setattr(core_mod.stt, "is_present", lambda _m: False, raising=False)
+        monkeypatch.setattr("kiro_crew.stt.models.is_present", lambda _m: True)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert body["model_present"] is True
+        assert all(row["present"] is True for row in body["models"])
+
+    @pytest.mark.asyncio
+    async def test_status_forwards_the_availability_code_and_detail(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """The code is the contract and the prose is advisory: the dashboard
+        renders localised text, so it cannot key off an English sentence, and
+        "install an extra" leads somewhere completely different from "this
+        platform has no prebuilt wheel"."""
+        monkeypatch.setattr(
+            core_mod,
+            "availability_detail",
+            lambda _cfg: _availability(False, core_mod.stt.CODE_EXTRA_MISSING, "needs the extra"),
+        )
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert body["available"] is False
+        assert body["code"] == core_mod.stt.CODE_EXTRA_MISSING
+        assert body["detail"] == "needs the extra"
+
+    @pytest.mark.asyncio
+    async def test_status_reports_whether_a_model_is_resident(
+        self, seeded_config, monkeypatch, model_store
+    ) -> None:
+        """Residency is what decides between a 30 ms transcription and one that
+        pays a model load first, so the panel can say which the user will get."""
+        monkeypatch.setattr(
+            "kiro_crew.stt.engine.shared_engine", lambda *a, **k: SimpleNamespace(loaded=True)
+        )
+        assert json.loads((await core_mod.api_stt_status(_req())).body)["engine_loaded"] is True
+
+    @pytest.mark.asyncio
+    async def test_status_republishes_the_live_download_block(
+        self, seeded_config, model_store
+    ) -> None:
+        """A first-run fetch is 148 MB at the default, so a panel polling this is
+        the only thing standing between the user and an unexplained wait."""
+        model_store._set(step="downloading", model="base", done=1024, total=147_951_465)
+        body = json.loads((await core_mod.api_stt_status(_req())).body)
+        assert body["download"] == {
+            "step": "downloading",
+            "model": "base",
+            "downloaded_bytes": 1024,
+            "total_bytes": 147_951_465,
             "error": "",
         }
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 409
-        assert "already in progress" in json.loads(resp.body)["error"]
-        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
 
     @pytest.mark.asyncio
-    async def test_transcribe_install_is_refused(self, fake_sel, stt_status) -> None:
-        """The install script only knows local Whisper runtimes; running it for
-        Transcribe succeeds while changing nothing. The endpoint must refuse
-        instead, and must NOT flip the status machine (a 400 that left
-        `starting` behind would deadlock the 409 gate)."""
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"stt": {"provider": "transcribe"}}) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 400
+    async def test_status_refuses_an_app_token(self, seeded_config, fake_sel, model_store) -> None:
+        """``request["user"]`` is truthy for an app token too, so the cookie check
+        alone does not separate a browser from an app that named this path in its
+        manifest. Reading the host's setup state is operator business, not
+        something an app earns by declaring a path."""
+        resp = await core_mod.api_stt_status(_req(app_token="meetings"))
+        assert resp.status == 403
         body = json.loads(resp.body)
-        assert body["code"] == "stt_no_local_install"
-        assert "voice" in body["error"]
-        assert core_mod._stt_install_status["step"] == "idle"
+        assert body["code"] == "dashboard_user_required"
         assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
 
     @pytest.mark.asyncio
-    async def test_successful_install_walks_the_progress_steps(
-        self, monkeypatch, fake_sel, stt_status
+    async def test_status_refuses_a_request_with_no_app_claim_at_all(
+        self, seeded_config, fake_sel, model_store
     ) -> None:
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        lines = [
-            b"Checking Xcode tools\n",
-            b"Installing Homebrew\n",
-            b"Installing ffmpeg\n",
-            b"Installing openai-whisper\n",
-            b"Installing mlx-whisper\n",
-            b"No suitable python3 found\n",
-            b"Using: /usr/bin/python3\n",
-            b"ERROR: recoverable hiccup\n",
-            b"Done.\n",
-        ]
+        """Fail closed: an absent claim means no auth middleware published one, so
+        it must be refused alongside a non-empty one rather than read as the
+        dashboard user by default."""
+        resp = await core_mod.api_stt_status(_req(app_token=None))
+        assert resp.status == 403
 
-        async def _spawn(*_a, **_k):
-            return _proc(lines)
 
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 200
-        assert json.loads(resp.body)["ok"] is True
-        assert core_mod._stt_install_status["step"] == "done"
-        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "success"
+class TestSttPrepare:
+    """``POST /api/stt/prepare`` starts, or joins, the one-time model download."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tasks(self, stt_background):
+        """Every test here asserts on what was scheduled, so the set must be ours."""
+
+    @pytest.fixture(autouse=True)
+    def _no_real_download(self, monkeypatch):
+        """Record the requested model instead of fetching 148 MB over the wire."""
+        self.requested: list[str] = []
+
+        async def _fake_ensure(name: str) -> bool:
+            self.requested.append(name)
+            return True
+
+        monkeypatch.setattr("kiro_crew.stt.session.ensure_model", _fake_ensure)
 
     @pytest.mark.asyncio
-    async def test_failed_install_reports_tail_of_output(
-        self, monkeypatch, fake_sel, stt_status
+    async def test_prepare_answers_202_and_starts_the_transfer(
+        self, seeded_config, model_store
     ) -> None:
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-
-        async def _spawn(*_a, **_k):
-            return _proc([b"boom\n"], returncode=1)
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 500
+        """202, not 200: the fetch outlives the request on purpose, so the user is
+        not held behind it and the caller polls the status endpoint instead."""
+        resp = await core_mod.api_stt_prepare(_json_req(raises=True))
+        assert resp.status == 202
         body = json.loads(resp.body)
-        assert body["ok"] is False
-        assert "boom" in body["error"]
-        assert core_mod._stt_install_status["step"] == "error"
-        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "failed"
+        assert body["model"] == stt_models.DEFAULT_MODEL
+        assert body["download"] == dict(model_store.status)
+        assert await _drain_stt_background() == [True]
+        assert self.requested == [stt_models.DEFAULT_MODEL]
 
     @pytest.mark.asyncio
-    async def test_faster_is_refused_on_windows_on_arm(self, monkeypatch, fake_sel, stt_status):
-        """No CTranslate2 wheel exists for win-arm64 and there is no sdist either, so
-        pip fails while RESOLVING — naming a package the user never asked for. Refuse
-        up front with the alternatives instead of letting every press repeat it."""
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"stt": {"provider": "faster"}}) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        monkeypatch.setattr(core_mod.platform_compat, "is_windows_on_arm", lambda: True)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 400
-        body = json.loads(resp.body)
-        assert body["code"] == "stt_unsupported_platform"
-        # The alternatives are the whole point — a bare refusal leaves the user stuck.
-        assert "whisper" in body["error"] and "transcribe" in body["error"]
-        # Must not strand the status machine in `starting`, or the 409 gate deadlocks.
-        assert core_mod._stt_install_status["step"] == "idle"
-        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+    async def test_prepare_honours_a_requested_model(self, seeded_config, model_store) -> None:
+        """The picker can offer the weights BEFORE the selection is committed, so
+        the operator is not asked to save a setting to find out what it costs."""
+        resp = await core_mod.api_stt_prepare(_json_req({"model": "tiny"}))
+        assert resp.status == 202
+        assert json.loads(resp.body)["model"] == "tiny"
+        await _drain_stt_background()
+        assert self.requested == ["tiny"]
 
     @pytest.mark.asyncio
-    async def test_windows_arm_refusal_never_spawns_the_shell(
-        self, monkeypatch, fake_sel, stt_status
-    ):
-        """The refusal has to be SERVER-SIDE, not a guard inside the generated script.
+    async def test_prepare_degrades_an_unknown_model_to_the_catalog_default(
+        self, seeded_config, model_store
+    ) -> None:
+        """A model name becomes a filename under the models directory and a URL
+        under the pinned base, so only catalog names may reach either. An unknown
+        one resolves to the default the same way a stale configured value does."""
+        resp = await core_mod.api_stt_prepare(_json_req({"model": "../../etc/passwd"}))
+        assert resp.status == 202
+        assert json.loads(resp.body)["model"] == stt_models.DEFAULT_MODEL
+        await _drain_stt_background()
+        # The name handed to the downloader resolves to the same catalog entry, so
+        # nothing outside the catalog reaches the filesystem or the network.
+        assert [stt_models.resolve(n).name for n in self.requested] == [stt_models.DEFAULT_MODEL]
 
-        ``api_stt_install`` launches the script through ``bash -c``, which does not
-        exist on a stock native-Windows gateway — the run would die with
-        FileNotFoundError before executing a line. An in-script guard would therefore
-        be unreachable on precisely the platform it exists for, so assert no spawn is
-        even attempted.
+    @pytest.mark.asyncio
+    async def test_prepare_with_a_non_object_body_uses_the_configured_model(
+        self, seeded_config, model_store
+    ) -> None:
+        """A JSON array, or anything else that is not an object, carries no model
+        name. The configured one is the only reading that leaves the endpoint
+        useful to a caller sending no body at all."""
+        _seed_stt(seeded_config, model="small")
+        resp = await core_mod.api_stt_prepare(_json_req(["tiny"]))
+        assert resp.status == 202
+        assert json.loads(resp.body)["model"] == "small"
+        await _drain_stt_background()
+        assert self.requested == ["small"]
+
+    @pytest.mark.asyncio
+    async def test_prepare_with_a_blank_model_uses_the_configured_one(
+        self, seeded_config, model_store
+    ) -> None:
+        _seed_stt(seeded_config, model="small")
+        resp = await core_mod.api_stt_prepare(_json_req({"model": ""}))
+        assert resp.status == 202
+        assert json.loads(resp.body)["model"] == "small"
+        await _drain_stt_background()
+        assert self.requested == ["small"]
+
+    @pytest.mark.asyncio
+    async def test_prepare_joins_a_transfer_already_running(
+        self, seeded_config, model_store
+    ) -> None:
+        """A polling panel must not accumulate one task per poll. Concurrent
+        callers are made safe by the store's own lock, so this only has to avoid
+        piling up work nobody will read."""
+        model_store._set(step="downloading", model="base", done=512, total=147_951_465)
+        resp = await core_mod.api_stt_prepare(_json_req(raises=True))
+        assert resp.status == 202
+        assert json.loads(resp.body)["download"]["downloaded_bytes"] == 512
+        assert await _drain_stt_background() == []
+        assert self.requested == []
+
+    @pytest.mark.asyncio
+    async def test_prepare_refuses_an_app_token(self, seeded_config, fake_sel, model_store) -> None:
+        """An app naming this path must not be able to start a 148 MB transfer on
+        the operator's connection."""
+        resp = await core_mod.api_stt_prepare(_json_req(raises=True, app_token="meetings"))
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "dashboard_user_required"
+        assert await _drain_stt_background() == []
+        assert self.requested == []
+
+
+class TestSttPrewarm:
+    """``POST /api/stt/prewarm`` pays the load while the user is still speaking."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tasks(self, stt_background):
+        """Every test here asserts on what was scheduled, so the set must be ours."""
+
+    @pytest.mark.asyncio
+    async def test_prewarm_answers_202_without_waiting_for_the_load(
+        self, seeded_config, monkeypatch
+    ) -> None:
+        """A first-ever load compiles a GPU pipeline, so awaiting it here would
+        stall the request that exists precisely to get ahead of that cost. The
+        fake stays blocked until after the response is asserted, so a handler that
+        awaited it would never reach the assertion at all.
+
+        Both configured values are non-default, so this also proves the warm-up
+        targets the operator's selection rather than the catalog default.
         """
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"stt": {"provider": "faster"}}) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        monkeypatch.setattr(core_mod.platform_compat, "is_windows_on_arm", lambda: True)
-        spawned = []
+        _seed_stt(seeded_config, model="small", language_code="fr-FR")
+        seen: dict = {}
+        release = asyncio.Event()
 
-        async def _spawn(*a, **_k):
-            spawned.append(a)
-            return _proc([b"Done.\n"])
+        async def _fake_prewarm(*, model_name: str = "", language: str = ""):
+            seen.update({"model_name": model_name, "language": language})
+            await release.wait()
+            return _availability(True)
 
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 400
-        assert spawned == []
-
-    @pytest.mark.asyncio
-    async def test_platform_refusal_precedes_the_pip_channel_check(
-        self, monkeypatch, fake_sel, stt_status
-    ):
-        """Ordering is load-bearing: on win-arm a healthy pip channel would pass the
-        sibling gate and let the install proceed to a guaranteed failure. The
-        platform verdict must win, and its message is also the more actionable one."""
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"stt": {"provider": "faster"}}) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        monkeypatch.setattr(core_mod.platform_compat, "is_windows_on_arm", lambda: True)
-        # A working channel: without correct ordering this would fall through.
-        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
-        resp = await core_mod.api_stt_install(_req())
-        assert json.loads(resp.body)["code"] == "stt_unsupported_platform"
+        monkeypatch.setattr("kiro_crew.stt.session.prewarm", _fake_prewarm)
+        resp = await core_mod.api_stt_prewarm(_req())
+        assert resp.status == 202
+        assert json.loads(resp.body) == {"ok": True}
+        release.set()
+        await _drain_stt_background()
+        assert seen["model_name"] == "small"
+        # The BCP-47 config value is reduced to the bare language code the
+        # recogniser names its languages by.
+        assert seen["language"] == "fr"
 
     @pytest.mark.asyncio
-    async def test_other_providers_are_unaffected_on_windows_on_arm(
-        self, monkeypatch, fake_sel, stt_status
-    ):
-        """The gate is scoped to `faster`. `whisper` has no CTranslate2 dependency, so
-        refusing it on win-arm would break a provider that works."""
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"stt": {"provider": "whisper"}}) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        monkeypatch.setattr(core_mod.platform_compat, "is_windows_on_arm", lambda: True)
-
-        async def _spawn(*_a, **_k):
-            return _proc([b"Done.\n"])
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 200
-
-    @pytest.mark.asyncio
-    async def test_faster_install_proceeds_on_a_supported_platform(
-        self, monkeypatch, fake_sel, stt_status
-    ):
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"stt": {"provider": "faster"}}) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        monkeypatch.setattr(core_mod.platform_compat, "is_windows_on_arm", lambda: False)
-        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
-        monkeypatch.setattr(core_mod, "_faster_whisper_model", lambda: object())
-
-        async def _spawn(*_a, **_k):
-            return _proc([b"Installing faster-whisper\n", b"Done.\n"])
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 200
-        assert core_mod._stt_install_status["step"] == "done"
-
-    @pytest.mark.asyncio
-    async def test_install_timeout_kills_the_child(self, monkeypatch, fake_sel, stt_status) -> None:
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
-        proc = MagicMock()
-        proc.stdout = SimpleNamespace(readline=AsyncMock(side_effect=asyncio.TimeoutError))
-        proc.communicate = AsyncMock(return_value=(b"", b""))
-
-        async def _spawn(*_a, **_k):
-            return proc
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 500
-        assert json.loads(resp.body)["error"] == "Install timed out"
-        proc.kill.assert_called_once()
-        assert core_mod._stt_install_status["step"] == "error"
-
-    @pytest.mark.asyncio
-    async def test_missing_shell_is_reported_not_raised(
-        self, monkeypatch, fake_sel, stt_status
+    async def test_prewarm_failure_does_not_fail_the_request(
+        self, seeded_config, monkeypatch
     ) -> None:
-        core_mod._stt_install_status = {"step": "idle", "detail": "", "error": ""}
+        """Prewarming is an optimisation. A host that cannot load the model still
+        has to be able to open the microphone, where the same failure is reported
+        as an error frame carrying a code."""
 
-        async def _spawn(*_a, **_k):
-            raise FileNotFoundError("bash")
+        async def _boom(**_kwargs):
+            raise RuntimeError("no recogniser here")
 
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
-        resp = await core_mod.api_stt_install(_req())
-        assert resp.status == 500
-        assert json.loads(resp.body)["error"] == "bash not found"
-        assert core_mod._stt_install_status["error"] == "bash not found"
+        monkeypatch.setattr("kiro_crew.stt.session.prewarm", _boom)
+        resp = await core_mod.api_stt_prewarm(_req())
+        assert resp.status == 202
+        outcomes = await _drain_stt_background()
+        assert [type(o).__name__ for o in outcomes] == ["RuntimeError"]
+
+    @pytest.mark.asyncio
+    async def test_prewarm_refuses_an_app_token(self, seeded_config, fake_sel, monkeypatch) -> None:
+        """Warming a resident model inside the gateway is operator setup, so an
+        app token must not reach it even though ``request["user"]`` is truthy."""
+        started: list[str] = []
+
+        async def _fake_prewarm(**_kwargs):
+            started.append("ran")
+            return _availability(True)
+
+        monkeypatch.setattr("kiro_crew.stt.session.prewarm", _fake_prewarm)
+        resp = await core_mod.api_stt_prewarm(_req(app_token="meetings"))
+        assert resp.status == 403
+        assert await _drain_stt_background() == []
+        assert started == []
+        assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
 
 
 # ── STT transcribe endpoint ─────────────────────────────────────────────
@@ -1052,30 +1161,68 @@ def _multipart_req(field) -> web.Request:
 
 
 class TestSttTranscribe:
+    """The batch upload path: record first, upload afterwards.
+
+    Every non-2xx body here carries a machine-readable ``code``. Backend-owned
+    strings have no translation catalog, so the English prose is advisory and the
+    code is the only thing the dashboard can branch on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _backend_ready(self, monkeypatch):
+        """Pin the availability probe, which imports an optional extra.
+
+        Left real, every test in this class would answer differently on a host
+        with the ``voice`` extra installed than on one without.
+        """
+        monkeypatch.setattr(core_mod, "availability_detail", lambda _cfg: _availability(True))
+
     @pytest.mark.asyncio
-    async def test_unavailable_backend_is_503(self, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda *_a: False)
+    async def test_unavailable_backend_is_503_naming_the_reason(self, monkeypatch) -> None:
+        """The provider's own code and prose are forwarded rather than flattened:
+        the caller has to be able to tell "install an extra" from "download the
+        model" without reading an English sentence."""
+        monkeypatch.setattr(
+            core_mod,
+            "availability_detail",
+            lambda _cfg: _availability(
+                False, core_mod.stt.CODE_MODEL_MISSING, "speech model base is not downloaded"
+            ),
+        )
         resp = await core_mod.api_stt_transcribe(_req())
         assert resp.status == 503
-        assert json.loads(resp.body)["error"] == "STT not available"
+        body = json.loads(resp.body)
+        assert body["code"] == core_mod.stt.CODE_MODEL_MISSING
+        assert body["error"] == "speech model base is not downloaded"
 
     @pytest.mark.asyncio
-    async def test_missing_audio_field_is_400(self, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda *_a: True)
+    async def test_a_reasonless_refusal_still_carries_a_code(self, monkeypatch) -> None:
+        """A provider that answers "no" without saying why must not produce a body
+        with an empty code: the dashboard would have nothing to render at all."""
+        monkeypatch.setattr(core_mod, "availability_detail", lambda _cfg: _availability(False))
+        resp = await core_mod.api_stt_transcribe(_req())
+        assert resp.status == 503
+        body = json.loads(resp.body)
+        assert body["code"] == "stt_unavailable"
+        assert body["error"] == "STT not available"
+
+    @pytest.mark.asyncio
+    async def test_missing_audio_field_is_400(self) -> None:
         resp = await core_mod.api_stt_transcribe(_multipart_req(None))
         assert resp.status == 400
-        assert json.loads(resp.body)["error"] == "missing audio field"
+        body = json.loads(resp.body)
+        assert body["error"] == "missing audio field"
+        assert body["code"] == "stt_missing_audio_field"
 
     @pytest.mark.asyncio
-    async def test_wrong_field_name_is_400(self, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda *_a: True)
+    async def test_wrong_field_name_is_400(self) -> None:
         field = SimpleNamespace(name="video", filename="x.webm", read_chunk=AsyncMock())
         resp = await core_mod.api_stt_transcribe(_multipart_req(field))
         assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "stt_missing_audio_field"
 
     @pytest.mark.asyncio
-    async def test_oversized_upload_is_413(self, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda *_a: True)
+    async def test_oversized_upload_is_413(self) -> None:
         field = SimpleNamespace(
             name="audio",
             filename="recording.mp4",
@@ -1083,14 +1230,18 @@ class TestSttTranscribe:
         )
         resp = await core_mod.api_stt_transcribe(_multipart_req(field))
         assert resp.status == 413
-        assert json.loads(resp.body)["error"] == "audio too large"
+        body = json.loads(resp.body)
+        assert body["error"] == "audio too large"
+        assert body["code"] == "stt_audio_too_large"
 
     @pytest.mark.asyncio
     async def test_transcript_is_returned_and_redacted(self, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda *_a: True)
+        """A dictated credential must not come back in the response body: speech
+        reaches this endpoint from a microphone, so nothing upstream of it has had
+        a chance to screen what was said."""
         monkeypatch.setattr(
             "kiro_crew.transcribe.transcribe_audio",
-            AsyncMock(return_value="hello from the meeting"),
+            AsyncMock(return_value="the key is AKIAIOSFODNN7EXAMPLE thanks"),
         )
         field = SimpleNamespace(
             name="audio",
@@ -1099,14 +1250,18 @@ class TestSttTranscribe:
         )
         resp = await core_mod.api_stt_transcribe(_multipart_req(field))
         assert resp.status == 200
-        assert json.loads(resp.body)["text"] == "hello from the meeting"
+        text = json.loads(resp.body)["text"]
+        assert "AKIAIOSFODNN7EXAMPLE" not in text
+        # The surrounding speech survives: redaction replaces the secret, it does
+        # not discard the transcript the user is waiting for.
+        assert text.startswith("the key is ")
+        assert text.endswith(" thanks")
 
     @pytest.mark.asyncio
     async def test_backend_failure_is_a_generic_500(self, monkeypatch) -> None:
-        monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda *_a: True)
         monkeypatch.setattr(
             "kiro_crew.transcribe.transcribe_audio",
-            AsyncMock(side_effect=RuntimeError("whisper exploded")),
+            AsyncMock(side_effect=RuntimeError("recogniser exploded")),
         )
         field = SimpleNamespace(
             name="audio",
@@ -1118,7 +1273,8 @@ class TestSttTranscribe:
         # The internal exception text must not reach the client.
         body = json.loads(resp.body)
         assert body["error"] == "transcription failed"
-        assert "whisper exploded" not in json.dumps(body)
+        assert body["code"] == "stt_transcription_failed"
+        assert "recogniser exploded" not in json.dumps(body)
 
 
 # ── Security event log + posture ────────────────────────────────────────

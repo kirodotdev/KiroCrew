@@ -723,3 +723,69 @@ class TestStartApiServerResidualPaths:
             for call in audit.log_api_access.call_args_list
         }
         assert audited.get("/api/crons") == "ok"
+
+
+class TestSttHooks:
+    """The idle sweep and the model release, for both server modes.
+
+    Registered by one helper because the two copies were byte-identical, and an
+    event-loop-blocking import in them therefore had to be found and fixed twice.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_engine_is_imported_off_the_event_loop(self, monkeypatch) -> None:
+        """169 ms of numpy and native binding must not run inline on the loop.
+
+        The boot delay was not enough on its own: it moved the import out of
+        ``runner.setup()`` (so it no longer delays the first socket bind) and left it
+        running on the loop, where it stalls every socket and heartbeat the gateway is
+        serving at that moment.
+
+        Asserted on the THREAD the import runs in, not on elapsed time. A timing
+        assertion cannot tell the two apart, because a blocked loop also blocks the
+        test's own assertions until it clears.
+        """
+        import threading
+
+        seen: list[str] = []
+
+        def _spy() -> Any:
+            seen.append(threading.current_thread().name)
+            return SimpleNamespace(idle_sweep_loop=AsyncMock())
+
+        monkeypatch.setattr(srv, "_STT_SWEEP_BOOT_DELAY_SECS", 0)
+        monkeypatch.setattr(srv, "_import_stt_engine", _spy)
+
+        await srv._stt_idle_sweep()
+
+        assert seen, "the engine was never imported"
+        assert (
+            seen[0] != threading.main_thread().name
+        ), f"the import ran on {seen[0]}, i.e. inline on the event loop"
+
+    @pytest.mark.asyncio
+    async def test_shutdown_does_not_build_an_engine_that_never_existed(self, monkeypatch) -> None:
+        """`stt.close()` resolves through `stt.session`, which imports numpy at module
+        scope and whose `shared_engine()` CREATES an engine when none exists. On a
+        gateway that never transcribed anything, closing therefore pulled the
+        recogniser binding and built a WhisperEngine purely to release nothing.
+
+        Asserted as "the engine module is still not imported", which is the effect
+        rather than a stand-in for it, and needs nothing stubbed.
+        """
+        import sys
+
+        app = web.Application()
+        srv._register_stt_hooks(app)
+        # A fresh Application already carries aiohttp's own cleanup context, so this
+        # checks that OUR pair landed rather than counting the signals.
+        names = {h.__name__ for h in app.on_startup} | {h.__name__ for h in app.on_cleanup}
+        assert {"_stt_startup", "_stt_shutdown"} <= names, names
+
+        # No sweep task was ever created, and nothing imported the engine.
+        monkeypatch.delitem(sys.modules, "kiro_crew.stt.engine", raising=False)
+        for hook in app.on_cleanup:
+            await hook(app)
+        assert (
+            "kiro_crew.stt.engine" not in sys.modules
+        ), "shutdown imported the recogniser to release a model that cannot exist"

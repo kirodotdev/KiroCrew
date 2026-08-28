@@ -93,6 +93,32 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=70.0,
         changed_in="#4388",
     ),
+    # 0.5.0 changed stt.streaming from False to True: every provider now produces
+    # partial results, so the reason the default was off (two of the six providers
+    # could stream) no longer exists. An install materialized before that keeps
+    # resolving False and sees text only after it stops speaking, which reads as
+    # the feature being missing rather than switched off.
+    SupersededDefault(
+        dotted_key="stt.streaming",
+        old_default=False,
+        new_default=True,
+        changed_in="0.5.0",
+    ),
+    # 0.5.0 changed stt.model from turbo to base. The stored name is still honoured
+    # (it resolves onto large-v3-turbo), so this is not a broken value -- it is a
+    # 1.6 GB first-use download where the current default is 148 MB, on an install
+    # that materialized the name back when the model was fetched by a separate
+    # whisper CLI the user had already installed themselves.
+    #
+    # stt.provider is deliberately NOT registered even though its default moved to
+    # ``local``: a stored retired provider is coerced at parse time, so the stored
+    # value does not win and there is no drift to report.
+    SupersededDefault(
+        dotted_key="stt.model",
+        old_default="turbo",
+        new_default="base",
+        changed_in="0.5.0",
+    ),
 )
 
 

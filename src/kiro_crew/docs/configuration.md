@@ -249,21 +249,74 @@ from the dashboard — see each channel's doc for keys and credentials.
 
 ### Speech-to-text
 
+Speech-to-text is on by default and runs on your machine. Dictate into the
+dashboard composer, and voice notes that arrive over a messaging channel are
+transcribed the same way.
+
 | Key | Description | Default |
 |-----|-------------|---------|
-| `stt.enabled` | Enable voice-memo transcription | `true` |
-| `stt.provider` | `"whisper"` (local), `"faster"` (local), `"mlx"` (local, Apple silicon), `"parakeet"` (local, Apple silicon, NVIDIA Parakeet), `"apple"` (local, macOS 26+), or `"transcribe"` (AWS, needs the `voice` extra) | `"whisper"` |
-| `stt.parakeet_model` | Hugging Face repo for the parakeet-mlx model (parakeet provider only) | `"mlx-community/parakeet-tdt-0.6b-v3"` |
-| `stt.timeout_secs` | Transcription timeout in seconds | `300` |
-| `stt.device` | Computation device: `"cpu"` or `"cuda"` | `"cpu"` |
-| `stt.mlx_model` | Hugging Face repo for the mlx_whisper model (mlx provider only) | `"mlx-community/whisper-large-v3-turbo"` |
-| `stt.streaming` | Stream partial transcripts live into the dashboard input. Supported by the `transcribe` and `apple` providers | `false` |
-| `stt.dictation_panel` | Show the animated dictation panel while recording; unsupported browsers and reduced-motion settings use the status bar | `true` |
-| `stt.endpointing` | While streaming, detect complete requests and auto-submit them. Supported by the `transcribe` and `apple` providers | `false` |
-| `stt.transcribe_profile` | AWS profile for the Transcribe API (transcribe provider only) | `""` |
-| `stt.model` | Whisper/faster model name. The dashboard offers `tiny`, `base`, `small`, `medium`, `large-v3`, and `turbo`; other nonempty string model names are retained with a warning | `"turbo"` |
-| `stt.transcribe_region` | AWS region for the Transcribe API (transcribe provider only) | `"us-east-1"` |
+| `stt.enabled` | Turn spoken input into text you can send | `true` |
+| `stt.provider` | `"local"` (this machine, no account), `"apple"` (the on-device recognizer built into macOS 26 and later), or `"transcribe"` (AWS Transcribe, which bills your AWS account) | `"local"` |
+| `stt.model` | Which speech model the local provider downloads and runs: `tiny`, `base`, `small`, or `large-v3-turbo`. Bigger is more accurate and a longer first-time download | `"base"` |
 | `stt.language_code` | Language for speech recognition, e.g. `en-US`, `fr-FR` | `"en-US"` |
+| `stt.streaming` | Show words in the message box while you are still speaking rather than only once you stop. Every provider supports it; turning it off spends less CPU on `local` and fewer API calls on `transcribe` | `true` |
+| `stt.silence_ms` | How long a pause must last before what you said is treated as a finished phrase. Raise it if you are being cut off mid-sentence, lower it if the text lags behind you. A value outside 200-5000 ms is clamped into that range, because a shorter pause than that falls between two ordinary words | `700` |
+| `stt.partial_interval_ms` | How often the live transcript is refreshed while you speak. Lower feels more immediate and costs a little more CPU per second of speech; higher is steadier to read. A value outside 100-5000 ms is clamped into that range | `400` |
+| `stt.idle_evict_secs` | How long the local model stays in memory after your last recording. It holds roughly 150 MB at the default model and reloads in a fraction of a second, so lower this on a machine short of memory. `0` releases it as soon as you stop speaking | `600` |
+| `stt.endpointing` | While dictating, judge each finished phrase with a fast background model and send the message once it reads as a complete request, without you pressing anything. Needs `streaming` | `false` |
+| `stt.dictation_panel` | Show the animated dictation panel while recording instead of the thin status bar. Ignored when the browser lacks WebGL2 or the OS asks for reduced motion, both of which fall back to the bar | `true` |
+| `stt.timeout_secs` | Ceiling on transcribing one whole file: the audio decode, and each model load or recognition inside it | `300` |
+| `stt.transcribe_region` | AWS region for the Transcribe API (`transcribe` provider only) | `"us-east-1"` |
+| `stt.transcribe_profile` | AWS profile for the Transcribe API. Empty uses the default credential chain (`transcribe` provider only) | `""` |
+
+#### The local provider downloads one model, once
+
+Recognition needs weights, and they are too large to ship inside the package, so
+the first time you dictate Kiro Crew fetches the model named by `stt.model` and
+every session after that loads it from disk. `base` is 148 MB. The others are
+78 MB (`tiny`), 488 MB (`small`) and 1.6 GB (`large-v3-turbo`). The dashboard says
+a download has started before it begins and reports its progress, because a silent
+transfer of that size is indistinguishable from a hang.
+
+Every download is verified against a pinned sha256 digest and is only moved into
+place once the digest matches, so a tampered mirror, a truncated transfer or a
+captive-portal login page cannot become your speech model. Weights live under
+`models/whisper/` in the data home. Deleting one just costs you the download
+again.
+
+Nothing else needs installing by hand. The recognizer arrives with the optional
+`voice` extra (`pip install "kirocrew[voice]"`), which also carries the AWS
+Transcribe client:
+
+- **Intel Macs have no prebuilt recognizer.** Every other platform Kiro Crew
+  supports (Apple silicon macOS, glibc and musl Linux on x86_64 and arm64, and
+  Windows) installs a ready-built wheel. On an Intel Mac `pip` falls back to
+  building from source, which needs a C++ toolchain and CMake. Settings reports
+  that as its own state rather than as a missing extra, because the two need
+  different fixes.
+
+  If you would rather not build it, `pip install "kirocrew[voice-aws]"` installs
+  only the AWS Transcribe client. `pip` resolves an extra all-or-nothing, so on a
+  platform without the recognizer wheel the full `voice` extra installs *nothing* —
+  including the Transcribe client, which has no such limitation. This is the way to
+  get the paid provider on a host that cannot build the free one.
+- **ffmpeg is still a prerequisite** for audio that did not come from the
+  dashboard's live stream. A voice note arrives as ogg/Opus and a browser
+  recording as webm, and only ffmpeg reads those. `kirocrew doctor` names the
+  install command for your OS.
+
+#### Retired providers
+
+The `whisper`, `mlx`, `parakeet` and `faster` providers are gone. Each of them
+needed a runtime you had to install yourself (a `whisper` command on `PATH`, or an
+`mlx-whisper` / `parakeet-mlx` / `faster-whisper` package), which is exactly the
+work `local` removes while recognizing the same speech. On Apple silicon the GPU
+acceleration that `mlx` existed for is already in the bundled recognizer.
+
+A config that still names one keeps working: it is read as `local`, and the
+gateway log says which value it replaced. The settings those providers used
+(`whisper_path`, `mlx_model`, `parakeet_model`, `device`) are ignored if they are
+still present, so there is nothing you have to remove by hand.
 
 ### Paid AWS services need an explicit confirmation
 
@@ -295,8 +348,8 @@ permission to spend. The authenticated dashboard is the only writer — there is
 deliberately no CLI verb, because a terminal command that records a grant on
 request is a grant an automated caller can take.
 
-Both local defaults (`piper` for TTS, `whisper` for STT) need no AWS account and
-no confirmation.
+Both local defaults (`piper` for TTS, `local` for STT) need no AWS account and no
+confirmation.
 
 ### Memory and embeddings
 

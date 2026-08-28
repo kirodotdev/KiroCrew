@@ -1,35 +1,57 @@
-"""Local speech-to-text via openai-whisper (opt-in, config-driven).
+"""Speech-to-text for whole audio files: one local recogniser, two adapted ones.
 
-Default STT provider is the local ``whisper`` binary (``pip install openai-whisper``).
-AWS Transcribe is supported as an optional extra (``pip install 'kirocrew[voice]'``).
+The default provider is ``local``: the whisper.cpp recogniser that
+:mod:`kiro_crew.stt` holds loaded in this process. Keeping the model resident is
+what makes it usable, because the cost that made local speech-to-text feel broken
+was never the decode. A warm decode of 4.2 s of audio measures 30-48 ms (real-time
+factor 0.007-0.011) and a 0.9 s push-to-talk utterance 27 ms, against seconds per
+utterance for anything that loads a model per recording. It needs no external
+binary and it works on every OS Kiro Crew supports.
+
+Two further providers are *adapted* onto the same seam rather than being
+first-class, and neither may add a step to the local path:
+
+- ``apple``: Apple's on-device SpeechAnalyzer (macOS 26+), which downloads no
+  model because the OS ships the assets. Owned by :mod:`kiro_crew.apple_speech`.
+- ``transcribe``: AWS Transcribe Streaming, a paid service, gated on the recorded
+  operator consent in :mod:`kiro_crew.aws_consent`.
+
+ffmpeg remains a prerequisite for all three: a Slack voice memo arrives as
+ogg/Opus and the dashboard records webm, and only ffmpeg reads those. A 16 kHz
+mono WAV is the one input that reaches the recogniser without it.
+
+Two guards here are deliberately provider-independent, because a per-branch copy
+is a copy that will be missing from the next branch someone adds:
+:func:`_is_sensitive_audio_path` refuses before any provider is dispatched, and
+:func:`_redact_transcript` runs on every provider's output.
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib
-import importlib.util
 import logging
 import os
 import re
 import shutil
-import sys
 import tempfile
-import threading
-from pathlib import Path
-from typing import Any
+import wave
+from typing import TYPE_CHECKING, Any
 
-from kiro_crew import aws_consent, dep_sync, platform_compat
-from kiro_crew.executors import stt_executor
-from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
+from kiro_crew import aws_consent, platform_compat, stt
 
-# Transcribe-path deps are an OPTIONAL 'aws' extra (amazon-transcribe + boto3).
+# Re-exported: the hallucination filter lives in kiro_crew.stt.hallucinations so
+# the live session's final transcript and this batch path apply the SAME rules.
+# The name stays importable from here because that is where callers have always
+# found it, and one filter with two import paths cannot drift.
+from kiro_crew.stt.hallucinations import filter_hallucinations  # noqa: F401
+
+# Transcribe-path deps are the OPTIONAL 'voice' extra (amazon-transcribe + boto3).
 # The module MUST stay importable when they're absent (default install, partial
 # install, pip mid-install) so that `cli_doctor` — which imports this module —
 # can surface the missing-deps diagnostic. Methods that actually use boto3 or
 # the Credentials class are only invoked when stt.provider == "transcribe" and
 # a profile is configured, so absence here is harmless for non-STT use. The
-# local whisper path (default STT provider) needs neither.
+# local recogniser (default STT provider) needs neither.
 try:
     import boto3
     from amazon_transcribe.auth import CredentialResolver, Credentials
@@ -38,225 +60,41 @@ except ImportError:  # pragma: no cover — covered by cli_doctor tests
     CredentialResolver = object  # type: ignore[assignment,misc]
     Credentials = None  # type: ignore[assignment,misc]
 
-# faster-whisper is an optional runtime installed on demand via /api/stt/install,
-# NOT a declared extra. The module MUST stay importable when it is absent so the
-# Gateway starts without the library and ``cli_doctor`` can report the gap.
-#
-# Deliberately NOT imported here. ``transcribe`` is reached from the gateway boot
-# path (``dashboard.handlers.core`` imports it at module scope), and importing
-# faster_whisper links CTranslate2's native extension — hundreds of ms of disk and
-# dynamic linking paid by every launch of an install that has the library, before
-# the dashboard socket accepts requests. The cache below is filled off-loop on
-# first use instead; :func:`is_available` locates the library without executing it.
-_FasterWhisperModel: Any = None
-
-
-def _faster_whisper_model() -> Any:
-    """Return the faster-whisper ``WhisperModel`` class, or ``None`` if absent.
-
-    Imports on first use and caches the class in the module global. Nothing
-    imports the library at module load, so this is the only place the native
-    extension is ever linked — and because the cache starts empty, a gateway that
-    booted before the on-demand install from Settings picks the library up without
-    a restart. While it stays absent the call costs one failed import each time.
-
-    NEVER call on the event loop: importing faster_whisper loads CTranslate2's
-    native extension synchronously (hundreds of ms of disk and dynamic linking),
-    which would stall every gateway task. Call sites are the STT executor thread
-    (:func:`_run_faster_whisper_sync`), the install handler's ``asyncio.to_thread``
-    warm-up, and ``cli_doctor`` (its own process, no loop). :func:`is_available`
-    runs on the loop and so must never call this — it locates the library with
-    ``importlib.util.find_spec``, which stats the import path without executing it.
-    """
-    global _FasterWhisperModel
-    if _FasterWhisperModel is None:
-        try:
-            _FasterWhisperModel = importlib.import_module("faster_whisper").WhisperModel
-        except ImportError:
-            return None
-    return _FasterWhisperModel
-
+if TYPE_CHECKING:  # annotations only; see the deferred-import note below
+    import numpy as np
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Hallucination filter — suppress Whisper-family transcription artefacts.
-#
-# Whisper models fed silence or low-energy audio produce two recognisable
-# artefacts, and both are worse than an empty transcript in this app: the text
-# goes to agents, so a hallucinated sign-off becomes a meeting note, and a phrase
-# repeated forty times becomes forty note lines.
-#
-#  1. One phrase repeating ("Thank you. Thank you. Thank you. …")
-#  2. Boilerplate unrelated to the audio — subtitle credits, sign-offs, stock
-#     phrases memorised from the training set's video captions.
-#
-# Applied to every Whisper-family provider. The repetition collapse below is
-# pure text logic and language-independent; the boilerplate list is English-only
-# and matches nothing in a zh-CN or de-DE transcript, so a non-English recording
-# gets the repetition half of this filter and none of the phrase half.
-# AWS Transcribe uses a different decoder and does not produce these,
-# so it is deliberately excluded rather than filtered "just in case" — running
-# the filter there could only ever delete genuine speech.
-# ---------------------------------------------------------------------------
-
-# Boilerplate phrases Whisper hallucinates on silence. Compared case-insensitively.
-# LIST DISCIPLINE: an entry must be a CAPTION ARTEFACT — text that exists because
-# a transcript was produced, not because anyone spoke. "Implausible as dictated
-# speech" was the earlier bar and it was not strict enough: it admitted sign-offs
-# and subscribe CTAs ("thank you for watching", "don't forget to subscribe",
-# "hit the bell", "see you in the next video"), which anyone recording a demo or
-# dictating a video script says out loud. Because the match is whole-sentence and
-# a transcript filtered down to nothing returns None, such an entry can delete the
-# only sentence a recording had — the speaker's own words, unrecoverable. Those
-# entries are gone, along with the ordinary-speech phrases dropped before them
-# ("goodbye", "copyright", "thanks for listening", "thanks for joining", "see you
-# next time", "all rights reserved").
-#
-# What remains is attribution text a caption track carries about itself. Nobody
-# utters "Subtitles by the Amara.org community" into a voice memo, so no reading of
-# these deletes speech.
-#
-# Residual, accepted deliberately: a single un-repeated hallucinated sign-off now
-# survives into the transcript. That is the safe direction of the trade — one stray
-# line a reader can see and ignore, versus silently destroying real speech — and the
-# repetition collapse below still removes the far more common form of this artefact,
-# where the model emits the same sign-off for the rest of the decode window.
-_WHISPER_BOILERPLATE: tuple[str, ...] = (
-    "subtitles by",
-    "subtitles by amara.org",
-    "subtitles by the amara.org community",
-    "subtitles created by",
-    "subtitled by",
-    "translated by",
-    "transcribed by",
-    "captioned by",
-    "amara.org",
-    "www.mooji.org",
-)
-
-# How many consecutive identical sentences count as a repetition artefact rather
-# than emphasis. Humans genuinely say a sentence two, three, even five times
-# ("No. No. No.", a counted beat, an insistent refusal), so a low threshold
-# rewrites real speech. The Whisper failure mode this targets repeats a phrase
-# for the remainder of the decode window — typically dozens of times — so six
-# is still far below the artefact and comfortably above plausible emphasis.
-_REPEAT_THRESHOLD = 6
-
-# Boilerplate matches the WHOLE sentence only, never a substring and never a
-# word-count neighbourhood. Anything looser deletes real speech: a bare
-# substring rule drops "Thanks for joining today's standup, let's start", and
-# even a one-word slack drops "Thanks for joining, everyone." — a normal
-# meeting opener. This filter runs on every Whisper-family transcript, so a
-# false positive is silent loss of genuine speech; a false negative is one
-# stray boilerplate line, which the repetition collapse usually removes anyway.
-# Known multi-word artefact shapes ("Subtitles by Amara.org") are covered by
-# listing the full phrase in _WHISPER_BOILERPLATE, not by loosening the match.
-
-
-def _is_boilerplate_line(line: str) -> bool:
-    """Return True if *line* is exactly (case/punctuation aside) known boilerplate."""
-    stripped = line.strip().rstrip(".!?,;:").strip().lower()
-    if not stripped:
-        return False
-    return stripped in _WHISPER_BOILERPLATE
-
-
-def _collapse_repeated_phrases(text: str) -> str:
-    """Collapse runs of >= :data:`_REPEAT_THRESHOLD` identical sentences to one.
-
-    Splits on sentence boundaries, keeping each sentence's trailing punctuation.
-    Only CONSECUTIVE runs collapse: the same sentence recurring later in a
-    meeting is ordinary speech, not an artefact.
-    """
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    if len(sentences) <= 1:
-        return text
-    output: list[str] = []
-    i = 0
-    while i < len(sentences):
-        current_norm = sentences[i].strip().lower()
-        j = i + 1
-        while j < len(sentences) and sentences[j].strip().lower() == current_norm:
-            j += 1
-        if j - i >= _REPEAT_THRESHOLD:
-            output.append(sentences[i])
-        else:
-            output.extend(sentences[i:j])
-        i = j
-    return " ".join(output)
-
-
-def filter_hallucinations(text: str) -> str:
-    """Remove Whisper hallucination artefacts from a transcript.
-
-    May return ``""`` when the whole transcript was hallucinated — which is the
-    honest answer for a recording of silence, and is why callers treat an empty
-    result as "no transcript" rather than passing it on.
-
-    Every removal is logged, because this is the one step in the pipeline that
-    can delete words the speaker actually said, and a silent deletion is
-    indistinguishable from the model never having heard them. What each log line
-    carries is deliberate: matched boilerplate is named verbatim, since it comes
-    from the fixed :data:`_WHISPER_BOILERPLATE` vocabulary and so reveals nothing
-    about the recording, whereas a collapsed repetition is reported only as a
-    COUNT — that text is ordinary speech and belongs in the transcript, not in
-    the log. Discarding the transcript outright is a warning rather than an info
-    line, because the caller then reports "no transcript" and the recording is
-    gone with no other trace.
-    """
-    if not text:
-        return text
-    before = len(re.split(r"(?<=[.!?])\s+", text))
-    text = _collapse_repeated_phrases(text)
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    collapsed = before - len(sentences)
-
-    kept: list[str] = []
-    dropped: list[str] = []
-    for sentence in sentences:
-        (dropped if _is_boilerplate_line(sentence) else kept).append(sentence)
-
-    if collapsed or dropped:
-        logger.info(
-            "stt hallucination filter: collapsed %d repeated sentence(s), "
-            "dropped %d boilerplate line(s)%s",
-            collapsed,
-            len(dropped),
-            (": " + "; ".join(sorted(set(dropped)))) if dropped else "",
-        )
-
-    result = " ".join(kept).strip()
-    if not result:
-        logger.warning(
-            "stt hallucination filter: discarded the entire transcript as "
-            "hallucinated (%d sentence(s) in, none kept); the caller will "
-            "report no transcript for this recording",
-            len(sentences),
-        )
-    return result
-
-
-#: Providers whose output passes through :func:`filter_hallucinations`.
-_WHISPER_FAMILY_PROVIDERS = frozenset(("whisper", "mlx", "faster"))
 
 
 def _ffmpeg_candidate_dirs() -> list[str]:
     """Build the ordered directory list to probe for an ffmpeg install.
 
-    POSIX-standard install prefixes come first (Homebrew, /usr/local, and the
-    per-user ~/ffmpeg / ~/.local/bin extraction dirs). On Windows we append
-    the two idiomatic install locations: the winget/Chocolatey machine-wide
-    ``%ProgramFiles%\\ffmpeg\\bin`` and the winget/scoop user-scope
+    Every entry is a PACKAGE MANAGER's directory. Whatever this resolves is exec'd by
+    the gateway, so a generic user-writable directory must not appear at all: an
+    earlier version carried ``~/ffmpeg`` and ``~/.local/bin`` for a user who had
+    unzipped a static build by hand, and searching them LAST was not enough -- on a
+    host with no packaged ffmpeg they were still trusted, and ``~/.local/bin`` is a
+    generic dumping ground on nearly every PATH. Speculative support for a manual
+    unzip is not worth a path that executes agent-written code as the gateway; a host
+    without ffmpeg gets the "install ffmpeg or send 16 kHz mono WAV" log and a
+    supported ``brew``/``apt`` install instead.
+
+    Package prefixes are kept even where they are user-OWNED: Homebrew makes
+    ``/opt/homebrew`` user-owned on Apple Silicon, and winget's user-scope target sits
+    under ``%LOCALAPPDATA%``. The distinction is not the mode bits but whether the
+    directory is a managed install root -- planting there means overwriting a package
+    manager's own file, which is a different proposition from dropping a new name into
+    a directory that exists to hold loose binaries. Dropping these would leave the
+    feature unusable for most macOS and Windows users.
+
+    Ordered most-trusted first regardless, and `_find_ffmpeg` consults
+    `platform_compat.trusted_system_path` ahead of this list entirely.
+
+    On Windows the two idiomatic install locations are the winget/Chocolatey
+    machine-wide ``%ProgramFiles%\\ffmpeg\\bin`` and the winget/scoop user-scope
     ``%LOCALAPPDATA%\\Programs\\ffmpeg\\bin``. Expanded once at import time.
     """
-    dirs = [
-        os.path.expanduser("~/ffmpeg"),
-        os.path.expanduser("~/.local/bin"),
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-    ]
+    dirs = ["/opt/homebrew/bin", "/usr/local/bin"]
     if platform_compat.IS_WINDOWS:
         program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
         local_appdata = os.environ.get(
@@ -291,125 +129,43 @@ def ensure_ffmpeg_in_path() -> None:
             path_parts.insert(0, d)
 
 
-def _own_scripts_dir() -> str:
-    """Scripts dir of the interpreter THIS process is running under.
+def _find_ffmpeg() -> str | None:
+    """Return an ffmpeg binary, resolved from fixed directories rather than from PATH.
 
-    Where ``pip install openai-whisper`` (or ``mlx-whisper``) lands its console
-    script when the app is installed in a virtualenv — which is how the gateway
-    normally runs. Nothing else in the search order looks there:
+    Deliberately NOT ``shutil.which("ffmpeg")``. A gateway's PATH can legitimately lead
+    with agent-writable directories (a worktree venv's ``bin``, ``~/.local/bin``), which
+    is exactly the threat `platform_compat.trusted_system_bin` documents: the result
+    here is handed to `create_subprocess_exec`, so a planted shim would run with the
+    gateway's environment and credentials. Pinning the lookup is the whole of the fix,
+    since the exec already uses the absolute path this returns.
 
-    * ``shutil.which`` only sees ``PATH``, and a venv is on ``PATH`` only after
-      ``activate``. The gateway is launched as ``<venv>/bin/kirocrew``, which does
-      not modify ``PATH``, so the venv's own ``bin/`` is invisible to it.
-    * :func:`_python3_bin_dir` deliberately asks the SYSTEM python3 (via
-      ``find_python_interpreter``), so it reports the system scripts dir even when
-      we are running inside a venv.
+    The trusted system directories are tried first, then the fixed candidate list,
+    which is itself ordered most-trusted first. ffmpeg is not an OS tool -- on macOS it
+    lives under a Homebrew prefix and on Windows under a package-manager directory --
+    so the system set alone would find it almost nowhere.
 
-    The result was that installing Whisper into the app's own environment — the
-    obvious thing to do — left ``is_available()`` reporting False, with the only
-    workarounds being to set ``stt.whisper_path`` by hand or install it a second
-    time somewhere else.
-
-    Uses ``sys.prefix`` rather than ``sysconfig.get_path('scripts')`` because the
-    latter can be redirected by an active ``--user`` scheme or a posix_prefix
-    override, while the console script always sits beside the running interpreter.
+    Reached through `trusted_system_path` rather than `trusted_system_bin` because that
+    helper warns once per name when a tool is on PATH but outside the system set, and
+    that message states the caller "degrades instead of running a PATH-chosen binary".
+    Here it does not: the candidate list below finds the packaged ffmpeg and uses it, so
+    borrowing the helper would log a degradation that never happens on every macOS host
+    with Homebrew. ``None`` from it means Windows, where the search must NOT fall back
+    to `which`'s default (the ambient PATH) and the candidate list already carries the
+    package-manager directories.
     """
-    return os.path.dirname(os.path.abspath(sys.executable))
-
-
-def _python3_bin_dir() -> str:
-    """Return the bin dir of the system python3 (where pip installs scripts)."""
-    try:
-        # platform_compat.find_python_interpreter prefers a real CPython >= 3.10
-        # and — on Windows — rejects the Microsoft Store alias stub, which would
-        # otherwise be spawned and print "Python was not found" on every call.
-        py = platform_compat.find_python_interpreter()
-        if not py:
-            return ""
-        # Through dep_sync._probe_interpreter (-I -X utf8, neutral cwd): the
-        # probe imports sysconfig by name, so a decoy module on the caller's
-        # PYTHONPATH or CWD would otherwise shadow the stdlib and answer with
-        # whatever path it likes — steering the Whisper script search there.
-        proc = dep_sync._probe_interpreter(
-            Path(py), "import sysconfig; print(sysconfig.get_path('scripts'))", timeout=5
-        )
-        if proc.returncode != 0:
-            return ""
-        return proc.stdout.strip()
-    except Exception:
-        return ""
-
-
-def _find_script_in_dir(bin_dir: str, name: str) -> str | None:
-    """Return an executable ``name`` inside ``bin_dir``, trying Windows suffixes.
-
-    A pip console script is materialized as ``<name>.exe`` in ``Scripts\\`` on
-    Windows, so the extensionless POSIX name never exists there. Sweep the
-    known launcher suffixes (the idiom in dev_fleet ``_trusted_bin``).
-    """
-    suffixes = ("", ".exe", ".cmd", ".bat") if platform_compat.IS_WINDOWS else ("",)
-    for suffix in suffixes:
-        p = os.path.join(bin_dir, name + suffix)
-        # On Windows there is no execute bit, so gate on isfile only there.
-        if os.path.isfile(p) and (platform_compat.IS_WINDOWS or os.access(p, os.X_OK)):
-            return p
+    trusted_path = platform_compat.trusted_system_path()
+    if trusted_path:
+        found = shutil.which("ffmpeg", path=trusted_path)
+        if found:
+            return found
+    for directory in _FFMPEG_CANDIDATE_DIRS:
+        # `which` with an explicit `path=` honours PATHEXT on Windows (so `ffmpeg.exe`
+        # resolves) without consulting the ambient PATH.
+        found = shutil.which("ffmpeg", path=directory)
+        if found:
+            return found
     return None
 
-
-_WHISPER_SEARCH_PATHS = [
-    os.path.expanduser("~/.local/bin/whisper"),
-    # Homebrew prefixes: a GUI-launched gateway inherits a minimal PATH
-    # (/usr/bin:/bin:/usr/sbin:/sbin) with no Homebrew, so shutil.which("whisper")
-    # misses a `brew install`ed binary. Probing the prefixes directly — the same
-    # reason _MLX_WHISPER_SEARCH_PATHS and _BREW_CANDIDATE_PATHS list them — is
-    # what keeps STT available without depending on the ensure_ffmpeg_in_path()
-    # PATH side effect happening to run first.
-    "/opt/homebrew/bin/whisper",  # Apple Silicon macOS
-    "/usr/local/bin/whisper",  # Intel macOS / Linuxbrew-less installs
-    "/usr/bin/whisper",
-]
-
-
-def _find_whisper(configured_path: str = "") -> str | None:
-    """Return whisper binary path or None if not found."""
-    if configured_path:
-        p = os.path.expanduser(configured_path)
-        return p if os.path.isfile(p) and os.access(p, os.X_OK) else None
-    found = shutil.which("whisper")
-    if found:
-        return found
-    # This interpreter's own scripts dir FIRST of the directory probes: when the
-    # app runs from a venv, that is where `pip install openai-whisper` put the
-    # console script, and it is the only candidate guaranteed to match the
-    # environment the caller actually installed into.
-    own_bin = _own_scripts_dir()
-    if own_bin:
-        found_own = _find_script_in_dir(own_bin, "whisper")
-        if found_own:
-            return found_own
-    # Check system python3's scripts dir (pip install target)
-    py3_bin = _python3_bin_dir()
-    if py3_bin:
-        found_script = _find_script_in_dir(py3_bin, "whisper")
-        if found_script:
-            return found_script
-    for p in _WHISPER_SEARCH_PATHS:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    return None
-
-
-_MLX_WHISPER_SEARCH_PATHS = [
-    os.path.expanduser("~/.local/bin/mlx_whisper"),
-    "/opt/homebrew/bin/mlx_whisper",
-    "/usr/local/bin/mlx_whisper",
-]
-
-_PARAKEET_MLX_SEARCH_PATHS = [
-    os.path.expanduser("~/.local/bin/parakeet-mlx"),
-    "/opt/homebrew/bin/parakeet-mlx",
-    "/usr/local/bin/parakeet-mlx",
-]
 
 # Homebrew installs its ``brew`` shim at a fixed prefix per platform, and none of
 # those prefixes are on the PATH a GUI-launched gateway inherits: the desktop app
@@ -422,22 +178,6 @@ _BREW_CANDIDATE_PATHS = [
     "/usr/local/bin/brew",  # Intel macOS
     "/home/linuxbrew/.linuxbrew/bin/brew",  # Linuxbrew, system install
     os.path.expanduser("~/.linuxbrew/bin/brew"),  # Linuxbrew, per-user install
-]
-
-#: Directories the STT install script prepends to ``PATH`` before probing for
-#: ``brew`` / ``pipx`` / the binaries it installs. Same reasoning as
-#: ``_BREW_CANDIDATE_PATHS``, expressed for the shell side: ``bash -c`` is
-#: neither a login nor an interactive shell, so the ``brew shellenv`` line in the
-#: user's ``~/.zprofile`` never runs and the inherited PATH is all the script gets.
-#: Expanded here rather than left as ``$HOME/...`` so the script can quote each
-#: entry without a shell-expansion escape hatch. ``~/.local/bin`` is where
-#: ``pipx`` puts ``mlx_whisper``, so the post-install verification needs it too.
-BREW_PATH_DIRS = [
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    "/home/linuxbrew/.linuxbrew/bin",
-    os.path.expanduser("~/.linuxbrew/bin"),
-    os.path.expanduser("~/.local/bin"),
 ]
 
 
@@ -457,130 +197,110 @@ def find_brew() -> str | None:
     return None
 
 
-def _find_mlx_whisper() -> str | None:
-    """Return the mlx_whisper binary path or None if not found.
+# ---------------------------------------------------------------------------
+# Availability
+# ---------------------------------------------------------------------------
 
-    mlx_whisper is the Apple-Silicon (Metal GPU) Whisper runtime. It is
-    installed out-of-band (e.g. ``pipx install mlx-whisper``) rather than as
-    a package dependency, because the ``mlx`` wheel only exists for arm64 and
-    would break builds/installs on every other architecture. We therefore
-    locate and invoke the CLI as a subprocess, mirroring ``_find_whisper``.
+# The adapted providers answer in :class:`kiro_crew.stt.Availability`, the same
+# shape and the same machine-readable vocabulary the local recogniser uses, so a
+# caller renders one set of reasons whichever provider is configured. The codes
+# below are the ones only this module can report; the rest come from
+# :mod:`kiro_crew.stt.engine`. They travel to the browser in JSON, so renaming
+# one silently drops the UI back to a generic string.
+
+#: Speech-to-text is switched off in configuration. Not a fault: it is the
+#: distinction between "you turned this off" and "this cannot run here".
+CODE_DISABLED = "stt_disabled"
+
+#: This host cannot run Apple's on-device speech at all (not macOS, or too old a
+#: macOS for the SpeechAnalyzer API). No install fixes it.
+CODE_APPLE_UNSUPPORTED = "stt_apple_unsupported"
+
+#: Apple's on-device speech could run here once the Swift toolchain is present.
+#: Separated from :data:`CODE_APPLE_UNSUPPORTED` because this one has a one-line
+#: fix and that one does not.
+CODE_APPLE_NEEDS_TOOLCHAIN = "stt_apple_needs_toolchain"
+
+#: What to do about a missing AWS Transcribe client. Named once because doctor,
+#: the settings panel and the failure log all report it, and a divergent copy
+#: sends a user to install the wrong thing.
+_VOICE_EXTRA_HINT = "AWS Transcribe needs the voice extra: pip install 'kirocrew[voice]'"
+
+
+def _aws_availability() -> stt.Availability:
+    """Whether the AWS Transcribe client libraries are importable.
+
+    Consent is deliberately NOT consulted here. ``aws_consent.refuse_and_log``
+    records an audit entry, and this predicate is polled (once per inbound Slack
+    message, on every settings read), so asking it here would fill the audit log
+    with refusals nobody requested. The paid-service gate stays at the point
+    where audio would actually leave the host.
     """
-    found = shutil.which("mlx_whisper")
-    if found:
-        return found
-    # Same venv gap as `_find_whisper` — see `_own_scripts_dir`.
-    own_bin = _own_scripts_dir()
-    if own_bin:
-        found_own = _find_script_in_dir(own_bin, "mlx_whisper")
-        if found_own:
-            return found_own
-    py3_bin = _python3_bin_dir()
-    if py3_bin:
-        found_script = _find_script_in_dir(py3_bin, "mlx_whisper")
-        if found_script:
-            return found_script
-    for p in _MLX_WHISPER_SEARCH_PATHS:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    return None
+    if boto3 is None:
+        return stt.Availability(False, stt.CODE_EXTRA_MISSING, _VOICE_EXTRA_HINT)
+    try:
+        import amazon_transcribe  # noqa: F401
+    except ImportError:
+        return stt.Availability(False, stt.CODE_EXTRA_MISSING, _VOICE_EXTRA_HINT)
+    return stt.Availability(True)
 
 
-def _find_parakeet_mlx() -> str | None:
-    """Return the parakeet-mlx binary path or None if not found.
+def _apple_availability() -> stt.Availability:
+    """Whether Apple's on-device speech can run, translated into one shape."""
+    from kiro_crew import apple_speech
 
-    parakeet-mlx runs NVIDIA's Parakeet ASR models on Apple Silicon via MLX. Like
-    mlx_whisper it is installed out-of-band (``pipx install parakeet-mlx`` or
-    ``uv tool install parakeet-mlx``) rather than as a package dependency, because
-    the ``mlx`` wheel only exists for arm64 and would break installs on every
-    other architecture. We therefore locate and invoke the CLI as a subprocess,
-    largely mirroring ``_find_mlx_whisper`` — but see the note below on why it
-    deliberately skips that finder's system-Python scripts-dir fallback.
+    # Stats only, never a build: this runs on the event loop (the settings read,
+    # the transcribe endpoint, the Slack voice path), and compiling the Swift
+    # helper there would freeze the gateway for as long as swiftc takes. The
+    # build happens inside the offloaded transcribe path.
+    result = apple_speech.availability()
+    if result.ok:
+        return stt.Availability(True)
+    code = CODE_APPLE_NEEDS_TOOLCHAIN if result.needs_toolchain else CODE_APPLE_UNSUPPORTED
+    return stt.Availability(False, code, result.reason)
+
+
+def availability_detail(stt_config=None) -> stt.Availability:  # type: ignore[no-untyped-def]
+    """Whether speech-to-text can run, and when it cannot, precisely why.
+
+    One shape for all three providers so a caller renders one set of reasons.
+    Distinguishing them is the point: "install an extra", "your platform has no
+    prebuilt wheel" and "this needs a newer macOS" lead to completely different
+    actions, and collapsing them into a boolean is what makes a feature feel
+    broken rather than unconfigured.
+
+    Whether the configured MODEL is on disk is deliberately not part of the
+    answer. A missing model resolves itself on first use, so reporting it as
+    unavailable would hide a working install behind a condition that fixes itself.
     """
-    found = shutil.which("parakeet-mlx")
-    if found:
-        return found
-    # Same venv gap as `_find_whisper` — see `_own_scripts_dir`.
-    own_bin = _own_scripts_dir()
-    if own_bin:
-        found_own = _find_script_in_dir(own_bin, "parakeet-mlx")
-        if found_own:
-            return found_own
-    # No system-Python scripts-dir probe here (unlike `_find_whisper`/
-    # `_find_mlx_whisper`): that fallback exists for `pip install --user`,
-    # which is how `openai-whisper` lands outside PATH. `parakeet-mlx` is
-    # installed via `pipx` (see `_build_stt_install_script`), which always
-    # puts its shim on PATH or in one of `_PARAKEET_MLX_SEARCH_PATHS` below —
-    # so the probe would never find anything here, while still paying its
-    # cost: it shells out to a system Python synchronously
-    # (`dep_sync._probe_interpreter`, 5s timeout) on the event loop this
-    # function runs on (dashboard GET/PUT /api/config/stt), which can stall
-    # the gateway.
-    for p in _PARAKEET_MLX_SEARCH_PATHS:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    return None
-
-
-def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
-    """Check if STT is enabled in config and a provider is usable."""
     if stt_config is None:
         from kiro_crew.config.loader import KiroCrewConfig
 
         stt_config = KiroCrewConfig.load().stt
     if not stt_config.enabled:
-        return False
+        return stt.Availability(False, CODE_DISABLED, "speech-to-text is turned off")
     provider = stt_config.provider
     if provider == "transcribe":
-        # AWS Transcribe is an optional extra; both amazon-transcribe and boto3
-        # must be present. On a vanilla install they're absent → not available.
-        if boto3 is None:
-            return False
-        try:
-            import amazon_transcribe  # noqa: F401
-        except ImportError:
-            return False
-        ensure_ffmpeg_in_path()
-        if not shutil.which("ffmpeg"):
-            logger.warning("ffmpeg not found; .webm transcription will be unavailable")
-        return True
-    if provider == "faster":
-        # No ffmpeg probe: faster-whisper decodes audio itself through PyAV's
-        # bundled FFmpeg, so the system binary the CLI providers need is irrelevant.
-        # LOCATE, NEVER IMPORT — this function runs on the event loop (config GET,
-        # Slack voice), and importing faster_whisper links CTranslate2's native
-        # extension synchronously, which would stall every gateway task. find_spec
-        # only walks and stats the import path, so the answer stays correct
-        # immediately after a plain restart of an already-installed gateway without
-        # putting that load on the boot path. Once a transcription has warmed the
-        # cache, the class answers directly and even the stat is skipped.
-        if _FasterWhisperModel is not None:
-            return True
-        try:
-            return importlib.util.find_spec("faster_whisper") is not None
-        except (ImportError, ValueError):
-            # A partially-removed install can leave the name in sys.modules with
-            # no spec (ValueError) or a finder that raises (ImportError). Either
-            # way the library is not usable, and this runs on the loop serving
-            # /api/config/stt — reporting unavailable is correct and keeps the
-            # endpoint from 500ing on a broken environment.
-            return False
-    if provider == "mlx":
-        ensure_ffmpeg_in_path()
-        return _find_mlx_whisper() is not None
-    if provider == "parakeet":
-        ensure_ffmpeg_in_path()
-        return _find_parakeet_mlx() is not None
+        return _aws_availability()
     if provider == "apple":
-        from kiro_crew import apple_speech
+        return _apple_availability()
+    # ``local`` is the floor every other value degrades to; see
+    # :func:`transcribe_audio` for why that is answered here rather than raised.
+    # The first call links the recogniser's native extension, then ``sys.modules``
+    # makes it a dictionary lookup. A FAILED import is not cached, so a gateway
+    # that booted without the extra picks up a later install with no restart.
+    return stt.availability()
 
-        # NOT a build check: this function runs on the event loop (config GET,
-        # the transcribe endpoint, Slack voice), and compiling the Swift helper
-        # there would freeze the gateway for up to 180s. `availability()` is
-        # stats-only; the build happens inside the offloaded transcribe path.
-        return apple_speech.availability().ok
-    ensure_ffmpeg_in_path()
-    return _find_whisper(stt_config.whisper_path) is not None
+
+def is_available(stt_config=None) -> bool:  # type: ignore[no-untyped-def]
+    """Whether speech-to-text is enabled and the configured provider can run.
+
+    The boolean view of :func:`availability_detail`, derived from it rather than
+    implemented beside it: two implementations of one question drift, and the pair
+    that disagrees hands a caller a 503 for a provider the settings panel is
+    showing as ready.
+    """
+    return availability_detail(stt_config).ok
 
 
 def _load_stt_config() -> Any:
@@ -607,7 +327,13 @@ def _redact_transcript(transcript: str) -> str:
 
 
 async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe audio file. Returns text or None."""
+    """Transcribe an audio file. Returns the text, or None.
+
+    None on every failure, and never an exception: eight channel adapters call
+    this and turn None into a visible "transcription failed" note for the user,
+    whereas an exception becomes a log line nobody reads and a turn that never
+    starts.
+    """
     if stt_config is None:
         stt_config = await asyncio.to_thread(_load_stt_config)
 
@@ -615,6 +341,8 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         logger.debug("STT disabled in config")
         return None
 
+    # Before dispatch, for every provider. Refusing here rather than inside each
+    # branch is what makes it impossible to add a provider that skips the check.
     if await asyncio.to_thread(_is_sensitive_audio_path, audio_path):
         logger.error("Refusing to read sensitive path: %s", audio_path)
         return None
@@ -622,29 +350,17 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
     provider = stt_config.provider
     if provider == "transcribe":
         result = await _transcribe_aws(audio_path, stt_config)
-    elif provider == "faster":
-        # No ensure_ffmpeg_in_path: faster-whisper decodes in-process via PyAV.
-        result = await _transcribe_faster(audio_path, stt_config)
-    elif provider == "mlx":
-        await asyncio.to_thread(ensure_ffmpeg_in_path)
-        result = await _transcribe_mlx(audio_path, stt_config)
-    elif provider == "parakeet":
-        await asyncio.to_thread(ensure_ffmpeg_in_path)
-        result = await _transcribe_parakeet(audio_path, stt_config)
     elif provider == "apple":
         result = await _transcribe_apple(audio_path, stt_config)
     else:
-        await asyncio.to_thread(ensure_ffmpeg_in_path)
-        result = await _transcribe_native(audio_path, stt_config)
+        # ``local`` is the floor. The config loader already degrades a retired or
+        # unrecognised provider onto it with a logged reason, and landing here
+        # for anything else transcribes rather than raising, so a hand-edited
+        # config costs the user a different engine and not a dead voice path.
+        result = await _transcribe_local(audio_path, stt_config)
 
     if result:
-        # Before redaction, and before the caller sees anything: a transcript that
-        # is entirely hallucinated must come back as None, not as boilerplate for
-        # an agent to write into the notes.
-        if provider in _WHISPER_FAMILY_PROVIDERS:
-            result = await asyncio.to_thread(filter_hallucinations, result)
-            if not result:
-                return None
+        # Unconditional, on every provider's output, in one off-loop hop.
         result = await asyncio.to_thread(_redact_transcript, result)
     return result
 
@@ -653,7 +369,7 @@ class _ProfileCredentialResolver(CredentialResolver):
     """Async credential resolver that delegates to a boto3 Session profile."""
 
     def __init__(self, profile: str) -> None:
-        if boto3 is None:  # pragma: no cover — optional 'aws' extra not installed
+        if boto3 is None:  # pragma: no cover (the optional 'voice' extra is absent)
             raise RuntimeError(
                 "AWS Transcribe support is not available: install the optional "
                 "dependencies (pip install 'kirocrew[voice]')."
@@ -673,9 +389,12 @@ class _ProfileCredentialResolver(CredentialResolver):
         return Credentials(frozen.access_key, frozen.secret_key, frozen.token)
 
 
-# Chrome MediaRecorder with opus codec defaults to 48 kHz.  If a different
-# browser/config uses another rate, Transcribe may reject or garble the stream.
-TRANSCRIBE_SAMPLE_RATE_HZ = 48000
+#: Sample rate declared to AWS Transcribe for the ogg-opus stream. Chrome's
+#: MediaRecorder with the opus codec defaults to 48 kHz; a different rate here
+#: makes Transcribe reject or garble the stream. Unrelated to the recogniser's
+#: 16 kHz (``stt.SAMPLE_RATE_HZ``): this one describes bytes already encoded by a
+#: browser, that one describes samples we hand to a decoder.
+_TRANSCRIBE_SAMPLE_RATE_HZ = 48000
 
 _TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024  # 25 MB Transcribe API limit
 
@@ -691,20 +410,12 @@ def _load_aws_transcribe_components() -> tuple[Any, Any]:
             super().__init__(output_stream)
             self._transcript_parts = transcript_parts
 
-        async def handle_transcript_event(
-            self, transcript_event: TranscriptEvent
-        ) -> None:
+        async def handle_transcript_event(self, transcript_event: TranscriptEvent) -> None:
             for result in transcript_event.transcript.results:
                 if not result.is_partial and result.alternatives:
                     self._transcript_parts.append(result.alternatives[0].transcript)
 
     return TranscribeStreamingClient, TranscriptCollector
-
-
-def _find_ffmpeg() -> str | None:
-    """Return an ffmpeg binary after probing known install locations."""
-    ensure_ffmpeg_in_path()
-    return shutil.which("ffmpeg")
 
 
 def _make_temp_ogg() -> str:
@@ -747,8 +458,8 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
     ):
         return None
 
-    # amazon-transcribe + boto3 are an optional 'aws' extra. Absent on a vanilla
-    # install → report not available rather than raising an uncaught ImportError.
+    # amazon-transcribe + boto3 are the optional 'voice' extra. Absent on a
+    # vanilla install → report not available rather than raising ImportError.
     if boto3 is None:
         logger.error("AWS Transcribe not available: install 'kirocrew[voice]'")
         return None
@@ -846,9 +557,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
 
         profile = stt_config.transcribe_profile or None
         credential_resolver = (
-            await asyncio.to_thread(_ProfileCredentialResolver, profile)
-            if profile
-            else None
+            await asyncio.to_thread(_ProfileCredentialResolver, profile) if profile else None
         )
 
         client = await asyncio.to_thread(
@@ -858,7 +567,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
         )
         stream = await client.start_stream_transcription(
             language_code=stt_config.language_code,
-            media_sample_rate_hz=TRANSCRIBE_SAMPLE_RATE_HZ,
+            media_sample_rate_hz=_TRANSCRIBE_SAMPLE_RATE_HZ,
             media_encoding="ogg-opus",
         )
 
@@ -909,399 +618,223 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                     raise
 
 
-def _collect_whisper_output(
-    returncode: int | None,
-    stderr: bytes | None,
-    out_dir: str,
-    label: str = "whisper",
-) -> str | None:
-    """Check whisper exit status and read the transcript from *out_dir*."""
-    if returncode != 0:
-        tail = stderr.decode(errors="replace").strip()[-500:] if stderr else ""
-        logger.error("%s failed (rc=%d): %s", label, returncode, tail)
-        return None
-    txt_files = list(Path(out_dir).glob("*.txt"))
-    if not txt_files:
-        tail = stderr.decode(errors="replace").strip()[-500:] if stderr else ""
-        logger.error("No %s output in %s stderr=%s", label, out_dir, tail or "(empty)")
-        return None
-    return txt_files[0].read_text().strip() or None
+# ---------------------------------------------------------------------------
+# The local recogniser
+# ---------------------------------------------------------------------------
+
+#: Shape of a language code whisper understands: two or three ASCII letters
+#: (ISO 639-1 / 639-3), never a region. Anything outside it is treated as unset.
+_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
+
+#: Suffixes read with the stdlib WAV reader before ffmpeg is considered. Only the
+#: suffix is trusted to decide whether to *try*; the reader itself decides whether
+#: the bytes are usable, so a mislabelled file falls through to the transcode.
+_WAV_SUFFIXES = (".wav", ".wave")
+
+#: Longest audio a batch transcription reads into memory. At 16 kHz float32 this
+#: is 4 bytes per sample, so an hour is ~230 MB. The point is to bound a
+#: pathological input (a multi-hour recording, a corrupt container ffmpeg decodes
+#: forever), not to limit a real voice memo, which is seconds to minutes long.
+_MAX_AUDIO_SECS = 3600
 
 
-#: Ceiling on the derived thread count (see :func:`_whisper_thread_count`). The
-#: count itself is host-derived; this only bounds EXTRAPOLATION above the widths
-#: that were measured. Decode-heavy models stop benefiting early — in-process
-#: ``base``, an 11s clip: 8 threads 0.96s, 16 1.13s, 24 1.18s, i.e. flat-to-worse
-#: — while encoder-heavy ``turbo`` keeps gaining to 24 (6.26s / 5.13s / 4.81s).
-#: 16 is where both model shapes sit within 7% of their own best, so a 64- or
-#: 128-core host gets 16 rather than an untested 32+.
-_WHISPER_THREAD_CEILING = 16
+def _whisper_language(language_code: str) -> str:
+    """Reduce a BCP-47 tag to the bare language whisper wants (``en-US`` -> ``en``).
 
-#: Vars that bound the subprocess's intra-op parallelism. ``OMP_NUM_THREADS``
-#: governs torch's own thread pool plus any OpenMP-threaded BLAS (and MKL, which
-#: falls back to it). A pthread-built OpenBLAS — what the aarch64 torch wheels
-#: link — reads ``OPENBLAS_NUM_THREADS`` instead and ignores the OpenMP one, so
-#: both are required to cover the wheel matrix rather than just the common case.
-#:
-#: torch and OpenBLAS keep SEPARATE pools (measured peak OS threads: omp=8/blas=8
-#: -> 16, omp=32/blas=32 -> 64, omp=32/blas=1 -> 33), so these two values add
-#: rather than multiply. Setting both to the same count — rather than handing the
-#: whole budget to one pool — is deliberate: omp=16/blas=1 and omp=16/blas=16
-#: measured within 3-5% of each other, while omp=31/blas=1 was 30-50% WORSE than
-#: omp=16/blas=16 at the same 32 total threads. Pool width, not thread total, is
-#: what costs.
-_THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS")
-
-
-def _available_cpus() -> int:
-    """Return the core count this process may actually run on.
-
-    ``os.sched_getaffinity`` rather than ``os.cpu_count``: under a CPU-set
-    restriction (containers, cgroups, ``taskset``) the latter reports the whole
-    machine, which is exactly the environment that over-threads worst. Falls back
-    to ``os.cpu_count`` where affinity is unavailable (macOS, Windows).
+    Whisper names its languages by ISO 639 code with no region, so a configured
+    locale has to be cut down to its primary subtag. An empty, unrecognisably
+    shaped, or ``auto`` value returns ``""``, which the recogniser reads as
+    auto-detect: a mistyped setting must cost the user a detection pass, never a
+    failed transcription. The ``str()`` covers a hand-edited ``config.json``
+    holding a non-string, which ``or ""`` would let through because it only
+    substitutes on a falsy value.
     """
-    if hasattr(os, "sched_getaffinity"):
-        try:
-            return len(os.sched_getaffinity(0)) or 1
-        except OSError:
-            pass
-    return os.cpu_count() or 1
+    primary = str(language_code or "").strip().split("-")[0].split("_")[0].lower()
+    return primary if _LANGUAGE_RE.match(primary) else ""
 
 
-def _whisper_thread_count() -> int:
-    """Derive the Whisper subprocess's intra-op thread count from the host.
+def _make_temp_wav() -> str:
+    """Create and close a temporary WAV file without leaking its descriptor."""
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    return path
 
-    Half the available cores, bounded by :data:`_WHISPER_THREAD_CEILING`.
 
-    Whisper decoding is autoregressive: thousands of tiny parallel regions, each
-    ending in a barrier that completes only when its slowest worker arrives. Wide
-    pools therefore cost latency per step rather than buying throughput, and on a
-    host with other work (a Kiro Crew host runs the gateway and agent sessions
-    alongside) the workers are time-sliced, so a barrier waits on threads the
-    scheduler has not run yet.
+def _pcm_from_wav(audio_path: str) -> np.ndarray | None:
+    """Read a 16 kHz WAV as mono float32, or None when it needs transcoding.
 
-    Half the cores is measured, not assumed, at two widths on this 32-core
-    Graviton3 host: at 32 visible cores 16 threads beat 31 (base 4.9s vs 7.3s,
-    turbo 20.8s vs 26.9s), and under ``taskset`` to 16 visible cores 8 threads
-    beat 16 (5s vs 7s). Taking every core also destabilises the runtime far more
-    than it slows it: 8 threads measured 4.9-5.0s across repeats while 32 threads
-    ranged 8.1-68.4s depending on background load. The headroom buys
-    predictability first and mean latency second.
+    The dashboard's audio worklet and the recogniser already agree on 16 kHz mono
+    int16, so audio that arrives in that form needs no external tool at all. Any
+    other rate or sample width returns None so the caller hands it to ffmpeg,
+    because resampling correctly is ffmpeg's job and a naive stride would change
+    the pitch the model hears.
     """
-    return max(1, min(_WHISPER_THREAD_CEILING, _available_cpus() // 2))
-
-
-def _thread_capped_env() -> dict[str, str]:
-    """Return the subprocess environment with intra-op threads bounded.
-
-    Also strips every var matching a prefix in
-    :data:`sandbox._PYTHON_ENV_PREFIXES` (``PYTHONPATH``/``PYTHONHOME``/…): the Whisper CLIs are installed
-    out-of-band and run under their own interpreter, so Kiro Crew's bundled
-    packages (numpy, torch) must not leak into their runtime. Reusing the
-    shared list instead of hand-listing keys keeps this scrub site from
-    drifting when the interpreter-env set grows.
-
-    An operator who has set ANY of :data:`_THREAD_ENV_VARS` is left completely
-    alone — all of them, not just the one they set. Someone who pins
-    ``OPENBLAS_NUM_THREADS=32`` for a reason has expressed an intent about this
-    process's threading, and silently capping the sibling var would half-honour
-    it in a way that is worse than either choice. That deliberately gives up the
-    speedup for those hosts in exchange for never overriding an explicit
-    setting.
-    """
-    env = os.environ.copy()
-    # Prefix match, not exact-name match: sandbox consumes _PYTHON_ENV_PREFIXES
-    # via startswith (scrub_env), so this site must too or a genuine prefix
-    # entry added to the list would be scrubbed there and missed here.
-    python_env_prefixes = tuple(_PYTHON_ENV_PREFIXES)
-    for key in [k for k in env if k.startswith(python_env_prefixes)]:
-        del env[key]
-    if any(env.get(var) for var in _THREAD_ENV_VARS):
-        return env
-    threads = str(_whisper_thread_count())
-    for var in _THREAD_ENV_VARS:
-        env[var] = threads
-    return env
-
-
-async def _run_whisper_cli(
-    binary: str,
-    build_args,  # Callable[[str], list[str]]: out_dir -> CLI args (excluding binary)
-    timeout_secs: int,
-    label: str,
-) -> str | None:  # type: ignore[no-untyped-def]
-    """Run a Whisper-style CLI in an isolated subprocess and read its transcript.
-
-    Shared by ``_transcribe_native`` (openai-whisper) and ``_transcribe_mlx``
-    (mlx_whisper). The environment comes from :func:`_thread_capped_env`, which
-    isolates the CLI from Kiro Crew's own Python packages and bounds its intra-op
-    parallelism. Each writes a ``.txt`` transcript into a temp ``out_dir`` we own
-    and clean up. ``build_args`` lets callers express their differing flags (the
-    two CLIs use hyphenated vs underscored option names).
-    """
-    out_dir = await asyncio.to_thread(tempfile.mkdtemp)
     try:
-        clean_env = _thread_capped_env()
-        proc = await asyncio.create_subprocess_exec(
-            binary,
-            *build_args(out_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=clean_env,
+        with wave.open(audio_path, "rb") as wav:
+            channels = wav.getnchannels()
+            if wav.getframerate() != stt.SAMPLE_RATE_HZ or wav.getsampwidth() != 2 or channels < 1:
+                return None
+            raw = wav.readframes(min(wav.getnframes(), _MAX_AUDIO_SECS * stt.SAMPLE_RATE_HZ))
+    except (OSError, EOFError, wave.Error):
+        # Not a readable PCM WAV (a compressed payload, a truncated header, a
+        # mislabelled suffix). ffmpeg reads far more than the stdlib does, so this
+        # is a "try the other route", not a failure.
+        return None
+    pcm = stt.pcm_from_int16(raw)
+    if channels == 1:
+        return pcm
+    # Drop a final frame the file cut in half before folding channels, so the
+    # reshape cannot fail on a truncated recording.
+    usable = pcm.size - (pcm.size % channels)
+    if usable <= 0:
+        return None
+    return pcm[:usable].reshape(-1, channels).mean(axis=1, dtype=pcm.dtype)
+
+
+async def _kill_and_reap(proc: Any) -> None:
+    """Stop a child process and collect it. Best effort throughout.
+
+    Reaped with ``communicate()`` rather than ``wait()``: it drains the pipes, so
+    a child that died with a full stderr buffer cannot deadlock the reap. Nothing
+    here may raise, because the caller already has a failure or an in-flight
+    cancellation to report and this cleanup must not replace it.
+    """
+    try:
+        proc.kill()
+    except OSError:
+        logger.debug("ffmpeg kill during cleanup failed", exc_info=True)
+        return
+    try:
+        await proc.communicate()
+    except BaseException:
+        # A repeat cancellation can land on this await; swallow it so the
+        # caller's own exception is the one that propagates.
+        pass
+
+
+async def _pcm_via_ffmpeg(audio_path: str, timeout_secs: int) -> np.ndarray | None:
+    """Transcode *audio_path* to 16 kHz mono and return it as float32 samples.
+
+    This is why ffmpeg stays a prerequisite: a Slack voice memo arrives as
+    ogg/Opus and the dashboard records webm, neither of which the stdlib reads.
+    The recogniser accepts exactly one format, so the transcode targets it
+    directly rather than leaving a rate conversion for later.
+    """
+    ffmpeg_bin = await asyncio.to_thread(_find_ffmpeg)
+    if not ffmpeg_bin:
+        logger.error(
+            "ffmpeg is required to read %s; install ffmpeg or send 16 kHz mono WAV audio",
+            audio_path,
         )
+        return None
+    tmp_wav = await asyncio.to_thread(_make_temp_wav)
+    try:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg_bin,
+                "-y",
+                "-i",
+                audio_path,
+                "-ar",
+                str(stt.SAMPLE_RATE_HZ),
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                # Bounds the temp file as well as the later read, so a container
+                # that decodes forever cannot fill the disk while it does.
+                "-t",
+                str(_MAX_AUDIO_SECS),
+                tmp_wav,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError:
+            logger.exception("Could not run ffmpeg (%s) to decode %s", ffmpeg_bin, audio_path)
+            return None
         try:
             _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
         except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            else:
-                # Reap via communicate(), not wait(): it drains the PIPEs, so a
-                # child that died with a full pipe buffer cannot deadlock the
-                # reap. Deliberately ``except Exception`` (narrower than the
-                # cancellation arm's ``BaseException`` swallow below): a
-                # cancellation arriving during THIS reap should win over the
-                # ``return None``, and the ``finally`` still removes the
-                # directory either way.
-                try:
-                    await proc.communicate()
-                except Exception:
-                    logger.debug("%s wait after kill failed", label, exc_info=True)
-            logger.error("%s transcription timed out after %ds", label, timeout_secs)
+            await _kill_and_reap(proc)
+            logger.error("ffmpeg decode of %s timed out after %ds", audio_path, timeout_secs)
             return None
         except BaseException:
-            # A cancellation mid-``communicate`` is a ``BaseException``, which
-            # the ``except asyncio.TimeoutError`` arm above never sees — the
-            # whisper child kept running as an orphan (#5821). Kill AND reap it
-            # before re-raising: Windows keeps the output files locked until
-            # the child fully exits, and on POSIX a live child can race the
-            # directory removal in the ``finally`` below.
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            else:
-                try:
-                    await proc.communicate()
-                except BaseException:
-                    # A repeat cancellation can land on the reap await; swallow
-                    # it so the directory removal still runs and the ORIGINAL
-                    # exception is the one that propagates.
-                    pass
+            # ``CancelledError`` is a ``BaseException``, so the ``TimeoutError``
+            # arm never sees it and an abandoned request would leave the child
+            # running. Stop AND reap it before the ``finally`` removes the temp:
+            # Windows keeps the output file locked until the child fully exits,
+            # and on POSIX a live child can race the removal.
+            await _kill_and_reap(proc)
             raise
-        return await asyncio.to_thread(
-            _collect_whisper_output,
-            proc.returncode,
-            stderr,
-            out_dir,
-            label,
-        )
+        if proc.returncode != 0:
+            tail = stderr.decode(errors="replace").strip()[-500:] if stderr else ""
+            logger.error(
+                "ffmpeg exited %s decoding %s: %s",
+                proc.returncode,
+                audio_path,
+                tail or "(no stderr)",
+            )
+            return None
+        return await asyncio.to_thread(_pcm_from_wav, tmp_wav)
     finally:
-        # The removal stays OFF the event loop, and scheduling it as its own
-        # task BEFORE awaiting is what closes the #5821 leak: a repeat
-        # cancellation (or KeyboardInterrupt) landing on this await abandons
-        # only the wait — the already-scheduled task still runs the removal to
-        # completion in its worker thread. ``shield`` keeps that cancellation
-        # from propagating INTO the removal task, while the exception itself
+        # Off the loop, and scheduled as its own task BEFORE it is awaited, so a
+        # repeat cancellation landing on the await abandons only the wait while
+        # the removal still runs to completion in its worker thread. ``shield``
+        # keeps that cancellation out of the removal task; the exception itself
         # still reaches the awaiter.
-        rm = asyncio.ensure_future(
-            asyncio.to_thread(shutil.rmtree, out_dir, ignore_errors=True)
-        )
+        rm = asyncio.ensure_future(asyncio.to_thread(_unlink_if_exists, tmp_wav))
         await asyncio.shield(rm)
 
 
-# Defense in depth: ``mlx_model`` is read from config.json. The dashboard PUT
-# API validates it against an allowlist, but a hand- or tool-edited config could
-# inject an arbitrary value that is then passed to the mlx_whisper subprocess.
-# Constrain it to a HuggingFace ``owner/repo`` id (single slash, no path
-# traversal — the owner segment forbids dots) before use.
-_MLX_MODEL_RE = re.compile(r"^[A-Za-z0-9_-]+/[A-Za-z0-9._-]+$")
+async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """Transcribe with the resident whisper.cpp recogniser.
 
-
-#: The one constructed WhisperModel, stored with its ``(model, device)`` key.
-#: Loading a model re-reads and re-quantizes the weights (tens of MB for
-#: ``tiny`` up to ~GBs for ``large-v3``), so constructing one per recording adds
-#: multi-second latency — and CONCURRENT recordings would each hold a full
-#: copy, compounding to RAM exhaustion on the 8-thread executor pool. The cache
-#: is deliberately SINGLE-SLOT: the gateway serves one configured model at a
-#: time, so switching sizes evicts the previous instance instead of keeping
-#: every size ever selected resident (which would itself OOM a small host).
-#: The lock serializes construction only; ``WhisperModel.transcribe`` is safe
-#: to call from multiple threads on one instance.
-_FW_MODEL_CACHE: dict[tuple[str, str], Any] = {}
-_FW_MODEL_LOCK = threading.Lock()
-
-
-def _cached_fw_model(model_cls: Any, model: str, device: str) -> Any:
-    """Return the shared WhisperModel for ``(model, device)``, single-slot."""
-    key = (model, device)
-    with _FW_MODEL_LOCK:
-        fw_model = _FW_MODEL_CACHE.get(key)
-        if fw_model is None:
-            # Evict any other-size instance BEFORE constructing the new one, so
-            # peak residency during a switch is one model plus the one being
-            # built, never an unbounded accumulation of every size selected.
-            _FW_MODEL_CACHE.clear()
-            fw_model = model_cls(model, device=device, compute_type="int8")
-            _FW_MODEL_CACHE[key] = fw_model
-        return fw_model
-
-
-def _run_faster_whisper_sync(audio_path: str, model: str, device: str) -> str | None:
-    """Run faster-whisper inference synchronously. NEVER call on the event loop.
-
-    ``compute_type="int8"`` is what makes CPU inference practical — the models are
-    quantised on load, trading a little accuracy for the several-fold speedup that
-    keeps a meeting-length recording from taking longer than the meeting.
+    Everything expensive is shared with every other voice surface: one loaded
+    model per process, so a Slack voice memo decodes on the weights a dashboard
+    dictation just warmed rather than loading its own copy.
     """
-    model_cls = _faster_whisper_model()
-    if model_cls is None:
-        logger.error("faster-whisper not available — install: pip install faster-whisper")
-        return None
-    try:
-        fw_model = _cached_fw_model(model_cls, model, device)
-        segments, _info = fw_model.transcribe(audio_path, beam_size=5)
-        # `segments` is a GENERATOR: inference happens as it is consumed, which is
-        # precisely why this whole function belongs off the loop.
-        parts = [text for segment in segments if (text := segment.text.strip())]
-        return " ".join(parts).strip() or None
-    except Exception:
-        # Same contract as every other provider here: log and return None rather
-        # than raise, so one bad recording cannot take a caller down.
-        logger.exception("faster-whisper transcription failed")
+    # Off the loop: the first probe links the recogniser's native extension, and
+    # this coroutine is awaited from the Slack path and the transcribe endpoint.
+    available = await asyncio.to_thread(stt.availability)
+    if not available.ok:
+        logger.error("Local speech recognition unavailable: %s", available.detail)
         return None
 
+    pcm: np.ndarray | None = None
+    if os.path.splitext(audio_path)[1].lower() in _WAV_SUFFIXES:
+        pcm = await asyncio.to_thread(_pcm_from_wav, audio_path)
+    if pcm is None:
+        pcm = await _pcm_via_ffmpeg(audio_path, stt_config.timeout_secs)
+    if pcm is None or pcm.size == 0:
+        logger.error("No audio could be decoded from %s", audio_path)
+        return None
 
-async def _transcribe_faster(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe with faster-whisper (CTranslate2), in-process.
-
-    Unlike the ``whisper`` and ``mlx`` providers there is no subprocess and no
-    system ffmpeg: faster-whisper links CTranslate2 and decodes audio through
-    PyAV's bundled FFmpeg. That removes the whole binary-discovery problem, and is
-    why this provider is worth having on machines where installing the CLI
-    toolchain is the hard part.
-
-    The model name needs no regex guard of the kind ``_MLX_MODEL_RE`` provides:
-    nothing is passed to a shell here, and faster-whisper resolves an unknown name
-    to a download or an error rather than executing it.
-    """
-    # No availability guard HERE: this coroutine runs on the event loop, and the
-    # lazy import retry loads a native library. _run_faster_whisper_sync performs
-    # the same check (with the retry) inside the executor thread and returns
-    # None with a log line when the library is absent.
-    loop = asyncio.get_running_loop()
-    # stt_executor(), not subprocess_executor() and not asyncio.to_thread:
-    # inference is CPU-bound and minutes long, and the first call for a model size
-    # can block inside the library's constructor downloading weights. Its own pool
-    # means that cost can only ever queue behind OTHER STT work — see
-    # kiro_crew.executors.stt_executor for why sharing the PTY-teardown pool was
-    # the wrong bulkhead.
-    fut = loop.run_in_executor(
-        stt_executor(),
-        _run_faster_whisper_sync,
-        audio_path,
-        stt_config.model,
-        stt_config.device,
+    # ``timeout_secs`` bounds the transcode above AND, inside the engine, each
+    # decode and each model load separately. What it deliberately does NOT bound is
+    # the first-run model download: that happens before the engine takes its lock,
+    # so a slow transfer cannot be mistaken for a wedged decode and abandoned
+    # mid-flight. The decode measures a real-time factor of 0.007-0.011, so the
+    # ceiling only ever fires on a genuinely stuck native call.
+    #
+    # Both bounds are passed on every call because the recogniser is a singleton:
+    # they are re-applied to the live instance rather than fixed by whichever
+    # surface reached it first, which is what stops a Slack voice memo from pinning
+    # the operator's settings to the package defaults.
+    text, result = await stt.transcribe_pcm(
+        pcm,
+        model_name=stt_config.model,
+        language=_whisper_language(stt_config.language_code),
+        idle_evict_secs=stt_config.idle_evict_secs,
+        timeout_secs=stt_config.timeout_secs,
     )
-    try:
-        return await asyncio.wait_for(fut, timeout=stt_config.timeout_secs)
-    except asyncio.TimeoutError:
-        # The timeout releases the CALLER, not the thread. A running
-        # run_in_executor future cannot be interrupted, so the inference (or the
-        # weight download it is stuck in) continues to completion and its worker
-        # stays occupied until then; what this bound buys is that the dictation
-        # request itself fails fast instead of hanging forever. Matching the CLI
-        # providers, which also log and return None on timeout rather than raise.
-        logger.error(
-            "faster-whisper transcription timed out after %ds "
-            "(worker still running; it cannot be cancelled)",
-            stt_config.timeout_secs,
-        )
+    if not result.ok:
+        logger.error("Local speech recognition unavailable: %s", result.detail)
         return None
-
-
-async def _transcribe_mlx(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe using the mlx_whisper CLI (Apple Silicon, Metal GPU).
-
-    mlx_whisper is installed out-of-band (the ``mlx`` wheel is arm64-only). Note
-    the hyphenated flags (``--output-dir``/``--output-format``), which differ
-    from the underscore flags used by the openai-whisper CLI.
-    """
-    mlx_bin = await asyncio.to_thread(_find_mlx_whisper)
-    if not mlx_bin:
-        logger.error("mlx_whisper not found — install: pipx install mlx-whisper")
-        return None
-
-    model = stt_config.mlx_model
-    if not _MLX_MODEL_RE.match(model or ""):
-        logger.error(
-            "Refusing to run mlx_whisper: invalid mlx_model %r "
-            "(expected a HuggingFace 'owner/repo' id)",
-            model,
-        )
-        return None
-
-    return await _run_whisper_cli(
-        mlx_bin,
-        lambda out_dir: [
-            audio_path,
-            "--model",
-            model,
-            "--output-dir",
-            out_dir,
-            "--output-format",
-            "txt",
-        ],
-        stt_config.timeout_secs,
-        label="mlx_whisper",
-    )
-
-
-async def _transcribe_parakeet(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe using the parakeet-mlx CLI (NVIDIA Parakeet, Apple Silicon).
-
-    parakeet-mlx is installed out-of-band (the ``mlx`` wheel is arm64-only), and
-    shares mlx_whisper's hyphenated flags (``--output-dir``/``--output-format``)
-    plus its ``<filename>.txt`` output convention, so it reuses the same
-    ``_run_whisper_cli`` runner and ``.txt`` collection. ``parakeet_model`` is
-    validated against the shared HuggingFace ``owner/repo`` regex for the same
-    defense-in-depth reason as ``mlx_model`` (a hand-edited config could inject
-    an arbitrary value passed straight to the subprocess).
-    """
-    parakeet_bin = await asyncio.to_thread(_find_parakeet_mlx)
-    if not parakeet_bin:
-        logger.error("parakeet-mlx not found — install: pipx install parakeet-mlx")
-        return None
-
-    model = stt_config.parakeet_model
-    # `model or ""` only substitutes on a falsy value (None, ""); a non-string
-    # truthy value (e.g. an int from a hand-edited config.json) would reach
-    # `_MLX_MODEL_RE.match()` as-is and raise TypeError there instead of
-    # producing the clean "invalid parakeet_model" refusal below.
-    if not isinstance(model, str) or not _MLX_MODEL_RE.match(model or ""):
-        logger.error(
-            "Refusing to run parakeet-mlx: invalid parakeet_model %r "
-            "(expected a HuggingFace 'owner/repo' id)",
-            model,
-        )
-        return None
-
-    return await _run_whisper_cli(
-        parakeet_bin,
-        lambda out_dir: [
-            audio_path,
-            "--model",
-            model,
-            "--output-dir",
-            out_dir,
-            "--output-format",
-            "txt",
-        ],
-        stt_config.timeout_secs,
-        label="parakeet-mlx",
-    )
+    # ``transcribe_pcm`` has already applied the hallucination filter, which can
+    # empty a transcript that was entirely caption boilerplate. Empty means no
+    # transcript, so the caller reports a memo it could not hear instead of
+    # writing boilerplate into an agent's notes.
+    return text or None
 
 
 async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
@@ -1313,8 +846,9 @@ async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type:
     straight through; the helper falls back to another installed dialect of the same
     language before it refuses.
 
-    Unlike whisper/mlx this needs no model download on a supported host — the OS
-    ships the assets — so a failure here is a real error, not a missing-model state.
+    A supported host needs no model download because the OS ships the assets, so
+    a failure here is a real error rather than the missing-model state the local
+    recogniser can be in on a first run.
     """
     from kiro_crew import apple_speech
 
@@ -1333,51 +867,3 @@ async def _transcribe_apple(audio_path: str, stt_config) -> str | None:  # type:
         metrics.get("locale", "?"),
     )
     return text
-
-
-def _is_openai_whisper(whisper_bin: str) -> bool:
-    """True when *whisper_bin* is the reference openai-whisper CLI.
-
-    ``--fp16`` is an openai-whisper-only flag (it silences the "FP16 is not
-    supported on CPU" warning). Drop-in replacements advertised as
-    openai-whisper-compatible — e.g. ``whisper-ctranslate2`` — do not implement
-    it and exit ``rc=2`` (``unrecognized arguments: --fp16``), which surfaces to
-    the user as a silent empty transcript. openai-whisper's console script is
-    always named ``whisper`` (``whisper`` / ``whisper.exe``), so gating on the
-    resolved binary's stem lets a compatible engine work through the existing
-    ``stt.whisper_path`` setting with no extra config. Getting this wrong for a
-    genuine openai-whisper install only restores a harmless CPU warning; wrongly
-    passing the flag to an engine that rejects it breaks transcription outright,
-    so the check errs toward omitting the flag when unsure.
-    """
-    return Path(whisper_bin).stem.lower() == "whisper"
-
-
-async def _transcribe_native(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
-    """Transcribe using the native openai-whisper (or a compatible) binary."""
-    whisper_bin = await asyncio.to_thread(_find_whisper, stt_config.whisper_path)
-    if not whisper_bin:
-        logger.error("whisper not found — install: pip install openai-whisper")
-        return None
-
-    add_fp16 = _is_openai_whisper(whisper_bin)
-
-    return await _run_whisper_cli(
-        whisper_bin,
-        lambda out_dir: [
-            audio_path,
-            "--model",
-            stt_config.model,
-            "--device",
-            stt_config.device,
-            "--output_dir",
-            out_dir,
-            "--output_format",
-            "txt",
-            # ``--fp16`` is openai-whisper-only; omit it for compatible engines
-            # (e.g. whisper-ctranslate2) that would reject it with rc=2.
-            *(["--fp16", "False"] if add_fp16 else []),
-        ],
-        stt_config.timeout_secs,
-        label="whisper",
-    )

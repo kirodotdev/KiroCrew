@@ -15,7 +15,7 @@ single subsystem belongs in [../modules/](../modules/README.md) instead.
 | [inline-action-buttons.md](inline-action-buttons.md) | Agent-proposed buttons rendered inline in chat. |
 | [workflow-chat-cards.md](workflow-chat-cards.md) | Rendering a workflow run's progress as a chat card. |
 | [steering-viewer.md](steering-viewer.md) | Viewing the steering files a session loaded. |
-| [stt-streaming.md](stt-streaming.md) | Live speech-to-text partials in the composer. |
+| [stt-streaming.md](stt-streaming.md) | Live dictation in the composer: the three providers, the WebSocket frames, the local recognizer's endpointing and partial pipeline, and the model download. |
 | [voice-streaming.md](voice-streaming.md) | Streaming voice replies, and the text normalization applied before synthesis. |
 | [turn-complete-chime.md](turn-complete-chime.md) | The end-of-turn audio cue. |
 | [turn-stats-footer.md](turn-stats-footer.md) | The per-turn token and timing footer. |

@@ -1533,7 +1533,7 @@ async def _transcribe_files(orch: "GatewayOrchestrator", files: list[dict]) -> l
             transcript = await transcribe_audio(dest)
             sel().log_api_access(
                 caller="stt",
-                operation="whisper.transcribe",
+                operation="stt.transcribe",
                 outcome="success" if transcript else "empty",
                 source="transcribe",
                 resources=f.get("name", "?"),
@@ -1547,7 +1547,7 @@ async def _transcribe_files(orch: "GatewayOrchestrator", files: list[dict]) -> l
             logger.exception("Failed to transcribe file %s", f.get("name", "?"))
             sel().log_api_access(
                 caller="stt",
-                operation="whisper.transcribe",
+                operation="stt.transcribe",
                 outcome="error",
                 source="transcribe",
                 resources=f.get("name", "?"),
@@ -2270,7 +2270,13 @@ async def _route_message(
             transcripts: list[str] = []
             # Decided once per message, not per memo: an unusable transcriber
             # cannot become usable between two attachments of one message.
-            stt_ok = stt_available()
+            #
+            # Off the loop, like every other caller of this: on the `local` provider it
+            # reaches the availability probe, which imports the recogniser binding and
+            # dlopens a native library (measured at 209 ms cold). Inline, the first
+            # inbound voice memo of a boot stalled the gateway's loop and its liveness
+            # heartbeat with it.
+            stt_ok = await asyncio.to_thread(stt_available)
             if stt_ok:
                 transcripts = await _transcribe_with_reaction(
                     orch.slack,

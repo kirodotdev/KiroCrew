@@ -5296,6 +5296,29 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # Downloaded MODEL WEIGHTS (speech recognition and embeddings both land here).
+    # WRITE-protected as a whole directory, not read+write sensitive: the weights hold
+    # no secret, and the settings surface and `kirocrew doctor` both read the directory
+    # to report what is installed.
+    #
+    # They are an INPUT TO A TRUST DECISION. Each store verifies its file against a
+    # pinned sha256 and then hands the PATH to a native loader, so a writable directory
+    # leaves a window between the digest and the open in which the bytes can be
+    # swapped -- and no amount of re-hashing closes it, because the loader re-opens by
+    # name. Removing the writability removes the window instead: the agent cannot
+    # modify the file at all, so the verified bytes are the loaded bytes. A poisoned
+    # model is persistent and invisible, and for speech it means the user's own words
+    # reaching the agent as something they did not say.
+    #
+    # Kiro Crew's own downloaders write here directly and do not route through this
+    # gate, so first-run fetches, re-downloads after a failed check and the embedding
+    # model install all keep working; only the agent's file-edit and shell tools are
+    # refused. Paired with the same entry in _WRITE_PROTECTED_BASH_LEAVES -- protected
+    # on one path only is not protected.
+    f"{prefix}/models"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The Connections tool-alias OWNERSHIP RECORD, third instance of the same class as the
     # two above and with the same read/write asymmetry. It holds no secret and the rebuild
     # reads it on every run, so classifying it sensitive would break the feature — but it is
@@ -5441,6 +5464,12 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
     # re-converges it. The residual ``cd``-relative form is the low-severity case
     # the scope note already accepts on purpose.
     "playwright-cli-config.json",
+    # Downloaded model weights, paired with the same entry in
+    # _WRITE_PROTECTED_HOME_PATHS so the file-edit and shell paths agree. A directory
+    # rather than a leaf: the trailing separator the pattern already accepts makes this
+    # cover everything beneath it, which is what the trust decision needs (any file the
+    # loader might open, not one filename).
+    "models",
 )
 
 # ── Anchor-INDEPENDENT leaf matching ──
@@ -5469,6 +5498,28 @@ _WRITE_PROTECTED_BASH_LEAVES: tuple[str, ...] = (
 # distinctive at all (their distinguishing part is the ``apps/.../data/``
 # subpath) and must stay anchored.
 _BARE_TOKEN_PROTECTED_LEAVES: tuple[str, ...] = ("connections-tool-aliases.json",)
+
+# Whisper weight files, matched as a NAME with no anchor, for the same reason as the
+# alias record above: the filename IS the grant. `stt.models` verifies a file's sha256
+# and then hands its PATH to a native loader that re-opens it by name, so the bytes a
+# C++ GGML parser actually consumes are whatever sits at ``ggml-<model>.bin`` at open
+# time, not the bytes that were hashed. The ``models`` entry in
+# _WRITE_PROTECTED_BASH_LEAVES fences the crew-home spelling of that path and is what
+# the file tools go through, but an anchored pattern falls to a single ``cd``:
+# ``cd ~/.kiro/crew/models; cp evil.bin ggml-base.bin`` names no home, no crew prefix
+# and no separator. Anchoring cannot be part of this contract, so it is not.
+#
+# A pattern rather than the four catalog filenames, so a model row added to
+# ``stt.models.CATALOG`` later is fenced without a second edit here -- a new row is
+# exactly the change nobody would think to mirror into this module.
+#
+# The SCOPE test above is met and the cost is stated rather than assumed: ``ggml-``
+# plus ``.bin`` is the whisper.cpp/llama.cpp artifact convention and appears in no
+# ordinary command line, but it is deliberately wider than the crew home, so an
+# unrelated checkout of someone else's GGML weights cannot be copied or renamed from
+# the agent's SHELL either. That is a denial rather than a grant, and the file tools
+# are untouched, which is the affordable direction for the trade.
+_WHISPER_WEIGHT_NAME = r"ggml-[A-Za-z0-9][A-Za-z0-9._-]*\.bin"
 
 # Regex for bash commands that read sensitive paths.
 # Matches: cat, head, tail, less, more, strings, xxd, base64, cp, scp, open,
@@ -5518,8 +5569,9 @@ def _build_sensitive_regex() -> re.Pattern[str]:
       3. a write-protected LEAF under the crew home, in POSIX and in
          Windows-native spelling, matched verb-independently;
       4. an anchor-INDEPENDENT bare path SEGMENT for the distinctive leaves in
-         ``_BARE_TOKEN_PROTECTED_LEAVES`` — the only strategy that survives a
-         ``cd`` into the crew home followed by a relative filename.
+         ``_BARE_TOKEN_PROTECTED_LEAVES``, and for a whisper weight filename
+         (``_WHISPER_WEIGHT_NAME``) — the only strategy that survives a ``cd``
+         into the crew home followed by a relative filename.
     The home anchor accepts ``~`` / ``$HOME`` / the literal ``Path.home()`` AND a
     generic ``/home/<user>`` / ``/Users/<user>`` literal so an unexpanded
     ``/home/$USER/...`` or another user's literal path is still caught.
@@ -5533,7 +5585,18 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     home_alts = f"(?:{home}|{tilde}|{home_var}|{generic_home})"
     escaped_dirs = [re.escape(d) for d in _SENSITIVE_HOME_DIRS]
     dirs_pattern = "|".join(escaped_dirs)
-    sensitive_path = rf"{home_alts}/(?:{dirs_pattern})(?:/|\s|$|['\"])"
+    # What may TERMINATE a sensitive path token. A path is very often the last thing
+    # before a shell metacharacter, and accepting only whitespace, a quote, ``/`` or
+    # end-of-string let punctuation defeat the gate outright: ``cd ~/.aws;`` and
+    # ``cd ~/.kiro/crew/models;`` were allowed, while the same commands written with
+    # ``&&`` were blocked -- for no better reason than that ``&&`` is preceded by a
+    # space and ``;`` is not. The asymmetry is the tell; nothing about a semicolon
+    # makes the path less named. So the class is every character a shell itself treats
+    # as the end of a word. Widening a DENY boundary can only ever deny more, which is
+    # the safe direction for this gate, and the rule it enforces is unchanged: naming a
+    # fenced path is the signal.
+    path_end = r"(?:/|\s|$|['\"]|[;&|()<>,:`])"
+    sensitive_path = rf"{home_alts}/(?:{dirs_pattern}){path_end}"
     # Write-protected leaves (e.g. the on-call schedule): a full home-anchored
     # path to a specific leaf file, matched verb-INDEPENDENTLY (below) so no
     # write form can bypass it. See _WRITE_PROTECTED_BASH_LEAVES for why reads
@@ -5544,7 +5607,7 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # trailing ``/`` is included so a ``mkdir -p <home>/<crew-prefix>/<leaf>/x``
         # (which also MATERIALISES the leaf as a directory) is caught, not just
         # the exact-leaf forms.
-        rf"{home_alts}/(?:{wp_prefixes})/(?:{wp_leaves})(?:/|\s|$|['\"])"
+        rf"{home_alts}/(?:{wp_prefixes})/(?:{wp_leaves}){path_end}"
     )
     # Windows-native spellings of the same fenced dirs, matched in the RAW
     # command text. POSIX shlex consumes unquoted backslashes during
@@ -5583,9 +5646,14 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # shell's spelling) is the same home by definition.
     userprofile = (
         r"(?:%USERPROFILE(?::[^%\s]*)?%"
+        # cmd.exe delayed expansion (`cmd /V:ON`) names the same home as the `%…%`
+        # form, exactly as it does for `%APPDATA%` below. Without it every
+        # home-anchored branch here missed `!USERPROFILE!\.kiro\crew\…`.
+        r"|!USERPROFILE(?::[^!\s]*)?!"
         rf"|{re.escape('$env:USERPROFILE')}"
         rf"|{re.escape('${env:USERPROFILE}')}"
         r"|%HOMEDRIVE(?::[^%\s]*)?%%HOMEPATH(?::[^%\s]*)?%"
+        r"|!HOMEDRIVE(?::[^!\s]*)?!!HOMEPATH(?::[^!\s]*)?!"
         rf"|{re.escape('$env:HOMEDRIVE$env:HOMEPATH')}"
         rf"|{re.escape('${env:HOMEDRIVE}${env:HOMEPATH}')})"
     )
@@ -5669,6 +5737,62 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"{win_home_alts}{win_gsep}(?:{win_wp_prefixes}){win_gsep}"
         rf"(?:{win_wp_leaves})(?:{win_sep}|\s|$|['\"])"
     )
+    # A native spelling whose LEAF is an expansion: ``%USERPROFILE%\.kiro\crew\%F%``
+    # names the keystone without spelling any of its literal leaves, so no branch
+    # above can match it. The token-level rule for that shape
+    # (`_sensitive_under_unresolved_var`) does catch it, but only when the path is
+    # QUOTED -- POSIX shlex consumes unquoted backslashes before that rule ever
+    # runs, which is the same blind spot every branch here exists to cover.
+    #
+    # Anchored on the keystone's PARENT directory, because the leaf being a variable
+    # means there is no literal leaf to match: naming the parent, a separator, and
+    # any expansion is the signal. Scoped to the crew trust root and NOT to every
+    # entry in `_SENSITIVE_LEAF_PARENT_DIRS`, since that list also holds
+    # ``AppData/Roaming`` and ``Library/Application Support`` -- directories whose
+    # variable-leaf spellings (``%APPDATA%\%APP%``) are ordinary and constant.
+    win_crew_leaf_parents = "|".join(
+        win_gsep.join(re.escape(part) for part in d.split("/"))
+        for d in _SENSITIVE_LEAF_PARENT_DIRS
+        if any(d == p or d.startswith(f"{p}/") for p in _CREW_HOME_PREFIXES)
+    )
+    # Every spelling of "something that is computed at run time", because the LEAF
+    # being computed is what this branch exists to catch: the value cannot be read from
+    # the command text, so the only safe reading is that it might name a keystone file.
+    #
+    # The substitution forms are not optional. Without them
+    # ``…\.kiro\crew\$(Write-Output security_policy.json)`` read the governance
+    # policy: the token-level rule catches that shape through `_SHELL_SUBST_RE`, but
+    # only when the path is QUOTED, and this branch exists precisely for the unquoted
+    # spellings POSIX shlex destroys before any token rule runs.
+    #
+    # The bracketing forms match their OPENER and do not describe a body, which is the
+    # difference between a deny gate and a parser. This question is only ever "does an
+    # unresolved expansion start here", and any answer that has to model the contents
+    # can be out-nested: a body permitting one level missed
+    # ``$(a $(b $(c)))``, and `${[^}\s]+}` missed ``${My Var}`` because a PowerShell
+    # variable name may legally contain a space. Matching the opener cannot be
+    # out-nested, and it can only ever deny MORE -- which for the keystone directory
+    # costs nothing, since a resolvable leaf there is fenced by name anyway.
+    #
+    # The delimited forms below keep their closers on purpose: an unterminated ``%``,
+    # ``!`` or backtick is a LITERAL to cmd, PowerShell and sh respectively, so it
+    # names no expansion and matching it would refuse ordinary filenames.
+    any_expansion = (
+        r"(?:%[A-Za-z_][A-Za-z0-9_]*(?::[^%\s]*)?%"
+        r"|![A-Za-z_][A-Za-z0-9_]*(?::[^!\s]*)?!"
+        rf"|{re.escape('$')}\{{?env:[A-Za-z_][A-Za-z0-9_]*\}}?"
+        # PowerShell subexpression / POSIX command substitution, PowerShell's
+        # array-subexpression sibling, and the brace-delimited variable form.
+        r"|\$\{"
+        r"|\$\("
+        r"|@\("
+        # POSIX backtick substitution.
+        r"|`[^`]*`"
+        r"|\$[A-Za-z_][A-Za-z0-9_]*)"
+    )
+    win_crew_var_leaf_path = (
+        rf"{win_home_alts}{win_gsep}(?:{win_crew_leaf_parents}){win_sep}{any_expansion}"
+    )
     # ── ~/.kiro/agents WRITE-protection (a whole DIRECTORY, not a leaf) ──
     # A spec under this dir becomes a KIROCREW_MCP_TARGET_<SERVER> command the
     # gateway execs — pooled backends run OUTSIDE the per-session sandbox — so an
@@ -5703,7 +5827,7 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     kiro_home_var = r"(?:\$KIRO_HOME|\$\{KIRO_HOME\})"
     agents_write_path = (
         rf"(?:{home_alts}/(?:{agents_dir_alt})"
-        rf"|{kiro_home_var}/(?:{agents_leaf_alt}))(?:/|\s|$|['\"])"
+        rf"|{kiro_home_var}/(?:{agents_leaf_alt})){path_end}"
     )
     win_agents_dir_alt = win_gsep.join(
         re.escape(part) for part in _KIRO_AGENTS_DIR.split("/")
@@ -5739,6 +5863,11 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # blocks on naming alone.
     bare_leaves = "|".join(re.escape(leaf) for leaf in _BARE_TOKEN_PROTECTED_LEAVES)
     bare_protected_path = rf"(?<![\w.\-])(?:{bare_leaves})(?![\w\-])"
+    # Same token boundaries, and for the same reasons: the lookbehind keeps a name that
+    # merely ENDS with one of these out (``my-ggml-base.bin`` stays allowed), while a
+    # trailing ``.`` or separator still matches, so ``ggml-base.bin.tmp`` and the
+    # mkdir-as-directory form are covered.
+    bare_weight_path = rf"(?<![\w.\-]){_WHISPER_WEIGHT_NAME}(?![\w\-])"
     return re.compile(
         # (1) verb/redirect-anchored, OR (2) verb-independent: the sensitive path
         # appears anywhere as a token.  The token anchor accepts start-of-string
@@ -5766,6 +5895,7 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"|(?:^|.*[\s'\"=:,;]){appdata_sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){localappdata_sensitive_path}"
         rf"|(?:^|.*[\s'\"=:,;]){win_write_protected_path}"
+        rf"|(?:^|.*[\s'\"=:,;]){win_crew_var_leaf_path}"
         # (8) ~/.kiro/agents (POSIX and Windows-native spelling, plus the
         # ``$KIRO_HOME`` override), matched verb-INDEPENDENTLY with the same token
         # anchor as (2)/(3): naming the dir is the signal, so ``curl -o``/``wget
@@ -5775,7 +5905,11 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         # only); tool-path reads stay allowed.
         rf"|(?:^|.*[\s'\"=:,;]){agents_write_path}"
         rf"|(?:^|.*[\s'\"=:,;]){win_agents_write_path}"
-        rf"|{bare_protected_path})",
+        # (10) whisper weight FILENAMES, also with no anchor, because the digest the
+        # model store checks only binds the bytes if the name it then loads cannot be
+        # rewritten by a ``cd``-relative command.
+        rf"|{bare_protected_path}"
+        rf"|{bare_weight_path})",
         re.IGNORECASE,
     )
 
@@ -6506,6 +6640,24 @@ _SHELL_VAR_REF_RE = re.compile(
     r"|\$([A-Za-z_][A-Za-z0-9_]*)"
 )
 
+# Windows-native spellings of an unresolved expansion: cmd.exe `%VAR%` (with the
+# expansion modifiers it tolerates), cmd.exe delayed expansion `!VAR!`, and
+# PowerShell `$env:VAR` braced or bare.
+#
+# Deliberately NOT folded into the pattern above, which also drives value
+# SUBSTITUTION: a cmd.exe or PowerShell name has no value the segment walk could
+# have tracked, so substituting it would rewrite a token on a hypothesis rather
+# than on something the command actually assigned. These names are only ever used
+# to ask "is something here unresolved", so they stay separate -- and are applied
+# FIRST, because the POSIX pattern matches `$env` on its own and would leave
+# `:USERPROFILE` behind as literal text.
+_WIN_VAR_REF_RE = re.compile(
+    r"%[A-Za-z_][A-Za-z0-9_]*(?::[^%\s]*)?%"
+    r"|![A-Za-z_][A-Za-z0-9_]*!"
+    r"|\$\{env:[A-Za-z_][A-Za-z0-9_]*\}"
+    r"|\$env:[A-Za-z_][A-Za-z0-9_]*"
+)
+
 #: Shell keywords whose whole job is to assign. The name they set persists just as
 #: a bare ``NAME=value`` segment does, so the walk has to look past the keyword to
 #: see the assignment at all.
@@ -6566,9 +6718,11 @@ _CHDIR_VERBS: frozenset[str] = frozenset(
 #: ``%HOMEDRIVE%`` plus a stray tail.
 _WINDOWS_HOME_ANCHOR_RE = re.compile(
     r"^(?:%HOMEDRIVE(?::[^%\s]*)?%%HOMEPATH(?::[^%\s]*)?%"
+    r"|!HOMEDRIVE(?::[^!\s]*)?!!HOMEPATH(?::[^!\s]*)?!"
     r"|\$\{env:HOMEDRIVE\}\$\{env:HOMEPATH\}"
     r"|\$env:HOMEDRIVE\$env:HOMEPATH"
     r"|%USERPROFILE(?::[^%\s]*)?%"
+    r"|!USERPROFILE(?::[^!\s]*)?!"
     r"|\$\{env:USERPROFILE\}"
     r"|\$env:USERPROFILE)",
     re.IGNORECASE,
@@ -7019,6 +7173,33 @@ def _brace_operand_reading(token: str) -> str | None:
     return rewritten if count else None
 
 
+def _mark_unresolved(token: str) -> str:
+    """Replace every expansion that cannot be resolved from the command text with NUL.
+
+    Shared by the two rules below rather than spelled out in each, because they ask
+    different questions of the SAME marking: a spelling one of them recognizes and
+    the other does not is a bypass of whichever rule missed it, and nothing about
+    either rule's own tests would show it.
+    """
+    marked = _SHELL_SUBST_RE.sub("\x00", token)
+    marked = _WIN_VAR_REF_RE.sub("\x00", marked)
+    return _SHELL_VAR_REF_RE.sub("\x00", marked)
+
+
+def _parent_dir_either_separator(path: str) -> str:
+    """The directory part of *path*, cutting at the last separator of EITHER kind.
+
+    Cutting on ``/`` alone read ``<home>\\.kiro\\crew\\`` as the single directory
+    ``/Users`` -- everything after the anchor being backslash-separated -- so the
+    keystone's own directory never reached `_dir_holds_sensitive_leaf` and a
+    variable leaf beneath it was allowed through. Windows accepts either
+    separator, and this gate fences on naming alone, so honouring both is the
+    same fail-safe direction the native-spelling patterns already take.
+    """
+    cut = max(path.rfind("/"), path.rfind("\\"))
+    return path[:cut] if cut > 0 else ""
+
+
 def _unresolved_home_hypothesis(token: str) -> str | None:
     """Rewrite the first unresolved expansion in *token* as a home reference.
 
@@ -7035,8 +7216,7 @@ def _unresolved_home_hypothesis(token: str) -> str | None:
     Returns the hypothesis, or None when the token carries nothing unresolved or
     the hypothesis is not home-anchored.
     """
-    marked = _SHELL_SUBST_RE.sub("\x00", token)
-    marked = _SHELL_VAR_REF_RE.sub("\x00", marked)
+    marked = _mark_unresolved(token)
     if "\x00" not in marked:
         return None
     hypothesis = marked.replace("\x00", "~", 1).replace("\x00", "")
@@ -7094,6 +7274,13 @@ def _dir_holds_sensitive_leaf(directory: str) -> bool:
     taint pass, which tainted nothing because ``~/.kiro/crew`` is not itself
     sensitive.
     """
+    # A Windows spelling names the same directory with the other separator, and on
+    # POSIX neither `normpath` nor `realpath` rewrites it, so the comparison below
+    # -- whose targets are built with ``/`` -- never matched a native spelling.
+    # Folding is the safe direction: a genuine POSIX filename that happens to
+    # contain a backslash folds to a directory holding no protected leaf and stays
+    # clean, while a backslash spelling OF a keystone parent starts matching.
+    directory = directory.replace("\\", "/")
     probe = os.path.expanduser(directory) if directory.startswith("~") else directory
     if not probe:
         return False
@@ -7129,8 +7316,7 @@ def _sensitive_under_unresolved_var(token: str) -> bool:
     hypothesis = _unresolved_home_hypothesis(token)
     if hypothesis is not None and is_sensitive_path(hypothesis):
         return True
-    marked = _SHELL_SUBST_RE.sub("\x00", token)
-    marked = _SHELL_VAR_REF_RE.sub("\x00", marked)
+    marked = _mark_unresolved(token)
     if "\x00" not in marked:
         return False
     # An unset variable expands to nothing, so the empty reading is a real
@@ -7140,15 +7326,21 @@ def _sensitive_under_unresolved_var(token: str) -> bool:
     empty_reading = marked.replace("\x00", "")
     if empty_reading != token and is_sensitive_path(empty_reading):
         return True
-    # The variable sits in the leaf: block when the literal directory prefix --
-    # everything up to the first unresolved expansion -- is a directory whose
-    # sensitivity lives in its leaves, since the variable could name one. This
-    # runs even when the home hypothesis is None, because `${HOME}/.kiro/crew/$F`
-    # normalizes to an ABSOLUTE prefix (not `~`-anchored) yet is the same attack.
-    literal_prefix = marked.split("\x00", 1)[0]
-    directory = literal_prefix.rsplit("/", 1)[0] if "/" in literal_prefix else ""
-    if directory and _dir_holds_sensitive_leaf(directory):
-        return True
+    # The variable sits in the leaf: block when the directory before it is one whose
+    # sensitivity lives in its leaves, since the variable could name one. Two
+    # spellings of that directory are tested, and both are needed:
+    #
+    # * The LITERAL prefix -- everything up to the first unresolved expansion --
+    #   covers a path already anchored absolutely, because `${HOME}/.kiro/crew/$F`
+    #   normalizes to an absolute prefix rather than a `~`-anchored one.
+    # * The HYPOTHESIS covers the shape where the ANCHOR is itself an expansion, so
+    #   the literal prefix is empty and the rule above sees no directory at all.
+    #   That is every native spelling of the keystone -- `%USERPROFILE%\.kiro\crew\%F%`,
+    #   `$env:USERPROFILE\.kiro\crew\$F` -- each of which read it unchallenged.
+    for candidate in (marked.split("\x00", 1)[0], hypothesis or ""):
+        directory = _parent_dir_either_separator(candidate)
+        if directory and _dir_holds_sensitive_leaf(directory):
+            return True
     return False
 
 

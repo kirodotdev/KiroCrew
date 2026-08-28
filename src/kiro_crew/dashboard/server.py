@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import faulthandler
 import logging
 import os
 import stat
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -204,6 +206,12 @@ _DIST_DIR = _STATIC_DIR / "dist"
 # interval keeps the overhead negligible; a turn shorter than one interval never
 # outlasts a sleep timer, so not catching it is harmless.
 _PREVENT_SLEEP_POLL_INTERVAL_SECS = 15.0
+
+# How long the speech idle-sweep task waits before importing the recogniser package.
+# Its only job is to keep boot clean: the import pulls numpy and the binding, and the
+# hook that starts this task runs before either socket binds. Anything past the first
+# few seconds of boot works, since the sweep's own interval is a minute.
+_STT_SWEEP_BOOT_DELAY_SECS = 30.0
 
 
 async def _prune_browser_snapshots_loop() -> None:
@@ -2393,6 +2401,78 @@ def _register_prevent_sleep_shutdown(app: web.Application, state: DashboardState
     app.on_cleanup.append(_prevent_sleep_shutdown)
 
 
+def _import_stt_engine() -> Any:
+    """Import the recogniser module. BLOCKING: 169 ms cold, numpy plus the binding.
+
+    A named module-level function rather than a closure so the call is observable: the
+    invariant a test has to pin is *which thread* this runs on, and there is no other
+    seam on an `import` statement.
+    """
+    from kiro_crew.stt import engine
+
+    return engine
+
+
+async def _stt_idle_sweep() -> None:
+    """Release the resident speech model once it has been idle past its window.
+
+    `WhisperEngine.maybe_evict` also runs on the paths that finish a decode, and that
+    call can never fire on its own: it runs microseconds after ``_last_used`` was
+    stamped. Idleness is by definition a stretch in which none of those paths run, so
+    noticing it needs something that runs anyway.
+
+    Two costs are kept off the gateway's loop, and they are separate problems with
+    separate fixes:
+
+    * The boot delay keeps the import out of ``runner.setup()``, which runs before
+      either socket binds. Importing there delays the moment the dashboard answers,
+      for a janitor whose first useful pass is minutes away.
+    * `asyncio.to_thread` keeps the import off the LOOP. Sleeping first moved it out
+      of boot but left it running inline on the event loop, where a measured 169 ms
+      (numpy plus the recogniser binding) stalls every socket and heartbeat the
+      gateway is serving at that moment.
+    """
+    await asyncio.sleep(_STT_SWEEP_BOOT_DELAY_SECS)
+    engine = await asyncio.to_thread(_import_stt_engine)
+    await engine.idle_sweep_loop()
+
+
+def _register_stt_hooks(app: web.Application) -> None:
+    """Register the STT idle sweep and the model release, for both server modes.
+
+    MUST be called BEFORE ``runner.setup()`` freezes the app's signal lists. Shared by
+    ``start_dashboard`` and the headless ``start_api_server`` rather than written out
+    in each: the two copies were identical, and an event-loop-blocking import in them
+    therefore had to be found and fixed twice.
+    """
+
+    async def _stt_startup(app_: web.Application) -> None:
+        task = asyncio.create_task(_stt_idle_sweep())
+        task.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
+        app_["stt_idle_sweep"] = task  # prevent GC
+
+    async def _stt_shutdown(app_: web.Application) -> None:
+        sweep = app_.get("stt_idle_sweep")
+        if sweep is not None:
+            sweep.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweep
+        # Gated on the engine module having been imported AT ALL, which is the cheap
+        # and exact test for "could a model be resident". `stt.close()` resolves
+        # through `stt.session`, which imports numpy at module scope and whose
+        # `shared_engine()` CREATES an engine if none exists -- so on a gateway that
+        # never transcribed anything, closing pulled the recogniser binding and built
+        # a WhisperEngine at shutdown purely to release nothing.
+        if "kiro_crew.stt.engine" not in sys.modules:
+            return
+        from kiro_crew import stt
+
+        await stt.close()
+
+    app.on_startup.append(_stt_startup)
+    app.on_cleanup.append(_stt_shutdown)
+
+
 def _arm_prevent_sleep_poll(state: DashboardState, port: int) -> None:
     """Create the sleep inhibitor and start its poll task on the running loop.
 
@@ -3356,6 +3436,10 @@ async def start_dashboard(
 
     app.on_cleanup.append(_kas_login_shutdown)
 
+    # Releases the resident speech model (148MB default, 1.6GB largest) when idle
+    # and at shutdown. Registered here, before runner.setup freezes the signal lists.
+    _register_stt_hooks(app)
+
     # ── Instances (multi-instance management) ────────────────────────────────
     # Register the opt-in instances startup/cleanup hooks HERE, before
     # ``runner.setup()`` freezes the app's signal lists. See
@@ -4048,6 +4132,10 @@ async def start_api_server(
             await service.close()
 
     app.on_cleanup.append(_kas_login_shutdown)
+
+    # Releases the resident speech model (148MB default, 1.6GB largest) when idle
+    # and at shutdown. Registered here, before runner.setup freezes the signal lists.
+    _register_stt_hooks(app)
 
     # Prevent-sleep shutdown hook — registered before runner.setup freezes the
     # signal lists; the poll itself is armed after the port binds (below). This

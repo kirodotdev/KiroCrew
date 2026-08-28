@@ -1359,15 +1359,6 @@ describe('panelBridge speech-to-text reuses the core stack', () => {
     expect(await bridge.getSttConfig()).toBeUndefined()
   })
 
-  it('an install failure carries its reason to the settings panel', async () => {
-    const bridge = await loadBridge()
-    expect(await bridge.installStt()).toEqual({ ok: true })
-
-    route('/api/stt/install', { ok: false, status: 500 }, 'POST')
-    const failing = await loadBridge()
-    expect(await failing.installStt()).toEqual({ ok: false, error: 'install failed (500)' })
-  })
-
   it('transcribes a clip and defaults the mime type', async () => {
     route('/api/stt/transcribe', { body: { text: 'hello there' } }, 'POST')
     const bridge = await loadBridge()

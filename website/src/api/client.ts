@@ -2662,13 +2662,28 @@ export const api = {
     enabled?: boolean
     provider?: string
     model?: string
-    mlx_model?: string
     streaming?: boolean
+    silence_ms?: number
+    partial_interval_ms?: number
+    endpointing?: boolean
+    dictation_panel?: boolean
     transcribe_region?: string
     transcribe_profile?: string
     language_code?: string
   }) => put('/api/config/stt', body).then(j),
-  sttInstall: () => post('/api/stt/install').then(j),
+  // Recogniser availability plus the model catalog and the progress of any
+  // download in flight. Separate from `sttConfig` because it is POLLED while a
+  // model is being fetched, and polling the config endpoint would re-read and
+  // re-probe configuration several times a second.
+  sttStatus: () => fetch('/api/stt/status').then(j),
+  // Fetch a model now, so the cost is paid at a moment the user chose rather
+  // than in the middle of their first dictation. Returns as soon as the transfer
+  // is under way; progress is read from `sttStatus`.
+  sttPrepare: (model: string) => post('/api/stt/prepare', { model }).then(j),
+  // Load the model and run one throwaway decode so the first real utterance does
+  // not pay for the graph allocation. Fire-and-forget at every call site: a
+  // failure only costs the latency it was meant to hide.
+  sttPrewarm: () => post('/api/stt/prewarm', {}).then(j),
   sttTranscribe: (blob: Blob, ext = 'webm') => {
     const fd = new FormData()
     fd.append('audio', blob, `recording.${ext}`)

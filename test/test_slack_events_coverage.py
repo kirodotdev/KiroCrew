@@ -20,8 +20,10 @@ client, and ``kiro_crew.slack.events.sel`` patched so no audit file is written.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import tempfile
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1052,8 +1054,10 @@ class TestRenderRichTextElement:
         "element,expected",
         [
             ({"type": "text", "text": "hello"}, "hello"),
-            ({"type": "link", "text": "site", "url": "https://a.invalid"},
-             "site (https://a.invalid)"),
+            (
+                {"type": "link", "text": "site", "url": "https://a.invalid"},
+                "site (https://a.invalid)",
+            ),
             ({"type": "link", "url": "https://a.invalid"}, "https://a.invalid"),
             ({"type": "link", "text": "bare"}, "bare"),
             ({"type": "emoji", "name": "tada"}, ":tada:"),
@@ -1129,10 +1133,14 @@ class TestExtractBlocksText:
         blocks = [
             "not-a-dict",
             {"type": "rich_text", "elements": "bad"},
-            {"type": "rich_text", "elements": ["bad", {"type": "rich_text_section",
-                                                       "elements": "bad"}]},
-            {"type": "rich_text", "elements": [{"type": "rich_text_list",
-                                                "elements": [{"elements": "bad"}]}]},
+            {
+                "type": "rich_text",
+                "elements": ["bad", {"type": "rich_text_section", "elements": "bad"}],
+            },
+            {
+                "type": "rich_text",
+                "elements": [{"type": "rich_text_list", "elements": [{"elements": "bad"}]}],
+            },
             {"type": "divider"},
         ]
         assert ev._extract_blocks_text(blocks) == ""
@@ -1389,9 +1397,7 @@ class TestTranscribeFiles:
             new_callable=AsyncMock,
             return_value="words",
         ):
-            with patch(
-                "kiro_crew.slack.events.os.unlink", side_effect=OSError("locked")
-            ) as unlink:
+            with patch("kiro_crew.slack.events.os.unlink", side_effect=OSError("locked")) as unlink:
                 assert await ev._transcribe_files(orch, files) == ["words"]
         unlink.assert_called_once()
         # The surviving file is inside tmp_path, not the system temp dir.
@@ -1561,9 +1567,7 @@ class TestRouteMessageGuards:
                 with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                     await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
-        assert (
-            _mock_sel.log_api_access.call_args.kwargs["error"] == "channels governance policy"
-        )
+        assert _mock_sel.log_api_access.call_args.kwargs["error"] == "channels governance policy"
 
     @pytest.mark.asyncio
     async def test_pure_stop_is_exempt_from_governance_denial(self):
@@ -1746,9 +1750,7 @@ class TestRouteMessageQueueing:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
-        orch.slack.add_reaction.assert_awaited_once_with(
-            "D1", "100.0", "hourglass_flowing_sand"
-        )
+        orch.slack.add_reaction.assert_awaited_once_with("D1", "100.0", "hourglass_flowing_sand")
 
     @pytest.mark.asyncio
     async def test_busy_session_without_session_object_uses_pending_queue(self):
@@ -1771,7 +1773,74 @@ class TestRouteMessageQueueing:
         hm.assert_not_called()
 
 
+async def _tick_until(flag) -> None:
+    """Set *flag* once the loop has demonstrably run, then keep yielding.
+
+    The loop making progress is the whole assertion in
+    `test_the_availability_probe_runs_off_the_event_loop`: if a synchronous probe is
+    holding the loop, this coroutine never runs and the probe's own wait times out.
+    """
+    for _ in range(500):
+        await asyncio.sleep(0.01)
+        flag.set()
+
+
 class TestRouteMessageAttachments:
+    @pytest.mark.asyncio
+    async def test_the_availability_probe_runs_off_the_event_loop(self):
+        """On the `local` provider this probe dlopens a native library.
+
+        `stt_available` reaches the availability probe, which imports the recogniser
+        binding (measured at 209 ms cold). Called inline on this async path, the first
+        inbound voice memo of a boot stalled the whole gateway loop and its liveness
+        heartbeat with it -- every other caller of this offloads it.
+
+        The stub reports the verdict itself, so the assertion does not depend on
+        timing: it returns True only if the event loop made progress WHILE it ran, which
+        is impossible unless the call was moved to a thread.
+        """
+        orch = _make_orch()
+        files = [{"mimetype": "audio/webm", "url_private": "https://x.invalid/a.webm"}]
+        loop_ran = threading.Event()
+
+        def _probe_watching_the_loop():
+            return loop_ran.wait(timeout=5.0)
+
+        async def _let_the_loop_breathe(*a, **kw):
+            # Runs only if the loop was free while the probe was in flight.
+            loop_ran.set()
+            return ["spoken"]
+
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch(
+                "kiro_crew.slack.events.stt_available", side_effect=_probe_watching_the_loop
+            ):
+                with patch(
+                    "kiro_crew.slack.events._transcribe_with_reaction",
+                    side_effect=_let_the_loop_breathe,
+                ):
+                    with patch(
+                        "kiro_crew.slack.events.process_slack_files",
+                        new_callable=AsyncMock,
+                        return_value=([], []),
+                    ):
+                        with patch(
+                            "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                        ) as hm:
+                            ticker = asyncio.create_task(_tick_until(loop_ran))
+                            try:
+                                await ev._route_message(
+                                    orch, _event(text="", files=files), ev.SeenCache()
+                                )
+                                await _drain(orch)
+                            finally:
+                                loop_ran.set()
+                                ticker.cancel()
+                                with contextlib.suppress(asyncio.CancelledError):
+                                    await ticker
+        assert hm.await_args is not None, "the message never routed"
+        assert "[Voice memo transcription]" in hm.await_args[0][3]
+
     @pytest.mark.asyncio
     async def test_voice_transcript_is_prefixed(self):
         orch = _make_orch()
@@ -1843,9 +1912,7 @@ class TestRouteMessageAttachments:
                     ) as hm:
                         # A missing temp path must not raise from the cleanup loop.
                         img.unlink()
-                        await ev._route_message(
-                            orch, _event(text="", files=files), ev.SeenCache()
-                        )
+                        await ev._route_message(orch, _event(text="", files=files), ev.SeenCache())
         hm.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1875,9 +1942,7 @@ class TestRouteMessageTransportPath:
                 with patch(
                     "kiro_crew.slack.events._dispatch_queued", new_callable=AsyncMock
                 ) as dispatch:
-                    with patch.object(
-                        KiroCrewConfig, "load", return_value=KiroCrewConfig()
-                    ):
+                    with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
                         await ev._route_message(orch, _event(), ev.SeenCache())
                         await _drain(orch)
                         await _drain(orch)
@@ -1891,15 +1956,11 @@ class TestRouteMessageTransportPath:
         orch.sessions.dequeue = MagicMock(return_value=None)
         orch._pending_queue = {"100.0": [("101.0", "pending", {"channel": "C1"})]}
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
-            with patch(
-                "kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock
-            ):
+            with patch("kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock):
                 with patch(
                     "kiro_crew.slack.events._dispatch_queued", new_callable=AsyncMock
                 ) as dispatch:
-                    with patch.object(
-                        KiroCrewConfig, "load", return_value=KiroCrewConfig()
-                    ):
+                    with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
                         await ev._route_message(orch, _event(), ev.SeenCache())
                         await _drain(orch)
                         await _drain(orch)
@@ -1911,9 +1972,7 @@ class TestRouteMessageTransportPath:
         orch = _make_orch(use_transport=True)
         orch.sessions.dequeue = MagicMock(side_effect=RuntimeError("queue corrupt"))
         with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
-            with patch(
-                "kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock
-            ):
+            with patch("kiro_crew.slack.events.handle_message_transport", new_callable=AsyncMock):
                 with patch.object(KiroCrewConfig, "load", return_value=KiroCrewConfig()):
                     with caplog.at_level("ERROR", logger="kiro_crew.slack.events"):
                         await ev._route_message(orch, _event(), ev.SeenCache())
@@ -1975,9 +2034,7 @@ class TestRouteMessageEnterpriseAndObserve:
             with patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as hm:
                 await ev._route_message(orch, _event(), ev.SeenCache())
         hm.assert_not_called()
-        assert (
-            _mock_sel.log_api_access.call_args.kwargs["error"] == "enterprise_origin_mismatch"
-        )
+        assert _mock_sel.log_api_access.call_args.kwargs["error"] == "enterprise_origin_mismatch"
 
     @pytest.mark.asyncio
     async def test_observe_records_history_then_drops_plain_message(self, _mock_sel):

@@ -241,12 +241,10 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 
 ### Voice / Audio (`transcribe.py`)
 - **Mimetypes**: `audio/*`, `video/webm`
-- **Flow**: Download via `SlackClientOps.download_file()` → local whisper CLI → transcription text prepended as `[Voice memo transcription]...[End of transcription]`
-- **Config**: Enabled by default (`stt.enabled = true`). Actual availability gated by whisper binary presence.
-  On AL2, install whisper via `brew install openai-whisper` (see `docs/reference/kiro-cli/chat/voice.md`).
-  Model default: `turbo` (~1.6 GB download, 809M params, ~8x faster than large).
-  Device, timeout configurable.
-- **Security**: Transcription output run through `redact_credentials()` + `redact_exfiltration_urls()` before injection. Audio file suffix sanitized to alphanumeric only.
+- **Flow**: Download via `SlackClientOps.download_file()` → `transcribe.transcribe_audio()` → transcription text prepended as `[Voice memo transcription]...[End of transcription]`
+- **Config**: Enabled by default (`stt.enabled = true`). `stt.provider` decides where recognition runs, and the default `local` runs it in this process on a resident whisper.cpp model, so a memo costs one first-time model download (`stt.model`, `base` by default) and nothing after that. A stored retired provider degrades to `local`; there is no binary to put on `PATH`. Availability per provider comes from `transcribe.availability_detail()`, which distinguishes a missing `voice` extra from a platform with no prebuilt recognizer and from a macOS too old for the `apple` provider, because those need different fixes. ffmpeg IS required here: a Slack voice memo is ogg/Opus or webm, and only ffmpeg reads those. Setup: [configuration](../../../src/kiro_crew/docs/configuration.md) § Speech-to-text.
+- **Provider-independent guards**: `transcribe_audio` refuses a sensitive `audio_path` and redacts every provider's output before returning, both before/after dispatch rather than inside a branch, so a provider cannot be added that skips either. See [stt-streaming](../features/stt-streaming.md).
+- **Security**: Transcription output run through `redact_credentials()` + `redact_exfiltration_urls()` before injection. Audio file suffix sanitized to alphanumeric only. `_transcribe_audio_files` records a `slack.download_file` and a transcription SEL entry per memo.
 
 ### Images (`files.py`)
 - **Mimetypes**: `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/bmp` (aligned with `AcpClient._send_prompt()` regex)

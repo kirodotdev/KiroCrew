@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import ctypes
 import functools
 import hashlib
 import importlib.util
@@ -163,9 +164,7 @@ _MODEL_URL_ENV = "KIROCREW_EMBED_MODEL_URL"
 # _EDITABLE_CONFIG allowlist, so no API caller and no agent can point the
 # embedder at an arbitrary file.
 _MODEL_PATH_ENV = "KIROCREW_EMBED_MODEL_PATH"
-_DEFAULT_MODEL_URL = (
-    "https://d3j0sthz5doyui.cloudfront.net/models/qwen3-embedding-0.6b.gguf"
-)
+_DEFAULT_MODEL_URL = "https://d3j0sthz5doyui.cloudfront.net/models/qwen3-embedding-0.6b.gguf"
 _HTTP_TIMEOUT_SECS = 1800  # 610MB at >=340KB/s; slower links retry with backoff
 _HTTP_CHUNK_BYTES = 1 << 20
 # Written by the HTTP downloader every ~16MB so the status endpoint can report
@@ -189,6 +188,25 @@ _LINUX_X86_64_REQUIRED_CPU_FLAGS = frozenset(
     {"avx", "avx2", "bmi2", "f16c", "fma", "sse3", "ssse3"}
 )
 _LINUX_CPUINFO_PATH = Path("/proc/cpuinfo")
+
+#: MSVC runtime DLLs the vendored Windows libs IMPORT but which are not shipped
+#: beside them. All four ship with the Microsoft Visual C++ 2015-2022
+#: Redistributable, and a clean Windows install may carry none of them.
+#:
+#: Read off the PE import tables of the four DLLs in ``win_amd64`` rather than
+#: guessed: ``llama.dll`` and ``ggml.dll`` need the first three, and
+#: ``ggml-base.dll``/``ggml-cpu.dll`` additionally pull ``VCOMP140.DLL``, the MSVC
+#: OpenMP runtime. Both Linux payloads DO vendor their equivalent
+#: (``libgomp-*.so.1.0.0``), which is what makes this an omission on the Windows
+#: lane rather than a deliberate asymmetry. They are not vendored here because
+#: redistributing Microsoft's runtime is a licensing decision, not a packaging one
+#: — so the gap is reported precisely instead of being papered over.
+_WINDOWS_MSVC_RUNTIME_DLLS = (
+    "MSVCP140.dll",
+    "VCRUNTIME140.dll",
+    "VCRUNTIME140_1.dll",
+    "VCOMP140.DLL",
+)
 
 # The native-library closure every supported platform MUST ship, keyed by the
 # `llama_cpp_libs/<dir>` name. `libllama` is the entry point ctypes opens by
@@ -268,6 +286,27 @@ def _platform_libs_dirname() -> str | None:
         if machine in ("amd64", "x86_64"):
             return "win_amd64"
     return None
+
+
+def _missing_windows_msvc_runtime() -> list[str]:
+    """Which MSVC runtime DLLs the vendored Windows libs need but cannot be found.
+
+    Probed BY NAME through the OS loader rather than by listing a directory, so the
+    answer reflects the same search the vendored DLLs' own imports will perform
+    (System32, the app directory, the DLL search path) instead of a guess about where
+    the redistributable installed itself.
+
+    Always empty off Windows: ``ctypes.WinDLL`` does not exist elsewhere.
+    """
+    if sys.platform != "win32":
+        return []
+    absent: list[str] = []
+    for name in _WINDOWS_MSVC_RUNTIME_DLLS:
+        try:
+            ctypes.WinDLL(name)
+        except OSError:
+            absent.append(name)
+    return absent
 
 
 def _linux_x86_64_cpu_flags(
@@ -416,6 +455,25 @@ def _load_llama_class():
                 _LIB_PATH_ENV,
             )
             return None
+        if libs_dirname == "win_amd64":
+            # Named rather than left to surface as the loader's own
+            # "[WinError 126] The specified module could not be found", which points
+            # at the library being opened rather than at the runtime it imports and
+            # so reads as a broken platform. Same reasoning as the missing-files
+            # branch above: the fix here is one download, and an operator cannot
+            # guess it from a WinError.
+            missing_runtime = _missing_windows_msvc_runtime()
+            if missing_runtime:
+                logger.warning(
+                    "The bundled Windows llama.cpp runtime needs the Microsoft Visual "
+                    "C++ 2015-2022 Redistributable (x64); this host is missing %s. "
+                    "Install it from https://aka.ms/vs/17/release/vc_redist.x64.exe "
+                    "and restart Kiro Crew. Memory falls back to keyword search until "
+                    "then. Set %s to use an operator-provided runtime instead.",
+                    ", ".join(missing_runtime),
+                    _LIB_PATH_ENV,
+                )
+                return None
         if libs_dirname == "linux_x86_64":
             cpu_flags = _linux_x86_64_cpu_flags()
             if cpu_flags is None:
