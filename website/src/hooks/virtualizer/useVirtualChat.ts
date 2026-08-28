@@ -450,20 +450,18 @@ export function useVirtualChat<T>(
 
   // ---- Scroll-anchor preservation ----
   //
-  // While the user is scrolled up reading history, an UPWARD window shift
-  // mounts rows above the viewport (recomputeWindow / top-sentinel expansion).
-  // Native `overflow-anchor: auto` normally holds the viewport steady, but a
-  // scroll-path recompute can UNMOUNT the browser's chosen anchor node (rows
-  // past WINDOW_UNMOUNT_HYSTERESIS), collapsing anchoring and jumping the
-  // viewport. This ref carries the topmost visible row's key + its screen
-  // offset, captured BEFORE an upward shift; a layout effect after commit
-  // re-reads that row and corrects scrollTop by the delta. This REDUCES
-  // reliance on overflow-anchor (it does not replace it — the CSS is owned by
-  // ChatPage and left alone).
-  const anchorPendingRef = useRef<{ key: string; top: number } | null>(null)
+  // While the user is scrolled up reading history, content can grow ABOVE the
+  // row they are reading, which moves that row down while scrollTop stays put —
+  // that IS the jump. Native `overflow-anchor: auto` normally holds the viewport
+  // steady, but a scroll-path recompute can UNMOUNT the browser's chosen anchor
+  // node (rows past WINDOW_UNMOUNT_HYSTERESIS), collapsing anchoring. So the
+  // hook carries its own anchor: the topmost visible row's key + screen offset,
+  // captured BEFORE the shift, re-read after commit, and the delta paid back
+  // into scrollTop. This REDUCES reliance on overflow-anchor (it does not
+  // replace it — the CSS is owned by ChatPage and left alone).
   // Anchor captured by syncHeightsNow for a spacer-repricing commit. Kept
-  // SEPARATE from anchorPendingRef: that one is consumed by the
-  // windowRange-keyed effect, and window commits land constantly while rows
+  // SEPARATE from shiftAnchorRef: that slot is consumed on a windowRange
+  // commit, and window commits land constantly while rows
   // mount — sharing the slot lets an unrelated window commit consume (and
   // clear) the anchor before the height-sync commit it was captured for,
   // leaving the repricing shift uncompensated (observed as a nondeterministic
@@ -471,22 +469,42 @@ export function useVirtualChat<T>(
   const heightAnchorPendingRef = useRef<{ key: string; top: number } | null>(null)
 
   /**
-   * Prepend compensation (load-older history).
+   * ONE compensation routine, TWO triggers, ONE capture point.
    *
-   * A prepend shifts every index up, so pre-existing rows move down by the
-   * inserted height while scrollTop stays put — that IS the jump. The snapshot
-   * must be taken in the RENDER phase (getSnapshotBeforeUpdate idiom): a layout
-   * effect runs after commit, when the row has moved and the delta reads zero.
+   *   TRIGGER 1 — prepend (load-older history): every index shifts up, so
+   *     pre-existing rows move down by the inserted height.
+   *   TRIGGER 2 — upward window shift (scroll recompute / top-sentinel
+   *     expansion): rows mount above the viewport, and they are re-measured
+   *     from the flat estimate, so the content above the reader changes height.
+   *
+   * Both are "content above the reader grew"; the correction is identical, so
+   * they share this slot and the single consumer below.
+   *
+   * The capture is in the RENDER phase (getSnapshotBeforeUpdate idiom) for BOTH.
+   * That point is canonical rather than merely convenient: a post-commit read
+   * cannot recover a pre-shift position — the row has already moved and the
+   * delta reads zero — while a pre-shift capture is valid for the window shift
+   * too, because the mounted nodes still carry the PREVIOUS commit's geometry
+   * while the new range renders. Capturing here also removes the stale-anchor
+   * hazard the callback capture had: an anchor taken when a shift was merely
+   * SCHEDULED outlived a no-op window commit and was then applied to an
+   * unrelated later one, yanking the viewport to a row nobody was reading.
    *
    * Arithmetic is no alternative: `getH` prices an unmeasured row from the
    * running MEAN of measured ones, so any measurement re-prices every unmeasured
    * row and the next sync re-reads them all (measured: a 1000px insert displaced
-   * rows by 1500). These refs stay private rather than reusing `anchorPendingRef`,
-   * which the passive itemCount recompute overwrites with its own capture.
+   * rows by 1500).
+   *
+   * Staged, because trigger 1 needs an extra commit before it can measure:
+   *   'awaiting-rebase' — prepend captured; the window must be re-based first
+   *                       (part 1) so the anchor row is still mounted to measure.
+   *   'rebased'         — re-base committed; correct, then re-derive the window.
+   *   'ready'           — window shift captured; correct only. No re-derive:
+   *                       the shift already is the window's own decision.
    */
-  const prependAnchorRef = useRef<{ key: string; top: number } | null>(null)
+  const shiftAnchorRef = useRef<{ key: string; top: number } | null>(null)
+  const shiftStageRef = useRef<'awaiting-rebase' | 'rebased' | 'ready' | null>(null)
   const prependCountRef = useRef(0)
-  const prependRefineRef = useRef(false)
   /** Previous render's identity. `items` is held because `itemsRef` has already
    *  advanced by the time the capture runs, while the mounted nodes still carry
    *  the PREVIOUS commit's indices. */
@@ -495,6 +513,9 @@ export function useVirtualChat<T>(
   })
   const prependPrev = prependPrevRef.current
   const prependFirstKey = itemCount > 0 ? getKey(items[0], 0) : null
+  // Guards the shared slot: a prepend capture in THIS render must not then be
+  // overwritten by the window-shift branch below (a re-base changes the range).
+  let anchorCapturedThisRender = false
   // A front-insert grows the count AND changes index 0's key. A slot switch does
   // both, hence the session guard; a plain append leaves index 0 alone.
   if (
@@ -518,8 +539,10 @@ export function useVirtualChat<T>(
         })
       : null
     if (prependAnchor) {
-      prependAnchorRef.current = prependAnchor
+      shiftAnchorRef.current = prependAnchor
+      shiftStageRef.current = 'awaiting-rebase'
       prependCountRef.current = itemCount - prependPrev.count
+      anchorCapturedThisRender = true
     }
   }
   prependPrevRef.current = { session: sessionId, count: itemCount, firstKey: prependFirstKey, items }
@@ -535,6 +558,23 @@ export function useVirtualChat<T>(
   })
   // Live mirror of windowRange for imperative reads (debug probe).
   const windowRangeRef = useRef(windowRange)
+  // TRIGGER 2 capture. Read BEFORE the mirror advances, so the comparison is
+  // against the range that is still on screen. Keyed on the range having
+  // ACTUALLY moved up in committed state — not on a shift being scheduled —
+  // which is what makes a no-op window commit incapable of stranding an anchor.
+  if (!anchorCapturedThisRender && windowRange.start < windowRangeRef.current.start && !stickRef.current) {
+    const shiftEl = scrollerRef.current
+    const shiftAnchor = shiftEl
+      ? captureTopAnchorFrom(shiftEl, elIndexRef.current.entries(), (idx) => {
+          const it = items[idx]
+          return it ? getKey(it, idx) : null
+        })
+      : null
+    if (shiftAnchor) {
+      shiftAnchorRef.current = shiftAnchor
+      shiftStageRef.current = 'ready'
+    }
+  }
   windowRangeRef.current = windowRange
 
   // isAtBottom is the only render-affecting scroll state we expose (drives the
@@ -895,15 +935,10 @@ export function useVirtualChat<T>(
     } else {
       next = computeWindow(Math.max(0, el.scrollTop - leadingOffset(el)), el.clientHeight, count, getH, overscan)
     }
-    // On an upward shift (window start moving up → more rows mount above
-    // the viewport) while the user is scrolled up (stick released), record the
-    // top anchor so the post-commit layout effect can hold the viewport steady.
-    // Skipped while stick is armed — the pin path owns positioning then.
-    const cur = windowRangeRef.current
-    if (next.start < cur.start && !stickRef.current) {
-      const a = captureTopAnchor()
-      if (a) anchorPendingRef.current = a
-    }
+    // No anchor capture here. An upward shift is compensated from the
+    // render-phase capture keyed on the range actually moving up (TRIGGER 2),
+    // which cannot strand an anchor when this recompute's own update is merged
+    // away to a no-op.
     setWindowRange((prev) => {
       let merged: { start: number; end: number }
       if (expandOnly) {
@@ -931,7 +966,7 @@ export function useVirtualChat<T>(
       if (prev.start === merged.start && prev.end === merged.end) return prev
       return merged
     })
-  }, [getH, overscan, scrollerRef, captureTopAnchor, leadingOffset])
+  }, [getH, overscan, scrollerRef, leadingOffset])
 
   // ---- Pin helpers (the only code that writes el.scrollTop for follow) ----
 
@@ -1398,19 +1433,11 @@ export function useVirtualChat<T>(
         for (const entry of entries) {
           if (!entry.isIntersecting) continue
           if (entry.target === topSentinelRef.current) {
-            // Upward expansion mounts rows above the viewport. Capture
-            // the top anchor first (while stick is released — reading history)
-            // so the compensation layout effect can hold the viewport steady.
-            //
-            // Only when there is actually room to expand: at start === 0
-            // expandWindowUp is a no-op, so a captured anchor would never be
-            // consumed by an upward shift and would instead be applied to the
-            // NEXT layout pass — a downward expansion — yanking the viewport
-            // back to a stale row.
-            if (!stickRef.current && windowRangeRef.current.start > 0) {
-              const a = captureTopAnchor()
-              if (a) anchorPendingRef.current = a
-            }
+            // Upward expansion mounts rows above the viewport, and TRIGGER 2
+            // compensates it from the render phase. Nothing to capture here:
+            // at start === 0 expandWindowUp is a no-op, and keying the capture
+            // on the committed range moving up makes that case a non-event
+            // instead of something this site has to screen for.
             setWindowRange((prev) => expandWindowUp(prev, overscan))
             onTopReachedRef.current?.()
           } else if (entry.target === bottomSentinelRef.current) {
@@ -1424,62 +1451,24 @@ export function useVirtualChat<T>(
     if (topSentinelRef.current) io.observe(topSentinelRef.current)
     if (bottomSentinelRef.current) io.observe(bottomSentinelRef.current)
     return () => io.disconnect()
-  }, [overscan, scrollerEl, captureTopAnchor])
-
-  // ---- Scroll-anchor preservation: hold the viewport steady across an
-  //      upward window shift ----
-  //
-  // Runs after every windowRange commit. If recomputeWindow / top-sentinel
-  // expansion captured a top anchor (only on an upward shift while stick is
-  // released), re-read that row's screen position in the freshly-committed DOM
-  // and correct scrollTop by the delta so the row the user is looking at does
-  // not jump when rows mount/unmount above it. Skipped when stick is armed (the
-  // pin path owns positioning) or nothing was captured. The scrollTop write is
-  // recorded in lastWriteTopRef so the passive scroll listener classifies it as
-  // a self-scroll (isSelfScroll / SELF_SCROLL_EPSILON) and does not release
-  // stick or treat it as a user scroll.
-  useLayoutEffect(() => {
-    const pending = anchorPendingRef.current
-    anchorPendingRef.current = null
-    if (!pending) return
-    const el = scrollerRef.current
-    if (!el || stickRef.current || typeof el.getBoundingClientRect !== 'function') return
-    let node: HTMLElement | null = null
-    for (const [n, idx] of elIndexRef.current.entries()) {
-      const it = itemsRef.current[idx]
-      if (it && getKeyRef.current(it, idx) === pending.key) {
-        node = n as HTMLElement
-        break
-      }
-    }
-    if (!node) return
-    const srTop = el.getBoundingClientRect().top
-    const newTop = node.getBoundingClientRect().top - srTop
-    const delta = newTop - pending.top
-    if (Math.abs(delta) > 0.5) {
-      // Instant, and accounted as a 'pin' write: this is our own correction, so
-      // the follow guard must recognise the resulting scroll event as self-scroll
-      // rather than user input. Routed through the chokepoint so the accounting
-      // cannot be forgotten here (see writeScrollTop).
-      writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
-    }
-  }, [windowRange, scrollerRef, writeScrollTop])
+  }, [overscan, scrollerEl])
 
   /**
-   * Prepend compensation, part 1: re-base the window by the inserted count so
-   * the rows being read stay mounted — including the anchor row, which part 2
-   * has to measure. Runs pre-paint, so the shifted-but-uncorrected frame is
-   * never shown.
+   * Part 1 — TRIGGER 1 only: re-base the window by the inserted count so the
+   * rows being read stay mounted, including the anchor row that part 2 has to
+   * measure. Runs pre-paint, so the shifted-but-uncorrected frame is never
+   * shown. A window shift needs no equivalent: it IS a range change already.
    */
   useLayoutEffect(() => {
     const inserted = prependCountRef.current
     if (inserted <= 0) return
     prependCountRef.current = 0
-    if (stickRef.current || !prependAnchorRef.current) {
-      prependAnchorRef.current = null
+    if (stickRef.current || !shiftAnchorRef.current) {
+      shiftAnchorRef.current = null
+      shiftStageRef.current = null
       return
     }
-    prependRefineRef.current = true
+    shiftStageRef.current = 'rebased'
     setWindowRange((r) => ({
       start: Math.min(itemCount, r.start + inserted),
       end: Math.min(itemCount, r.end + inserted),
@@ -1487,24 +1476,34 @@ export function useVirtualChat<T>(
   }, [itemCount])
 
   /**
-   * Prepend compensation, part 2: re-read the anchor row in the shifted DOM and
-   * move scrollTop by however far it travelled, which holds the user's place
-   * whatever mix of inserted rows and re-estimated heights caused the shift.
+   * Part 2 — the single consumer for BOTH triggers: re-read the anchor row in
+   * the shifted DOM and move scrollTop by however far it travelled, which holds
+   * the user's place whatever mix of inserted rows and re-estimated heights
+   * caused the shift.
    *
-   * INVARIANT — the passive itemCount recompute runs BETWEEN these two layout
-   * effects; part 2 must re-derive the window after correcting scrollTop.
+   * Gated on the stage, not on this effect having run: the deps include
+   * `recomputeWindow`, whose identity changes as heights are measured, so an
+   * ungated read here would consume a prepend anchor before part 1 had re-based
+   * the window to keep its row mounted.
    *
-   * Then recompute the window, because the passive itemCount recompute has
-   * already run by this point — React flushes it between these two layout
-   * effects — so it sized the window from the PRE-correction offset and its
-   * update lands after this write. Re-deriving from the corrected scrollTop is
-   * what stops that stale range being the one left committed.
+   * The scrollTop write is recorded in lastWriteTopRef so the passive scroll
+   * listener classifies it as a self-scroll (isSelfScroll / SELF_SCROLL_EPSILON)
+   * and does not release stick or treat it as user input.
+   *
+   * After a 'rebased' correction only, re-derive the window: the passive
+   * itemCount recompute has already run by this point — React flushes it between
+   * these two layout effects — so it sized the window from the PRE-correction
+   * offset and its update lands after this write. Re-deriving from the corrected
+   * scrollTop is what stops that stale range being the one left committed. A
+   * 'ready' (window-shift) correction must NOT re-derive: that range is the
+   * window's own decision, and recomputing it here would fight the scroll.
    */
   useLayoutEffect(() => {
-    if (!prependRefineRef.current) return
-    prependRefineRef.current = false
-    const pending = prependAnchorRef.current
-    prependAnchorRef.current = null
+    const stage = shiftStageRef.current
+    if (stage !== 'rebased' && stage !== 'ready') return
+    shiftStageRef.current = null
+    const pending = shiftAnchorRef.current
+    shiftAnchorRef.current = null
     const el = scrollerRef.current
     if (!pending || !el || stickRef.current) return
     const newTop = rowTopFrom(el, elIndexRef.current.entries(), (idx) => {
@@ -1513,8 +1512,12 @@ export function useVirtualChat<T>(
     }, pending.key)
     if (newTop === null) return
     const delta = newTop - pending.top
+    // Instant, and accounted as a 'pin' write: this is our own correction, so
+    // the follow guard must recognise the resulting scroll event as self-scroll
+    // rather than user input. Routed through the chokepoint so the accounting
+    // cannot be forgotten here (see writeScrollTop).
     if (Math.abs(delta) > 0.5) writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
-    recomputeWindow()
+    if (stage === 'rebased') recomputeWindow()
   }, [windowRange, scrollerRef, writeScrollTop, recomputeWindow])
 
   // Same correction for a HEIGHT-SYNC commit (spacer repricing), keyed on the

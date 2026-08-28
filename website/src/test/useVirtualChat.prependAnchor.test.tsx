@@ -261,4 +261,67 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     // unmodified hook (verified), so that drift is not this path's to fix.
     expect(screenTopOf(el, before!.key)).not.toBeNull()
   })
+
+  // ---- Reader-row immobility: ONE invariant, both compensation triggers ----
+  //
+  // A prepend and an upward window shift are two ways the content above the
+  // reader grows. The user-visible contract is identical for both: the row
+  // being read does not move. These cases pin that contract per TRIGGER,
+  // independent of which internal slot carries the anchor, so collapsing the
+  // capture paths cannot silently drop one of them.
+
+  it('INVARIANT holds the reader row across the PREPEND trigger', () => {
+    const { el, view, scrollerRef } = mountScrolledUp()
+
+    const before = topVisible(el)
+    expect(before).not.toBeNull()
+
+    act(() => {
+      view.rerender(
+        <Harness items={[...mkItems(10, 'p'), ...mkItems(30)]} scrollerRef={scrollerRef} />,
+      )
+    })
+
+    const after = screenTopOf(el, before!.key)
+    expect(after).not.toBeNull()
+    expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
+  })
+
+  /** Lowest mounted virtual index — proves an upward shift actually happened,
+   *  so the invariant case cannot pass vacuously on a window that never moved. */
+  function lowestMountedIndex(el: HTMLElement): number {
+    let min = Number.POSITIVE_INFINITY
+    el.querySelectorAll('[data-index]').forEach((n) => {
+      min = Math.min(min, Number((n as HTMLElement).getAttribute('data-index')))
+    })
+    return min
+  }
+
+  it('INVARIANT holds the reader row across the upward WINDOW-SHIFT trigger', () => {
+    const { el } = mountScrolledUp()
+
+    // A reading-scroll UP, not a far jump: the window shifts up by a couple of
+    // rows while the row being read stays mounted. The scroll is the user's;
+    // the shift it provokes is ours, so the reference position is read AFTER
+    // the scroll lands and BEFORE the rAF that mounts rows above.
+    const mountedBefore = lowestMountedIndex(el)
+    act(() => {
+      el.scrollTop = 1960
+      el.dispatchEvent(new Event('scroll'))
+    })
+    const before = topVisible(el)
+    expect(before).not.toBeNull()
+
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+
+    // Not vacuous: rows really did mount above the reader.
+    expect(lowestMountedIndex(el)).toBeLessThan(mountedBefore)
+    // Those rows are REAL_H while the offset index had credited them the flat
+    // estimate, so without compensation the reader's row is pushed down by the
+    // difference. Assert the ROW, not scrollTop: holding the row IS the
+    // contract, and it is held by moving the viewport under it.
+    const after = screenTopOf(el, before!.key)
+    expect(after).not.toBeNull()
+    expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
+  })
 })
