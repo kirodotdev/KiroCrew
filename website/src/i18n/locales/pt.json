@@ -6082,7 +6082,7 @@
       "s_elapsed": "s decorridos"
     },
     "kasLogin": {
-      "aside_body": "Faça login no Kiro aqui mesmo, sem instalar CLI nem abrir um terminal. O Kiro Crew cuida do resto.",
+      "aside_body": "O Kiro Crew executa agentes com a sua conta Kiro.",
       "aside_footnote": "Seu login fica nesta máquina — nada é enviado aos servidores do Kiro Crew.",
       "aside_headline": "Faça login para começar",
       "browser_note": "Cada opção inicia o login do Kiro e orienta você no próximo passo.",

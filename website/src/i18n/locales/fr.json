@@ -6082,7 +6082,7 @@
       "s_elapsed": "s écoulées"
     },
     "kasLogin": {
-      "aside_body": "Connecte-toi à Kiro directement ici, sans installer de CLI ni ouvrir de terminal. Kiro Crew s'occupe du reste.",
+      "aside_body": "Kiro Crew exécute des agents avec ton compte Kiro.",
       "aside_footnote": "Ta connexion reste sur cette machine — rien n'est envoyé aux serveurs de Kiro Crew.",
       "aside_headline": "Connecte-toi pour commencer",
       "browser_note": "Chaque option lance la connexion à Kiro et te guide vers l’étape suivante.",

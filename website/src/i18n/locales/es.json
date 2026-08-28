@@ -6082,7 +6082,7 @@
       "s_elapsed": "s transcurridos"
     },
     "kasLogin": {
-      "aside_body": "Inicia sesión en Kiro aquí mismo, sin instalar ninguna CLI ni abrir una terminal. Kiro Crew se encarga del resto.",
+      "aside_body": "Kiro Crew ejecuta agentes con tu cuenta de Kiro.",
       "aside_footnote": "Tu inicio de sesión se queda en esta máquina — no se envía nada a los servidores de Kiro Crew.",
       "aside_headline": "Inicia sesión para empezar",
       "browser_note": "Cada opción comienza el inicio de sesión de Kiro y te guía al siguiente paso.",

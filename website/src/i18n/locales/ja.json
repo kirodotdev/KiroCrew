@@ -5878,7 +5878,7 @@
       "s_elapsed": "秒経過"
     },
     "kasLogin": {
-      "aside_body": "CLI のインストールもターミナルも不要で、ここからそのまま Kiro にサインインできます。あとは Kiro Crew にお任せください。",
+      "aside_body": "Kiro Crew はあなたの Kiro アカウントでエージェントを実行します。",
       "aside_footnote": "サインイン情報はこのマシンにのみ保存され、Kiro Crew のサーバーには送信されません。",
       "aside_headline": "サインインして始める",
       "browser_note": "どのオプションも Kiro サインインを開始し、次の手順へ案内します。",

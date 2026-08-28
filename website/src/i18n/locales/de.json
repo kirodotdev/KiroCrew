@@ -5980,7 +5980,7 @@
       "s_elapsed": "s vergangen"
     },
     "kasLogin": {
-      "aside_body": "Melde dich direkt hier bei Kiro an, ohne CLI-Installation und ohne Terminal. Den Rest übernimmt Kiro Crew.",
+      "aside_body": "Kiro Crew führt Agenten über dein Kiro-Konto aus.",
       "aside_footnote": "Deine Anmeldung bleibt auf diesem Rechner – es wird nichts an die Server von Kiro Crew gesendet.",
       "aside_headline": "Zum Start anmelden",
       "browser_note": "Jede Option startet die Kiro-Anmeldung und führt dich durch den nächsten Schritt.",

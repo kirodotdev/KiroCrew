@@ -5878,7 +5878,7 @@
       "s_elapsed": "초 경과"
     },
     "kasLogin": {
-      "aside_body": "CLI 설치도 터미널도 필요 없이 여기에서 바로 Kiro에 로그인할 수 있습니다. 나머지는 Kiro Crew가 처리합니다.",
+      "aside_body": "Kiro Crew는 회원님의 Kiro 계정으로 에이전트를 실행합니다.",
       "aside_footnote": "로그인 정보는 이 컴퓨터에만 저장되며 Kiro Crew 서버로는 전송되지 않습니다.",
       "aside_headline": "로그인하고 시작하기",
       "browser_note": "각 옵션은 Kiro 로그인을 시작하고 다음 단계를 안내합니다.",

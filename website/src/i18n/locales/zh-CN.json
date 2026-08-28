@@ -5878,7 +5878,7 @@
       "s_elapsed": "秒已过"
     },
     "kasLogin": {
-      "aside_body": "无需安装 CLI，也不用打开终端，在这里直接登录 Kiro 即可，其余交给 Kiro Crew。",
+      "aside_body": "Kiro Crew 使用你的 Kiro 账号来运行智能体。",
       "aside_footnote": "你的登录信息只保存在这台机器上，不会发送到 Kiro Crew 的服务器。",
       "aside_headline": "登录即可开始",
       "browser_note": "每个选项都会启动 Kiro 登录，并引导你完成下一步。",

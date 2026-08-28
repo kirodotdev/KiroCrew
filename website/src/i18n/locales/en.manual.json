@@ -1760,7 +1760,7 @@
       "failed_to_load_history": "Failed to load history"
     },
     "kasLogin": {
-      "aside_body": "Sign in to Kiro right here — no CLI to install, no terminal to open. Kiro Crew handles the rest.",
+      "aside_body": "Kiro Crew runs agents using your Kiro account.",
       "aside_footnote": "Your sign-in stays on this machine — nothing is sent to Kiro Crew's servers.",
       "aside_headline": "Sign in to start",
       "browser_note": "Each option starts Kiro sign-in and walks you through the next step.",
