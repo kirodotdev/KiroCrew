@@ -97,7 +97,12 @@ Out-of-band lanes that never gate a PR:
   "Add Contributor needs a human to open the contributors PR" carrying the compare
   link. The same limitation applies to every workflow here that opens a PR
   (`test-durations.yml`, `cleanup-temp-screenshots.yml`, `memory-benchmark.yml`),
-  which have not been converted to this pattern yet.
+  which carry the same guard in a lighter form: they emit a `::notice::` with the
+  compare link and exit 0 rather than filing an issue, because their branches are
+  regenerated on the next scheduled run and so do not need a durable tracker. Any
+  create failure that is NOT that refusal still fails the job in all four.
+  `test/test_workflow_pr_create_handoff.py` holds them in step and fails a new
+  `gh pr create` step that skips the guard.
 
 ## `ci.yml`: correctness
 

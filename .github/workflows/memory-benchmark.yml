@@ -313,7 +313,39 @@ jobs:
           if gh pr view "$BRANCH" --json state --jq .state 2>/dev/null | grep -q OPEN; then
             echo "PR already open for $BRANCH; updated in place."
           else
-            gh pr create --base main --head "$BRANCH" \
+            # `gh pr create` with GITHUB_TOKEN is refused outright when the
+            # repository has "Allow GitHub Actions to create and approve pull
+            # requests" turned OFF -- GitHub answers
+            #   GraphQL: GitHub Actions is not permitted to create or approve
+            #   pull requests (createPullRequest)
+            # This repository leaves it off deliberately: the same single switch
+            # also grants APPROVING, and main's merge gate is a required human
+            # review. It only bites on the create path, reached once the previous
+            # rolling PR merged and its branch was deleted; while that PR is open
+            # the push above is enough, which is why some runs got further.
+            #
+            # The push already succeeded, so nothing is lost -- only the last,
+            # cosmetic step is unavailable. Hand the branch to a human with a
+            # one-click compare link and keep the run green. Failing here was the
+            # old behaviour and it went unnoticed for weeks; a scheduled run that
+            # is red every time and that nobody can act on trains maintainers to
+            # ignore the signal. Any OTHER create failure is a real error and
+            # must still fail loud. Same remedy as add-contributor.yml.
+            rc=0
+            out="$(gh pr create --base main --head "$BRANCH" \
               --title "chore(bench): accept new memory-benchmark baseline" \
-              --body-file comparison.md
+              --body-file comparison.md 2>&1)" || rc=$?
+            printf '%s\n' "$out"
+            if [ "$rc" -ne 0 ]; then
+              case "$out" in
+                *"not permitted to create or approve pull requests"*)
+                  compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH?expand=1"
+                  echo "::notice::Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare"
+                  exit 0
+                  ;;
+                *)
+                  exit "$rc"
+                  ;;
+              esac
+            fi
           fi
