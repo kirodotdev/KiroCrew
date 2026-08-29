@@ -48,9 +48,10 @@
 
 You choose how to run Kiro Crew: the desktop app with automatic updates, a
 one-line install on your machine or a remote host, the Docker image for
-always-on servers, or a build from source. Every path runs on `kiro-cli`
-underneath, so the first launch installs it if needed and guides Kiro
-device-code sign-in.
+always-on servers, or a build from source. Every path runs on the selected ACP backend — `kiro-cli` by default
+(Developer → Agent Backend offers `KAS` and `OpenCode` as experimental
+adapters) — so the first launch installs the chosen harness if needed and guides
+sign-in.
 
 ### App downloads
 
@@ -282,17 +283,21 @@ the same memory, tool, approval, and policy services. Apps extend the dashboard 
 Gateway APIs with focused workflows.
 
 Each active conversation or background task uses an agent session. Its session
-provider drives `kiro-cli` over ACP, streams model and tool events, and preserves
-conversation state. Depending on the workload, a session is backed by its own
-ACP process or by a session handle on a shared multiplexed ACP runtime. The
-Gateway manages these sessions along with scheduling, approvals, memory,
-security policy, messaging connections, and the dashboard.
+provider drives the selected ACP backend over ACP (the first-class `kiro-cli`
+harness, or an adapted `KAS`/`OpenCode` backend), streams model and tool
+events, and preserves conversation state. Depending on the backend and workload,
+a session is backed by its own ACP process or by a session handle on a shared
+multiplexed ACP runtime. The Gateway manages these sessions along with
+scheduling, approvals, memory, security policy, messaging connections, and the
+dashboard.
 
 The current runtime places the Gateway, agent sessions, ACP processes, and state
 on the same host. Run Kiro Crew on your Mac, inside a container on your machine,
 or on a remote Linux host you control. Conversation history, memory, and
-knowledge indexes remain on that host. Model requests are handled by `kiro-cli`
-and follow the account and model configuration you use there.
+knowledge indexes remain on that host. Model requests are handled by the active backend (`kiro-cli` by default,
+`opencode acp` for OpenCode) and follow that harness's account and model
+configuration. `GET /api/models` always serves the active backend's own
+advertised set — OpenCode never falls through to the Kiro catalog.
 
 **Gateway.** The Gateway is the long-running Kiro Crew process. It routes
 messages from the desktop app, web, CLI, and the messaging surfaces listed below. It persists

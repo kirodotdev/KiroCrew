@@ -1055,6 +1055,48 @@ def _normalize_model_key(name: str) -> str:
     return string_fold
 
 
+def _advertised_opencode_models(request: web.Request) -> list[dict]:
+    """Return OpenCode-advertised models from any active session.
+
+    OpenCode exposes its model set through ACP ``configOptions`` (id ``model``)
+    rather than the kiro-cli catalog. :meth:`AcpClient.available_models`
+    normalizes those options to ``{modelId, name, description}``. This helper
+    maps that list to the ``/api/models`` wire shape ``{model_name, ...}`` so
+    the picker does not fall through to the Kiro CLI path. Returns ``[]`` when
+    no OpenCode session has advertised yet."""
+    try:
+        state: DashboardState = request.app["state"]
+        providers = state.sessions.active_providers()
+    except (KeyError, AttributeError):
+        return []
+    for provider in providers:
+        getter = getattr(provider, "available_models", None)
+        if not callable(getter):
+            continue
+        try:
+            advertised = getter()
+        except Exception:
+            continue
+        if not advertised:
+            continue
+        # Only OpenCode advertises provider-qualified ids (``openai/gpt-5``).
+        # A Kiro session's advertised list uses bare kiro ids, so an empty match
+        # here safely falls through to the Kiro path.
+        has_opencode = any("/" in (m.get("modelId", "") or "") for m in advertised)
+        if not has_opencode:
+            continue
+        return [
+            {
+                "model_name": m.get("modelId", ""),
+                "display_name": m.get("name", "") or m.get("modelId", ""),
+                "description": m.get("description", ""),
+            }
+            for m in advertised
+            if m.get("modelId")
+        ]
+    return []
+
+
 def _advertised_cc_models(request: web.Request) -> list[dict]:
     """Map the first active CC provider's advertised models to the API shape.
 
@@ -1300,7 +1342,40 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
 
 
 async def api_models(request: web.Request) -> web.Response:
-    """GET /api/models — list available models from the live kiro-cli ACP session."""
+    """GET /api/models — list available models from the active ACP backend.
+
+    The backend is determined from ``agent.acp_backend``. Kiro and KAS use the
+    ``kiro chat --list-models`` catalog (entitlement-narrowed); OpenCode
+    advertises its model set via ACP ``configOptions`` and never falls through
+    to the Kiro CLI path.
+    """
+    # OpenCode path — never spawn kiro-cli. Return the session-advertised list
+    # when any OpenCode session has initialized; otherwise 503 so the picker
+    # keeps the cached/degraded list rather than caching an empty result.
+    try:
+        from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE  # noqa: F811
+        from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
+
+        cfg = KiroCrewConfig.load()
+        if cfg.agent.acp_backend == ACP_BACKEND_OPENCODE:
+            models = _advertised_opencode_models(request)
+            if models:
+                # ``auto`` is always offered — it means "backend default" and
+                # is not an advertised id, so synthesize it first. Do not read
+                # the model registry here: OpenCode ids live in provider
+                # namespaces (``openai/gpt-5``) and must not be checked against
+                # Kiro's catalog.
+                if not any(m.get("model_name") == "auto" for m in models):
+                    models = [
+                        {"model_name": "auto", "display_name": "Auto", "description": ""}
+                    ] + models
+                return web.json_response(models)
+            return web.json_response({"error": "opencode model list unavailable"}, status=503)
+    except Exception:
+        logger.warning(
+            "api_models: opencode branch failed; falling through to kiro path", exc_info=True
+        )
+
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
