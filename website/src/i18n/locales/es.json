@@ -9533,7 +9533,10 @@
       "lane_legacy_column_hint": "muestra todas las sesiones",
       "workflow_running_many": "{{count}} flujos de trabajo en ejecución",
       "workflow_running_one": "{{count}} flujo de trabajo en ejecución",
-      "workflow_running_other": "{{count}} flujos de trabajo en ejecución"
+      "workflow_running_other": "{{count}} flujos de trabajo en ejecución",
+      "flat_view_hide_folders_in_board_columns": "Vista plana — ocultar carpetas en las columnas del tablero",
+      "show_folders_in_board_columns": "Mostrar carpetas en las columnas del tablero",
+      "switch_to_flat_view_hide_folders_in_board_columns": "Cambiar a vista plana (ocultar carpetas en las columnas del tablero)"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

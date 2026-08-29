@@ -9243,7 +9243,10 @@
       "lane_seed_failed": "自動カラムを追加できませんでした。",
       "lane_seed_retry": "再試行",
       "lane_legacy_column_hint": "すべてのセッションを表示",
-      "workflow_running_other": "{{count}} 件のワークフローが実行中"
+      "workflow_running_other": "{{count}} 件のワークフローが実行中",
+      "flat_view_hide_folders_in_board_columns": "フラット表示 — ボードの列内のフォルダーを非表示",
+      "show_folders_in_board_columns": "ボードの列内のフォルダーを表示",
+      "switch_to_flat_view_hide_folders_in_board_columns": "フラット表示に切り替え（ボードの列内のフォルダーを非表示）"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

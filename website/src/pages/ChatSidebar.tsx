@@ -3696,11 +3696,13 @@ function ChatSidebar({
   )
 
   // Which lane the sidebar is actually rendering. Mirrors the render branches
-  // below exactly: flat wins when there are folders to flatten, otherwise the
-  // tag-column board when columns exist, otherwise the folder tree. The folder
+  // below exactly: the tag-column board wins when columns exist — flat view
+  // does not replace it, it applies INSIDE each lane (folders skipped, the
+  // lane's rows render flat; see the column body). Otherwise flat wins when
+  // there are folders to flatten, otherwise the folder tree. The folder
   // filter applies to the flat lane and the tree, NOT to the board.
-  const flatLaneActive = flatView && folders.length > 0
-  const boardLaneActive = !flatLaneActive && orderedColumns.length > 0
+  const boardLaneActive = orderedColumns.length > 0
+  const flatLaneActive = !boardLaneActive && flatView && folders.length > 0
 
   // The folder filter goes inert while searching, in BOTH views: a query must
   // reach every match, so an unchecked folder can never become a search dead
@@ -5451,8 +5453,15 @@ function ChatSidebar({
               type="button"
               className={`relative w-6 h-6 rounded flex items-center justify-center cursor-pointer transition-colors border-none ${flatView ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`}
               onClick={toggleFlatView}
-              title={flatView ? i18nT('pages.chatSidebar.back_to_folder_view') : i18nT('pages.chatSidebar.flat_view_all_chats_without_folders')}
-              aria-label={flatView ? i18nT('pages.chatSidebar.switch_to_folder_view') : i18nT('pages.chatSidebar.switch_to_flat_view_all_chats_without_folders')}
+              /* With a board configured the toggle flattens INSIDE each column
+               * rather than producing the single flat lane, so the copy must
+               * not promise "all chats without folders" (one combined list). */
+              title={flatView
+                ? (boardLaneActive ? i18nT('pages.chatSidebar.show_folders_in_board_columns') : i18nT('pages.chatSidebar.back_to_folder_view'))
+                : (boardLaneActive ? i18nT('pages.chatSidebar.flat_view_hide_folders_in_board_columns') : i18nT('pages.chatSidebar.flat_view_all_chats_without_folders'))}
+              aria-label={flatView
+                ? (boardLaneActive ? i18nT('pages.chatSidebar.show_folders_in_board_columns') : i18nT('pages.chatSidebar.switch_to_folder_view'))
+                : (boardLaneActive ? i18nT('pages.chatSidebar.switch_to_flat_view_hide_folders_in_board_columns') : i18nT('pages.chatSidebar.switch_to_flat_view_all_chats_without_folders'))}
               aria-pressed={flatView}
               data-testid="flat-view-toggle"
             >
@@ -5930,11 +5939,13 @@ function ChatSidebar({
         </div>
       )}
       <LayoutGroup id="chat-slots">
-        {flatView && folders.length > 0 ? (
+        {flatLaneActive ? (
           // Flat view: every chat exploded out of its folder into one lane.
           // Removes only the folder rendering hierarchy — sort, pin priority,
           // filters, and search all apply as usual (filteredSlots). No folder
-          // tree. Takes precedence over the tag-columns layout.
+          // tree. This lane only renders when NO tag columns exist: with a
+          // board configured, flat view applies inside each column instead
+          // (see the column body), so the board never silently disappears.
           // Inactive without folders (the toggle is hidden then too), so a
           // persisted flat preference can never strand the user.
           //
@@ -6272,9 +6283,21 @@ function ChatSidebar({
                       // raw cache array here made drops appear to revert: a reorder
                       // only rewrites `order` values (array positions are
                       // unchanged), so an unsorted render ignored the new order.
-                      const relevantFolders = rootFolders
-                      const ungrouped = colSlots.filter(s => !slotFolders[s.key] || !folders.find(f => f.id === slotFolders[s.key]))
-                      const hasAny = colSlots.length > 0 || folders.length > 0
+                      //
+                      // Flat view inside the board: the same view-only toggle as
+                      // the list — folders stop rendering and every matching
+                      // session sits directly in the lane, in filteredSlots
+                      // order. Cross-lane card drag (the column onDrop above) is
+                      // untouched; only folder rendering (and with it folder
+                      // reorder/drop, which need folder headers) goes away.
+                      const relevantFolders = flatView ? [] : rootFolders
+                      const ungrouped = flatView
+                        ? colSlots
+                        : colSlots.filter(s => !slotFolders[s.key] || !folders.find(f => f.id === slotFolders[s.key]))
+                      // In flat view folders never render, so an empty lane is
+                      // empty — folder structure alone must not suppress the
+                      // "no sessions" notice.
+                      const hasAny = colSlots.length > 0 || (!flatView && folders.length > 0)
                       return (
                         <>
                           {/* Folder reorder in board view: one DndContext per
@@ -6283,7 +6306,11 @@ function ChatSidebar({
                            *  same global reorderFolders() as list view, so order
                            *  is consistent across columns. Native session-card
                            *  drop (HTML5 DnD) is untouched — it uses drag events,
-                           *  not the pointer sensor. */}
+                           *  not the pointer sensor. Skipped entirely in flat
+                           *  view: no folder headers means nothing to drag, and
+                           *  an empty context would still mount sensors and a
+                           *  body portal per column for nothing. */}
+                          {!flatView && (
                           <DndContext sensors={dndSensors} collisionDetection={sidebarCollision} measuring={{ droppable: { strategy: MeasuringStrategy.Always } }} onDragStart={handleSidebarDragStart} onDragEnd={handleSidebarDragEnd} onDragCancel={handleSidebarDragCancel}>
                             <SortableContext items={relevantFolders.map(f => f.id)} strategy={verticalListSortingStrategy}>
                               {relevantFolders.map(f => <SortableColumnFolder key={f.id} folder={f} columnId={col.id} colSlotKeys={colSlotKeys} subtree={[...(folderSubtrees.get(f.id) ?? collectFolderSubtreeIds(folders, f.id))]} renderColumnFolder={renderColumnFolder} />)}
@@ -6305,6 +6332,7 @@ function ChatSidebar({
                               document.body,
                             )}
                           </DndContext>
+                          )}
                           {ungrouped.map((s, i) => {
                             const isActive = activeSlot === s.key
                             const nextIsActive = i < ungrouped.length - 1 && activeSlot === ungrouped[i + 1].key
@@ -6691,6 +6719,14 @@ function ChatSidebar({
                 color: draft.color,
                 tags: draft.tags,
               })
+              // Creating a folder while flat view is on would otherwise appear
+              // to do nothing (flat rendering skips folder blocks in both the
+              // list and the board columns). Exit flat view so the new folder
+              // is visible, whichever entry point created it.
+              if (flatView) {
+                setFlatView(false)
+                safeSetItem(FLAT_VIEW_LS_KEY, '0')
+              }
             } else {
               // Build the PATCH from what the USER edited (draft.touched, measured
               // against what the modal opened with) — NOT from a diff against live

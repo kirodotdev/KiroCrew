@@ -9243,7 +9243,10 @@
       "lane_seed_failed": "자동 칼럼을 추가할 수 없습니다.",
       "lane_seed_retry": "다시 시도",
       "lane_legacy_column_hint": "모든 세션 표시",
-      "workflow_running_other": "워크플로 {{count}}개 실행 중"
+      "workflow_running_other": "워크플로 {{count}}개 실행 중",
+      "flat_view_hide_folders_in_board_columns": "플랫 보기 — 보드 열에서 폴더 숨기기",
+      "show_folders_in_board_columns": "보드 열에서 폴더 표시",
+      "switch_to_flat_view_hide_folders_in_board_columns": "플랫 보기로 전환(보드 열에서 폴더 숨기기)"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

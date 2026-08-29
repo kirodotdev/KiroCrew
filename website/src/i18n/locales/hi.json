@@ -9388,7 +9388,10 @@
       "lane_seed_retry": "फिर कोशिश करो",
       "lane_legacy_column_hint": "सभी सत्र दिखाता है",
       "workflow_running_one": "{{count}} वर्कफ़्लो चल रहा है",
-      "workflow_running_other": "{{count}} वर्कफ़्लो चल रहे हैं"
+      "workflow_running_other": "{{count}} वर्कफ़्लो चल रहे हैं",
+      "flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू — बोर्ड कॉलम में फ़ोल्डर छिपाएँ",
+      "show_folders_in_board_columns": "बोर्ड कॉलम में फ़ोल्डर दिखाएँ",
+      "switch_to_flat_view_hide_folders_in_board_columns": "फ़्लैट व्यू पर जाएँ (बोर्ड कॉलम में फ़ोल्डर छिपाएँ)"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

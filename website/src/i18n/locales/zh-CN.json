@@ -9243,7 +9243,10 @@
       "lane_seed_failed": "无法添加自动栏。",
       "lane_seed_retry": "重试",
       "lane_legacy_column_hint": "显示所有会话",
-      "workflow_running_other": "{{count}} 个工作流运行中"
+      "workflow_running_other": "{{count}} 个工作流运行中",
+      "flat_view_hide_folders_in_board_columns": "扁平视图 — 隐藏看板列中的文件夹",
+      "show_folders_in_board_columns": "显示看板列中的文件夹",
+      "switch_to_flat_view_hide_folders_in_board_columns": "切换到扁平视图（隐藏看板列中的文件夹）"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

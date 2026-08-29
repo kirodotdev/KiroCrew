@@ -9269,7 +9269,10 @@
       "switch_session_one": "[Şẁìţçĥ {{count}} şèşşìøñ ··············]",
       "switch_session_other": "[Şẁìţçĥ {{count}} şèşşìøñş ··············]",
       "workflow_running_one": "[{{count}} ẁøŕķƒĺøẁ ŕùññìñğ ···············]",
-      "workflow_running_other": "[{{count}} ẁøŕķƒĺøẁş ŕùññìñğ ················]"
+      "workflow_running_other": "[{{count}} ẁøŕķƒĺøẁş ŕùññìñğ ················]",
+      "flat_view_hide_folders_in_board_columns": "[Ƒĺàţ ṽìèẁ — ĥìðè ƒøĺðèŕş ìñ ţĥè ƀøàŕð çøĺùɱñş ·······················]",
+      "show_folders_in_board_columns": "[Şĥøẁ ƒøĺðèŕş ìñ ţĥè ƀøàŕð çøĺùɱñş ·················]",
+      "switch_to_flat_view_hide_folders_in_board_columns": "[Şẁìţçĥ ţø ƒĺàţ ṽìèẁ (ĥìðè ƒøĺðèŕş ìñ ţĥè ƀøàŕð çøĺùɱñş) ···················]"
     },
     "contextBreakdown": {
       "axis_bar": "[ƀàŕ ĺèñğţĥ ∝ √çĥàŕş · şèğɱèñţş = ţĥàţ ţùŕñ'ş çøɱþøşìţìøñ ····················]",
