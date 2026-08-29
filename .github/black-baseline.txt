@@ -462,7 +462,6 @@ test/test_channel_model_inheritance.py
 test/test_channel_registry.py
 test/test_channel_resolver.py
 test/test_channel_slot_close_binding.py
-test/test_channel_slots.py
 test/test_channel_transcript_migration.py
 test/test_chat_backfill.py
 test/test_chat_folder_app_isolation.py

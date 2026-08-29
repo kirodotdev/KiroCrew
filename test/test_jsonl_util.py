@@ -771,3 +771,40 @@ class TestNoUnboundedHandleIteration:
         src = Path(kiro_crew.__file__).parent
         for rel in sorted(_ALLOWED_UNBOUNDED_FILES):
             assert (src / rel).is_file(), f"excused reader {rel} no longer exists"
+
+
+def test_the_byte_ceiling_is_enforced_while_the_handle_is_consumed(tmp_path):
+    """``fstat`` describes the file at OPEN time, so the size check alone bounds nothing.
+
+    A writer holding the same path can append while the handle is being consumed, and the pre-fix
+    reader then delivered every one of those bytes. The cap has to be charged against what the
+    caller actually receives; removing that accounting re-fails this.
+    """
+    import errno
+
+    from kiro_crew.jsonl_util import open_regular_nofollow
+
+    path = tmp_path / "grows-under-the-reader.jsonl"
+    path.write_bytes(b'{"one":1}\n')
+
+    with pytest.raises(OSError) as caught:
+        with open_regular_nofollow(path, max_bytes=64) as handle:
+            # The open already passed its size check, so only a cumulative cap can see this.
+            with open(path, "ab") as writer:
+                writer.write(b"x" * 8192)
+            handle.read()
+
+    assert caught.value.errno == errno.EFBIG, caught.value
+
+
+def test_a_file_of_exactly_the_ceiling_still_reads_to_the_end(tmp_path):
+    """The cap must refuse only an OVERRUN: charging the EOF read would refuse a legal file."""
+    from kiro_crew.jsonl_util import open_regular_nofollow
+
+    path = tmp_path / "exactly-at-the-ceiling.jsonl"
+    payload = b"y" * 64
+    path.write_bytes(payload)
+
+    with open_regular_nofollow(path, max_bytes=64) as handle:
+        assert handle.read() == payload
+        assert handle.read() == b""

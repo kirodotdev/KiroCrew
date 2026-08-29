@@ -50,6 +50,11 @@ import { fmtDateFields } from '../i18n/format'
 import ErrorNotice from '../components/ErrorNotice'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
+// Seconds. Without a TTL a dormant slot marches to the queue ceiling and 429s every
+// later post. This entry is deliberately NOT `ephemeral`: it must survive a close, which
+// is the whole point of this change, so the TTL is what bounds it.
+const COMPANION_CONTEXT_MAX_AGE_S = 3600
+
 /** Human text for a rejected query/mutation, so every ErrorNotice on this page reads the same shape. */
 /**
  * The artifact's active companion session: the bound slot for `slug`, or the most
@@ -287,6 +292,10 @@ function ArtifactPopoutControl({ slug, name }: { slug: string; name: string }) {
   )
 }
 
+/** Carries the SLUG as well as the version: the retraction is artifact-scoped, and this page
+ *  survives a slug change, so a bare version cannot say which artifact a result belongs to. */
+type InjectVars = { slotKey: string; version: number; slug: string; refresh?: boolean }
+
 export default function ArtifactDetailPage({ popout = false }: { popout?: boolean } = {}) {
   const { slug = '' } = useParams<{ slug: string }>()
   const navigate = useNavigate()
@@ -361,6 +370,26 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const [editedContent, setEditedContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  /** SEPARATE from `saveError`, which renders a "save failed" notice: a background /context
+   *  failure told a user with a dirty draft that their SAVE had failed. This one renders in the
+   *  chat panel's own column and names the real consequence. */
+  const [contextError, setContextError] = useState<string | null>(null)
+  // A resume nudge failing is not a failure to share: the earlier injection succeeded and the
+  // chat works, so only the LATEST version is missing and the title must say so.
+  const [contextErrorIsRefresh, setContextErrorIsRefresh] = useState(false)
+  /** OUTCOME-FIRST, and never the raw transport text: `friendlyErrText` rewrites this
+   *  endpoint's 429 into the tunnel rate-limit string, which names the wrong cause and
+   *  promises an automatic retry nothing performs. The raw detail stays in the error
+   *  journal that `ApiError` already writes. */
+  const contextFailureMessage = useCallback(
+    (isRefresh: boolean): string =>
+      i18nT(
+        isRefresh
+          ? 'pages.artifactDetailPage.chat_context_stale_not_attached'
+          : 'pages.artifactDetailPage.chat_context_not_attached',
+      ),
+    [],
+  )
   const [showPublish, setShowPublish] = useState(false)
   // Tag editing: tags shown in the header are editable inline. Adding a tag
   // posts metadata-only (no version bump). Removing a tag works the same way.
@@ -451,6 +480,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // into a rendered preview.
     setPreviewDuringEdit(false)
     setSaveError(null)
+    // WITH `saveError`: the notice names the artifact it was raised on, so leaving it up reports
+    // the departed document's failure against the arriving one, under a leaked title variant.
+    setContextError(null)
+    setContextErrorIsRefresh(false)
     setPopover(null)
     setAddingTag(false)
     setNewTag('')
@@ -460,6 +493,23 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // artifact already gets a fresh verdict, and clearing it at this point would
     // race the departing document's cleanup.
   }, [slug])
+
+  /** ONE definition, ONE mount point at the top of the chat column: the copy names the composer
+   *  beneath it, so a page-top placement would put the instruction a column from what it means. */
+  const contextNotice = (
+    <>
+      {/* No hand-off: this page holds a live editor buffer and an in-progress anchored comment
+          selection -- the chat navigation unmounts this tree and discards both. */}
+      <ErrorNotice
+        message={contextError}
+        title={i18nT(contextErrorIsRefresh
+          ? 'pages.artifactDetailPage.chat_context_stale_notice_title'
+          : 'pages.artifactDetailPage.chat_context_notice_title')}
+        onDismiss={() => setContextError(null)}
+        className="mb-3 animate-rise"
+      />
+    </>
+  )
 
   const detailQuery = useQuery<Artifact>({
     queryKey: ['artifact', slug],
@@ -1126,12 +1176,35 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // replacement. That yields two active bound sessions for one artifact, the
   // exact invariant the archive-then-create ordering exists to protect.
   const sessionOpBusyRef = useRef(false)
-  // Versions already announced to a session via context injection, so repeated
-  // panel opens don't stack duplicate freshness nudges.
+  // MEMORY ONLY, and scoped to this page's lifetime. A resolved POST is not a durable-write
+  // acknowledgment, so a claim that outlived the page could skip a nudge for a lost entry.
   const injectedVersionRef = useRef<Map<string, number>>(new Map())
+  /** Claim the version for an IN-FLIGHT injection: suppresses a concurrent second
+   *  injection within this page. */
+  const holdInjectedVersion = useCallback((slotKey: string, version: number) => {
+    injectedVersionRef.current.set(slotKey, version)
+  }, [])
+  /** Record a version as genuinely DELIVERED (or as a deliberate baseline).
+   *
+   *  The endpoint reports no per-POST durability flag to branch on, so the claim cannot
+   *  outlive the page that observed the response -- a repeat nudge is the lesser evil. */
+  const confirmInjectedVersion = useCallback((slotKey: string, version: number) => {
+    injectedVersionRef.current.set(slotKey, version)
+  }, [])
+  /** Drop the claim after a rejected POST, so the next open retries. Guarded on the
+   *  version: a stale rejection must not delete a newer request's claim. */
+  const releaseInjectedVersion = useCallback((slotKey: string, version: number) => {
+    if (injectedVersionRef.current.get(slotKey) === version) {
+      injectedVersionRef.current.delete(slotKey)
+    }
+  }, [])
+  /** This page's own claim. A reload starts empty and re-nudges, by design. */
+  const readInjectedVersion = useCallback((slotKey: string): number | undefined => {
+    return injectedVersionRef.current.get(slotKey)
+  }, [])
 
-  /** Structured context entry naming the artifact — injected ephemeral (consumed
-   *  on the next user message) so the user's first message can be natural
+  /** Structured context entry naming the artifact — injected as background context
+   *  with a short TTL, so the user's first message can be natural
    *  ("summarize this") with no slug boilerplate in the composer. */
   const buildCompanionContext = useCallback((): string => {
     if (!artifact) return ''
@@ -1156,8 +1229,63 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
    *
    *  `prefillText` is staged via writePrefill BEFORE the optimistic bind so
    *  ChatPage's slot-activation effect deterministically finds it on mount. */
-  const createBoundSession = useCallback(async (prefillText?: string): Promise<string | null> => {
-    if (!artifact) return null
+  /**
+   * The silent /context write, routed through `useMutation` like every other write on this
+   * page (use-react-query guideline) rather than a bare promise chain.
+   *
+   * The hold is taken by the CALLER, before `mutate`, so an open/close/reopen inside the
+   * request window cannot inject twice; only a resolved write persists the claim.
+   */
+  // The NEWEST version any injection has requested. A ref, not state: it gates a retraction
+  // inside a callback and must never itself cause a render.
+  const latestInjectedRequest = useRef<{ slug: string; version: number }>({ slug: '', version: 0 })
+
+  const injectContextMut = useMutation({
+    mutationFn: (vars: InjectVars) =>
+      api.chatSlotContext(vars.slotKey, buildCompanionContext(), {
+        source: 'artifact-companion', maxAge: COMPANION_CONTEXT_MAX_AGE_S,
+        // EXPLICIT rather than relying on the boundary default: this entry is the whole point
+        // of the durable queue, so it states that it must survive a close.
+        ephemeral: false,
+        // NAMES THE SNAPSHOT within this source, so a reload that re-decides staleness cannot
+        // queue a second copy: the boundary reads its still-pending entry, not client memory.
+        contextKey: String(vars.version),
+      }),
+    onSuccess: (_d: unknown, vars: InjectVars) => {
+      confirmInjectedVersion(vars.slotKey, vars.version)
+      // ARTIFACT-SCOPED: a version number is not an identity, and this page outlives a slug
+      // change, so another artifact's success must not retract THIS artifact's failure.
+      if (vars.slug !== slug) return
+      const high = latestInjectedRequest.current
+      // A successful enqueue retracts the notice: leaving it up told a recovered retry the
+      // artifact was still unshared when it now is.
+      // Newest request only: an older success would clear a notice this write cannot satisfy.
+      if (high.slug === slug && vars.version >= high.version) setContextError(null)
+    },
+    onMutate: (vars: InjectVars) => {
+      const high = latestInjectedRequest.current
+      // The high-water mark RESTARTS per artifact: carrying a taller version across a slug
+      // change would suppress the next legitimate retraction on the artifact now shown.
+      latestInjectedRequest.current = high.slug === vars.slug
+        ? { slug: vars.slug, version: Math.max(high.version, vars.version) }
+        : { slug: vars.slug, version: vars.version }
+    },
+    onError: (_err: unknown, vars: InjectVars) => {
+      // Not a delivery, so the claim is released and the next open RETRIES rather than
+      // recording a baseline -- see the resume path.
+      releaseInjectedVersion(vars.slotKey, vars.version)
+      if (vars.slug !== slug) return
+      setContextErrorIsRefresh(vars.refresh === true)
+      setContextError(contextFailureMessage(vars.refresh === true))
+    },
+  })
+
+  // NO AUTO-RETRACTION ON A TURN, matching the co-author surface: a turn does not attach the
+  // artifact, so clearing on one tells a user who typed anything at all that the agent has it.
+
+  // NO RETRY either. Dismissal or a later successful share is what clears the notice.
+
+  const createBoundSession = useCallback(async (prefillText?: string): Promise<string | null> => {    if (!artifact) return null
     setChatCreating(true)
     try {
       // No `name`: the backend generates a unique slot key (reusing a
@@ -1186,10 +1314,11 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // the staged prefill and the composer opens empty (correct only on the
       // second open). Idempotent once active === res.key.
       dispatch(switchSlot(res.key))
-      api.chatSlotContext(res.key, buildCompanionContext(), {
-        source: 'artifact-companion', ephemeral: true,
-      }).catch(() => undefined)
-      injectedVersionRef.current.set(res.key, artifact.version)
+      // Held BEFORE the POST so a concurrent reopen cannot inject twice; the hold is
+      // memory-only and only a RESOLVED post persists the claim.
+      const injectedVersion = artifact.version
+      holdInjectedVersion(res.key, injectedVersion)
+      injectContextMut.mutate({ slotKey: res.key, version: injectedVersion, slug })
       dispatch(fetchSlots())
       return res.key as string
     } catch (err) {
@@ -1198,7 +1327,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     } finally {
       setChatCreating(false)
     }
-  }, [artifact, buildCompanionContext, dispatch])
+  }, [artifact, dispatch, holdInjectedVersion, injectContextMut, slug])
 
   /** Sparkle flow: resume the active bound session if one exists, else create a
    *  new one. With `address`, stage (never auto-send) the address-comments
@@ -1245,22 +1374,24 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (addressMsg) writePrefill(boundSlotResolved.key, addressMsg)
     setPanel('chat')
     // Resume freshness nudge: if the artifact moved past the session's last
-    // activity, inject a fresh ephemeral context entry so the agent doesn't act
+    // activity, inject a fresh short-lived context entry so the agent doesn't act
     // on stale-version assumptions. Best-effort — ISO timestamps compare
     // lexicographically; a miss just means the agent re-reads via artifact_get.
-    const injected = injectedVersionRef.current.get(boundSlotResolved.key)
-    if (
-      injected !== artifact.version &&
+    const injected = readInjectedVersion(boundSlotResolved.key)
+    const artifactIsStale = Boolean(
       boundSlotResolved.last_activity_ts && artifact.updated_at &&
       artifact.updated_at > boundSlotResolved.last_activity_ts
-    ) {
-      injectedVersionRef.current.set(boundSlotResolved.key, artifact.version)
-      api.chatSlotContext(boundSlotResolved.key, buildCompanionContext(), {
-        source: 'artifact-companion', ephemeral: true,
-      }).catch(() => undefined)
+    )
+    // A reload empties the memory-only claim, so NO CLAIM cannot be told from NEVER
+    // INJECTED, and re-sending on that ambiguity delivers one entry twice.
+    if (injected !== artifact.version && artifactIsStale) {
+      const nudgeVersion = artifact.version
+      holdInjectedVersion(boundSlotResolved.key, nudgeVersion)
+      injectContextMut.mutate({ slotKey: boundSlotResolved.key, version: nudgeVersion, slug, refresh: true })
     }
   }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch,
-      createBoundSession, buildCompanionContext])
+      createBoundSession, readInjectedVersion,
+      holdInjectedVersion, injectContextMut])
 
   /** "New chat": archive the current bound session FIRST (the existing red-X
    *  delete path — history preserved, resumable from the History page), then
@@ -2113,14 +2244,21 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               activeCommentId={activeCommentId}
             />
           )}
+          {/* EVERY breakpoint, not just desktop: mobile HIDES the body while a panel is open, so a
+              !isMobile gate here left a mobile chat with neither body nor panel -- a blank page. */}
           {panel === 'chat' && (
-            <ArtifactChatPanel
-              slotKey={boundSlot?.key ?? null}
-              creating={chatCreating}
-              onNewChat={() => { void newCompanionChat() }}
-              onOpenFull={openChatFull}
-              onClose={() => { sidebarUserToggledRef.current = true; setPanel('none') }}
-            />
+            <div className={`flex flex-col min-h-0 ${isMobile ? 'flex-1 min-w-0' : 'w-[480px] shrink-0'}`}>
+              {/* IN THIS COLUMN, its only mount: the remedy names the composer below it, and a
+                  page-top banner puts that instruction a column away from the control it means. */}
+              {contextNotice}
+              <ArtifactChatPanel
+                slotKey={boundSlot?.key ?? null}
+                creating={chatCreating}
+                onNewChat={() => { void newCompanionChat() }}
+                onOpenFull={openChatFull}
+                onClose={() => { sidebarUserToggledRef.current = true; setPanel('none') }}
+              />
+            </div>
           )}
         </div>
 

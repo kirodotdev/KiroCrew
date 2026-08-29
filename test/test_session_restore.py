@@ -1649,3 +1649,43 @@ class TestAsyncRestoreRecentSessionsOffLoop:
         assert not (
             tmp_path / "dashboard_vanished.jsonl"
         ).exists(), "the deleted transcript came back"
+
+
+@pytest.mark.parametrize(
+    "live",
+    ["whatsapp:+15551234567", "imessage:user@example.com", "discord:crew_agent:direct:user_1"],
+)
+def test_a_refused_persisted_binding_falls_back_to_the_session_map(tmp_path, monkeypatch, live):
+    """Hydration is where these three spellings go silent, and it had no fallback at all.
+
+    The gate refuses a persisted spelling it cannot prove names this transcript. That says nothing
+    against the session map's OWN answer, which is trusted -- so without this the tab answers from
+    its own dashboard session, every restart, until a human re-links it.
+    """
+    from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+    from kiro_crew.dashboard.chat_utils import transcript_stem
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    stem = transcript_stem(live)
+    _write_session(
+        tmp_path,
+        stem,
+        [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+        meta={"linked_session_key": live},
+    )
+
+    state = _make_state(tmp_path)
+    assert state.sessions is not None, "precondition: the state needs a session map to consult"
+    monkeypatch.setattr(state.sessions, "channel_key_for_stem", lambda _stem: "")
+    unbound = _rehydrate_slot_from_history(state, stem)
+    assert unbound is not None, "precondition: the transcript must hydrate into a slot"
+    assert unbound.linked_session_key == "", (
+        "precondition: the gate must REFUSE this persisted spelling with no map answer, or the "
+        "binding below proves nothing about the fallback"
+    )
+
+    answering = _make_state(tmp_path)
+    monkeypatch.setattr(answering.sessions, "channel_key_for_stem", lambda _stem: live)
+    healed = _rehydrate_slot_from_history(answering, stem)
+    assert healed is not None
+    assert healed.linked_session_key == live, "the trusted map answer did not reach the slot"

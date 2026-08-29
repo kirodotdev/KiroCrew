@@ -332,6 +332,66 @@ class TestSurfaceChannelSession:
         assert slot.key == "slack_1.1"
         assert slot.linked_session_key == "slack:1.1"
 
+    @pytest.mark.parametrize(
+        "live",
+        [
+            "whatsapp:+15551234567",
+            "imessage:user@example.com",
+            "discord:crew_agent:direct:user_1",
+        ],
+    )
+    def test_a_refused_binding_is_healed_from_the_trusted_map(
+        self, dashboard_state: Any, live: str
+    ) -> None:
+        """These are the three spellings the hydration gate refuses, and nothing else rebound them.
+
+        `_is_separator_fold` cannot tell a SUBSTITUTED separator from the live one, so a `+`, an `@`
+        or a literal `_` leaves the slot unbound after a restart. The reconciler returned early for
+        an already-present slot, so the thread stayed silent until someone re-linked it by hand.
+        """
+        from kiro_crew.dashboard.chat_utils import transcript_stem
+
+        assert channel_slots.is_channel_session_key(live), f"precondition: {live} is a channel key"
+        stem = transcript_stem(live)
+
+        created = channel_slots.surface_channel_session(
+            dashboard_state, _session(stem), {}, [], session_key=live
+        )
+        assert created is not None and created.linked_session_key == live
+
+        # Exactly what a refused hydration leaves behind: the slot survives, unbound.
+        created.linked_session_key = ""
+        created._dirty = False
+
+        channel_slots.surface_channel_session(
+            dashboard_state, _session(stem), {}, [], session_key=live
+        )
+        assert created.linked_session_key == live, "the trusted map answer did not heal the slot"
+        assert created._dirty, "an unflagged heal is lost on restart, so the refusal would repeat"
+
+    def test_a_slot_without_channel_provenance_is_never_rebound(self, dashboard_state: Any) -> None:
+        """A NAME is not provenance, and the rebind reaches an existing slot whoever made it.
+
+        Any caller can create a slot named for a live channel stem. Binding on the name alone would
+        route that tab's later turns into the channel's conversation, so the rebind requires the
+        marker only a channel path sets. Dropping that requirement re-fails this.
+        """
+        from kiro_crew.dashboard.chat_utils import transcript_stem
+
+        live = "slack:1785370133.085469"
+        stem = transcript_stem(live)
+        impostor = dashboard_state.get_or_create_slot(name=channel_slots.channel_slot_name(stem))
+        assert not impostor.channel_origin, "precondition: a plain caller sets no provenance"
+        assert impostor.linked_session_key == "", "precondition: the impostor starts unbound"
+
+        channel_slots.surface_channel_session(
+            dashboard_state, _session(stem), {}, [], session_key=live
+        )
+
+        assert (
+            impostor.linked_session_key == ""
+        ), "a slot with no channel provenance was bound to a channel conversation"
+
     def test_an_unresolvable_session_key_surfaces_the_slot_unbound(
         self, dashboard_state: Any
     ) -> None:
@@ -339,9 +399,7 @@ class TestSurfaceChannelSession:
         the key must not invent one: the tab shows the history without claiming
         to be two-way, rather than routing replies to a session the channel
         never reads."""
-        slot = channel_slots.surface_channel_session(
-            dashboard_state, _session("slack_1.1"), {}, []
-        )
+        slot = channel_slots.surface_channel_session(dashboard_state, _session("slack_1.1"), {}, [])
         assert slot is not None
         assert slot.linked_session_key == ""
 
@@ -462,6 +520,15 @@ class _FakeLog:
     def get_metadata(self, key: str) -> dict[str, Any]:
         self.meta_reads.append(key)
         return dict(self._meta.get(key, {}))
+
+    def get_metadata_with_overflow(self, key: str) -> dict[str, Any]:
+        """The accessor the surface path uses, so a spill is re-attached on hydration.
+
+        Delegates so ``meta_reads`` still counts one read per call. Without it the call site's
+        ``except Exception`` swallowed the missing attribute and every key read EMPTY, which is
+        why the eligibility and clear-scoping assertions failed rather than erroring.
+        """
+        return self.get_metadata(key)
 
     def mtime_of(self, key: str) -> float | None:
         return self.mtimes.get(key)
@@ -624,9 +691,9 @@ class TestReconcilePass:
         dashboard_state.push_slots_update = lambda: None  # type: ignore[method-assign]
 
         asyncio.run(channel_slots.reconcile_channel_slots(dashboard_state, 30))
-        assert log._meta["slack:1.1"].get("closed") is True, (
-            "a close written after the snapshot must survive the stale clear"
-        )
+        assert (
+            log._meta["slack:1.1"].get("closed") is True
+        ), "a close written after the snapshot must survive the stale clear"
 
     def test_overlapping_reconciles_are_serialized(self, dashboard_state: Any) -> None:
         """The periodic loop and a dispatcher-triggered immediate pass must not
@@ -1119,9 +1186,7 @@ class TestFailedTranscriptReadDefers:
         assert "slack_1.1" not in state._slots
 
     @pytest.mark.asyncio
-    async def test_a_genuinely_empty_transcript_still_surfaces(
-        self, dashboard_state: Any
-    ) -> None:
+    async def test_a_genuinely_empty_transcript_still_surfaces(self, dashboard_state: Any) -> None:
         state = dashboard_state
         _map_stems(state, "slack:1.1")
         state.conversation_log.list_sessions = lambda: [_session("slack_1.1")]
