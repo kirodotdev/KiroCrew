@@ -20,6 +20,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import selectable_backend_values
 from kiro_crew.agent import (
     AGENT_FILENAME,
+    _spec_path_is_safe,
     clear_model_pin,
     get_shipped_tools,
     install_agent,
@@ -96,7 +97,11 @@ def _namespaced_agent_file_exists(agent_name: str) -> bool:
     # glob the real ~/.kiro from an isolated run.
     try:
         for path in kiro_agents_dir_path().glob(f"*--{agent_name}.json"):
-            data = _read_agent_spec(path)
+            data = _read_agent_spec(
+                path,
+                operation="api_agents_sync",
+                source="dashboard",
+            )
             if data is None:
                 continue
             if data.get("name") == agent_name:
@@ -1565,7 +1570,11 @@ async def api_agent_detail(request: web.Request) -> web.Response:
 
     state: DashboardState = request.app["state"]
     for f in kiro_agents_dir_path().glob("*.json"):
-        spec = _read_agent_spec(f)
+        spec = _read_agent_spec(
+            f,
+            operation="api_agent_detail",
+            source="dashboard",
+        )
         if spec is None:
             continue
         # Two-step so ``data`` stays typed ``dict`` for the PATCH branch's
@@ -1674,7 +1683,35 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     async with _get_config_lock():
                         # Re-read under the lock: the copy above was read before
                         # the lock and a concurrent PATCH may have superseded it.
-                        data = json.loads(f.read_text(encoding="utf-8"))
+                        # The branch writes this data back, so bind the same
+                        # agents directory and apply the stricter no-symlink /
+                        # no-escape fence before the hardened read.  Keep the
+                        # filesystem work off the event loop while the shared
+                        # config lock is held.
+                        agents_dir = kiro_agents_dir_path()
+
+                        def _reread_under_lock(
+                            spec_file: Path = f,
+                            root: Path = agents_dir,
+                        ) -> dict[str, Any] | None:
+                            if not _spec_path_is_safe(spec_file, root):
+                                return None
+                            return _read_agent_spec(
+                                spec_file,
+                                operation="api_agent_detail",
+                                source="dashboard",
+                            )
+
+                        reread_data = await asyncio.to_thread(_reread_under_lock)
+                        if reread_data is None:
+                            return web.json_response(
+                                {
+                                    "error": f"'{name}' changed on disk during update; retry.",
+                                    "code": "agent_changed",
+                                },
+                                status=409,
+                            )
+                        data = reread_data
                         # `spec_str` for the same reason as `declared` above: a
                         # hand-edited spec can carry a structured (non-string)
                         # "name", which would crash the sidecar helper's dict

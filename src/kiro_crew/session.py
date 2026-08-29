@@ -2705,8 +2705,9 @@ class SessionManager:
           mtime, so entries also expire after ``_AGENT_MODEL_CACHE_TTL`` seconds
           and are re-resolved.
         """
+        agents_dir = kiro_agents_dir_path()
         try:
-            dir_mtime = kiro_agents_dir_path().stat().st_mtime
+            dir_mtime = agents_dir.stat().st_mtime
         except OSError:
             dir_mtime = 0.0
         now = time.monotonic()
@@ -2723,22 +2724,20 @@ class SessionManager:
 
         model = "auto"
         try:
-            for af in kiro_agents_dir_path().glob("*.json"):
-                # The hardened, size-capped reader, same as every other spec
-                # read: the agents directory is user-writable and shared with
-                # other tools, and this result is cached and served to
-                # ``/api/sessions/context``. It also supplies the malformed- and
-                # non-object-JSON skip this loop needs.
-                ad = _read_agent_spec(af)
-                if ad is None:
+            # Use the SAME directory as the cache stamp and preserve the former
+            # native-order, first-match scan.  This runs on the event-loop
+            # thread, so a match must stop all later spec reads rather than
+            # building a full map on every cache miss / TTL expiry.
+            for agent_file in agents_dir.glob("*.json"):
+                data = _read_agent_spec(
+                    agent_file,
+                    operation="resolve_agent_model",
+                    source="unknown",
+                )
+                if data is None:
                     continue
-                if ad.get("name") == agent or af.stem == agent:
-                    # Coerced, not raw: this method is annotated ``-> str`` and
-                    # its result is CACHED, fed to ``/api/sessions/context``
-                    # (where the dashboard calls ``.replace()`` on it) and
-                    # compared/translated as a model id in ``claim_pooled``. A
-                    # foreign spec's ``{"id": ...}`` would poison all three.
-                    model = spec_model(ad)
+                if data.get("name") == agent or agent_file.stem == agent:
+                    model = spec_model(data)
                     break
         except Exception:
             pass

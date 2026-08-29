@@ -2649,15 +2649,25 @@ def migrate_agent_specs() -> int:
     agent loads. Idempotent and cheap (a handful of small JSON files); safe to
     run on every gateway start. Returns the number of spec files cleaned.
     """
-    if not kiro_agents_dir_path().is_dir():
+    agents_dir = kiro_agents_dir_path()
+    if not agents_dir.is_dir():
         return 0
     cleaned = 0
-    for spec_path in sorted(kiro_agents_dir_path().glob("*.json")):
+    for spec_path in sorted(agents_dir.glob("*.json")):
+        # This read is followed by a rewrite, so the hardened reader's
+        # sensitive-target refusal is not sufficient on its own: refuse every
+        # symlink, escape and sensitive path before reading to prevent copy-out.
+        if not _spec_path_is_safe(spec_path, agents_dir):
+            continue
         # The hardened reader (size cap, AppleDouble/sensitive-symlink and
         # non-object refusal). This site also WRITES below: a spec the reader
         # refuses is now never rewritten at all, whereas the old read_text
         # path read -- and then rewrote -- whatever the file or link named.
-        data = _read_agent_spec(spec_path)
+        data = _read_agent_spec(
+            spec_path,
+            operation="migrate_agent_specs",
+            source="unknown",
+        )
         if data is None:
             continue
         if "model_managed" not in data and "cc_model" not in data:

@@ -318,7 +318,7 @@ class TestResolveAgentModel:
         agents.mkdir()
         (agents / "researcher.json").write_text('{"name": "researcher"}', encoding="utf-8")
         with patch("kiro_crew.session.kiro_agents_dir_path", return_value=agents), patch(
-            "kiro_crew.session.spec_model", side_effect=RuntimeError("bad spec")
+            "kiro_crew.session._read_agent_spec", side_effect=RuntimeError("bad spec")
         ):
             assert SessionManager._resolve_agent_model("researcher") == "auto"
 

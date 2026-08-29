@@ -782,7 +782,11 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     # Non-kirocrew agent: read from agent config
     if agent and agent != "kirocrew":
         for f in kiro_agents_dir_path().glob("*.json"):
-            spec = _read_agent_spec(f)
+            spec = _read_agent_spec(
+                f,
+                operation="api_mcp_active",
+                source="dashboard",
+            )
             if spec is None:
                 continue
             if spec.get("name") == agent:
@@ -2736,7 +2740,11 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     if not agents_dir.is_dir():
         return rows
     for path in sorted(agents_dir.glob("*.json")):
-        spec = _read_agent_spec(path)
+        spec = _read_agent_spec(
+            path,
+            operation="mcp_server_rows",
+            source="dashboard",
+        )
         if spec is None:
             continue
         agent_name = spec.get("name") or path.stem
@@ -2799,7 +2807,11 @@ def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
     if not agents_dir.is_dir():
         return specs
     for path in sorted(agents_dir.glob("*.json")):
-        spec = _read_agent_spec(path)
+        spec = _read_agent_spec(
+            path,
+            operation="mcp_stub_eligibility",
+            source="dashboard",
+        )
         if spec is None:
             continue
         mcp_servers = spec.get("mcpServers")
