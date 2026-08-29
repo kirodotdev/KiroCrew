@@ -6,14 +6,15 @@ mode activation costs a FIXED ~5.18s whether the spec carries one remote server 
 a spec holding every mintable provider yields every ``oauth_request`` in a SINGLE
 activation.
 
-Two halves have landed. The TABLE: the row shape a shared mint uses (``shared`` /
-``generation`` / ``activation`` on :class:`~kiro_crew.connections.mint.MintState`), the
-liveness registry those stamps are read against (:class:`_WarmMintRuntime`), and the
+Three halves have landed. The TABLE: the row shape a shared mint uses (``shared`` /
+``generation`` / ``activation`` on :class:`~kiro_crew.connections.mint.MintState`) and the
 withdrawal chokepoint the dashboard's status path calls (:func:`expire_dead_mints`). The
 SPECS: the registry scan deciding which providers a warm process could serve
 (:func:`warm_spec_providers`), the plan it would spawn on (:func:`_warm_spec_plan`), and
-the spec files that plan writes (:func:`_write_warm_mint_specs`). Nothing here spawns,
-activates, parks or kills a process.
+the spec files that plan writes (:func:`_write_warm_mint_specs`). The RUNTIME: the one
+process every card shares (:class:`_WarmMintRuntime`) -- spawned, activated, parked, killed
+and reaped (:func:`_warm_mint_reaper`) -- and the flow that turns one activation into a
+whole table of URLs (:func:`warm_mint_all`).
 
 Redeemability takes TWO questions and they die independently: the PKCE verifier lives in
 the PROCESS (``generation_is_live``) while the loopback listener answering the redirect
@@ -21,11 +22,66 @@ belongs to the SESSION (``activation_is_live``). Process liveness alone passed a
 terminated-session row, which is how a card kept serving an unredeemable URL. Both
 failures are recorded in ``docs/architecture/design-notes/connections-warm-table.md``.
 
-Two rules on the spec side are load-bearing and recorded in that same note: specs are
-enumerated ONCE at spawn, so a plan that merely SHRANK must not force a respawn
-(:func:`_plan_is_servable`), and the spec universe is registry-derived and BLIND to grant
-and cancel state, because a plan tracking who needs a URL now retires a process holding
-other cards' listeners.
+Four rules are load-bearing and recorded in that same note: the SESSION is HELD (see
+:func:`_warm_row_alive`), specs are enumerated ONCE at spawn so a plan that merely SHRANK
+must not force a respawn and a process still holding a consent is PARKED rather than killed
+(:func:`_plan_is_servable`, :meth:`_WarmMintRuntime._park_or_kill_locked`), the spec
+universe is registry-derived and BLIND to grant and cancel state because a plan tracking
+who needs a URL now retires a process holding other cards' listeners, and a warm session
+injects an EMPTY ``mcp_servers`` list because remote servers passed through ``session/new``
+kill the process with every pending verifier in it
+(:func:`_warm_session_mcp_servers`).
+
+IDENTITY: a row is fenced by its own opaque ``token``, never by the batch clock reading in
+``started``. ``time.monotonic()`` has ~15.6ms granularity on Windows, so two Connects for
+one provider inside a tick read as one row and a late absorb overwrites the newer claim --
+the same reasoning
+:func:`~kiro_crew.connections.mint._new_mint_token` records for the cold engine. WITHDRAWAL
+is the other axis and does NOT use the token: a row is expired because the process that
+holds its verifier is gone, so :func:`_expire_shared_mints` narrows by ``generation`` only.
+
+ATOMICITY: :func:`_claim_shared_mints` contains no await, so a caller either holds every
+claim it asked for or none -- the claim is taken before :func:`warm_mint_all` enters the
+``try`` that rolls it back, which makes any await in that loop an unprotected cancel window.
+The rows a claim displaced come back to the caller and are disposed inside that ``try``.
+
+CANCELLATION SAFETY is the invariant this module is written around, because two review
+rounds found the same bug class: an await sitting between a state mutation and that
+mutation's settlement or cleanup, guarded only by an ``except Exception`` that a
+``CancelledError`` walks straight past. Every such window is closed the same way -- the
+mutation is either atomic by construction (no await in it) or its cleanup is a ``finally``
+/ ``except BaseException`` that re-raises. Concretely: a claim rolls back
+(:func:`warm_mint_all`), an activation's session is ALWAYS settled so the sweep can collect
+it (:func:`_absorb_warm_requests`), and a process whose teardown did not finish stays
+PARKED with a drain armed rather than losing its only reference
+(:meth:`_WarmMintRuntime._park_or_kill_locked`, ``_sweep_retiring_locked``,
+``_retire_locked``, ``_abandon_spawn_locked``). Pinned by an AST guard in
+``test/test_connections_warm.py``, not merely described here.
+
+SESSION OWNERSHIP is explicit at every transfer, because the handle is the ONLY way to
+terminate a backend session and the loopback callback children it owns. One rule covers
+every point: a handle is REGISTERED in ``_sessions`` before anything can be interrupted, and
+FORGOTTEN only once its destroy has completed -- so an interrupted teardown leaves a record
+the ordinary sweep retries. The create is run as a shielded task so its handle stays
+reachable even when the wait for it is abandoned
+(:meth:`_WarmMintRuntime._abandon_session_creation_locked`). When no handle can be recovered
+at all the generation is QUARANTINED rather than trusted to retire on its own, which bounds
+the unaddressable residual to one generation's sessions -- retirement is not guaranteed to
+arrive, because a card holding a URL keeps the reaper's idle clock reset while the digest fast
+path keeps the same process reusable.
+
+LIVENESS is asked of the parked list too. A generation keeps its NUMBER while parked -- only
+a successful spawn bumps the counter -- so ``generation_is_live`` uses the equality test to
+CONFIRM liveness and never to deny it, then falls through to ``_retiring``. Denying on
+equality reported a stood-down-but-alive process dead, which withdrew redeemable URLs and
+then let the next sweep kill the process the park existed to preserve.
+
+OWNERSHIP is checked twice, because a spec is activated BY NAME. The writer refuses a path
+whose contents this module did not write, which protects the FILE; :func:`_unowned_plan_specs`
+then re-verifies every planned spec exists and is ours BEFORE the runtime is constructed,
+which protects the SPAWN. Without the second check the refusal would hand kiro-cli a
+stranger's spec at our fixed name and initialize its ``mcpServers``. A refusal aborts
+warming entirely, audited: the cold path still serves every Connect.
 
 OWNERSHIP: these specs carry FIXED, predictable names in the user's own agents directory,
 so a name is where a spec of ours would GO and never proof that the file there is one.
@@ -36,41 +92,45 @@ so the sentinel is what actually discriminates. Neither :func:`_write_warm_mint_
 not write -- see :func:`_warm_spec_is_foreign`.
 
 INVARIANT: no coroutine here touches the filesystem directly. The spec helpers read the
-user's config, the shared agents dir, or kiro-cli's OAuth cache -- any of which can sit on
-a network mount where a stat is unbounded -- so they are synchronous, and a coroutine
-reaches them through ``asyncio.to_thread``. Enforced by a fixed-point drift guard in
+user's config, the shared agents dir, or kiro-cli's OAuth cache, and the credential gate
+reads the operator's OAuth-endpoint extension -- any of which can sit on a network mount
+where a stat is unbounded -- so they are synchronous, and a coroutine reaches them through
+``asyncio.to_thread``. Enforced by a fixed-point drift guard in
 ``test/test_connections_warm.py``, not merely described here.
 
-DEFERRED to the lifecycle slice: everything that spawns, activates, parks or reaps a
-process, and the ``warm_mint_all`` entry point that drives them. Until it lands nothing
-sets ``shared`` on a row and nothing calls the spec planner, so :func:`expire_dead_mints`
-is a no-op scan and the registry below stays empty. Both are written to answer correctly
-the moment that slice starts filling them, parked generations included: a reader blind to
-a parked process withdraws a code that process can still redeem, so completing the
-predicate later would mean revisiting this decision under a live bug.
+SEAM left open: :func:`warm_mint_all` has NO CALLER yet. The dashboard endpoint that
+premints a whole gallery is its own slice, so nothing here is reachable from a request
+today. Proactive refresh attaches in :func:`_warm_mint_reaper` when slice N3 lands.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent as _agent
+from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.config.loader import data_home
 from kiro_crew.connections.mint import (
     _MINT_AGENT_PREFIX,
+    _MINT_GRANT_POLL_SECONDS,
     _MINT_NAME_RE,
+    _MINT_TTL_SECONDS,
     MintState,
     _dispose_mint,
     _mint_spec_body,
+    _mint_watcher,
     _mints,
     _mints_lock,
+    _new_mint_token,
 )
 from kiro_crew.connections.registry import Provider, get_visible_providers
 from kiro_crew.connections.tool_aliases import declared_tool_aliases, resolve_tool_aliases
@@ -82,6 +142,7 @@ from kiro_crew.mcp_utils import (
     kiro_oauth_wire_entry,
     mcp_server_alias,
 )
+from kiro_crew.security import oauth_url_contains_credential
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -102,6 +163,53 @@ _WARM_ALL_AGENT = f"{_WARM_AGENT_PREFIX}all"
 #: ``description`` is the only schema-legal field free enough to carry a marker: kiro-cli
 #: rejects an unknown spec key, and the agent-spec migration sweep strips bookkeeping keys.
 _WARM_SPEC_SENTINEL = "Kiro Crew warm mint spec (machine-written; safe to delete)"
+_WARM_SPAWN_TIMEOUT_SECONDS = 90.0
+_WARM_SESSION_TIMEOUT_SECONDS = 90.0
+_WARM_SESSION_DESTROY_TIMEOUT_SECONDS = 10.0
+#: How long to keep waiting for a handle whose create we already gave up on. Short, because
+#: this only buys back a session already on its way; see ``_abandon_session_creation``.
+_WARM_SESSION_REAP_TIMEOUT_SECONDS = 10.0
+_WARM_KILL_TIMEOUT_SECONDS = 20.0
+#: The oauth_request frame lands a beat AFTER set_mode returns (~0.35s measured),
+#: beyond drain_init's idle window for a slow provider. Poll rather than race it.
+_WARM_OAUTH_SETTLE_SECONDS = 0.5
+_WARM_OAUTH_SETTLE_ROUNDS = 6
+#: A tenth of the mint TTL: long enough that reopening the gallery reuses the
+#: process, short enough that an abandoned visit leaves no kiro-cli resident.
+_WARM_IDLE_GRACE_SECONDS = _MINT_TTL_SECONDS / 10
+#: One respawn, then the cold path -- a second death means the process cannot stay
+#: up, and a Connect is better served by its own dedicated spawn.
+_WARM_ACTIVATION_ATTEMPTS = 2
+
+#: The row states a shared mint is still working on. ``minting`` counts: a claim with no
+#: URL yet is exactly what a cancelled activation must not leave behind.
+_LIVE_STATES = ("minting", "waiting")
+
+
+class _WarmMintUnsafe(RuntimeError):
+    """A warm mint was about to be issued in a way that kills the shared process."""
+
+
+class _WarmMintDied(RuntimeError):
+    """The shared process was gone by the end of an activation."""
+
+    def __init__(self, cause: str) -> None:
+        super().__init__(cause)
+        self.cause = cause
+
+
+def _acp_runtime_factory() -> Any:
+    """Indirection so tests can substitute a fake runtime class."""
+    return AcpRuntime
+
+
+def _warm_session_mcp_servers() -> list[dict[str, Any]]:
+    """The session-injected MCP servers for a warm mint: ALWAYS empty.
+
+    A remote server passed through ``session/new`` kills the process together with every
+    pending verifier in it, so the spec -- never the session -- is what mounts servers.
+    """
+    return []
 
 
 def _log_warm_event(operation: str, resources: str, outcome: str = "ok") -> None:
@@ -220,6 +328,11 @@ def _warm_candidate_scan() -> tuple[list[Provider], list[Provider]]:
 def mintable_providers() -> list[Provider]:
     """Providers an activation should warm right now, registry order."""
     return _warm_candidate_scan()[1]
+
+
+def _wanted_aliases(providers: list[Provider]) -> frozenset[str]:
+    """The server aliases an activation must produce a challenge for."""
+    return frozenset(mcp_server_alias(provider["slug"]) for provider in providers)
 
 
 def _auth_shape(entry: dict[str, Any]) -> tuple[str, tuple[str, ...], str]:
@@ -419,6 +532,27 @@ def _write_warm_mint_specs(plan: _WarmSpecPlan) -> None:
         _agent._atomic_json_write(path, spec)
 
 
+def _unowned_plan_specs(plan: _WarmSpecPlan) -> list[str]:
+    """The planned spec names whose file is missing, or is not one this module wrote.
+
+    Activation happens BY NAME: the runtime is handed ``agent=<fixed name>`` and kiro-cli
+    resolves that name off this same agents directory. So the write's refusal protects the
+    FILE and nothing else -- a hand-written agent sitting at a name we declined to
+    overwrite would be spawned, and its ``mcpServers`` commands would initialize. This is
+    what protects the SPAWN.
+
+    Existence is tested as well as ownership, because :func:`_warm_spec_is_foreign` answers
+    False for an absent path: a spec that is not there is equally not ours to activate.
+    """
+    agents_dir = _agent.kiro_agents_dir_path()
+    unowned: list[str] = []
+    for name in plan.specs:
+        path = agents_dir / f"{name}.json"
+        if not path.is_file() or _warm_spec_is_foreign(path):
+            unowned.append(name)
+    return unowned
+
+
 def _remove_warm_mint_specs() -> None:
     """Unlink every warm spec THIS module wrote. Called when the process is retired."""
     try:
@@ -449,35 +583,104 @@ def _runtime_alive(runtime: Any) -> bool:
         return False
 
 
-class _WarmMintRuntime:
-    """The liveness registry a shared row's ``generation``/``activation`` are read against.
+def _live_row_count(generation: int) -> int:
+    """How many cards are still mid-consent on ``generation``."""
+    return sum(
+        1
+        for entry in _mints.values()
+        if entry.get("shared")
+        and entry.get("generation") == generation
+        and entry.get("state") in _LIVE_STATES
+    )
 
-    Both containers are filled by the deferred lifecycle (slice N2b) and are empty until it
-    lands. They are READ here rather than in N2b because the reader is what decides whether
-    a card's URL is withdrawn, and the parked case is exactly the one where a wrong answer
-    destroys a code the user could still redeem.
+
+def _generation_holds_live_rows(generation: int) -> bool:
+    """True while killing ``generation`` would strand a redeemable code."""
+    return _live_row_count(generation) > 0
+
+
+def _activations_in_use() -> set[int]:
+    """Activation ids a live shared row still points at -- the sweep's keep-set."""
+    return {
+        int(entry["activation"])
+        for entry in _mints.values()
+        if entry.get("shared") and entry.get("activation") and entry.get("state") in _LIVE_STATES
+    }
+
+
+@dataclass
+class _WarmSession:
+    """One live ACP session on the shared process, and what it owns.
+
+    Held because the session owns the loopback callback servers for its challenges.
+    ``settled`` flips once the URLs are absorbed into the mint table, which is what makes
+    the sweep safe -- an activation still in flight is referenced by no row. ``expires_at``
+    is why a session outlives the rows that pointed at it: a replaced URL may still be open
+    on the provider's consent page, and one mint TTL is exactly the window in which that
+    code is still redeemable.
+    """
+
+    generation: int
+    handle: Any
+    expires_at: float
+    settled: bool = False
+
+
+@dataclass(frozen=True)
+class _WarmMintResult:
+    """One activation's product, plus the snapshot and process it ran on."""
+
+    generation: int
+    activation: int
+    providers: list[Provider]
+    requests: list[dict[str, str]]
+
+
+class _WarmMintRuntime:
+    """One kiro-cli process shared by every card's approval-URL mint.
+
+    Also the liveness registry a shared row's ``generation``/``activation`` are read
+    against: the reader is what decides whether a card's URL is withdrawn, and the parked
+    case is exactly the one where a wrong answer destroys a code the user could still
+    redeem.
     """
 
     def __init__(self) -> None:
         self._runtime: Any = None
+        self._plan: _WarmSpecPlan | None = None
+        self._digest = ""
         #: Bumped on every spawn. Rows record the generation that minted them, letting a
         #: stand-down tell "nothing needs this" from "killing it strands a user mid-consent".
         self._generation = 0
         #: Generations kept alive ONLY because a card still holds one of their URLs.
+        #: New mints never route here; the reaper kills each once its rows are gone.
         self._retiring: list[tuple[int, Any]] = []
         #: Live sessions by activation id -- each owns the loopback servers for its
         #: challenges, so one is held while a card points at one of its URLs.
-        self._sessions: dict[int, Any] = {}
+        self._sessions: dict[int, _WarmSession] = {}
+        self._activation_seq = 0
+        self._lock = asyncio.Lock()
+        self._reaper: Any = None
 
     def is_alive(self) -> bool:
         return _runtime_alive(self._runtime)
 
     def generation_is_live(self, generation: int) -> bool:
-        """True while the process that minted ``generation`` can still redeem."""
+        """True while the process that minted ``generation`` can still redeem.
+
+        A generation keeps its NUMBER while it is parked: only a successful spawn bumps the
+        counter, so between a stand-down and its replacement the CURRENT number names a
+        process that lives in ``_retiring`` with ``self._runtime`` already cleared. The
+        equality test therefore CONFIRMS liveness but never denies it -- a miss falls
+        through to the parked list. Answering False there withdrew redeemable URLs, and the
+        withdrawal then made ``_generation_holds_live_rows`` false, so the next sweep killed
+        the very process the park existed to preserve. Readers reach this without the
+        runtime lock (the dashboard status path does), so the window is observable.
+        """
         if generation <= 0:
             return False
-        if generation == self._generation:
-            return self.is_alive()
+        if generation == self._generation and self.is_alive():
+            return True
         return any(
             parked == generation and _runtime_alive(runtime) for parked, runtime in self._retiring
         )
@@ -487,6 +690,456 @@ class _WarmMintRuntime:
         if activation <= 0:
             return False
         return activation in self._sessions
+
+    def parked_count(self) -> int:
+        """How many generations are parked -- alive only for a card still mid-consent.
+
+        Read by :func:`_drain_parked_generations`, which is what retires them once the
+        current process is gone and no new mint will sweep them.
+        """
+        return len(self._retiring)
+
+    async def settle_activation(self, activation: int, in_use: set[int]) -> None:
+        """Mark ``activation`` absorbed, then collect the sessions nothing needs."""
+        async with self._lock:
+            record = self._sessions.get(activation)
+            if record is not None:
+                record.settled = True
+            await self._sweep_sessions_locked(in_use)
+
+    async def sweep_sessions(self, in_use: set[int]) -> None:
+        """Collect settled sessions no live row points at."""
+        async with self._lock:
+            await self._sweep_sessions_locked(in_use)
+
+    async def _sweep_sessions_locked(self, in_use: set[int]) -> None:
+        """Collect settled sessions no row needs AND whose TTL has run out."""
+        now = time.monotonic()
+        doomed = [
+            activation
+            for activation, record in self._sessions.items()
+            if record.settled and activation not in in_use and record.expires_at <= now
+        ]
+        for activation in doomed:
+            record = self._sessions.get(activation)
+            if record is None:
+                continue
+            destroyed = False
+            try:
+                await _destroy_session_quietly(record.handle)
+                destroyed = True
+            finally:
+                # Forgotten only once the destroy completed. The record is the only reference
+                # left to the handle, so losing it mid-destroy leaves a session -- and the
+                # loopback servers it owns -- with nothing that could ever retry. Held across
+                # the await deliberately: a reader without the lock then over-reports the
+                # session as live for a moment, which keeps a row waiting a beat longer
+                # rather than withdrawing a URL, the safe direction.
+                if destroyed:
+                    self._sessions.pop(activation, None)
+
+    def _drop_generation_sessions(self, generation: int) -> None:
+        """Forget one generation's sessions. Its process death already reaped them."""
+        for activation in [
+            activation
+            for activation, record in self._sessions.items()
+            if record.generation == generation
+        ]:
+            self._sessions.pop(activation, None)
+
+    async def mint_for(self, *, slug: str = "") -> _WarmMintResult | None:
+        """Ensure a live process, activate it, return its challenges."""
+        async with self._lock:
+            await self._sweep_retiring_locked()
+            universe, candidates = await asyncio.to_thread(_warm_candidate_scan)
+            if slug and not any(provider["slug"] == slug for provider in candidates):
+                return None
+            # The UNIVERSE decides what the process must have enumerated; the CANDIDATES
+            # decide what this activation asks for. Apart, a grant moves the second only.
+            if not await self._ensure_locked(universe):
+                return None
+            plan = self._plan
+            if plan is None:
+                return None
+            agent = plan.per_provider.get(slug, "") if slug else plan.all_agent
+            if not agent:
+                return None
+            wanted = [
+                provider
+                for provider in candidates
+                if provider["slug"] in plan.per_provider and (not slug or provider["slug"] == slug)
+            ]
+            if not wanted:
+                return None
+            generation = self._generation
+            try:
+                activation, requests = await self._activate_locked(agent, _wanted_aliases(wanted))
+            except Exception as exc:
+                if self.is_alive():
+                    # One activation failed but the process still serves: its other verifiers
+                    # are intact, so killing it here destroys still-completable consent flows.
+                    raise
+                await self._park_or_kill_locked()
+                raise _WarmMintDied(type(exc).__name__) from exc
+            return _WarmMintResult(
+                generation=generation,
+                activation=activation,
+                providers=wanted,
+                requests=requests,
+            )
+
+    async def _ensure_locked(self, providers: list[Provider]) -> bool:
+        """Guarantee a process whose specs can serve ``providers``."""
+        try:
+            plan = await asyncio.to_thread(_warm_spec_plan, providers)
+        except Exception:  # noqa: BLE001 — reads user-editable JSON; never fail a mint
+            logger.debug("warm mint spec plan failed", exc_info=True)
+            return False
+        if not plan.all_agent:
+            return False
+
+        if self.is_alive() and self._digest == plan.digest:
+            return True
+        resident = self._plan
+        if self.is_alive() and resident is not None and _plan_is_servable(resident, plan):
+            logger.info(
+                "Shared mint generation %d already serves the new candidate set; "
+                "re-activating instead of respawning",
+                self._generation,
+            )
+            return True
+        if self._runtime is not None:
+            logger.info(
+                "Starting a new shared mint generation (%s)",
+                "specs are incompatible" if self.is_alive() else "process is gone",
+            )
+        await self._park_or_kill_locked()
+
+        runtime: Any = None
+        handed_over = False
+        try:
+            await asyncio.to_thread(_write_warm_mint_specs, plan)
+            # The write REFUSES a path it does not own rather than clobbering it, and the
+            # spawn below activates by NAME -- so without this the refusal would hand
+            # kiro-cli a stranger's spec to execute. Aborting is safe and honest: the cold
+            # path still serves every Connect, it just spawns per provider.
+            unowned = await asyncio.to_thread(_unowned_plan_specs, plan)
+            if unowned:
+                logger.warning(
+                    "Not warming: %d planned mint spec(s) are not ours to activate", len(unowned)
+                )
+                await asyncio.to_thread(
+                    _log_warm_event,
+                    "connections_warm_mint_spawn",
+                    f"unowned_specs:{len(unowned)}",
+                    "refused",
+                )
+                return False
+            runtime = _acp_runtime_factory()(
+                work_dir=await asyncio.to_thread(_warm_work_dir),
+                agent=_WARM_BASE_AGENT,
+                sandbox_mode="auto",
+            )
+            await asyncio.wait_for(runtime.spawn(), timeout=_WARM_SPAWN_TIMEOUT_SECONDS)
+            # No await between the spawn returning and the flag: the handover is a run of
+            # plain assignments plus a synchronous ``create_task``, so there is no window
+            # in which the process is ours but the ``finally`` would still tear it down.
+            self._runtime, self._plan, self._digest = runtime, plan, plan.digest
+            self._generation += 1
+            self._reaper = asyncio.get_running_loop().create_task(
+                _warm_mint_reaper(self._generation)
+            )
+            handed_over = True
+        except Exception as exc:  # noqa: BLE001 — degrade to the cold path
+            logger.warning("Shared mint process spawn failed: %s", type(exc).__name__)
+            return False
+        finally:
+            # A ``finally``, not an ``except Exception``: the stand-down above has already
+            # parked the old generation AND cancelled its reaper, so a CancelledError in the
+            # spec write or the spawn would otherwise leave that process with nothing that
+            # will ever sweep it -- the parked-generation leak by a third route -- plus a
+            # forked child and a set of specs nobody owns.
+            if not handed_over:
+                await self._abandon_spawn_locked(runtime)
+        await asyncio.to_thread(
+            _log_warm_event,
+            "connections_warm_mint_spawn",
+            f"providers:{len(plan.per_provider)} generation:{self._generation}",
+        )
+        return True
+
+    async def _abandon_spawn_locked(self, runtime: Any) -> None:
+        """Undo a spawn attempt that never became this object's process.
+
+        Reached from a ``finally``, so it covers cancellation as well as failure.
+        """
+        if self._retiring:
+            # Armed BEFORE any await, because ``create_task`` is synchronous: the parked
+            # generation then has its sweeper even if the teardown below is interrupted.
+            # Stored as the reaper so a later spawn's own reaper replaces it.
+            self._reaper = asyncio.get_running_loop().create_task(_drain_parked_generations())
+        if runtime is not None:
+            await _kill_quietly(runtime)
+        if not self._retiring:
+            await asyncio.to_thread(_remove_warm_mint_specs)
+
+    async def _abandon_session_creation_locked(self, create: Any) -> None:
+        """Reap a session the backend may have created after we stopped waiting for it.
+
+        ``create`` was shielded from our own cancellation precisely so its result stays
+        reachable here: the handle is the ONLY way to terminate the session and the loopback
+        callback children it owns. A handle that does arrive is REGISTERED before it is
+        destroyed -- settled and already expired -- so it enters the same ownership rule the
+        rest of this class uses, and an interrupted destroy is retried by the ordinary sweep
+        instead of being lost.
+        """
+        handle: Any = None
+        try:
+            # Bounded: this only buys back a session already on its way.
+            handle = await asyncio.wait_for(
+                asyncio.shield(create), timeout=_WARM_SESSION_REAP_TIMEOUT_SECONDS
+            )
+        except BaseException:  # noqa: BLE001 — best-effort reap; the caller re-raises its own
+            handle = None
+        if handle is None:
+            # Nothing addressable exists to destroy: the backend may still accept a session
+            # carrying an id we never received. QUARANTINE the generation rather than trust
+            # retirement to arrive on its own -- it is not guaranteed to. Any card holding a
+            # URL keeps ``_shared_mints_pending`` true, which resets the reaper's idle clock
+            # every cycle, while ``_ensure_locked``'s digest fast path keeps this same
+            # process reusable; so without this, every repetition of this path parked another
+            # unaddressable session and its callback children on ONE live runtime, without
+            # bound. Clearing the resident plan makes the next activation find it unservable,
+            # which stands this generation down through the ordinary path (parked for the
+            # drain when a card still needs it, killed outright otherwise) and takes the
+            # orphan with it. The residual is therefore at most ONE generation's sessions.
+            #
+            # Scoped deliberately to this branch: the recovered-handle path below repairs
+            # itself completely, so quarantining there would cost a respawn on every
+            # transient timeout for nothing.
+            self._plan, self._digest = None, ""
+            logger.warning(
+                "Quarantining shared mint generation %d: a session was created that we "
+                "cannot address, so the process is stood down at the next activation",
+                self._generation,
+            )
+            create.cancel()
+            return
+        self._activation_seq += 1
+        activation = self._activation_seq
+        self._sessions[activation] = _WarmSession(
+            generation=self._generation, handle=handle, expires_at=0.0, settled=True
+        )
+        destroyed = False
+        try:
+            await _destroy_session_quietly(handle)
+            destroyed = True
+        finally:
+            if destroyed:
+                self._sessions.pop(activation, None)
+
+    async def _activate_locked(
+        self, agent: str, wanted: frozenset[str]
+    ) -> tuple[int, list[dict[str, str]]]:
+        """Activate ``agent`` on the shared process and return its challenges."""
+        runtime = self._runtime
+        if runtime is None or not self.is_alive():
+            raise _WarmMintUnsafe("the shared mint process is not alive")
+        servers = _warm_session_mcp_servers()
+        if servers:
+            # Never reachable from our own code -- the guard exists because the failure is
+            # silent and total: session/new-injected servers kill the process and its verifiers.
+            raise _WarmMintUnsafe("session-injected MCP servers would kill the shared process")
+
+        # OWNERSHIP TRANSFER, and the one that has no second chance: the returned handle is
+        # the ONLY way to terminate a session and the loopback callback children it owns, so
+        # a wait we abandon after the backend already accepted `session/new` would leak them
+        # until the whole runtime is retired. The create runs as a task we keep a reference
+        # to and shield, so the handle stays REACHABLE even when we stop waiting for it.
+        create = asyncio.get_running_loop().create_task(
+            runtime.create_session(agent=agent, mcp_servers=servers)
+        )
+        try:
+            handle = await asyncio.wait_for(
+                asyncio.shield(create), timeout=_WARM_SESSION_TIMEOUT_SECONDS
+            )
+        except BaseException:
+            await self._abandon_session_creation_locked(create)
+            raise
+        # No await between the handle arriving and its registration, so there is no window
+        # in which the session exists and nothing in this object knows about it.
+        self._activation_seq += 1
+        activation = self._activation_seq
+        self._sessions[activation] = _WarmSession(
+            generation=self._generation,
+            handle=handle,
+            expires_at=time.monotonic() + _MINT_TTL_SECONDS,
+        )
+        collected: dict[str, dict[str, str]] = {}
+        try:
+            for round_index in range(_WARM_OAUTH_SETTLE_ROUNDS):
+                for request in handle.pop_pending_oauth_requests():
+                    name = str(request.get("serverName") or "")
+                    if name and request.get("oauthUrl"):
+                        collected[name] = request
+                if wanted and wanted <= collected.keys():
+                    break
+                if round_index + 1 < _WARM_OAUTH_SETTLE_ROUNDS:
+                    # CONSUME the queue rather than sleep past it. This is the whole
+                    # mechanism: ``pop_pending_oauth_requests`` reads a list that only
+                    # ``drain_init`` appends to, and ``create_session`` runs exactly one
+                    # drain before handing the handle over -- so a bare sleep here moved
+                    # nothing, and a frame arriving after that drain's idle exit was
+                    # unreachable however many rounds elapsed. The budget was never the
+                    # binding constraint; the loop had no way to absorb a late frame at all.
+                    #
+                    # ``no_report_ceiling=0.0`` is load-bearing: it arms the idle shortcut at
+                    # entry, so this call cannot hold waiting for a "first report" that this
+                    # session already produced during ``create_session``'s own drain. That is
+                    # precisely the idle-window semantics that made an unbounded drain the
+                    # wrong tool here -- bounded per round, it is the right one. Each round is
+                    # therefore a window of at most ``_WARM_OAUTH_SETTLE_SECONDS`` that
+                    # returns as soon as the queue goes quiet, so the total budget is
+                    # unchanged and a satisfied activation still short-circuits on the pop
+                    # above without opening a window at all.
+                    await handle.drain_init(
+                        duration=_WARM_OAUTH_SETTLE_SECONDS,
+                        idle_exit=_WARM_OAUTH_SETTLE_SECONDS,
+                        no_report_ceiling=0.0,
+                    )
+        except BaseException:
+            # Nothing will ever be stamped with this activation, so the session it
+            # registered would leak past the sweep's settled-only rule. Marked settled and
+            # already expired FIRST, so that if the destroy below is interrupted the sweep
+            # is a real retry; and popped only once the destroy actually completed, because
+            # the record is the only reference left to the handle.
+            record = self._sessions.get(activation)
+            if record is not None:
+                record.settled = True
+                record.expires_at = 0.0
+            await _destroy_session_quietly(handle)
+            self._sessions.pop(activation, None)
+            raise
+        return activation, list(collected.values())
+
+    async def shutdown(self) -> None:
+        async with self._lock:
+            await self._retire_locked()
+
+    async def sweep_retiring(self) -> None:
+        """Kill parked generations nothing is waiting on any more."""
+        async with self._lock:
+            await self._sweep_retiring_locked()
+
+    async def _sweep_retiring_locked(self) -> None:
+        keep: list[tuple[int, Any]] = []
+        drop: list[tuple[int, Any]] = []
+        for pair in self._retiring:
+            generation, runtime = pair
+            needed = _runtime_alive(runtime) and _generation_holds_live_rows(generation)
+            (keep if needed else drop).append(pair)
+        self._retiring = keep
+        try:
+            while drop:
+                generation, runtime = drop[0]
+                logger.info("Retiring parked shared mint generation %d", generation)
+                await self._kill_generation(generation, runtime)
+                # Popped only once its kill has actually completed.
+                drop.pop(0)
+        finally:
+            if drop:
+                # Whatever this sweep did not finish stays PARKED. Removing it from the list
+                # without killing it would make ``parked_count()`` read zero, so the drain
+                # would exit and no later sweep would retry -- the process, its sessions and
+                # their loopback servers would simply leak.
+                self._retiring = drop + self._retiring
+
+    async def _park_or_kill_locked(self) -> None:
+        """Stand the current process down: PARKED when a card still needs it."""
+        runtime, generation = self._runtime, self._generation
+        reaper, self._reaper = self._reaper, None
+        self._runtime, self._plan, self._digest = None, None, ""
+        # The reaper is the caller on the idle path; cancelling the current task
+        # would abandon the kill it is in the middle of awaiting.
+        if reaper is not None and reaper is not asyncio.current_task():
+            reaper.cancel()
+        if runtime is None:
+            return
+        if _runtime_alive(runtime) and _generation_holds_live_rows(generation):
+            self._retiring.append((generation, runtime))
+            logger.info(
+                "Parking shared mint generation %d: %d card(s) still mid-consent on it",
+                generation,
+                _live_row_count(generation),
+            )
+            return
+        try:
+            await self._kill_generation(generation, runtime)
+        except BaseException:
+            # ``_runtime`` and the reaper were cleared synchronously above, so this list is
+            # now the ONLY reference to a process the kill did not finish with. Park it and
+            # arm the drain rather than dropping it: an untracked child never gets retired.
+            self._retiring.append((generation, runtime))
+            if self._reaper is None:
+                self._reaper = asyncio.get_running_loop().create_task(_drain_parked_generations())
+            raise
+
+    async def _kill_generation(self, generation: int, runtime: Any) -> None:
+        """Kill one process and expire the links only it could have redeemed."""
+        await _kill_quietly(runtime)
+        self._drop_generation_sessions(generation)
+        await _expire_shared_mints("mint_process_gone", generation=generation)
+        if self._runtime is None and not self._retiring:
+            await asyncio.to_thread(_remove_warm_mint_specs)
+
+    async def _retire_locked(self) -> None:
+        """Hard teardown: every generation, parked ones included."""
+        reaper, runtime, generation = self._reaper, self._runtime, self._generation
+        # Parked generations first, then the current one -- a parked process is the one a
+        # card may still be mid-consent on, so it is retired before the live one.
+        pending = list(self._retiring)
+        if runtime is not None:
+            pending.append((generation, runtime))
+        had_work = bool(pending)
+        self._retiring = []
+        self._reaper = self._runtime = None
+        self._plan, self._digest = None, ""
+        self._sessions.clear()
+        if reaper is not None and reaper is not asyncio.current_task():
+            reaper.cancel()
+        try:
+            while pending:
+                doomed_generation, doomed_runtime = pending[0]
+                await _kill_quietly(doomed_runtime)
+                await _expire_shared_mints("mint_process_gone", generation=doomed_generation)
+                # Popped only once this generation is fully retired.
+                pending.pop(0)
+        finally:
+            if pending:
+                # Same rule as everywhere else in this class: a process whose teardown did
+                # not complete stays tracked, with something scheduled to retire it. The
+                # lists above were emptied synchronously, so this is the only reference left.
+                self._retiring = pending
+                self._reaper = asyncio.get_running_loop().create_task(_drain_parked_generations())
+        if had_work and not self._retiring:
+            # Only once nothing is left: a spec removed under a still-running parked process
+            # strands it without the file it was spawned on.
+            await asyncio.to_thread(_remove_warm_mint_specs)
+
+
+async def _destroy_session_quietly(handle: Any) -> None:
+    """Terminate one warm session. Only ever called once nothing points at it."""
+    try:
+        await asyncio.wait_for(handle.destroy(), timeout=_WARM_SESSION_DESTROY_TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 — best-effort teardown of our own session
+        logger.debug("warm mint session destroy failed", exc_info=True)
+
+
+async def _kill_quietly(runtime: Any) -> None:
+    try:
+        await asyncio.wait_for(runtime.kill(), timeout=_WARM_KILL_TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 — best-effort teardown of our own child
+        logger.debug("warm mint runtime kill failed", exc_info=True)
 
 
 _warm_mint = _WarmMintRuntime()
@@ -506,6 +1159,38 @@ def _warm_row_alive(entry: MintState) -> bool:
     return _warm_mint.activation_is_live(int(entry.get("activation") or 0))
 
 
+def _shared_mints_pending() -> bool:
+    """True while any card still needs the shared process alive."""
+    return any(
+        entry.get("shared") and entry.get("state") in _LIVE_STATES for entry in _mints.values()
+    )
+
+
+async def _expire_shared_mints(reason: str, *, generation: int | None = None) -> list[str]:
+    """Flip live shared mints stale. Called when a process is gone.
+
+    ``generation`` is the only narrowing there is, and every caller passes it: the rows a
+    dead process can no longer redeem are exactly the ones it minted. A pass narrowed by
+    the CALLER's own row tokens instead used to exist here; it read as "spare my retry" but
+    meant "expire every other generation", which withdrew a parked generation's redeemable
+    URL. Withdrawal follows the verifier, so it follows the generation.
+    """
+    flipped: list[str] = []
+    async with _mints_lock:
+        for slug, entry in _mints.items():
+            if not entry.get("shared") or entry.get("state") not in _LIVE_STATES:
+                continue
+            if generation is not None and entry.get("generation") != generation:
+                continue
+            entry["state"] = "expired"
+            entry["reason"] = reason
+            await _dispose_mint(entry)
+            flipped.append(slug)
+    if flipped:
+        logger.info("Shared mint process gone; %d pending mint(s) flipped stale", len(flipped))
+    return flipped
+
+
 async def expire_dead_mints() -> list[str]:
     """Withdraw every shared row whose holding process is gone. THE chokepoint."""
     doomed: list[str] = []
@@ -522,3 +1207,318 @@ async def expire_dead_mints() -> list[str]:
     if doomed:
         logger.info("Withdrew %d approval URL(s) whose minting process is gone", len(doomed))
     return doomed
+
+
+async def _warm_activate(*, slug: str = "") -> _WarmMintResult | None:
+    """Activate the shared process, surviving one death of it.
+
+    The death path does NOT expire anything itself. The stand-down inside ``mint_for`` --
+    reached only when the process is already gone -- has just run
+    ``_expire_shared_mints(generation=<the dead one>)`` through ``_kill_generation``, so the
+    rows whose verifier died are already withdrawn, scoped to that generation. A second,
+    unscoped pass here withdrew every other live shared row instead: a PARKED generation's
+    URL is still redeemable (its process holds the verifier and its session still answers
+    the redirect) and a concurrent batch's claims are another activation's to fill.
+
+    ``CancelledError`` is deliberately NOT caught: swallowing it would report a successful
+    stand-down to a caller that is being torn down. The caller releases its claims and
+    re-raises (see ``warm_mint_all``).
+    """
+    for attempt in range(_WARM_ACTIVATION_ATTEMPTS):
+        try:
+            return await _warm_mint.mint_for(slug=slug)
+        except _WarmMintDied as died:
+            last = attempt + 1 >= _WARM_ACTIVATION_ATTEMPTS
+            logger.warning(
+                "Shared mint process died mid-activation (%s); %s",
+                died.cause,
+                "falling back to the cold path" if last else "respawning it",
+            )
+        except Exception as exc:  # noqa: BLE001 — the process lives; degrade to cold
+            logger.warning(
+                "Shared mint activation failed on a live process (%s); "
+                "falling back to the cold path",
+                type(exc).__name__,
+            )
+            return None
+    return None
+
+
+async def _drain_parked_generations() -> None:
+    """Keep sweeping until no parked generation is left, then return.
+
+    A parked generation is a process kept alive ONLY because a card still holds one of its
+    URLs, so it can be retired the moment that card grants, cancels or times out -- and
+    ``sweep_retiring`` is the only thing that retires it. Every other route to that sweep
+    runs off a NEW mint (``mint_for``, or the reaper a fresh spawn creates), which is
+    precisely what the leak does not have: once the current process is gone and no further
+    Connect arrives, nothing calls it again and the parked process, its sessions and their
+    loopback servers stay resident indefinitely.
+
+    Returns immediately when nothing is parked, so the callers can invoke it unconditionally.
+    """
+    while _warm_mint.parked_count():
+        await asyncio.sleep(_MINT_GRANT_POLL_SECONDS)
+        await _warm_mint.sweep_retiring()
+        # A parked process can also die while parked, which withdraws its cards' URLs.
+        await expire_dead_mints()
+        async with _mints_lock:
+            in_use = _activations_in_use()
+        await _warm_mint.sweep_sessions(in_use)
+
+
+async def _warm_mint_reaper(generation: int) -> None:
+    """Retire the shared process once no card is waiting on it.
+
+    Outlives its own generation on the death path: standing the current process down does
+    not release the generations parked behind it, so the reaper drains those before it
+    returns (see :func:`_drain_parked_generations`).
+    """
+    idle_since = 0.0
+    try:
+        while True:
+            await asyncio.sleep(_MINT_GRANT_POLL_SECONDS)
+            await _warm_mint.sweep_retiring()
+            # Every generation, parked ones included: a card pointing at a process that is
+            # gone must not keep its URL until this reaper's own generation is the dead one.
+            await expire_dead_mints()
+            # Sessions outlive the rows that needed them on every path ending a mint without
+            # a new activation (grant, cancel, TTL). Collected here, not for the process life.
+            async with _mints_lock:
+                in_use = _activations_in_use()
+            await _warm_mint.sweep_sessions(in_use)
+            if not _warm_mint.is_alive():
+                await _expire_shared_mints("mint_process_gone", generation=generation)
+                await _drain_parked_generations()
+                return
+            if _shared_mints_pending():
+                idle_since = 0.0
+                continue
+            now = time.monotonic()
+            if idle_since == 0.0:
+                idle_since = now
+            elif now - idle_since >= _WARM_IDLE_GRACE_SECONDS:
+                logger.info("Retiring the idle shared mint process")
+                # Hard teardown, parked generations included -- so no drain is needed after.
+                await _warm_mint.shutdown()
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — the reaper must never take the gateway down
+        logger.debug("warm mint reaper failed", exc_info=True)
+
+
+def _mint_is_cold_held(entry: MintState | None) -> bool:
+    """True when a dedicated client -- not the shared process -- holds this URL."""
+    return entry is not None and entry.get("state") == "waiting" and entry.get("client") is not None
+
+
+async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[MintState]]:
+    """Claim ``slugs`` for the shared process. Returns ``({slug: row token}, displaced rows)``.
+
+    The token is the row's OWN identity and it is what every later step fences on. A batch
+    ``time.monotonic()`` reading cannot do that job: it has ~15.6ms granularity on Windows,
+    so two Connects for one provider inside a single tick read as the same row and a late
+    absorb writes its URL over the newer claim (see ``_new_mint_token``, which records the
+    same reasoning for the cold engine).
+
+    ATOMIC BY CONSTRUCTION: the loop contains NO await, so the caller either gets every
+    claim or none. It used to await ``_dispose_mint`` on each replaced row, which suspends
+    on a client teardown and again on the shielded spec removal in that function's
+    ``finally`` -- and the claim is taken BEFORE ``warm_mint_all`` enters the try that rolls
+    it back, so a cancellation there left earlier slugs installed as ``minting`` with no
+    caller holding their tokens. Nothing withdraws such a row (``expire_dead_mints`` judges
+    ``waiting`` only) and it keeps ``_shared_mints_pending`` true, so the process is never
+    retired either. The replaced rows come back for the caller to dispose INSIDE that try
+    instead -- which also puts the dispose outside the table lock, where the mint engine's
+    own rule wants it.
+    """
+    claimed: dict[str, str] = {}
+    displaced: list[MintState] = []
+    started = time.monotonic()
+    async with _mints_lock:
+        for slug in slugs:
+            prior = _mints.get(slug)
+            if _mint_is_cold_held(prior):
+                # A dedicated client owns this provider's verifier. Leave its URL on
+                # the card rather than replace a working link.
+                continue
+            if prior is not None:
+                # Hand it back, don't just drop it: the replaced row may own a watcher, and
+                # a watcher outliving its row expires the NEW mint on the OLD mint's
+                # deadline. Recorded only alongside the claim that displaced it, so a
+                # non-empty list always implies a non-empty claim set.
+                displaced.append(prior)
+            token = _new_mint_token()
+            _mints[slug] = {
+                "state": "minting",
+                # Informational only -- when the claim was taken. Never a fence.
+                "started": started,
+                "shared": True,
+                "token": token,
+            }
+            claimed[slug] = token
+    return claimed, displaced
+
+
+async def _dispose_displaced_rows(rows: list[MintState]) -> None:
+    """Release the holdings of the rows a claim replaced -- watcher, client, PID, spec.
+
+    Split out of the claim itself because it awaits: see ``_claim_shared_mints``. Called
+    from inside the caller's protected region, so a cancellation here rolls the claims back
+    rather than stranding them.
+    """
+    for row in rows:
+        await _dispose_mint(row)
+
+
+async def _release_shared_claims(claims: dict[str, str]) -> None:
+    """Drop unfulfilled claims so the card asks for a fresh mint.
+
+    Keyed on the row token, so a claim already superseded by a newer one at the same slug
+    is left alone rather than dropped out from under the activation now filling it.
+    """
+    async with _mints_lock:
+        for slug, token in claims.items():
+            entry = _mints.get(slug)
+            if entry is not None and entry.get("token") == token and entry.get("shared"):
+                await _dispose_mint(entry)
+                _mints.pop(slug, None)
+
+
+def _credential_bearing_slugs(urls: dict[str, str]) -> set[str]:
+    """The slugs in ``{slug: url}`` whose approval URL carries a credential.
+
+    The gate is :func:`~kiro_crew.security.oauth_url_contains_credential` -- the same
+    predicate the cold mint and the chat consent banner apply -- and it is synchronous
+    because it can consult the operator's on-disk OAuth-endpoint extension, an unbounded
+    stat on a network mount. Never returns or logs the value it judged.
+    """
+    return {slug for slug, url in urls.items() if url and oauth_url_contains_credential(url)}
+
+
+async def _absorb_warm_requests(result: _WarmMintResult, claims: dict[str, str]) -> list[str]:
+    """Move popped challenges into the mint table. Returns the slugs now waiting."""
+    popped = {
+        str(request.get("serverName") or ""): str(request.get("oauthUrl") or "")
+        for request in result.requests
+    }
+    # An activation names its challenges by the alias the SPEC mounted; the table is keyed by
+    # registry slug. Resolved once, here, so the screen and the store judge the same string.
+    resolved = {
+        slug: popped.get(mcp_server_alias(slug)) or popped.get(slug) or ""
+        for slug in (provider["slug"] for provider in result.providers)
+    }
+    minted: list[str] = []
+    unfulfilled: dict[str, str] = {}
+    tainted: set[str] = set()
+    try:
+        # Screened BEFORE the table lock: the verdict is a pure function of the URL, and the
+        # gate can read the operator's endpoint extension off disk. A refused URL never
+        # reaches the store, so no card can be handed one.
+        tainted = await asyncio.to_thread(_credential_bearing_slugs, resolved)
+        loop = asyncio.get_running_loop()
+        async with _mints_lock:
+            for provider in result.providers:
+                slug = provider["slug"]
+                token = claims.get(slug, "")
+                entry = _mints.get(slug)
+                if entry is None or not token or entry.get("token") != token:
+                    # Superseded while the activation ran. Its challenge stays alive in the
+                    # session that produced it and nothing points at it; the sweep collects
+                    # that session.
+                    continue
+                url = resolved.get(slug, "")
+                if not url or slug in tainted:
+                    # Released either way, not failed: the card asks for a fresh mint rather
+                    # than sitting on a claim nothing will ever fill.
+                    unfulfilled[slug] = token
+                    continue
+                entry.update(
+                    {
+                        "state": "waiting",
+                        "oauth_url": url,
+                        "generation": result.generation,
+                        "activation": result.activation,
+                        "watcher": loop.create_task(
+                            _mint_watcher(slug, provider["mcp_url"], token)
+                        ),
+                    }
+                )
+                minted.append(slug)
+    finally:
+        # Settlement on EVERY post-activation exit, which is why it is a ``finally``. The
+        # session was registered by ``_activate_locked`` before this function ran, and the
+        # sweep only ever collects a SETTLED session -- so a raise anywhere above (the
+        # screen's thread hop is a cancellation point, and the gate itself can fail on an
+        # unreadable file) would leave the session, and the loopback callback servers it
+        # owns, resident for the life of the process. The in-use snapshot is taken HERE,
+        # under the lock, so it reflects whatever the loop above actually installed rather
+        # than what it intended to.
+        async with _mints_lock:
+            in_use = _activations_in_use()
+        await _warm_mint.settle_activation(result.activation, in_use)
+    for slug in tainted:
+        logger.warning("Shared mint for %r produced a URL with a credential pattern", slug)
+        await asyncio.to_thread(
+            _log_warm_event, "connections_warm_mint_url", f"provider:{slug}", "refused"
+        )
+    if unfulfilled:
+        await _release_shared_claims(unfulfilled)
+    return minted
+
+
+async def warm_mint_all(providers: list[Provider] | None = None) -> list[str]:
+    """Warm every mintable provider's approval URL in ONE activation.
+
+    Returns the slugs now holding a URL. Never raises for a mint failure -- that leaves the
+    cards exactly as they were, asking for a mint. CANCELLATION does propagate, after the
+    claims are released.
+
+    The claim is taken BEFORE the process is ensured, because ensuring and activating are
+    one locked step (see ``mint_for``) and nothing may run between them. ``providers``
+    therefore only decides which rows are CLAIMED; what gets activated is the snapshot the
+    lock holder computes, so a claim the activation did not cover is released rather than
+    left minting forever.
+
+    NO CALLER YET: the premint endpoint that drives this lands in its own slice.
+    """
+    candidates = (
+        await asyncio.to_thread(mintable_providers) if providers is None else list(providers)
+    )
+    if not candidates:
+        return []
+
+    claims, displaced = await _claim_shared_mints([provider["slug"] for provider in candidates])
+    if not claims:
+        # A displaced row is only ever recorded alongside the claim that displaced it, so an
+        # empty claim set means there is nothing to dispose either.
+        return []
+    try:
+        # Inside the protected region on purpose: this is the awaiting half of the claim, so
+        # a cancellation here must roll the whole claim set back rather than strand it.
+        await _dispose_displaced_rows(displaced)
+        result = await _warm_activate()
+        if result is None:
+            await _release_shared_claims(claims)
+            return []
+
+        minted = await _absorb_warm_requests(result, claims)
+        activated = {provider["slug"] for provider in result.providers}
+        stranded = {slug: token for slug, token in claims.items() if slug not in activated}
+        if stranded:
+            await _release_shared_claims(stranded)
+    except BaseException:
+        # BaseException, not Exception: a CancelledError landing between the claim and the
+        # activation would otherwise leave every row ``minting`` with no watcher and no
+        # activation. ``expire_dead_mints`` judges ``waiting`` rows only, so nothing would
+        # ever withdraw them -- and they keep ``_shared_mints_pending`` true, so the reaper
+        # never retires the process either. The release awaits to completion: a task is
+        # handed its cancellation once, so this cleanup runs before the raise resumes it.
+        await _release_shared_claims(claims)
+        raise
+    await asyncio.to_thread(
+        _log_warm_event, "connections_warm_mint", f"activated:{len(claims)} minted:{len(minted)}"
+    )
+    logger.info("Shared mint activation warmed %d of %d card(s)", len(minted), len(claims))
+    return minted

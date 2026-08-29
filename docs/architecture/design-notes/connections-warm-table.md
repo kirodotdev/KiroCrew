@@ -8,17 +8,16 @@ process, and every rule below answers an observed failure.
 adds only endpoint wiring and a function-local `expire_dead_mints` import on the status path,
 keeping the mint engine off the gateway's boot path.
 
-**Scope boundary: the TABLE and the SPECS have landed; the PROCESS LIFECYCLE has not.**
-Shipped now: the shared row shape (`shared`/`generation`/`activation`), the liveness registry
-those stamps are read against, `expire_dead_mints()` on the status path, and the spec side --
-the registry-derived universe, the plan and its servability test, the tool-alias key shape, the
-spec files the plan writes, and the filesystem-drift guard covering their synchronous helpers.
-Still deferred: everything that spawns, activates, parks or kills a process -- the spawn/respawn
-rules, the reaper, and `warm_mint_all`, which is the only thing that would give the spec planner
-a caller. The lifecycle slice lands those tests together with the code. Until it does, nothing
-calls the planner and no row is ever `shared`, so the shipped `expire_dead_mints()` call is a
-no-op scan whose predicate is nonetheless complete for the parked case, because a reader blind
-to a parked process withdraws a URL that process can still redeem.
+**Scope boundary: the TABLE, the SPECS and the PROCESS LIFECYCLE have landed; the ENDPOINT
+WIRING has not.** Shipped now: the shared row shape (`shared`/`generation`/`activation`), the
+liveness registry those stamps are read against, `expire_dead_mints()` on the status path, the
+spec side -- the registry-derived universe, the plan and its servability test, the tool-alias key
+shape, the spec files the plan writes, and the filesystem-drift guard covering their synchronous
+helpers -- and the lifecycle: spawn/respawn, activation, park-or-kill, the reaper, and
+`warm_mint_all`, which is what gives the spec planner a caller. Still deferred: the dashboard
+endpoint that premints a gallery, so `warm_mint_all` itself has NO CALLER yet and no request
+path reaches any of this. That is the last seam, and it is deliberately thin -- the endpoint adds
+a handler, not a rule.
 
 ## Measured facts
 
@@ -33,6 +32,22 @@ to a parked process withdraws a URL that process can still redeem.
   questions: `generation_is_live` (the process holds the verifier) **and** `activation_is_live`
   (the session still answers the redirect). Process liveness alone passed the
   terminated-session case.
+- **A frame becomes readable only when something DRAINS the session queue.**
+  `pop_pending_oauth_requests()` reads a list that only `drain_init` appends to, and
+  `create_session` runs exactly one drain before it hands the handle over. The settle loop
+  originally slept between pops, which consumes nothing — so a provider whose `oauth_request`
+  landed after that create-time drain's idle exit was unreachable however many rounds elapsed.
+  The 3s budget was never the binding constraint; the loop had no mechanism to absorb a late
+  frame at all, and in a multi-provider activation the later providers are exactly the ones at
+  risk. Each waiting round is now a bounded `drain_init(duration=0.5, idle_exit=0.5,
+  no_report_ceiling=0.0)`. The ceiling argument is load-bearing: it arms the idle shortcut at
+  entry so the call cannot hold waiting for a "first report" this session already produced
+  during `create_session`'s own drain — which is precisely the idle-window semantics that made
+  an *unbounded* drain the wrong tool here. Bounded per round it is the right one, the total
+  wall-clock budget is unchanged, and an activation whose frames are already staged still
+  short-circuits on the first pop without opening a window. Beyond the budget the claim is
+  released and the cold path serves that provider, which is the correct fallback rather than a
+  defect.
 
 ## Specs are read once at spawn
 
@@ -110,20 +125,176 @@ quietly drop the filesystem work the guard's coverage rests on without failing i
 
 ## Seams and residuals
 
-**Shared-mint expiry** is the lifecycle slice's, keyed on the fact that a minting process is
+**Shared-mint expiry** has landed with the lifecycle, keyed on the fact that a minting process is
 gone rather than on a cause, which is what covers a process that went away by a route no expiry
 path anticipated. PR #5899 is a different cause and a different table: it owns
 **Disconnect-driven grant revocation**, and the two meet only where a revoke should re-warm.
-**Proactive refresh** attaches to the reaper the lifecycle slice introduces; **a
-supervisor/watchdog** is absent, as are the accessors it would need. Two residuals:
+**Proactive refresh** attaches to `_warm_mint_reaper`, which now exists; **a
+supervisor/watchdog** is absent, as are the accessors it would need.
 
-- **A cancel between the claim and the activation leaks the claim.** The lifecycle entry point
-  takes its claim outside any `try`/`finally` and the activation catches `Exception`, not
-  `BaseException`, so a `CancelledError` in that window leaves rows `minting` with no watcher:
-  nothing expires them, the pending check stays true, and the process is never retired.
-  Unreachable while that entry point does not exist, and **must be closed before the lifecycle
-  slice wires it up** -- along with replacing a shared row's state-string fence with a unique row
-  token (issue #6110), and screening an approval URL for a credential *before* it is stored.
+Three residuals the lifecycle slice was required to close, and did:
+
+- **A cancel between the claim and the activation leaked the claim.** The entry point took its
+  claim outside any `try`/`finally` and the activation catches `Exception`, not `BaseException`,
+  so a `CancelledError` in that window left rows `minting` with no watcher: nothing expires them
+  (`expire_dead_mints` judges `waiting` rows only), the pending check stays true, and the process
+  is never retired. `warm_mint_all` now holds every claim inside a `try` whose `except
+  BaseException` releases them and re-raises, so cancellation still propagates -- the activation
+  deliberately does NOT swallow it, because reporting a clean stand-down to a caller being torn
+  down is the worse failure. The window after the activation returns is covered by the same
+  block. **The claim loop itself was a second copy of this window**, since the claim is taken
+  *before* that `try`: it awaited `_dispose_mint` on each row it replaced, which suspends on a
+  client teardown and again on the shielded spec removal in that function's `finally`. The claim
+  loop is now await-free and atomic by construction -- it returns the displaced rows for the
+  caller to dispose *inside* the protected region, which also moves the dispose outside the
+  table lock, where the mint engine's own rule wants it. Pinned by an AST guard, not just by a
+  behavioural test.
+- **A shared row's fence was a batch clock reading, not a row identity** (issue #6110). Rows were
+  separated by `entry["started"] == started`, one `time.monotonic()` value per `warm_mint_all`
+  call. The clock has ~15.6ms granularity on Windows -- the reason `_new_mint_token` exists for
+  the cold engine -- so two Connects for one provider inside a tick read as the same row and a
+  late absorb wrote its URL over the newer claim. Claiming now returns `{slug: token}` and
+  absorb and release both verify that opaque per-row token; `started` is kept as information and
+  is never a fence.
+- **An approval URL was stored without being screened for a credential.** `_absorb_warm_requests`
+  wrote the popped `oauth_request` URL straight onto the row. It now passes every popped URL
+  through `security.oauth_url_contains_credential` -- the same gate the cold mint and the chat
+  consent banner apply, called, not re-implemented -- *before* the table lock, since the verdict
+  is a pure function of the URL and the gate can read the operator's on-disk endpoint extension.
+  A refused URL never reaches the store: the claim is released so the card asks for a fresh mint,
+  and the refusal is audited without the value.
+
+Two more the same slice closed, both about **withdrawal and retirement following the
+generation** rather than anything else:
+
+- **The retry's expiry pass was unscoped.** `_WarmMintDied` is raised only after the stand-down
+  inside `mint_for` has already run `_expire_shared_mints(generation=<the dead one>)` through
+  `_kill_generation`, so the rows whose verifier died are withdrawn before the retry ever sees
+  the exception. A second pass in `_warm_activate`, narrowed only by the caller's own row
+  tokens, therefore expired every *other* live shared row: a parked generation's URL is still
+  redeemable (its process holds the verifier and its session still answers the redirect), and a
+  concurrent batch's claims are another activation's to fill. The pass is gone, and
+  `_expire_shared_mints` now takes `generation` as its only narrowing, because withdrawal
+  follows the verifier.
+- **A parked generation was stranded when the current process died.** `sweep_retiring` is the
+  only thing that retires a parked process, and every route to it runs off a NEW mint -- which
+  is exactly what the leak does not have. The reaper used to `return` as soon as the current
+  process was gone, and the stand-down before a *failed* respawn cancelled the reaper without
+  creating one, so in both cases the parked process, its sessions and their loopback servers
+  stayed resident forever once its last card completed. `_drain_parked_generations` now keeps
+  sweeping until nothing is parked, and both routes run it.
+
+And one the second review round found, which is not a cancellation bug at all:
+
+- **A refused spec was still activated by name.** The writer declines to overwrite a file at
+  a planned spec path whose contents this module did not write — which protects the file and
+  nothing else, because the spawn is handed `agent=<fixed name>` and kiro-cli resolves that
+  name off the same agents directory. A hand-written agent parked at
+  `kirocrew-mint-warm-base.json` would therefore have been executed, with its own
+  `mcpServers` commands initialized, by the very code that had just refused to own it.
+  `_unowned_plan_specs` now re-verifies, off the loop, that every planned spec exists *and*
+  is sentinel-owned before the runtime is constructed; any refusal aborts warming entirely
+  and is audited. Aborting is safe because the cold path still serves every Connect — it
+  just spawns per provider.
+
+One residual remains:
+
+## Session-handle ownership, made explicit
+
+Three review rounds kept producing findings in this area because the ownership transfers were
+*implicit* — a handle moved between "the backend has it", "we have it", and "the registry has
+it" with no stated rule about who is responsible if an await in between is interrupted. The
+rule is now one sentence: **a handle is registered before anything can interrupt, and
+forgotten only once its destroy has completed.** Every touchpoint:
+
+| # | Point | Transfer | How it is cancellation-safe |
+|---|---|---|---|
+| 1 | `runtime.create_session` in `_activate_locked` | backend → us | Run as a SHIELDED task we keep a reference to, so the handle stays reachable when the wait is abandoned. `except BaseException` → `_abandon_session_creation_locked` → re-raise. |
+| 2 | `_sessions[activation] = _WarmSession(...)` | us → registry | No await between the handle arriving and the registration (counter bump + dataclass are sync). Atomic by construction. |
+| 3 | abandoned create, handle recovered | backend → registry | Registered settled-and-expired *before* the destroy, so it enters rule 6 rather than being a special case. |
+| 4 | abandoned create, no handle recovered | — | `create.cancel()`, then the generation is **quarantined** (`_plan`/`_digest` cleared) so the next activation stands it down and the orphan dies with the process. See the bound below. |
+| 5 | oauth-poll failure in `_activate_locked` | registry → destroyed | Record marked settled + `expires_at = 0` BEFORE the destroy, popped after. An interrupted destroy leaves a sweepable record. |
+| 6 | `_sweep_sessions_locked` | registry → destroyed | `try/finally` popping only when `destroyed` is true. Held across the await on purpose: a lock-free reader then over-reports liveness briefly, which keeps a row waiting rather than withdrawing a URL. |
+| 7 | `_drop_generation_sessions` | registry → dropped, no destroy | Sync, and correct: the process is dead, so its sessions died with it. |
+| 8 | `_retire_locked`'s `_sessions.clear()` | registry → dropped, no destroy | Sync. Every runtime is being killed, so every session dies with its process; on this path withdrawing the rows is the intent. |
+| 9 | `_destroy_session_quietly` | — | Swallows `Exception`, propagates `CancelledError` **by design** — that is what lets callers 5, 6 and 3 retain the record and retry. |
+
+Two awaits in `_activate_locked`'s own `except BaseException` handler are the cleanup rather
+than a window, and their safety is state ordering (rule 5) rather than a nested handler, so
+they are pinned by behavioural tests instead of the AST guard.
+
+That guard is now bound to **specific (function, await-target) pairs**, not to "this function
+contains some protected try" — the coarse form is what let a bare sibling await in
+`_activate_locked` pass by association, and it omitted `_sweep_sessions_locked` entirely.
+
+**The residual, and its bound.** A `session/new` the backend accepts *after* we cancel the
+create carries no id we hold, so nothing can address it directly. The first version of this
+note claimed that was fine because "it is reaped when the runtime is retired" — and a review
+round falsified exactly that argument: retirement is not guaranteed to arrive. Any card
+holding a URL keeps `_shared_mints_pending` true, which resets the reaper's idle clock on
+every cycle, while `_ensure_locked`'s digest-equality fast path keeps the same generation
+reusable — so each repetition parked another orphan session and its callback children on ONE
+live process, unbounded until listener or memory exhaustion.
+
+So the generation is now **quarantined** instead: row 4 clears `_plan` and `_digest`, which
+makes the next activation find the resident plan unservable and stand the generation down
+through the ordinary path — parked for the drain when a card still needs it, killed outright
+otherwise. Either way the process dies and takes the orphan with it. **The bound is therefore
+at most one generation's sessions, released on the next activation or on idle retirement,
+whichever comes first.** The cost is a respawn (~5s) on the next warm call after a transient
+session timeout, which is the right trade: correctness over a warm-cache hit. Closing the
+residual entirely would need the backend to expose a session id at request time rather than at
+response time.
+
 - **A hard gateway kill strands warm spec files.** They carry no manifest row, so the cold
   engine's aged-row sweep cannot see them. The next spawn's write-time sweep removes them, so
   the exposure is bounded, but it is not a clean teardown.
+
+## The one bug class, and the uniform shape that closes it
+
+Two independent review rounds on the lifecycle slice produced seven findings between them,
+and **six were the same defect wearing different clothes**: an `await` sitting between a
+state mutation and that mutation's settlement or cleanup, guarded only by an
+`except Exception` — which a `CancelledError` walks straight past, because it inherits from
+`BaseException`. Each instance leaks something different, which is why they read as
+unrelated:
+
+| Mutation | The await in the window | What leaked |
+|---|---|---|
+| rows installed as `minting` | `_dispose_mint` on a replaced row, inside the claim loop | rows nothing withdraws, process never retired |
+| rows installed as `minting` | the activation and the absorb | same |
+| a generation parked, its reaper cancelled | the spec write and `runtime.spawn()` | parked process with no sweeper, forked child, orphan specs |
+| a session registered | the credential screen's thread hop | session + its loopback callback servers, for the process's life |
+| generations moved out of `_retiring` | `_kill_generation` per generation | processes with no reference left anywhere |
+| `_runtime` cleared, reaper cancelled | `_kill_generation` in the stand-down | the same |
+| `_retiring` emptied, `_runtime` cleared | the hard teardown's kill loop | the same |
+
+One further finding was NOT a cancellation window but the same *implicitness* — a state that
+had always been reachable and became routine. `generation_is_live` denied liveness on the
+equality branch: `generation == self._generation` answered `is_alive()`, which reads
+`self._runtime`. But only a successful spawn bumps the counter, so a stood-down process sits
+in `_retiring` under the number that is still `self._generation` with `self._runtime` already
+cleared. A lock-free status scan in that window read a live parked process as dead, withdrew
+its redeemable URLs, and the withdrawal then made `_generation_holds_live_rows` false so the
+next sweep killed it. The ordinary incompatible-plan respawn always had this window; the
+re-park fixes above *widened* it by adding a second route (an interrupted kill re-parks under
+the current number). The equality test now confirms liveness and never denies it, falling
+through to the parked list.
+
+Fixing them one at a time is what produced two rounds, so the module now states the
+invariant instead: **a mutation is either atomic by construction, or its cleanup runs in a
+`finally` / `except BaseException` that re-raises.** In practice that is three shapes —
+make the loop await-free so there is no window (the claim), settle in a `finally` that
+takes its own fresh snapshot (the session), or re-park what a teardown did not finish and
+arm the drain synchronously before any further await (every process path). An AST guard
+asserts the functions owning these windows carry a bare-`finally` or `BaseException`
+handler rather than only `except Exception`, so the class cannot silently return; the
+remaining awaits are covered by a written audit rather than a test, because "this await has
+no mutation behind it" is not mechanically checkable.
+
+Three awaits are deliberately left unprotected, and each is a judgement rather than an
+oversight: `_dispose_displaced_rows` can be interrupted partway, but the rows are already
+evicted and their watchers are token-fenced, so a survivor writes nothing;
+`_expire_shared_mints` and `expire_dead_mints` flip a row to `expired` before awaiting its
+dispose, which the reaper's next pass re-scans and completes; and the reaper and drain
+treat their own cancellation as the signal that a replacement is taking over.
