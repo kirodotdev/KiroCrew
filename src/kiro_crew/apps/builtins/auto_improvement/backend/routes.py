@@ -23,6 +23,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew.apps import teardown
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.security import redact
 
@@ -458,7 +459,10 @@ async def _handle_pr_status(request: web.Request) -> web.StreamResponse:
     if status.get("ok"):
         return web.json_response(status, status=200)
     return web.json_response(
-        {"code": "pr_status_unavailable", "error": _redact_for_display(str(status.get("error") or ""))},
+        {
+            "code": "pr_status_unavailable",
+            "error": _redact_for_display(str(status.get("error") or "")),
+        },
         status=502,
     )
 
@@ -1467,6 +1471,38 @@ def register_routes(app: web.Application) -> None:
         except Exception:  # pragma: no cover - defensive
             logger.warning("%s: run shutdown failed", store.APP_NAME, exc_info=True)
 
+    async def _stop_on_disable(_app: str) -> None:
+        """Wind the same run down when the OPERATOR switches the app off.
+
+        ``on_cleanup`` fires at gateway shutdown and nowhere else. Disabling the app
+        takes a different path entirely: :func:`_require_enabled` starts refusing the
+        routes, while the supervisor thread keeps the clone lock and keeps spending
+        budget — the operator sees the app off and the work carries on.
+
+        :func:`~kiro_crew.apps.teardown.notify_app_disabled` fires INSIDE the disable
+        request and before the ``enabled`` flag is written, which is what makes this
+        an off-switch rather than a sweep: a run signalled on the next poll instead
+        would get a whole further candidate out of a permission that was already
+        withdrawn.
+
+        Both workers stand down, because both keep acting on the operator's
+        repositories: a watcher runs an agent turn inside a per-PR clone on a
+        timer, and the run holds the clone lock and spends budget. Each is
+        signalled the way its own shutdown hook signals it — ``stop_all``
+        only sets flags and joins nothing, ``stop`` is bounded and blocks, so it
+        goes off the loop — and each is contained separately. ``on_cleanup``
+        gets that independence free by holding two hooks; here one failing
+        signal must not swallow the other.
+        """
+        try:
+            pr_watchers.get_registry().stop_all()
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("%s: watcher stop on disable failed", store.APP_NAME, exc_info=True)
+        try:
+            await asyncio.to_thread(runner.get_supervisor().stop)
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("%s: run stop on disable failed", store.APP_NAME, exc_info=True)
+
     # Guarded: register_routes runs before the runner freezes its signal lists,
     # so appending is safe — but a failure here must never break gateway startup.
     try:
@@ -1475,5 +1511,16 @@ def register_routes(app: web.Application) -> None:
         app.on_cleanup.append(_stop_run)
     except Exception:  # pragma: no cover - defensive
         logger.warning("%s: could not register lifecycle hooks", store.APP_NAME)
+
+    # Same wind-down, different trigger. Feature-detected with ``getattr`` rather
+    # than called directly, so a core build whose teardown module predates this
+    # registry still loads — there the shutdown hook above is the only stop
+    # there is, which is the pre-registry behaviour rather than a regression.
+    try:
+        register_disable = getattr(teardown, "register_app_disable_hook", None)
+        if register_disable is not None:
+            register_disable(store.APP_NAME, _stop_on_disable)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("%s: could not register the app-disable hook", store.APP_NAME)
 
     logger.info("%s backend routes registered", store.APP_NAME)
