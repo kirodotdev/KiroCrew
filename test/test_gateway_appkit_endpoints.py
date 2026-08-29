@@ -388,7 +388,7 @@ class TestContextInjection:
         entry = slot._pending_context[0]
         assert entry["content"] == "CR-123 was approved"
         assert entry["source"] == "watch"
-        assert entry["ephemeral"] is True
+        assert "ephemeral" not in entry
         assert "injectedAt" in entry
 
     @pytest.mark.asyncio
@@ -446,7 +446,7 @@ class TestContextInjection:
 
         entry = slot._pending_context[0]
         assert entry["maxAge"] == 60
-        assert entry["ephemeral"] is False
+        assert "ephemeral" not in entry
 
     @pytest.mark.asyncio
     async def test_inject_multiple(self, tmp_path: Path):

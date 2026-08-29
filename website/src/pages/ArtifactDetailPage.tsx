@@ -47,6 +47,35 @@ import { i18nT } from '../i18n/t'
 import { fmtDateFields } from '../i18n/format'
 import ErrorNotice from '../components/ErrorNotice'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+
+// Seconds. Without a TTL a dormant slot marches to the queue ceiling and 429s every
+// later post; the server ignores `ephemeral`, so this is the only thing that bounds it.
+const COMPANION_CONTEXT_MAX_AGE_S = 3600
+
+const INJECTED_VERSION_PREFIX = 'mc-artifact-injected:'
+
+/** Read the persisted injected-version claim for a slot, if any. */
+function loadInjectedVersion(slotKey: string): number | undefined {
+  try {
+    const raw = sessionStorage.getItem(INJECTED_VERSION_PREFIX + slotKey)
+    if (raw === null) return undefined
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : undefined
+  } catch {
+    // Storage disabled or full: fall back to the in-memory map for this tab.
+    return undefined
+  }
+}
+
+/** Persist (or clear, with null) the injected-version claim for a slot. */
+function writeInjectedVersion(slotKey: string, version: number | null): void {
+  try {
+    if (version === null) sessionStorage.removeItem(INJECTED_VERSION_PREFIX + slotKey)
+    else sessionStorage.setItem(INJECTED_VERSION_PREFIX + slotKey, String(version))
+  } catch {
+    // Best-effort: the in-memory map still guards this tab's own duplicate.
+  }
+}
 /**
  * The artifact's active companion session: the bound slot for `slug`, or the most
  * recently active one if a race or a History-page resume left more than one.
@@ -1106,12 +1135,50 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // replacement. That yields two active bound sessions for one artifact, the
   // exact invariant the archive-then-create ordering exists to protect.
   const sessionOpBusyRef = useRef(false)
-  // Versions already announced to a session via context injection, so repeated
-  // panel opens don't stack duplicate freshness nudges.
+  // PERSISTED: a ref-only marker is empty on every reload, so the cold branch fired
+  // every time and suppressed the stale-version nudge for good.
   const injectedVersionRef = useRef<Map<string, number>>(new Map())
+  /** Claim the version for an IN-FLIGHT injection: suppresses a concurrent second
+   *  injection within this page. NOT persisted -- an injection aborted before its POST
+   *  resolves (tab closed, navigation, network drop) would otherwise be recorded as
+   *  DELIVERED and suppress that version's nudge on every later reload. */
+  const holdInjectedVersion = useCallback((slotKey: string, version: number) => {
+    injectedVersionRef.current.set(slotKey, version)
+  }, [])
+  /** Record a version as genuinely DELIVERED (or as a deliberate baseline). *persist*
+   *  decides whether the claim may outlive the page, and callers must state it: a resolved
+   *  POST is NOT sufficient, because the queue entry behind it lives in memory until the
+   *  server flushes, so a crash before that flush would leave a persisted claim suppressing
+   *  the repost of content that never reached disk. Pass the server's own durability
+   *  answer; a local decision with no queued entry behind it passes true. */
+  const confirmInjectedVersion = useCallback(
+    (slotKey: string, version: number, persist: boolean) => {
+      injectedVersionRef.current.set(slotKey, version)
+      if (persist) {
+        writeInjectedVersion(slotKey, version)
+      }
+    },
+    [],
+  )
+  /** Drop the claim after a rejected POST, so the next open retries. Guarded on the
+   *  version: a stale rejection must not delete a newer request's claim. */
+  const releaseInjectedVersion = useCallback((slotKey: string, version: number) => {
+    if (injectedVersionRef.current.get(slotKey) === version) {
+      injectedVersionRef.current.delete(slotKey)
+      writeInjectedVersion(slotKey, null)
+    }
+  }, [])
+  /** The persisted claim, so a reload does not read as "never injected". */
+  const readInjectedVersion = useCallback((slotKey: string): number | undefined => {
+    const live = injectedVersionRef.current.get(slotKey)
+    if (live !== undefined) return live
+    const stored = loadInjectedVersion(slotKey)
+    if (stored !== undefined) injectedVersionRef.current.set(slotKey, stored)
+    return stored
+  }, [])
 
-  /** Structured context entry naming the artifact — injected ephemeral (consumed
-   *  on the next user message) so the user's first message can be natural
+  /** Structured context entry naming the artifact — injected as background context
+   *  with a short TTL, so the user's first message can be natural
    *  ("summarize this") with no slug boilerplate in the composer. */
   const buildCompanionContext = useCallback((): string => {
     if (!artifact) return ''
@@ -1166,10 +1233,19 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // the staged prefill and the composer opens empty (correct only on the
       // second open). Idempotent once active === res.key.
       dispatch(switchSlot(res.key))
+      // Held BEFORE the POST so a concurrent reopen cannot inject twice; the hold is
+      // memory-only and only a RESOLVED post persists the claim.
+      const injectedVersion = artifact.version
+      holdInjectedVersion(res.key, injectedVersion)
       api.chatSlotContext(res.key, buildCompanionContext(), {
-        source: 'artifact-companion', ephemeral: true,
-      }).catch(() => undefined)
-      injectedVersionRef.current.set(res.key, artifact.version)
+        source: 'artifact-companion', maxAge: COMPANION_CONTEXT_MAX_AGE_S,
+      })
+        .then((ack) => confirmInjectedVersion(res.key, injectedVersion, ack?.durable === true))
+        // A failed POST is not a delivery, so the claim is released either way. A full
+        // queue answers the retry with its own 429; nothing is tracked client-side.
+        .catch(() => {
+          releaseInjectedVersion(res.key, injectedVersion)
+        })
       dispatch(fetchSlots())
       return res.key as string
     } catch (err) {
@@ -1178,7 +1254,8 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     } finally {
       setChatCreating(false)
     }
-  }, [artifact, buildCompanionContext, dispatch])
+  }, [artifact, buildCompanionContext, dispatch, holdInjectedVersion,
+      confirmInjectedVersion, releaseInjectedVersion])
 
   /** Sparkle flow: resume the active bound session if one exists, else create a
    *  new one. With `address`, stage (never auto-send) the address-comments
@@ -1225,22 +1302,37 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (addressMsg) writePrefill(boundSlotResolved.key, addressMsg)
     setPanel('chat')
     // Resume freshness nudge: if the artifact moved past the session's last
-    // activity, inject a fresh ephemeral context entry so the agent doesn't act
+    // activity, inject a fresh short-lived context entry so the agent doesn't act
     // on stale-version assumptions. Best-effort — ISO timestamps compare
     // lexicographically; a miss just means the agent re-reads via artifact_get.
-    const injected = injectedVersionRef.current.get(boundSlotResolved.key)
-    if (
-      injected !== artifact.version &&
+    const injected = readInjectedVersion(boundSlotResolved.key)
+    const artifactIsStale = Boolean(
       boundSlotResolved.last_activity_ts && artifact.updated_at &&
       artifact.updated_at > boundSlotResolved.last_activity_ts
-    ) {
-      injectedVersionRef.current.set(boundSlotResolved.key, artifact.version)
+    )
+    if (injected === undefined && !artifactIsStale) {
+      // Nothing to nudge about: record the baseline so a later update is detectable.
+      // Persisted deliberately -- it is a decision, not an in-flight claim.
+      confirmInjectedVersion(boundSlotResolved.key, artifact.version, true)
+    } else if (injected !== artifact.version && artifactIsStale) {
+      // Same rule as the create path: the hold lands BEFORE the POST so an
+      // open/close/reopen inside the request window cannot inject twice, and only a
+      // RESOLVED post persists it -- an aborted one must not read as delivered.
+      const nudgeVersion = artifact.version
+      holdInjectedVersion(boundSlotResolved.key, nudgeVersion)
       api.chatSlotContext(boundSlotResolved.key, buildCompanionContext(), {
-        source: 'artifact-companion', ephemeral: true,
-      }).catch(() => undefined)
+        source: 'artifact-companion', maxAge: COMPANION_CONTEXT_MAX_AGE_S,
+      })
+        .then((ack) =>
+          confirmInjectedVersion(boundSlotResolved.key, nudgeVersion, ack?.durable === true),
+        )
+        .catch(() => {
+          releaseInjectedVersion(boundSlotResolved.key, nudgeVersion)
+        })
     }
   }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch,
-      createBoundSession, buildCompanionContext])
+      createBoundSession, buildCompanionContext, readInjectedVersion,
+      holdInjectedVersion, confirmInjectedVersion, releaseInjectedVersion])
 
   /** "New chat": archive the current bound session FIRST (the existing red-X
    *  delete path — history preserved, resumable from the History page), then

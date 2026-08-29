@@ -170,6 +170,14 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "last_consolidated",
         "closed",
         "closed_at",
+        # Undrained background-context entries, so closing a tab (or a gateway
+        # restart) no longer silently discards them. Slot-owned BECAUSE absence
+        # must clear: the queue is drained by the next user message, and a save
+        # after that drain omits the key — which is how the persisted copy is
+        # retired. That is also why the save writes it on EVERY save and not
+        # only on close: a non-close save that omitted the key would clear a
+        # copy persisted by an earlier close.
+        "pending_context",
         "memory_mode",
         "title",
         "agent",
@@ -278,6 +286,130 @@ ROWS_ONLY_DEFERRED_META_KEYS: frozenset[str] = (
 ) | frozenset({"title_origin", "title_refresh_mark", "created_by", "origin"})
 
 
+def _dedupe_key(entry: dict) -> object | None:
+    """A hashable identity for an entry carrying no ``ctxId``, or None if there is none.
+
+    Returning None means "cannot compare this one", and the caller then KEEPS it
+    undeduplicated -- never drops it, because a duplicate costs one repeated injection
+    while a drop loses content the API acknowledged.
+
+    Only scalars are admitted. A hand-edited metadata line can carry a list or dict in
+    ``content``, and an unhashable member makes the tuple unhashable, which raises where
+    it is used as a set member rather than at construction.
+    """
+    parts = (entry.get("content"), entry.get("injectedAt"), entry.get("source"))
+    if all(part is None or isinstance(part, (str, int, float, bool)) for part in parts):
+        return parts
+    return None
+
+
+def merge_pending_context(disk: object, mine: object) -> list[dict]:
+    """Union two holders' queued context, the on-disk copy first.
+
+    A ROWS-ONLY save writes one slot's rows onto a transcript whose metadata line
+    describes a DIFFERENT live slot, and ``pending_context`` is inside
+    :data:`ROWS_ONLY_DEFERRED_META_KEYS` by construction. Deferring it drops content
+    the API acknowledged for the WRITING slot -- it has no other durable home on that
+    file -- while overwriting would drop the holder's. Both are acknowledged, the line
+    can carry both, and the restore side parks entries stamped for another session
+    rather than injecting them, so a union loses neither and leaks nothing.
+
+    Deduplicated by ``ctxId`` where present, else by content/stamp/source, so repeated
+    rows-only saves re-union their own output without growing it.
+
+    NOTHING IS DROPPED FOR SIZE. Admission bounds each side (:func:`pending_context_budget_room`
+    is the single capacity chokepoint) but it cannot bound the AGGREGATE: two holders each
+    admitted separately, unioned repeatedly across distinct foreign handovers, can carry the
+    metadata line past the transcript ceiling, and past it every later append rotates prior
+    MESSAGES away to make room. So the aggregate is capped here -- and the surplus is handed
+    back to the caller rather than skipped, because skipping is what an earlier revision did
+    and it discarded acknowledged context, the very defect this union exists to fix.
+
+    Use :func:`split_pending_context` when a caller has a byte ceiling to honour; it returns
+    the surplus so the caller can hand it to a durable owner FIRST and only then write the
+    shortened line.
+    """
+    kept, _overflow = split_pending_context(disk, mine, max_bytes=None)
+    return kept
+
+
+def split_pending_context(
+    disk: object, mine: object, *, max_bytes: int | None
+) -> tuple[list[dict], list[dict]]:
+    """Union two holders' queued context, split at *max_bytes* of encoded line cost.
+
+    Returns ``(kept, overflow)``. ``overflow`` is NEVER discarded by this function: it is
+    the caller's to place, and a caller that cannot place it durably must keep it on the
+    line (an oversized line is recoverable; an acknowledged entry that no longer exists is
+    not -- the same precedence the rotation archive already applies).
+
+    ``max_bytes=None`` disables the split, so every entry lands in ``kept``.
+    """
+    out: list[dict] = []
+    overflow: list[dict] = []
+    seen: set[object] = set()
+    used = 0
+    for group in (disk, mine):
+        if not isinstance(group, list):
+            continue
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            ident = entry.get("ctxId")
+            if isinstance(ident, str):
+                key: object = ident
+            else:
+                # HAND-EDITED METADATA IS A DEFENDED SURFACE, as on the restore path: an
+                # unhashable ``content`` raises INSIDE the set, aborting the save.
+                key = _dedupe_key(entry)
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            if max_bytes is not None:
+                try:
+                    cost = len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
+                except (TypeError, ValueError):
+                    # Unmeasurable cannot be shown to fit, and keeping it would abort the
+                    # save; the durable owner takes a plain repr instead.
+                    overflow.append(entry)
+                    continue
+                if out and used + cost > max_bytes:
+                    overflow.append(entry)
+                    continue
+                used += cost
+            out.append(entry)
+    return out, overflow
+
+
+def pending_context_line_max_bytes() -> int:
+    """Byte ceiling for one metadata line's ``pending_context`` union."""
+    return int(_PENDING_CONTEXT_LINE_MAX_BYTES)
+
+
+def archive_context_entries(
+    key: str, entries: list[dict], *, reason: str, base: Path | None = None
+) -> Path | None:
+    """Append over-ceiling context entries to the same archive the rotation path uses.
+
+    This is the DURABLE OWNER for context that cannot ride the metadata line: the entries
+    leave the line only once these bytes are on disk, so the pair is a move rather than a
+    drop. Returns the archive path, or None when nothing was written.
+    """
+    lines: list[str] = []
+    for entry in entries:
+        try:
+            row = json.dumps({"pending_context": entry}, ensure_ascii=False)
+        except (TypeError, ValueError):
+            # An unencodable entry still has to be preserved, so record its repr rather
+            # than skipping it -- this function exists so nothing is dropped for size.
+            row = json.dumps({"pending_context_repr": repr(entry)}, ensure_ascii=False)
+        # NEWLINE-TERMINATED: the writer concatenates with no separator, so an unterminated
+        # row silently welds itself onto the next one and neither can be parsed back.
+        lines.append(row + "\n")
+    return _archive_lines(key, lines, reason=reason, base=base)
+
+
 def carry_unowned_metadata(
     rebuilt: dict,
     existing: dict,
@@ -326,6 +458,9 @@ def carry_unowned_metadata(
 
 
 _SESSION_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+#: Ceiling for one metadata line's ``pending_context`` union, derived from the transcript
+#: ceiling so the two cannot drift. Past it, every append rotates prior messages away.
+_PENDING_CONTEXT_LINE_MAX_BYTES = _SESSION_MAX_BYTES // 8
 _SESSION_KEEP_LINES = 200
 # Bounded cross-process lock acquisition. The per-session sidecar ``flock`` is
 # acquired on the hot ``append`` path, which some transports (Telegram/WeCom/
@@ -1160,6 +1295,16 @@ def transcript_stems(key: str) -> tuple[str, ...]:
         if legacy not in stems:
             stems.append(legacy)
     return tuple(stems)
+
+
+def same_transcript(a: str, b: str) -> bool:
+    """True when two session keys resolve to the SAME transcript file.
+
+    Compared as stem SETS, never by string equality: ``_safe_key`` is many-to-one, so
+    ``slack:C1:1.2`` and ``slack:C1_1.2`` both land in ``slack_C1_1.2.jsonl`` and an
+    equality test reports "different transcript" when nothing moved.
+    """
+    return bool(set(transcript_stems(a)) & set(transcript_stems(b)))
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:

@@ -42,9 +42,12 @@ from kiro_crew.dashboard.state import (
     append_and_surface,
     parse_cls_meta,
 )
-from kiro_crew.history import transcript_sort_key
+from kiro_crew.history import (
+    transcript_sort_key,
+    transcript_stem,
+)
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.messaging.link import canonical_key, is_channel_session_key
+from kiro_crew.messaging.link import canonical_key, is_channel_session_key, legacy_key
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
     oauth_url_contains_credential,
@@ -630,6 +633,207 @@ def subagent_event_slot(parent_session_key: str) -> str:
     external WS consumers and log lines).
     """
     return dashboard_slot_key(parent_session_key) or parent_session_key.removeprefix("dashboard:")
+
+
+def _is_separator_fold(candidate: str, stem: str) -> bool:
+    """True when *stem* is *candidate*'s fold and every folded slot held a separator.
+
+    ``history._safe_key`` substitutes each non-``[\\w\\-.]`` character with ``_``, so
+    it is MANY-TO-ONE and a bare ``fold(candidate) == stem`` test adopts a foreign
+    session: ``slack:C123:<ts>`` and ``slack:C123_<ts>`` are distinct keys sharing
+    the stem ``slack_C123_<ts>``. Every member of such a collision set differs from
+    the genuine live key by carrying a LITERAL underscore where the real key carried
+    a separator, so requiring each folded position to have held a non-underscore
+    character keeps the true spelling pair and refuses the impostors.
+
+    The substitution is per-character, so the fold preserves length and the two
+    strings can be compared position-by-position.
+    """
+    if not candidate or not stem:
+        return False
+    if transcript_stem(candidate) != stem:
+        return False
+    return all(c != "_" for c, s in zip(candidate, stem) if s == "_")
+
+
+def persisted_binding_is_adoptable(candidate: str, transcript_key: str) -> bool:
+    """True when a PERSISTED ``linked_session_key`` may be adopted on hydration.
+
+    The metadata line is agent-writable, and adopting a value from it rebinds where
+    the slot ROUTES — every later turn and every later save — not merely what it
+    restores. So a shape check is not a trust check: ``is_channel_session_key``
+    proves only that a string LOOKS like a session key, never that it names THIS
+    conversation, and a value naming some other valid session would silently
+    retarget the slot at it.
+
+    The safe rule: adopt only a candidate that names the transcript being hydrated.
+    That is exactly what a genuine binding looks like, because
+    :func:`slot_history_key` returns ``linked_session_key`` verbatim for a bound
+    slot — a bound slot's transcript IS its linked session's file.
+
+    IDENTITY, the candidate's exact LEGACY alias, or the transcript key being this
+    candidate's SEPARATOR-ONLY fold — never a folded-vs-folded compare, and never a
+    bare fold. One conversation genuinely has two spellings (the live ``slack:<ts>``
+    and the ``slack_<ts>`` filename stem), so a plain ``==`` would reject a
+    legitimate binding; but ``fold(a) == fold(b)`` is too permissive, and so is a
+    bare ``fold(candidate) == transcript_key``, because ``_safe_key`` is many-to-one
+    and two distinct valid keys can share a stem. :func:`_is_separator_fold`
+    therefore also requires every folded position to have carried a real separator,
+    which is what distinguishes the true spelling pair from an impostor that
+    smuggles a literal underscore. That check is a named helper rather than inlined
+    because the underscore rule needs its own explanation; it still calls
+    :func:`~kiro_crew.history.transcript_stem`, so the fold rule stays beside the
+    transcript-name resolution it tracks.
+
+    The MIRROR direction is deliberately absent rather than forgotten: it folds the
+    CANDIDATE, so a substitution-only collision would satisfy it and rebind the slot
+    at an unrelated session — the case the separator-fold rule exists to refuse.
+
+    On mismatch the caller leaves the slot UNBOUND. There is deliberately no
+    fallback and no log-and-adopt: an unbound slot answers from its own
+    dashboard-only session, which is a visible, recoverable degradation, whereas
+    adopting a foreign key routes a user's turns into someone else's conversation.
+
+    WHY UNBINDING RARELY STRANDS A THIRD LEGITIMATE SPELLING, AND THE ONE CASE IT
+    DOES. :meth:`ConversationLog._path` derives a filename exactly two ways,
+    ``_safe_key(key)`` and ``_safe_key(legacy_key(key))``, and
+    :func:`~kiro_crew.history.transcript_stems` is built from those same two rules,
+    so a transcript's name is always a member of that tuple.
+
+    The EXCEPTION is a key carrying a LITERAL underscore exactly where the stem has
+    one. That is a legitimate name a transcript can occupy, but it is byte-identical
+    to the impostor shape :func:`_is_separator_fold` exists to refuse, so nothing here
+    can tell them apart and it is refused too. Deliberate: an unbound slot is a
+    recoverable degradation, adopting a foreign key is not.
+
+    That argument is only as durable as the agreement between those two functions,
+    which is why it is PINNED rather than asserted here:
+    ``test_transcript_naming_is_closed_over_transcript_stems`` fails if ``_path``
+    ever gains a third derivation without ``transcript_stems`` mirroring it. Two
+    spellings have already been refused in error (the legacy Slack bare
+    ``thread_ts`` and a folded Discord DM), and both were this same drift -- an
+    accepted-set narrower than the naming rule -- which is the failure the pin
+    catches at the source rather than one spelling at a time.
+    """
+    if not candidate or not transcript_key:
+        return False
+    if candidate == transcript_key:
+        return True
+    # EXACT LEGACY ALIASES FIRST. A Slack thread session key has TWO legitimate
+    # transcript filenames, because `ConversationLog._path` falls back to the
+    # pre-migration bare ``thread_ts`` name for threads that predate the canonical
+    # key. `transcript_stems` is that same fallback rule, so it enumerates both.
+    #
+    # Without this, resuming from the LEGACY transcript refused the canonical
+    # binding: `transcript_key` is the bare ``<thread_ts>`` while the persisted
+    # candidate is ``slack:<thread_ts>``, and neither is the other's fold (the fold
+    # of the candidate is ``slack_<thread_ts>``). The slot came back UNBOUND, its
+    # authorized context was dropped as foreign, and the next save then cleared the
+    # durable copy -- losing content a 200 had acknowledged.
+    #
+    # UNFOLDED and EXACT, so it cannot collide. Identity is already answered above,
+    # so only the legacy alias is decided here.
+    if transcript_key == legacy_key(candidate):
+        return True
+    # The remaining legitimate shape is "the transcript key IS this candidate's
+    # fold" -- a channel slot whose filename stem folded every separator. Accepting
+    # a bare fold would admit a FOREIGN key, because `_safe_key` is many-to-one:
+    # `slack:C123:<ts>` and `slack:C123_<ts>` are distinct sessions sharing the stem
+    # `slack_C123_<ts>`. The discriminator is that the impostor smuggles a LITERAL
+    # underscore into a position the fold would have produced anyway, so require
+    # every folded position to have carried a real separator in the candidate.
+    if _is_separator_fold(candidate, transcript_key):
+        return True
+    # ONE DIRECTION ONLY, and the check is an exact fold, never a fold-vs-fold
+    # comparison. `transcript_stem` is `_safe_key`, which substitutes every
+    # non-``[\w\-.]`` character, so ``fold(x) == fold(y)`` is many-to-one and lets
+    # two DISTINCT sessions match -- measured: ``slack:C123:1785370133.085469`` and
+    # ``slack:C123_1785370133.085469`` share the stem
+    # ``slack_C123_1785370133.085469``. Requiring the candidate to BE the fold
+    # forces it to already be a fully folded form, which the second of that pair is
+    # not (it still contains a ``:``), so the collision is refused while every
+    # genuine spelling pair is accepted.
+    #
+    # The FOLD RULE itself is not copied here -- this calls
+    # :func:`~kiro_crew.history.transcript_stem`, so it still derives from the same
+    # naming function `_path` resolves through, which is what
+    # `test_transcript_naming_is_closed_over_transcript_stems` pins.
+    #
+    # THE REVERSE FOLD IS NOT ACCEPTED. `candidate == transcript_stem(transcript_key)`
+    # admits a candidate that is merely the transcript key's FOLD, and that fold is
+    # many-to-one, so a distinct session alias sharing one transcript file is adopted
+    # and channel and dashboard contexts then diverge against a single history. It was
+    # affordable to accept only while a refusal DESTROYED the queued copy; the held
+    # entries removed that cost, so the strict answer is now the safe one too.
+    return False
+
+
+def audit_persisted_binding(slot_key: str, candidate: str, *, adopted: bool) -> bool:
+    """Record a persisted-binding adoption decision in the Security Event Log.
+
+    Returns whether the record LANDED. Callers must refuse the adoption when it did
+    not: `persisted_binding_is_adoptable` is a TRUST gate on agent-writable metadata,
+    deciding whether a persisted ``linked_session_key`` may retarget where a slot
+    routes its turns and saves, and a permission decision may not be taken without a
+    record. A logger line cannot substitute -- it is rotated, unsigned, and outside
+    the HMAC chain an investigator can verify.
+
+    AUDIT-OR-DENY, via ``critical=True``. An earlier revision swallowed the write
+    failure and adopted anyway, on the availability argument that an unwritable SEL
+    would otherwise stop channel threads seeing replies. That trade is not ours to
+    make: refusing to adopt is the safe direction, because it leaves the slot on its
+    own dashboard session rather than routing it somewhere unaudited.
+
+    Emitted for BOTH outcomes deliberately. A refusal is the security-relevant event,
+    but recording only refusals would leave an adoption -- the one that actually
+    changes routing -- with no trail at all.
+
+    Not a hot path: the gate runs only when a slot is hydrated AND its metadata
+    carries a persisted binding, so this adds no per-message write amplification.
+    """
+    try:
+        sel().log_governance_decision(
+            session_key=slot_key,
+            tool_name="chat:adopt_persisted_binding",
+            scope="chat.linked_session_key",
+            item=candidate,
+            outcome="allowed" if adopted else "denied",
+            rule="persisted_binding_is_adoptable",
+            layer="hydration",
+            reason=f"transcript {slot_key}",
+            critical=True,
+        )
+    except Exception:
+        # No record landed, so no adoption may proceed on this decision.
+        logger.warning("persisted-binding adoption audit failed; refusing", exc_info=True)
+        return False
+    return True
+
+
+async def preaudit_persisted_binding(meta: object, transcript_key: str) -> bool | None:
+    """Off-loop audit-or-deny verdict for a persisted binding, or None when there is none.
+
+    The SEL write for a ``critical=True`` audit is INLINE -- the writer itself tunes
+    its own rotation probes because a critical audit is written inline, sometimes on the
+    event loop. Inline is what audit-or-deny needs: the row must land before the decision
+    is acted on, so it cannot be enqueued to the background writer.
+
+    That leaves ONE place the write can go: before the synchronous slot build, not inside
+    it. The build is deliberately await-free -- an await between the deletion probe and
+    the build reopens the window that probe closes -- so the async hydration paths resolve
+    the verdict HERE, in a worker thread, and hand the build a decision rather than I/O.
+
+    Returns True to adopt, False to refuse (unadoptable OR the audit did not land), and
+    None when the metadata carries no binding, which is not a decision at all.
+    """
+    candidate = str((meta or {}).get("linked_session_key") or "") if isinstance(meta, dict) else ""
+    if not candidate:
+        return None
+    adoptable = persisted_binding_is_adoptable(candidate, transcript_key)
+    landed = await asyncio.to_thread(
+        audit_persisted_binding, transcript_key, candidate, adopted=adoptable
+    )
+    return adoptable if landed else False
 
 
 def slot_transcript_key(slot_key: str) -> str:

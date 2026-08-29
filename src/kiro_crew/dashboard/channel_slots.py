@@ -61,8 +61,14 @@ from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
-from kiro_crew.dashboard.chat_utils import effective_session_key
-from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    slot_history_key,
+)
+from kiro_crew.dashboard.state import (
+    _normalize_slot_key,
+    durable_row_count,
+)
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
@@ -337,6 +343,7 @@ def surface_channel_session(
     # without created_at, so the delete-won guard's evidence gate engages.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
+    slot._disk_meta_key = slot_history_key(slot)
     if meta.get("model"):
         slot.model = meta["model"]
     if meta.get("autocompact_pct") is not None:
@@ -371,6 +378,32 @@ def surface_channel_session(
     for tid in validate_folder_tag_ids(meta.get("tags"), state):
         if tid not in slot.tags:
             slot.tags.append(tid)
+    # Re-seat undrained background context. The Slack thread backfill shares this
+    # queue, and a reconciler-surfaced slot hydrated with an empty one would have
+    # its stored copy DELETED by the next forced save, since the key is
+    # slot-owned and absence clears.
+    #
+    # Independent of the tag restore above — one recovers organizational tags, the
+    # other recovers undelivered context — so both run. Ordered after it only
+    # because the tag restore is the incumbent; neither reads the other's state.
+    if meta.get("pending_context"):
+        slot.restore_pending_context(meta["pending_context"])
+        # Record the transcript this queue was hydrated FROM, so a later rebind can
+        # retire this copy; see the note at the rehydrate site.
+        #
+        # Resolved through ``slot_history_key`` -- the SAME function the save uses to
+        # pick its target -- rather than the ``stem`` this metadata was read out of.
+        # The two are different SPELLINGS of one file (the stem is folded; the bound
+        # key keeps its colons), so a stem-stamped marker reads as "rebound" on the
+        # very first save and fires a retirement against the file just written.
+        # Deriving both sides from one function makes them agree by construction
+        # instead of by a claim about which variable happens to match.
+        #
+        # Not the bound ``session_key`` alone: a channel slot the dashboard could not
+        # bind is surfaced UNBOUND, so that is empty while the save still resolves a
+        # real transcript.
+        slot._ctx_persisted_key = slot_history_key(slot)
+        slot.adopt_ctx_owner(slot_history_key(slot))
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
     elif folder_id and needs_default_filing(meta):

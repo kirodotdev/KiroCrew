@@ -95,7 +95,25 @@ class DashboardPersistenceCoordinator:
         # provisional value durable while the guarded writer is still waiting.
         if getattr(slot, "_metadata_persist_inflight", 0):
             return
-        if not owner.conversation_log or not slot._dirty or not slot.messages:
+        if not owner.conversation_log or not slot._dirty:
+            return
+        # A MESSAGE-LESS SLOT STILL FLUSHES WHEN IT HOLDS QUEUED CONTEXT. Without
+        # the second arm this returned on `not slot.messages`, so the `_dirty` mark
+        # that `append_pending_context` sets was inert for a tab nothing had been
+        # posted to yet -- the queue lived in memory until a close or shutdown, and
+        # a crash lost content the endpoint had already answered 200 for.
+        #
+        # `_save_slot_to_history` is already built for this case: its own
+        # message-less early return widens on exactly the same condition. Gating
+        # here on anything narrower left that widening unreachable on the periodic
+        # path, so the two guards have to agree.
+        #
+        # `isinstance(..., list)` is load-bearing, matching the downstream guard: a
+        # stand-in slot (a MagicMock, as several suites use) auto-creates every
+        # attribute as a truthy Mock, so a truthiness test alone would send every
+        # such slot into a save that has always stopped here.
+        _queued_context = getattr(slot, "_pending_context", None)
+        if not slot.messages and not (isinstance(_queued_context, list) and _queued_context):
             return
         save_slot_to_history = self._slot_saver_provider()
 

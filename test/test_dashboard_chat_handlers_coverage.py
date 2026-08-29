@@ -734,7 +734,11 @@ class TestSlotContextInject:
         slot = _ChatSlot("s1")
         slot._app = "notes"
         status, body = await self._post(_state(slot), "s1", {"content": "x"}, app_claim="notes")
-        assert (status, body) == (200, {"ok": True, "pending": 1})
+        assert status == 200
+        assert body["ok"] is True and body["pending"] == 1
+        # The durability answer is what lets a caller decide whether it may REMEMBER the
+        # delivery; a response without one must not be read as durable.
+        assert isinstance(body["durable"], bool)
 
     @pytest.mark.asyncio
     async def test_invalid_json_is_400(self, _sel):
@@ -771,11 +775,17 @@ class TestSlotContextInject:
             "s1",
             {"content": "note", "source": "watch", "ephemeral": False, "maxAge": 300},
         )
-        assert (status, body) == (200, {"ok": True, "pending": 1})
+        assert status == 200
+        assert body["ok"] is True and body["pending"] == 1
+        # The durability answer is what lets a caller decide whether it may REMEMBER the
+        # delivery; a response without one must not be read as durable.
+        assert isinstance(body["durable"], bool)
         entry = slot._pending_context[0]
         assert entry["content"] == "note"
         assert entry["source"] == "watch"
-        assert entry["ephemeral"] is False
+        # `ephemeral` is accepted for compatibility and NOT stored: nothing ever
+        # read it, so writing it to disk only implied a durability it never had.
+        assert "ephemeral" not in entry
         assert entry["maxAge"] == 300
         assert isinstance(entry["injectedAt"], float)
 
@@ -784,7 +794,7 @@ class TestSlotContextInject:
         slot = _ChatSlot("s1")
         await self._post(_state(slot), "s1", {"content": "note"})
         assert "maxAge" not in slot._pending_context[0]
-        assert slot._pending_context[0]["ephemeral"] is True
+        assert "ephemeral" not in slot._pending_context[0]
 
     @pytest.mark.asyncio
     async def test_per_source_cap_is_429(self, _sel):
@@ -800,14 +810,23 @@ class TestSlotContextInject:
         assert status2 == 200
 
     @pytest.mark.asyncio
-    async def test_queue_is_fifo_evicted_at_the_shared_ceiling(self, _sel):
+    async def test_queue_refuses_at_the_shared_ceiling_instead_of_evicting(self, _sel):
+        """A full queue REFUSES the newest entry; it no longer evicts the oldest.
+
+        Evicting discarded an entry the caller already had a 200 for, with nothing
+        reporting the loss. The endpoint now answers 429 `context_not_queued`, which
+        the caller can retry after the next drain.
+        """
         slot = _ChatSlot("s1")
         slot._pending_context = [{"content": f"c{i}", "source": ""} for i in range(50)]
         assert len(slot._pending_context) == _MAX_PENDING_CONTEXT
         status, body = await self._post(_state(slot), "s1", {"content": "newest"})
-        assert (status, body) == (200, {"ok": True, "pending": _MAX_PENDING_CONTEXT})
-        assert slot._pending_context[0]["content"] == "c1"
-        assert slot._pending_context[-1]["content"] == "newest"
+        assert status == 429
+        assert body["code"] == "context_not_queued"
+        # The oldest acknowledged entry survives, and the refused one never lands.
+        assert slot._pending_context[0]["content"] == "c0"
+        assert len(slot._pending_context) == _MAX_PENDING_CONTEXT
+        assert all(e["content"] != "newest" for e in slot._pending_context)
 
 
 # ── queue mutation routes ────────────────────────────────────────────────────

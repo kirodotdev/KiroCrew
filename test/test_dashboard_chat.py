@@ -2637,6 +2637,7 @@ class TestSaveDoesNotResurrectDeletedSession:
         # disk identity (every hydrate site records both).
         slot._resumed_count = 1
         slot._disk_meta_created_at = str(log.get_metadata("dashboard:revived")["created_at"])
+        slot._disk_meta_key = "dashboard:revived"
         assert slot._disk_window_len == 0
 
         assert log.delete_session("dashboard:revived") is True
@@ -2877,6 +2878,7 @@ class TestSaveDoesNotResurrectDeletedSession:
         # As a restore of that session records it: identity observed, all
         # window counters zero (nothing to load).
         slot._disk_meta_created_at = str(meta["created_at"])
+        slot._disk_meta_key = "dashboard:empty"
         assert slot._resumed_count == 0
         assert slot._disk_older_count == 0
         assert slot._disk_window_len == 0
@@ -3093,6 +3095,7 @@ class TestSaveDoesNotResurrectDeletedSession:
         log.append("dashboard:midprobe", "user", "delete me")
         slot = state.get_or_create_slot("midprobe")
         slot._disk_meta_created_at = str(log.get_metadata("dashboard:midprobe")["created_at"])
+        slot._disk_meta_key = "dashboard:midprobe"
         # Control: the session is alive, so the probe must not refuse the copy.
         assert session_was_deleted(state, slot) is False
 
@@ -3125,6 +3128,7 @@ class TestSaveDoesNotResurrectDeletedSession:
         log.append("dashboard:legacymeta", "user", "keep me")
         slot = state.get_or_create_slot("legacymeta")
         slot._disk_meta_created_at = str(log.get_metadata("dashboard:legacymeta")["created_at"])
+        slot._disk_meta_key = "dashboard:legacymeta"
 
         monkeypatch.setattr(log, "get_metadata_status", lambda key: ({}, True))
         assert (
