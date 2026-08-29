@@ -6040,6 +6040,8 @@
       "collapse_unchanged": "変更なしを折りたたむ",
       "copy_content": "コンテンツをコピー",
       "copy_path": "パスをコピー",
+      "diff_failed_to_compute": "差分を計算できませんでした（このファイルで git が失敗しました）",
+      "diff_no_baseline_not_git": "このファイルは git リポジトリ内にないため、比較する基準となるバージョンがありません",
       "discard_changes_button": "変更を破棄",
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",
       "download": "ダウンロード",

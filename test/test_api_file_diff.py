@@ -153,6 +153,98 @@ async def test_untracked_file_in_git_repo(tmp_path):
 
 @pytest.mark.asyncio
 @requires_git
+async def test_failed_git_diff_reports_error_not_clean(tmp_path):
+    """A non-zero `git diff` exit must surface as status "error", never "clean".
+
+    Mapping the failure to an empty diff would fall through to the clean
+    branch, reporting a git failure to the user as "no changes" — a false
+    negative on a question people act on.
+    """
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    f = tmp_path / "committed.txt"
+    f.write_text("original content")
+    subprocess.run(["git", "add", "committed.txt"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
+
+    orig_run = subprocess.run
+
+    def failing_diff_run(cmd, **kwargs):
+        # Fail exactly the `git diff HEAD -- <path>` invocation; everything
+        # else (rev-parse preflight, `git show` for the baseline) stays real.
+        if "diff" in cmd and "HEAD" in cmd:
+            return subprocess.CompletedProcess(cmd, returncode=128, stdout="", stderr="fatal: boom")
+        return orig_run(cmd, **kwargs)
+
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \
+         patch("kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=failing_diff_run):
+        req = _req(str(f))
+        resp = await api_file_diff(req)
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["status"] == "error"
+    assert body["diff"] == ""
+    # The baseline read succeeded before the diff failed; keep what we have.
+    assert body["original"] == "original content"
+
+
+@pytest.mark.asyncio
+@requires_git
+async def test_empty_repo_file_is_untracked_not_error(tmp_path):
+    """A freshly-initialized repo with no commits keeps the untracked verdict.
+
+    `git diff HEAD` exits 128 there (`fatal: bad revision 'HEAD'`), which is the
+    dominant real-world non-zero exit — the untracked probe must claim the file
+    before the failure branch turns a healthy repo into a false "git failed".
+    """
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    f = tmp_path / "first.txt"
+    f.write_text("the very first file, no commit yet")
+
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()):
+        req = _req(str(f))
+        resp = await api_file_diff(req)
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["status"] == "untracked"
+    assert "the very first file" in body["diff"]
+
+
+@pytest.mark.asyncio
+@requires_git
+async def test_timeout_after_preflight_reports_error_not_not_git(tmp_path):
+    """A timeout past the repository preflight must not masquerade as not_git.
+
+    The client renders not_git as "there is no baseline" — a statement about
+    the file. A slow repo timing out on `git diff` is a computation failure.
+    """
+    subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+    f = tmp_path / "slow.txt"
+    f.write_text("content")
+    subprocess.run(["git", "add", "slow.txt"], cwd=tmp_path, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, capture_output=True, check=True)
+
+    orig_run = subprocess.run
+
+    def slow_diff_run(cmd, **kwargs):
+        if "diff" in cmd and "HEAD" in cmd:
+            raise subprocess.TimeoutExpired(cmd, 10)
+        return orig_run(cmd, **kwargs)
+
+    with patch("kiro_crew.dashboard.handlers.files._sel", return_value=_mock_sel()), \
+         patch("kiro_crew.dashboard.handlers.files.subprocess.run", side_effect=slow_diff_run):
+        req = _req(str(f))
+        resp = await api_file_diff(req)
+    assert resp.status == 200
+    body = json.loads(resp.body)
+    assert body["status"] == "error"
+
+
+@pytest.mark.asyncio
+@requires_git
 async def test_git_output_is_decoded_as_utf8(tmp_path):
     """Every git text subprocess opts out of the Windows locale code page."""
     subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)

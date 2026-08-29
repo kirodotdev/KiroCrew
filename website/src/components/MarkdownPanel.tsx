@@ -758,11 +758,11 @@ function useFileArtifactState(filePath: string, content: string) {
  * listener already picks up — no editor-specific selection bridge needed. */
 /** Diff mode with nothing to show: the file matches its baseline, so the diff
  *  canvas would render empty. Say so and offer the way out. */
-function ZeroDiffNotice({ onExitDiff }: { onExitDiff: () => void }) {
+function ZeroDiffNotice({ onExitDiff, message }: { onExitDiff: () => void; message?: string }) {
   return (
     <div className="h-full flex flex-col items-center justify-center gap-2.5 text-muted px-6 text-center">
       <FileDiff size={20} className="opacity-50" />
-      <span className="text-[12.5px]">{i18nT('components.markdownPanel.no_changes_in_file')}</span>
+      <span className="text-[12.5px]">{message ?? i18nT('components.markdownPanel.no_changes_in_file')}</span>
       <button
         className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text border border-border bg-transparent cursor-pointer transition-colors"
         onClick={onExitDiff}
@@ -1194,10 +1194,30 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     staleTime: 10_000,
   })
   const originalContent = diffData?.original ?? ''
+  // The backend reports WHY there is nothing to diff against. `not_git` means
+  // the file is outside any git work tree, so there is no baseline at all —
+  // rendering the diff would present the whole file as added against a
+  // baseline that does not exist ("untracked" keeps the all-added rendering:
+  // there the repo IS the baseline and all-added is the true answer). `error`
+  // means git itself failed, which must stay distinguishable from a clean
+  // file's empty diff. Deliberately NOT gated on diffChecking: a background
+  // refetch (window refocus past staleTime) keeps the cached data while
+  // isFetching is true, and collapsing this state mid-refetch would flash the
+  // exact all-added rendering this branch exists to suppress.
+  const diffUnavailable = diffMode && (diffData?.status === 'not_git' || diffData?.status === 'error')
+    ? diffData.status as 'not_git' | 'error' : null
   // Diff mode on a file identical to its baseline renders an empty canvas in
   // BOTH view and edit modes — show a notice instead. Editing past the
   // baseline (content diverges) flips this off automatically.
-  const zeroDiff = diffMode && !diffChecking && diffData != null && originalContent === content
+  const zeroDiff = diffMode && !diffChecking && diffData != null && !diffUnavailable && originalContent === content
+  // Resolved in render position so a language switch re-renders it; the notice
+  // reuses ZeroDiffNotice so the "Show full file" escape hatch is identical
+  // across all three empty-diff states.
+  const diffUnavailableText = diffUnavailable === 'not_git'
+    ? i18nT('components.markdownPanel.diff_no_baseline_not_git')
+    : diffUnavailable === 'error'
+      ? i18nT('components.markdownPanel.diff_failed_to_compute')
+      : null
   // Auto-open diff mode once for a genuine edit unless this file tab already
   // carries an explicit choice. File-tab metadata survives ChatPage unmounts,
   // so returning to a session restores preview/source instead of re-enabling
@@ -1702,7 +1722,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 </span>
               ))}
             </span>
-            {diffMode && (diffStats.added > 0 || diffStats.removed > 0) && (
+            {diffMode && !diffUnavailable && (diffStats.added > 0 || diffStats.removed > 0) && (
               <span className="text-[11px] font-mono font-semibold shrink-0">
                 {diffStats.added > 0 && <span className="text-ok">+{diffStats.added}</span>}
                 {diffStats.removed > 0 && <span className="text-danger ml-1.5">-{diffStats.removed}</span>}
@@ -1782,10 +1802,11 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
               pr-6 keeps the text clear of the ticks. */}
           <div ref={sidePanelScrollRef} onScroll={scrollMemory.onScroll} className={`flex-1 min-h-0 overflow-auto ${isMarkdown && !editing ? 'scrollbar-overlay pr-6' : ''}`}>
             {zeroDiff && <ZeroDiffNotice onExitDiff={toggleDiffMode} />}
-            {!zeroDiff && !diffChecking && !isRichType && (
+            {diffUnavailableText && !editing && <ZeroDiffNotice message={diffUnavailableText} onExitDiff={toggleDiffMode} />}
+            {!zeroDiff && !diffUnavailable && !diffChecking && !isRichType && (
               <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffMode && !editing} fileName={fileName} originalContent={originalContent} content={content} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />
             )}
-            {!zeroDiff && (!diffMode || editing) && <ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!zeroDiff && (!diffUnavailable || editing) && (!diffMode || editing) && <ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
               previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} />}
           </div>
@@ -1856,8 +1877,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           {findBar}
           <div ref={fullscreenBodyRef} className="h-full overflow-auto px-16 py-4">
             {zeroDiff && <ZeroDiffNotice onExitDiff={toggleDiffMode} />}
-            {!zeroDiff && !isRichType && <DiffViewBlock sideBySide={diffSplit} diffMode={diffMode && !editing} fileName={fileName} originalContent={originalContent} content={content} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
-            {!zeroDiff && (!diffMode || editing) && <ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {diffUnavailableText && !editing && <ZeroDiffNotice message={diffUnavailableText} onExitDiff={toggleDiffMode} />}
+            {!zeroDiff && !diffUnavailable && !isRichType && <DiffViewBlock sideBySide={diffSplit} diffMode={diffMode && !editing} fileName={fileName} originalContent={originalContent} content={content} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
+            {!zeroDiff && (!diffUnavailable || editing) && (!diffMode || editing) && <ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
               previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} />}
           </div>

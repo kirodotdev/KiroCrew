@@ -1877,6 +1877,8 @@
       "adding_2": "Adding...",
       "already_in_library": "Already in Library",
       "cannot_read_file": "Cannot read file",
+      "diff_failed_to_compute": "Couldn't compute the diff — git failed for this file",
+      "diff_no_baseline_not_git": "This file isn't in a git repository, so there is no baseline to diff against",
       "discard_changes_button": "Discard changes",
       "download_failed": "Download failed",
       "edit": "Edit",

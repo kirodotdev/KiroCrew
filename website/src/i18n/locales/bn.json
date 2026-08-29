@@ -6142,6 +6142,8 @@
       "collapse_unchanged": "অপরিবর্তিত অংশ সংকুচিত করুন",
       "copy_content": "কনটেন্ট কপি করুন",
       "copy_path": "পাথ কপি করুন",
+      "diff_failed_to_compute": "ডিফ গণনা করা যায়নি — এই ফাইলে git ব্যর্থ হয়েছে",
+      "diff_no_baseline_not_git": "এই ফাইলটি কোনো git রিপোজিটরিতে নেই, তাই তুলনার জন্য কোনো ভিত্তি সংস্করণ নেই",
       "discard_changes_button": "পরিবর্তন বাতিল করুন",
       "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তন বাতিল করবেন?",
       "download": "ডাউনলোড",

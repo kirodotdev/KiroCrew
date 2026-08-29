@@ -6040,6 +6040,8 @@
       "collapse_unchanged": "折叠未更改内容",
       "copy_content": "复制内容",
       "copy_path": "复制路径",
+      "diff_failed_to_compute": "无法生成差异：git 在此文件上执行失败",
+      "diff_no_baseline_not_git": "此文件不在任何 git 仓库中，没有可对比的基准版本",
       "discard_changes_button": "放弃更改",
       "discard_unsaved_changes": "放弃未保存的更改？",
       "download": "下载",

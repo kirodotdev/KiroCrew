@@ -600,6 +600,46 @@ describe('MarkdownPanel — diff chrome', () => {
     await waitFor(() => expect(screen.queryByText('No changes in this file')).toBeNull())
   })
 
+  it('reports the missing baseline for a file outside any git repository', async () => {
+    // status not_git means there IS no baseline: the whole-file-added diff the
+    // empty `original` would produce is a claim about a baseline that does not
+    // exist, so the panel must say so instead of rendering it (#6640).
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: '', status: 'not_git' } as never)
+    mountPanel({ content: 'standalone text\n', initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    expect(await screen.findByText("This file isn't in a git repository, so there is no baseline to diff against")).toBeInTheDocument()
+    expect(screen.queryByTestId('pierre-diff')).toBeNull()
+    // The escape hatch back to the full file is the same as the zero-diff one.
+    fireEvent.click(screen.getByText('Show full file'))
+    await waitFor(() => expect(screen.queryByText(/no baseline to diff against/)).toBeNull())
+  })
+
+  it('keeps the all-added diff for an untracked file inside a repo', async () => {
+    // untracked is the case where all-added IS the true answer — the repo is
+    // the baseline and the file is new to it. Only not_git loses its diff.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '+new file content', original: '', status: 'untracked' } as never)
+    mountPanel({ content: 'new file content\n', initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    const surface = await screen.findByTestId('pierre-diff')
+    expect(surface).toHaveAttribute('data-old', '')
+    expect(surface).toHaveAttribute('data-new', 'new file content\n')
+    expect(screen.queryByText(/no baseline to diff against/)).toBeNull()
+  })
+
+  it('surfaces a git failure instead of presenting it as a clean file', async () => {
+    // status error is a failed `git diff`, which the backend keeps distinct
+    // from clean so a failure is never read as "no changes".
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: 'same\n', status: 'error' } as never)
+    mountPanel({ content: 'same\n', initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    expect(await screen.findByText("Couldn't compute the diff — git failed for this file")).toBeInTheDocument()
+    expect(screen.queryByTestId('pierre-diff')).toBeNull()
+    expect(screen.queryByText('No changes in this file')).toBeNull()
+  })
+
   it('offers split/unified as a menu row only once a diff is on screen', async () => {
     // The control moved out of the header bar into the ⋯ menu as a checkbox
     // row: with the file-browser toggle present, the bar was carrying three

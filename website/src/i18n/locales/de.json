@@ -6142,6 +6142,8 @@
       "collapse_unchanged": "Unveränderte ausblenden",
       "copy_content": "Inhalt kopieren",
       "copy_path": "Pfad kopieren",
+      "diff_failed_to_compute": "Diff konnte nicht berechnet werden — git ist bei dieser Datei fehlgeschlagen",
+      "diff_no_baseline_not_git": "Diese Datei liegt in keinem Git-Repository, daher gibt es keine Basisversion zum Vergleichen",
       "discard_changes_button": "Änderungen verwerfen",
       "discard_unsaved_changes": "Nicht gespeicherte Änderungen verwerfen?",
       "download": "Herunterladen",

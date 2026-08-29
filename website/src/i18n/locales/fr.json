@@ -6244,6 +6244,8 @@
       "collapse_unchanged": "Replier les parties inchangées",
       "copy_content": "Copier le contenu",
       "copy_path": "Copier le chemin",
+      "diff_failed_to_compute": "Impossible de calculer le diff — git a échoué sur ce fichier",
+      "diff_no_baseline_not_git": "Ce fichier n'est pas dans un dépôt git, il n'y a donc aucune version de référence à comparer",
       "discard_changes_button": "Abandonner les modifications",
       "discard_unsaved_changes": "Abandonner les modifications non enregistrées ?",
       "download": "Télécharger",

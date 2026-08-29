@@ -6142,6 +6142,8 @@
       "collapse_unchanged": "अपरिवर्तित को समेटें",
       "copy_content": "सामग्री कॉपी करें",
       "copy_path": "पाथ कॉपी करें",
+      "diff_failed_to_compute": "डिफ़ की गणना नहीं हो सकी — इस फ़ाइल पर git विफल रहा",
+      "diff_no_baseline_not_git": "यह फ़ाइल किसी git रिपॉज़िटरी में नहीं है, इसलिए तुलना के लिए कोई आधार संस्करण नहीं है",
       "discard_changes_button": "बदलाव छोड़ें",
       "discard_unsaved_changes": "बिना सहेजे बदलाव छोड़ दें?",
       "download": "डाउनलोड",

@@ -6244,6 +6244,8 @@
       "collapse_unchanged": "Contraer sin cambios",
       "copy_content": "Copiar el contenido",
       "copy_path": "Copiar la ruta",
+      "diff_failed_to_compute": "No se pudo calcular el diff: git falló con este archivo",
+      "diff_no_baseline_not_git": "Este archivo no está en un repositorio git, así que no hay una versión base con la que comparar",
       "discard_changes_button": "Descartar cambios",
       "discard_unsaved_changes": "¿Descartar los cambios sin guardar?",
       "download": "Descargar",

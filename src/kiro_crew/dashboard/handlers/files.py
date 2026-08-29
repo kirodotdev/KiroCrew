@@ -3077,6 +3077,14 @@ async def api_file_diff(request: web.Request) -> web.Response:
                 cwd=dirpath, capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=5, check=True, env=_env,
             )
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, UnicodeDecodeError):
+            # Only a failed repository preflight may claim "not a git repo":
+            # the client renders not_git as "there is no baseline", which is a
+            # statement about the file, not about git's health. Failures past
+            # this point (a timeout on a slow repo, git disappearing mid-flight)
+            # are computation failures and must report "error" instead.
+            return {"diff": "", "original": "", "status": "not_git"}
+        try:
             # Get HEAD content
             root = subprocess.run(
                 [*_git, "rev-parse", "--show-toplevel"],
@@ -3112,10 +3120,21 @@ async def api_file_diff(request: web.Request) -> web.Response:
                     )
                     diff = r3.stdout if r3.stdout else ""
                     return {"diff": diff, "original": "", "status": "untracked"}
+            if r.returncode != 0:
+                # `git diff` failed and the untracked probe above did not claim
+                # the file. This must stay distinguishable from a genuinely
+                # unmodified file: falling through would report status "clean",
+                # presenting a git failure as "no changes" — a false negative on
+                # a question users act on. The probe runs FIRST because the
+                # dominant non-zero exit is `fatal: bad revision 'HEAD'` in a
+                # freshly-initialized repo with no commits, where every file is
+                # simply untracked and the all-added diff is the true answer.
+                # Still HTTP 200: the request succeeded, only the diff did not.
+                return {"diff": "", "original": original, "status": "error"}
             status = "modified" if diff else "clean"
             return {"diff": diff, "original": original, "status": status}
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, UnicodeDecodeError):
-            return {"diff": "", "original": "", "status": "not_git"}
+            return {"diff": "", "original": "", "status": "error"}
 
     result = await asyncio.to_thread(_run)
     _sel().log_api_access(caller=request.get("user", "dashboard"), operation="file_diff", outcome="allowed", resources=f"path={raw_path}")
