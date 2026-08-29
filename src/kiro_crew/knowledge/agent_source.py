@@ -374,7 +374,7 @@ async def _add_agent_document(
             # The duplicate-branch sibling of on_committed, and inside the gate's
             # hop for the same reason: the gate has already committed the delete
             # and the location claim by the time it reports back.
-            on_duplicate=lambda: _record_deduped_state(
+            on_duplicate=lambda _text_hash: _record_deduped_state(
                 store, source_id, slug, content_hash, title),
         )
     finally:

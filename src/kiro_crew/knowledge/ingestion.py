@@ -277,7 +277,7 @@ class IngestionPipeline:
 
     def _skip_as_duplicate(self, content_hash: str, source_id: str | None,
                            old_item_ids: list[str] | None = None,
-                           on_duplicate: Callable[[], None] | None = None) -> str | None:
+                           on_duplicate: Callable[[str], None] | None = None) -> str | None:
         """Terminal job id when this exact document is already in the Library.
 
         Returns ``None`` when the write should proceed.
@@ -373,7 +373,11 @@ class IngestionPipeline:
             # rolls the gate back too, which is the correct pairing: the delete,
             # the claim and the record land together or not at all.
             if on_duplicate is not None:
-                on_duplicate()
+                # The caller may track file identity in a different hash domain
+                # (folder rows use raw bytes while items use extracted text).
+                # Hand it the exact text hash the gate matched so transformed
+                # documents can remain adoptable after this transaction commits.
+                on_duplicate(content_hash)
             self.store.db.execute("COMMIT")
         except Exception:
             self.store.db.execute("ROLLBACK")
@@ -450,7 +454,7 @@ class IngestionPipeline:
         except Exception:
             logger.debug("Post-ingest dedup skipped", exc_info=True)
 
-    async def ingest_file(self, path: str, on_progress=None, original_name: str = "", namespace: str = "default", source_id: str = "", old_item_ids: list[str] | None = None, on_committed: Callable[[list[str]], None] | None = None, on_duplicate: Callable[[], None] | None = None) -> str | None:
+    async def ingest_file(self, path: str, on_progress=None, original_name: str = "", namespace: str = "default", source_id: str = "", old_item_ids: list[str] | None = None, on_committed: Callable[[list[str]], None] | None = None, on_duplicate: Callable[[str], None] | None = None) -> str | None:
         """Full pipeline. Returns job_id, or None if content hash unchanged.
 
         If source_id is provided, ingests into that existing source instead of
@@ -470,9 +474,9 @@ class IngestionPipeline:
         the same run-to-completion guarantee as the delete it belongs with.
 
         ``on_duplicate`` is that same bargain for the branch where the pre-ingest
-        gate REFUSES the write. It runs inside the gate's own hop, after its
-        transaction commits, and records whatever terminal state the caller keys by
-        document. Leaving it to the caller is not merely riskier here than on the
+        gate REFUSES the write. It receives the extracted-text hash matched by the
+        gate and runs inside the gate's transaction, recording whatever terminal
+        state the caller keys by document. Leaving it to the caller is not merely riskier here than on the
         success branch, it is unsound: ``run_to_completion`` guarantees the gate
         finishes and then re-raises the cancellation, so a shutdown lands with the
         deletion and the location claim durable and the caller's write never
@@ -783,7 +787,7 @@ class IngestionPipeline:
     async def ingest_text(self, text: str, title: str, source_type: str = 'manual',
                           source_id: str | None = None,
                           old_item_ids: list[str] | None = None,
-                          on_duplicate: Callable[[], None] | None = None) -> str | None:
+                          on_duplicate: Callable[[str], None] | None = None) -> str | None:
         """Ingest raw text (dashboard drop, chat, or a shared aggregate source).
 
         Without ``source_id`` the source is found-or-created by a

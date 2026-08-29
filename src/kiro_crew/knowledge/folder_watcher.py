@@ -495,8 +495,8 @@ class FolderWatcher:
 
             item_ids, outcome = await self._ingest_file(
                 file_path, source_id, namespace, props, old_ids, root=uri,
-                on_duplicate=lambda: self._record_deduped_state(
-                    source_id, file_path, content_hash, mtime, now))
+                on_duplicate=lambda text_hash: self._record_deduped_state(
+                    source_id, file_path, content_hash, mtime, now, text_hash))
             if item_ids is None:
                 # Ingestion failed. The 'scanning' marker above is only a crash hint,
                 # so it has to be replaced with a terminal status here rather than
@@ -709,24 +709,16 @@ class FolderWatcher:
         Never on the event loop, and only inside the caller's write transaction.
 
         Returning empty is not proof that this source owns nothing for the
-        document. ``_adopt_reassigned_item`` matches a folder row on
-        ``COALESCE(text_hash, content_hash)``, and a refused row's ``text_hash``
-        is derived from a byte-identical sibling row -- so for a transformed file
-        (PDF, DOCX, HTML, where the bytes hash and the text hash differ) with no
-        such sibling, the adoption matches nothing and this read cannot see the
-        item. That gap predates this change: the terminal write was previously an
-        unconditional empty group, so the row never named the item either. Closing
-        it needs the incoming document's TEXT hash carried out of the gate rather
-        than guessed from a sibling, which is a change to what the gate reports and
-        does not belong here. ``test_deduped_state_write_recovers_a_transformed_
-        files_reassigned_item`` is an xfail pinning it. The aggregate tables store
-        the text hash in ``content_hash`` directly and do not have this gap.
+        document. The duplicate finalizer stores the gate's extracted-text hash
+        before commit, so a later cascade can adopt a transformed document into
+        this exact row. This read preserves an adoption that already landed.
         """
         return self.store.surviving_group_in_txn(
             "folder_file_state", source_id, file_path)
 
     def _record_deduped_state(self, source_id: str, file_path: str, content_hash: str,
-                              mtime: float, now: str) -> None:
+                              mtime: float, now: str,
+                              text_hash: str | None = None) -> None:
         """Terminal write for a file the pre-ingest gate refused.
 
         Invoked BY the gate as its ``on_duplicate`` finalizer, from inside the
@@ -746,9 +738,9 @@ class FolderWatcher:
         adopted = self._surviving_group(source_id, file_path)
         self._write_state_row(
             source_id, file_path, content_hash, mtime, json.dumps(adopted), now,
-            "done" if adopted else "deduped")
+            "done" if adopted else "deduped", known_text_hash=text_hash)
 
-    def _write_state_row(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0):
+    def _write_state_row(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, known_text_hash: str | None = None):
         # Record the EXTRACTED-TEXT hash alongside the file-bytes one. Ownership
         # lookups have to relate this row to items, and items are keyed by the text
         # hash -- for a PDF or HTML file that is a different string from the bytes
@@ -756,17 +748,17 @@ class FolderWatcher:
         # (one document's items share its hash) so nothing has to be plumbed through
         # the ingest path, and left alone when the row owns nothing: there is then
         # nothing to derive it from, and guessing is what makes documents collide.
-        text_hash: str | None = None
+        text_hash = known_text_hash
         try:
             ids = json.loads(item_ids or "[]")
         except (TypeError, ValueError):
             ids = []
-        if ids:
+        if ids and text_hash is None:
             row = self.store.db.execute(
                 "SELECT content_hash FROM items WHERE id = ?", (ids[0],)).fetchone()
             if row:
                 text_hash = row["content_hash"]
-        elif status == "deduped":
+        elif status == "deduped" and text_hash is None:
             text_hash = self._deduped_text_hash(content_hash)
         # ``attempts`` defaults to 0, so every terminal write ('done', 'deduped',
         # 'failed') clears the retry budget as a side effect of not passing it: the
@@ -858,7 +850,7 @@ class FolderWatcher:
     async def _ingest_file(self, file_path: str, source_id: str, namespace: str, props: dict,
                            old_item_ids: list[str],
                            root: str = "",
-                           on_duplicate: Callable[[], None] | None = None,
+                           on_duplicate: Callable[[str], None] | None = None,
                            ) -> tuple[list[str] | None, str]:
         """Ingest one file.
 

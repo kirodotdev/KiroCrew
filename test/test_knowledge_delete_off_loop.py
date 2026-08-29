@@ -623,15 +623,6 @@ def test_deduped_state_write_drops_the_group_the_gate_just_deleted(tmp_path):
         store.close()
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Pre-existing on main, not introduced here: a transformed file's ownership "
-    "bookkeeping is inert because _adopt_reassigned_item matches a folder row on "
-    "COALESCE(text_hash, content_hash) and a refused row's text_hash is derived "
-    "from a byte-identical SIBLING row, which a lone PDF does not have. main "
-    "writes an unconditional empty group here, so the row never named the item "
-    "either. Closing it needs the incoming document's TEXT hash carried out of "
-    "the gate instead of guessed, which changes what the gate reports. Strict, so "
-    "this starts failing the moment someone lands that and the xfail goes stale."))
 @pytest.mark.asyncio
 async def test_deduped_state_write_recovers_a_transformed_files_reassigned_item(tmp_path):
     """A transformed file must not be stranded when adoption silently matched nothing.
@@ -923,7 +914,7 @@ async def test_duplicate_gate_records_terminal_state_even_when_cancelled(tmp_pat
         started = asyncio.Event()
         release = threading.Event()
 
-        def finalizer() -> None:
+        def finalizer(_text_hash: str) -> None:
             recorded.append("terminal state written")
 
         real_gate = pipeline._skip_as_duplicate
@@ -1015,7 +1006,7 @@ async def test_duplicate_gate_and_terminal_state_are_one_transaction(tmp_path):
             "SELECT id FROM items WHERE source_id = ?", (target,)).fetchall()]
         assert superseded, "nothing to supersede -- the delete under test is a no-op"
 
-        def exploding_finalizer() -> None:
+        def exploding_finalizer(_text_hash: str) -> None:
             raise RuntimeError("terminal state write failed")
 
         with pytest.raises(RuntimeError, match="terminal state write failed"):

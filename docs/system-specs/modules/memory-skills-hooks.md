@@ -48,6 +48,19 @@ FTS5 search via `~/.kiro/crew/memory_index.db` (SQLite via `pysqlite3-binary` on
 
 Context injection includes source citations per section. Agent can update memory files via kiro-cli's file tools.
 
+### Knowledge library duplicate ownership
+
+Folder ingestion tracks two identities for each file: `content_hash` is the hash
+of the file's raw bytes, while `text_hash` is the hash of the text extracted by
+the reader and stored on knowledge items. They are equal for plain text but not
+for transformed formats such as PDF, DOCX, and HTML. The pre-ingest duplicate
+gate passes its exact extracted-text hash to the caller's in-transaction
+`on_duplicate` finalizer. `FolderWatcher` stores that value on the deduped state
+row before the gate commits, so a later source deletion can reassign and adopt
+the surviving item into the correct file row. Deriving the value only from a
+byte-identical sibling is a fallback for older direct state writes, not the
+ingestion contract.
+
 ### Decaying Memory (`read_recent_history`)
 
 History context uses natural decay: recent days in full detail, older days

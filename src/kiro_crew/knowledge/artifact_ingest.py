@@ -467,7 +467,7 @@ async def ingest_artifact(
             # it has already committed the delete and the location claim, and a
             # cancellation between here and a post-hoc write would leave both
             # durable with nothing naming them.
-            on_duplicate=lambda: _record_deduped_state(
+            on_duplicate=lambda _text_hash: _record_deduped_state(
                 kstore, source_id, slug, content_hash, title, art.kind),
         )
     finally:
