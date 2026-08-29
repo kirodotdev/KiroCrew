@@ -74,13 +74,24 @@ Out-of-band lanes that never gate a PR:
   button, not a CI comment), `pr-merge-conflict-label.yml` and `fork-pr-label.yml`
   (both mirror a fact GitHub does not surface in the `/pulls` list onto a label), and
   `add-contributor.yml` (a daily cron, plus manual dispatch, adds each merged
-  PR's author to the README Contributors block via
+  PR's author AND the reporters of the issues that PR closed to the README
+  Contributors block via
   `scripts/update_contributors.py`; because the default branch is protected it
   opens a rolling PR rather than committing directly, like `test-durations.yml`.
   A login in `.github/contributors-optout.txt` is never added, which keeps the
   README's removal promise enforceable against the full-rebuild collector).
-  The same block also holds contributors whose contribution was never a pull
-  request — a bug report, a review, a private security report — added with
+  One paginated GraphQL sweep over `pullRequests(states: MERGED)` drives it,
+  reading each node's `author` and its `closingIssuesReferences` authors. The
+  reporter side is deliberately keyed on that link rather than on listing
+  `/issues`: the connection is populated only when a PR declares it closes the
+  issue, and only merged PRs are scanned, so an entry is evidence the report
+  changed the product — which keeps duplicates, invalid reports and
+  credit-farming issues out. It undercounts by design (a fix that omitted the
+  closing keyword is invisible), and the remedy is the manual `--login` path, not
+  loosening the rule. Dedup is two-layered: `sort -u` over the union, because
+  someone can be both a PR author and a reporter, then the script's own README
+  scan. The same block also holds contributors whose contribution left neither
+  trace — a review, a translation, a private security report — added with
   `scripts/update_contributors.py --login`. Those entries survive every later run
   because the collector only ever inserts and never rewrites an existing line;
   that preservation is what makes one shared list workable instead of a second

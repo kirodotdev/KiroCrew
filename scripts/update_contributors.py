@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Insert merged-PR authors into the README Contributors block.
+"""Insert contributors into the README Contributors block.
+
+The workflow feeds this the authors of merged pull requests and the people who
+reported the issues those pull requests closed; a maintainer can add anyone else by
+hand with --login. This script only WRITES: it never queries GitHub, so which
+contributions count is decided by the caller, not here.
 
 Usage:
     # Add contributors read as JSON from stdin ([{"login", "name"}, ...]).
@@ -379,7 +384,7 @@ def _self_test() -> int:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="Add merged-PR authors to the README Contributors block."
+        description="Add contributors to the README Contributors block."
     )
     parser.add_argument("--test", action="store_true", help="run the built-in self-test and exit")
     parser.add_argument("--login", help="single contributor login (alternative to JSON on stdin)")

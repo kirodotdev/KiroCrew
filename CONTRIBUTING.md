@@ -537,17 +537,26 @@ There is one contributor list, the Contributors block in [README.md](README.md).
 Deliberately one: a second table for "other" contributions would rank one kind of
 help above another, and split recognition across two places nobody reads twice.
 
-Merged pull requests are credited automatically — a daily job adds their authors.
-Contributions that never were a pull request are credited in the same block, on
-request: a bug report, a code review, a translation, an idea, a design, a
-private security report. Open an issue naming the person (yourself is fine), and
-a maintainer records it:
+Two things are credited automatically by a daily job: authoring a merged pull
+request, and reporting an issue that a merged pull request closed. You do not need
+to ask for either.
+
+The second rule is deliberately about outcome, not volume. Credit follows a report
+that changed the product, which is why the job reads each merged PR's closing
+references rather than listing every issue — that keeps duplicates, invalid
+reports, and issues opened to farm a credit out of the list. It undercounts on
+purpose: if a pull request fixed your report without writing a closing keyword,
+the link does not exist and the job cannot see it. Ask, and it gets added by hand.
+
+Everything else is credited in the same block on request: a code review, a
+translation, an idea, a design, a private security report. Open an issue naming
+the person (yourself is fine), and a maintainer records it:
 
 ```sh
 python3 scripts/update_contributors.py --login <github-login> --name "Display Name"
 ```
 
-The daily job re-derives the full merged-PR author set and rebuilds its branch
+The daily job re-derives the full contributor set and rebuilds its branch
 from scratch, but it never rewrites or drops an existing line, so a
 manually-added entry survives every later run. A login listed in
 `.github/contributors-optout.txt` is never added by the job, which is how a
