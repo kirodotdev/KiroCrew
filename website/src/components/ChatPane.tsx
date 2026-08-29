@@ -12,6 +12,7 @@ import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput, { type ComposerBusyMode } from './ChatInput'
 import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
+import { DeliveryWarningStrip } from './DeliveryWarningStrip'
 import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
 import PendingDecisionCard from './PendingDecisionCard'
@@ -33,16 +34,18 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
-import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
+import { useQueuedMessageActions, queuedSendStash, stashQueuedSend, stashPreSend, retirePreSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer, selectSlotMessages, selectSendConfirmed, selectSlotStreamState, selectSlotRunEpoch, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, syncSlotRunningFromServer, setAgentSwitchNotice, pendingQuestionFor, clearPendingServerRow, dropUnconfirmedRow, markDeliveryUnknown, retainedSend } from '../store/chatSlice'
 import { handleStopPress, isEscalationState } from '../utils/stopDebounce'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { tryQuickSend } from '../lib/quickSend'
-import { mergeRecoveredDraft } from '../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, mergeRecoveredDraft } from '../utils/chatDrafts'
 import { takePaneDraft, writePaneDraft, mergePaneDraft, subscribePaneDraft } from '../utils/chatPaneDrafts'
+import { loadNewestRecoveryForSlot, loadPaneRecoveryById, loadRefusedRecovery, adoptPaneRecovery, setPaneRecoveryFor, clearPaneRecoveryFor, clearUnidentifiedPaneRecovery, type PaneRecovery } from '../utils/chatPaneRecovery'
+import { sendDelivered } from '../utils/sendDelivery'
 import { sendTurn, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { useSelectionQuoteAsk } from '../chat-core/composer/selectionActions'
 import FlyingQuote from './FlyingQuote'
@@ -629,18 +632,323 @@ export default function ChatPane({
    *  they just did. `mergeRecoveredDraft` owns that rule for every recovery site
    *  in the app, this pane's two included (a failed `doSend` and a failed
    *  question-card fallback); attachments merge here as a set union so a file
-   *  re-picked mid-flight is not double-attached.
-   *
-   *  `forSlot` is the slot the payload was typed into. When the pane has since
-   *  been rebound to another slot — or unmounted altogether — the text goes
-   *  into THAT slot's parked draft (shown again when the user returns to it)
-   *  instead of into the composer the user is now looking at, which belongs to
-   *  someone else's conversation, or into a component that no longer exists. */
-  const restoreIntoComposer = useCallback((text: string, files: string[] = [], forSlot: string = slotKeyRef.current) => {
-    if (!mountedRef.current || forSlot !== slotKeyRef.current) { mergePaneDraft(forSlot, text, files); return }
+   *  re-picked mid-flight is not double-attached. */
+  // Component-local BY DESIGN (this pane's `input` is not persisted) and slot-SCOPED:
+  // MembersPage reuses one unkeyed pane, so unscoped state captions the wrong member.
+  const [stagedSend, setStagedSend] = useState<{ slot: string; sendId: string } | null>(null)
+  const [recoveredPayload, setRecoveredPayload] = useState<{ text: string; files: string[] } | null>(null)
+  // What the composer is CARRYING, for the containment check only. Set wherever a payload is
+  // armed, including a park that carried no `sent` fragment and so seeds no Discard gate.
+  const containmentBasis = useRef<string | null>(null)
+  // Current at RENDER time. Main's `slotKeyRef` must LAG until its layout effect reads it as
+  // the previous slot, so the restore gate below cannot share it.
+  const liveSlotRef = useRef(slotKey); liveSlotRef.current = slotKey
+  // A busy send appends no bubble, so the composer holds the ONLY copy -- park a failure
+  // that lands off-screen under its SENDING slot rather than dropping the payload.
+  const strandedSends = useRef(new Map<string, PaneRecovery>())
+  // Sends THIS pane parked a recovery for, per slot -- pane-scoped so retiring the chain below
+  // can never reach a sibling tab's record.
+  const ownParked = useRef(new Map<string, Set<string>>())
+  // Every in-memory parking write gets a persisted twin: the ref dies with the component, and
+  // a send handed back by the transport has no other copy once the composer is cleared.
+  const persistRecovery = useCallback((slot: string, rec: PaneRecovery) => {
+    // Registered HERE, the one owner of every park write: the OFF-SCREEN paths persisted without
+    // registering, so the resend-success chain clear could not see them and left a delivered prompt.
+    if (rec.sendId) {
+      const seen = ownParked.current.get(slot) ?? new Set<string>()
+      seen.add(rec.sendId)
+      ownParked.current.set(slot, seen)
+    }
+    if (setPaneRecoveryFor(slot, rec)) {
+      // Durable now, so an earlier REFUSAL's twin is stale -- and the revisit read prefers the twin
+      // while the slot-leave park merges it forward, which put removed text back in the composer.
+      const stale = strandedSends.current.get(slot)
+      if (stale && (rec.sendId ? stale.sendId === rec.sendId : !stale.sendId)) strandedSends.current.delete(slot)
+      return
+    }
+    // The store REFUSED it -- quota exhausted, nothing left to reclaim. Treating that as durable
+    // is how the prompt disappears, so keep the in-memory twin instead.
+    strandedSends.current.set(slot, rec)
+    // eslint-disable-next-line no-console -- intentional dev-only diagnostic, as imageDims does
+    if (import.meta.env.DEV) console.warn('[chatPaneRecovery] persist refused; in-memory only for', slot)
+  }, [])
+  // With an id this retires that send only; with none, the UNIDENTIFIED record alone. Never every
+  // record the slot owns, which deleted a sibling tab's only copy.
+  const clearRecovery = useCallback((slot: string, sendId?: string) => {
+    if (sendId) clearPaneRecoveryFor(slot, sendId)
+    else clearUnidentifiedPaneRecovery(slot)
+    // The in-memory twin too, or a discard whose persist was REFUSED cleared nothing the revisit
+    // effect reads -- it prefers the twin, so the next visit restored the discarded prompt.
+    const twin = strandedSends.current.get(slot)
+    if (twin && (sendId ? twin.sendId === sendId : !twin.sendId)) strandedSends.current.delete(slot)
+  }, [])
+  // Retention contract for the persisted copy: armed by a restore, retired ONLY by an explicit
+  // discard or a definitive receipt. An edit updates it, so no keystroke can delete the last copy.
+  const recoveryArmed = useRef<{ slot: string; sendId?: string } | null>(null)
+  // The send empties the composer itself, and that empty must not read as the user rejecting
+  // the payload the send is still carrying.
+  const sendClearedComposer = useRef(false)
+  // True once the armed composer has actually held the payload, so an empty read before the
+  // restore renders is not mistaken for the user clearing it.
+  const mirroredContent = useRef(false)
+  // The composer is component state, so it OUTLIVES a slot change: a payload restored for the
+  // member it was sent to would otherwise be addressable to whoever the pane shows next.
+  const restoredPayload = useRef<{ slot: string; sendId?: string } | null>(null)
+  const composerNow = useRef({ text: '', files: [] as string[] })
+  composerNow.current = { text: input, files: pendingFiles }
+  const shownSlot = useRef(slotKey)
+  const stagedSendOwned = stagedSend !== null && stagedSend.slot === slotKey
+  const stagedSendDelivered = stagedSendOwned && sendDelivered(allMessages, stagedSend!.sendId)
+  /** Persist the release rather than only forgetting it: a reload re-arms from the RECORD's
+   *  `mayDuplicate`, so clearing memory alone made an edited-away warning return. */
+  // Settlement must see a record the durable write REFUSED too: that copy lives only in the session
+  // fallback, which the restore path already reads, so a localStorage-only lookup here retired nothing.
+  const settlementRecord = (slot: string, id?: string): PaneRecovery | undefined =>
+    id ? (loadPaneRecoveryById(slot, id) ?? loadRefusedRecovery(slot, id)) : undefined
+  const releaseDuplicateWarning = useCallback((slot: string, sendId?: string) => {
+    if (!sendId) return
+    const prior = strandedSends.current.get(slot) ?? loadPaneRecoveryById(slot, sendId)
+    if (!prior || prior.sendId !== sendId || prior.mayDuplicate === false) return
+    persistRecovery(slot, { ...prior, mayDuplicate: false })
+  }, [persistRecovery])
+  const onComposerInput = useCallback((v: string) => {
+    // Containment: an edit before resending leaves the payload one Enter from a duplicate. The
+    // basis falls back past `recoveredPayload`, which a park that dropped `sent` leaves null.
+    const held = (recoveredPayload?.text ?? containmentBasis.current)?.trim()
+    if (!held || !v.includes(held)) {
+      releaseDuplicateWarning(slotKey, stagedSend?.sendId ?? recoveryArmed.current?.sendId)
+      setStagedSend(null)
+      setRecoveredPayload(null)
+      containmentBasis.current = null
+      // The strip goes; the ROW's `deliveryUnknown` does NOT. An edit is no receipt, so un-dimming
+      // here would make the transcript vouch for an unproven delivery.
+    }
+    // Ownership OUTLIVES an edit, because the slot-leave park is gated on it. Only an emptied
+    // composer releases it here; discard and resend clear it at their own sites.
+    if (!v.trim() && !composerNow.current.files.length) restoredPayload.current = null
+    setInput(v)
+  }, [recoveredPayload, releaseDuplicateWarning, slotKey, stagedSend?.sendId])
+  // Parity with ChatPage: offered while the composer holds the recovered payload and nothing
+  // BEYOND it, so a recovery that carried attachments still gets an exit.
+  const discardableRecovery = recoveredPayload !== null
+    && input.trim() === recoveredPayload.text.trim()
+    && pendingFiles.every(f => recoveredPayload.files.includes(f))
+  const discardRecoveredSend = useCallback(() => {
+    // Discard is the user saying they do not want this send, so the bubble goes with the text: a
+    // send that DID land is re-added by the next fetched page, which carries the server row.
+    const discarded = recoveryArmed.current?.sendId ?? stagedSend?.sendId
+    if (discarded) {
+      dispatch(clearPendingServerRow({ slot: slotKeyRef.current, sendId: discarded }))
+      dispatch(dropUnconfirmedRow({ slot: slotKeyRef.current, sendId: discarded }))
+    }
+    setStagedSend(null)
+    setRecoveredPayload(null)
+    // Ownership is released HERE now that a non-empty edit keeps it: discard is the user saying
+    // the payload is gone, so nothing is left to park under the sending slot.
+    restoredPayload.current = null
+    recoveryArmed.current = null
+    // Names the send: another tab can have parked a DIFFERENT send under this same slot, and a
+    // whole-slot clear would delete its only durable copy along with this one.
+    clearRecovery(slotKeyRef.current, discarded)
+    setInput('')
+    setPendingFiles([])
+  }, [clearRecovery, dispatch, stagedSend])
+  // Acknowledgement, NOT a discard, and the pane's only exit when the composer has moved on: it
+  // cannot tell what the send carried, so the row's text is MERGED in rather than replacing.
+  const dismissDeliveryWarning = useCallback(() => {
+    const acked = recoveryArmed.current?.sendId ?? stagedSend?.sendId
+    if (acked) {
+      // Removal drops the ONLY copy of a send that may never have left, so hand its text back --
+      // but only when removal will actually happen, or a delivered message is seated twice.
+      const st = store.getState().chat
+      const rows = st.activeSlot === slotKeyRef.current ? st.messages : st.slotMessages?.[slotKeyRef.current]
+      const row = rows?.find(m => m.role === 'user' && m.meta?.sendId === acked)
+      // `dropUnconfirmedRow` REFUSES a row carrying a server mid or a confirmation, so handing its
+      // text back would seat an already-delivered message in the composer beside the surviving row.
+      const mid = row?.meta?.mid
+      const gone = row && !(typeof mid === 'string' && mid) && row.meta?.deliveryConfirmed !== true
+        ? row.content
+        : undefined
+      if (gone) setInput(prev => {
+        // The composer may already hold THIS send's text from an earlier restore, with the user's
+        // own edit appended. `mergeRecoveredDraft` dedupes on equality only, by design.
+        const held = (recoveredPayload?.text ?? containmentBasis.current)?.trim()
+        return held && prev.includes(held) ? prev : mergeRecoveredDraft(prev, gone)
+      })
+      dispatch(clearPendingServerRow({ slot: slotKeyRef.current, sendId: acked }))
+      dispatch(dropUnconfirmedRow({ slot: slotKeyRef.current, sendId: acked }))
+    }
+    releaseDuplicateWarning(slotKeyRef.current, acked)
+    setStagedSend(null)
+  }, [dispatch, stagedSend, releaseDuplicateWarning, recoveredPayload?.text])
+  /** `sendId` is the record's IDENTITY and is always supplied; `armWarning` is the separate
+   *  question of whether this send's delivery is in doubt. Conflating them meant a refusal
+   *  withheld the id, so two tabs refused on one slot both wrote the bare `pane:${slot}` key
+   *  and the later write overwrote the earlier prompt with no copy left anywhere. */
+  const restoreIntoComposer = useCallback((text: string, files: string[] = [],
+    opts: { sendId?: string; armWarning?: boolean; forSlot?: string } = {}) => {
+    // Named, not positional: a third positional parameter let four call sites pass a SLOT where a
+    // send id was expected, silently disarming the warning and restoring into the wrong composer.
+    const { sendId, armWarning = false, forSlot = liveSlotRef.current } = opts
+    // Main's case, and ONLY main's: an unmounted pane, or a caller naming another slot.
+    if (!mountedRef.current || forSlot !== liveSlotRef.current) {
+      mergePaneDraft(forSlot, text, files)
+      // A draft carries WORDS only. A send in doubt also carries its id and its duplicate risk, and
+      // this guard returns before the branch that persists those, so the pane came back unwarned.
+      if (sendId || armWarning) {
+        const stranded = strandedSends.current.get(forSlot)
+        const held = {
+          text: stranded ? mergeRecoveredDraft(stranded.text, text) : text,
+          files: [...(stranded?.files ?? []), ...files.filter(f => !(stranded?.files ?? []).includes(f))],
+          sendId: sendId ?? stranded?.sendId,
+          sent: stranded?.sent ?? text,
+          sentFiles: stranded?.sentFiles ?? files,
+          mayDuplicate: armWarning || stranded?.mayDuplicate === true,
+        }
+        strandedSends.current.set(forSlot, held)
+        persistRecovery(forSlot, held)
+      }
+      return
+    }
+    // `slotKey` is a PROP, so an in-flight send holds the slot it was typed in while the
+    // composer may now belong to another member -- mirrors ChatPage's `onScreenNow` gate.
+    if (slotKey !== liveSlotRef.current) {
+      // Same APPEND-never-replace rule as the on-screen path, so two stranded sends both live.
+      const prior = strandedSends.current.get(slotKey)
+      const parked = {
+        text: prior ? mergeRecoveredDraft(prior.text, text) : text,
+        files: [...(prior?.files ?? []), ...files.filter(f => !(prior?.files ?? []).includes(f))],
+        sendId: sendId ?? prior?.sendId,
+        // This path's arguments ARE the send's own fragment, so the returning pane gets an exit.
+        sent: prior?.sent ?? text,
+        sentFiles: prior?.sentFiles ?? files,
+        // A refusal must not re-arm the duplicate warning on reload, and only THIS path knows which
+        // it was. OR-ed with the prior: one send in doubt is enough to warn about the merged record.
+        mayDuplicate: armWarning || prior?.mayDuplicate === true,
+      }
+      strandedSends.current.set(slotKey, parked)
+      persistRecovery(slotKey, parked)
+      return
+    }
+    if (sendId && armWarning) setStagedSend({ slot: slotKey, sendId })
+    restoredPayload.current = { slot: slotKey, sendId }
+    recoveryArmed.current = { slot: slotKey, sendId }
+    // The send's clear is over the moment its payload is back in the composer; leaving the flag
+    // set would let it absorb the NEXT empty, which is the user rejecting the payload.
+    sendClearedComposer.current = false
     setInput(prev => mergeRecoveredDraft(prev, text))
     if (files.length) setPendingFiles(prev => [...prev, ...files.filter(f => !prev.includes(f))])
-  }, [])
+    // Persist what the COMPOSER ends up holding, not the restored fragment: the two setters
+    // above merge with text the user typed mid-flight, so the fragment alone loses that.
+    const mergedText = mergeRecoveredDraft(composerNow.current.text, text)
+    const mergedFiles = [...composerNow.current.files, ...files.filter(f => !composerNow.current.files.includes(f))]
+    // The Discard GATE is the send's own fragment, never the merge: snapshotting the merge made
+    // the composer equal to it, so Discard offered to delete work the user typed mid-flight.
+    setRecoveredPayload({ text, files })
+    containmentBasis.current = text
+    persistRecovery(slotKey, { text: mergedText, files: mergedFiles, sent: text, sentFiles: files, mayDuplicate: armWarning, ...(sendId ? { sendId } : {}) })
+  }, [slotKey, persistRecovery])
+
+  // Re-entering the pane that owns a parked payload is the first moment it can be handed
+  // back; keyed on the SENDING slot, so a bystander pane never receives another's text.
+  useEffect(() => {
+    const left = shownSlot.current
+    shownSlot.current = slotKey
+    // Leaving the member a restored payload belongs to: park it under THAT slot rather than
+    // let the composer carry it, so it can only ever be resent to the member it was sent to.
+    if (left !== slotKey && restoredPayload.current?.slot === left) {
+      const { text, files } = composerNow.current
+      const ownerSendId = restoredPayload.current.sendId
+      restoredPayload.current = null
+      if (text || files.length) {
+        // The persisted record is the fallback: on the HAPPY path the write landed, so
+        // `strandedSends` is empty and re-writing this key dropped the restore's `sent` fragment.
+        const prior = strandedSends.current.get(left)
+          ?? (ownerSendId ? loadPaneRecoveryById(left, ownerSendId) : undefined)
+        const parked = {
+          text: prior ? mergeRecoveredDraft(prior.text, text) : text,
+          files: [...(prior?.files ?? []), ...files.filter(f => !(prior?.files ?? []).includes(f))],
+          sendId: ownerSendId ?? prior?.sendId,
+          // `text` here is the COMPOSER, not the send, so only an already-known fragment carries.
+          ...(prior?.sent !== undefined ? { sent: prior.sent, sentFiles: prior.sentFiles ?? [] } : {}),
+          ...(prior?.mayDuplicate !== undefined ? { mayDuplicate: prior.mayDuplicate } : {}),
+        }
+        strandedSends.current.set(left, parked)
+        persistRecovery(left, parked)
+      }
+      setInput('')
+      setPendingFiles([])
+      setStagedSend(null)
+    }
+    // Memory first, then the persisted twin: after a reload the ref is empty and the store is
+    // the only copy, which is the case a component-local park could not survive.
+    // The store read spans BOTH homes and picks by park time: a refusal happens when the durable
+    // store is full, so a newer refused record sits beside an older durable one and `??` lost it.
+    const parked = strandedSends.current.get(slotKey) ?? loadNewestRecoveryForSlot(slotKey)
+    if (!parked) return
+    strandedSends.current.delete(slotKey)
+    // NOT cleared: the store is the only copy a SECOND reload has, so consuming it here is what
+    // made the first reload the last one. Discard and a definitive receipt retire it instead.
+    recoveryArmed.current = { slot: slotKey, sendId: parked.sendId }
+    // Reset with the arm: a stale `true` made this pane's empty pre-hydration composer read as a
+    // rejection, so the mirror effect cleared the durable record before the text arrived.
+    mirroredContent.current = false
+    sendClearedComposer.current = false
+    restoredPayload.current = { slot: slotKey, sendId: parked.sendId }
+    // Seeded from the SEND's fragment, not the persisted merge: without that distinction a reload
+    // offered Discard over mid-flight work folded into the same record. No fragment, no exit.
+    if (parked.sent !== undefined) setRecoveredPayload({ text: parked.sent, files: parked.sentFiles ?? [] })
+    containmentBasis.current = parked.sent ?? parked.text
+    // `sendId` is IDENTITY; the warning is the separate delivery question, exactly as the live
+    // path splits them. A record parked by an explicit refusal says so and must not re-arm.
+    if (parked.sendId && parked.mayDuplicate !== false) setStagedSend({ slot: slotKey, sendId: parked.sendId })
+    setInput(prev => mergeRecoveredDraft(prev, parked.text))
+    if (parked.files.length) setPendingFiles(prev => [...prev, ...parked.files.filter(f => !prev.includes(f))])
+  }, [slotKey, persistRecovery, clearRecovery])
+
+  // While a recovery is armed the composer IS the payload, so mirror edits into the store on the
+  // same debounce as drafts: that is what lets an edit update the copy instead of dropping it.
+  useEffect(() => {
+    const armed = recoveryArmed.current
+    if (!armed) return
+    // The ARMED slot owns the payload, not whichever member the pane shows now: `slotKey` is a
+    // prop, so an edit after a slot change would otherwise file this text under a bystander.
+    const slot = armed.slot
+    if (slot !== slotKeyRef.current) return
+    if (!input.trim() && !pendingFiles.length) {
+      // An empty composer means the user rejected the payload only AFTER it was actually in
+      // there: on a fresh mount the arm lands a render before the restored text does.
+      if (!mirroredContent.current) return
+      // The send's OWN clear is not a rejection either, and only the latter retires the copy —
+      // otherwise a reload after an explicit empty resurrects what the user just deleted.
+      if (sendClearedComposer.current) { sendClearedComposer.current = false; return }
+      recoveryArmed.current = null
+      mirroredContent.current = false
+      clearRecovery(slot, armed.sendId)
+      return
+    }
+    mirroredContent.current = true
+    const timer = setTimeout(() => {
+      // The receipt retires the arm by MUTATING a ref, which fires no re-render and so no cleanup:
+      // without this identity check a timer pending at clear time writes the record back after it.
+      if (recoveryArmed.current !== armed) return
+      // THIS send's own record, never the newest for the slot: two tabs can each park a failed send
+      // here, so the newest was a sibling's and its `sent` became the wrong Discard basis.
+      const prior = armed.sendId ? loadPaneRecoveryById(slot, armed.sendId) : undefined
+      const gen = (prior?.gen ?? 0) + 1
+      // The fragment is carried forward: it records what the SEND held, which an edit to the
+      // composer does not change, and dropping it would leave the Discard gate with no basis.
+      persistRecovery(slot, {
+        text: input,
+        files: pendingFiles,
+        gen,
+        ...(prior?.sent !== undefined ? { sent: prior.sent, sentFiles: prior.sentFiles ?? [] } : {}),
+        ...(prior?.mayDuplicate !== undefined ? { mayDuplicate: prior.mayDuplicate } : {}),
+        ...(armed.sendId ? { sendId: armed.sendId } : {}),
+      })
+    }, DRAFT_SAVE_DEBOUNCE_MS)
+    return () => clearTimeout(timer)
+  }, [input, pendingFiles, persistRecovery, clearRecovery])
 
   /** Say, in the transcript that owns the message, that it never went out.
    *
@@ -669,7 +977,7 @@ export default function ChatPane({
         content: reason
           ? i18nT(restored ? 'pages.chatPage.send_failed_with_error_restored' : 'pages.chatPage.send_failed_with_error', { error: reason })
           : i18nT(status === 'transport-error'
-            ? 'pages.chatPage.send_failed_connection'
+            ? 'pages.chatPage.send_no_response'
             : 'pages.chatPage.send_failed'),
         cls: '',
       },
@@ -713,6 +1021,11 @@ export default function ChatPane({
     if (!optionText) {
       setInput('')
       setPendingFiles([])
+      restoredPayload.current = null
+      sendClearedComposer.current = true
+      // Retiring the marker here bypasses `onComposerInput`, so without it the resend the
+      // caption warns about leaves that caption standing over an emptied composer.
+      setStagedSend(null)
     }
     // Attachments take the SAME wire/bubble serialization as ChatPage
     // (prepareSendPayload, the single owner of attachment-marker knowledge):
@@ -749,11 +1062,13 @@ export default function ChatPane({
       ...(dirPaths.length ? { dirs: dirPaths } : {}),
       sendId,
     }
+    // Captured from the gate itself, not re-derived: a failure arm that recomputed
+    // `busy` could drift from this condition and lose the text a bubble never held.
     const bubbleMinted = !busy && (text || files.length)
     if (bubbleMinted) {
       dispatch(appendSlotMessage({
         slot: slotKey,
-        message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), ...(meta ? { meta } : {}) },
+        message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: retainedSend(meta) },
       }))
     }
     // A failed send has to say so on the pane it was typed into. This path
@@ -761,31 +1076,70 @@ export default function ChatPane({
     // fetch was swallowed by `.catch(() => undefined)`, so an undelivered
     // message stayed on screen looking sent. `ChatPage` has always appended an
     // error row and handed the text back; the pane now does the same.
-    const reportFailedSend = (reason?: string, status?: SendReceiptStatus) => {
+    const reportFailedSend = (reason?: string, delivered: 'unsent' | 'unknown' = 'unsent', status?: SendReceiptStatus) => {
+      // The ROW's copy is derived from `status` centrally by `reportSendFailure`, which keeps the
+      // shared connection wording every surface uses; the CAPTION owns the delivery state.
       reportSendFailure(reason, status, !optionText)
-      // Only a composer send has anything to hand back: an option send never
-      // consumed the draft (see the `!optionText` gate above), so restoring the
-      // option label here would CLOBBER the preserved draft with text the user
-      // can re-click any time.
-      if (!optionText) restoreIntoComposer(text, files, slotKey)
+      // Only an EXPLICIT non-delivery may retire retention. A transport error after
+      // an accepted POST proves nothing, and clearing would let a refetch delete it.
+      if (delivered === 'unsent') dispatch(clearPendingServerRow({ slot: slotKey, sendId }))
+      // Retained but unconfirmed: the bubble must stop reading as delivered.
+      else dispatch(markDeliveryUnknown({ slot: slotKey, sendId }))
+      // Restore ALWAYS (bar an option click, which has no typed text). The id goes with it every
+      // time as the record's identity; only the WARNING is conditional on unknown delivery.
+      if (!optionText) restoreIntoComposer(text, files, { sendId, armWarning: delivered === 'unknown', forSlot: slotKey })
     }
-    // Receipt semantics live in the chat-core transport (sendTurn owns the
-    // abort deadline and the shared readSendReceipt classification). This
-    // pane only decides how to REACT
-    // per status: failures report on the pane that owns the message and hand
-    // the payload back. `unknown` proves a 2xx was received, while
-    // `response-late` proves no refusal either; restoring either one here could
-    // invite a retry that duplicates a turn already in flight, side effects
-    // included, so the optimistic composer row stays pending.
+    // Read BEFORE the POST, and only THIS composer's own record: `recoveryArmed` names the
+    // payload restored here, where the newest-for-the-slot would be a sibling tab's parked send.
+    const armedAtSend = recoveryArmed.current
+    const ownArmed = armedAtSend && armedAtSend.slot === slotKey
+    // An armed record with NO id came from a refusal, which restored without one. Bind it to THIS
+    // retry so the settlement below can retire it, instead of a reload resurrecting a sent prompt.
+    if (ownArmed && !armedAtSend.sendId && adoptPaneRecovery(slotKey, sendId)) {
+      recoveryArmed.current = { slot: slotKey, sendId }
+    }
+    const boundId = ownArmed ? (recoveryArmed.current?.sendId ?? armedAtSend.sendId) : undefined
+    const consumed = settlementRecord(slotKey, boundId)
+    if (!optionText) stashPreSend(sendId, { raw: text, files, sent: llm })
     void sendTurn({ message: llm, slot: slotKey, meta, ...(steerNow ? { steer: true } : {}) }).then((receipt) => {
       if ((receipt.status === 'response-late' || receipt.status === 'transport-error')
-        && selectSendConfirmed(store.getState(), slotKey, sendId)) return
-      if (receipt.status === 'refused' || receipt.status === 'transport-error') {
-        reportFailedSend(receipt.reason, receipt.status)
+        && selectSendConfirmed(store.getState(), slotKey, sendId)) {
+        // The echo already proved delivery, so this payload is settled even though the POST failed.
+        // Returning without retiring it left a reload restoring a prompt the server has.
+        const settled = settlementRecord(slotKey, consumed?.sendId)
+        if (consumed && settled && settled.gen === consumed.gen && settled.sendId === consumed.sendId) {
+          recoveryArmed.current = null
+          clearRecovery(slotKey, consumed.sendId)
+          if (consumed.sendId) ownParked.current.get(slotKey)?.delete(consumed.sendId)
+        }
+        return
+      }
+      if (receipt.status === 'refused') {
+        // Nothing was accepted, so no `queue_push` will ever name this send: the only reader the
+        // pre-send record had is gone and holding the prompt past here is a pure leak.
+        retirePreSendStash(sendId)
+        reportFailedSend(receipt.reason, 'unsent', receipt.status)
+        return
+      }
+      // No browser signal proves the POST never left: `onLine` is read when the
+      // error surfaces, so it can be false on a drop AFTER the bytes went out.
+      if (receipt.status === 'transport-error') {
+        reportFailedSend(undefined, 'unknown', receipt.status)
         return
       }
       if (receipt.status === 'unknown') return
       if (receipt.status === 'response-late') {
+        // A minted bubble is the row this send is represented by, so MARK it rather than
+        // hand the text back blind; with no bubble there is no row and main's path runs.
+        if (bubbleMinted) {
+        // Aborted before any receipt, so delivery is unknown rather than confirmed:
+        // marking stops a refetch preserving this row as a normal-looking prompt.
+        dispatch(markDeliveryUnknown({ slot: slotKey, sendId }))
+        // Abort is the WEAKEST delivery state and the bubble is store-only, so a
+        // reload discards it -- restore ALWAYS, as the transport arm does.
+        if (!optionText) restoreIntoComposer(text, files, { sendId, armWarning: true, forSlot: slotKey })
+          return
+        }
         // The "stays pending" reasoning above needs a row to stay pending. A
         // BUSY send minted none (the server's queue/steer echo was to be the
         // representation), so if the deadline fires before any echo landed
@@ -801,8 +1155,13 @@ export default function ChatPane({
           // The cost is a visible duplicate (card + refilled draft + notice)
           // when the card did belong to this send; the alternative is silent
           // loss, and the notice says to check the conversation first.
-          restoreIntoComposer(text, files, slotKey)
-          dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
+          const echoed = selectSlotMessages(store.getState(), slotKey).some(m => m.role === 'user' && m.meta?.sendId === sendId)
+          if (!echoed) {
+            // Same pair as the transport arm: the id is the record's identity and the warning is
+            // the doubt this arm is already announcing, so a reload re-arms instead of forgetting.
+            restoreIntoComposer(text, files, { sendId, armWarning: true, forSlot: slotKey })
+            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_short'), cls: '' } }))
+          }
         }
         return
       }
@@ -820,26 +1179,62 @@ export default function ChatPane({
       // wire text can never reach here (sendTurn classifies it `refused`),
       // and the guard requires the receipt's `queue_id`.
       if (receipt.status === 'queued' && typeof receipt.body.queue_id === 'string' && receipt.body.queue_id && !optionText) {
-        queuedSendStash.set(receipt.body.queue_id, { raw: text, files, sent: llm })
+        stashQueuedSend(receipt.body.queue_id, { raw: text, files, sent: llm })
+        // The queue id is already bound above, so the sendId-keyed copy has no reader left.
+        retirePreSendStash(sendId)
       }
+      // The queue_push card owns the on-screen copy from here, so the bubble is no
+      // longer the message's only representation and retention is released.
+      if (receipt.status === 'queued') dispatch(clearPendingServerRow({ slot: slotKey, sendId }))
       // The response is the delivery receipt for this pane's optimistic bubble
-      // independently of when its correlated user echo arrives. Only
-      // an IMMEDIATE dispatch counts: a queued acceptance is not a receipt for
-      // this bubble.
+      // independently of when its correlated user echo arrives, because no
+      // `chat_message` echo is coming for a dashboard send. Only an IMMEDIATE
+      // dispatch counts: a queued acceptance is not a receipt for this bubble.
       if (receipt.status === 'dispatched') {
+        // Ran immediately, so it becomes no queue entry and no `queue_push` follows.
+        retirePreSendStash(sendId)
         dispatch(confirmOptimisticSend({
           slot: slotKey,
           sendId,
           mid: typeof receipt.body.mid === 'string' ? receipt.body.mid : undefined,
         }))
       }
+      // Retires the payload this receipt CARRIED, matched by the whole record identity. `!optionText`
+      // because an option click consumes no draft, so it would clear another send's.
+      if (!optionText && (receipt.status === 'queued' || receipt.status === 'dispatched')) {
+        const now = settlementRecord(slotKey, consumed?.sendId)
+        // `consumed` must EXIST: the failure path persists no `gen`, so `gen ?? 0` read 0 === 0
+        // for a send that consumed nothing and retired a sibling's only copy of its prompt.
+        if (consumed && now && now.gen === consumed.gen && now.sendId === consumed.sendId) {
+          recoveryArmed.current = null
+          clearRecovery(slotKey, consumed.sendId)
+          if (consumed.sendId) ownParked.current.get(slotKey)?.delete(consumed.sendId)
+        }
+        // Earlier links of the same retry chain: this receipt proves that payload reached the
+        // server, so retire a record whose fragment the delivered text carries.
+        const chain = ownParked.current.get(slotKey)
+        if (chain) {
+          for (const parkedId of [...chain]) {
+            if (parkedId === sendId) continue
+            const rec = loadPaneRecoveryById(slotKey, parkedId)
+            if (!rec) { chain.delete(parkedId); continue }
+            // A `gen` means the user typed into this record since it was parked -- the same thing
+            // the consumed-record guard above protects. Only a pristine failure record may go.
+            if (rec.gen !== undefined) continue
+            const fragment = (rec.sent ?? rec.text).trim()
+            if (!fragment || !text.includes(fragment)) continue
+            clearRecovery(slotKey, parkedId)
+            chain.delete(parkedId)
+          }
+        }
+      }
       if (!cardAtSend && !askAtSend) return
-      // Immediate dispatch only: a QUEUED acceptance is still cancellable —
-      // the queued path retires at its queue_pop instead (removeQueuedMessage).
+      // Immediate dispatch only: a QUEUED acceptance is still cancellable — the
+      // queued path retires at its queue_pop instead (removeQueuedMessage).
       if (receipt.status === 'dispatched' && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
     })
-  }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
+  }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure, clearRecovery])
   // The endpointer auto-submit (handed to the Voice atom above) reads the
   // latest send through this ref.
   doSendRef.current = doSend
@@ -908,7 +1303,11 @@ export default function ChatPane({
       if (receipt.status === 'refused' || receipt.status === 'transport-error') {
         dispatch(resolveOptimisticSteer({ slot: slotKey, sendId, outcome: 'queued' }))
         reportSendFailure(receipt.reason, receipt.status)
-        restoreIntoComposer(raw, files, slotKey)
+        // A refusal is the server DECLINING the steer, so a warning would contradict it. A transport
+        // error is indeterminate, so without identity and warning a resend can execute it twice.
+        restoreIntoComposer(raw, files, receipt.status === 'transport-error'
+          ? { sendId, armWarning: true, forSlot: slotKey }
+          : { forSlot: slotKey })
         return
       }
       // - response-late: the deadline aborted the POST; delivery is
@@ -918,9 +1317,9 @@ export default function ChatPane({
       //   and deletable, a lost steer is not.
       if (receipt.status === 'response-late') {
         dispatch(resolveOptimisticSteer({ slot: slotKey, sendId, outcome: 'queued' }))
-        restoreIntoComposer(raw, files, slotKey)
+        restoreIntoComposer(raw, files, { sendId, armWarning: true, forSlot: slotKey })
         // \u26A0 is NoticeCard's warn-tone selector (parseNotice).
-        dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
+        dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_short'), cls: '' } }))
         return
       }
       // - unknown: a 2xx whose body would not parse. Accepted; an unreadable
@@ -994,7 +1393,7 @@ export default function ChatPane({
       // it was sent for, not the one now shown: acting on it here would zero
       // the CURRENT slot's arming stamp and pending state (its next press
       // would read as a fresh soft, which the backend escalates) and show it
-      // a notice about a stop it never pressed (GPT round 9).
+      // a notice about a stop it never pressed.
       if (stopSlotRef.current !== slotKey) return
       const failure = requestStop.fulfilled.match(res) ? res.payload : null
       if (!failure) return
@@ -1006,7 +1405,7 @@ export default function ChatPane({
       // queue-clearing hard kill. So the optimistic pending state and the
       // arming stamp stay — the composer keeps saying "click again to force
       // stop", and the retry the notice asks for is a deliberate force, not a
-      // second soft the backend may read as one (GPT round 8). Only a
+      // second soft the backend may read as one. Only a
       // DEFINITE refusal (the backend answered, and said no) armed nothing:
       // that retry must read as a fresh press, so the stamp and the pending
       // promise are reset.
@@ -1088,11 +1487,15 @@ export default function ChatPane({
     onEdit: onEditQueued,
     onReorder: onReorderQueued,
     pendingIds: queuePendingIds,
+    editError: queueEditError,
+    dismissEditError: dismissQueueEditError,
   } = useQueuedMessageActions({
     slot: slotKey,
     allQueued: allQueuedMessages,
     visibleQueued: queuedMessages,
-    restoreDraft: restoreIntoComposer,
+    // Arity-pinned on purpose: this surface has no knowledge selection, and its own third
+    // parameter is a `sendId`, which the hook's third argument would land in positionally.
+    restoreDraft: (text: string, files: string[]) => restoreIntoComposer(text, files),
   })
   // Split-view panes draw the SAME transcript rows as the single-chat surface,
   // through the SDK's row registry: the live ToolCallLine (purpose / input /
@@ -1322,8 +1725,9 @@ export default function ChatPane({
             without a steer channel, a mid-plan send) must stay visible and
             cancellable — hiding real state is worse than showing a card the
             surface did not intend. */}
-        {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
+        {(queuedMessages.length > 0 || queueEditError) && (
+          <QueueStack editError={queueEditError} onDismissEditError={dismissQueueEditError}
+          messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} pendingIds={queuePendingIds} />
         )}
 
         {/* The pending ask_question card renders per pane: in split mode the
@@ -1337,8 +1741,9 @@ export default function ChatPane({
              the time this runs, so a swallowed failure would destroy the
              user's answer outright; on refusal, transport failure, or
              the abort deadline it goes back into the composer through the
-             same recovery `doSend` uses. `response-late` restores HERE unlike
-             the composer send: a deadline can fire before the POST ever
+             same recovery `doSend` uses. `response-late` restores here even for
+             an option answer, which the composer send does not: a deadline can
+             fire before the POST ever
              reached the gateway, and with the card gone a silently lost
              answer has no other trace — the worst case is a duplicate answer,
              which the user can see and delete. `unknown` stays silent — a 2xx
@@ -1346,7 +1751,7 @@ export default function ChatPane({
              landed, and handing it back would invite a second answer to a
              question already gone. */
           onFallbackSend={(text) => {
-            const fail = (reason?: string, status?: SendReceiptStatus) => { reportSendFailure(reason, status); restoreIntoComposer(text, [], slotKey) }
+            const fail = (reason?: string, status?: SendReceiptStatus) => { reportSendFailure(reason, status); restoreIntoComposer(text, [], { forSlot: slotKey }) }
             void sendTurn({ message: text, slot: slotKey }).then((receipt) => {
               if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
                 fail(receipt.reason, receipt.status)
@@ -1374,7 +1779,7 @@ export default function ChatPane({
                 void sendTurn({ message: o, slot: slotKey }).then((receipt) => {
                   if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
                     reportSendFailure(receipt.reason, receipt.status)
-                    restoreIntoComposer(o, [], slotKey)
+                    restoreIntoComposer(o, [], { forSlot: slotKey })
                   }
                 })
               }}
@@ -1418,12 +1823,23 @@ export default function ChatPane({
           ref={composerRef}
           slotKey={slotKey}
           value={input}
-          onChange={setInput}
+          onChange={onComposerInput}
           voice={composerVoiceOptions}
         >
         <ChatInput
+          aboveComposer={stagedSendOwned ? (
+            /* Parity with ChatPage: a pane user whose transcript is scrolled cannot see
+               the bubble's caption, and the RESEND is fired here. */
+            <DeliveryWarningStrip
+              noteId={`pane-delivery-dismiss-note-${slotKey}`}
+              delivered={stagedSendDelivered}
+              discardable={discardableRecovery}
+              onDiscard={discardRecoveredSend}
+              onDismiss={dismissDeliveryWarning}
+            />
+          ) : undefined}
           value={input}
-          onChange={setInput}
+          onChange={onComposerInput}
           onSend={doSend}
           isRunning={busy}
           onStop={onStop}

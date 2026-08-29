@@ -4882,6 +4882,7 @@
       "ready_processing_after_the_current_turn": "ready — processing after the current turn",
       "save": "Save",
       "save_edit": "Save edit",
+      "edit_failed": "Couldn't save the edit: {{error}}",
       "send_now": "Send now",
       "sub_agent_result_one": "{{count}} sub-agent result",
       "sub_agent_result_other": "{{count}} sub-agent results"

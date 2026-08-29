@@ -869,7 +869,7 @@ describe('ChatPage queued-message controls', () => {
     expect(editSpy).not.toHaveBeenCalled()
 
     act(() => queueProps!.onEdit('q1', '  deploy instead  '))
-    await waitFor(() => expect(editSpy).toHaveBeenCalledWith('chat-1', 'q1', 'deploy instead'))
+    await waitFor(() => expect(editSpy).toHaveBeenCalledWith('chat-1', 'q1', 'deploy instead', expect.any(String)))
     await waitFor(() => expect(queueProps!.messages[0].content).toBe('deploy instead'))
   })
 

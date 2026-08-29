@@ -15,7 +15,7 @@ import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, WorkflowRunSummary } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
-import { mergePreservedPastes } from '../utils/pasteTokens'
+import { mergePreservedPastes, expandAll as expandPasteTokens, type PasteBlock } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../utils/thunkError'
 import { jsonEqual } from '../utils/structuralEqual'
@@ -23,6 +23,7 @@ import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { i18nT } from '../i18n/t'
 import { secureRandomId } from '../utils/secureId'
 import { mergeIntoDraft } from '../utils/chatDrafts'
+import { adoptPreSendStash, noteLocalQueueEdit, noteAppliedEditRev, editSupersededByNewerRev, settleLocalEditResponse, settleQueueEditEcho, retireEditedQueueRecord, retireRemoteQueueEdit } from '../utils/queuedSendStash'
 import { isRejectedDecision } from '../utils/approvalDecision'
 import { automationForSlot, type AutomationRecord } from '../monitoring/automation'
 import { findReport, parseErrorCode } from '../utils/errorReport'
@@ -169,30 +170,87 @@ const RECONCILE_WINDOW = 50
  *  first non-matching user message, preventing reconciliation of pipelined sends
  *  (user A then user B — echo for A could never reach past B). Now uses
  *  `continue` to keep scanning. */
+/** Index of the row a send id names, or -1 — searching the WHOLE array.
+ *
+ *  Deliberately unbounded. `sendId` is unique per send, so there is no mis-hit for a
+ *  proximity window to prevent, and a bounded scan silently MISSED a send once an agent
+ *  turn emitted more rows than the window while a discard was still pending. For
+ *  `clearPendingServerRow` that miss is unrecoverable: retention is durable across refetch
+ *  by design and this is its only retirement path, so the bubble re-attaches forever.
+ *
+ *  Identity comes from `rowIdentities`, the one owner of which sends a row stands for, so a
+ *  merged row's folded ids are not judged independently here. */
+function indexBySendId(msgs: ChatMessage[], sendId: string): number {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.role !== 'user') continue
+    if (rowIdentities(m).includes(`send:${sendId}`)) return i
+    // The one identity `rowIdentities` cannot carry: reconciliation DELETES `sendId` and
+    // rewrites it as `confirmedSendId`, so a confirmed row would be unfindable without this.
+    if ((m.meta as Record<string, unknown> | undefined)?.confirmedSendId === sendId) return i
+  }
+  return -1
+}
+
+/** Delivery doubt is retired ONLY by the row's own send being confirmed, which both confirm paths do
+ *  inline. A later turn's success proves nothing about an earlier send, so clearing that row's warning
+ *  made a prompt which never left the browser render as an ordinary delivered message -- no cue left,
+ *  and no path back to the doubt. The caption outliving it is the declared retention trade. */
+
 function reconcileOptimisticEcho(
   msgs: ChatMessage[],
   echoSendId: string,
   meta: Record<string, unknown>,
   ts?: string,
 ): boolean {
+  // A merged row stands for EVERY send folded into it, so match the set it names:
+  // on the scalar alone the earlier sends stay optimistic and get resent.
+  const many = meta.sendIds
+  const wanted = new Set<string>([echoSendId])
+  if (Array.isArray(many)) for (const x of many) if (typeof x === 'string' && x) wanted.add(x)
+  let reconciled = false
+  const matched = new Set<string>()
+  const matchedAt: number[] = []
   const reconcileFloor = Math.max(0, msgs.length - RECONCILE_WINDOW)
   for (let i = msgs.length - 1; i >= reconcileFloor; i--) {
     const m = msgs[i]
     if (m.role !== 'user') continue
-    if (m.meta?.sendId === echoSendId) {
+    // NOT a boundary: upstream reconciles a delayed echo arriving PAST a newer steer, so the scan
+    // must reach the row behind it. Id matching means passing a steer row cannot mis-attribute.
+    const rowSendId = typeof m.meta?.sendId === 'string' ? m.meta.sendId : ''
+    if (rowSendId && wanted.has(rowSendId)) {
+      matched.add(rowSendId)
+      matchedAt.push(i)
       // Keep the rendered row's identity when the server supplies its timestamp.
       if (ts && m.ts && ts !== m.ts) {
         m.meta = { ...(m.meta || {}), clientTs: m.meta?.clientTs ?? m.ts }
       }
       if (ts) m.ts = ts
       m.meta = { ...(m.meta || {}), ...meta }
+      // The wire id STAYS: upstream's confirmed-send lookup reads it on the reconciled row. This
+      // sits beside it because a MERGED echo names several sends, so the row must say which.
+      ;(m.meta as Record<string, unknown>).confirmedSendId = rowSendId
       delete (m.meta as Record<string, unknown>).optimistic
       if (!meta.steer) delete (m.meta as Record<string, unknown>).steer
-      return true
+      // The echo IS proof of delivery, so the unconfirmed marking must not outlive it.
+      delete (m.meta as Record<string, unknown>).deliveryUnknown
+      // Positive marker: the composer holding the restored copy reads this to state
+      // delivery as FACT instead of hedging -- absence cannot say it, a dropped row is too.
+      ;(m.meta as Record<string, unknown>).deliveryConfirmed = true
+      reconciled = true
+      // Keep scanning: a merged echo has more than one row to resolve.
+      continue
     }
     // #3898 fix: continue scanning past non-matching user messages so
     // pipelined sends (multiple optimistic bubbles) can all be reconciled.
   }
+  if (!reconciled) return false
+  // Only a SINGLE-send echo is the row it matched. A merged echo carries one `mid` for several
+  // sends, and `mid` is the identity deep links and pins resolve on, so it cannot be spread.
+  if (matched.size === wanted.size && wanted.size === 1) return true
+  // Either a folded send has no local row at all, or one canonical row stands for several: both
+  // leave the echo's own row the only honest carrier. Retire the matched rows; the caller appends it.
+  for (const i of matchedAt) msgs.splice(i, 1)
   return false
 }
 
@@ -359,7 +417,7 @@ const slotKeyedMaps = (state: ChatState) => [
   // server count belongs with them: kept past an eviction it would read as a
   // fall against a recreated slot's first fetch and drop a legitimate tail.
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
-  state.slotServerTotalSeq,
+  state.slotServerTotalSeq, state.slotDetailSeq,
   state.thinkingOrphans,
 ].filter(Boolean)
 
@@ -525,7 +583,7 @@ export const shouldResolveAskOnSend = (
 
 /** One queued-message entry as normalized by `fetchSlotDetail` from the backend
  *  slot-detail `queue` field. */
-type SlotQueueItem = { content: string; queueId: string; ts: string }
+type SlotQueueItem = { content: string; queueId: string; ts: string; sendId?: string; edited?: boolean }
 
 /** Field-for-field equality over every `ChatMessage` field a consumer can render. */
 function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
@@ -561,10 +619,44 @@ function sameTranscript(prev: ChatMessage[], next: ChatMessage[]): boolean {
 function hydrateQueuedBubbles(
   list: ChatMessage[],
   queue: SlotQueueItem[] | undefined,
+  prior: ChatMessage[] = list,
 ): ChatMessage[] {
+  // `SlotQueueItem` has no `rawSend`/`sendId`, so a bare rebuild strands the raw draft.
+  // `prior` is separate: most callers pass a list rebuilt from the server page.
+  const carried = new Map<string, Record<string, unknown>>()
+  for (const m of prior) {
+    if (m.role !== 'queued') continue
+    const qid = m.meta?.queueId
+    if (typeof qid !== 'string' || !qid) continue
+    const keep: Record<string, unknown> = {}
+    if (m.meta?.rawSend) keep.rawSend = m.meta.rawSend
+    if (typeof m.meta?.sendId === 'string' && m.meta.sendId) keep.sendId = m.meta.sendId
+    // An UNSETTLED edit is local state a refetch has no proof about, exactly like the optimistic
+    // bubble: dropping it left the response's own guard unable to match and the card diverging.
+    if (typeof m.meta?.editPending === 'string') keep.editPending = m.meta.editPending
+    // Its partner: `editPrev` is what tells a delayed echo of the REPLACED text from real news, so
+    // carrying the pending edit without it disarmed that guard on every rebuild.
+    if (typeof m.meta?.editPrev === 'string') keep.editPrev = m.meta.editPrev
+    if (Object.keys(keep).length) carried.set(qid, keep)
+  }
   const base = list.filter((m) => m.role !== 'queued')
-  for (const { content, queueId, ts } of queue ?? []) {
-    base.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
+  for (const { content, queueId, ts, sendId, edited } of queue ?? []) {
+    // The SERVER's id wins over the carried one: carrying only works when a live bubble already
+    // exists, which requires having seen the `queue_push` broadcast -- the case this repairs.
+    const own = sendId ? { sendId } : {}
+    const keep = { ...(carried.get(queueId) || {}) }
+    // `rawSend` was captured against ONE content, so dropping it when the server's has since moved
+    // makes "a row's rawSend.sent equals its own content" hold by construction. `sendId` is identity.
+    const rs = keep.rawSend as { sent?: string } | undefined
+    if (rs && rs.sent !== content) delete keep.rawSend
+    // The comparison above cannot see an edit that REDACTS to the same display text, so the server's
+    // own marker decides: an edited entry's carried payload describes the text before the edit.
+    if (edited) delete keep.rawSend
+    // `editPending` IS the text the user submitted, so an unsettled edit renders from it: the page
+    // was read before the edit landed, and showing the server's copy reverts the card under them.
+    const pending = keep.editPending
+    const shown = typeof pending === 'string' ? pending : content
+    base.push({ role: 'queued', content: shown, cls: 'msg msg-queued', ts, meta: { queueId, ...keep, ...own } })
   }
   return base
 }
@@ -1026,6 +1118,11 @@ interface ChatState {
    *  only when that count came from a warm carrying one, so an absent entry
    *  means the ordering is unknown and the merge must not act on it. */
   slotServerTotalSeq: Record<string, number>
+  /** Dispatch order of the NEWEST slot-detail response already applied, per slot.
+   *  Two same-slot refetches can settle out of order, and the later one retires a
+   *  send's retention marker — so without this the earlier response would rebuild
+   *  the transcript from its own older page and erase a persisted user row. */
+  slotDetailSeq: Record<string, number>
   /** Reasoning blocks whose anchoring row is above the loaded window, per slot.
    *  Client-only, so this is their only copy until the anchor pages back in. */
   thinkingOrphans: Record<string, Array<ParkedThinking<ChatMessage>>>
@@ -1169,6 +1266,7 @@ const initialState: ChatState = {
   slotPaneBounded: {},
   slotServerTotal: {},
   slotServerTotalSeq: {},
+  slotDetailSeq: {},
   thinkingOrphans: {},
   slotRun: {},
   slotHydrated: {},
@@ -1360,7 +1458,7 @@ function applyNonActiveFrame(
   // message does — count it (see `ChatState.runEpoch`). A `/note` is also an
   // inject row but is PASSIVE: it starts no turn, so counting it would make a
   // Stop settlement captured a moment earlier read as stale and leave the pane
-  // falsely busy (GPT round 10).
+  // falsely busy.
   if (role === 'inject' && !isNoteRow({ cls, meta })) bumpRunEpoch(state, slot)
   if (role === 'tool') {
     if (run.state === 'idle') bumpRunEpoch(state, slot)
@@ -1448,6 +1546,15 @@ const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
  *  closed by default. */
 export const selectSlotSubagents = (state: RootState, slot: string | null): Record<string, SubagentActivity> =>
   slot && slot !== state.chat.activeSlot ? (state.chat.slotActivity[slot]?.subagents ?? EMPTY_SUBAGENTS) : state.chat.subagents
+/** Opt a just-appended user row into refetch retention. Retention is NOT automatic:
+ *  a surface that asks for it here also owes a release — `clearPendingServerRow` on a
+ *  refused or queued send, `markDeliveryUnknown` when the outcome is unknown. Without
+ *  this call a send gets no retention, so a new surface cannot inherit a
+ *  tab-lifetime phantom by merely minting a `sendId`. Returns a new object: the
+ *  caller's meta also goes over the wire and must not gain a client-only flag. */
+export const retainedSend = (meta?: Record<string, unknown>): Record<string, unknown> =>
+  ({ ...(meta || {}), pendingServerRow: true })
+
 /** Per-slot pending tool-approval (unresolved permission after the slot's last
  *  user message) — slot-aware version of ChatInput's old selectPendingApproval,
  *  so each grid pane's approval bar reflects ITS slot, not the global active one. */
@@ -1715,10 +1822,14 @@ let _abortLoadOlder: (() => void) | null = null
  * writing the offset without re-keying leaves paging refusing forever, and
  * re-keying without the offset pages the wrong chat at the wrong place.
  */
-function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number): void {
+function setPagingCursor(state: ChatState, hasMore: boolean, nextBefore: number, seq?: number): void {
   // A switch installs a cursor only for the slot it targets, so a writer that
   // activated a different slot must write: nothing else will.
-  if (state.slotSwitchRequestId !== null && state.slotSwitchTarget === state.activeSlot) return
+  // Exempt the NEWEST applied response: deferring to a switch whose own response
+  // then loses the supersede check left the slot with no cursor and paging off.
+  const isNewestApplied = typeof seq === 'number' && state.activeSlot !== null
+    && state.slotDetailSeq?.[safeKey(state.activeSlot)] === seq
+  if (!isNewestApplied && state.slotSwitchRequestId !== null && state.slotSwitchTarget === state.activeSlot) return
   state.slotHasMore = hasMore
   state.slotOldestIndex = hasMore ? nextBefore : 0
   state.slotCursorKey = state.activeSlot
@@ -1755,6 +1866,14 @@ function rowIdentities(m: ChatMessage): string[] {
   if (typeof mid === 'string' && mid) ids.push(`mid:${mid}`)
   const sendId = meta?.sendId
   if (typeof sendId === 'string' && sendId) ids.push(`send:${sendId}`)
+  // A merged row stands for EVERY send the drain folded into it, so identity is the
+  // set: on the scalar alone an earlier send's retained row reinserts beside it.
+  const sendIds = meta?.sendIds
+  if (Array.isArray(sendIds)) {
+    for (const id of sendIds) {
+      if (typeof id === 'string' && id && !ids.includes(`send:${id}`)) ids.push(`send:${id}`)
+    }
+  }
   return ids
 }
 
@@ -2047,9 +2166,46 @@ async function fetchSlotDetail(key: string, limit?: number) {
   // COUNT-MATCHED one instead, see REFRESH_LIMIT_CEILING. Omit the arg when
   // unbounded to keep the one-arg shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
-  type QueueItem = string | { content: string; id: string }
-  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
+  type QueueItem = string | { content: string; id: string; sendId?: string; edited?: boolean; editId?: string; editRev?: number }
+  return { key, boundedRead: limit !== undefined, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString(), ...(q.sendId ? { sendId: q.sendId } : {}), ...(q.edited ? { edited: true } : {}), ...(q.editId ? { editId: q.editId } : {}), ...(typeof q.editRev === 'number' ? { editRev: q.editRev } : {}) }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
 }
+
+/** Adopts the queue-id stash from a slot-detail page. Out of the reducer because the stash is a
+ *  module-level side table a pure reducer must not touch, and out of `fetchSlotDetail` because that
+ *  helper cannot tell whether its own response is still the newest. */
+export function adoptQueueStash(queue: unknown): void {
+  for (const q of (queue || []) as Array<{ id?: string; queueId?: string; content?: string; sendId?: string; edited?: boolean; editId?: string; editRev?: number }>) {
+    if (!q || typeof q !== 'object') continue
+    // `queueId` on a normalized page, `id` straight off the wire -- reading only one made this a
+    // silent no-op for every caller that passes the normalized shape.
+    const id = q.queueId ?? q.id
+    // Restore the order a refetch observed, or a delayed OLDER response still looks current and
+    // overwrites the card: the monotonic revision is the only thing that can refuse it.
+    noteAppliedEditRev(id, q.editRev)
+    // An EDITED entry's record is refused adoption, and retired ONLY when it predates the edit: the
+    // flag stays set for the entry's life, so a blind retire dropped the current edit's own record.
+    if (q.edited) retireEditedQueueRecord(id, typeof q.content === 'string' ? q.content : '', q.editId)
+    else adoptPreSendStash(q.sendId, id, q.content)
+  }
+}
+
+/** True when a NEWER slot-detail response has already been applied for `key`. Read-only -- the
+ *  reducer still owns the stamping, so asking here cannot disturb its ordering. */
+export function detailStashSuperseded(state: ChatState, key: string, seq: number): boolean {
+  const applied = state.slotDetailSeq?.[safeKey(key)]
+  return typeof applied === 'number' && seq < applied
+}
+
+/** The ONE way a thunk reads a slot-detail page. A new call site cannot skip the adoption, nor run
+ *  it for a response the store has already moved past. */
+async function fetchDetailAdopting(
+  read: () => unknown, key: string, seq: number, limit?: number,
+): Promise<Awaited<ReturnType<typeof fetchSlotDetail>>> {
+  const d = await fetchSlotDetail(key, limit)
+  if (!detailStashSuperseded((read() as { chat: ChatState }).chat, key, seq)) adoptQueueStash(d.queue)
+  return d
+}
+
 
 /** SINGLE hydration path for the slot-detail context-meter fields — the one
  *  place that seeds `slotContextPct`/`slotContextTokens` from HTTP. Every
@@ -2104,7 +2260,7 @@ export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolea
 const switchSlotKey = (arg: SwitchSlotArg): string => typeof arg === 'object' && arg !== null ? arg.key : arg
 
 export const switchSlot = createAsyncThunk<
-  Awaited<ReturnType<typeof fetchSlotDetail>>,
+  Awaited<ReturnType<typeof fetchSlotDetail>> & { detailSeq: number },
   SwitchSlotArg,
   { rejectValue: StatusRejection }
 >(
@@ -2156,7 +2312,9 @@ export const switchSlot = createAsyncThunk<
       const cachedRows = state.slotMessages?.[safeKey(key)] ?? []
       const cached = cachedRows.length
       const limit = slotSwitchFetchLimit({ cached })
-      const first = await fetchSlotDetail(key, limit)
+      // Captured BEFORE the fetch: two same-slot responses settle in any order.
+      const detailSeq = nextSeq()
+      const first = await fetchDetailAdopting(getState, key, detailSeq, limit)
       // Coverage, MEASURED from the rows the window returned against the rows this
       // tab already holds. The older count-based check had to assume a hole whenever
       // it had no earlier server total to subtract -- true on every first visit to a
@@ -2177,18 +2335,16 @@ export const switchSlot = createAsyncThunk<
         // REPLACES rather than merges. Carry the bounded read's count forward -- it is
         // the only one of the two in settled units, and returning only the retry threw
         // away the baseline the next switch needs.
-        const wide = await fetchSlotDetail(key)
+        const wide = await fetchDetailAdopting(getState, key, detailSeq)
         // Emit only while this request still owns the slot switch: a rapid
         // A->B switch leaves A's fetch resolving after B took over, and A's
-        // transcript never rendered — relaying its read would clear sibling
-        // badges for messages nobody displayed. `pending` assigns activeSlot
-        // atomically before this thunk body runs, so a superseded request
-        // observes someone else's key here.
+        // transcript never rendered -- relaying its read would clear sibling
+        // badges for messages nobody displayed.
         if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
-        return { ...wide, comparableTotal: first.total }
+        return { ...wide, comparableTotal: first.total, detailSeq }
       }
       if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
-      return first
+      return { ...first, detailSeq }
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
       // which keeps string fields only -- `ApiError.status` (a number) never
@@ -2274,6 +2430,126 @@ const anchorMidOk = (a: ThinkingAnchor, row: { meta?: Record<string, unknown> })
  *  so a list that has since gained more is detectable rather than silently mismatched.
  *  Both absent on a record parked by a build before they existed. */
 type ParkedThinking<M> = { msg: M; anchor: ThinkingAnchor; occ?: number; occTotal?: number }
+
+/** The user bubbles THIS client appended optimistically and the server has not yet
+ *  shown back.
+ *
+ *  A POSITIVE marker, set only where the composer renders a bubble ahead of the
+ *  server. Absence of a marker would retain rows that were never optimistic at all,
+ *  which is how a row whose receipt already cleared `optimistic` got re-attached
+ *  forever once another tab rewound it away. `clearPendingServerRow` retires it on
+ *  every outcome that means "do not re-attach": a page carrying the row, a refused
+ *  or errored send, and a QUEUED acceptance, whose queued twin owns the message.
+ *
+ *  Retention does NOT expire on dispatch order or on any clock. Neither says when the
+ *  SERVER took its snapshot, so a refetch dispatched after the send can still have
+ *  read the transcript before the POST committed -- treating that page as proof of
+ *  absence deletes a delivered prompt. Only the row's own identity in a page, or an
+ *  explicit outcome via `clearPendingServerRow`, retires it. */
+const retainableSends = (msgs: ChatMessage[]): ChatMessage[] =>
+  msgs.filter(m => m.role === 'user' && m.meta?.pendingServerRow === true)
+
+/** Re-attach recently-sent user bubbles a fetched page cannot legitimately contain.
+ *
+ *  Reinserted at its PRIOR RELATIVE POSITION, never concatenated: a `thinking` row
+ *  can arrive after the optimistic append and the refetch re-seats it, so a tail
+ *  append renders reasoning ABOVE the prompt that caused it. Anchoring on the
+ *  nearest preceding identifiable neighbour keeps pipelined sends in order, and the
+ *  timestamp advance below stops an identity-less row being overtaken. */
+/** The rebuild TAIL, in the one order every site must use.
+ *
+ *  These three passes are order-dependent and the dependency runs one way:
+ *  `hydrateQueuedBubbles` rebuilds queued rows from the server queue,
+ *  `deduplicateByMid` collapses server-minted duplicates, and only then may
+ *  `preserveOptimisticSends` re-add a retained send — it carries no server mid, so
+ *  a dedup after it cannot see it and a hydrate after it can reorder around it.
+ *
+ *  It lives in one function because the order was previously written out by hand at
+ *  each rebuild site, in a comment, and the sites had already drifted apart:
+ *  `switchSlot` ran hydrate→dedup→preserve while `refreshSlot` ran preserve→hydrate.
+ *  A caller can no longer express a different order, which is what the comment asked
+ *  of every future reader and could not enforce.
+ */
+function finalizeRebuild(
+  list: ChatMessage[],
+  opts: { queue: SlotQueueItem[] | undefined; prior: ChatMessage[]; pending: ChatMessage[]; page: ChatMessage[] },
+): ChatMessage[] {
+  const hydrated = hydrateQueuedBubbles(list, opts.queue, opts.prior)
+  return preserveOptimisticSends(opts.pending, deduplicateByMid(hydrated), opts.prior, opts.page)
+}
+
+function preserveOptimisticSends(pending: ChatMessage[], next: ChatMessage[], prior: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
+  const readd = tailNotInPage(pending, next)
+  // Retire the marker only where the FETCHED PAGE carries the row: `next` can be
+  // assembled from the prior cache, so surviving it is a rescue, not a receipt.
+  const pageIds = new Set<string>()
+  for (const m of page) for (const id of rowIdentities(m)) pageIds.add(id)
+  // Keyed on the retained LOCAL row, not the marker: the server's page row does not
+  // carry the client-only marker, so reading it here would never fire.
+  const confirmedBy = new Map<string, string>()
+  for (const m of pending) {
+    const sid = m.meta?.sendId
+    if (typeof sid !== 'string' || !sid) continue
+    const ids = rowIdentities(m)
+    if (ids.some(id => pageIds.has(id))) for (const id of ids) confirmedBy.set(id, sid)
+  }
+  const base = next.map(m => {
+    if (m.role !== 'user') return m
+    const ids = rowIdentities(m)
+    const inPage = ids.some(id => pageIds.has(id))
+    // No LOCAL bubble carries the id when a stale busy read skipped the optimistic
+    // append, so trust the FETCHED row's own sendId -- being in the page IS the receipt.
+    const fetched = typeof m.meta?.sendId === 'string' && m.meta.sendId ? m.meta.sendId : undefined
+    const sid = ids.map(id => confirmedBy.get(id)).find(Boolean) || (inPage ? fetched : undefined)
+    const retired = m.meta?.pendingServerRow === true && inPage
+    if (!sid && !retired) return m
+    const meta: Record<string, unknown> = { ...(m.meta || {}), pendingServerRow: false }
+    if (sid) {
+      meta.confirmedSendId = sid
+      meta.deliveryConfirmed = true
+    }
+    // Confirmed delivery and unknown delivery are contradictory; confirmation wins.
+    delete meta.deliveryUnknown
+    return { ...m, meta }
+  })
+  if (!readd.length) return base
+  const out = [...base]
+  const rowIndex = (list: ChatMessage[], row: ChatMessage): number => {
+    const ids = rowIdentities(row)
+    if (!ids.length) return -1
+    return list.findIndex(m => rowIdentities(m).some(id => ids.includes(id)))
+  }
+  const tsOf = (m: ChatMessage | undefined): number | null => transcriptTsMs(String(m?.ts ?? ''))
+  for (const row of readd) {
+    const was = rowIndex(prior, row)
+    // Fall back to the row's own prior index, clamped: a transcript whose history
+    // carries no identities has no anchor to match, and 0 would jump it to the top.
+    let at = was < 0 ? out.length : Math.min(was, out.length)
+    let anchored = false
+    for (let i = was - 1; i >= 0; i--) {
+      const anchor = rowIndex(out, prior[i])
+      if (anchor >= 0) { at = anchor + 1; anchored = true; break }
+    }
+    if (anchored) {
+      // An identity-less row (a channel message) cannot be anchored on, so walk past
+      // anything the page places strictly EARLIER in time than this send.
+      const rowTs = tsOf(row)
+      if (rowTs != null) {
+        while (at < out.length) {
+          const t = tsOf(out[at])
+          if (t == null || t >= rowTs) break
+          at++
+        }
+      }
+    } else {
+      // Unanchored: walk past SERVER-IDENTIFIED rows rather than consult a clock. An
+      // empty cache leaves `was` at 0, which would otherwise seat it above history.
+      while (at < out.length && rowIdentities(out[at]).length) at++
+    }
+    out.splice(at, 0, row)
+  }
+  return out
+}
 
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
@@ -2843,6 +3119,8 @@ export const refreshSlot = createAsyncThunk(
   async (key: string, { getState }) => {
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot !== key) return null
+    // Captured BEFORE the fetch, for the same reason switchSlot does.
+    const detailSeq = nextSeq()
     // COUNT-MATCHED bound, not a fixed one. The recurring refresh (reconnect,
     // chat_done, variant switch) no longer pulls the whole chained transcript
     // every time — but because it REPLACES `messages` wholesale, a fixed
@@ -2901,8 +3179,8 @@ export const refreshSlot = createAsyncThunk(
       held > 0 &&
       want <= REFRESH_LIMIT_CEILING &&
       !(floorOverRequests && hasUnidentifiedDurableRow(view))
-    if (!bounded) return fetchSlotDetail(key)
-    const page = await fetchSlotDetail(key, want)
+    if (!bounded) return { ...(await fetchDetailAdopting(getState, key, detailSeq)), detailSeq }
+    const page = await fetchDetailAdopting(getState, key, detailSeq, want)
     /* Is this page safe to hand a reducer that REPLACES the transcript with it?
      * It is, on any one of three counts -- and each is a different relationship
      * between the page's range and the view's, not a restatement:
@@ -2955,7 +3233,9 @@ export const refreshSlot = createAsyncThunk(
      * anchor is guarded rather than indexed blind. */
     const spansView = serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    return !page.hasMore || spansView || overlapsView ? page : fetchSlotDetail(key)
+    return !page.hasMore || spansView || overlapsView
+      ? { ...page, detailSeq }
+      : { ...(await fetchDetailAdopting(getState, key, detailSeq)), detailSeq }
   },
 )
 
@@ -2968,8 +3248,27 @@ export const refreshSlot = createAsyncThunk(
  *  this to reconcile a background pane's optimistic/streamed/echoed messages to
  *  the server's canonical history at end-of-turn (replaces the earlier
  *  reconcileSlot thunk, which did the same job). */
-let warmSeqCounter = 0
-const nextWarmSeq = (): number => ++warmSeqCounter
+/** ONE monotonic dispatch clock for every ordering decision in this slice: a warm's
+ *  staleness check, a slot-detail refetch's supersede check, and the receipt stamp
+ *  that bounds retention. A second counter would let two orderings interleave
+ *  incomparably, so they share this source and compare only within one field. */
+let seqCounter = 0
+const nextSeq = (): number => ++seqCounter
+/** True when this response is older than the newest one already applied for `key`.
+ *  Records the sequence when it is not, so the newest applied always wins. */
+function detailResponseSuperseded(state: ChatState, key: string, seq: unknown): boolean {
+  if (typeof seq !== 'number') return false
+  if (!state.slotDetailSeq) state.slotDetailSeq = {}
+  const prior = state.slotDetailSeq[safeKey(key)]
+  if (typeof prior === 'number' && seq < prior) return true
+  state.slotDetailSeq[safeKey(key)] = seq
+  // Stamp the TOTAL's order too: `retainServerTotal` returns early while running or with
+  // no total, so an older warm would otherwise lower a baseline this response just set.
+  if (!state.slotServerTotalSeq) state.slotServerTotalSeq = {}
+  const priorTotalSeq = state.slotServerTotalSeq[safeKey(key)]
+  if (typeof priorTotalSeq !== 'number' || seq > priorTotalSeq) state.slotServerTotalSeq[safeKey(key)] = seq
+  return false
+}
 
 const configuredDefaultMemoryMode = () =>
   resolveDefaultMemoryMode(() => api.dashboardConfig())
@@ -2984,11 +3283,11 @@ export const warmSlotCache = createAsyncThunk(
     const streaming = (state.slotRun[key]?.state ?? 'idle') !== 'idle'
     // Captured BEFORE the fetch: two warms for one slot resolve in any order,
     // and the later-dispatched response is the newer view of the transcript.
-    const warmSeq = nextWarmSeq()
+    const warmSeq = nextSeq()
     // `switchSlot.pending` paints the active view from this cache, and a window can miss
     // a small cache entirely once the server has grown, so refetch any of it whole.
     const cached = state.slotMessages?.[safeKey(key)]?.length ?? 0
-    return { ...(await fetchSlotDetail(key, streaming || cached > 0 ? undefined : PANE_HYDRATE_LIMIT)), warmSeq }
+    return { ...(await fetchDetailAdopting(getState, key, warmSeq, streaming || cached > 0 ? undefined : PANE_HYDRATE_LIMIT)), warmSeq }
   },
 )
 
@@ -4047,6 +4346,8 @@ const chatSlice = createSlice({
       // ID for reconciliation. The `optimistic` flag is kept as a simple boolean
       // so the reconcile scan knows this bubble is pending confirmation.
       if (m.role === 'user' && !m.meta?.steer && m.meta?.sendId) {
+        // `optimistic` only. Retention is opt-in via `retainedSend`, so a surface
+        // that never wires a release cannot leave a permanent captioned phantom.
         m.meta = { ...(m.meta || {}), optimistic: true }
       }
       state.messages.push(ensureMsgId(m))
@@ -4180,12 +4481,16 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       const confirm = (msgs: ChatMessage[] | undefined): boolean => {
         if (!msgs) return false
-        const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-        for (let i = msgs.length - 1; i >= floor; i--) {
+        const i = indexBySendId(msgs, sendId)
+        if (i >= 0) {
           const m = msgs[i]
-          if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
           const meta = { ...(m.meta || {}) }
           delete meta.optimistic
+          // A receipt proves delivery, so a prior unconfirmed marking is retired.
+          delete meta.deliveryUnknown
+          meta.deliveryConfirmed = true
+          // Set on BOTH confirm paths so a reader never has to know which one fired.
+          meta.confirmedSendId = sendId
           // Stamp the server-minted row id the receipt carried back. The bubble
           // was appended client-side with only a `sendId` (no server identity),
           // so either the user echo or this receipt can supply its identity.
@@ -4220,10 +4525,9 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       const resolve = (msgs: ChatMessage[] | undefined): boolean => {
         if (!msgs) return false
-        const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
-        for (let i = msgs.length - 1; i >= floor; i--) {
+        const i = indexBySendId(msgs, sendId)
+        if (i >= 0) {
           const m = msgs[i]
-          if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
           if (!m.meta?.steer || !m.meta?.optimistic) return true
           // The drop arm. Also taken for a steer whose receipt never came (the
           // transport's deadline aborted the POST and the text went back to the
@@ -4240,6 +4544,69 @@ const chatSlice = createSlice({
         return false
       }
       if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
+    },
+    /** Mark a send whose delivery is UNKNOWN: the transport failed with no receipt.
+     *
+     *  Retention deliberately stays (a lost response is no proof of non-delivery), so
+     *  the bubble survives every refetch -- and without this marker the transcript
+     *  would vouch for a delivery the code itself cannot confirm. Separate from
+     *  `clearPendingServerRow`, which retires retention and must NOT fire here. */
+    markDeliveryUnknown(state, action: PayloadAction<{ slot: string; sendId: string }>) {
+      const { slot, sendId } = action.payload
+      if (isUnsafeKey(slot)) return
+      const mark = (msgs: ChatMessage[] | undefined): boolean => {
+        if (!msgs) return false
+        const i = indexBySendId(msgs, sendId)
+        if (i < 0) return false
+        // Every confirm path already retires doubt; this is the same invariant from the other end, so
+        // a late unknown receipt cannot re-doubt a row the server already answered.
+        if (msgs[i].meta?.deliveryConfirmed === true) return true
+        msgs[i].meta = { ...(msgs[i].meta || {}), deliveryUnknown: true }
+        return true
+      }
+      if (!mark(state.messages)) mark(state.slotMessages[safeKey(slot)])
+    },
+    /** Retire a send's retention marker, so no refetch re-attaches its bubble.
+     *
+     *  Dispatched for every outcome meaning "the transcript must not get this row back
+     *  from me": a refused or errored send, and a QUEUED acceptance, whose queued row
+     *  owns the message and whose cancellation would otherwise leave a phantom. Keyed
+     *  on `sendId`, which redaction never touches — the queue payload carries only
+     *  `{id, content}` with the content redacted for display, so a content join cannot
+     *  recognise its own twin.
+     *
+     *  Leaves `optimistic` alone: that is delivery state, and a refusal is not a
+     *  receipt. Scans both arrays as `confirmOptimisticSend` does. */
+    /** Drop a row nothing proves landed, as the user's own explicit outcome.
+     *
+     *  Guarded on the absence of proof rather than on the caller: a server `mid` or a confirmation
+     *  means the transcript owns the row and removing it would delete a delivered message. */
+    dropUnconfirmedRow(state, action: PayloadAction<{ slot: string; sendId: string }>) {
+      const { slot, sendId } = action.payload
+      if (isUnsafeKey(slot)) return
+      const drop = (msgs: ChatMessage[] | undefined): boolean => {
+        if (!msgs) return false
+        const i = indexBySendId(msgs, sendId)
+        if (i < 0) return false
+        const m = msgs[i].meta as Record<string, unknown> | undefined
+        if (typeof m?.mid === 'string' && m.mid) return false
+        if (m?.deliveryConfirmed === true) return false
+        msgs.splice(i, 1)
+        return true
+      }
+      if (!drop(state.messages)) drop(state.slotMessages[safeKey(slot)])
+    },
+    clearPendingServerRow(state, action: PayloadAction<{ slot: string; sendId: string }>) {
+      const { slot, sendId } = action.payload
+      if (isUnsafeKey(slot)) return
+      const clear = (msgs: ChatMessage[] | undefined): boolean => {
+        if (!msgs) return false
+        const i = indexBySendId(msgs, sendId)
+        if (i < 0) return false
+        msgs[i].meta = { ...(msgs[i].meta || {}), pendingServerRow: false }
+        return true
+      }
+      if (!clear(state.messages)) clear(state.slotMessages[safeKey(slot)])
     },
     /** Age the slot's folder-suggestion card by one delivered user send, and
      *  drop it once it has had its run (> FOLDER_SUGGESTION_MAX_TURNS).
@@ -4353,7 +4720,7 @@ const chatSlice = createSlice({
         // The snapshot answered about the turn the caller OBSERVED running.
         // A turn that started since — its first live frame bumped the epoch —
         // is not that turn, and idling it here would finalize its streaming
-        // row mid-reply and split it (GPT round 7). Same guard as
+        // row mid-reply and split it. Same guard as
         // `settleStopNotRunning`.
         if (epoch !== undefined && (state.runEpoch?.[safeKey(slot)] ?? 0) !== epoch) return
         // Optional: tests and older persisted shapes preload a partial state.
@@ -4366,7 +4733,7 @@ const chatSlice = createSlice({
         syncOriginRun(state, slot, 'idle')
         // The `_done` this settlement stands in for would also have finalized
         // the trailing streaming row; a reply left as `streaming` hides its
-        // final-only rendering and actions (GPT round 3).
+        // final-only rendering and actions.
         finalizeTrailingStreaming(state.slotMessages?.[safeKey(slot)] ?? [])
         return
       }
@@ -4417,7 +4784,7 @@ const chatSlice = createSlice({
       run.lastChunkSeq = undefined
       syncOriginRun(state, slot, 'idle')
       // Stand-in for the `_done` that never came: finalize the trailing
-      // streaming row as that frame would have (GPT round 3).
+      // streaming row as that frame would have.
       finalizeTrailingStreaming(state.slotMessages?.[safeKey(slot)] ?? [])
     },
     setStopPressedAt(state, action: PayloadAction<{ slotId: string; ts: number }>) {
@@ -5551,7 +5918,7 @@ const chatSlice = createSlice({
       // live card (see dropStaleStatelessQuestion).
       dropStaleStatelessQuestion(state, slot, role)
       // An inject row starts a turn like a user message does (see runEpoch);
-      // a passive `/note` does not (GPT round 10).
+      // a passive `/note` does not.
       if (role === 'inject' && !isNoteRow({ cls, meta })) bumpRunEpoch(state, slot)
       // Tool call — update state, insert before streaming message
       if (role === 'tool') {
@@ -5690,13 +6057,69 @@ const chatSlice = createSlice({
       if (idx >= 0) msgs.splice(idx, 1)
     },
     /** Edit a queued message in place (from backend queue_edit WS event or optimistic local update). */
-    editQueuedMessage(state, action: PayloadAction<{ slot: string; queue_id: string; content: string }>) {
-      const { slot, queue_id, content } = action.payload
+    editQueuedMessage(
+      state,
+      action: PayloadAction<{ slot: string; queue_id: string; content: string; confirmed?: boolean; expect?: string; editId?: string; echoConfirms?: boolean }>,
+    ) {
+      const { slot, queue_id, content, confirmed, expect, echoConfirms } = action.payload
       if (isUnsafeKey(slot)) return
       const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
       if (!msgs) return
       const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
-      if (idx >= 0) msgs[idx].content = content
+      if (idx >= 0) {
+        // `expect` names the optimistic edit a LOCAL response answers, so a newer edit -- another
+        // client's echo, or a second local one -- is not overwritten by a late success.
+        if (expect !== undefined
+          && (msgs[idx].meta as Record<string, unknown> | undefined)?.editPending !== expect) return
+        const live = msgs[idx].meta as Record<string, unknown> | undefined
+        // `content` is the server's DISPLAY form, so text cannot correlate an echo either. One case
+        // is decidable: re-asserting the text a pending edit REPLACED is a frame from before it.
+        if (expect === undefined && echoConfirms === false
+          && live?.editPending !== undefined && content === live?.editPrev) return
+        const replaced = msgs[idx].content
+        msgs[idx].content = content
+        // Which text the card shows and whether the SERVER has agreed to it. The rollback path reads
+        // this, so a confirmation arriving first makes a late failure a no-op.
+        const marked = { ...(msgs[idx].meta || {}) } as Record<string, unknown>
+        if (confirmed === false) {
+          marked.editPending = content
+          // What this edit REPLACED, so a delayed echo of that text can be told from real news.
+          marked.editPrev = replaced
+        } else {
+          delete marked.editPending
+          delete marked.editPrev
+        }
+        msgs[idx].meta = marked
+        // `rawSend` describes the payload the card was SENT with, so an edit makes it stale: it
+        // outlives the edit through `keep.rawSend` and a cancel could restore the pre-edit text.
+        if (msgs[idx].meta?.rawSend !== undefined) {
+          const { rawSend: _stale, ...rest } = msgs[idx].meta as Record<string, unknown>
+          msgs[idx].meta = rest
+        }
+      }
+    },
+    /** Undo an optimistic queue edit whose request failed -- ONLY while the card still shows that
+     *  same unconfirmed edit.
+     *
+     *  The server commits and broadcasts on a different channel from the response, so a lost response
+     *  can arrive AFTER the echo already confirmed the edit. Undoing it then left stale text on screen
+     *  while the agent ran the new prompt, with no automatic re-sync. Deliberately not the
+     *  `applyQueueEdit` thunk: this must not retire the pre-send stash. */
+    rollbackQueueEdit(
+      state,
+      action: PayloadAction<{ slot: string; queue_id: string; previous: string; optimistic: string }>,
+    ) {
+      const { slot, queue_id, previous, optimistic } = action.payload
+      if (isUnsafeKey(slot)) return
+      const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
+      if (!msgs) return
+      const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
+      if (idx < 0) return
+      const meta = { ...(msgs[idx].meta || {}) } as Record<string, unknown>
+      if (meta.editPending !== optimistic) return
+      msgs[idx].content = previous
+      delete meta.editPending
+      msgs[idx].meta = meta
     },
     /** Reorder queued messages to match the given queue-id sequence (from the
      *  backend queue_reorder WS event or an optimistic local update). Queued
@@ -5721,16 +6144,49 @@ const chatSlice = createSlice({
     },
     /** Add a queued message (from backend queue_push WS event). */
     appendQueuedMessage: {
-      reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string }>) {
-        const { slot, content, ts, queueId } = action.payload
+      reducer(state, action: PayloadAction<{ slot: string; content: string; ts: string; queueId: string; sendId?: string }>) {
+        const { slot, content, ts, queueId, sendId } = action.payload
         const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
+        // The queued twin OWNS the message, so the optimistic row is a duplicate.
+        // Removed BEFORE the dedup return, or a raced duplicate push skips it.
+        let rawSend: { text: string; files?: string[]; sent: string } | undefined
+        if (sendId) {
+          for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i]
+            const mm = m.meta as Record<string, unknown> | undefined
+            if (m.role !== 'user' || mm?.sendId !== sendId) continue
+            // Only the client's OWN unconfirmed row: a server row carries `mid`, and
+            // confirming one clears these markers, so a late push must not delete it.
+            if (typeof mm?.mid === 'string' && mm.mid) continue
+            if (mm?.optimistic !== true && mm?.pendingServerRow !== true) continue
+            // The push `content` is REDACTED, so this bubble is the last copy of the typed text -- unless
+            // it is an option send (composer never cleared) or a knowledge send (block is wire-only).
+            if (mm?.optionSend !== true && mm?.knowledge === undefined) {
+              const f = mm?.files
+              const p = mm?.pastes
+              // A collapsed paste's text is only a TOKEN, and the composer sink takes no
+              // block channel, so store it EXPANDED or the restore is a dead reference.
+              const blocks = Array.isArray(p) ? (p as PasteBlock[]) : []
+              const text = blocks.length ? expandPasteTokens(m.content, blocks) : m.content
+              rawSend = { text, ...(Array.isArray(f) && f.length ? { files: f as string[] } : {}), sent: content }
+            }
+            msgs.splice(i, 1)
+            break
+          }
+        }
         // A row with this queueId may ALREADY exist: slot-detail hydration
         // can land before a delayed `queue_push` for the same entry. Appending
         // blindly would duplicate the row; keep the existing one.
-        if (msgs.some(m => m.role === 'queued' && (m.meta?.queueId as string) === queueId)) return
-        msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId } })
+        const existing = msgs.find(m => m.role === 'queued' && (m.meta?.queueId as string) === queueId)
+        if (existing) {
+          // The recovery text still has to reach the surviving card, or the ordering
+          // of two events decides whether the user's own words survive a cancel.
+          if (rawSend && !existing.meta?.rawSend) existing.meta = { ...(existing.meta || {}), rawSend }
+          return
+        }
+        msgs.push({ role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(sendId ? { sendId } : {}), ...(rawSend ? { rawSend } : {}) } })
       },
-      prepare(payload: { slot: string; content: string; ts: string; queue_id?: string }) {
+      prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; sendId?: string }) {
         return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }
       },
     },
@@ -5889,6 +6345,12 @@ const chatSlice = createSlice({
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away during fetch
+        // Above the supersede guard, as the claim-clearing above is: nothing else
+        // lowers this flag, so a superseded return would spin forever.
+        state.slotLoading = false
+        // The rebuild is discarded and so is its cursor: installing one even when the slot holds
+        // none lets an OLDER response set the paging anchor and skip rows. The newest applied response installs instead.
+        if (detailResponseSuperseded(state, key, action.payload.detailSeq)) return
         // A payload carrying `comparableTotal` came from the coverage retry: its
         // own `total` is the raw unbounded count, the carried one is the settled
         // bounded count, and only the latter may become the baseline.
@@ -6036,15 +6498,15 @@ const chatSlice = createSlice({
         const reseated = reinsertThinkingOrphans(next, parked[safeKey(key)] ?? [], windowComplete)
         next = reseated.list
         parked[safeKey(key)] = [...reseated.remaining, ...orphaned]
-        next = hydrateQueuedBubbles(next, queue)
-        next = deduplicateByMid(next)
+        // One owner for the tail order (see `finalizeRebuild`): hydrate, then dedup, then
+        // re-add the retained send, which carries no server mid for a later pass to see.
+        next = finalizeRebuild(next, { queue, prior: existing, pending: retainableSends(existing), page: messages })
         // Switching back to an already-loaded slot re-fetches a history that is
         // usually identical; skipping the write keeps every existing reference.
         if (!sameTranscript(existing, next)) state.messages = next
         // Update cache and clear loading state. This is the active view, so the
         // marker is slotHasMore -- writing the array alone left a stale flag.
         writeSlotPage(state, key, state.messages, hasMore)
-        state.slotLoading = false
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(switchSlot.rejected, (state, action) => {
@@ -6130,7 +6592,13 @@ const chatSlice = createSlice({
         const { key, messages, running, hasMore, queue, nextBefore } = action.payload
         if (isUnsafeKey(key)) return
         if (state.activeSlot !== key) return  // user switched away
+        // A superseded same-slot response must not rebuild from its older page.
+        if (detailResponseSuperseded(state, key, action.payload.detailSeq)) return
         retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
+        // Captured BEFORE the rebuild below reads or replaces `state.messages`;
+        // the order snapshot is what positions a re-attached send.
+        const priorOrder = [...state.messages]
+        const pendingSends = retainableSends(priorOrder)
         // Merge permission messages: prefer state perms (have frontend resolved flags)
         // but include API perms for any we don't have locally (e.g. arrived while disconnected)
         const statePerms = new Map<string, typeof state.messages[0]>()
@@ -6209,13 +6677,9 @@ const chatSlice = createSlice({
         const seatedOnRefresh = reinsertThinkingOrphans(state.messages, parkedOnRefresh[safeKey(key)] ?? [], !keptCursor.hasMore)
         state.messages = seatedOnRefresh.list
         parkedOnRefresh[safeKey(key)] = seatedOnRefresh.remaining
-        // Re-hydrate queued bubbles through the SAME shared path as
-        // switchSlot/warmSlotCache. The merge above is rebuilt from server
-        // history + preserved perms/thinking and carries no `queued` bubbles, so
-        // without this a refresh (e.g. the one fired on chat_done) would vanish a
-        // user's pending queued messages. Routing all three slot-detail reducers
-        // through hydrateQueuedBubbles is what stops them drifting apart again.
-        state.messages = hydrateQueuedBubbles(state.messages, queue)
+        // Same tail as switchSlot, through the one owner: this site used to run preserve
+        // BEFORE hydrate. `priorOrder` is the PRE-rebuild list, or the raw draft is stranded.
+        state.messages = finalizeRebuild(state.messages, { queue, prior: priorOrder, pending: pendingSends, page: messages })
         state.slotRunning = running
         state.slotStopping = action.payload.stopping ?? false
         state.pendingTurnSlot = null
@@ -6232,7 +6696,7 @@ const chatSlice = createSlice({
         } else {
           state.lastChunkSeq = undefined
         }
-        setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore)
+        setPagingCursor(state, keptCursor.hasMore, keptCursor.nextBefore, action.payload.detailSeq)
         seedContextUsage(state, key, action.payload.context)
       })
       .addCase(warmSlotCache.fulfilled, (state, action) => {
@@ -6267,7 +6731,7 @@ const chatSlice = createSlice({
         // in-flight turn (the bubbles only reappeared on a later full fetch).
         // Routing every slot-detail reducer through the one helper is what keeps
         // this from silently diverging from switchSlot/refreshSlot again.
-        const warmed = hydrateQueuedBubbles(hydrated, queue)
+        const warmed = hydrateQueuedBubbles(hydrated, queue, state.slotMessages[safeKey(key)] ?? [])
         // A bounded warm replacing the array wholesale deletes scrollback under a
         // reader, so keep any older head that sits above the warm's first row.
         // The server queue is authoritative for every pane, so a branch that
@@ -6339,7 +6803,7 @@ const chatSlice = createSlice({
         const mergedRaw = newerTail.length && !keepsAllPrior ? [...base, ...newerTail] : base
         // A queued row has no identity, so both merge branches keep one the warm
         // already re-added; collapsing once dedupes it and restores queued-last.
-        const merged = hydrateQueuedBubbles(mergedRaw, queue)
+        const merged = hydrateQueuedBubbles(mergedRaw, queue, prior)
         // Restore the preserved reasoning onto the reconciled list. A slot the
         // user switched AWAY from mid-turn holds its blocks only in this cache
         // (switchSlot.pending caches `state.messages` wholesale) and this warm is
@@ -6350,7 +6814,10 @@ const chatSlice = createSlice({
         // before hydrateQueuedBubbles re-attaches client queued bubbles):
         // `merged` can carry rescued prior-cache rows and queued bubbles, which
         // must not vouch for history the snapshot never covered.
-        const revived = mergePreservedThinking(priorAll, merged, hydrated)
+        const revivedRaw = mergePreservedThinking(priorAll, merged, hydrated)
+        // The THIRD rebuild site: with no identity overlap `base` is the warm page
+        // alone, which drops a pane send the server has not shown back yet.
+        const revived = preserveOptimisticSends(retainableSends(prior), revivedRaw, prior, hydrated)
         // Omitting boundedLen DELETES the marker, while omitting hasMore keeps the
         // OLD value -- and its presence is what stops a late hydrate prepending.
         const warmIsPrefix = base === warmed
@@ -6364,6 +6831,9 @@ const chatSlice = createSlice({
         const pageRows = warmed.filter(m => m.role !== 'queued')
         const boundaryIdx = pageRows.length ? revived.indexOf(pageRows[pageRows.length - 1]) : -1
         const boundedLen = boundaryIdx >= 0 ? boundaryIdx + 1 : pageRows.length
+        // Discard before ANY write, like the other two rebuild sites: the run write below
+        // idled a LIVE turn. Not hoisted -- the stamp would blind `staleTotal` above.
+        if (detailResponseSuperseded(state, key, warmSeq)) return
         writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
           warmIsPrefix && hasMore ? boundedLen : undefined)
         retainServerTotal(state, key, total, running, warmSeq, action.payload.boundedRead)
@@ -6551,8 +7021,18 @@ const chatSlice = createSlice({
           const resumedRun = state.slotRun[safeKey(action.payload.key)]
           state.lastChunkSeq = resumedRun?.lastChunkSeq
           state.lastChunkGen = resumedRun?.lastChunkGen
+          // Read BEFORE `activeSlot` moves: `state.messages` still belongs to the slot being left.
+          const leavingSlot = state.activeSlot
           state.activeSlot = action.payload.key
-          state.messages = mergePreservedPastes(state.messages, action.payload.messages)
+          // The FOURTH rebuild site. `mergePreservedPastes` returns the INCOMING page, so a send the
+          // server has not shown back yet was dropped here while its three siblings preserved it.
+          // Scoped to the session the send was authored against: resuming a DIFFERENT session must
+          // not re-seat this slot's in-flight bubble, as `loadOlderMessages` guards its own merge.
+          const resumedPrior = leavingSlot === action.payload.key ? state.messages : []
+          const resumedMerged = mergePreservedPastes(resumedPrior, action.payload.messages)
+          state.messages = preserveOptimisticSends(
+            retainableSends(resumedPrior), resumedMerged, resumedPrior, action.payload.messages,
+          )
           state.slotState = 'idle'
           state.pendingTurnSlot = null
           setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
@@ -6625,7 +7105,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, resolveOptimisticSteer, clearPendingServerRow, dropUnconfirmedRow, rollbackQueueEdit, markDeliveryUnknown, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
@@ -6643,5 +7123,54 @@ export function selectAutomationForSlot(
   if (isUnsafeKey(slotKey)) return null
   return automationForSlot(state.chat.automations, safeKey(slotKey))
 }
+
+/** The ONE owner of "a queued entry was edited": applies the edit, and retires the queue-id stash
+ *  once -- but ONLY once the edit is a fact.
+ *
+ *  The reducer already drops the row's own `rawSend`, but the stash is a SECOND carrier of the
+ *  pre-edit payload, and it is the only copy of the ATTACHMENTS a redacted card was sent with. So
+ *  both halves are load bearing: a REMOTE `queue_edit` that never retired it let a later Cancel
+ *  restore the original credential, while an OPTIMISTIC local edit that retired it up front threw
+ *  the payload away when the request then failed and a refetch put the server's entry back.
+ *
+ *  `confirmed` defaults to true because the remote frame IS the server's confirmation; the local
+ *  path passes false while its request is in flight and dispatches again on success. A thunk rather
+ *  than the reducer because the stash is a module-level side table, so a reducer touching it would
+ *  not be pure.
+ */
+export const applyQueueEdit = createAsyncThunk(
+  'chat/applyQueueEdit',
+  async (
+    payload: { slot: string; queue_id: string; content: string; confirmed?: boolean; expect?: string; editId?: string; editRev?: number },
+    { dispatch },
+  ) => {
+    // The author marks the record BEFORE the POST, so a frame carrying no `expect` can be
+    // attributed: the server excludes no sender, so only a DIFFERENT client's edit may retire it.
+    if (payload.confirmed === false && payload.editId) noteLocalQueueEdit(payload.queue_id, payload.content, payload.editId)
+    else if (payload.expect !== undefined) {
+      // `expect` is the text the user SUBMITTED and `content` the server's DISPLAY form, which
+      // redaction can rewrite -- the record needs both, under the field that means each.
+      // Ordered by the SERVER's revision, not the pending marker: a remote echo clears `editPending`,
+      // so that comparison discarded this tab's own success and Cancel restored stale text.
+      if (!editSupersededByNewerRev(payload.queue_id, payload.editRev)) {
+        noteAppliedEditRev(payload.queue_id, payload.editRev)
+        settleLocalEditResponse(payload.queue_id, payload.expect, payload.content)
+      }
+    }
+    // This tab's OWN echo, which carries no `expect`. The identity lives on the RECORD, so a
+    // committed edit whose response was lost still settles here after its rollback cleared the row.
+    else {
+      // Refuse a delayed LOWER revision: the reducer writes the row unconditionally. Checked BEFORE
+      // stamping, which would raise the bar past this frame's own revision and never refuse.
+      if (editSupersededByNewerRev(payload.queue_id, payload.editRev)) return
+      noteAppliedEditRev(payload.queue_id, payload.editRev)
+      const confirms = settleQueueEditEcho(payload.queue_id, payload.content, payload.editId)
+      if (!confirms) retireRemoteQueueEdit(payload.queue_id)
+      dispatch(editQueuedMessage({ ...payload, echoConfirms: confirms }))
+      return
+    }
+    dispatch(editQueuedMessage(payload))
+  },
+)
 
 export default chatSlice.reducer

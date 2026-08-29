@@ -254,6 +254,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        edit_id: str | None = None,
     ) -> bool:
         """Edit a user-owned entry without changing its identity or position."""
         for item in owner._queue:
@@ -271,6 +272,20 @@ class SlotQueueRepository:
             item["content"] = prune_attachment_meta(
                 item.get("meta"), content, previous if isinstance(previous, str) else ""
             )
+            # A client that MISSED the queue_push cannot otherwise tell an edited entry from a
+            # redacted one, and adopting its pre-send record restores the pre-edit text and files.
+            item["edited"] = True
+            # Names WHICH edit produced this text. A client cannot correlate on the content: the
+            # display form is redacted, so a different client's edit can render identically.
+            if edit_id:
+                item["edit_id"] = edit_id
+            else:
+                # An id-less edit is a SUPPORTED shape, and this text is not the old edit's: keeping
+                # its id names a lie a client correlates against, so a stale record survives.
+                item.pop("edit_id", None)
+            # Server-assigned ORDER, which an id cannot supply: a client comparing ids alone cannot
+            # tell its own edit being superseded from its own echo merely arriving first.
+            item["edit_rev"] = int(item.get("edit_rev") or 0) + 1
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

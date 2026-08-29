@@ -1,39 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAppDispatch } from '../store'
-import { cancelQueuedMessage, editQueuedMessage } from '../store/chatSlice'
+import { cancelQueuedMessage, applyQueueEdit, rollbackQueueEdit } from '../store/chatSlice'
 import { restoreQueuedContent } from '../utils/fileTokens'
+import { mintSendId } from '../pages/chat/ChatPageMessageContent'
 import type { ChatMessage } from '../types'
+import { rollbackLocalQueueEdit, queuedSendStash } from '../utils/queuedSendStash'
+import { errMessage } from '../utils/thunkError'
+import { i18nT } from '../i18n/t'
 
-/** Pre-serialization composer state of a send the server QUEUED, written by the
- *  host's send path when the `queued: true` receipt names the entry. */
-export interface QueuedSendRecord {
-  /** The text exactly as the user typed it. */
-  raw: string
-  /** The staged file paths at send time. */
-  files: string[]
-  /** The exact POSTed LLM-facing text — the edit guard: an entry edited after
-   *  send keeps its queue id but fails this equality, so an edited card falls
-   *  to the parser instead of clobbering the edit with pre-edit state. */
-  sent: string
-}
+interface EditVars { slot: string; queueId: string; content: string; previous: string; editId: string }
 
-/** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
- *  same id `queue_push` broadcasts and the card's cancel button carries).
- *  Queue identity is the ONLY sound key: the serialization is not injective
- *  (image @-tokens are erased from the LLM-facing text), so content-keyed
- *  records can collide across different captions, duplicate sends, and other
- *  tabs. Module-level so every host's send path (ChatPage, ChatPane) writes
- *  the one store this hook's cancel consumes — the same one-owner reasoning
- *  as the hook itself (#5891). Deliberately unevicted: an entry dies on the
- *  cancel that consumes it, and evicting a live entry would degrade that
- *  card's cancel to the parser fallback; orphans from normal delivery are
- *  three small strings bounded by queued sends per tab session. */
-export const queuedSendStash = new Map<string, QueuedSendRecord>()
+
+export {
+  queuedSendStash,
+  preSendStash,
+  stashPreSend,
+  retirePreSendStash,
+  adoptPreSendStash,
+  stashQueuedSend,
+  type QueuedSendRecord,
+} from '../utils/queuedSendStash'
 
 /** The four queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
 export interface QueuedMessageActions {
+  /** A rejected queue edit, for the host to render. Null when there is nothing to report. */
+  editError: string | null
+  dismissEditError: () => void
   onCancel: (queueId: string) => void
   onInterrupt: (queueId: string) => void
   onEdit: (queueId: string, content: string) => void
@@ -170,8 +165,9 @@ export function useQueuedMessageActions({
    *  rewrites it, so the response is the whole story and there is nothing left
    *  to wait for.
    *
-   *  The failure path stays silent, matching what both hosts did before this
-   *  hook existed and leaving item 1 of #5891 to decide otherwise. It must still
+   *  The failure path stays silent for CANCEL, matching what both hosts did before
+   *  this hook existed. The EDIT path no longer does: #5891 item 1 is RESOLVED here,
+   *  by the rollback and the inline error below. It must still
    *  release, or one lost request freezes a card until the queue drains. */
   const run = useCallback((queueId: string, call: Promise<unknown>) => {
     markPending(queueId, true)
@@ -194,9 +190,19 @@ export function useQueuedMessageActions({
       // worse than the verbatim restore this replaced.
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
-      const { text, files } = stashed && stashed.sent === msg.content
+      // Second source for the same fact: when the receipt was unreadable no stash
+      // was written, and the card's own text is the redacted form (#6825).
+      const carried = msg.meta?.rawSend as { text?: string; files?: string[]; sent?: string } | undefined
+      // Not content alone, and not the ROW's flag either: a remote frame clears that while THIS tab's
+      // edit is still outstanding. A rolled-back edit is exempt -- it changed nothing server-side.
+      const editUnresolved = typeof stashed?.pendingEdit === 'string' && stashed.editRolledBack !== true
+      const fromStash = stashed && stashed.sent === msg.content
+        && !msg.meta?.editPending && !editUnresolved
+      const { text, files } = fromStash
         ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(msg.content)
+        : carried && typeof carried.text === 'string' && carried.sent === msg.content
+          ? { text: carried.text, files: carried.files || [] }
+          : restoreQueuedContent(msg.content)
       restoreDraftRef.current?.(text, files)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.
@@ -217,14 +223,55 @@ export function useQueuedMessageActions({
     )
   }, [slot, markPending])
 
+  /** Confirmed only by the SERVER taking it: nothing here rolls the optimistic edit back, so a
+   *  refetch restores the original entry and the stash is what a cancel then recovers. */
+  const [editError, setEditError] = useState<string | null>(null)
+  const dismissEditError = useCallback(() => setEditError(null), [])
+
+  const editMutation = useMutation({
+    mutationFn: ({ slot: s, queueId, content, editId }: EditVars) =>
+      api.editQueuedMessage(s, queueId, content, editId),
+    onMutate: ({ queueId }) => { setEditError(null); markPending(queueId, true) },
+    // The SERVER's text, not the request's: an edit that drops an attachment marker is
+    // renumbered server-side, so replaying the submitted text diverges the card from the queue.
+    // `expect` is the optimistic text this response answers, and `editRev` ORDERS it against what
+    // has been applied, which is what tells a superseded edit from an echo that arrived first.
+    onSuccess: (data, { slot: s, queueId, content }) => {
+      const d = data as { content?: unknown; editRev?: unknown } | undefined
+      dispatch(applyQueueEdit({
+        slot: s, queue_id: queueId, confirmed: true, expect: content,
+        content: typeof d?.content === 'string' && d.content ? d.content : content,
+        ...(typeof d?.editRev === 'number' ? { editRev: d.editRev } : {}),
+      }))
+    },
+    // Conditional: the commit is broadcast on a separate channel, so a lost response can land after
+    // the echo confirmed this edit -- undoing it then shows text the agent is not running.
+    onError: (err, { slot: s, queueId, content, previous }) => {
+      // The row's `editPending` is cleared by the reducer; the STASH needs telling too, or a later
+      // remote edit finds a record it is not allowed to retire and a cancel restores pre-edit text.
+      rollbackLocalQueueEdit(queueId)
+      dispatch(rollbackQueueEdit({ slot: s, queue_id: queueId, previous, optimistic: content }))
+      setEditError(i18nT('components.queueStack.edit_failed', {
+        error: errMessage(err) || i18nT('components.errorBoundary.something_went_wrong'),
+      }) as string)
+    },
+    onSettled: (_data, _err, { queueId }) => markPending(queueId, false),
+  })
+  const editEntry = editMutation.mutate
+
   const onEdit = useCallback((queueId: string, content: string) => {
     if (!slot) return
     const trimmed = content.trim()
     if (!trimmed) return
-    // Optimistically update the card; the WS event reconciles other clients.
-    dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed }))
-    run(queueId, api.editQueuedMessage(slot, queueId, trimmed))
-  }, [slot, dispatch, run])
+    // Read BEFORE the optimistic dispatch: after it the store already holds the new text, so the
+    // rollback basis has to be carried through the mutation rather than re-read in a handler.
+    const previous = allQueuedRef.current.find(m => queueIdOf(m) === queueId)?.content ?? ''
+    // Minted here so the optimistic dispatch and the request name the SAME edit: the echo carries it
+    // back, and that is the only thing separating this tab's own frame from a concurrent editor's.
+    const editId = mintSendId()
+    dispatch(applyQueueEdit({ slot, queue_id: queueId, content: trimmed, confirmed: false, editId }))
+    editEntry({ slot, queueId, content: trimmed, previous, editId })
+  }, [slot, dispatch, editEntry])
 
   const onReorder = useCallback((queueId: string, direction: 'next' | 'later') => {
     if (!slot) return
@@ -252,7 +299,7 @@ export function useQueuedMessageActions({
   }, [slot])
 
   return useMemo(
-    () => ({ onCancel, onInterrupt, onEdit, onReorder, pendingIds }),
-    [onCancel, onInterrupt, onEdit, onReorder, pendingIds],
+    () => ({ onCancel, onInterrupt, onEdit, onReorder, pendingIds, editError, dismissEditError }),
+    [onCancel, onInterrupt, onEdit, onReorder, pendingIds, editError, dismissEditError],
   )
 }

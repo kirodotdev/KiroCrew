@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { i18nT } from '../i18n/t'
 import { render, screen } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -190,5 +191,19 @@ describe('registry wiring', () => {
     const { container } = render(<>{entry.render(m, ctx)}</>)
     expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
     expect(container.textContent).not.toContain('\u2139')
+  })
+})
+
+describe('the delivery notice row selects its tone through the glyph, not a second channel', () => {
+  it('renders warn from the lead glyph and ships no emoji in the row text', () => {
+    // First Principles at 301e06c2f: a `tone` prop duplicated `parseNotice`. This pins the one
+    // remaining mechanism, so removing the glyph prefix cannot silently downgrade the row to info.
+    const content = '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_resend')
+    const { container } = render(<NoticeCard content={content} />)
+    const card = container.querySelector('[data-testid="notice-card"]')
+    expect(card?.getAttribute('data-tone'), 'the row must read as a warning').toBe('warn')
+    expect(container.querySelector('svg.lucide-triangle-alert')).not.toBeNull()
+    expect(container.textContent ?? '', 'no emoji may stand in for the status icon')
+      .not.toMatch(/[\u2139\u26A0\u26D4]/)
   })
 })
