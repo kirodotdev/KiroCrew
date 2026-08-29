@@ -81,6 +81,8 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   check('01-roster last-message preview', preview >= 1, `preview-rows=${preview}`)
   const search = await page.getByTestId('member-search').count()
   check('01-roster search box', search === 1, `search-inputs=${search}`)
+  const dots = await page.getByTestId('member-presence-dot').count()
+  check('01-roster presence dot only when running', dots === 1, `dots=${dots} (radar runs; idle rows show none)`)
   await page.screenshot({ path: `${OUT}/01-roster-dark.png` })
   await page.close()
 }

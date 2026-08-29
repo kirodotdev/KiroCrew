@@ -239,6 +239,17 @@ describe('MembersPage drawer and edit jump', () => {
     expect(screen.queryByText(/^(idle|working)$/i)).toBeNull()
   })
 
+  it('the presence dot renders only on running members — idle rows show no dot', async () => {
+    await renderPage([
+      row({ name: 'busy', slug: 'busy', running: true, bound: true, slot_key: 'member-busy' }),
+      row({ name: 'idle-one', slug: 'idle-one' }),
+    ])
+    await screen.findByText('busy')
+    // Exactly one dot: the running member's. An idle member renders nothing
+    // where the dot would be, not a gray placeholder.
+    expect(screen.getAllByTestId('member-presence-dot')).toHaveLength(1)
+  })
+
   it('the search box filters the roster by name', async () => {
     await renderPage([
       row({ name: 'radar', slug: 'radar' }),

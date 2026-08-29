@@ -251,12 +251,16 @@ export default function MembersPage() {
               >
                 <span className="relative shrink-0">
                   <CrewAvatar seed={m.name} size={36} />
-                  <span
-                    className={`absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg ${
-                      isRunning(m) ? 'bg-ok' : 'bg-muted/50'
-                    }`}
-                    aria-hidden="true"
-                  />
+                  {/* Presence dot renders only while the member is working —
+                      an idle member shows nothing rather than a gray dot,
+                      which read as a broken/disabled state. */}
+                  {isRunning(m) && (
+                    <span
+                      className="absolute -right-0.5 -bottom-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg bg-ok"
+                      aria-hidden="true"
+                      data-testid="member-presence-dot"
+                    />
+                  )}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-[13px] font-medium truncate">{m.name}</span>
