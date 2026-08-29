@@ -1241,18 +1241,6 @@ class KnowledgeStore:
             return []
         return [self._serialize_item(r) for r in rows]
 
-    def search_items_fts_count(self, query) -> int:
-        safe = self._sanitize_fts5(query)
-        if not safe:
-            return 0
-        try:
-            row = self.db.execute(
-                "SELECT COUNT(*) FROM items_fts WHERE items_fts MATCH ?",
-                (safe,)).fetchone()
-            return row[0] if row else 0
-        except sqlite3.OperationalError:
-            return 0
-
     @staticmethod
     def _sanitize_fts5(query: str) -> str:
         tokens = query.split()

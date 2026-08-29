@@ -158,9 +158,8 @@ MAX_EVENTS_PER_ARTIFACT = 500
 #: are dropped (a thread root + its replies together), never a reply orphaned.
 MAX_COMMENTS_PER_ARTIFACT = 500
 
-#: Maximum number of tags per artifact, and max length per tag.
+#: Maximum number of tags per artifact. Per-tag length is bounded by ``_TAG_RE``.
 MAX_TAGS = 16
-MAX_TAG_LEN = 64
 
 # Slug pattern: lowercase letters, digits, hyphens. 1-80 chars. No leading or
 # trailing hyphen. Single-character slugs are allowed for trivial names.
@@ -3933,13 +3932,6 @@ def get_default_store() -> ArtifactStore:
         return _default_store
 
 
-def reset_default_store() -> None:
-    """Drop the cached default store (test-only helper)."""
-    global _default_store
-    with _default_store_lock:
-        _default_store = None
-
-
 _default_folder_store: "ArtifactFolderStore | None" = None
 _default_folder_store_lock = threading.Lock()
 
@@ -3951,10 +3943,3 @@ def get_default_folder_store() -> "ArtifactFolderStore":
         if _default_folder_store is None:
             _default_folder_store = ArtifactFolderStore()
         return _default_folder_store
-
-
-def reset_default_folder_store() -> None:
-    """Drop the cached default folder store (test-only helper)."""
-    global _default_folder_store
-    with _default_folder_store_lock:
-        _default_folder_store = None

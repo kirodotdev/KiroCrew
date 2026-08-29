@@ -1199,41 +1199,6 @@ class TestListAutoSkills:
         assert auto_only[0]["key"] == "auto/generated-one"
 
 
-class TestAutoNameFromTitleTruncation:
-    """Regression test for #6: trailing hyphen after truncation would fail regex."""
-
-    def test_trailing_hyphen_stripped_after_truncation(self):
-        from kiro_crew.skills import _auto_name_from_title
-
-        # Build a title where the 62-char boundary lands in the middle of a
-        # word-separator run ("-") that would otherwise leave a trailing
-        # hyphen and silently fail _AUTO_NAME_PATTERN.
-        # 60 alphanumerics + 2 non-alphanumerics -> "a" * 60 + "-x"
-        # After truncation at [:62], you get "a"*60 + "-x" — 62 chars, still valid.
-        # A tricker case: 61 alphanumerics + non-alphanum + alphanum
-        # -> "a" * 61 + "-b" -> after re.sub + strip + truncate[:62] ->
-        # "a"*61 + "-" which ends in a hyphen.
-        title = "a" * 61 + " b"  # Space becomes hyphen during sanitization
-        slug = _auto_name_from_title(title)
-        # Post-fix: trailing hyphen stripped, slug is "a"*61 -> 61 chars, valid
-        assert slug
-        assert not slug.endswith("-")
-        assert slug == "a" * 61
-
-    def test_normal_title_unaffected(self):
-        from kiro_crew.skills import _auto_name_from_title
-
-        assert _auto_name_from_title("Debug Timber logs via SSH") == "debug-timber-logs-via-ssh"
-
-    def test_empty_and_invalid_inputs_still_return_empty(self):
-        from kiro_crew.skills import _auto_name_from_title
-
-        assert _auto_name_from_title("") == ""
-        assert _auto_name_from_title("!!!") == ""
-        # Single character is below the min length (3)
-        assert _auto_name_from_title("a") == ""
-
-
 class TestUpdateAutoSkillPreservesCreatedAt:
     """Regression test for #5: refine must not clobber created_at."""
 

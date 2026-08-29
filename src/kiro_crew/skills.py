@@ -219,12 +219,6 @@ def _emit_pending_consumed(payload: dict) -> None:
         logger.debug("pending-consumed hook failed", exc_info=True)
 
 
-# Derived lifecycle states for auto-skills (not persisted — computed from
-# usage recency at lifecycle-run time).
-SKILL_STATE_ACTIVE = "active"
-SKILL_STATE_STALE = "stale"
-SKILL_STATE_ARCHIVED = "archived"
-
 # Frontmatter field used to mark a skill as auto-generated.  Absence means
 # the skill is hand-authored (or legacy, pre-feature).
 AUTO_SKILL_SOURCE_VALUE = "auto"
@@ -279,24 +273,6 @@ class AutoSkillProvenance:
         if self.pinned:
             lines.append("pinned: true")
         return lines
-
-
-def _auto_name_from_title(raw: str) -> str:
-    """Convert a free-form title into a safe ``auto/<slug>`` skill name.
-
-    Strategy:
-    - lowercase
-    - replace any run of non-alphanumerics with a single hyphen
-    - strip leading/trailing hyphens
-    - truncate to 62 chars (leaves room for uniqueness suffix)
-
-    Returns the slug component only; caller prepends the namespace.
-    Returns an empty string if the input can't be sanitized.
-    """
-    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:62].rstrip("-")
-    if not _AUTO_NAME_PATTERN.match(slug):
-        return ""
-    return slug
 
 
 def _build_auto_skill_content(
