@@ -25,6 +25,7 @@ import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders, createTestStore } from './helpers'
 import { api } from '../api/client'
 import { sseSlots } from '../store/dashboardSlice'
+import { appendSlotMessage } from '../store/chatSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import type { Artifact, ChatSlot } from '../types'
 
@@ -42,6 +43,15 @@ vi.mock('../pages/ChatPage', () => ({
     />
   ),
   PREFILL_STORAGE_KEY: 'kirocrew_prefill',
+}))
+
+// jsdom reports the desktop breakpoint, so mobile is a module mock -- the established pattern for
+// this hook. Mutable, so one suite can assert both breakpoints.
+let mobileViewport = false
+vi.mock('../hooks/useIsMobile', () => ({
+  useIsMobile: () => mobileViewport,
+  useIsNarrowViewport: () => mobileViewport,
+  MOBILE_BREAKPOINT: 768,
 }))
 
 const mkArtifact = (overrides: Partial<Artifact> = {}): Artifact => ({
@@ -136,7 +146,61 @@ describe('ArtifactDetailPage companion chat', () => {
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
   })
 
-  it('injects the artifact context ephemerally in the background', async () => {
+  it('mounts the chat panel on mobile, where the artifact body is hidden', async () => {
+    // Mobile HIDES the body while a panel is open, so gating the panel on !isMobile left a mobile
+    // user with neither: no body, no chat, a blank page.
+    mobileViewport = true
+    try {
+      renderPage()
+      await waitForLoaded()
+      fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+      await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    } finally {
+      mobileViewport = false
+    }
+  })
+
+  it('mounts the context notice inside the chat column, beside the composer it names', async () => {
+    // The copy tells the user to mention the artifact in their next message, so a page-top banner
+    // puts that instruction a column away from the composer it means.
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('context refused'))
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await screen.findByTestId('chat-page')
+    // The column's own width class: page-top would put the parent at the content wrapper instead.
+    expect((await screen.findByRole('alert')).parentElement?.className).toContain('w-[480px]')
+  })
+
+  it('lets the panel flex inside a viewport-bounded column, so the notice cannot clip the composer', async () => {
+    // jsdom runs no layout, so this pins the property that decides it: a panel holding a fixed
+    // inline height cannot give any of it up to the notice above it, at any viewport.
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('context refused'))
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    const column = (await screen.findByRole('alert')).parentElement
+    expect(column?.className).toContain('h-[calc(100vh-240px)]')
+    const panel = column?.querySelector('aside')
+    expect(panel, 'precondition: the panel must be inside the notice column').toBeTruthy()
+    expect(panel?.getAttribute('style') ?? '').not.toContain('height')
+    expect(panel?.className).toContain('min-h-0')
+  })
+
+  it('takes the notice down with the panel, never pointing at an absent composer', async () => {
+    // Left up after a close, the remedy names a composer that is no longer on screen.
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('context refused'))
+    renderPage()
+    await waitForLoaded()
+    const toggle = screen.getByLabelText('Toggle agent chat')
+    fireEvent.click(toggle)
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('injects the artifact context with a bounded TTL in the background', async () => {
     renderPage()
     await waitForLoaded()
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
@@ -145,8 +209,148 @@ describe('ArtifactDetailPage companion chat', () => {
     expect(slot).toBe('slot-new')
     expect(content).toContain('cr-queue')
     expect(content).toContain('artifact_get_comments')
-    // Ephemeral: consumed on the NEXT user message, never persisted as a turn.
-    expect(opts).toEqual({ source: 'artifact-companion', ephemeral: true })
+    // The key is the artifact VERSION, which is what makes a reload's repost of the same
+    // snapshot a no-op at the boundary rather than a second durable entry.
+    expect(opts).toEqual({
+      source: 'artifact-companion', maxAge: 3600, ephemeral: false, contextKey: '2',
+    })
+  })
+
+  it('leaves no injected-version marker when the context POST is rejected', async () => {
+    // A 429 must NOT record a delivered injection: the marker suppresses the
+    // retry after a reload, so writing it on a rejection loses context for good.
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('429 Too Many Requests'))
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+  })
+
+  it('a queue-full refusal does not persist a claim that suppresses later nudges', async () => {
+    // UX finding: holding the claim on a 429 marked the version injected though it never
+    // was, so that version's freshness nudge was skipped on EVERY later reload.
+    localStorage.clear()
+    sessionStorage.clear()
+    const refusal = Object.assign(new Error('context_not_queued'), {
+      status: 429,
+      body: JSON.stringify({ code: 'context_not_queued' }),
+    })
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(refusal)
+    renderPage()
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    // Positive control: the refusal really was recognised as one, so the null below is
+    // the released claim rather than a path that never ran.
+    expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not inject on a user turn, because that lands behind the turn it informs', async () => {
+    // The page does not own the composer, so its message count only advances once the turn is
+    // already dispatched: any injection keyed on that arrives behind the turn it should inform.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('429 Too Many Requests'))
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+
+    // A user turn lands. It says nothing about the artifact.
+    seedSlots(store, [mkSlot({ key: 'slot-new', artifact: 'cr-queue' })])
+    await new Promise((r) => setTimeout(r, 60))
+
+    // Exactly the one attempt from the open: the turn triggered no second call.
+    expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1)
+    // And the notice STILL stands, because nothing has succeeded -- retracting on the turn told
+    // a user who typed "thanks" that the artifact had landed.
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+  })
+
+  it('keeps the first-share title after a turn, instead of claiming staleness', async () => {
+    // UX finding: a FIRST share that failed must never be relabelled "Latest version not
+    // shared", which claims the agent holds an older version it never received.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('500 Server Error'))
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+    expect(screen.getByRole('alert')).toHaveTextContent(/Couldn't share this artifact/i)
+
+    seedSlots(store, [mkSlot({ key: 'slot-new', artifact: 'cr-queue' })])
+    await new Promise((r) => setTimeout(r, 60))
+
+    // Still a failed first share. Telling the user a newer version exists names a state the
+    // session was never in, and a different bound slot re-baselines rather than retracting.
+    expect(screen.getByRole('alert')).toHaveTextContent(/Couldn't share this artifact/i)
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/Latest version not shared/i)
+  })
+
+  it('keeps the share-failure notice when a non-user row advances the count', async () => {
+    // The count includes assistant and system rows, so retracting on it would let the agent's own
+    // reply answer a warning addressed to the user.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('500 Server Error'))
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+
+    // Resolving the bound slot is the baseline, not an advance.
+    seedSlots(store, [mkSlot({ key: 'slot-new', artifact: 'cr-queue', messages: 1 })])
+    await new Promise((r) => setTimeout(r, 60))
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+
+    seedSlots(store, [mkSlot({ key: 'slot-new', artifact: 'cr-queue', messages: 2 })])
+    await new Promise((r) => setTimeout(r, 80))
+
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+  })
+
+  it('a reload before sending does not queue the artifact context twice', async () => {
+    // GPT BLOCKER: the nudge also fired on `injected === undefined`, which every reload
+    // produces, so a chat reopened before its first turn queued the same artifact twice.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({ key: 'chat-bound', artifact: 'cr-queue' })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    // Positive control: the bound slot really was resolved, so the zero below is a nudge
+    // that declined to fire rather than a panel that never opened.
+    expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    expect(vi.mocked(api).chatSlotContext).not.toHaveBeenCalled()
+  })
+
+  it('still nudges on a cold resolve when the artifact is stale', async () => {
+    // The marker is in-memory only, so a reload re-sends rather than trusting an entry a
+    // crash may have lost -- a repeat nudge, not silent loss (GPT F3 chose that direction).
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    seedSlots(store, [mkSlot({
+      key: 'chat-bound', artifact: 'cr-queue', last_activity_ts: '2026-05-01T00:00:00Z',
+    })])
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(screen.getByTestId('chat-page')).toBeInTheDocument())
+    // The artifact's updated_at is newer than the slot's last activity, so the resumed
+    // agent must be told, rather than silently acting on a stale version.
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
   })
 
   it('embeds ChatPage in single-session chrome with URL sync off', async () => {
@@ -565,4 +769,40 @@ describe('ArtifactDetailPage companion chat', () => {
     })
     expect(screen.queryByText('library page target')).toBeNull()
   })
+
+  it('keeps the share-failure notice when the user takes a turn without sharing', async () => {
+    // One policy across both surfaces: a turn does not attach the artifact, so it must not retract.
+
+    // Its pair is 'keeps the share-failure notice when a non-user row advances the count', which
+    // fails for a different reason: that one advances the projection's all-role count.
+    localStorage.clear()
+    sessionStorage.clear()
+    const store = createTestStore()
+    vi.mocked(api).chatSlotContext = vi.fn().mockRejectedValue(new Error('500 Server Error'))
+    renderPage(false, store)
+    await waitForLoaded()
+    fireEvent.click(screen.getByLabelText('Toggle agent chat'))
+    await waitFor(() => expect(vi.mocked(api).chatSlotContext).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+
+    seedSlots(store, [mkSlot({ key: 'slot-new', artifact: 'cr-queue', messages: 1 })])
+    await new Promise((r) => setTimeout(r, 60))
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+
+    act(() => {
+      store.dispatch(appendSlotMessage({
+        slot: 'slot-new',
+        message: { role: 'user', content: 'an unrelated question' },
+      }))
+    })
+    await new Promise((r) => setTimeout(r, 80))
+
+    // Positive control: the row really landed, so the surviving notice is the policy and not a
+    // dispatch that did nothing. Active slots keep rows on `messages`, others on `slotMessages`.
+    const st = store.getState().chat
+    const rows = st.activeSlot === 'slot-new' ? st.messages : (st.slotMessages['slot-new'] ?? [])
+    expect(rows.some((m: { role: string }) => m.role === 'user')).toBe(true)
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+  })
+
 })

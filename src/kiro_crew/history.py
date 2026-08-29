@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import errno
 import json
 import logging
 import math
@@ -24,10 +25,10 @@ from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal, NamedTuple, overload
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.frontmatter import (  # noqa: F401 - facade re-exports
@@ -112,6 +113,7 @@ from kiro_crew.history_search import (  # noqa: F401 - facade re-exports
     parse_search_query,
     snippet_needles,
 )
+from kiro_crew.jsonl_util import bounded_records, open_regular_nofollow
 from kiro_crew.llm_helpers import (  # noqa: F401 - facade re-exports
     ToolApprovalPolicy,
     background_turn,
@@ -170,6 +172,14 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "last_consolidated",
         "closed",
         "closed_at",
+        # Undrained background-context entries, so closing a tab (or a gateway
+        # restart) does not silently discard them. Slot-owned BECAUSE absence
+        # must clear: the queue is drained by the next user message, and a save
+        # after that drain omits the key — which is how the persisted copy is
+        # retired. That is also why the save writes it on EVERY save and not
+        # only on close: a non-close save that omitted the key would clear a
+        # copy persisted by an earlier close.
+        "pending_context",
         "memory_mode",
         "title",
         "agent",
@@ -287,6 +297,235 @@ ROWS_ONLY_OWNED_META_KEYS: frozenset[str] = frozenset({"_type", "created_at", "l
 ROWS_ONLY_DEFERRED_META_KEYS: frozenset[str] = (
     SLOT_OWNED_META_KEYS - ROWS_ONLY_OWNED_META_KEYS
 ) | frozenset({"title_origin", "title_refresh_mark", "created_by", "origin"})
+
+
+def _dedupe_key(entry: dict) -> object | None:
+    """A hashable identity for an entry carrying no ``ctxId``, or None if there is none.
+
+    Returning None means "cannot compare this one", and the caller then KEEPS it
+    undeduplicated -- never drops it, because a duplicate costs one repeated injection
+    while a drop loses content the API acknowledged.
+
+    Only scalars are admitted. A hand-edited metadata line can carry a list or dict in
+    ``content``, and an unhashable member makes the tuple unhashable, which raises where
+    it is used as a set member rather than at construction.
+    """
+    parts = (entry.get("content"), entry.get("injectedAt"), entry.get("source"))
+    if all(part is None or isinstance(part, (str, int, float, bool)) for part in parts):
+        return parts
+    return None
+
+
+def merge_pending_context(
+    disk: object,
+    mine: object,
+    *,
+    final: bool = False,
+    archive_key: str = "",
+    archive_base: Path | None = None,
+) -> list[dict]:
+    """Union two holders' queued context, the on-disk copy first.
+
+    A ROWS-ONLY save writes one slot's rows onto a transcript whose metadata line describes a
+    DIFFERENT live slot, and ``pending_context`` is inside :data:`ROWS_ONLY_DEFERRED_META_KEYS`
+    by construction. Deferring it drops content the API acknowledged for the WRITING slot --
+    it has no other durable home on that file -- while overwriting would drop the holder's.
+    Both are acknowledged and the line can carry both, so the union loses neither, and the
+    restore side parks entries stamped for another session rather than injecting them.
+
+    Deduplicated by ``ctxId`` where present, else by content/stamp/source, so repeated
+    rows-only saves re-union their own output without growing it.
+
+    BOUNDED BY THE AGGREGATE, because per-slot admission cannot see the other holder: each
+    queue is admitted against its own cap, so a union of enough holders exceeds what one
+    metadata line may carry, and ``_maybe_rotate`` can only drop MESSAGE lines -- never the
+    metadata one -- so the overflow destroys real transcript rows instead.
+
+    THE TWO SIDES ARE NOT INTERCHANGEABLE, and that is what makes the bound safe. The ON-DISK
+    side is kept unconditionally: this file's line is its ONLY home, so dropping one of those
+    entries destroys it with no recovery. Only the WRITING slot's own additions are gated, and
+    gating them DEFERS rather than loses -- a save does not clear ``_pending_context`` (only
+    ``drain_pending_context`` does), so a deferred entry stays queued in memory and is retried
+    by the next save, by which time expiry and drains have freed room on the holder's side.
+
+    *final* SUSPENDS THE DEFERRAL, and must be set by a CLOSE save. The deferral's entire
+    safety argument is that a later save retries it; on close there is no later save and the
+    slot is going away, so deferring there would silently and permanently discard content a
+    200 acknowledged. On that one path the writer's entries are in the same position as the
+    on-disk ones -- no other home -- so instead of being deferred, any that do not fit the
+    budget are SPILLED to the durable archive: the line stays under the session ceiling, and
+    the entries keep a copy on disk. Keeping them on the line instead would oversize it, and
+    rotation can only trim MESSAGE rows, so the queue would evict real transcript rows.
+    """
+    out: list[dict] = []
+    seen: set[object] = set()
+    on_disk = 0
+    for index, group in enumerate((disk, mine)):
+        if not isinstance(group, list):
+            continue
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            ident = entry.get("ctxId")
+            if isinstance(ident, str):
+                key: object = ident
+            else:
+                # HAND-EDITED METADATA IS A DEFENDED SURFACE, as on the restore path: an
+                # unhashable ``content`` raises INSIDE the set, aborting the save.
+                key = _dedupe_key(entry)
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(entry)
+            if index == 0:
+                on_disk += 1
+    return _bounded_context_union(
+        out, on_disk, final=final, archive_key=archive_key, archive_base=archive_base
+    )
+
+
+def _ctx_entry_persist_cost(entry: dict) -> int:
+    """Serialized byte cost of one queued entry on the metadata line."""
+    try:
+        return len(json.dumps(entry).encode("utf-8")) + 1
+    except (TypeError, ValueError):
+        # A hand-edited entry that will not serialize is measured approximately rather
+        # than treated as free, which would let it escape the bound entirely.
+        return len(repr(entry).encode("utf-8")) + 1
+
+
+def _bounded_context_union(
+    entries: list[dict],
+    on_disk: int,
+    *,
+    final: bool = False,
+    archive_key: str = "",
+    archive_base: Path | None = None,
+) -> list[dict]:
+    """Admit the writer's additions within the persistable budget, keeping all *on_disk* ones.
+
+    The first *on_disk* entries came from the line being rewritten and are NEVER dropped:
+    they have no other durable home, so shedding one is unrecoverable loss. A line already
+    over budget before this save stays over budget rather than being trimmed, because trimming
+    it would destroy content this save was only ever meant to add to.
+
+    *final* means no later save will retry a deferral, so nothing is held back for a retry --
+    entries past the budget are spilled to the durable archive instead of onto the line.
+    """
+    budget = max(1, int(_SESSION_MAX_BYTES // 2))
+    if final:
+        kept: list[dict] = []
+        excess: list[dict] = []
+        used = 0
+        # A suffix split ONLY where the excess is spilled and later recombined; with no archive
+        # it is dropped instead, so splitting there would discard the newest entry rather than sort.
+        spill_suffix = bool(archive_key)
+        for entry in entries:
+            cost = _ctx_entry_persist_cost(entry)
+            if (excess and spill_suffix) or (kept and used + cost > budget):
+                excess.append(entry)
+                continue
+            used += cost
+            kept.append(entry)
+        if not archive_key:
+            return kept
+        # A SUPERSET ACROSS THE COMMIT WINDOW, but only for entries this save PROMOTES onto the
+        # line: those are the ones at risk. One the union dropped was delivered, so it stays gone.
+        _kept_ids = {e["ctxId"] for e in kept if isinstance(e.get("ctxId"), str)}
+        _spill_ids = {e["ctxId"] for e in excess if isinstance(e.get("ctxId"), str)}
+        _retained = [
+            e
+            for e in read_ctx_overflow(archive_key, archive_base)
+            if isinstance(e.get("ctxId"), str)
+            and e["ctxId"] in _kept_ids
+            and e["ctxId"] not in _spill_ids
+        ]
+        _spill = [*excess, *_retained]
+        try:
+            path = sync_ctx_overflow(archive_key, _spill, archive_base)
+        except Exception as exc:
+            # NEITHER place the union on the line NOR commit without it: the caller's restore arm
+            # is the only disposition that keeps these entries recoverable.
+            raise CtxSpillFailed(
+                f"could not spill {len(excess)} over-budget pending-context entries for "
+                f"{archive_key}: "
+                + ", ".join(
+                    e["ctxId"] if isinstance(e.get("ctxId"), str) else repr(_dedupe_key(e))[:64]
+                    for e in excess[:20]
+                )
+            ) from exc
+        if not excess:
+            return kept
+        logger.warning(
+            "final save: %d of %d pending-context entries exceeded the %d-byte budget and were "
+            "SPILLED to %s, not dropped; the metadata line stays under the session ceiling: %s",
+            len(excess),
+            len(entries),
+            budget,
+            path,
+            ", ".join(
+                e["ctxId"] if isinstance(e.get("ctxId"), str) else repr(_dedupe_key(e))[:64]
+                for e in excess[:20]
+            ),
+        )
+        return kept
+    kept = []
+    used = 0
+    deferred: list[str] = []
+    held: list[dict] = []
+    # The fold puts SIDECAR entries inside the on-disk range, so keeping that side unconditionally
+    # let a spill promote itself onto the line; budget it whenever a sidecar can receive the excess.
+    relocatable = bool(archive_key)
+    for position, entry in enumerate(entries):
+        cost = _ctx_entry_persist_cost(entry)
+        from_line = position < on_disk
+        movable = relocatable or not from_line
+        # ORDER-PRESERVING SUFFIX: once one entry defers, every movable entry after it defers too.
+        # A per-entry fit test kept a later, smaller entry ahead of its own deferred predecessor.
+        if movable and (held or (kept and used + cost > budget)):
+            ident = entry.get("ctxId")
+            label = ident if isinstance(ident, str) else repr(_dedupe_key(entry))[:64]
+            deferred.append(label)
+            held.append(entry)
+            continue
+        used += cost
+        kept.append(entry)
+    at_risk = bool(held)
+    if archive_key and not at_risk:
+        # PINNED FIRST: _node_present settles only the leaf, so a junction at the root is traversed.
+        with _ctx_overflow_dirfd(archive_base) as _probe_fd:
+            if _probe_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                raise CtxSpillFailed(f"sidecar root for {archive_key} is unsafe")
+            at_risk = _probe_fd is not None and any(
+                _node_present(p, dir_fd=_probe_fd)
+                for p in _ctx_overflow_paths(archive_key, archive_base)
+            )
+    if archive_key and at_risk:
+        # THE WHOLE UNION, not just the remainder: the folding read puts SIDECAR entries on the
+        # `on_disk` side too, and this file is their only durable copy until the commit lands.
+        # Reached only when an entry is AT RISK -- deferred over the budget, or already spilled.
+        # With neither, every entry lands on the line this save, so a write here is redundant.
+        try:
+            sync_ctx_overflow(archive_key, held + kept, archive_base)
+        except Exception as exc:
+            # The transcript must not commit against a sidecar that did NOT: the stale file still
+            # holds delivered entries, and the next hydration folds them back and re-injects them.
+            raise CtxSpillFailed(
+                f"pending-context sidecar for {archive_key} could not be written before the "
+                "transcript commit; refusing the commit rather than leaving a hydratable spill "
+                "of delivered entries"
+            ) from exc
+    if deferred:
+        logger.warning(
+            "pending-context union is at the %d-byte persistable budget; DEFERRED %d of %d "
+            "entries to a later save (they remain queued in memory, nothing is dropped): %s",
+            budget,
+            len(deferred),
+            len(entries),
+            ", ".join(deferred[:20]),
+        )
+    return kept
 
 
 def carry_unowned_metadata(
@@ -854,8 +1093,703 @@ def _sessions_dir() -> Path:
     return config_dir() / SESSIONS_DIR_NAME
 
 
+def _fold_ctx_overflow(meta: dict, key: str, base: Path | None = None) -> dict:
+    """Re-attach *key*'s spilled entries to ``pending_context`` on the way out of a read.
+
+    Folded HERE so the spill is symmetric with the save and invisible to callers: every
+    hydration site and the save's own accounting read this accessor, so none of them can
+    forget the sidecar and leave its entries out of the delivery queue.
+    """
+    if not isinstance(meta, dict):
+        return meta
+    spilled = read_ctx_overflow(key, base)
+    if not spilled:
+        return meta
+    on_line = meta.get("pending_context")
+    on_line = on_line if isinstance(on_line, list) else []
+    seen = {e["ctxId"] for e in on_line if isinstance(e, dict) and isinstance(e.get("ctxId"), str)}
+    folded = [*on_line]
+    # READ-ONLY, deliberately. A read-modify-write here races a concurrent close: this read can
+    # already be stale, and rewriting from it would replace a spill the close just wrote.
+    folded.extend(
+        e for e in spilled if not (isinstance(e.get("ctxId"), str) and e["ctxId"] in seen)
+    )
+    out = dict(meta)
+    out["pending_context"] = folded
+    return out
+
+
+def _fold_ctx_overflow_status(pair: tuple[dict, bool], key: str, base: Path | None = None):
+    meta, ok = pair
+    return _fold_ctx_overflow(meta, key, base), ok
+
+
 def _archive_dir(base: Path | None = None) -> Path:
     return (base or _sessions_dir()) / ARCHIVE_DIR_NAME
+
+
+CTX_OVERFLOW_DIR_NAME = "context-overflow"
+
+#: Yielded instead of a descriptor when the sidecar root exists but is not a plain directory, so a
+#: mutation refuses rather than resolving through whatever the name points at.
+_CTX_OVERFLOW_ROOT_UNSAFE = -1
+
+#: Whether the platform can address a mutation relative to a directory descriptor. Windows cannot,
+#: and there ``pin_directory``'s held handle is what stops the root moving under a path-based call.
+_CTX_RELATIVE_MUTATION = os.rename in os.supports_dir_fd and os.unlink in os.supports_dir_fd
+
+#: Whether a presence probe can be addressed relative to a directory descriptor. Same platform
+#: split as the mutation constant: Windows relies on the pin's held handle instead.
+_CTX_RELATIVE_PROBE = os.stat in os.supports_dir_fd
+
+# A contended unlink (a scanner holding the handle) usually clears on the next attempt.
+_CTX_CLEAR_ATTEMPTS = 3
+
+
+class CtxSpillFailed(Exception):
+    """A save could not put its pending-context sidecar in the state the commit assumes.
+
+    Raised rather than returned so the close path's restore arm keeps the slot: committing the
+    bounded line would report a durable save for entries that have no durable home, and the close
+    removes the slot straight after, so nothing would retry them.
+
+    NOT an ``OSError`` subclass on purpose. Arms on this path catch ``OSError`` around neighbouring
+    file work, and a sibling type in this family was once silently swallowed by one of them.
+    """
+
+
+class CtxOverflowNotCleared(OSError):
+    """A sidecar holding RETIRED entries is still hydratable.
+
+    Committing an empty metadata line over one re-injects delivered context on the next
+    hydration, so this is raised rather than returned: the callers already guard the call, and a
+    returned failure left every one of those handlers dead.
+    """
+
+
+def _ctx_overflow_paths(key: str, base: Path | None = None) -> tuple[Path, ...]:
+    """Every stem *key*'s sidecar could occupy, canonical first.
+
+    Mirrors :func:`transcript_stems` rather than keying on ``_safe_key`` alone, because
+    ``ConversationLog._path`` resolves a pre-migration Slack thread to a DIFFERENT stem than its
+    canonical key. Keyed on one stem, a legacy thread carried two sidecars for one transcript and
+    a delete cleared only one -- orphaning a file that resurrects deleted context on key reuse.
+    """
+    root = (base or _sessions_dir()) / CTX_OVERFLOW_DIR_NAME
+    return tuple(root / f"{stem}.jsonl" for stem in transcript_stems(key))
+
+
+def _ctx_overflow_root(base: Path | None = None) -> Path:
+    """The directory every sidecar lives in."""
+    return (base or _sessions_dir()) / CTX_OVERFLOW_DIR_NAME
+
+
+def _node_present(path: Path, *, dir_fd: int | None = None) -> bool:
+    """Whether a node exists at *path*, WITHOUT traversing a link at the final component.
+
+    ``Path.exists()`` follows, so a planted reparse point aimed at a UNC share makes the probe
+    itself authenticate to that share -- the leak happens during the check, before any open.
+    ``os.lstat`` reports the link rather than its target.
+
+    ``dir_fd`` resolves the name against an ALREADY-PINNED directory. Declining to follow the last
+    component is not enough on its own: a junction planted at the agent-writable parent is
+    traversed while resolving the path to it, so the parent must be pinned too.
+
+    Reports a BROKEN link as present, which ``exists()`` calls absent. That direction is the safe
+    one here: the caller then attempts the no-follow open and is REFUSED, instead of treating a
+    planted name as free space.
+    """
+    try:
+        if dir_fd is not None and _CTX_RELATIVE_PROBE:
+            os.lstat(path.name, dir_fd=dir_fd)
+        else:
+            os.lstat(path)
+    except OSError:
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def _ctx_overflow_dirfd(base: Path | None = None) -> Iterator[int | None]:
+    """A descriptor pinning the sidecar root, refusing a symlinked or non-directory root.
+
+    The read side already refuses a planted node via ``open_regular_nofollow``; a mutation must
+    refuse the same way, because a symlinked ROOT redirects every path built under it and a rename
+    would then move a file the caller never named.
+
+    ``pin_directory`` closes that window on each platform: POSIX yields a descriptor mutations
+    resolve against, while Windows holds a handle no rename can move the directory out from under.
+    So mutations pass ``dir_fd`` only where the platform supports it.
+
+    Yields ``None`` when the root is absent, which is ordinary: there is nothing to clear.
+    """
+    try:
+        fd = platform_compat.pin_directory(_ctx_overflow_root(base))
+    except FileNotFoundError:
+        yield None
+        return
+    except OSError:
+        yield _CTX_OVERFLOW_ROOT_UNSAFE
+        return
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def coexisting_transcript_stems(key: str, base: Path | None = None) -> frozenset[str]:
+    """Stems among *key*'s aliases that a DIFFERENT surviving transcript backs.
+
+    :func:`transcript_stems` returns the canonical and legacy bare stem for one Slack key because
+    :meth:`ConversationLog._path` may resolve to either. That assumes only one is backed. When both
+    transcript files exist they are two live sessions, so the other stem's sidecar holds the OTHER
+    session's queue: clearing it destroys acknowledged context whose transcript is still resumable,
+    and reading it injects one session's context into the other.
+
+    Empty unless at least two stems are backed, so a lone legacy thread keeps resolving exactly as
+    before. The retained stem mirrors ``_path``: canonical when its transcript exists, else the
+    first legacy one whose transcript does.
+    """
+    sessions = base or _sessions_dir()
+    backed = [stem for stem in transcript_stems(key) if _node_present(sessions / f"{stem}.jsonl")]
+    if len(backed) < 2:
+        return frozenset()
+    return frozenset(backed[1:])
+
+
+def _ctx_overflow_path(key: str, base: Path | None = None, *, dir_fd: int | None = None) -> Path:
+    """The sidecar to read or write for *key*, paired with the transcript that actually exists.
+
+    Returning the canonical stem unconditionally wrote a legacy Slack thread's spill beside a
+    transcript living under the BARE ``thread_ts`` name, so History resumed the bare stem, found
+    no sidecar, and never restored acknowledged context. This mirrors
+    :meth:`ConversationLog._path`: canonical when its transcript is there, else the legacy stem
+    whose transcript is. An existing sidecar still wins over both, so a spill already written
+    stays findable wherever it landed.
+    """
+    paths = _ctx_overflow_paths(key, base)
+    stems = transcript_stems(key)
+    foreign = coexisting_transcript_stems(key, base)
+    for stem, candidate in zip(stems[1:], paths[1:]):
+        if stem not in foreign and _node_present(candidate, dir_fd=dir_fd):
+            return candidate
+    sessions = base or _sessions_dir()
+    if not _node_present(sessions / f"{stems[0]}.jsonl"):
+        for stem, sidecar in zip(stems[1:], paths[1:]):
+            if _node_present(sessions / f"{stem}.jsonl"):
+                return sidecar
+    return paths[0]
+
+
+def write_ctx_overflow(key: str, entries: list[dict], base: Path | None = None) -> Path:
+    """Persist *entries* that did not fit *key*'s metadata line, replacing any prior spill.
+
+    A SIDECAR rather than the archive, because the archive is a graveyard nothing reads: an
+    entry only reaches the agent through ``drain_pending_context``, which delivers the slot's
+    QUEUE, so a spill that cannot be read back is acknowledged content that is never injected.
+    This file is outside the transcript, so it does not count toward the rotation ceiling, and
+    :meth:`ConversationLog.get_metadata_with_overflow` folds it back for the readers that opt in.
+    """
+    root = _ctx_overflow_root(base)
+    try:
+        # NO exist_ok: its arm raises FileExistsError internally then calls is_dir(), which FOLLOWS
+        # a node planted after any pre-check. Swallowed unprobed, the pin below is what validates.
+        root.mkdir(parents=True)
+    except FileExistsError:
+        pass
+    payload = "".join(json.dumps(e, default=repr) + "\n" for e in entries)
+    # ONE FILE, so publishing is ONE atomic rename: a spill spread over continuation files had no
+    # atomic publish, and an interrupted rewrite left a mixed generation the next read recombined.
+    if len(entries) > _MAX_CTX_OVERFLOW_ENTRIES:
+        # THE SAME CEILING THE READER ENFORCES. Without it the writer published a spill every
+        # hydration then refused, so resume failed and the content became unreachable.
+        raise CtxOverflowTooLarge(
+            f"{len(entries)} entries exceeds {_MAX_CTX_OVERFLOW_ENTRIES} for {key}; NOT written"
+        )
+    size = len(payload.encode("utf-8"))
+    if size > _MAX_CTX_OVERFLOW_BYTES:
+        # REFUSED, NOT TRUNCATED: the caller still holds these entries, and a partial write is the
+        # silent loss this bound exists to prevent.
+        raise CtxOverflowTooLarge(
+            f"{size} bytes exceeds {_MAX_CTX_OVERFLOW_BYTES} for {key}; spill NOT written"
+        )
+    # OWNER-ONLY (0600). These entries are the same trusted-caller content the /note context half
+    # carries and are deliberately unredacted, so a default-umask 0644 spill is a local read.
+    with _ctx_overflow_dirfd(base) as _root_fd:
+        if _root_fd is None or _root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+            raise OSError(
+                errno.ENOTDIR,
+                f"the sidecar root for {key} is not a plain directory; refusing to write through "
+                "whatever the name points at",
+                str(root),
+            )
+        # DERIVED INSIDE THE PIN: choosing which stem a spill occupies PROBES sibling candidates,
+        # and a probe with no descriptor lstats the full child path, resolving the root by name.
+        path = _ctx_overflow_path(key, base, dir_fd=_root_fd)
+        if _CTX_RELATIVE_MUTATION:
+            atomic_write_at(_root_fd, path.name, payload, mode=0o600)
+        else:
+            # Windows exposes no descriptor-relative write, so pin_directory's held handle is what
+            # stops the root moving under this path-based call; it is held across the whole write.
+            atomic_write(path, payload, restrict_to_owner=True)
+    return path
+
+
+class CtxOverflowClear(NamedTuple):
+    """What a sidecar clear actually achieved.
+
+    ``survivors`` is the load-bearing field: a non-empty list means a spill file is STILL
+    hydratable, so a caller about to remove the transcript must refuse instead.
+    """
+
+    survivors: list[Path]
+    quarantined: list[tuple[Path, Path]]
+
+
+def clear_ctx_overflow(
+    key: str, base: Path | None = None, *, quarantine: str = ""
+) -> CtxOverflowClear:
+    """Remove *key*'s spill under every alias its OWN transcript could occupy.
+
+    An alias a different surviving transcript backs is left alone; see
+    :func:`coexisting_transcript_stems`. An alias nothing backs is still cleared, because an
+    orphaned sidecar resurrects deleted context when the key is reused.
+
+    A failed unlink must not be SUPPRESSED: that reports success while leaving a hydratable file
+    behind -- so a session later created at the same key re-injected the deleted session's
+    context. Failures are now returned.
+
+    *quarantine* RENAMES a sidecar off the ``.jsonl`` stem, putting it beyond
+    :func:`_ctx_overflow_paths` -- unhydratable but recoverable. Two modes, because the callers
+    need opposite things:
+
+    ``"always"``
+        Never unlink. For a caller that cannot yet know whether the delete will happen: unlinking
+        first destroys a pinned session's pending context, because the skip decision comes later.
+        Such a caller unlinks the holdings itself once the delete has SUCCEEDED.
+    ``"on_failure"``
+        Unlink, and quarantine only what will not unlink. For a caller whose entries are already
+        retired, where the file must stop being hydratable even if the filesystem refuses.
+    """
+    survivors: list[Path] = []
+    quarantined: list[tuple[Path, Path]] = []
+
+    def _quarantine(path: Path, dirfd: int | None) -> bool:
+        holding = path.with_suffix(f".orphaned-{uuid.uuid4().hex}")
+        try:
+            if dirfd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                return False
+            if dirfd is None:
+                return True
+            # RELATIVE to the vetted root where the platform allows it; elsewhere the pin's held
+            # handle is what stops the root being swapped under a path-based rename.
+            if _CTX_RELATIVE_MUTATION:
+                os.rename(path.name, holding.name, src_dir_fd=dirfd, dst_dir_fd=dirfd)
+            else:
+                path.rename(holding)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        quarantined.append((path, holding))
+        return True
+
+    with _ctx_overflow_dirfd(base) as _root_fd:
+        foreign = coexisting_transcript_stems(key, base)
+        for stem, path in zip(transcript_stems(key), _ctx_overflow_paths(key, base)):
+            if stem in foreign:
+                continue
+            if quarantine == "always":
+                if not _quarantine(path, _root_fd):
+                    logger.error(
+                        "could not quarantine the pending-context sidecar %s; it stays HYDRATABLE, "
+                        "so a session reusing this key would re-inject its context.",
+                        path,
+                    )
+                    survivors.append(path)
+                continue
+            last: OSError | None = None
+            for _ in range(_CTX_CLEAR_ATTEMPTS):
+                try:
+                    if _root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                        raise PermissionError(
+                            f"the pending-context sidecar root {_ctx_overflow_root(base)} is not a "
+                            "plain directory"
+                        )
+                    if _root_fd is None:
+                        raise FileNotFoundError(str(path))
+                    if _CTX_RELATIVE_MUTATION:
+                        os.unlink(path.name, dir_fd=_root_fd)
+                    else:
+                        path.unlink()
+                except FileNotFoundError:
+                    last = None
+                    break
+                except OSError as exc:
+                    last = exc
+                else:
+                    last = None
+                    break
+            if last is None:
+                continue
+            # The entries are already retired, so the file must stop being hydratable even when
+            # the filesystem refuses to remove it, or the next fold re-injects delivered context.
+            if quarantine == "on_failure" and _quarantine(path, _root_fd):
+                logger.warning(
+                    "pending-context sidecar %s could not be removed (%s); QUARANTINED off the "
+                    "hydration stem instead, so its retired entries cannot be re-injected.",
+                    path,
+                    last,
+                )
+                continue
+            logger.error(
+                "could not remove the pending-context sidecar %s (%s); it stays HYDRATABLE, so "
+                "a session reusing this key would re-inject already-delivered context.",
+                path,
+                last,
+            )
+            survivors.append(path)
+    return CtxOverflowClear(survivors, quarantined)
+
+
+def sync_ctx_overflow(key: str, entries: list[dict], base: Path | None = None) -> Path | None:
+    """Make *key*'s sidecar hold exactly *entries*, removing it when there are none.
+
+    THE INVARIANT IS "what is not on the metadata line", and it has to be re-established by
+    every save rather than only by one that spills. The fold dedups against the line alone, so
+    a sidecar left behind after the queue shrank re-injects entries already delivered -- and a
+    file left behind after the session is gone is inherited by the next session at that key.
+    """
+    if entries:
+        return write_ctx_overflow(key, entries, base)
+    cleared = clear_ctx_overflow(key, base, quarantine="on_failure")
+    if cleared.survivors:
+        # RAISED, not returned: the callers already guard this call, and a returned failure left
+        # those handlers dead -- the empty line committed while the stale file stayed hydratable.
+        raise CtxOverflowNotCleared(f"{len(cleared.survivors)} sidecar(s) survived for {key}")
+    return None
+
+
+def _entries_at_ctx_overflow_path(path: Path) -> list[dict]:
+    """Entries in one spill file addressed BY PATH, for a file already off the hydration stem.
+
+    :func:`read_ctx_overflow` resolves its own path from a key, so it cannot read a quarantined
+    holding. Carries that reader's AGGREGATE limits as well as its per-record one: a holding is the
+    same agent-writable state, read on the same recovery path, so a per-record cap alone would let a
+    file the stem reader refuses be materialized whole here.
+
+    Raises :class:`CtxOverflowTooLarge` past either limit, which the re-seat caller already treats
+    as an unreadable holding -- the bytes stay in the file rather than being read into memory.
+    """
+    out: list[dict] = []
+    unusable = 0
+    try:
+        with _ctx_overflow_dirfd(path.parent.parent) as _root_fd:
+            if _root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                raise CtxOverflowUnreadable(f"sidecar root for {path} is not a plain directory")
+            with open_regular_nofollow(
+                path, max_bytes=_MAX_CTX_OVERFLOW_BYTES, dir_fd=_root_fd
+            ) as handle:
+                for line in bounded_records(
+                    handle, path, label="quarantined pending-context sidecar"
+                ):
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        unusable += 1
+                        continue
+                    if isinstance(entry, dict):
+                        out.append(entry)
+                        if len(out) > _MAX_CTX_OVERFLOW_ENTRIES:
+                            raise CtxOverflowTooLarge(
+                                f"quarantined holding {path} carries more than "
+                                f"{_MAX_CTX_OVERFLOW_ENTRIES} entries"
+                            )
+                    else:
+                        unusable += 1
+    except CtxOverflowUnreadable:
+        raise
+    except OSError as exc:
+        if exc.errno != errno.EFBIG:
+            raise
+        # The ceiling is enforced from the OPEN DESCRIPTOR, so the refusal arrives as EFBIG; the
+        # re-seat caller keys on the unreadable-holding type, which must stay the observable one.
+        raise CtxOverflowTooLarge(
+            f"quarantined holding {path} is past the "
+            f"{_MAX_CTX_OVERFLOW_BYTES}-byte read ceiling"
+        ) from exc
+    if unusable:
+        logger.error(
+            "quarantined pending-context holding %s: %d of %d line(s) were unusable and were "
+            "DROPPED (unparseable, or not an object); those acknowledged entries are gone.",
+            path,
+            unusable,
+            unusable + len(out),
+        )
+    return out
+
+
+def _reseat_undelivered_from_quarantine(
+    key: str,
+    quarantined: list[tuple[Path, Path]],
+    committed_ids: AbstractSet[str],
+    base: Path | None,
+) -> int:
+    """Put a quarantined spill's UNDELIVERED entries back on the hydration stem.
+
+    Returns how many were re-seated. The quarantine above is what stops DELIVERED entries
+    re-injecting, but it moves the whole file, and a MIXED spill also holds entries the
+    committed line never carried -- for which the sidecar was the only durable home. So the
+    read is retried against the holding: the failure that triggered the quarantine is a
+    transient one, and on the retry succeeding the remainder is written back minus everything
+    the commit accounted for.
+
+    Best-effort BY DESIGN. If the retry fails too, the holding still carries the bytes and the
+    live queue still carries the entries, so nothing is worse than the quarantine alone -- which
+    is why every failure here is logged and swallowed rather than raised into a caller that has
+    already committed its transcript.
+    """
+    recovered: list[dict] = []
+    for _original, holding in quarantined:
+        try:
+            recovered.extend(_entries_at_ctx_overflow_path(holding))
+        except (OSError, CtxOverflowUnreadable) as exc:
+            logger.warning(
+                "quarantined pending-context sidecar %s could not be re-read (%s); its "
+                "undelivered entries stay in the holding file rather than on the hydration stem.",
+                holding,
+                exc,
+            )
+    undelivered = [
+        e
+        for e in recovered
+        if not (isinstance(e.get("ctxId"), str) and e["ctxId"] in committed_ids)
+    ]
+    if not undelivered:
+        return 0
+    try:
+        write_ctx_overflow(key, undelivered, base)
+    except OSError:
+        logger.error(
+            "could not re-seat %d undelivered pending-context entr(ies) for %s after "
+            "quarantining an unreadable spill; the holding file still carries them.",
+            len(undelivered),
+            key,
+            exc_info=True,
+        )
+        return 0
+    return len(undelivered)
+
+
+def reconcile_ctx_overflow(
+    key: str, committed_ids: AbstractSet[str], base: Path | None = None
+) -> None:
+    """Drop from *key*'s sidecar every entry the just-committed metadata line now carries.
+
+    THE SHRINK HALF OF THE WRITE, deliberately after the transcript's ``atomic_write`` rather
+    than before it. The union writes a SUPERSET, so an entry moving from the sidecar onto the
+    line exists in both files across the window and a crash there costs a duplicate -- which the
+    fold dedups by ``ctxId`` -- instead of losing acknowledged content from both.
+    """
+    try:
+        spilled = read_ctx_overflow(key, base)
+    except CtxOverflowUnreadable as exc:
+        # The transcript has already committed, so returning would leave a stale sidecar that
+        # re-injects delivered context; quarantining stops it hydrating without destroying it.
+        # REUSED when the raiser already moved it: clearing an empty stem quarantines nothing, so
+        # the re-seat below would find no holdings and strand the undelivered half.
+        cleared = (
+            CtxOverflowClear([], list(exc.quarantined))
+            if exc.quarantined
+            else clear_ctx_overflow(key, base, quarantine="always")
+        )
+        if cleared.survivors:
+            # A survivor still on the hydration stem re-injects delivered entries once the
+            # metadata copy clears; raised, not returned, because no caller guards a return here.
+            raise CtxOverflowNotCleared(
+                f"{len(cleared.survivors)} sidecar(s) still hydratable for {key} after an "
+                "unreadable post-commit read"
+            )
+        # Quarantine alone would strand a MIXED spill's undelivered half: it moves the whole
+        # file, and those entries had the sidecar as their only durable home.
+        reseated = _reseat_undelivered_from_quarantine(
+            key, cleared.quarantined, committed_ids, base
+        )
+        logger.error(
+            "pending-context sidecar for %s could not be read after the transcript commit (%s); "
+            "quarantined %d file(s) off the hydration stem so nothing already delivered can be "
+            "re-injected, and re-seated %d undelivered entr(ies) from the holding.",
+            key,
+            exc,
+            len(cleared.quarantined),
+            reseated,
+        )
+        return
+    remaining = [
+        e for e in spilled if not (isinstance(e.get("ctxId"), str) and e["ctxId"] in committed_ids)
+    ]
+    try:
+        sync_ctx_overflow(key, remaining, base)
+    except Exception:
+        # PRESERVED, NOT CLEARED. Only two states are reachable once this rewrite fails, and
+        # deleting takes the undelivered remainder's ONLY durable copy with it.
+        logger.warning(
+            "pending-context sidecar for %s could not be pruned after the transcript commit; "
+            "PRESERVING it so the %d undelivered entr(ies) keep a durable copy. The %d "
+            "committed entr(ies) are re-pruned by the next hydration's fold.",
+            key,
+            len(remaining),
+            len(committed_ids),
+            exc_info=True,
+        )
+
+
+class CtxOverflowUnreadable(OSError):
+    """The spill file EXISTS but could not be read.
+
+    Distinct from absence, which is the ordinary state and returns ``[]``. Collapsing the two
+    reported a read failure as "no spilled entries", so a hydration silently dropped
+    acknowledged context and a save then committed a line without it.
+
+    ``quarantined`` carries the moves the RAISER already made, because a handler that clears again
+    finds an empty stem: it would re-seat nothing and strand the undelivered half of a mixed spill.
+    """
+
+    def __init__(self, *args: object, quarantined: "list[tuple[Path, Path]] | None" = None) -> None:
+        super().__init__(*args)
+        self.quarantined: list[tuple[Path, Path]] = list(quarantined or [])
+
+
+class CtxOverflowTooLarge(CtxOverflowUnreadable):
+    """The spill file is too large to read into memory.
+
+    A SUBCLASS so every caller already handling an unreadable sidecar covers this too: the fold
+    reads through the same function, and a sibling type would escape handlers the old raise never
+    reached. Still distinguishable where a caller wants to tell a bounded refusal from I/O.
+
+    The file is quarantined off the hydration stem before this is raised: leaving it in place
+    would make every later hydration attempt the same oversized allocation.
+    """
+
+
+# A legitimate spill is bounded by the per-slot queue cap, but the union keeps the on-disk side
+# across unbounded distinct-slot rows-only saves onto one key, so the file has no natural bound.
+_MAX_CTX_OVERFLOW_BYTES = 8 * 1024 * 1024
+
+# Aggregate ceiling on what ONE read MATERIALIZES: the file-size check bounds bytes on disk, but
+# the decoded entries accumulate in memory, so the list cap is what actually bounds hydration.
+
+_MAX_CTX_OVERFLOW_ENTRIES = 5000
+
+
+def read_ctx_overflow(key: str, base: Path | None = None) -> list[dict]:
+    """Entries spilled off *key*'s metadata line, or ``[]`` when there is no spill file.
+
+    Tolerant PER LINE: a truncated or hand-edited row costs that one entry rather than the whole
+    queue. NOT tolerant of an I/O failure -- that raises :class:`CtxOverflowUnreadable`, because
+    an unreadable file is not an empty one and a caller must not treat it as such.
+
+    SIZE-CHECKED BEFORE IT IS READ, and streamed through :func:`bounded_records` rather than read
+    whole -- which also caps each RECORD, so one enormous line cannot defeat the file-size check.
+    The file is
+    writable state whose size the writer does not bound, and this runs on the hydration path, so
+    one oversized sidecar could allocate the gateway out of memory. Past
+    :data:`_MAX_CTX_OVERFLOW_BYTES` it is quarantined off the hydration stem and
+    :class:`CtxOverflowTooLarge` is raised -- refusing without quarantining would repeat the same
+    allocation on every later hydration.
+    """
+    out: list[dict] = []
+    over_count = False
+    over_size: OSError | None = None
+    # COUNTED, NOT JUST SKIPPED: per-line tolerance keeps one bad row from costing the queue, but
+    # an unreported drop is the silent loss of an acknowledged entry that this file exists to hold.
+    unreadable = 0
+    with _ctx_overflow_dirfd(base) as _root_fd:
+        if _root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+            # The ROOT is agent-writable, so settling only the FINAL component leaves a junction
+            # planted here traversed -- on Windows that authenticates the gateway to its target.
+            logger.error(
+                "the pending-context sidecar root %s is not a plain directory; refusing to read "
+                "%s rather than resolving through whatever the name points at.",
+                _ctx_overflow_root(base),
+                key,
+            )
+            raise CtxOverflowUnreadable(f"sidecar root for {key} is not a plain directory")
+        if _root_fd is None:
+            return []
+        path = _ctx_overflow_path(key, base, dir_fd=_root_fd)
+        try:
+            with open_regular_nofollow(
+                path, max_bytes=_MAX_CTX_OVERFLOW_BYTES, dir_fd=_root_fd
+            ) as handle:
+                for line in bounded_records(handle, path, label="pending-context sidecar"):
+                    if not line.strip():
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        unreadable += 1
+                        continue
+                    if isinstance(entry, dict):
+                        out.append(entry)
+                        if len(out) > _MAX_CTX_OVERFLOW_ENTRIES:
+                            over_count = True
+                            break
+                    else:
+                        unreadable += 1
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            if exc.errno != errno.EFBIG:
+                logger.error(
+                    "pending-context sidecar for %s exists but could not be read (%s); refusing "
+                    "to report it as EMPTY, which would drop acknowledged context.",
+                    key,
+                    exc,
+                )
+                raise CtxOverflowUnreadable(str(exc)) from exc
+            over_size = exc
+    # OUTSIDE THE PIN, and only once the handle is closed: Windows refuses to rename or unlink an
+    # open file, so quarantining while either was held left the spill hydratable.
+    if over_size is not None:
+        cleared = clear_ctx_overflow(key, base, quarantine="always")
+        logger.error(
+            "pending-context sidecar for %s is past the %d-byte read ceiling (%s); quarantined "
+            "%d file(s) off the hydration stem rather than reading it whole.",
+            key,
+            _MAX_CTX_OVERFLOW_BYTES,
+            over_size,
+            len(cleared.quarantined),
+        )
+        raise CtxOverflowTooLarge(
+            f"sidecar for {key} exceeds {_MAX_CTX_OVERFLOW_BYTES} bytes",
+            quarantined=cleared.quarantined,
+        ) from over_size
+    if unreadable:
+        logger.error(
+            "pending-context sidecar for %s: %d of %d line(s) were unusable and were DROPPED "
+            "(unparseable, or not an object); those acknowledged entries are gone from %s.",
+            key,
+            unreadable,
+            unreadable + len(out),
+            _ctx_overflow_path(key, base),
+        )
+    if over_count:
+        cleared = clear_ctx_overflow(key, base, quarantine="always")
+        logger.error(
+            "pending-context sidecar for %s holds more than %d entries; quarantined %d file(s) "
+            "off the hydration stem.",
+            key,
+            _MAX_CTX_OVERFLOW_ENTRIES,
+            len(cleared.quarantined),
+        )
+        raise CtxOverflowTooLarge(
+            f"more than {_MAX_CTX_OVERFLOW_ENTRIES} entries in the spill for {key}",
+            quarantined=cleared.quarantined,
+        )
+    return out
 
 
 def _archive_lines(
@@ -1189,6 +2123,32 @@ def transcript_lock_stems(key: str) -> tuple[str, ...]:
     if bare is None:
         return (_safe_key(key),)
     return (_safe_key(f"slack:{bare}"), _safe_key(bare))
+
+
+def resolved_transcript_stems(key: str, base: Path | None = None) -> frozenset[str]:
+    """The stems *key* can resolve to, minus those a DIFFERENT live transcript backs.
+
+    :func:`transcript_stems` returns both Slack spellings because :meth:`ConversationLog._path`
+    may resolve to either, which holds only while one of them is backed. When both are backed
+    they are two separate live sessions, so the alias
+    :func:`coexisting_transcript_stems` names belongs to the OTHER one and is not a name this
+    key resolves to.
+    """
+    return frozenset(transcript_stems(key)) - coexisting_transcript_stems(key, base)
+
+
+def same_transcript(a: str, b: str, base: Path | None = None) -> bool:
+    """True when two session keys resolve to the SAME transcript file.
+
+    Compared as stem SETS, never by string equality: ``_safe_key`` is many-to-one, so
+    ``slack:C1:1.2`` and ``slack:C1_1.2`` both land in ``slack_C1_1.2.jsonl`` and an
+    equality test reports "different transcript" when nothing moved.
+
+    Intersected over :func:`resolved_transcript_stems` rather than the raw alias sets, so two
+    coexisting Slack transcripts that share the legacy bare spelling are not conflated: matching
+    on that shared alias reported one live session as the other and routed its context there.
+    """
+    return bool(resolved_transcript_stems(a, base) & resolved_transcript_stems(b, base))
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
@@ -2746,9 +3706,138 @@ class ConversationLog:
     def delete_session(self, key: str, *, skip_pinned: Literal[True]) -> bool | None: ...
 
     def delete_session(self, key: str, *, skip_pinned: bool = False) -> bool | None:
+        # ONE LOCK HOLD ACROSS BOTH: releasing between them lets a concurrent save write a
+        # REPLACEMENT sidecar that this cleanup then deletes. Reentrant, so the inner hold is fine.
+        try:
+            with self._locked(key):
+                return self._delete_session_locked(key, skip_pinned=skip_pinned)
+        except HistoryLockTimeout:
+            # The projection guarded its OWN acquisition and answered False; hoisting the hold up
+            # here put this one ahead of that guard, so the refusal has to be answered here too.
+            logger.warning("delete_session: lock timeout, not deleting key=%s", key)
+            return False
+
+    def _restore_quarantined(self, quarantined: list[tuple[Path, Path]]) -> list[tuple[Path, Path]]:
+        """Move holdings back onto the hydration stem, for every path where the transcript LIVES.
+
+        A holding file is off the stem `_ctx_overflow_path` resolves, so nothing reads it: it is
+        recoverable only by being renamed back. Both surviving-transcript exits therefore need this
+        — the refusal on unremovable survivors as much as the pinned/absent one — or a partial
+        rename leaves the entries it DID quarantine unreachable with the transcript still live.
+
+        Returns the pairs it could NOT restore. A logged-only failure left the caller reporting a
+        successful skip while the surviving transcript's context sat unreachable, so the callers
+        refuse on a nonempty return instead.
+        """
+        unrestored: list[tuple[Path, Path]] = []
+        if not quarantined:
+            return unrestored
+        # PINNED ACROSS THE RENAME: this runs after clear_ctx_overflow's own pin closed, and a bare
+        # rename resolves the agent-writable root by name again -- the window that pin exists to shut.
+        with _ctx_overflow_dirfd(self._dir) as root_fd:
+            if root_fd is None or root_fd == _CTX_OVERFLOW_ROOT_UNSAFE:
+                logger.error(
+                    "cannot restore %d quarantined sidecar(s): the root %s is not a plain "
+                    "directory, so a rename would resolve through whatever the name points at.",
+                    len(quarantined),
+                    _ctx_overflow_root(self._dir),
+                )
+                return list(quarantined)
+            for original, holding in quarantined:
+                last: OSError | None = None
+                for _ in range(_CTX_CLEAR_ATTEMPTS):
+                    try:
+                        if _CTX_RELATIVE_MUTATION:
+                            os.rename(
+                                holding.name, original.name, src_dir_fd=root_fd, dst_dir_fd=root_fd
+                            )
+                        else:
+                            holding.rename(original)
+                    except OSError as exc:
+                        last = exc
+                    else:
+                        last = None
+                        break
+                if last is None:
+                    continue
+                logger.error(
+                    "quarantined sidecar %s could not be restored to %s (%s); the "
+                    "transcript survives but its spilled context is now unreachable.",
+                    holding,
+                    original,
+                    last,
+                )
+                unrestored.append((original, holding))
+        return unrestored
+
+    def _delete_session_locked(self, key: str, *, skip_pinned: bool = False) -> bool | None:
+        # BEFORE the transcript, not after: the spill is keyed by transcript rather than
+        # owned by one, so a survivor is hydrated by any session later created at this key.
+        cleared = clear_ctx_overflow(key, self._dir, quarantine="always")
+        if cleared.survivors:
+            logger.error(
+                "refusing to delete %s: %d pending-context sidecar(s) could not be removed "
+                "or quarantined, and deleting the transcript would leave them hydratable.",
+                key,
+                len(cleared.survivors),
+            )
+            stranded = self._restore_quarantined(cleared.quarantined)
+            if stranded:
+                # Naming each holding is the whole remedy available here: it is off the stem
+                # `_ctx_overflow_path` resolves, so only a rename back makes it readable again.
+                logger.error(
+                    "delete of %s was refused and %d quarantined sidecar(s) could not be put "
+                    "back: %s. The transcript is live, so that acknowledged context is "
+                    "unreachable until a holding is renamed to its original path.",
+                    key,
+                    len(stranded),
+                    "; ".join(f"{holding} -> {original}" for original, holding in stranded),
+                )
+            return False
         if skip_pinned:
-            return self._metadata_projection.delete_session(key, skip_pinned=True)
-        return self._metadata_projection.delete_session(key, skip_pinned=False)
+            result = self._metadata_projection.delete_session(key, skip_pinned=True)
+        else:
+            result = self._metadata_projection.delete_session(key, skip_pinned=False)
+        # `delete_session` returns `existed`, so a False is EITHER a pinned skip -- transcript
+        # live, spill still owed to it -- OR nothing there, where no transcript can own the spill.
+        if not result and self._path(key).exists():
+            if self._restore_quarantined(cleared.quarantined):
+                # A FAILURE, not the ordinary skip: the transcript is live and its spilled context
+                # is off the hydration stem, so reporting the skip would hide unreachable content.
+                logger.error(
+                    "delete of %s was skipped but its quarantined context could not be restored; "
+                    "reporting failure so the caller does not treat this as a clean skip.",
+                    key,
+                )
+                return False
+            return result
+        # The transcript is gone or was never there, so nothing can hydrate these holdings and
+        # restoring one would arm a later session at this key with another session's context.
+        # PINNED ACROSS THE UNLINK, for the reason the restore above pins: clear_ctx_overflow's pin
+        # has closed, so a bare unlink resolves the agent-writable root by name a second time.
+        with _ctx_overflow_dirfd(self._dir) as root_fd:
+            if cleared.quarantined and (root_fd is None or root_fd == _CTX_OVERFLOW_ROOT_UNSAFE):
+                logger.warning(
+                    "leaving %d quarantined sidecar(s) for %s in place: the root is not a plain "
+                    "directory, so an unlink would resolve through whatever it points at.",
+                    len(cleared.quarantined),
+                    key,
+                )
+                return result
+            for _, holding in cleared.quarantined:
+                try:
+                    if _CTX_RELATIVE_MUTATION:
+                        os.unlink(holding.name, dir_fd=root_fd)
+                    else:
+                        holding.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "quarantined sidecar %s outlived the deleted transcript (%s); it is off "
+                        "the hydration stem, so it is unreachable rather than re-injected.",
+                        holding,
+                        exc,
+                    )
+        return result
 
     def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:
         """Delete every artifact of one retired generated consolidation turn."""
@@ -2935,6 +4024,32 @@ class ConversationLog:
 
     def get_metadata_status(self, key: str) -> tuple[dict, bool]:
         return self._read_projection.get_metadata_status(key)
+
+    def get_metadata_with_overflow(self, key: str) -> dict:
+        """:meth:`get_metadata` with *key*'s spilled context re-attached.
+
+        OPT-IN, because folding reads a sidecar file that can be megabytes: the plain accessor
+        is called from telemetry, sessions, mcp tools, slack and the projection, and some of
+        those run on the event loop. Only hydration and save-accounting need the spill back, and
+        every one of those reads is synchronous or already offloaded to a worker thread.
+
+        ONE SNAPSHOT, under the same lock the writers take. The line and the sidecar are two
+        files, so reading them unlocked can straddle a concurrent save that moves an entry from
+        one to the other: the reader sees the line before the move and the sidecar after it, and
+        the entry appears in neither. The lock is reentrant, so a caller already holding it for
+        the same key nests rather than deadlocking.
+        """
+        with self._locked(key):
+            return _fold_ctx_overflow(self.get_metadata(key), key, self._dir)
+
+    def get_metadata_status_with_overflow(self, key: str) -> tuple[dict, bool]:
+        """:meth:`get_metadata_status` with *key*'s spilled context re-attached.
+
+        Locked for the same reason as :meth:`get_metadata_with_overflow`: both files are read
+        as one snapshot rather than two.
+        """
+        with self._locked(key):
+            return _fold_ctx_overflow_status(self.get_metadata_status(key), key, self._dir)
 
     def _pause_for_transient_retry(self) -> None:
         self._read_projection._pause_for_transient_retry()

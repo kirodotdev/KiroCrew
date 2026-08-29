@@ -1049,7 +1049,19 @@ state a close compensates is not all scoped the same way.
   conversation's own MONOTONE once-flags (`auto_tagged`, `human_seen`,
   `channel_origin`, `channel_folder_filed`) are set and never cleared, so two writers
   on one transcript cannot disagree about them in a way that outlives the pair; they
-  stay as written. Deferring to disk is deliberately not
+  stay as written. `pending_context` is the ONE slot-owned key the rows-only write does not
+  defer. It falls inside `ROWS_ONLY_DEFERRED_META_KEYS` by construction, being the difference
+  of a set it belongs to, but deferring it would drop queued entries the API already answered
+  200 for and which have no other durable home on that file — so the branch UNIONS instead,
+  disk copy first, deduped by each entry's `ctxId`. Its ownership is otherwise ordinary, and
+  deliberately so: omitting the key is what durably empties a delivered queue, which is why it
+  cannot simply be carried forward. That leaves one asymmetry the full save has to respect —
+  omission may only speak for entries this slot actually hydrated, tracked per slot as the
+  accounted-for `ctxId` set. An entry a same-key handover wrote AFTER this slot hydrated is
+  absent from its export through ignorance rather than delivery, so the full save preserves it
+  rather than reading its absence as a clear; and the accounted-for set records this slot's OWN
+  committed ids only, never the merged line's, or another holder's entry would be claimed and
+  then cleared on the next save. Deferring to disk is deliberately not
   the same as deriving the line from the replacement — a recreate that published
   nothing has no metadata to protect, and re-deriving from it would ERASE a real
   title and filing the two slots' shared conversation has; leaving the line alone is
@@ -1080,6 +1092,24 @@ state a close compensates is not all scoped the same way.
   runs and the open-shaped write erases it. The failure arms take the same route in place of the
   restore they skip: a store that rejected the `closed=True` write can still
   accept the next one, and a lock lost to the recreate is exactly that case.
+
+  **Why an OVERFLOW sidecar stands while a sidecar for the PRIMARY copy does not.** A second
+  durable home for the primary copy is rejected, and this states that rejection rather than
+  assuming it: splitting the primary copy across the metadata line and a second file means two
+  writes must agree, so a crash between
+  them leaves an entry either double-injected or silently gone, and every reader needs both
+  files to answer a question the line alone should answer. The overflow file makes neither
+  trade, because it is not a second home for the same entry. The line remains the primary
+  copy for every entry that fits it, and the sidecar holds only what a save could not put
+  there — a set the line, by construction, does not carry. What makes the pair safe to read
+  is that the fold dedups by `ctxId`, so an entry reachable from both surfaces resolves to
+  ONE entry rather than two injections, and the post-commit reconcile prunes the copy the
+  commit made redundant. The ORDER is the other half: the union is written BEFORE the transcript
+  commits and pruned only after, so a crash inside that window costs a duplicate the fold
+  collapses rather than an entry present in neither file — the failure the two-writes-must-agree
+  argument above rejects. The invariant the rejection protects therefore still holds: exactly
+  one durable copy of an entry exists at any instant. A save with nothing over the budget and
+  no existing spill writes no sidecar at all, so the common path is unchanged by it.
 - **A drain that fails is reported, not swallowed.** `_persist_handover_tail`
   returns whether rows were owed and reached disk, and every caller honours it —
   because this frame is the last reference to those rows, so nothing will retry and

@@ -4454,7 +4454,9 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     )
 
 
-def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) -> int:
+def open_file_no_reparse(
+    path: str | os.PathLike, *, nonblocking: bool = False, dir_fd: int | None = None
+) -> int:
     """Open a regular FILE for reading, refusing a reparse point at the final name.
 
     The leaf counterpart to :func:`pin_directory`. ``pin_directory`` freezes the
@@ -4479,11 +4481,18 @@ def open_file_no_reparse(path: str | os.PathLike, *, nonblocking: bool = False) 
     ``nonblocking`` adds ``O_NONBLOCK`` on POSIX so a caller can reject a FIFO
     with ``fstat`` before an open waits for a writer. Regular file reads are
     unaffected. Windows has no POSIX FIFO open; its handle checks stay the same.
+
+    ``dir_fd`` resolves *path* against an already-pinned directory, so the
+    ANCESTORS cannot be re-pointed either -- this call settles only the last
+    component. Windows has no ``dir_fd``; there :func:`pin_directory`'s held
+    handle is what stops the directory moving, so the argument is ignored.
     """
     if IS_POSIX:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         if nonblocking:
             flags |= getattr(os, "O_NONBLOCK", 0)
+        if dir_fd is not None:
+            return os.open(os.fspath(path), flags, dir_fd=dir_fd)
         return os.open(os.fspath(path), flags)
 
     fd = _win_open_without_following(path)

@@ -16,7 +16,7 @@ classes are dropped. What remains is the ungated refactor:
 
 from __future__ import annotations
 
-from kiro_crew.dashboard.chat_runner import drain_pending_context
+from kiro_crew.dashboard.chat_runner import commit_drained_context, drain_pending_context
 from kiro_crew.session_map import SessionMap
 
 _BOUND_THREAD = "1700.42"
@@ -42,8 +42,12 @@ class TestPendingContextDrainContract:
         assert '[Background context from "slack-thread"]' in prefix
         assert "[End of background context]" in prefix
         assert "the earlier thread discussion" in prefix
-        # Drain is one-shot: the queue is cleared so a later turn isn't re-fed.
+        # Drain is one-shot ONCE DELIVERY IS CONFIRMED: the queue is cleared so a later
+        # turn isn't re-fed. Before the commit the entries are only IN FLIGHT, and a
+        # second drain deliberately re-feeds them -- a drain whose turn died before the
+        # prompt reached the provider must not have destroyed acknowledged content.
         assert slot._pending_context == []
+        commit_drained_context(slot)
         assert drain_pending_context(slot) == ""
 
 

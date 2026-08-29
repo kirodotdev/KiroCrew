@@ -40,6 +40,16 @@ class _Log:
         self.read_threads.append(threading.current_thread().name)
         return self._meta
 
+    def get_metadata_with_overflow(self, key: str) -> dict | None:
+        """The prefetch seam's read, which folds the pending-context sidecar."""
+        self.read_threads.append(threading.current_thread().name)
+        return self._meta
+
+    def get_metadata_status_with_overflow(self, key: str) -> tuple[dict, bool]:
+        """Recorded as an OFF-loop read: this is the prefetch, not the on-loop re-check."""
+        self.read_threads.append(threading.current_thread().name)
+        return self._meta or {}, True
+
     def read_messages_chained(self, key: str) -> list[dict]:
         self.read_threads.append(threading.current_thread().name)
         return self._messages
@@ -200,6 +210,10 @@ class _StatusLog(_Log):
         self._readable = readable
 
     def get_metadata_status(self, key: str) -> tuple[dict, bool]:
+        self.read_threads.append(threading.current_thread().name)
+        return self._meta or {}, self._readable
+
+    def get_metadata_status_with_overflow(self, key: str) -> tuple[dict, bool]:
         self.read_threads.append(threading.current_thread().name)
         return self._meta or {}, self._readable
 
