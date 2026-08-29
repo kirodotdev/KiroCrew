@@ -741,6 +741,41 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     return _LIVE_WORKTREE
 
 
+# owner/repo capture, shared by identity normalization and the fallback scan.
+_REPO_PATH_RE = re.compile(r"[:/]([^/]+/[^/]+?)(?:\.git)?$")
+
+
+def _normalize_repo_identity(url: str) -> tuple[str, str] | None:
+    """Return a ``(host, owner/repo)`` identity for a git remote URL, or None.
+
+    Normalizes across the spellings git accepts for the same repository so two
+    aliases of one repo compare equal:
+
+    - ``https://github.com/owner/Repo.git`` and ``git@github.com:owner/repo``
+      collapse to the same identity;
+    - a trailing ``.git`` is stripped and the whole identity is lowercased;
+    - the host is part of the identity, so ``owner/repo`` on two different
+      forges stays distinct.
+
+    Returns None when no ``owner/repo`` can be extracted.
+    """
+    url = url.strip()
+    m = _REPO_PATH_RE.search(url)
+    if not m:
+        return None
+    owner_repo = m.group(1).lower()
+    # Host: scp-style ``user@host:owner/repo`` or a URL with a scheme.
+    host = ""
+    scp = re.match(r"(?:[^@/]+@)?([^/:]+):", url)
+    if scp and "://" not in url:
+        host = scp.group(1).lower()
+    else:
+        scheme = re.match(r"[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^@/]+@)?([^/:]+)", url)
+        if scheme:
+            host = scheme.group(1).lower()
+    return (host, owner_repo)
+
+
 async def _load_fallback_repos() -> None:
     global _FALLBACK_REPOS
     try:
@@ -749,7 +784,20 @@ async def _load_fallback_repos() -> None:
         # No checkout, no remotes to enumerate; the fallback list stays empty.
         return
     repos: list[str] = []
+    seen: set[tuple[str, str]] = set()
     upstream = await _upstream_remote()
+    # Resolve upstream's own repo identity so a duplicate alias that merely
+    # points at the SAME repository as upstream (e.g. an ``origin`` left in
+    # place after the tracking remote was renamed) is not mistaken for a
+    # pre-rename fork. Without this, ``merge-base --is-ancestor`` is trivially
+    # true for identical refs and upstream's own repo enters the fallback list,
+    # so the derived ``<reponame>-wt-`` prefix flags every worktree as legacy.
+    upstream_identity: tuple[str, str] | None = None
+    rc_up, up_url, _ = await _run_cmd(
+        ["git", "-C", repo, "remote", "get-url", upstream], timeout=5,
+    )
+    if rc_up == 0:
+        upstream_identity = _normalize_repo_identity(up_url)
     rc, out, _err = await _run_cmd(["git", "-C", repo, "remote"], timeout=5)
     if rc == 0:
         for remote in out.split():
@@ -765,10 +813,21 @@ async def _load_fallback_repos() -> None:
             rc3, url, _ = await _run_cmd(
                 ["git", "-C", repo, "remote", "get-url", remote], timeout=5,
             )
-            if rc3 == 0:
-                m = re.search(r"[:/]([^/]+/[^/]+?)(?:\.git)?$", url.strip())
-                if m:
-                    repos.append(m.group(1))
+            if rc3 != 0:
+                continue
+            identity = _normalize_repo_identity(url)
+            if identity is None:
+                continue
+            # Skip a remote that names the SAME repository as upstream — it is
+            # an alias, not a distinct fork. This keeps the genuine pre-rename
+            # case (a different repo whose main is an ancestor of upstream's)
+            # while removing upstream's own name from the fallback list.
+            if upstream_identity is not None and identity == upstream_identity:
+                continue
+            if identity in seen:
+                continue
+            seen.add(identity)
+            repos.append(identity[1])
     _FALLBACK_REPOS = repos
 
 
