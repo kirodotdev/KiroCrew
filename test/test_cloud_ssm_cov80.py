@@ -278,9 +278,6 @@ class TestSmallHelpers:
     def test_json_str_list_renders_a_json_array(self) -> None:
         assert ssm._json_str_list(["echo 'hi'"]) == "[\"echo 'hi'\"]"
 
-    def test_shell_quoting_escapes_embedded_quotes(self) -> None:
-        assert ssm._shq("it's") == "'it'\\''s'"
-
     def test_normalized_arch_maps_aarch64_to_arm64(self, monkeypatch) -> None:
         monkeypatch.setattr(ssm.platform, "machine", lambda: "AArch64")
         assert ssm._normalized_arch() == "arm64"

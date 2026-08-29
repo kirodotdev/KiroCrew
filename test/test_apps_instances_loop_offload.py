@@ -72,9 +72,6 @@ class _RecordingRegistry:
         self.write_threads.append(threading.current_thread())
         return SimpleNamespace(id=instance_id)
 
-    def set_last_active(self, instance_id: str) -> None:
-        self.write_threads.append(threading.current_thread())
-
 
 def _tunnel_double(instance_id: str, *, pid: int = 4321, local_port: int = 18022) -> Any:
     """Stand-in for ``_SshTunnel`` carrying every attribute ``_mark_recovered`` reads.
@@ -394,7 +391,6 @@ def test_no_direct_registry_write_in_async_frames() -> None:
 
     write_methods = {
         "update",
-        "set_last_active",
         "remove",
         "get",
         "list",
@@ -428,7 +424,6 @@ def test_no_direct_registry_call_in_instances_handler_async_frames() -> None:
         "add",
         "update",
         "remove",
-        "set_last_active",
     }
     offenders: list[str] = []
     for owner, call in _calls_in_async_frames(_module_tree(handlers_instances_mod)):

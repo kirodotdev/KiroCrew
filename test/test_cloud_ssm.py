@@ -32,22 +32,8 @@ class TestArgvBuilders:
         assert "--profile" not in argv
         assert "--region" not in argv
 
-    def test_interactive_session_argv(self):
-        argv = ssm.build_interactive_session_argv("i-0abc", "dev", "us-east-1")
-        assert argv == [
-            "aws",
-            "ssm",
-            "start-session",
-            "--target",
-            "i-0abc",
-            "--region",
-            "us-east-1",
-            "--profile",
-            "dev",
-        ]
-
     def test_argv_heads_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path):
-        """Both start-session builders must resolve the CLI absolutely under a
+        """``build_port_forward_argv`` must resolve the CLI absolutely under a
         GUI-launched gateway's minimal PATH via the deploy engine's shared
         well-known-dirs resolver (#4770)."""
         import os as _os
@@ -71,10 +57,6 @@ class TestArgvBuilders:
         pf = ssm.build_port_forward_argv("i-0abc", 5476, 5599, "dev", "us-east-1")
         assert pf[0] == str(fake_aws)
         assert pf[1:3] == ["ssm", "start-session"]
-
-        it = ssm.build_interactive_session_argv("i-0abc")
-        assert it[0] == str(fake_aws)
-        assert it[1:3] == ["ssm", "start-session"]
 
 
 class TestOpenPortForward:
@@ -421,9 +403,6 @@ class TestManaged:
 
 
 class TestShellQuote:
-    def test_quotes_single_quotes(self):
-        assert ssm._shq("it's") == "'it'\\''s'"
-
     def test_json_str_list(self):
         assert ssm._json_str_list(["a", "b"]) == '["a", "b"]'
 

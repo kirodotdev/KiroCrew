@@ -123,14 +123,6 @@ def list_pending() -> list[dict[str, Any]]:
     return entries
 
 
-def get_pending(entry_id: str) -> dict[str, Any] | None:
-    """Get a single pending entry by id, or None if expired/missing."""
-    for e in _prune_expired(_load_raw()):
-        if e.get("id") == entry_id:
-            return e
-    return None
-
-
 def remove_pending(entry_id: str) -> bool:
     """Remove an entry (confirm or dismiss). Returns True if found."""
     lock_path = _store_path().with_suffix(".lock")

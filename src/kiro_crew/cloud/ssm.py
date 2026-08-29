@@ -191,21 +191,6 @@ def build_port_forward_argv(
     return argv
 
 
-def build_interactive_session_argv(
-    instance_id: str, profile: str = "", region: str = ""
-) -> list[str]:
-    """Build the plain ``aws ssm start-session`` argv (interactive shell).
-
-    Same absolute CLI resolution as :func:`build_port_forward_argv` (#4770).
-    """
-    argv = [resolve_aws_bin(), "ssm", "start-session", "--target", instance_id]
-    if region:
-        argv += ["--region", region]
-    if profile:
-        argv += ["--profile", profile]
-    return argv
-
-
 def session_manager_plugin_installed() -> bool:
     """True when the local AWS Session Manager plugin is available."""
     return shutil.which(_SESSION_MANAGER_PLUGIN) is not None
@@ -501,11 +486,6 @@ def instance_is_managed(instance_id: str, profile: str = "", region: str = "") -
 
 
 # --- small helpers ---------------------------------------------------------
-
-
-def _shq(s: str) -> str:
-    """Single-quote a string for safe embedding in a bash -lc argument."""
-    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def _wrap_remote_command(command: str, run_as: str) -> str:

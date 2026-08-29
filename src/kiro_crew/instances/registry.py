@@ -573,16 +573,3 @@ class InstancesRegistry:
             self._write(doc)
             logger.info("Removed instance %s", instance_id)
             return True
-
-    def set_last_active(self, instance_id: str) -> None:
-        """Mark *instance_id* as the one to auto-revive on next startup.
-
-        Raises :class:`InstanceNotFoundError` if the id is unknown so callers
-        can't silently point ``last_active_id`` at a non-existent instance.
-        """
-        with self._lock:
-            doc = self._read()
-            if _find(doc, instance_id) is None:
-                raise InstanceNotFoundError(f"no instance with id {instance_id!r}")
-            doc.last_active_id = instance_id
-            self._write(doc)

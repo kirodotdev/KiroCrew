@@ -97,10 +97,6 @@ def _build_line_index(text: str) -> list[int]:
     return offsets
 
 
-def _line_of(text: str, pos: int) -> int:
-    return text.count("\n", 0, pos) + 1
-
-
 def _line_of_fast(line_offsets: list[int], pos: int) -> int:
     """O(log n) line number lookup using precomputed offsets."""
     import bisect

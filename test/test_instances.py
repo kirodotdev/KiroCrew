@@ -1124,8 +1124,6 @@ class TestRegistry:
             reg.update("cd-1", id="nope")
         with pytest.raises(InstanceNotFoundError):
             reg.update("ghost", name="z")
-        reg.set_last_active("cd-1")
-        assert reg.get_last_active().id == "cd-1"
 
     def test_update_mark_last_active_is_one_mutation(self, tmp_path):
         """update(mark_last_active=True) records the auto-revive target in the
@@ -1146,7 +1144,7 @@ class TestRegistry:
     def test_remove_clears_last_active_and_reload(self, tmp_path):
         reg = self._reg(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
-        reg.set_last_active("cd-1")
+        reg.update("cd-1", mark_last_active=True)
         assert reg.remove("cd-1") is True
         assert reg.remove("cd-1") is False
         assert reg.get_last_active() is None
