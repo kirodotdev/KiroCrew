@@ -635,7 +635,7 @@ class TestAcpClientSessionKey:
         with (
             patch(
                 "kiro_crew.acp.client._resolve_claude_acp_bin",
-                return_value=["/usr/bin/node", "/x/acp.js"],
+                return_value=(["/usr/bin/node", "/x/acp.js"], ""),
             ),
             patch(
                 "kiro_crew.acp.client.wrap_argv",
@@ -933,7 +933,10 @@ class TestAcpClientBackendSelection:
         with (
             patch(
                 "kiro_crew.acp.client._resolve_claude_acp_bin",
-                return_value=["/usr/local/bin/node", "/usr/local/lib/claude-agent-acp/index.js"],
+                return_value=(
+                    ["/usr/local/bin/node", "/usr/local/lib/claude-agent-acp/index.js"],
+                    "",
+                ),
             ),
             patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
             patch(
@@ -963,11 +966,53 @@ class TestAcpClientBackendSelection:
     async def test_spawn_claude_backend_missing_bin_raises(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         with (
-            patch("kiro_crew.acp.client._resolve_claude_acp_bin", return_value=None),
+            patch("kiro_crew.acp.client._resolve_claude_acp_bin", return_value=(None, "")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
         ):
             with pytest.raises(AcpError, match="claude-agent-acp not found"):
                 await client._spawn()
+
+    @pytest.mark.asyncio
+    async def test_spawn_claude_missing_bin_reports_the_cached_search_path(
+        self, tmp_path, monkeypatch
+    ):
+        searched = os.pathsep.join((str(tmp_path / "node-bin"), str(tmp_path / "npm-bin")))
+        later = str(tmp_path / "later-path")
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        with patch(
+            "kiro_crew.acp.client._resolve_claude_acp_bin",
+            return_value=(None, searched),
+        ) as resolve:
+            with pytest.raises(AcpError) as first:
+                await client._spawn()
+
+            monkeypatch.setenv("PATH", later)
+            with pytest.raises(AcpError) as second:
+                await client._spawn()
+
+        resolve.assert_called_once_with()
+        for error in (str(first.value), str(second.value)):
+            assert str(tmp_path / "node-bin") in error
+            assert str(tmp_path / "npm-bin") in error
+            assert later not in error
+
+    @pytest.mark.asyncio
+    async def test_spawn_kiro_missing_bin_reports_only_resolver_search_dirs(self, tmp_path):
+        searched = [str(tmp_path / "managed-bin"), str(tmp_path / "path-bin")]
+        unsearched = str(tmp_path / "never-checked")
+        client = AcpClient(work_dir=tmp_path)
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value=None),
+            patch("kiro_crew.acp.client.known_kiro_cli_dirs", return_value=searched),
+        ):
+            with pytest.raises(AcpError) as raised:
+                await client._spawn()
+
+        error = str(raised.value)
+        assert "searched 2 directories" in error
+        assert searched[0] in error
+        assert searched[1] in error
+        assert unsearched not in error
 
     @pytest.mark.asyncio
     async def test_spawn_kiro_backend_unchanged(self, tmp_path):
@@ -1046,9 +1091,9 @@ class TestResolveClaudeAcpBin:
         bin_path.chmod(0o755)
         monkeypatch.setenv("CLAUDE_AGENT_ACP_BIN", str(bin_path))
         monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
-        result = _resolve_claude_acp_bin()
-        assert result is not None
-        assert str(bin_path) in result
+        argv, _search_path = _resolve_claude_acp_bin()
+        assert argv is not None
+        assert str(bin_path) in argv
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_path_lookup(self, tmp_path, monkeypatch):
@@ -1068,9 +1113,9 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: str(bin_path) if name == "claude-agent-acp" else None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result is not None
-        assert str(bin_path) in result
+        argv, _search_path = client_mod._resolve_claude_acp_bin()
+        assert argv is not None
+        assert str(bin_path) in argv
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_mise_which_preferred(self, tmp_path, monkeypatch):
@@ -1091,8 +1136,8 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result == [str(script)]
+        argv, _search_path = client_mod._resolve_claude_acp_bin()
+        assert argv == [str(script)]
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_mise_installed_script_resolves_node(self, tmp_path, monkeypatch):
@@ -1119,8 +1164,8 @@ class TestResolveClaudeAcpBin:
         monkeypatch.setenv("CLAUDE_AGENT_ACP_BIN", str(script))
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
-        result = _resolve_claude_acp_bin()
-        assert result == [str(node_bin), str(script.resolve())]
+        argv, _search_path = _resolve_claude_acp_bin()
+        assert argv == [str(node_bin), str(script.resolve())]
 
     def test_non_executable_script_falls_back_to_path_node(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
@@ -1147,8 +1192,8 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: str(node_bin) if name == "node" else None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result == [str(node_bin), str(script.resolve())]
+        argv, _search_path = client_mod._resolve_claude_acp_bin()
+        assert argv == [str(node_bin), str(script.resolve())]
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_mise_glob_fallback(self, tmp_path, monkeypatch):
@@ -1173,8 +1218,8 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result == [str(node_bin), str(acp_script.resolve())]
+        argv, _search_path = client_mod._resolve_claude_acp_bin()
+        assert argv == [str(node_bin), str(acp_script.resolve())]
 
     def test_returns_none_when_not_found(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
@@ -1190,8 +1235,9 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result is None
+        argv, search_path = client_mod._resolve_claude_acp_bin()
+        assert argv is None
+        assert search_path == client_mod.augmented_path(os.environ.get("PATH", ""))
 
 
 class TestResolveClaudeCodeExecutable:

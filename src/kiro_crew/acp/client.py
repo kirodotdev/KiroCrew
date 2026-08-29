@@ -118,14 +118,19 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
 )
-from kiro_crew.env import augmented_path, mise_data_dir, resolve_krb5_ccname
+from kiro_crew.env import (
+    augmented_path,
+    describe_search_path,
+    mise_data_dir,
+    resolve_krb5_ccname,
+)
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
     fire_tool_hooks,
     get_global_hook_store,
 )
-from kiro_crew.kiro_cli import resolve_kiro_cli
+from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.resource_status import inject_xdist_auto_cap
@@ -374,7 +379,9 @@ def _resolve_node_for_script(script_path: str) -> str | None:
 
 
 _UNRESOLVED: object = object()  # sentinel for "not yet resolved"
-_claude_acp_argv_cache: list[str] | None | object = _UNRESOLVED
+# Cache the PATH with the resolution result. A failed resolve is cached too, so
+# recomputing PATH at the error site could report directories that were never searched.
+_claude_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
 
 
 def _vendored_claude_acp_roots(pkg_dir: Path | None = None) -> list[Path]:
@@ -425,11 +432,13 @@ def _resolve_vendored_claude_acp(pkg_dir: Path | None = None) -> str | None:
     return None
 
 
-def _resolve_claude_acp_bin() -> list[str] | None:
-    """Find the claude-agent-acp Node entry script and return argv.
+def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
+    """Find the claude-agent-acp Node entry script and its searched PATH.
 
-    Returns a list suitable for subprocess argv (e.g. ``["node", "script.js"]``
-    or ``["/path/to/binary"]``).  Explicitly resolves the node binary to
+    The first item is argv suitable for subprocess use (e.g.
+    ``["node", "script.js"]`` or ``["/path/to/binary"]``), or ``None`` when
+    nothing was found. The second is the PATH searched at step 5. Explicitly
+    resolves the node binary to
     avoid relying on ``#!/usr/bin/env node`` shebang resolution which fails
     in non-interactive daemon contexts (mise shims require cwd with
     .mise.toml or a working global config).
@@ -482,7 +491,7 @@ def _resolve_claude_acp_bin() -> list[str] | None:
         resolved = str(Path(script).resolve())
         node = _resolve_node_for_script(resolved)
         if node:
-            return [node, resolved]
+            return [node, resolved], search_path
         # Directly runnable (a real executable on POSIX; a .exe/.cmd/etc. on
         # Windows)? Run it as-is. A bare .js is NOT directly runnable on Windows
         # (is_executable_file excludes it), so it correctly falls through to be
@@ -490,12 +499,12 @@ def _resolve_claude_acp_bin() -> list[str] | None:
         # Casing-normalize (Windows): a `which`-resolved .EXE must reach a
         # launcher-style shim with its true on-disk name (see _normalize_exe_casing).
         if platform_compat.is_executable_file(script):
-            return [_normalize_exe_casing(script) or script]
+            return [_normalize_exe_casing(script) or script], search_path
         node_on_path = shutil.which("node", path=search_path)
         if node_on_path:
-            return [node_on_path, resolved]
+            return [node_on_path, resolved], search_path
 
-    return None
+    return None, search_path
 
 
 def _resolve_claude_code_executable() -> str | None:
@@ -2748,13 +2757,18 @@ class AcpClient:
             global _claude_acp_argv_cache  # noqa: PLW0603
             if _claude_acp_argv_cache is _UNRESOLVED:
                 _claude_acp_argv_cache = await asyncio.to_thread(_resolve_claude_acp_bin)
-            claude_argv = _claude_acp_argv_cache
+            cached_claude_resolution = _claude_acp_argv_cache
+            claude_argv, acp_search_path = (
+                cached_claude_resolution
+                if isinstance(cached_claude_resolution, tuple)
+                else (None, "")
+            )
             if not isinstance(claude_argv, list) or not claude_argv:
                 raise AcpError(
-                    f"{CLAUDE_ACP_BIN} not found. Install it with "
+                    f"{CLAUDE_ACP_BIN} not found "
+                    f"({describe_search_path(acp_search_path)}). Install it with "
                     f"'npm i -g {CLAUDE_ACP_NPM_PKG}' (or add it as a project "
-                    f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry "
-                    f"script."
+                    f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
                 )
             argv: list[str] = claude_argv
         else:
@@ -2763,7 +2777,16 @@ class AcpClient:
             except _KiroExecutableTrustError as exc:
                 raise AcpError(str(exc)) from exc
             if not kiro_bin:
-                raise AcpError(f"{KIRO_CLI_BIN} not found in PATH")
+                searched_dirs = await asyncio.to_thread(
+                    known_kiro_cli_dirs,
+                    sys.platform,
+                    Path.home(),
+                    os.environ,
+                )
+                raise AcpError(
+                    f"{KIRO_CLI_BIN} not found "
+                    f"({describe_search_path(os.pathsep.join(searched_dirs))})"
+                )
             # Self-heal (B): ensure the managed default agent file exists before
             # this --agent spawn, so kiro-cli registers the mode and step 4's
             # set_mode succeeds instead of faulting "Mode not found". Best-effort,
