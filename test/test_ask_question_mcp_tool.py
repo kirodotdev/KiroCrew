@@ -116,6 +116,45 @@ def test_ask_question_is_advertised_in_the_tool_list():
     assert "[OPTIONS:" in spec["description"]
 
 
+def test_advertised_description_does_not_promise_a_blocking_result():
+    """The description is what an agent reads BEFORE its first call, so it has to
+    match the seam the rest of this file tests.
+
+    It used to say the tool would "BLOCK until they answer" and hand back the
+    answer "as this tool's result — no extra turn". Acting on that is the failure
+    mode: the agent posts a card and then keeps working through the turn the
+    answer can never arrive in, because delivery is the user's NEXT message.
+    """
+    spec = next(t for t in mcp_core._list_tools() if t["name"] == "ask_question")
+    desc = spec["description"]
+    lowered = desc.lower()
+    assert "non-blocking" in lowered
+    assert "end your turn" in lowered
+    assert "next ordinary message" in lowered
+    # The specific claims that misdirected the agent.
+    assert "block until" not in lowered
+    assert "no extra turn" not in lowered
+    assert "pausing mid-turn" not in lowered
+
+
+def test_timeout_secs_is_not_advertised_but_is_still_accepted(default_install):
+    """`timeout_secs` cannot do anything here: the directive carries only the
+    questions, so nothing downstream reads a deadline. It is therefore absent
+    from the advertised schema — a knob with no effect should not be offered to a
+    model — while remaining a lenient field so a caller that still passes it gets
+    its card rather than a validation error.
+    """
+    spec = next(t for t in mcp_core._list_tools() if t["name"] == "ask_question")
+    assert "timeout_secs" not in spec["inputSchema"]["properties"]
+    assert "timeout_secs" not in spec["description"]
+
+    result = _call_tool_inner(
+        "ask_question", {"questions": QUESTIONS, "timeout_secs": 60}
+    )
+    args = session_directive.decode(result, "ask_question")
+    assert args == {"questions": _validated_questions()}
+
+
 # ── Applier (dashboard.session_directive_apply) ───────────────────────────────
 
 

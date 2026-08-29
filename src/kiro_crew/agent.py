@@ -4530,8 +4530,9 @@ Your tools:
 - State that outlives a round — `session_ledger_read`, `session_ledger_record`.
 - Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`, `wait`.
 - Capacity, before standing up several sessions at once — `resource_status`.
-- Talking to the person — `ask_question` for a blocking decision that is not
-  yours to make, `send_message` / `send_notification` to report.
+- Talking to the person — `ask_question` puts a decision that is not yours to
+  make to them as a card, after which you END your turn and their answer
+  arrives as the next message; `send_message` / `send_notification` to report.
 - Naming the right skill in a seed message — `skill_search`, `skill_fetch`.
 - Reading — `fs_read`, `web_fetch`.
 - `tool_search` loads a tool that is not in your list yet.

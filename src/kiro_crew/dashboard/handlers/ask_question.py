@@ -1,17 +1,30 @@
-"""Agent-question HTTP API — render a question card and block for the answer.
+"""Agent-question HTTP API — question-card state, and a blocking ask round-trip.
 
-Two endpoints form one blocking round-trip:
+Cards come in two kinds and these routes serve both. A card carrying an
+``ask_id`` has a server-side wait behind it; a card carrying a ``card_id`` is
+stateless and blocks nothing. The MCP ``ask_question`` tool produces the
+stateless kind — it returns a session directive and the agent ends its turn (see
+:func:`kiro_crew.mcp_tools.control.ask_question`), so it does NOT call the POST
+below.
 
 ``POST /api/ask-question``
-    Called by the ``ask_question`` MCP tool. Validates the question payload,
-    broadcasts a ``question_card`` to the owning slot's dashboard clients, and
-    holds the request open until the user answers (or the window elapses).
+    Opens a blocking ask: validates the payload, broadcasts a ``question_card``
+    with an ``ask_id`` to the owning slot's dashboard clients, and holds the
+    request open until the user answers or the window elapses. No in-tree caller
+    uses it now that the MCP tool is directive-based; it remains supported.
 
 ``POST /api/ask-question/{ask_id}/answer``
-    Called by the dashboard when the user submits (or dismisses) the card.
-    Resolves the blocked request above.
+    Called by the dashboard when the user submits or dismisses such a card.
+    Resolves the wait above.
 
-This mirrors the tool-approval round-trip in
+``GET /api/ask-question/pending``
+    Read-only rehydration after a reload or websocket reconnect, since
+    ``question_card`` is a one-shot broadcast. Returns both kinds.
+
+``POST /api/ask-question/dismiss``
+    Retires a STATELESS card's pending state. It cannot resolve a blocking wait.
+
+The blocking half mirrors the tool-approval round-trip in
 :meth:`kiro_crew.dashboard.state.DashboardState.request_approval` — the
 difference is that the resolution value is the user's answer map rather than an
 allow/deny boolean, and the card is addressed to a single slot.

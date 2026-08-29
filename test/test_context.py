@@ -223,7 +223,13 @@ class TestContextBuilder:
             "done", is_new_session=False, interactive=True, session_key="dashboard:chat-1"
         )
         assert "ask_question" in dash, "dashboard session must get the question nudge"
-        assert "BEFORE" in dash and "ENDING" in dash
+        # Pin the CONTRACT, not a keyword. The wording this replaces ("BEFORE you
+        # can continue the current turn") described a blocking round-trip the tool
+        # does not perform, so the nudge has to say the card does not block, that
+        # the agent ends its turn, and that [OPTIONS:] is the end-of-turn choice.
+        assert "END YOUR TURN" in dash
+        assert "does not block" in dash
+        assert "[OPTIONS:]" in dash
         assert "suggest_followup" in dash, "dashboard session must get the follow-up nudge"
 
         for sk in (None, "cron:job-1", "subagent:abc", "slack:C123"):

@@ -1173,17 +1173,23 @@ _ASK_MAX_DESC_LEN = 500
 # transcript, so an oversized custom answer would consume model context.
 _ASK_MAX_ANSWER_LEN = 2000
 
-# ask_question renders the dashboard question card and blocks the tool call
-# until the user answers. `questions` is only shape-checked here (a bounded
-# list); the per-question/per-option limits are enforced server-side by
-# validate_ask_user_question, which is the single source of truth for the card
-# payload. timeout bounds mirror DashboardState._QUESTION_TIMEOUT_MAX.
+# ask_question requests a NON-BLOCKING dashboard question card: the MCP tool
+# returns a session directive and the agent ends its turn, so no tool call is
+# held open (see mcp_tools.control.ask_question). `questions` is only
+# shape-checked here (a bounded list); the per-question/per-option limits are
+# enforced server-side by validate_ask_user_question, which is the single
+# source of truth for the card payload.
 ASK_QUESTION_SCHEMA = ToolSchema(
     tool_name="ask_question",
     fields=[
         FieldSpec("questions", list, required=True, max_items=_ASK_MAX_QUESTIONS),
-        # 540 not 1800: the ACP tool-stall watchdog (600s) kills the turn
-        # first, and an answer arriving after that has no turn to return to.
+        # Accepted but IGNORED: the directive the tool returns carries only
+        # `questions`, so nothing downstream reads a timeout. The bound still
+        # mirrors DashboardState._QUESTION_TIMEOUT_MAX, which governs the legacy
+        # blocking POST /api/ask-question path. Kept lenient rather than removed
+        # so a caller still passing it gets its card instead of a validation
+        # error, while the tool's inputSchema no longer advertises it — a knob
+        # with no effect should not be offered to a model.
         FieldSpec("timeout_secs", int, min_val=15, max_val=540),
     ],
 )

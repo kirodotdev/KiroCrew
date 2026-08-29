@@ -2252,10 +2252,12 @@ def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
     the cooperative cancel times out into a hard kill:
 
     * pending tool approvals (:func:`_reject_pending_approvals`)
-    * pending agent questions from the ``ask_question`` tool
+    * pending agent questions that have a server-side wait
       (:meth:`DashboardState.cancel_questions_for_slot`) — the blocked HTTP
       request holds an MCP worker, so resolving the future is what lets that
-      socket close and the tool call return.
+      socket close and the call return. Only the ``POST /api/ask-question``
+      path creates such a wait; the MCP ``ask_question`` tool posts a stateless
+      card and ends the turn, so it leaves nothing to release here.
 
     They are combined here deliberately: a new blocking wait added later must
     be released from every stop path, and three separate call sites each
@@ -2324,11 +2326,12 @@ async def _reset_slot_session(
 
     The switch handlers (agent, model, bulk model, reasoning effort, workspace)
     and the reload endpoint reset the session so the next message starts under
-    the new setting. That tears down the agent process — but a pending
-    ``ask_question`` lives in dashboard state, not in the session, so without
-    this it survives the reset: the card stays on screen inviting an answer,
-    and the blocked HTTP request holds an MCP worker until its own timeout with
-    no agent left to receive the answer it eventually returns.
+    the new setting. That tears down the agent process — but a pending question
+    card lives in dashboard state, not in the session, so without this it
+    survives the reset: the card stays on screen inviting an answer, and if it
+    is the blocking kind (``POST /api/ask-question``) the open HTTP request
+    holds an MCP worker until its own timeout, with no agent left to receive
+    the answer it eventually returns.
 
     Routing every reset through one helper rather than adding a second call at
     each site is deliberate, and is the same reasoning as
@@ -3710,9 +3713,9 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         if late_retired_loop is not None:
             retired_loop = late_retired_loop
     state._slots.pop(name, None)
-    # Release any blocking wait before cancelling the task: a pending
-    # ask_question holds an MCP worker on a blocked HTTP request, and the slot
-    # is going away, so nobody will ever answer its card.
+    # Release any blocking wait before cancelling the task: a question pending on
+    # the blocking POST /api/ask-question path holds an MCP worker on an open
+    # HTTP request, and the slot is going away, so nobody will answer its card.
     _unblock_pending_waits(state, slot)
     # Cancel any pending speculative session creation. Without this, an
     # eager task mid-debounce or mid-handshake outlives the slot; combined

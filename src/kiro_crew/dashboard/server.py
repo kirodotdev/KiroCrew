@@ -1340,9 +1340,13 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_patch("/api/autonudge/{loop_id}", api_autonudge_update)
     app.router.add_delete("/api/autonudge/{loop_id}", api_autonudge_delete)
 
-    # Agent questions — blocking question-card round-trip for the ask_question
-    # MCP tool. The POST holds open until the user answers, so it must not be
-    # wrapped in any short-timeout middleware.
+    # Agent questions. The MCP ask_question tool no longer posts here: it returns
+    # a session directive and the dashboard posts a NON-BLOCKING card (see
+    # mcp_tools.control.ask_question). This API stays live because the UI reads
+    # /pending to rehydrate cards after a reload and answers or dismisses them
+    # through the routes below, and POST /api/ask-question still opens a blocking
+    # wait for any caller that uses it — so it must not be wrapped in any
+    # short-timeout middleware.
     from kiro_crew.dashboard.handlers.ask_question import (
         api_ask_question,
         api_ask_question_answer,

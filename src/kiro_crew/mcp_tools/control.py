@@ -167,17 +167,21 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "ask_question",
             "description": (
-                "Ask the dashboard user one or more multiple-choice questions and "
-                "BLOCK until they answer. Renders a question card in the chat: the "
-                "user clicks an option (or types a custom answer in the card's "
-                "free-text field) and the answer is returned to you as this tool's "
-                "result — no extra turn, no [OPTIONS:] tag. Use when you need a "
-                "decision mid-task and cannot usefully continue without it "
-                "(which of these approaches, which account, confirm before I "
-                "refactor). Prefer the [OPTIONS: a | b | c] text tag when you are "
-                "ENDING your turn anyway — this tool is for pausing mid-turn. "
-                "Dashboard sessions only; returns a timeout notice if the user "
-                "does not answer within timeout_secs."
+                "Ask the dashboard user 1-4 multiple-choice questions by posting a "
+                "question card to the chat: the user clicks an option (or types a "
+                "custom answer in the card's free-text field). The tool is "
+                "NON-BLOCKING — it returns as soon as the card is requested, so END "
+                "YOUR TURN immediately after calling it. The answer arrives as the "
+                "user's next ordinary message, NOT as this tool's result, so do not "
+                "re-ask or guess in the meantime. Use it when a decision is genuinely "
+                "needed before the work can continue (which of these approaches, "
+                "which account, confirm before I refactor). When you are ending your "
+                "turn anyway a final [OPTIONS: a | b | c] tag is cheaper and renders "
+                "on every channel — the card's advantage is several questions at "
+                "once, multi-select and the free-text field, not saving a turn. "
+                "Dashboard sessions only: from another surface the call returns an "
+                "[OPTIONS:] steer instead of a card, and if no dashboard client is "
+                "attached the card is dropped."
             ),
             "inputSchema": {
                 "type": "object",
@@ -232,12 +236,8 @@ def schemas() -> list[dict[str, Any]]:
                             "required": ["question", "options"],
                         },
                     },
-                    "timeout_secs": {
-                        "type": "integer",
-                        "description": (
-                            "How long to wait for the answer (15-540, default 300)"
-                        ),
-                    },
+                    # No timeout_secs: it would imply a wait this tool does not
+                    # perform. Still accepted for compatibility, never read.
                 },
                 "required": ["questions"],
             },
