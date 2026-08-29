@@ -3354,6 +3354,9 @@ class TestDirectSendGrantsAreAudited:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.side_effect = lambda **_kw: []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = yolo
 
         app_name = self.APP
@@ -3427,6 +3430,9 @@ class TestDirectSendGrantsAreAudited:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.side_effect = lambda **_kw: []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
 
         app_name = self.APP
