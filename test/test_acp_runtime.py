@@ -4053,10 +4053,10 @@ class TestAcpRuntimeLoadSession:
         """#3528 guard: the stub injection now lives at multiple call sites in
         two files, and this bug was exactly one of them silently sending [].
         Enumerate every function that issues session/new or session/load and
-        assert each one consults the pooled-stub resolution (either
-        pooled_session_servers directly or the _pooled_mcp_servers hook), so a
-        fourth builder — or a regression in an existing one — fails here
-        instead of shipping another silent un-pooling path."""
+        assert each one consults the backend-aware session-server resolution
+        (or its pooled-stub implementation directly), so a fourth builder — or
+        a regression in an existing one — fails here instead of shipping
+        another silent un-pooling path."""
         import ast
         import inspect
 
@@ -4102,8 +4102,15 @@ class TestAcpRuntimeLoadSession:
             "_new_session_following_substitution",
             "_initialize_session",
         } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
+        session_helper = inspect.getsource(client_mod.AcpClient._session_mcp_servers)
+        assert "_pooled_mcp_servers" in session_helper
+        assert "managed_session_servers" in session_helper
         for name, body in builders.items():
-            assert "pooled_session_servers" in body or "_pooled_mcp_servers" in body, (
+            assert (
+                "pooled_session_servers" in body
+                or "_pooled_mcp_servers" in body
+                or "_session_mcp_servers" in body
+            ), (
                 f"{name} issues session/new or session/load but never consults "
                 "the pooled broker stubs — it would un-pool its sessions (#3528)"
             )

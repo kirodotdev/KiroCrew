@@ -129,7 +129,10 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.kiro_cli import resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
-from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.mcp_gateway.session_servers import (
+    managed_session_servers,
+    pooled_session_servers,
+)
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -160,6 +163,11 @@ KIRO_CLI_SUBCMD = "acp"
 
 OPENCODE_BIN = "opencode"
 OPENCODE_BIN_ENV = "OPENCODE_BIN"
+# OpenCode derives its MCP tool key by replacing every character outside this
+# set with ``_`` and joining ``<server>_<tool>``.  Kiro Crew only reverses that
+# wire name for code-owned servers it injected into this exact ACP session.
+_OPENCODE_MCP_WIRE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_OPENCODE_MCP_SANITIZE_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 CLAUDE_ACP_BIN = "claude-agent-acp"
 # On-disk name of the Claude backend CLI.  The claude-agent-acp adapter
@@ -2260,6 +2268,12 @@ class AcpClient:
         # canonical mcp__<server>__<tool> for per-tool governance in the
         # app-own-server auto-approve.
         self._tool_call_tool_name: dict[str, str] = {}
+        # OpenCode does not emit Kiro's trusted ``_meta.kiro`` identity.  Its
+        # permission adapter instead uses the registered MCP key as the
+        # non-model-authored title.  This tuple records only unambiguous
+        # prefixes derived from managed servers actually injected into this
+        # session; unknown and colliding prefixes stay untrusted.
+        self._opencode_mcp_identity_prefixes: tuple[tuple[str, str], ...] = ()
         # Structured raw tool params (rawInput dict) keyed by toolCallId, cached
         # from the ToolCall notification so the later request_permission event —
         # which carries only a truncated title — can recover the real path/url
@@ -2378,6 +2392,68 @@ class AcpClient:
         session would have zero MCP tools.
         """
         return []
+
+    async def _session_mcp_servers(self) -> list[dict[str, Any]]:
+        """Return the backend-specific ACP ``mcpServers`` array.
+
+        Kiro and the dormant Claude seam retain their established behavior.
+        OpenCode does not read Kiro agent specs, so it receives only the safely
+        representable projection of Kiro Crew-managed servers. User MCP entries
+        remain with Kiro because ACP's whole-server registration cannot preserve
+        Kiro's per-tool narrowing and vendor extensions.
+        """
+        if self._is_opencode:
+            servers = await asyncio.to_thread(
+                managed_session_servers,
+                self._mcp_gateway_overlay,
+                self._agent,
+                self._channel_id,
+            )
+            self._remember_opencode_mcp_servers(servers)
+            return servers
+        self._opencode_mcp_identity_prefixes = ()
+        return [
+            *self._claude_session_mcp_servers(),
+            *(await asyncio.to_thread(self._pooled_mcp_servers)),
+        ]
+
+    def _remember_opencode_mcp_servers(self, servers: Sequence[dict[str, Any]]) -> None:
+        """Record unique OpenCode wire prefixes for this session's servers."""
+        names_by_wire: dict[str, list[str]] = {}
+        for entry in servers:
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            wire_name = _OPENCODE_MCP_SANITIZE_RE.sub("_", name)
+            if wire_name:
+                names_by_wire.setdefault(wire_name, []).append(name)
+        self._opencode_mcp_identity_prefixes = tuple(
+            (f"{wire_name}_", names[0])
+            for wire_name, names in sorted(names_by_wire.items())
+            if len(names) == 1
+        )
+
+    def _opencode_mcp_identity(self, tool_key: Any) -> tuple[str, str]:
+        """Recover a managed MCP identity from OpenCode's permission key.
+
+        A prefix match is trusted only when exactly one injected server can
+        explain the complete wire key. Prefix overlaps and malformed keys fail
+        closed instead of granting a server or per-tool policy match.
+        """
+        if (
+            not self._is_opencode
+            or not isinstance(tool_key, str)
+            or not _OPENCODE_MCP_WIRE_NAME_RE.fullmatch(tool_key)
+        ):
+            return "", ""
+        matches = [
+            (server_name, tool_key.removeprefix(prefix))
+            for prefix, server_name in self._opencode_mcp_identity_prefixes
+            if tool_key.startswith(prefix) and tool_key != prefix
+        ]
+        if len(matches) != 1:
+            return "", ""
+        return matches[0]
 
     @property
     def is_ready(self) -> bool:
@@ -3390,18 +3466,9 @@ class AcpClient:
         """
         new_params: dict = {
             "cwd": str(self._work_dir),
-            # kiro-cli loads servers from --agent; claude-agent-acp must be
-            # told here -- it does not read kirocrew.mcp.json on its own. The
-            # Default hook returns [] (kiro-cli path unchanged); an internal
-            # companion that drives the _is_claude seam overrides
-            # _claude_session_mcp_servers() to populate the claude MCP array.
-            # Pooled broker stubs are appended for kiro-cli: a session-injected
-            # server outranks the same-named entry in the agent spec, which is
-            # how pooling takes effect without writing a spec anywhere.
-            "mcpServers": [
-                *self._claude_session_mcp_servers(),
-                *(await asyncio.to_thread(self._pooled_mcp_servers)),
-            ],
+            # Each backend gets only the registration shape it can preserve;
+            # see _session_mcp_servers for the capability boundary.
+            "mcpServers": await self._session_mcp_servers(),
         }
         if self._is_claude:
             new_params["_meta"] = {"claudeCode": {"options": {}}}
@@ -3515,16 +3582,9 @@ class AcpClient:
                     load_params: dict = {
                         "sessionId": resume_sid,
                         "cwd": str(self._work_dir),
-                        # kiro-cli gets its servers via --agent; the claude
-                        # backend must receive them here (it does not read
-                        # kirocrew.mcp.json itself). Default [] leaves kiro-cli
-                        # unchanged; a companion overrides the hook (see
-                        # session/new above). Pooled stubs are re-declared so a
-                        # resumed session keeps talking to the broker.
-                        "mcpServers": [
-                            *self._claude_session_mcp_servers(),
-                            *(await asyncio.to_thread(self._pooled_mcp_servers)),
-                        ],
+                        # Re-declare the backend-specific servers so a resumed
+                        # session retains the same tool and pooling boundary.
+                        "mcpServers": await self._session_mcp_servers(),
                     }
                     if self._is_claude:
                         load_params["_meta"] = {"claudeCode": {"options": {}}}
@@ -5954,6 +6014,15 @@ class AcpClient:
         )
         if recorded is not None:
             self._permission_options[event.request_id] = recorded
+        if self._is_opencode and event.tool_kind == "other":
+            params = msg.params if isinstance(msg.params, dict) else {}
+            tool_call = params.get("toolCall", {})
+            tool_call = tool_call if isinstance(tool_call, dict) else {}
+            server_name, tool_name = self._opencode_mcp_identity(tool_call.get("title"))
+            if server_name and tool_name:
+                event.mcp_server_name = server_name
+                event.tool_name = tool_name
+                event.mcp_identity_trusted = True
         logger.info("Permission requested for tool: %s (req=%s)", event.title, event.request_id)
         if logger.isEnabledFor(logging.DEBUG):
             params = msg.params if isinstance(msg.params, dict) else {}

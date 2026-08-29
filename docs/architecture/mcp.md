@@ -24,13 +24,15 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 
 | File | Owner | Purpose | Read by |
 |------|-------|---------|---------|
-| `~/.kiro/agents/kirocrew.json` | Kiro Crew gateway (`agent.rebuild_agent_config`) | The rendered Kiro agent: model + tools + merged `mcpServers` | kiro-cli, when spawned as the `kirocrew` agent |
+| `~/.kiro/agents/kirocrew.json` | Kiro Crew gateway (`agent.rebuild_agent_config`) | The rendered Kiro agent: model + tools + merged `mcpServers` | kiro-cli directly; Kiro Crew's OpenCode adapter projects eligible managed rows into ACP session registration |
 | `~/.kiro/settings/mcp.json` | User | Kiro global MCP servers | kiro-cli for all agents; merged into Kiro Crew's agent file at render time |
 | `~/.kiro/crew/mcp.json` | User, via the dashboard MCP panel | specific to Kiro Crew additions and per-server tool disables | Kiro Crew gateway only |
 
 `rebuild_agent_config()` writes exactly **one** file, `~/.kiro/agents/kirocrew.json`.
-There is no second rendered agent file and no agent-file renderer for any other
-provider: Kiro Crew is KiroACP-only.
+There is no second rendered agent file and no agent-file renderer for another
+harness. Kiro Crew has one ACP provider; kiro-cli is the first-class harness,
+while an adapted harness such as OpenCode receives only a bounded session-time
+projection described below.
 
 ### Provider-global scopes come from the platform seam, not the core
 
@@ -74,8 +76,8 @@ kirocrew`). Onto that base:
    Kiro Crew's `command`/`args`/`env` win while user-set fields such as
    `autoApprove` survive.
 
-Kiro global outranks any seam-contributed provider global because Kiro Crew is
-kiro-cli-only. Managed servers are skipped by every merge loop: their
+Kiro global outranks any seam-contributed provider global because the rendered
+spec is the first-class kiro-cli authority. Managed servers are skipped by every merge loop: their
 `command`/`args` are set by `_refresh_dynamic_fields()` and must not be
 overwritten by a stale global entry.
 
@@ -123,13 +125,19 @@ app agent). Plain kiro-cli agents outside Kiro Crew keep kiro-cli's own default.
 
 ### Managed servers
 
-`agent._MANAGED_MCP_SERVERS` holds the three servers the gateway owns end to
-end: `kirocrew-cron`, `kirocrew-core`, `kirocrew-computer`. Each is refreshed on
+`agent._MANAGED_MCP_SERVERS` holds the four servers the gateway owns end to
+end: `kirocrew-cron`, `kirocrew-core`, `kirocrew-computer`, and the opt-in
+`kirocrew-dashboard`. Each emitted entry is refreshed on
 every rebuild by `_refresh_dynamic_fields()`, which rewrites `command`/`args`
 from the live `kirocrew` binary, strips stale remote-transport fields (`url`,
 `headers`) left by older builds, and re-pins `env.KIROCREW_HOME` to the home the
 gateway is actually running under while preserving the user's own env keys.
 User customizations such as `autoApprove` are preserved.
+
+`kirocrew-dashboard` is not emitted into the default agent. An agent must
+explicitly mount it, while `kirocrew-computer` remains subject to its separate
+platform and keystone gate. The sample above therefore shows the possible
+default rows rather than the complete ownership catalog.
 
 An entry may also carry a **`spec_gate`** — a predicate consulted at spec
 EMISSION time. `kirocrew-computer` is the one row that has one, and the
@@ -209,6 +217,30 @@ and type into an already-authenticated application, that would be a complete
 gate bypass. Its stdio shim answers an empty `tools/list` while the keystone
 enable is off — retained as defence in depth for a mid-session disable, on top of
 the `spec_gate` above that keeps the process from existing in the first place.
+
+### Adapted ACP session projection
+
+OpenCode does not read a Kiro agent file, so `AcpClient` supplies a portable
+`mcpServers` array to `session/new` and `session/load`. The projection is
+deliberately narrower than the rendered spec:
+
+- only names in `agent.MANAGED_MCP_SERVER_NAMES` are eligible;
+- the spec must expose the exact whole-server `@server` ref, with neither a
+  per-tool-only mount nor a truthy `disabledTools` filter;
+- disabled entries are omitted, and only ACP's portable local-server fields
+  (`name`, `command`, `args`, `env`) cross the boundary;
+- user-installed and app-contributed MCP servers are omitted because a
+  whole-server ACP registration cannot preserve their Kiro-specific narrowing,
+  credentials, or remote-transport extensions without risking a wider grant;
+- when the shared gateway produced a broker stub for an eligible managed name,
+  the stub replaces that direct entry for the session, preserving pooling.
+
+OpenCode's ACP adapter identifies an MCP permission by the sanitized
+`<server>_<tool>` registry key instead of Kiro's `_meta.kiro` fields. Kiro Crew
+recovers the canonical server/tool pair only from unambiguous prefixes derived
+from the managed servers actually injected into that session. Unknown,
+malformed, colliding, or overlapping keys retain no trusted MCP identity, so
+the governance and durable-trust paths fail closed.
 
 ### The final auto-approve pass
 

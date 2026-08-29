@@ -19,7 +19,11 @@ from kiro_crew.acp.client import (
     AcpModelUnavailable,
     _resolve_opencode_bin,
 )
-from kiro_crew.acp.types import ACP_BACKEND_OPENCODE
+from kiro_crew.acp.types import ACP_BACKEND_OPENCODE, JsonRpcMessage
+from kiro_crew.mcp_gateway.session_servers import (
+    _managed_servers_from_spec,
+    managed_session_servers,
+)
 from kiro_crew.providers.acp import AcpProvider
 
 
@@ -147,9 +151,60 @@ class TestOpenCodeProtocol:
         assert client._resolved_model_id == "openai/gpt-5"
 
     @pytest.mark.asyncio
+    async def test_new_session_injects_only_projected_managed_servers(self, tmp_path):
+        client = AcpClient(
+            work_dir=tmp_path,
+            agent="kirocrew",
+            acp_backend=ACP_BACKEND_OPENCODE,
+        )
+        expected = [
+            {
+                "name": "kirocrew-core",
+                "command": "/opt/kirocrew",
+                "args": ["mcp-core"],
+                "env": [],
+            }
+        ]
+        sent: list[tuple[str, dict]] = []
+        responses = iter(
+            [
+                {"protocolVersion": 1, "agentCapabilities": {}},
+                {"sessionId": "oc-session", "configOptions": _model_options()},
+            ]
+        )
+
+        async def _send(method, params):
+            sent.append((method, params))
+            return len(sent)
+
+        async def _wait(_request_id, **_kwargs):
+            return next(responses)
+
+        client._send_request = _send  # type: ignore[assignment]
+        client._wait_for_response = _wait  # type: ignore[assignment]
+        client._drain_notifications = AsyncMock()  # type: ignore[assignment]
+
+        with patch("kiro_crew.acp.client.managed_session_servers", return_value=expected):
+            await client._initialize_session()
+
+        assert sent[1][1]["mcpServers"] == expected
+        assert client._opencode_mcp_identity("kirocrew-core_spawn_run") == (
+            "kirocrew-core",
+            "spawn_run",
+        )
+
+    @pytest.mark.asyncio
     async def test_load_accepts_config_options_without_modes_or_kiro_file(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
         client.set_resume_session_id("existing-session")
+        expected_servers = [
+            {
+                "name": "kirocrew-core",
+                "command": "/opt/kirocrew",
+                "args": ["mcp-core"],
+                "env": [],
+            }
+        ]
         sent: list[tuple[str, dict]] = []
         responses = iter(
             [
@@ -169,7 +224,13 @@ class TestOpenCodeProtocol:
         client._wait_for_response = _wait  # type: ignore[assignment]
         client._drain_notifications = AsyncMock()  # type: ignore[assignment]
 
-        with patch("kiro_crew.acp.client.kiro_sessions_dir") as kiro_store:
+        with (
+            patch("kiro_crew.acp.client.kiro_sessions_dir") as kiro_store,
+            patch(
+                "kiro_crew.acp.client.managed_session_servers",
+                return_value=expected_servers,
+            ),
+        ):
             await client._initialize_session()
 
         assert client.resumed is True
@@ -177,6 +238,7 @@ class TestOpenCodeProtocol:
         assert [method for method, _params in sent] == ["initialize", "session/load"]
         load_params = sent[1][1]
         assert "_meta" not in load_params
+        assert load_params["mcpServers"] == expected_servers
         kiro_store.assert_not_called()
 
     def test_models_are_captured_from_config_options(self, tmp_path):
@@ -234,6 +296,162 @@ class TestOpenCodeProtocol:
             await client.set_model("provider/missing")
 
         client._send_request.assert_not_awaited()  # type: ignore[union-attr]
+
+    @pytest.mark.asyncio
+    async def test_kiro_session_server_path_does_not_project_managed_spec(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        client._claude_session_mcp_servers = MagicMock(  # type: ignore[method-assign]
+            return_value=[]
+        )
+        client._pooled_mcp_servers = MagicMock(  # type: ignore[method-assign]
+            return_value=[{"name": "pooled"}]
+        )
+
+        with patch("kiro_crew.acp.client.managed_session_servers") as managed:
+            servers = await client._session_mcp_servers()
+
+        assert servers == [{"name": "pooled"}]
+        managed.assert_not_called()
+
+
+class TestOpenCodeManagedMcp:
+    def test_projection_keeps_only_fully_exposed_managed_servers(self):
+        spec = {
+            "tools": [
+                "@kirocrew-core",
+                "@kirocrew-cron/run",
+                "@kirocrew-computer",
+                "@user-server",
+            ],
+            "mcpServers": {
+                "kirocrew-core": {
+                    "command": "/opt/kirocrew",
+                    "args": ["mcp-core"],
+                    "env": {"SAFE": "1"},
+                    "autoApprove": ["recall"],
+                    "timeout": 30,
+                },
+                "kirocrew-cron": {
+                    "command": "/opt/kirocrew",
+                    "args": ["mcp-cron"],
+                },
+                "kirocrew-computer": {
+                    "command": "/opt/kirocrew",
+                    "args": ["mcp-computer"],
+                    "disabledTools": ["computer_click"],
+                },
+                "user-server": {"command": "user-mcp", "args": []},
+            },
+        }
+
+        assert _managed_servers_from_spec(
+            spec,
+            frozenset({"kirocrew-core", "kirocrew-cron", "kirocrew-computer"}),
+        ) == [
+            {
+                "name": "kirocrew-core",
+                "command": "/opt/kirocrew",
+                "args": ["mcp-core"],
+                "env": [{"name": "SAFE", "value": "1"}],
+            }
+        ]
+
+    def test_pooled_stub_replaces_same_managed_server(self, tmp_path):
+        spec = {
+            "tools": ["@kirocrew-core"],
+            "mcpServers": {
+                "kirocrew-core": {
+                    "command": "/opt/kirocrew",
+                    "args": ["mcp-core"],
+                }
+            },
+        }
+        pooled = {
+            "name": "kirocrew-core",
+            "command": "/opt/python",
+            "args": ["-m", "kiro_crew.mcp_gateway.stub", "--channel-id", "slack:C1"],
+            "env": [],
+            "autoApprove": ["recall"],
+        }
+
+        with (
+            patch("kiro_crew.agent.materialized_agent_spec", return_value=spec),
+            patch(
+                "kiro_crew.mcp_gateway.session_servers.pooled_session_servers",
+                return_value=[pooled],
+            ) as pooled_servers,
+        ):
+            result = managed_session_servers(tmp_path, "kirocrew", "slack:C1")
+
+        assert result == [
+            {
+                "name": "kirocrew-core",
+                "command": "/opt/python",
+                "args": [
+                    "-m",
+                    "kiro_crew.mcp_gateway.stub",
+                    "--channel-id",
+                    "slack:C1",
+                ],
+                "env": [],
+            }
+        ]
+        pooled_servers.assert_called_once_with(tmp_path, "kirocrew", "slack:C1")
+
+    def test_permission_recovers_only_injected_open_code_identity(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._remember_opencode_mcp_servers(
+            [{"name": "kirocrew-core", "command": "kirocrew", "args": [], "env": []}]
+        )
+        msg = JsonRpcMessage(
+            id=7,
+            method="session/request_permission",
+            params={
+                "toolCall": {
+                    "toolCallId": "tc-7",
+                    "title": "kirocrew-core_spawn_run",
+                    "kind": "other",
+                    "rawInput": {"message": "check tests"},
+                },
+                "options": [{"optionId": "once", "kind": "allow_once", "name": "Allow once"}],
+            },
+        )
+
+        event = client._build_permission_event(msg)
+
+        assert event.mcp_server_name == "kirocrew-core"
+        assert event.tool_name == "spawn_run"
+        assert event.mcp_identity_trusted is True
+        assert event.raw_tool_params == {"message": "check tests"}
+        assert '"message": "check tests"' in event.tool_input
+
+    def test_permission_identity_overlap_fails_closed(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._remember_opencode_mcp_servers(
+            [
+                {"name": "crew", "command": "x", "args": [], "env": []},
+                {"name": "crew_tool", "command": "y", "args": [], "env": []},
+            ]
+        )
+        msg = JsonRpcMessage(
+            id=8,
+            method="session/request_permission",
+            params={
+                "toolCall": {
+                    "toolCallId": "tc-8",
+                    "title": "crew_tool_call",
+                    "kind": "other",
+                    "rawInput": {},
+                },
+                "options": [],
+            },
+        )
+
+        event = client._build_permission_event(msg)
+
+        assert event.mcp_server_name == ""
+        assert event.tool_name == ""
+        assert event.mcp_identity_trusted is False
 
 
 class TestOpenCodeProviderBoundaries:

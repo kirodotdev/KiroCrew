@@ -830,6 +830,11 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
     },
 }
 
+# Public, immutable identity set for transport adapters that must project the
+# rendered Kiro agent spec into ACP ``session/new``.  The private mapping above
+# remains the single owner of invocation details and emission gates.
+MANAGED_MCP_SERVER_NAMES = frozenset(_MANAGED_MCP_SERVERS)
+
 
 def _extra_mcp_servers() -> dict[str, dict]:
     """Edition-contributed MCP servers from the active PlatformContext.
@@ -4311,6 +4316,29 @@ def ensure_agent_materialized(agent: str | None) -> bool:
     except Exception:
         logger.warning("ensure_agent_materialized failed for agent %r", agent, exc_info=True)
         return False
+
+
+def materialized_agent_spec(agent: str | None) -> dict | None:
+    """Return the safely read rendered spec for *agent*, if one exists.
+
+    The managed default is self-healed first; custom and app agents are only
+    read, never regenerated here.  Every read goes through the capped agent-spec
+    reader and the safe path resolver, so an ACP adapter cannot turn session
+    initialization into an unrestricted read of a user-controlled path.
+
+    Fail-soft to ``None``.  A missing or ambiguous spec means the adapted
+    harness starts without injected managed MCP tools, which is the safe
+    direction and leaves the first-class Kiro path unchanged.
+    """
+    if not agent:
+        return None
+    ensure_agent_materialized(agent)
+    try:
+        path = agent_spec_path(agent)
+        return _read_spec_capped(path) if path is not None else None
+    except (OSError, ValueError):
+        logger.warning("Cannot resolve rendered agent spec for %r", agent, exc_info=True)
+        return None
 
 
 def _install_aim_capabilities() -> None:

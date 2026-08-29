@@ -137,9 +137,23 @@ discoverable user- and project-scoped spec.
 
 ### MCP Server Registration
 
-MCP servers are passed directly in the `session/new` params. The two managed
-servers (`kirocrew-core`, `kirocrew-cron` — see `agent.py:_MANAGED_MCP_SERVERS`)
-are always present; user-configured servers from the agent config are merged in.
+Registration is backend-specific:
+
+- **kiro-cli / KAS:** the rendered Kiro agent remains authoritative. The direct
+  client adds only shared-gateway broker stubs to `session/new` or
+  `session/load`; the shared runtime applies the equivalent session overlay.
+- **OpenCode:** the adapter reads the rendered agent through the capped,
+  traversal-safe resolver and passes only fully exposed Kiro Crew-managed
+  servers in ACP's portable local-server shape. Per-tool-only mounts,
+  `disabledTools`, disabled entries, user-installed servers, and app-contributed
+  servers are omitted rather than widened. An eligible pooled stub replaces the
+  direct managed entry by name.
+- **Dormant Claude seam:** the companion-owned registration hook remains the
+  authority, with pooled stubs appended as before.
+
+The managed ownership catalog contains `kirocrew-core`, `kirocrew-cron`,
+`kirocrew-computer`, and the opt-in `kirocrew-dashboard`; emission still obeys
+each rendered agent's mounts and feature gates.
 
 ### SessionManager (`session.py`)
 
