@@ -842,3 +842,129 @@ class TestListAgentsCache:
         # ... then force a clear: the next call must re-scan and see "v2".
         clear_list_agents_cache()
         assert [a.name for a in list_agents(agents_dir=d)] == ["v2"]
+
+
+def _discovery_warnings(caplog):
+    """WARNING+ records from the discovery logger about a systematic scan failure.
+
+    Filtered by logger name per the module-top note, and by message so the
+    pre-existing shadowing/duplicate warnings never contaminate the count.
+    """
+    return [
+        r
+        for r in caplog.records
+        if r.name == _DISCOVERY_LOGGER
+        and r.levelno >= logging.WARNING
+        and "parsed 0" in r.getMessage()
+    ]
+
+
+class TestSystematicScanFailureWarning:
+    """A scan that rejects EVERY candidate spec warns once; anything less stays quiet.
+
+    Regression: `_read_agent_spec` degrades per file to ``None`` at debug level, so
+    a systematic refusal (e.g. the trusted-root gate rejecting an entire home
+    layout, issue #6721) was indistinguishable at default log levels from an empty
+    agents directory — discovery listed nothing and nothing said why (#6727).
+    """
+
+    def test_all_unreadable_user_specs_emit_one_warning(self, fake_home, caplog):
+        d = _agents_dir(fake_home)
+        for i in range(3):
+            (d / f"broken-{i}.json").write_bytes(b"\xff\xfe\x00\x01\xa3")
+        clear_list_agents_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert list_agents(agents_dir=d) == []
+        warnings = _discovery_warnings(caplog)
+        assert len(warnings) == 1, "exactly one warning per scan, not per file"
+        # Count asserted via the record's args: a digit-in-string match is
+        # satisfiable by digits in the pytest tmp path.
+        assert warnings[0].args[0] == 3
+        assert str(d) in warnings[0].getMessage()
+
+    def test_mixed_directory_emits_no_warning(self, fake_home, caplog):
+        d = _agents_dir(fake_home)
+        (d / "good.json").write_text(json.dumps({"name": "good"}))
+        (d / "broken.json").write_bytes(b"\xff\xfe\x00\x01\xa3")
+        clear_list_agents_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            names = [a.name for a in list_agents(agents_dir=d)]
+        assert names == ["good"]
+        assert _discovery_warnings(caplog) == []
+
+    def test_empty_and_absent_directories_emit_no_warning(self, fake_home, caplog):
+        empty = _agents_dir(fake_home)
+        absent = fake_home / "nowhere" / "agents"
+        clear_list_agents_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert list_agents(agents_dir=empty) == []
+            clear_list_agents_cache()
+            assert list_agents(agents_dir=absent) == []
+        assert _discovery_warnings(caplog) == [], "N=0 is not systematic failure"
+
+    def test_all_unreadable_project_specs_emit_one_warning(self, fake_home, tmp_path, caplog):
+        d = _agents_dir(fake_home)
+        proj = tmp_path / "repo"
+        pd = _project_agents_dir(proj)
+        (pd / "bad-a.json").write_text("not json at all")
+        (pd / "bad-b.json").write_text(json.dumps(["top-level", "array"]))
+        clear_list_agents_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert list_agents(agents_dir=d, project_dir=str(proj)) == []
+        warnings = _discovery_warnings(caplog)
+        assert len(warnings) == 1
+        assert warnings[0].args[0] == 2
+        assert str(pd) in warnings[0].getMessage()
+
+    def test_project_agent_names_warns_on_systematic_failure(self, tmp_path, caplog):
+        """The per-turn resolver's scan warns too — this is the exact path whose
+        silence let model resolution fall back to auto in #6721."""
+        proj = tmp_path / "repo"
+        pd = _project_agents_dir(proj)
+        (pd / "bad.json").write_text("{broken")
+        clear_project_agent_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert project_agent_names(str(proj)) == frozenset()
+        warnings = _discovery_warnings(caplog)
+        assert len(warnings) == 1
+        assert str(pd) in warnings[0].getMessage()
+
+    def test_project_agent_names_mixed_directory_emits_no_warning(self, tmp_path, caplog):
+        proj = tmp_path / "repo"
+        pd = _project_agents_dir(proj)
+        (pd / "good.json").write_text(json.dumps({"name": "good"}))
+        (pd / "bad.json").write_text("{broken")
+        clear_project_agent_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert project_agent_names(str(proj)) == frozenset({"good"})
+        assert _discovery_warnings(caplog) == []
+
+    def test_sidecar_only_directory_emits_no_warning(self, fake_home, caplog):
+        """AppleDouble sidecars are rejected by design, not by failure — a
+        directory holding only ``._*.json`` is empty of specs, not broken."""
+        d = _agents_dir(fake_home)
+        (d / "._ghost.json").write_bytes(b"\x02\x00\x00\x00\xa3\x80\x81 not utf-8")
+        clear_list_agents_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert list_agents(agents_dir=d) == []
+        assert _discovery_warnings(caplog) == []
+
+    def test_row_construction_failure_counts_as_unparsed(self, fake_home, caplog, monkeypatch):
+        """A spec that parses but whose row construction raises still ends in
+        "discovery listed nothing" — the warning must cover that path too, so
+        the parsed counter means "produced a row", not "JSON loaded"."""
+        import kiro_crew.agent_discovery as mod
+
+        d = _agents_dir(fake_home)
+        (d / "parses.json").write_text(json.dumps({"name": "parses"}))
+
+        def _boom(f, data):
+            raise RuntimeError("row construction failed")
+
+        monkeypatch.setattr(mod, "_global_agent_info", _boom)
+        clear_list_agents_cache()
+        with caplog.at_level(logging.WARNING, logger=_DISCOVERY_LOGGER):
+            assert list_agents(agents_dir=d) == []
+        warnings = _discovery_warnings(caplog)
+        assert len(warnings) == 1
+        assert warnings[0].args[0] == 1
