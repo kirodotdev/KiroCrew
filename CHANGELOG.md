@@ -2,6 +2,319 @@
 
 All notable changes to KiroCrew are documented in this file.
 
+## [0.5.0] — 2026-08-29
+
+Your AWS account gets a control room and your whole fleet gets one centrally
+published security policy. Chat grows up: sessions open as tabs, an idle
+sidebar folds itself away, and approvals can be answered in bulk or refused
+one call at a time. Dictation now works out of the box with no install, agents
+can seed and steer other agents' sessions, and a script-installed Kiro Crew
+updates itself atomically instead of asking you to re-run the installer.
+
+### Before you upgrade
+
+- **Dictation providers consolidate into one `local` provider** — The
+  `whisper`, `mlx`, `parakeet` and `faster` speech-to-text providers are
+  retired; a saved setting falls back to the new in-process `local` provider,
+  which downloads its own model on first use and needs no external binary.
+  The default model is now `base` (a 148 MB download; a stored `turbo` still
+  resolves but pulls 1.6 GB), and live streaming text is on by default for
+  new installs. `kirocrew doctor` now reports stored defaults that an earlier
+  build materialized, so you can decide which to adopt.
+- **Snapshot-to-S3 is retired** — `kirocrew snapshot --to s3://…`,
+  `--aws-profile`, and the `s3://` fetch path are gone; cloud backup moves to
+  the AWS Control app. Snapshots gain restore-into-live-state (replace or
+  merge, with a rollback ledger) in exchange.
+- **App execution trust is bound to the code you consented to** — A grant now
+  records the repository it covers; an app whose name later resolves to
+  different code is refused, and a legacy grant that cannot be tied to a
+  repository asks for one-time re-consent. Installed app checkouts are also
+  write-protected against agent edits.
+- **Some commands that ran silently now ask first** — Looking like a help or
+  version probe no longer counts as approval, a command name that resolves to
+  something other than the trusted system program falls back to a prompt, and
+  durable "always allow" grants no longer cover structured non-shell tools.
+- **Kiro CLI is reached through its published relay** — Kiro Crew no longer
+  probes kiro-cli's internal bundle layout or mints access tokens itself; the
+  two bundle-path environment overrides are gone.
+- **A misspelled security-policy `sandbox` key now fails validation** instead
+  of silently leaving the sandbox floor ungoverned, and a malformed `publish`
+  section now denies publishing rather than quietly dropping its restriction.
+- **A release can declare a minimum supported version** — An install below the
+  floor gets an update prompt that cannot be snoozed, skipped or dismissed.
+
+### Your AWS account gets a control room
+
+- **AWS Control** — A new built-in app puts your AWS accounts on one surface:
+  an Accounts page with a health light and reconnect guidance per account,
+  and a per-account console with Library, Drive, Backup, Bill and Access
+  views over a private, versioned, owner-only S3 bucket — consent-gated, with
+  audited mutations.
+- **A cloud drive you can browse** — The drive is its own page: browse and
+  create folders, delete a folder and everything under it, and see the share
+  ledger alongside.
+- **Restore a snapshot into live state** — Replace or merge a snapshot into
+  the running install, per component, with a rollback ledger to undo it.
+
+### One policy for the whole fleet
+
+- **Centrally published security policy** — An administrator can publish one
+  `security_policy.json` at a URL and have every host fetch, cache and
+  periodically refresh it. A policy change binds fleet-wide with no restart
+  and no host visit; an unreachable source serves the cached copy, and a bad
+  document is rejected rather than lowering the running ceiling.
+- **Enterprise MCP governance** — On an enterprise Kiro account with an
+  admin-configured MCP registry, org-level MCP controls (including a version
+  pin) now take effect. Personal accounts are unaffected.
+- **A tamper-evident audit log under concurrency** — Two Kiro Crew processes
+  writing at once no longer break the audit chain's verification.
+
+### Dictation that just works
+
+- **No-install local dictation** — One whisper.cpp model stays resident in
+  the gateway: a short utterance transcribes in tens of milliseconds, live
+  text appears as you speak, and a session keeps transcribing across pauses.
+- **Silence stays silent** — A filter drops the model's silence
+  hallucinations and caption boilerplate instead of turning them into notes.
+- **Settings apply without leaving the panel** — Speech settings that need a
+  gateway restart now offer the restart button inline.
+
+### Sessions become tabs
+
+- **Session tabs** — Keep several sessions open as tabs above the transcript:
+  middle-click or modifier-click a sidebar row to open one, each tab shows
+  live status, and the set persists per surface.
+- **Dormant sessions fold away** — Sessions idle past a threshold you choose
+  collapse behind a "Dormant sessions (N)" expander per folder; pinned,
+  running and unread rows always stay visible.
+- **Deep-linkable settings** — Settings pages live at real URLs like
+  `/settings/display/session-colors`, so any screen can be bookmarked and
+  shared.
+- **A project folder shows its files** — Project tabs gain a full expandable
+  file tree with search and refresh, opening files in de-duplicated tabs with
+  find and save chords that act on the tab you can see.
+- **Wide notes** — A markdown note can be lifted out of the reading column to
+  full width, and the choice is remembered per device.
+
+### Approvals you can steer
+
+- **Approve or reject everything at once** — When several tool calls wait on
+  you, one click answers all of them, and the confirmation lists every
+  command it covers — not just the newest.
+- **Reject once** — Refuse a single tool call and still get asked about the
+  rest, instead of rejecting the whole batch.
+- **Commands you can read** — A long shell call with no stated purpose shows
+  a short readable digest of what it does; the verbatim command stays one
+  hover away.
+- **Approvals in the CLI** — `kirocrew chat` now shows tool permission
+  prompts and lets you answer them, so a turn no longer hangs silently until
+  it times out.
+- **The approval bar teaches the modes** — It now points at the
+  approval-mode picker, so Reads, Trust and YOLO are discoverable instead of
+  confirming every step forever.
+
+### Agents that drive other agents
+
+- **Seed and steer peer sessions** — `session_send` delivers a message into
+  another session as its next turn, so a coordinator can direct peers instead
+  of only opening, reading or stopping them.
+- **A conductor for goals too big for one session** — The built-in conductor
+  agent decomposes a goal, stands up a session per work item, checks
+  acceptance, and decides each next round — patrolling on a monitoring loop
+  that survives tab closes and turn caps.
+- **A durable workflow library** — Promote a session's workflow into a global
+  library, manage revisions and lineage from Agent Capabilities, and invoke
+  saved definitions with `/workflow`; task-runner plans share the same
+  library.
+- **Watches that wake on change** — A babysat pull request wakes its watcher
+  on human comments, reviews and verdicts — not just check results — and the
+  new interrupt controller turns polling monitors into wake-on-change
+  interrupts for any script cron.
+- **Auditable fan-outs** — Wave digests name the model that actually served
+  each member, the live panel flags a downgraded model while the run is still
+  going, and a finished subagent's results survive a gateway restart.
+
+### Update itself, anywhere
+
+- **Atomic self-update** — `kirocrew update` installs the new version into a
+  fresh, signature-verified tree and switches to it atomically, so a
+  script-installed Kiro Crew updates itself.
+- **Windows updates install in place** — "Restart & Update" shows installer
+  progress and relaunches the new build instead of nesting a copy and
+  reopening the old one; kept Start Menu and Desktop shortcuts are repointed,
+  and installs are much faster.
+- **An honest About page** — Settings › About shows when the last update
+  check ran and when the next is due, reports your real OS and architecture,
+  and the post-upgrade "What's new" modal shows the notes for the version you
+  are actually running.
+- **No more downgrade nags** — Running ahead of your channel's published
+  release no longer produces an older-build update offer, and a hotfix
+  published on an old release line can never move a channel's update feed
+  backward.
+
+### Secrets leave more files
+
+- **`kirocrew secrets import`** — Move plaintext credentials out of `.env`
+  into the encrypted vault, leaving a `secret://` reference behind; dry-run
+  by default, `--apply` to commit.
+- **Redaction happens before truncation** — Credentials near a truncation
+  boundary are redacted before the text is cut, so partial secrets stop
+  leaking into audit rows, logs and dashboard payloads; hook output is
+  redacted too.
+- **Owner-only from the first byte** — Windows `config.json` writes are
+  locked to your account (over a thousand times faster than before), and
+  secrets written during pod setup and snapshot restore are locked down
+  before publication.
+
+### Phones and touch
+
+- **One-click phone access** — A single "Set up & show QR" action enables
+  trust, restarts the gateway, publishes over Tailscale, and hands you a
+  sign-in QR code — and a phone session now survives gateway restarts and
+  updates instead of needing a fresh scan.
+- **A sign-in link for a phone that lost its session** — A signed-in device
+  can mint a one-time link; the CLI recovery path remains when nothing else
+  is signed in.
+- **Video in the composer** — Attach videos up to 512 MB, streamed straight
+  to disk and offered by the phone photo picker alongside images.
+- **Touch that behaves** — The sessions drawer tracks your finger and can be
+  abandoned mid-swipe, pinch zooms the image and diagram viewers instead of
+  the whole dashboard, the terminal gains a Paste soft key, and pasted text
+  with trailing blank lines stops vanishing on iOS Safari.
+
+### Apps, members, and the store
+
+- **Discover and Library split** — The App Store becomes two pages with their
+  own URLs, plus an Updates tab listing every installed app with a pending
+  update and an Update All button.
+- **Real artwork everywhere** — Every built-in app has a product screenshot,
+  light and dark artwork, and use-case guidance on its detail page, in all 12
+  languages.
+- **Crew Members** — A roster page gives every member a durable pinned DM
+  thread, sorted by recent activity, with previews and name search.
+- **Apps schedule in your timezone** — An app can set a cron job's timezone
+  and skipped dates in code or `app.json`, so "06:00 for this user" fires at
+  the right local hour.
+- **App backends that fail loudly and heal** — A backend that dies after
+  startup is reported as down, stops receiving requests, and recovers on its
+  own after a brief wedge; a multi-module backend can import its own sibling
+  modules.
+
+### MCP servers stop degrading silently
+
+- **A failure count you can see** — A server that keeps failing its health
+  probe shows a running consecutive-failure count with one-click reset, so a
+  blip is distinguishable from a server broken for days.
+- **OAuth sign-in from the servers tab** — Sign in to a remote OAuth MCP
+  server directly from MCP Servers instead of being routed through a chat
+  session.
+- **Misbehaving servers get isolated, not shared** — A server caught behaving
+  per-client is given a private backend per connection until it is fixed, a
+  broker restart reconnects sessions instead of stranding them, and a stale
+  gateway daemon from an older configuration is replaced automatically.
+
+### Faster and lighter
+
+- **Chat stays smooth under load** — The sidebar no longer re-renders on
+  every streaming token, subagent output paints once per frame, and the
+  sidebar skips off-screen work above a few hundred sessions.
+- **Transcripts load a page at a time** — Opening a session loads one page of
+  history with older messages fetched as you scroll, instead of the whole
+  transcript up front.
+- **Big inputs stopped hurting** — Large-PDF knowledge ingestion and local
+  embedding generation use far less memory, the storage screen streams its
+  trash summary, and log writes no longer stall the gateway on a slow disk.
+- **Windows sizes itself honestly** — The concurrent sub-agent limit is
+  derived from real free memory instead of being pinned at three.
+
+### Notable fixes
+
+For anyone checking whether their particular annoyance is gone.
+
+**Chat and the transcript.** A turn's reasoning collapses into a single
+"Thought process" row that shimmers while it thinks, instead of stacking
+duplicate rows. Stopping a turn during startup actually cancels it. Follow-up
+option pills return after a failed turn, appear in split-view panes, and each
+chip now carries a complete instruction on its own. Links whose URL contains
+raw spaces render as working links. Images hold a fixed placeholder while
+loading. Gateway notices render as proper cards. A message you just sent can
+be pinned immediately, and un-pinning right after pinning sticks.
+
+**Sessions, history, and search.** Polling a long session for new messages
+survives trimming with exact cursors instead of a permanent error. A `?sid=`
+deep link opens the session you linked. Switching to a dead session snaps you
+back instead of stranding the dashboard, and a server error during the switch
+no longer replaces a live session. A chat created in a project-scoped folder
+starts in that folder's project every time. Auto-generated titles name the
+topic instead of reacting to a cut-off sentence.
+
+**Voice.** Cancelling a transcription or spoken reply reliably stops the
+audio process and removes its temp files — across macOS helpers, streaming
+dictation, hardware-keyboard touch devices, and voice replies — instead of
+leaking processes and files.
+
+**Approvals and security.** The Approve buttons stay visible while a tool
+group is expanded. A batch file read nesting a credential path inside an
+array argument is caught by the sensitive-path gate. The sandbox refuses to
+run when a credential-hiding mount fails. A crafted deny-list regex can no
+longer freeze the security gate, and adding a pattern that copies a built-in
+names the unsafe fragment. Trust-all sessions stop re-prompting once per
+remote MCP call during a fan-out.
+
+**Subagents and automation.** A finished subagent's undelivered results stay
+recoverable across a gateway shutdown. A stalled run keeps showing how long
+it has been idle after a reconnect. When a turn ends with the model writing a
+tool call as text instead of running it, you get a visible notice instead of
+a silently stalled monitor loop. When every model in a fallback chain fails,
+the error reports the whole walk. Script crons can call MCP tools on
+enterprise profiles.
+
+**Windows and the desktop app.** Signing in to kiro-cli sticks on hosts that
+keep their identity store under Roaming AppData, and the credit pill reads
+tokens there too. The gateway starts under non-UTF-8 Python encodings and
+legacy console locales. The app stops yanking itself in front of your work on
+reconnect, waits through a slow first gateway start, and detects a Kiro CLI
+installed while it was running. The Changes panel works on Windows. MD
+Notebook retries a save when another program holds the file.
+
+**Channels.** Streamed Slack replies keep working in Slack Connect shared
+channels. Webex accepts binary connection frames. Telegram gets native file
+delivery and keeps every restored reference when several images fail.
+Discord delivers real files with real names. Feishu is configurable from
+Settings like every other channel, and Settings shows the exact install
+command when a channel's client library is missing.
+
+**Localization and accessibility.** Counted labels, confirmation dialogs and
+sign-in guidance are fully translated in all 12 languages, destructive
+prompts quote the resource in your language's own quote marks, and five more
+menus gain arrow-key navigation, focus return and screen-reader announcements.
+
+### Contributors
+
+@adiarora06 @anant-kaushik @andreyaurelien @aniruddhaadak80 @billygerhard
+@bolichen97 @buluoray @c020627 @chenmingwei23 @cixuuz @CrysisDeu @DeryFerd
+@dwu96 @flukschander @GoZippy @helenastafford @iamwhatever @isotope14
+@jeeshofone @jingchaodev @kaizawa97 @kyleseaman @leonlaiyc @leozhad
+@LucaButBoring @mbriones98 @md-abusayeed @mrbeag @NicholasRBowers @pepmach
+@peterhieuvu @piyushrajyadav @pkot98121 @ptias @rnoack1 @robomnis @RohanK6
+@royosherove @rubencu @SebastianYuSun @shrihan-vijay @Tiger-0512
+@unstablebrainiac @warren830 @welikoiwanenko @xuejinT
+
+## [0.4.1] — 2026-08-28
+
+A display fix for stable-channel installs: the About page no longer shows the
+running build or an available update under its internal release-candidate stamp.
+
+### Notable fixes
+
+- **Available updates show their release version** — On the stable channel, the About panel's "a new version is available" line now shows the clean release number (0.4.0) instead of the internal candidate stamp it was built from (0.4.0rc14). The update mechanism itself is unchanged and keeps using the exact published version.
+- **The version chip shows the release you installed** — The About page's version badge and the Settings footer now show the clean release number on the stable channel too, instead of the candidate stamp baked into the published build.
+- **The update popup names the release, not the candidate stamp** — The "a new version is available" popup now announces the clean release number on the stable channel. Skipping or snoozing a version keeps working exactly as before.
+
+### Contributors
+
+@bolichen97
+
 ## [0.4.0] — 2026-08-25
 
 Windows and Linux stop being second-class: both get signed, self-updating native
