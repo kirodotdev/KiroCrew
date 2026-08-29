@@ -28,7 +28,7 @@ import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
 } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
-import { manifestArt, manifestArtList, classifyManifestArt } from '../components/appstore/useHeroArt'
+import { classifyManifestArt, installedArt, installedArtList, installedIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
@@ -293,13 +293,10 @@ export default function AppDetailPage() {
           // A non-built-in installed app may have no registry row carrying art
           // at all — a local-directory install has none, and a row built from a
           // cached manifest older than the release that added the art carries
-          // those fields empty. The manifest on disk still has the paths, but
-          // they are repo-relative, so every fallback below goes through
-          // `manifestArt` to reach the blob proxy. The repo it resolves against
-          // is the row's when there is one, else the manifest's own, else the
-          // git URL the app was installed from — which the install records
-          // independently of the store's caches.
-          const artRepo = registryEntry?.repo || m.repo || installed.sourceUrl || ''
+          // those fields empty. The manifest on disk still has the paths, and
+          // since the app IS installed those paths resolve against its own
+          // install directory through `installedArt` — no repo identifier, no
+          // clone, no network.
           // A page's own icon ships inside the app's UI bundle, not at the repo
           // root, so a relative value resolves against the app's UI asset route —
           // the same base the rail and the command palette use. A cross-origin
@@ -324,23 +321,28 @@ export default function AppDetailPage() {
             // allowlist and the trusted-repo gate. The `iconUrl` fallback goes
             // through the same resolver rather than straight to `<img>`, so a
             // manifest naming an external host is refused on this surface too.
-            iconUrl: registryEntry?.iconUrl || manifestArt(m.iconPath, artRepo)
-              || manifestArt(m.iconUrl, artRepo) || pageIconUrl || '',
-            iconUrlDark: registryEntry?.iconUrlDark || manifestArt(m.iconPathDark, artRepo)
-              || manifestArt(m.iconUrlDark, artRepo) || '',
+            iconUrl: registryEntry?.iconUrl
+              || installedIcon(m.iconPath, m.iconUrl, installed.name) || pageIconUrl || '',
+            iconUrlDark: registryEntry?.iconUrlDark
+              || installedIcon(m.iconPathDark, m.iconUrlDark, installed.name) || '',
             tags: m.tags || registryEntry?.tags || [],
             highlights: m.highlights || registryEntry?.highlights || [],
             useCases: m.useCases || registryEntry?.useCases || [],
             configuration: m.configuration || registryEntry?.configuration || [],
-            screenshots: registryEntry?.screenshots || manifestArtList(m.screenshots, artRepo),
+            // `||` would be wrong for the list fields: an empty array is truthy,
+            // so a declared-but-unresolvable list would short-circuit the
+            // blob-proxy fallback instead of falling through to it.
+            screenshots: registryEntry?.screenshots
+              || installedArtList(m.screenshots, installed.name),
             screenshotsDark: registryEntry?.screenshotsDark
-              || manifestArtList(m.screenshotsDark, artRepo),
-            heroImage: registryEntry?.heroImage || manifestArt(m.heroImage, artRepo),
-            heroImageDark: registryEntry?.heroImageDark || manifestArt(m.heroImageDark, artRepo),
+              || installedArtList(m.screenshotsDark, installed.name),
+            heroImage: registryEntry?.heroImage || installedArt(m.heroImage, installed.name),
+            heroImageDark: registryEntry?.heroImageDark
+              || installedArt(m.heroImageDark, installed.name),
             heroImageDetail: registryEntry?.heroImageDetail
-              || manifestArt(m.heroImageDetail, artRepo),
+              || installedArt(m.heroImageDetail, installed.name),
             heroImageDetailDark: registryEntry?.heroImageDetailDark
-              || manifestArt(m.heroImageDetailDark, artRepo),
+              || installedArt(m.heroImageDetailDark, installed.name),
             // Left as the row's own value: this field also names the repo in the
             // trust-consent prompt and the details list, and widening those to a
             // fallback identifier is a separate decision from resolving art.

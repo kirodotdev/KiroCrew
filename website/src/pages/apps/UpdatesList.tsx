@@ -24,7 +24,7 @@ import { ArrowUp } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import AppIconTile from '../../components/appstore/AppIconTile'
 import { appDisplayName } from '../../components/appstore/appManifest'
-import { manifestArt } from '../../components/appstore/useHeroArt'
+import { installedIcon } from '../../components/appstore/useHeroArt'
 import { i18nT } from '../../i18n/t'
 import type { LibraryApp } from './useAppsData'
 
@@ -66,13 +66,15 @@ export default function UpdatesList({
         {rows.map(app => {
           // Icon resolution — the InstalledAppCard chain verbatim, so an app
           // wears the same mark on this worklist as on its Library card: a
-          // page icon glyph, else the manifest's icon through the same
+          // page icon glyph, else the app's own installed art through the
           // resolver that refuses external hosts, else the name-hashed
           // gradient inside AppIconTile.
           const m = app.manifest
-          const artRepo = m?.repo || app.sourceUrl || ''
-          const iconUrl = manifestArt(m?.iconUrl, artRepo) || manifestArt(m?.iconPath, artRepo)
-          const iconUrlDark = manifestArt(m?.iconUrlDark, artRepo) || manifestArt(m?.iconPathDark, artRepo)
+          // `iconPath` FIRST, matching every other surface: the order is only
+          // observable for a manifest declaring both, and there it decides which
+          // file the app wears. See InstalledAppCard for the full rationale.
+          const iconUrl = installedIcon(m?.iconPath, m?.iconUrl, app.name)
+          const iconUrlDark = installedIcon(m?.iconPathDark, m?.iconUrlDark, app.name)
           // Disabled while ANY update runs — the batch, this row's own call,
           // or another row's: `updatePending` is a single slot, so letting a
           // sibling stay clickable would invite a dispatch the hook refuses

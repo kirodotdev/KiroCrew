@@ -115,43 +115,98 @@ export function classifyManifestArt(path: unknown): ArtPathKind {
 }
 
 /**
- * Resolve ONE art path read straight off an installed app's ``app.json``.
+ * Honour a manifest's ``iconUrl``/``iconUrlDark`` for what the contract says it IS:
+ * a BUILTIN's absolute client-local path, whose bytes the client already ships.
  *
- * Store rows arrive server-enriched (the backend rewrites ``iconPath`` and the
- * hero/screenshot fields into ``/api/apps/blob?…`` URLs), so a surface that
- * renders a row needs no resolution. A surface that falls back to the manifest
- * does: a local-directory install has no row at all, and a row built from a
- * cached manifest predating the release that added the art carries those fields
- * empty while the manifest on disk has them.
+ * A RELATIVE value is refused rather than turned into an art-route URL, and that
+ * asymmetry is the point. The backend's declared-field set
+ * (``_ART_MANIFEST_FIELDS``) carries ``iconPath``, not ``iconUrl`` — because for a
+ * FETCHED app ``iconUrl`` is ignored by design, so that the publisher cannot name a
+ * host in a field the client would load. So building ``/apps/<name>/art/<relative>``
+ * out of an ``iconUrl`` produces a URL the route refuses by construction: a
+ * guaranteed 404 dressed as a fallback. One side has to own that contract, and the
+ * manifest contract already does.
  *
- * Unlike :func:`resolveArtPath`, an unusable path answers ``''`` rather than
- * passing through — both a repo-relative path with no repo to resolve against
- * and a refused cross-origin one. Passing through is right for a store row (the
- * value may already be absolute) but wrong here: the browser would resolve
- * ``assets/hero.webp`` against the current route, get the SPA shell, and the
- * ``<img>`` would fail silently instead of degrading to the gradient.
+ * Named for the shape it accepts rather than the field it reads, because that is
+ * what the caller is choosing: "this value is only usable if it is already a path
+ * this origin serves."
  */
-export function manifestArt(path: unknown, repo: string | undefined): string {
-  const kind = classifyManifestArt(path)
-  if (kind === 'refused') return ''
-  // The normalized form, not the raw one: classifying one string and emitting
-  // another is exactly the gap a tab-splitting value walks through.
-  const value = asParserSees(path as string)
-  if (kind === 'same-origin') return value
-  return repo ? resolveArtPath(value, repo) : ''
+export function clientLocalArt(path: unknown): string {
+  return classifyManifestArt(path) === 'same-origin' ? asParserSees(path as string) : ''
 }
 
 /**
- * Resolve a LIST of manifest art paths, dropping every entry the rules refuse.
+ * Resolve ONE art path for an app that is INSTALLED, against its own files.
  *
- * The array itself is ``unknown`` for the same reason each entry is: the
- * installed-app normalizer coerces ``screenshots`` but not ``screenshotsDark``,
- * so an ``app.json`` declaring ``"screenshotsDark": {}`` would reach a bare
- * ``.map`` and throw.
+ * The bytes of an installed app's icon, hero and screenshots are already on
+ * local disk, inside the directory the install created. Reaching them through
+ * ``/api/apps/blob`` instead means a git clone gated by an SSRF
+ * allowlist — so a catalog-listed app's art could 403 on a cold load, because
+ * that allowlist is warmed by a network fetch the Library render can outrun
+ * (its card list gates on the installed-apps query alone) and an ``<img>`` does
+ * not retry. ``/apps/{name}/art/…`` reads the file the gateway itself wrote:
+ * no network, no ordering, no host in the request.
+ *
+ * A manifest is untrusted content, so a cross-origin value is refused by
+ * :func:`classifyManifestArt` rather than handed to ``<img>``, and anything
+ * unusable answers ``''`` so a caller keeps degrading to the
+ * gradient. The leading ``./`` is stripped to match the backend, which compares
+ * the request against the manifest's declared paths in that normalized form.
+ *
+ * Reads the fields the backend's declared set actually carries — ``iconPath``,
+ * ``heroImage*``, ``screenshots*``. For ``iconUrl``/``iconUrlDark`` use
+ * :func:`clientLocalArt`: a relative value there would build a URL the route
+ * refuses by construction.
+ *
+ * Segments are encoded individually: the path is a manifest-declared value and
+ * may contain a space, which must not arrive as a raw space in the URL, while
+ * the ``/`` separators must survive.
  */
-export function manifestArtList(paths: unknown, repo: string | undefined): string[] {
+export function installedArt(path: unknown, appName: string | undefined): string {
+  const kind = classifyManifestArt(path)
+  if (kind === 'refused') return ''
+  const value = asParserSees(path as string)
+  if (kind === 'same-origin') return value
+  if (!appName) return ''
+  const rel = value.startsWith('./') ? value.slice(2) : value
+  const encoded = rel.split('/').map(encodeURIComponent).join('/')
+  return `/apps/${encodeURIComponent(appName)}/art/${encoded}`
+}
+
+/**
+ * Resolve a LIST of an installed app's art paths, dropping every refused entry.
+ *
+ * ``unknown`` rather than ``string[]`` because the array's TYPE is as untrusted as
+ * its entries: the installed-app normalizer coerces ``screenshots`` but not
+ * ``screenshotsDark``, so an ``app.json`` declaring ``"screenshotsDark": {}``
+ * would reach a bare ``.map`` and throw.
+ */
+export function installedArtList(paths: unknown, appName: string | undefined): string[] {
   if (!Array.isArray(paths)) return []
-  return paths.map(p => manifestArt(p, repo)).filter(Boolean)
+  return paths.map(p => installedArt(p, appName)).filter(Boolean)
+}
+
+/**
+ * An installed app's ICON, resolving the two fields that can declare one.
+ *
+ * This exists because the two-term rule was spelled out at eight call sites and
+ * they diverged: the rail and detail page resolved ``iconPath`` first while the
+ * Library card and Updates list resolved ``iconUrl`` first, so a manifest
+ * declaring BOTH wore one icon in the rail and a different one on its own card.
+ * The order is only observable for that manifest, which is exactly why four
+ * copies of it drifted without anything going red.
+ *
+ * ``iconPath`` wins because it is the field that addresses a file inside the
+ * install directory — the app's own art, on local disk. ``iconUrl`` is the
+ * client-local ABSOLUTE path a builtin declares (see ``clientLocalArt``, which
+ * refuses a relative one), so it is the fallback rather than the primary.
+ */
+export function installedIcon(
+  path: unknown,
+  url: unknown,
+  appName: string | undefined,
+): string {
+  return installedArt(path, appName) || clientLocalArt(url)
 }
 
 /**

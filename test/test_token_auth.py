@@ -1796,6 +1796,49 @@ def test_no_get_route_outside_shell_exclusions() -> None:
     )
 
 
+def test_apps_routes_get_paths_are_matched_by_the_apps_spa_regex() -> None:
+    """Every ``/apps/`` GET registered in ``apps/routes.py`` must be matched by
+    ``_APPS_SPA_EXCLUDED_RE`` once its placeholders are filled in.
+
+    The sibling guard above only scans ``server.py``, and its ``"{" in p``
+    escape hatch treats any pattern route as a real handler without ever asking
+    the regex. So nothing coupled the regex to the app routes it exists to
+    describe: adding ``/apps/{name}/art/{path:.*}`` to ``apps/routes.py`` while
+    leaving the regex at ``(?:api|ui)`` left the route registered and
+    unreachable — ``_is_spa_shell_request`` classified it as a React Router
+    navigation and the middleware answered the SPA shell, so an ``<img>``
+    pointed at it received HTML with a 200 and rendered nothing. Silent by
+    construction: the route works under a token, the handler is never the thing
+    that fails, and no existing test looks at this pair.
+
+    Instantiating the pattern is the whole point — the regex requires a
+    lowercase app name AND a following slash, so only a concrete path can
+    exercise it.
+    """
+    import re as _re
+
+    import kiro_crew.apps.routes as app_routes
+    import kiro_crew.dashboard.token_auth as ta
+
+    source = open(app_routes.__file__, encoding="utf-8").read()
+    get_paths = [p for p in _re.findall(r'add_get\(\s*["\']([^"\']+)["\']', source)]
+    apps_paths = [p for p in get_paths if p.startswith("/apps/")]
+    assert apps_paths, "expected /apps/ add_get route literals in apps/routes.py"
+
+    def concrete(pattern: str) -> str:
+        """Fill each ``{…}`` placeholder with a value the regex would accept."""
+        out = _re.sub(r"\{name[^}]*\}", "demo-app", pattern)
+        return _re.sub(r"\{[^}]+\}", "assets/icon.webp", out)
+
+    unmatched = [p for p in apps_paths if not ta._APPS_SPA_EXCLUDED_RE.match(concrete(p))]
+    assert not unmatched, (
+        f"/apps/ GET route(s) in apps/routes.py that _APPS_SPA_EXCLUDED_RE does not "
+        f"match: {unmatched}. The middleware will answer these with the SPA shell "
+        f"instead of the handler — add the sub-namespace verb to the regex in "
+        f"token_auth.py."
+    )
+
+
 @pytest.mark.asyncio
 async def test_shell_bypass_does_not_preempt_ip_mismatch() -> None:
     """A VALID token from the wrong IP on a shell path is still a hard 403 —

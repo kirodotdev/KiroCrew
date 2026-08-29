@@ -1,5 +1,5 @@
 import { appPageLabel } from './components/appstore/appManifest'
-import { manifestArt } from './components/appstore/useHeroArt'
+import { installedIcon } from './components/appstore/useHeroArt'
 
 /**
  * Where an installed app lives in the dashboard — one definition, shared by every
@@ -38,6 +38,15 @@ export interface AppNavRecord {
   manifest?: {
     iconUrl?: string
     iconUrlDark?: string
+    /**
+     * What an EXTERNAL app actually declares. The manifest contract gives a
+     * fetched app `iconPath` (repo-relative) and reserves `iconUrl` for a
+     * builtin's absolute client-local path, so reading only `iconUrl` here left
+     * every external app's rail and command-palette icon as the generic box —
+     * the one surface that renders on every load.
+     */
+    iconPath?: string
+    iconPathDark?: string
     /** The repo a manifest declares for its own art paths, when it declares one. */
     repo?: string
     ui?: {
@@ -119,7 +128,6 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
   const isBuiltin = app.origin === 'builtin'
   const orphaned = !!app.orphaned
   const appHostRouted = !isBuiltin || !!app.manifest?.ui?.entry
-  const artRepo = app.manifest?.repo || app.sourceUrl || ''
   const route = orphaned
     ? `/apps/migrate/${app.name}`
     : appHostRouted
@@ -138,8 +146,20 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
     // dashboard load — so a manifest naming an external host would leak the
     // viewer to it without them opening anything. A built-in's absolute
     // `/app-assets/…` still passes through unchanged.
-    iconUrl: manifestArt(app.manifest?.iconUrl, artRepo),
-    iconUrlDark: manifestArt(app.manifest?.iconUrlDark, artRepo),
+    //
+    // `installedArt` first: everything here IS installed, and its art sits in
+    // the app's own install directory, so serving it from `/apps/{name}/art/…`
+    // keeps the rail off the blob proxy entirely. That matters most on this
+    // surface — it is the one that renders on every load, so a proxy 403 during
+    // a cold start would blank every external app's rail icon at once.
+    // `iconPath` before `iconUrl`, matching the order the detail page and the
+    // backend both use: a fetched app declares the repo-relative one, and reading
+    // only `iconUrl` is why an external app kept the generic box here even after
+    // its detail page showed the real icon.
+    iconUrl: installedIcon(app.manifest?.iconPath, app.manifest?.iconUrl, app.name),
+    iconUrlDark: installedIcon(
+      app.manifest?.iconPathDark, app.manifest?.iconUrlDark, app.name,
+    ),
     iconName: page.icon || '',
     pageIconUrl: page.iconUrl || '',
   }

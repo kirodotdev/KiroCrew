@@ -589,7 +589,7 @@ _APPS_UI_BYPASS_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/ui/")
 # NOTE: /apps/ is intentionally NOT in this tuple. /apps/ path handling is
 # governed solely by _APPS_SPA_EXCLUDED_RE in _is_spa_shell_request:
 #   - bare /apps/{name}              → SPA shell (browser refresh must work)
-#   - /apps/{name}/api|ui/...        → real server handler (proxy / static)
+#   - /apps/{name}/api|art|ui/...    → real server handler (proxy / static)
 #   - any other /apps/ path          → SPA shell (React Router owns it, e.g.
 #                                      /apps/detail/{name}, /apps/migrate/{name})
 # test_no_get_route_outside_shell_exclusions validates /apps/ routes against
@@ -643,15 +643,16 @@ def register_app_window_paths(paths: Iterable[str]) -> None:
 # test_apps_server_routes_are_excluded_from_shell guards the other direction by
 # reading the live route literals out of apps/routes.py.
 #
-# The trailing slash is also load-bearing. Both handlers are registered with a
-# path segment after the sub-namespace (`/apps/{name}/ui/{path:.*}` and
-# `/apps/{name}/api/{path:.*}`), and no bare `/apps/{name}/ui` or
-# `/apps/{name}/api` route exists. An earlier `(?:/|$)` therefore excluded two
-# paths that no handler serves, and since the app name occupies the same segment
-# position as the router's `detail`/`migrate` verbs, an app named literally
-# "api" or "ui" got a 404 on /apps/detail/api. Requiring the slash costs no
-# real server route and resolves that collision toward the client route.
-_APPS_SPA_EXCLUDED_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/(?:api|ui)/")
+# The trailing slash is also load-bearing. Every handler is registered with a
+# path segment after the sub-namespace (`/apps/{name}/ui/{path:.*}`,
+# `/apps/{name}/art/{path:.*}` and `/apps/{name}/api/{path:.*}`), and no bare
+# `/apps/{name}/ui`, `/apps/{name}/art` or `/apps/{name}/api` route exists. An
+# earlier `(?:/|$)` therefore excluded paths that no handler serves, and since
+# the app name occupies the same segment position as the router's
+# `detail`/`migrate` verbs, an app named literally "api" or "ui" got a 404 on
+# /apps/detail/api. Requiring the slash costs no real server route and resolves
+# that collision toward the client route.
+_APPS_SPA_EXCLUDED_RE = re.compile(r"^/apps/[a-z0-9][a-z0-9_-]*/(?:api|art|ui)/")
 
 
 def _is_spa_shell_request(request: web.Request) -> bool:
@@ -662,11 +663,11 @@ def _is_spa_shell_request(request: web.Request) -> bool:
     dead-end 403 whose recovery JS never loads. Safe because the shell is
     static and secret-free and every data namespace is excluded.
 
-    Special case for ``/apps/``: only ``/apps/{name}/api/...`` and
-    ``/apps/{name}/ui/...`` have server-side handlers. Every other ``/apps/``
-    path is a React Router navigation entry with no server route -- bare
-    ``/apps/{name}``, plus ``/apps/detail/{name}`` and ``/apps/migrate/{name}``
-    -- so those must fall through to the SPA shell.
+    Special case for ``/apps/``: only ``/apps/{name}/api/...``,
+    ``/apps/{name}/art/...`` and ``/apps/{name}/ui/...`` have server-side
+    handlers. Every other ``/apps/`` path is a React Router navigation entry
+    with no server route -- bare ``/apps/{name}``, plus ``/apps/detail/{name}``
+    and ``/apps/migrate/{name}`` -- so those must fall through to the SPA shell.
     """
     if request.method not in ("GET", "HEAD"):
         return False
@@ -677,9 +678,10 @@ def _is_spa_shell_request(request: web.Request) -> bool:
             return False
         return not path.startswith(SPA_FALLBACK_EXCLUDED_PREFIXES)
     # /apps/ sub-namespace: exclude only the paths apps/routes.py actually
-    # serves (/apps/{name}/api/... and /apps/{name}/ui/...). Everything else
-    # under /apps/ belongs to React Router — bare /apps/{name} as well as
-    # /apps/detail/{name} and /apps/migrate/{name} — and gets the shell.
+    # serves (/apps/{name}/api/..., /apps/{name}/art/... and
+    # /apps/{name}/ui/...). Everything else under /apps/ belongs to React
+    # Router — bare /apps/{name} as well as /apps/detail/{name} and
+    # /apps/migrate/{name} — and gets the shell.
     return not _APPS_SPA_EXCLUDED_RE.match(path)
 
 

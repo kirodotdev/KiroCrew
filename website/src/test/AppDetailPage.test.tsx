@@ -159,8 +159,8 @@ const ART_LESS_ROW = {
   origin: 'registry',
 }
 
-const proxied = (path: string, repo = 'https://example.invalid/octocat/some-app') =>
-  `/api/apps/blob?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`
+/** The app's own installed art route — no repo identifier, no clone, no network. */
+const local = (path: string, name = 'some-app') => `/apps/${name}/art/${path}`
 
 describe('AppDetailPage — installed external app whose registry row carries no art', () => {
   beforeEach(() => {
@@ -170,7 +170,12 @@ describe('AppDetailPage — installed external app whose registry row carries no
     system.mockResolvedValue({ hostname: '' })
   })
 
-  it('proxies the manifest icon, banner, and screenshot through the blob proxy', async () => {
+  it("serves the manifest icon, banner, and screenshot from the app's own files", async () => {
+    // This is the surface the catalog leaves with nothing: a catalog row carries
+    // `iconRef`/`heroRef` and no screenshot or detail-hero equivalent at all, so
+    // these three fields come off the installed manifest. They used to reach the
+    // blob proxy — a git clone behind an SSRF allowlist warmed by a network
+    // fetch — and now read the files the install itself wrote.
     getApp.mockResolvedValue(EXTERNAL)
     listRegistry.mockResolvedValue({
       apps: [ART_LESS_ROW],
@@ -179,20 +184,27 @@ describe('AppDetailPage — installed external app whose registry row carries no
     renderDetail('some-app')
 
     const icon = await screen.findByTestId('app-icon')
-    expect(icon.getAttribute('data-icon-url')).toBe(proxied('assets/icon.webp'))
-    expect(document.querySelector(`img[src="${proxied('assets/hero-detail.webp')}"]`))
+    expect(icon.getAttribute('data-icon-url')).toBe(local('assets/icon.webp'))
+    expect(document.querySelector(`img[src="${local('assets/hero-detail.webp')}"]`))
       .not.toBeNull()
-    expect(document.querySelector(`img[src="${proxied('assets/screenshots/one.webp')}"]`))
+    expect(document.querySelector(`img[src="${local('assets/screenshots/one.webp')}"]`))
       .not.toBeNull()
+    const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src') || '')
+    expect(srcs.some(s => s.includes('/api/apps/blob'))).toBe(false)
   })
 
-  it('falls back to the recorded install URL when no row and no manifest repo name one', async () => {
-    getApp.mockResolvedValue(EXTERNAL)
+  it('needs no recorded install URL, so art survives an app with no provenance', async () => {
+    // Replaces a case that asserted the opposite: with no row and no manifest
+    // `repo`, the blob URL was built from `sourceUrl`, and without that there was
+    // no URL at all. The app's own name locates the bytes, so neither identifier
+    // is load-bearing for art any more.
+    const { sourceUrl: _unused, ...noProvenance } = EXTERNAL
+    getApp.mockResolvedValue(noProvenance)
     listRegistry.mockResolvedValue({ apps: [], serverPlatform: { os: 'linux', arch: 'x86_64' } })
     renderDetail('some-app')
 
     const icon = await screen.findByTestId('app-icon')
-    expect(icon.getAttribute('data-icon-url')).toBe(proxied('assets/icon.webp'))
+    expect(icon.getAttribute('data-icon-url')).toBe(local('assets/icon.webp'))
   })
 
   it('renders no repo-relative src when no repo can be resolved', async () => {

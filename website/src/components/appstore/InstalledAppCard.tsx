@@ -14,7 +14,7 @@ import {
 import { api } from '../../api/client'
 import { Badge, Btn } from '../ui'
 import AppIconTile from './AppIconTile'
-import { manifestArt } from './useHeroArt'
+import { installedIcon } from './useHeroArt'
 import type { InstalledApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
 
@@ -51,15 +51,24 @@ export default function InstalledAppCard({
   const canUpdate = app.lifecycle === 'gateway'
   const canUninstall = app.lifecycle !== 'locked'
   const hasOpenCommand = !!m?.openCommand
-  // Icon: a built-in's absolute `iconUrl`, else the repo-relative `iconPath`
-  // through the blob proxy. Both go through the same resolver, so a manifest
-  // naming an external host is refused rather than handed to <img>. The repo is
-  // the manifest's own when it declares one, else the git URL the install
-  // recorded — a manifest is not required to name its repo, and without that
-  // fallback such an app renders the generic box.
-  const artRepo = m?.repo || app.sourceUrl || ''
-  const iconUrl = manifestArt(m?.iconUrl, artRepo) || manifestArt(m?.iconPath, artRepo)
-  const iconUrlDark = manifestArt(m?.iconUrlDark, artRepo) || manifestArt(m?.iconPathDark, artRepo)
+  // Icon: a built-in's absolute `iconUrl`, else the repo-relative `iconPath`,
+  // both resolved against the app's OWN install directory. The resolver refuses
+  // a manifest naming an external host rather than handing it to <img>.
+  //
+  // `/apps/{name}/art/…` rather than the blob proxy: the bytes are already on
+  // local disk, so this needs no network and cannot 403 the way the proxy's
+  // SSRF allowlist can before its catalog fetch has warmed. No blob-proxy tail
+  // here — this surface always has `app.name`, so `installedArt` answers ''
+  // only for a path the proxy resolver would refuse too.
+  //
+  // `iconPath` FIRST, matching `appNav.ts` and `AppDetailPage`. The order is only
+  // observable for a manifest declaring both, and there it decides which file the
+  // app wears — so the four surfaces have to agree or the same app shows one icon
+  // on this card and another in the rail. `iconPath` wins because it is the field
+  // that addresses a file in the install directory; `iconUrl` is a client-local
+  // absolute path a builtin declares (see `clientLocalArt`).
+  const iconUrl = installedIcon(m?.iconPath, m?.iconUrl, app.name)
+  const iconUrlDark = installedIcon(m?.iconPathDark, m?.iconUrlDark, app.name)
 
   return (
     <div className="border border-border rounded-lg hover:border-accent/30 transition-colors overflow-hidden">

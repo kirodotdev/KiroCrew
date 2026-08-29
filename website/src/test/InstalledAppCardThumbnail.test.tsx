@@ -101,25 +101,35 @@ describe('InstalledAppCard thumbnail', () => {
     expect(srcs.some(s => s.includes('/api/apps/blob'))).toBe(false)
   })
 
-  it("proxies iconPath against the manifest's repo", () => {    renderCard(app({ iconPath: 'assets/icon.webp', repo: 'octocat/some-app' }))
+  it("serves iconPath from the app's own install directory", () => {
+    renderCard(app({ iconPath: 'assets/icon.webp', repo: 'octocat/some-app' }))
     expect(screen.getByTestId('app-icon').getAttribute('data-icon-url'))
-      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Ficon.webp')
+      .toBe('/apps/dev-fleet/art/assets/icon.webp')
   })
 
-  it('falls back to the recorded install URL when the manifest names no repo', () => {
-    // A manifest is not required to declare `repo`, and a registry row can be
-    // absent or missing its art. `sourceUrl` is recorded at install time, so it
-    // is the identifier that survives both.
-    const a = app({ iconPath: 'assets/icon.webp' })
-    a.sourceUrl = 'https://example.invalid/octocat/some-app'
-    renderCard(a)
-    expect(screen.getByTestId('app-icon').getAttribute('data-icon-url'))
-      .toBe('/api/apps/blob?repo=https%3A%2F%2Fexample.invalid%2Foctocat%2Fsome-app&path=assets%2Ficon.webp')
-  })
-
-  it('renders no icon URL at all when nothing can resolve the repo-relative path', () => {
+  it('needs no repo identifier at all, so a manifest without one still shows art', () => {
+    // The case this replaces asserted the opposite: with no `repo` and no
+    // `sourceUrl` there was nothing to build a blob URL against, so the card
+    // rendered the generic box. The app's own name locates the bytes, so a
+    // local-directory install or a manifest that never declares `repo` now
+    // renders its real icon.
     renderCard(app({ iconPath: 'assets/icon.webp' }))
-    expect(screen.getByTestId('app-icon').getAttribute('data-icon-url')).toBe('')
+    expect(screen.getByTestId('app-icon').getAttribute('data-icon-url'))
+      .toBe('/apps/dev-fleet/art/assets/icon.webp')
+  })
+
+  it('reaches the blob proxy for no icon path at all', () => {
+    // The chain has no proxy tail left: this surface always knows the app name,
+    // so a value `installedArt` refuses is one the proxy resolver refuses too.
+    for (const m of [
+      { iconPath: 'assets/icon.webp', repo: 'octocat/some-app' },
+      { iconPath: 'assets/icon.webp' },
+      { iconUrl: '/app-assets/dev-fleet/icon.svg' },
+    ]) {
+      renderCard(app(m))
+    }
+    const urls = screen.getAllByTestId('app-icon').map(el => el.getAttribute('data-icon-url') || '')
+    expect(urls.some(u => u.includes('/api/apps/blob'))).toBe(false)
   })
 
   it('refuses a manifest icon pointing at an external host', () => {

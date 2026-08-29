@@ -19,7 +19,7 @@ vi.mock('../components/AppIcon', () => ({
 }))
 
 import FeaturedSpotlight from '../components/appstore/FeaturedSpotlight'
-import { resolveArtPath, manifestArt, manifestArtList, classifyManifestArt } from '../components/appstore/useHeroArt'
+import { classifyManifestArt, clientLocalArt, installedArt, resolveArtPath } from '../components/appstore/useHeroArt'
 import type { RegistryApp } from '../components/appstore/types'
 
 function registryApp(over: Partial<RegistryApp> = {}): RegistryApp {
@@ -70,16 +70,15 @@ describe('resolveArtPath', () => {
   })
 })
 
-describe('manifestArt', () => {
-  it('proxies a repo-relative manifest path', () => {
-    expect(manifestArt('assets/icon.webp', 'octocat/some-app'))
-      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Ficon.webp')
-  })
-
-  it('leaves an absolute path or a full URL as written', () => {
-    expect(manifestArt('/app-assets/dev-fleet/icon.svg', '')).toBe('/app-assets/dev-fleet/icon.svg')
-  })
-
+describe('classifyManifestArt', () => {
+  /*
+   * These cases outlived `manifestArt`, which this change deleted as a
+   * caller-less export. They were never really about that wrapper: what they pin
+   * is the CLASSIFIER, which every art resolver still routes through, and three
+   * of the refusal families below each defeated a successive prefix test during
+   * review. Deleting them alongside the wrapper would have retired the evidence
+   * and kept the rule.
+   */
   it('REFUSES every spelling the URL parser resolves off-origin', () => {
     // Measured against a real parser, resolving each against a same-origin base.
     // Four families, three of which defeated a successive prefix test here:
@@ -99,8 +98,10 @@ describe('manifestArt', () => {
       '\u000b//example.com/icon.png', ' https://example.com/icon.png',
     ]
     for (const bad of offOrigin) {
-      expect(manifestArt(bad, 'octocat/some-app')).toBe('')
       expect(classifyManifestArt(bad)).toBe('refused')
+      // And the live resolvers must both act on that answer, not re-derive it.
+      expect(installedArt(bad, 'some-app')).toBe('')
+      expect(clientLocalArt(bad)).toBe('')
     }
   })
 
@@ -111,14 +112,14 @@ describe('manifestArt', () => {
     expect(classifyManifestArt('/app-assets/x\\y.svg')).toBe('same-origin')
     expect(classifyManifestArt('\\example.com/x.png')).toBe('relative')
     expect(classifyManifestArt('/app-assets/a b.svg')).toBe('same-origin')
-    expect(manifestArt('/app-assets/x.svg\t', '')).toBe('/app-assets/x.svg')
+    expect(clientLocalArt('/app-assets/x.svg\t')).toBe('/app-assets/x.svg')
   })
 
   it('emits the string it classified, not the raw one', () => {
     // Classifying a normalized value and handing <img> the raw one is the gap a
     // tab-splitting value walks through.
-    expect(manifestArt('\tassets/a.png', 'octocat/some-app'))
-      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Fa.png')
+    expect(installedArt('\tassets/a.png', 'some-app'))
+      .toBe('/apps/some-app/art/assets/a.png')
   })
 
   it('classifies each path shape', () => {
@@ -133,49 +134,34 @@ describe('manifestArt', () => {
     expect(classifyManifestArt(undefined)).toBe('refused')
   })
 
-  it('answers empty for a repo-relative path with no repo, NOT the bare path', () => {
-    // The distinction from `resolveArtPath` — a bare relative src resolves
-    // against the current route and 404s the SPA shell instead of degrading.
-    expect(manifestArt('assets/icon.webp', '')).toBe('')
-    expect(manifestArt('assets/icon.webp', undefined)).toBe('')
-  })
-
-  it('answers empty for a missing path', () => {
-    expect(manifestArt('', 'octocat/some-app')).toBe('')
-    expect(manifestArt(undefined, 'octocat/some-app')).toBe('')
-  })
-
   it('refuses a non-string value instead of throwing', () => {
     // A manifest is JSON from disk and the installed-app normalizer passes
     // unknown keys through verbatim, so `"iconPath": {}` reaches this as an
     // object. A bare `startsWith` would throw and blank the whole surface.
     for (const bad of [{}, [], 42, true, null] as unknown[]) {
-      expect(manifestArt(bad, 'octocat/some-app')).toBe('')
       expect(classifyManifestArt(bad)).toBe('refused')
+      expect(installedArt(bad, 'some-app')).toBe('')
+      expect(clientLocalArt(bad)).toBe('')
     }
   })
 })
 
-describe('manifestArtList', () => {
-  it('resolves every entry and drops the refused ones', () => {
-    expect(manifestArtList(['assets/a.png', 'https://evil.example/b.png', '/app-assets/c.svg'],
-      'octocat/some-app')).toEqual([
-      '/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Fa.png',
-      '/app-assets/c.svg',
-    ])
+describe('clientLocalArt', () => {
+  /*
+   * `iconUrl` means "a builtin's absolute client-local path". The backend's
+   * declared-field set carries `iconPath`, NOT `iconUrl`, so building an art-route
+   * URL out of a RELATIVE `iconUrl` produces a path the route refuses by
+   * construction -- a guaranteed 404 dressed as a fallback. That is what this
+   * refuses, and it is the whole reason the helper exists separately.
+   */
+  it('passes a builtin absolute client-local path through', () => {
+    expect(clientLocalArt('/app-assets/dev-fleet/icon.svg'))
+      .toBe('/app-assets/dev-fleet/icon.svg')
   })
 
-  it('answers an empty list for a non-array instead of throwing', () => {
-    // `screenshotsDark` is NOT coerced by the installed-app normalizer (only
-    // `screenshots` is), so `"screenshotsDark": {}` reaches the caller raw.
-    for (const bad of [{}, 'assets/a.png', 42, null, undefined] as unknown[]) {
-      expect(manifestArtList(bad, 'octocat/some-app')).toEqual([])
-    }
-  })
-
-  it('drops a non-string entry inside an otherwise valid array', () => {
-    expect(manifestArtList(['assets/a.png', {}, null], 'octocat/some-app'))
-      .toEqual(['/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Fa.png'])
+  it('REFUSES a relative value rather than building a URL the route cannot serve', () => {
+    expect(clientLocalArt('assets/icon.webp')).toBe('')
+    expect(clientLocalArt('./assets/icon.webp')).toBe('')
   })
 })
 
