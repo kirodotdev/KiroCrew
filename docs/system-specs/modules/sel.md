@@ -74,6 +74,16 @@ registers an `atexit` flush.
   `verify_integrity`, `prune`) and on exit. It waits on a pending-event counter
   (a `threading.Condition`, race-free vs a bare queue-empty check), bounded by
   `_FLUSH_TIMEOUT_SECS` so a wedged writer can't hang a read.
+- **Hard exits flush explicitly**: `os._exit` runs no `atexit` handler and does
+  not join a daemon thread, so "on exit" above covers only an ordinary
+  interpreter shutdown. Every hard exit in the gateway process therefore drains
+  the queue for itself — `flush_audit_queue(timeout=...)` from a synchronous
+  signal handler, `await flush_audit_queue_before_hard_exit()` from a coroutine
+  (it offloads the blocking drain so the loop is not parked). Both are bounded by
+  `_HARD_EXIT_FLUSH_TIMEOUT_SECS` and neither raises: a hard exit must not be
+  blocked, or replaced, by auditing. `flush_audit_queue` is a no-op when no
+  singleton exists, so it never creates the trust directory as a side effect of
+  leaving. Pinned by the AST ratchet in `test/test_sel_hard_exit_flush.py`.
 - **Fallback**: if the writer can't be started, `log()` writes synchronously so
   an event is never silently dropped.
 - **`sync=True`**: `SecurityEventLog(base_dir=..., sync=True)` writes each event

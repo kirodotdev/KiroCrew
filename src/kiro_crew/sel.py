@@ -55,6 +55,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES
+from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +371,10 @@ _MAX_ARG_LEN = 500
 # read so read-after-write stays consistent.
 _QUEUE_DRAIN_BATCH = 256  # max events appended per open() in the writer loop
 _FLUSH_TIMEOUT_SECS = 5.0  # bound on flush() so a stuck writer can't hang reads
+# Tighter bound for the hard-exit paths. os._exit() is imminent there, so a
+# wedged writer must not be given the whole read-path budget before the process
+# is allowed to leave.
+_HARD_EXIT_FLUSH_TIMEOUT_SECS = 3.0
 
 
 def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
@@ -3337,6 +3342,54 @@ def _trust_root_key_loads(path: Path) -> bool:
     except OSError:
         return False
     return stat.S_ISREG(st.st_mode) and st.st_size >= _HMAC_KEY_MIN_BYTES
+
+
+def flush_audit_queue(timeout: float = _HARD_EXIT_FLUSH_TIMEOUT_SECS) -> None:
+    """Drain the queued audit tail, bounded by *timeout*. Never raises.
+
+    The writer is a *daemon* thread fed by an unbounded queue, and its drain is
+    registered with :mod:`atexit`. ``os._exit`` runs no ``atexit`` handler and
+    does not join daemon threads, so every event still queued at a hard exit
+    dies with the process -- including the ones recorded during the shutdown
+    that is exiting, which are exactly the records an investigator reaches for.
+
+    Flushes only an ALREADY-INITIALIZED singleton: with no live instance there
+    is nothing queued, and constructing one here would create the trust
+    directory and HMAC key as a side effect of leaving.
+    """
+    inst = SecurityEventLog._instance
+    if inst is None:
+        return
+    try:
+        inst.flush(timeout=timeout)
+    except Exception:
+        logger.debug("SEL flush before hard exit failed", exc_info=True)
+
+
+async def flush_audit_queue_before_hard_exit(
+    timeout: float = _HARD_EXIT_FLUSH_TIMEOUT_SECS,
+) -> None:
+    """:func:`flush_audit_queue` for an ``async`` hard-exit path.
+
+    :meth:`SecurityEventLog.flush` is a *synchronous* blocking drain, so calling
+    it inline from a coroutine would park the event loop for up to *timeout*.
+    Offload it to :func:`~kiro_crew.executors.subprocess_executor` -- the pool
+    reserved for teardown work that can block on a wedged resource -- under an
+    outer deadline just past the inner one, so a writer wedged on a full disk or
+    an unreachable sink delays neither the loop nor the exit, and leaves no pool
+    thread blocked past the deadline that already gave up on it.
+
+    Never raises: a hard exit must not be blocked, or replaced, by auditing.
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), flush_audit_queue, timeout
+            ),
+            timeout=timeout + 1.0,
+        )
+    except Exception:
+        logger.debug("SEL flush before hard exit failed", exc_info=True)
 
 
 def sel_hmac_key_path() -> Path:
