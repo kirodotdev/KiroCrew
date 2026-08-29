@@ -362,6 +362,341 @@ class TestOscillationCap:
         assert bare._stand_downs_issued == 0
 
 
+class TestAdoptedDriftRecheck:
+    """Re-checking coverage while the daemon is merely being kept alive.
+
+    ``TestElection`` pins the start-time repair. That fires only at a
+    transition -- adoption, or the pre-respawn gate -- and an adopted daemon
+    that keeps answering ping is in neither: the watchdog supervises it for
+    LIVENESS alone. So a survivor that goes stale AFTER adoption (the gateway
+    restarts with a new stub_servers set while the daemon lives on) kept its
+    stale map for as long as it held the socket. That is the 25-day-old daemon
+    from the field; this class pins the loop that now catches it.
+
+    The re-check rides the liveness ping's own reply, so it costs nothing extra
+    on the wire -- the coverage report is in a frame the watchdog already reads.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_fit_adopted_daemon_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        asked = AsyncMock(return_value=mgr._SPAWN)
+        monkeypatch.setattr(manager, "_repair_or_adopt", asked)
+        assert await manager._reconcile_adopted({"type": "pong", "targets": ["CORE"]}) is False
+        asked.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_recheck_is_rate_limited_to_its_own_interval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cadence is the whole reason this is safe to run in the loop.
+
+        The liveness ping is every 30s and a manager may only ever issue
+        _MAX_STAND_DOWN_REQUESTS stand-downs, so re-assessing on every ping
+        would spend that entire budget within ~90s against an incumbent that
+        refuses to yield -- and then never ask again for the life of the
+        process. One assessment per interval is what keeps the repair available.
+        """
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        asked = AsyncMock(return_value=mgr._ADOPT)
+        monkeypatch.setattr(manager, "_repair_or_adopt", asked)
+        pong = {"type": "pong", "targets": []}
+
+        assert await manager._reconcile_adopted(pong) is False
+        assert asked.await_count == 1, "the first call assesses"
+        for _ in range(5):
+            assert await manager._reconcile_adopted(pong) is False
+        assert asked.await_count == 1, "further pings inside the interval must not re-ask"
+
+        manager._last_drift_check -= mgr._DRIFT_RECHECK_INTERVAL_SECS
+        assert await manager._reconcile_adopted(pong) is False
+        assert asked.await_count == 2, "a new interval assesses again"
+
+    @pytest.mark.asyncio
+    async def test_a_drifted_adopted_daemon_is_repaired_and_replaced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        # _reconcile_adopted is only ever reached from the watchdog's adopted
+        # branch, so anything asserting on _adopted must start there.
+        manager._adopted = True
+        monkeypatch.setattr(manager, "_repair_or_adopt", AsyncMock(return_value=mgr._SPAWN))
+        ours = MagicMock()
+        ours.pid = 4242
+        ours.returncode = None
+
+        async def _spawned() -> dict:
+            manager._process = ours
+            return {"type": "pong", "targets": ["CORE"]}
+
+        monkeypatch.setattr(manager, "_spawn_and_confirm", AsyncMock(side_effect=_spawned))
+        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is True
+        assert manager._adopted is False, "we own the daemon now"
+        assert manager.is_running
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verdict", [mgr._ADOPT, mgr._ABORT])
+    async def test_an_unyielding_incumbent_stays_adopted_without_spinning(
+        self, verdict: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neither refusal nor draining may make the watchdog hot-loop.
+
+        Returning True here would send the loop straight back around with no
+        sleep, re-pinging a daemon that just declined -- burning CPU for as long
+        as the drift lasts. False means the caller sleeps out its liveness
+        interval, which is also what gives a draining daemon time to finish (the
+        next ping then fails and the death path spawns a replacement).
+
+        Note this differs from ``start()``, which FAILS on _ABORT: a start that
+        reported ready would hand sessions a daemon accepting nothing, whereas
+        the watchdog is already supervising and simply keeps doing so.
+        """
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        # _reconcile_adopted is only ever reached from the watchdog's adopted
+        # branch, so anything asserting on _adopted must start there.
+        manager._adopted = True
+        monkeypatch.setattr(manager, "_repair_or_adopt", AsyncMock(return_value=verdict))
+        spawn = AsyncMock()
+        monkeypatch.setattr(manager, "_spawn_and_confirm", spawn)
+        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is False
+        assert manager._adopted is True
+        spawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["nothing_serves", "lost_the_race"])
+    async def test_a_yield_we_could_not_capitalise_on_returns_to_adoption(
+        self, outcome: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two ways our spawn does not end up ours, one recovery.
+
+        The incumbent released the socket, but either the spawn failed outright
+        or a sibling gateway won the freed lock first. Either way this manager
+        holds no usable process, so it must go back to the adopted branch --
+        leaving _adopted False with _process None idles the watchdog forever
+        with no daemon and no retry.
+
+        Recovery deliberately does NOT go through _adopt_incumbent(), which
+        starts a watchdog task: calling it from inside the watchdog would leave
+        a second, uncancellable supervisor running.
+        """
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        # _reconcile_adopted is only ever reached from the watchdog's adopted
+        # branch, so anything asserting on _adopted must start there.
+        manager._adopted = True
+        monkeypatch.setattr(manager, "_repair_or_adopt", AsyncMock(return_value=mgr._SPAWN))
+        # A foreign daemon answering (flock loser exits rc=0, so _process stays
+        # unusable) vs the spawn failing outright.
+        reply = None if outcome == "nothing_serves" else {"type": "pong", "targets": ["CORE"]}
+        monkeypatch.setattr(manager, "_spawn_and_confirm", AsyncMock(return_value=reply))
+        watchdogs: list[object] = []
+        monkeypatch.setattr(
+            manager, "_adopt_incumbent", lambda: watchdogs.append("started") or True
+        )
+
+        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is True
+        assert manager._adopted is True, "must return to the adopted branch"
+        assert manager._process is None
+        assert not watchdogs, "must not re-enter _adopt_incumbent (it starts a watchdog)"
+
+    @pytest.mark.asyncio
+    async def test_adoption_starts_the_recheck_clock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Coverage was just assessed, so the first re-check waits a full interval.
+
+        Without this the watchdog's very first ping would repeat the assessment
+        the adoption gate had just made, and against a refusing incumbent that
+        spends a stand-down from the cap for no new information.
+        """
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        monkeypatch.setattr(manager, "_run_watchdog", AsyncMock())
+        assert manager._last_drift_check == 0.0
+        assert manager._adopt_incumbent() is True
+        assert manager._last_drift_check > 0.0
+        if manager._watchdog is not None:
+            manager._watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await manager._watchdog
+
+        asked = AsyncMock(return_value=mgr._SPAWN)
+        monkeypatch.setattr(manager, "_repair_or_adopt", asked)
+        assert await manager._reconcile_adopted({"type": "pong", "targets": []}) is False
+        asked.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_spawn_setup_failure_does_not_kill_the_watchdog(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The repair may not cost us the supervisor.
+
+        _spawn_and_confirm guards _spawn_once, but its _clear_stale_socket and
+        prepare_dir steps run OUTSIDE that guard, so an OSError there (a full
+        disk, a vanished parent dir, a permission change) propagates. Unguarded,
+        it escapes the watchdog's adopted branch and terminates the supervisor
+        task -- the daemon then has NO watchdog at all, which is strictly worse
+        than the drift the repair came to fix.
+
+        Asserted on the loop, not just the helper: a passing return value proves
+        nothing if the exception killed the caller.
+        """
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        manager._adopted = True
+        manager._process = None
+        pong = {"type": "pong", "targets": []}
+        pings = 0
+
+        async def _ping() -> dict:
+            nonlocal pings
+            pings += 1
+            # Stop after this cycle: a True return `continue`s to the loop
+            # condition, so the watchdog exits without sleeping out its
+            # liveness interval. An UNGUARDED OSError never reaches here at
+            # all -- it propagates and _run_watchdog raises, which is the
+            # regression this pins.
+            manager._stopping = True
+            return pong
+
+        monkeypatch.setattr(manager, "_ping_payload", _ping)
+        monkeypatch.setattr(manager, "_repair_or_adopt", AsyncMock(return_value=mgr._SPAWN))
+        # Raise from the real producer step, not from _spawn_and_confirm itself:
+        # the guard lives inside that method, so mocking it to raise would pin a
+        # guard that no longer exists there and would miss a regression at its
+        # other call site.
+        monkeypatch.setattr(
+            manager,
+            "_clear_stale_socket",
+            AsyncMock(side_effect=OSError("no space left on device")),
+        )
+        monkeypatch.setattr(manager, "_spawn_once", AsyncMock())
+
+        # Must not raise: the watchdog has to survive its own repair attempt.
+        await asyncio.wait_for(manager._run_watchdog(), timeout=5)
+
+        assert pings == 1
+        assert manager._adopted is True, "adoption must be restored, not left dangling"
+        assert manager._process is None
+
+    @pytest.mark.asyncio
+    async def test_the_respawn_gate_adoption_also_starts_the_recheck_clock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every path that ADOPTS owes the clock stamp, not just _adopt_incumbent.
+
+        The watchdog's pre-respawn gate adopts an incumbent inline (it must not
+        call _adopt_incumbent, which would start a second watchdog). It had
+        assessed coverage one line earlier but left _last_drift_check at 0.0, so
+        the adopted branch's very first iteration saw an elapsed interval of
+        `now - 0.0` and re-assessed immediately -- spending a stand-down from the
+        lifetime cap to re-derive what the gate had just decided.
+        """
+        monkeypatch.setattr(mgr, "_RESPAWN_BACKOFF_START_SECS", 0.0)
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        manager._adopted = False
+
+        exited = MagicMock()
+        exited.pid = 999
+        exited.returncode = 0
+        exited.wait = AsyncMock(return_value=0)
+        manager._process = exited
+
+        async def _never() -> str:
+            await asyncio.sleep(3600)
+            return "unreachable"
+
+        monkeypatch.setattr(manager, "_liveness_probe_loop", _never)
+        # A fit incumbent holds the socket: drift is empty, so the gate adopts.
+        monkeypatch.setattr(
+            manager,
+            "_ping_payload",
+            AsyncMock(return_value={"type": "pong", "targets": ["CORE"]}),
+        )
+        seen: list[float] = []
+
+        async def _capture(frame: dict) -> bool:
+            seen.append(manager._last_drift_check)
+            manager._stopping = True
+            return True
+
+        monkeypatch.setattr(manager, "_reconcile_adopted", AsyncMock(side_effect=_capture))
+        await asyncio.wait_for(manager._run_watchdog(), timeout=5)
+
+        assert manager._adopted is True
+        assert seen, "the adopted branch never ran, so the gate was not exercised"
+        assert seen[0] > 0.0, "the respawn gate adopted without starting the clock"
+
+    @pytest.mark.asyncio
+    async def test_start_returns_false_rather_than_raising_on_a_setup_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sibling call site, and the contract that made it matter.
+
+        `_spawn_and_confirm` has two callers. Guarding only the watchdog's would
+        leave `_start_locked`'s untouched, where the same OSError escapes
+        `start()` -- whose docstring promises "Never raises -- callers treat a
+        False return as fall back to per-session MCP" -- and reaches the
+        unguarded `await manager.start()` in the gateway bootstrap, failing
+        gateway startup instead of degrading to per-session MCP.
+
+        Guarding the producer covers both callers at once, which is why this
+        test lives beside the watchdog one: they are the same defect.
+        """
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        # Nobody holds the socket, so the election goes straight to spawning.
+        monkeypatch.setattr(manager, "_ping_payload", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            manager,
+            "_clear_stale_socket",
+            AsyncMock(side_effect=OSError("no space left on device")),
+        )
+        spawn = AsyncMock()
+        monkeypatch.setattr(manager, "_spawn_once", spawn)
+
+        assert await manager.start() is False, "start() must fall back, not raise"
+        spawn.assert_not_awaited(), "a failed setup must not proceed to spawn"
+        assert manager._watchdog is None, "no supervisor for a start that failed"
+
+    def test_the_stamp_is_total_without_init(self) -> None:
+        """Built via __new__, as several call sites and tests do."""
+        bare = mgr.GatewayManager.__new__(mgr.GatewayManager)
+        assert bare._last_drift_check == 0.0
+
+    @pytest.mark.asyncio
+    async def test_the_watchdog_reconciles_on_the_liveness_reply(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wiring: the adopted branch must read the pong, not just a bool.
+
+        _ping_once() throws the payload away, so a watchdog built on it could
+        never see coverage. This pins that the branch reads _ping_payload and
+        hands the frame to the reconciler.
+        """
+        manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
+        manager._adopted = True
+        manager._process = None
+        pong = {"type": "pong", "targets": []}
+        monkeypatch.setattr(manager, "_ping_payload", AsyncMock(return_value=pong))
+        monkeypatch.setattr(
+            manager,
+            "_ping_once",
+            AsyncMock(
+                side_effect=AssertionError(
+                    "the adopted branch must read the pong payload, not a bare bool"
+                )
+            ),
+        )
+
+        async def _stop_after_one(frame: dict) -> bool:
+            assert frame is pong
+            manager._stopping = True
+            return True  # True short-circuits the sleep, so the loop exits at once
+
+        monkeypatch.setattr(manager, "_reconcile_adopted", AsyncMock(side_effect=_stop_after_one))
+        await asyncio.wait_for(manager._run_watchdog(), timeout=5)
+        assert manager._reconcile_adopted.await_count == 1  # type: ignore[attr-defined]
+
+
 # ── the election ───────────────────────────────────────────────────
 
 

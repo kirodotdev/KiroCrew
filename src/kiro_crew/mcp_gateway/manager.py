@@ -24,6 +24,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -88,6 +89,16 @@ _ELECTION_ROUNDS = 2
 # authorised successor; that is a protocol design and is deliberately not
 # invented here.
 _MAX_STAND_DOWN_REQUESTS = 3
+# How often the watchdog RE-checks an adopted daemon's target coverage.
+# Deliberately much slower than the liveness ping: drift is a
+# config-vs-daemon mismatch that only changes when a gateway restarts or
+# its stub_servers set is edited, so probing it on every ping would buy
+# nothing and would spend the _MAX_STAND_DOWN_REQUESTS budget within ~90s
+# against an incumbent that refuses to yield. At five minutes a genuinely
+# stale survivor is repaired within one interval instead of living until
+# the next full gateway start, while a refusing incumbent still settles
+# after three asks -- bounded contention, not an unbounded loop.
+_DRIFT_RECHECK_INTERVAL_SECS = 300.0
 
 # What to do about the daemon holding the socket. Plain strings rather than an
 # Enum so they read the same in a log line as in a branch.
@@ -181,6 +192,10 @@ class GatewayManager:
     #: ``__init__``, and an instance-only attribute would raise AttributeError on
     #: every such path the moment the adoption gate reads it.
     _stand_downs_issued: int = 0
+    #: Monotonic stamp of the last adopted-daemon drift re-check. Same
+    #: class-level-default reasoning as ``_stand_downs_issued`` above: the
+    #: watchdog reads it on paths that build this object via ``__new__``.
+    _last_drift_check: float = 0.0
 
     def __init__(self, spec: GatewaySpec) -> None:
         self._spec = spec
@@ -189,6 +204,7 @@ class GatewayManager:
         self._stopping = False
         self._adopted = False
         self._stand_downs_issued = 0
+        self._last_drift_check = 0.0
         self._lifecycle_lock = asyncio.Lock()
 
     @property
@@ -293,6 +309,10 @@ class GatewayManager:
         """Adopt the daemon on the socket and supervise it. Always ``True``."""
         self._adopted = True
         self._process = None
+        # The caller just assessed coverage, so start the watchdog's
+        # re-check clock here: the first re-check lands one full interval
+        # from now rather than immediately repeating that assessment.
+        self._last_drift_check = time.monotonic()
         logger.info(
             "mcp-gateway: a healthy daemon already owns %s — adopting "
             "(no spawn)", self._spec.socket_path,
@@ -376,7 +396,19 @@ class GatewayManager:
         coverage, which is why this returns the frame rather than a bool.
         """
         # Clear any stale socket from a prior crash.
-        await self._clear_stale_socket()
+        #
+        # These two setup steps touch the filesystem, so they can raise (a full
+        # disk, a vanished parent dir, a permission change on the socket dir)
+        # -- and they sit OUTSIDE the try that guards _spawn_once below. Guard
+        # them here, at the producer, rather than at a caller: both call sites
+        # (_start_locked and the watchdog's _reconcile_adopted) already treat a
+        # None return as "the start failed outright", which is this method's
+        # documented contract, and only a guard here makes start()'s own
+        # "Never raises" contract true. An escape from this method reaches
+        # `await manager.start()` in the gateway bootstrap and, from the
+        # watchdog, terminates the supervisor task outright.
+        try:
+            await self._clear_stale_socket()
         # Owner-only containing directory: the socketsec model calls this the
         # primary access boundary (a 0600 socket alone is insufficient on a
         # shared host), and on Windows it is where the singleton lock file and
@@ -387,7 +419,14 @@ class GatewayManager:
         # -> start()), so calling it inline stalls chat turns and the liveness
         # heartbeat. Mirrors the log-file hunk below, which offloads the same
         # helper.
-        await asyncio.to_thread(transport.prepare_dir, self._spec.socket_path)
+            await asyncio.to_thread(transport.prepare_dir, self._spec.socket_path)
+        except Exception:
+            logger.exception(
+                "mcp-gateway: could not prepare %s for a daemon — "
+                "starting without a shared broker",
+                self._spec.socket_path,
+            )
+            return None
 
         try:
             await self._spawn_once()
@@ -829,6 +868,76 @@ class GatewayManager:
             except Exception:
                 pass
 
+    async def _reconcile_adopted(self, pong: dict) -> bool:
+        """Re-assess an adopted daemon's target coverage and repair a drift.
+
+        Returns ``True`` when this call CHANGED who serves the socket (or who
+        this manager thinks serves it), so the watchdog should re-enter its loop
+        immediately instead of sleeping; ``False`` means nothing moved and the
+        caller should sleep out its normal liveness interval.
+
+        This closes the one gap the start-time repair cannot reach. A target map
+        is baked into a daemon's process env at ``_spawn_once`` and a frozen
+        ``GatewaySpec`` is never re-applied, so coverage is only ever assessed at
+        a transition: adoption, or a pre-respawn gate. An adopted daemon that
+        keeps answering ping sits in neither -- it is supervised purely for
+        liveness -- so a survivor that goes stale AFTER adoption (the gateway
+        restarts with a new ``stub_servers`` set while the daemon lives on) stays
+        stale for as long as it holds the socket. That is the 25-day-old daemon
+        from the field, and the reason the repair had to wait for a full gateway
+        start to fire.
+
+        Rechecking costs nothing extra on the wire: the liveness ping's own reply
+        already carries the coverage report, so this reads a frame the watchdog
+        was fetching anyway.
+        """
+        now = time.monotonic()
+        if now - self._last_drift_check < _DRIFT_RECHECK_INTERVAL_SECS:
+            return False
+        self._last_drift_check = now
+        missing = self._adoption_drift(pong)
+        if not missing:
+            return False
+        verdict = await self._repair_or_adopt(missing)
+        if verdict != _SPAWN:
+            # _ADOPT: it will not yield (or this manager has spent its
+            # stand-down budget) and the cost is already on the record via
+            # _adoption_drift/_repair_or_adopt. _ABORT: it accepted but is still
+            # draining, so right now it is neither adoptable nor replaceable --
+            # the next cycle either finds the socket free (the ping fails and
+            # the death path spawns a replacement) or finds a new daemon to
+            # assess. Either way, keep supervising and do not spin.
+            return False
+        # It released the socket. Take it the same way a start would, so the
+        # flock still arbitrates if a sibling gateway races us for the freed
+        # lock. Drop adoption first: _spawn_and_confirm sets _process, and
+        # leaving _adopted True alongside it would put the watchdog in both
+        # branches at once.
+        self._adopted = False
+        # A setup failure inside _spawn_and_confirm surfaces as None (it guards
+        # its own filesystem steps), so it lands in the restore branch below
+        # rather than escaping and killing this watchdog task.
+        spawned = await self._spawn_and_confirm()
+        if spawned is None or not self.is_running:
+            # Either nothing serves the socket now, or our spawn lost the freed
+            # lock to another gateway instance. This manager holds no usable
+            # process either way, so go back to adopted and let the next
+            # iteration assess whoever answers -- re-checking it is bounded by
+            # _MAX_STAND_DOWN_REQUESTS, so a foreign daemon that also drifted
+            # cannot make this trade sockets forever. Deliberately NOT via
+            # _adopt_incumbent(), which starts a second watchdog task.
+            self._adopted = True
+            self._process = None
+            self._last_drift_check = time.monotonic()
+            return True
+        logger.info(
+            "mcp-gateway: replaced a drifted adopted daemon on %s -- pid=%s now "
+            "serves the current target map",
+            self._spec.socket_path,
+            self._process.pid if self._process else "?",
+        )
+        return True
+
     async def _run_watchdog(self) -> None:
         """Supervise the daemon: respawn on exit or on liveness failure.
 
@@ -849,7 +958,16 @@ class GatewayManager:
                     # adoption and try to become the owner. The flock
                     # arbitrates if a sibling races us; a flock-loser exits
                     # rc=0 and we re-adopt on the next loop.
-                    if await self._ping_once():
+                    #
+                    # The reply also carries the daemon's target coverage,
+                    # so the round-trip that proves liveness re-checks
+                    # drift too: an adopted daemon never re-applies a spec,
+                    # so without this a survivor that goes stale after
+                    # adoption stays stale for its whole life.
+                    pong = await self._ping_payload()
+                    if pong is not None:
+                        if await self._reconcile_adopted(pong):
+                            continue
                         await asyncio.sleep(_LIVENESS_PING_INTERVAL_SECS)
                         continue
                     logger.warning(
@@ -988,6 +1106,13 @@ class GatewayManager:
                     continue
                 if verdict == _ADOPT:
                     self._adopted = True
+                    # Coverage was just assessed above, so start the
+                    # drift re-check clock here as _adopt_incumbent
+                    # does. Without it this manager's _last_drift_check
+                    # stays 0.0 and the adopted branch re-assesses on
+                    # its very first iteration, spending a stand-down
+                    # from the cap for no new information.
+                    self._last_drift_check = time.monotonic()
                     logger.info(
                         "mcp-gateway: socket %s already served by another daemon "
                         "— adopting; watchdog will supervise it via ping",
