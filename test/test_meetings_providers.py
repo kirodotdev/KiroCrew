@@ -26,6 +26,7 @@ from concurrent import futures
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import pytest
 from meetings_helpers import (  # noqa: F401
@@ -285,6 +286,56 @@ class TestParseDt:
     def test_a_malformed_value_is_none(self):
         assert cal._parse_dt("not-a-date", "") is None
         assert cal._parse_dt("", "") is None
+
+    def test_a_zone_beyond_the_original_subset_is_mapped(self):
+        """The table is the FULL CLDR 001 mapping, not a hand-picked subset.
+
+        `FLE Standard Time` (Europe/Kyiv) was absent from the original 28-entry
+        table, so an Exchange export from that zone silently kept the
+        whole-offset bug the PR exists to fix. 12:00 Kyiv in January (UTC+2)
+        == 10:00 UTC.
+        """
+        parsed = cal._parse_dt("20260115T120000", ";TZID=FLE Standard Time")
+        assert parsed == datetime(2026, 1, 15, 10, 0, tzinfo=timezone.utc)
+
+    def test_another_previously_missing_zone_is_mapped(self):
+        """`GTB Standard Time` -> Europe/Bucharest. 12:00 in August (UTC+3) == 09:00 UTC."""
+        parsed = cal._parse_dt("20260827T120000", ";TZID=GTB Standard Time")
+        assert parsed == datetime(2026, 8, 27, 9, 0, tzinfo=timezone.utc)
+
+
+class TestWindowsToIanaTable:
+    """Shape invariants of the full CLDR ``windowsZones`` 001-territory table."""
+
+    def test_every_value_resolves_under_zoneinfo(self):
+        """A row whose value ZoneInfo cannot load is dead weight — the second
+        lookup in `_tzid_of` would raise and degrade to UTC exactly as if the
+        row were absent, silently re-opening the whole-offset bug for that zone.
+        """
+        unresolvable = []
+        for win, iana in cal._WINDOWS_TO_IANA.items():
+            try:
+                ZoneInfo(iana)
+            except Exception:  # noqa: BLE001 - any failure means a dead row
+                unresolvable.append((win, iana))
+        assert unresolvable == []
+
+    def test_every_key_is_lowercase_and_stripped(self):
+        """`_tzid_of` looks up ``name.lower()`` on an already-stripped name, so
+        a key with uppercase letters or edge whitespace is unreachable.
+        """
+        bad = [
+            k
+            for k in cal._WINDOWS_TO_IANA
+            if k != k.lower() or k != k.strip()
+        ]
+        assert bad == []
+
+    def test_the_table_carries_the_full_cldr_001_set(self):
+        """CLDR ``windowsZones`` maps 139 Windows ids for territory 001; a
+        shrinking table means someone re-introduced the hand-picked-subset gap.
+        """
+        assert len(cal._WINDOWS_TO_IANA) >= 139
 
 
 class TestEventId:
