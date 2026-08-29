@@ -191,11 +191,13 @@ _eb_invoke() {
 #   - transient network/TLS failures in electron-builder's OWN mid-build
 #     fetches: the AppImage and NSIS/Squirrel targets pull their own tooling
 #     through `got` AFTER the electron zip has already reported
-#     progress=100%. A dropped connection ("socket hang up") or a
-#     TLS-intercepted response ("self-signed certificate") aborts the whole
-#     build there. These are per-execution network events, not build errors --
-#     the same commit passes on a plain re-run, and one matrix leg can fail
-#     while its siblings go green in the same attempt (#3088).
+#     progress=100%. A dropped connection ("socket hang up"), a
+#     TLS-intercepted response ("self-signed certificate"), or an HTTP-level
+#     answer from the artifact CDN that is retryable rather than final
+#     ("Response code 504") aborts the whole build there. These are
+#     per-execution network events, not build errors -- the same commit
+#     passes on a plain re-run, and one matrix leg can fail while its
+#     siblings go green in the same attempt (#3088, #6795).
 #
 # Split out of the packaging step (rather than left inline) so the
 # retry/classification logic is testable in isolation, mirroring
@@ -215,7 +217,16 @@ run_electron_builder_with_retry() {
     eb_transient=""
     if grep -q "ENOTEMPTY" "$eb_log"; then
       eb_transient="ds_store"
-    elif grep -qE "socket hang up|self[- ]signed certificate|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND" "$eb_log"; then
+    # Socket-level errno strings and HTTP-level statuses share ONE class
+    # because the class boundary here is cleanup, not protocol layer (see the
+    # header comment): both arise in the same `got` fetches, and both recover
+    # by simply re-fetching on the next attempt with nothing to sweep first.
+    # A 5xx is transient by definition and a 429 is a rate limit that clears;
+    # every OTHER 4xx (401/403/404/400) is a configuration or authorisation
+    # fault that would fail identically on all three attempts, so it stays
+    # unrecognised and still aborts on the first one.
+    elif grep -qE "socket hang up|self[- ]signed certificate|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND" "$eb_log" \
+      || grep -qE "Response code (429|5[0-9][0-9])" "$eb_log"; then
       eb_transient="network"
     fi
     if [ -n "$eb_transient" ] && [ "$attempt" -lt "$max_attempts" ]; then
@@ -225,7 +236,7 @@ run_electron_builder_with_retry() {
         rm -rf dist/*-temp 2>/dev/null || true
         eb_backoff=2
       else
-        echo "  ⚠ transient network/TLS failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
+        echo "  ⚠ transient network/TLS/HTTP failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
         eb_backoff=$((attempt * 10))
       fi
       rm -f "$eb_log"; attempt=$((attempt + 1)); sleep "$eb_backoff"; continue

@@ -13,6 +13,14 @@ electron zip itself has already downloaded) — fell straight through to
 ``exit 1`` with zero retries, even though the same commit reliably passed on
 a plain re-run.
 
+The same hole then reopened one layer up (#6795): every pattern in the
+network class was a socket-level errno, so a fetch the CDN answered with an
+HTTP ``504`` matched none of them and aborted on attempt 1 with the
+three-attempt budget unspent. Retryable statuses (``5xx`` and ``429``) now
+land in that class too; every other ``4xx`` deliberately does not, because a
+401/403/404 is a configuration fault that fails identically on all three
+attempts.
+
 ``run_electron_builder_with_retry`` classifies a failure into one of two
 transient classes (each with its own cleanup/backoff) or "unknown", and only
 the two known classes get a bounded retry; anything else — or the budget
@@ -129,6 +137,18 @@ class TestTransientClassesRetry:
             "self-signed certificate; if the root CA is installed locally, try running Node.js with --use-system-ca",
             "Error: connect ECONNRESET",
             "Error: connect ETIMEDOUT",
+            # HTTP-level failures from the SAME `got` fetches. Every case above
+            # is a socket-level errno; a CDN that answers with a 5xx/429
+            # instead of dropping the connection is the same per-execution
+            # event one layer up, and used to fall through to a hard abort on
+            # attempt 1 with the 3-attempt budget unspent. The first case is
+            # the verbatim line from PR #6795, Build Desktop (ubuntu-22.04).
+            "⨯ Response code 504 (Gateway Time-out)  failedTask=build "
+            "stackTrace=HTTPError: Response code 504 (Gateway Time-out)",
+            "HTTPError: Response code 500 (Internal Server Error)",
+            "HTTPError: Response code 502 (Bad Gateway)",
+            "HTTPError: Response code 503 (Service Unavailable)",
+            "HTTPError: Response code 429 (Too Many Requests)",
         ],
     )
     def test_retries_on_transient_network_failure(self, tmp_path: Path, error_line: str) -> None:
@@ -150,14 +170,28 @@ class TestTransientClassesRetry:
         assert "EXIT=1" in proc.stdout, proc.stdout + proc.stderr
         assert len(counter.read_text()) == 3, "must stop at max_attempts, not retry forever"
 
-    def test_does_not_retry_an_unrecognised_failure(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "error_line",
+        [
+            "Error: Cannot find module 'some-broken-config-key'",
+            # A 4xx that is NOT 429 is a configuration/authorisation fault, not
+            # a transient one: retrying a bad URL or a missing credential just
+            # spends the budget and delays the real verdict by two backoffs.
+            # These pin that widening the class to HTTP did not widen it to
+            # ALL of HTTP -- without them the 5xx pattern could be a bare
+            # "Response code" match and every test above would still pass.
+            "HTTPError: Response code 404 (Not Found)",
+            "HTTPError: Response code 403 (Forbidden)",
+            "HTTPError: Response code 401 (Unauthorized)",
+            "HTTPError: Response code 400 (Bad Request)",
+        ],
+    )
+    def test_does_not_retry_an_unrecognised_failure(self, tmp_path: Path, error_line: str) -> None:
         """A genuine build error (e.g. a real packaging/config mistake) must
         abort on its FIRST occurrence with no retries -- only the two known
         transient classes get a second chance."""
         (tmp_path / "dist").mkdir()
-        stub, counter = _counting_stub(
-            tmp_path, fail_times=99, error_line="Error: Cannot find module 'some-broken-config-key'"
-        )
+        stub, counter = _counting_stub(tmp_path, fail_times=99, error_line=error_line)
         proc = _run(stub, 'run_electron_builder_with_retry; echo "EXIT=$?"', tmp_path)
         assert "EXIT=1" in proc.stdout, proc.stdout + proc.stderr
         assert len(counter.read_text()) == 1, "an unrecognised error must not be retried at all"
