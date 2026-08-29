@@ -5381,6 +5381,20 @@ class ConversationLog:
     def last_message_preview(self, key: str, sanitize=None) -> str:
         """Return a short preview of the session's last message ('' if none).
 
+        Thin wrapper over :meth:`last_message_info` — see it for the tail-read
+        mechanics and the ``sanitize`` ordering contract.
+        """
+        return self.last_message_info(key, sanitize=sanitize)[0]
+
+    def last_message_info(self, key: str, sanitize=None) -> tuple[str, float]:
+        """Return ``(preview, message_ts)`` for the session's newest message.
+
+        ``message_ts`` is the epoch seconds of the SAME row the preview came
+        from — the newest user/assistant message — so a caller ordering rows by
+        it sorts by what the preview shows, not by the file's mtime (which any
+        non-message write also bumps). ``0.0`` when the row has no parseable
+        ``ts`` (pre-timestamp transcripts) or no message exists.
+
         Reads only the tail of the JSONL file (bounded), scanning backwards
         for the newest parseable message line — cheap even on large sessions.
         Handles both plain-string ``content`` and structured list-form content
@@ -5401,7 +5415,7 @@ class ConversationLog:
         try:
             size = path.stat().st_size
         except OSError:
-            return ""
+            return "", 0.0
         for window in (self._PREVIEW_TAIL_BYTES, self._PREVIEW_TAIL_BYTES * 16):
             try:
                 with open(path, "rb") as f:
@@ -5410,7 +5424,7 @@ class ConversationLog:
                         f.readline()  # discard the (likely partial) first line
                     tail = f.read().decode("utf-8", errors="replace")
             except OSError:
-                return ""
+                return "", 0.0
             for line in reversed(tail.splitlines()):
                 line = line.strip()
                 if not line:
@@ -5432,10 +5446,19 @@ class ConversationLog:
                     preview = sanitize(preview)
                 if len(preview) > self._PREVIEW_MAX_CHARS:
                     preview = preview[: self._PREVIEW_MAX_CHARS].rstrip() + "…"
-                return preview
+                ts_raw = data.get("ts")
+                ts_epoch = 0.0
+                if isinstance(ts_raw, str) and ts_raw:
+                    try:
+                        ts_epoch = datetime.fromisoformat(
+                            ts_raw.strip().replace("Z", "+00:00")
+                        ).timestamp()
+                    except ValueError:
+                        pass  # unparseable ts — the row still previews
+                return preview, ts_epoch
             if size <= window:
                 break  # the window already covered the whole file — no retry
-        return ""
+        return "", 0.0
 
     @staticmethod
     def _content_text(content: object) -> str:

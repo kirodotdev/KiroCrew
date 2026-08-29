@@ -227,6 +227,40 @@ class TestMemberRoutes:
         assert "AKIA" not in preview
 
     @pytest.mark.asyncio
+    async def test_roster_orders_by_message_ts_not_file_mtime(self, tmp_path):
+        """last_active_ts is the newest MESSAGE's own timestamp.
+
+        Non-message writes (metadata, rehydration) bump the transcript file's
+        mtime without any new message; ordering on mtime made rows reorder
+        with no visible cause. Bumping the older thread's file mtime to the
+        newest time must NOT promote it above the thread whose message is
+        actually newer.
+        """
+        import os
+        import time
+
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        write_dm_binding(
+            "docs-writer", member="Docs_Writer", slot_key=member_slot_key("docs-writer")
+        )
+        old_key = f"dashboard:{member_slot_key(CREW)}"
+        new_key = f"dashboard:{member_slot_key('docs-writer')}"
+        state.conversation_log.append(old_key, "user", "older message")
+        state.conversation_log.append(new_key, "user", "newer message")
+        # Touch the OLDER thread's file so its mtime is the newest of the two.
+        old_path = state.conversation_log._path(old_key)
+        now = time.time() + 60
+        os.utime(old_path, (now, now))
+        with _patched_config([CREW, "Docs_Writer"]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                data = await resp.json()
+        rows = {r["name"]: r for r in data["members"]}
+        assert rows[CREW]["last_active_ts"] < rows["Docs_Writer"]["last_active_ts"]
+
+    @pytest.mark.asyncio
     async def test_thread_create_then_roster_reports_bound(self, tmp_path):
         state = _make_state(tmp_path)
         with _patched_config([CREW]):

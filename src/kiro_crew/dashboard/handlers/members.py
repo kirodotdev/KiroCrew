@@ -163,8 +163,12 @@ async def api_members(request: web.Request) -> web.Response:
             mt = state.conversation_log.session_mtime(log_key)
             if not mt:
                 continue
-            preview = state.conversation_log.last_message_preview(log_key, sanitize=_sanitize)
-            out[row["slot_key"]] = (mt, preview)
+            preview, msg_ts = state.conversation_log.last_message_info(log_key, sanitize=_sanitize)
+            # Order by the newest MESSAGE, not the file: metadata writes and
+            # rehydration bump the mtime without any new message, which made
+            # rows reorder with no visible cause. mtime remains only as the
+            # fallback for pre-timestamp transcript rows.
+            out[row["slot_key"]] = (msg_ts or mt, preview)
         return out
 
     tails = await asyncio.to_thread(_read_transcript_tails)
