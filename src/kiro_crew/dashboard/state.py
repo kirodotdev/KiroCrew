@@ -148,6 +148,47 @@ def _safe_folder_tree(folders: object) -> list[dict[str, Any]]:
     return [f for f in folders if isinstance(f, dict) and isinstance(f.get("id"), str)]
 
 
+def _slots_ws_frame(
+    slots: object,
+    *,
+    yolo: bool,
+    channel_trusted: bool,
+    gitlab_hosts_gen: object,
+    folders: object,
+) -> str:
+    """Serialize the dashboard-user ``slots`` WS frame.
+
+    ONE builder for the two sites that send this frame — the generic fan-out in
+    :meth:`DashboardState._broadcast` and the owner frame in
+    :meth:`DashboardState._do_slots_broadcast` — because they must carry the SAME
+    keys and nothing else enforces that. ``_send_ws_all`` skips owner sockets for
+    ``slots``, so the generic frame no longer backstops an owner: a key present in
+    one envelope and not the other silently deprives every owner window, with no
+    error anywhere. Hand-building both is exactly how they drifted before (the
+    owner frame was a strict subset, missing ``folders`` and
+    ``gitlabHostsGeneration``), so the remedy is one builder rather than a second
+    careful copy — drift becomes impossible by construction instead of merely
+    detectable.
+
+    DELIBERATELY NOT used for the app-token frame in
+    :meth:`DashboardState._serialize_for_client`. That envelope diverges on
+    purpose: it omits ``folders`` (apps do not render the chat folder tree) and
+    gates ``yolo`` / ``channelTrusted`` behind the token's declared scope. Routing
+    it through here would widen an app's payload, so it is a third shape by
+    design, not a duplicate awaiting cleanup.
+    """
+    return json.dumps(
+        {
+            "type": "slots",
+            "data": slots,
+            "yolo": yolo,
+            "channelTrusted": channel_trusted,
+            "gitlabHostsGeneration": gitlab_hosts_gen,
+            "folders": folders,
+        }
+    )
+
+
 def _split_namespaced_channel_id(channel_id: str | None) -> tuple[str, str] | None:
     """Return ``(channel_type, target)`` for a ``<type>:<target>`` id."""
     if not channel_id:
@@ -8482,17 +8523,24 @@ class DashboardState:
                 "folders": _safe_folder_tree(getattr(self, "_folders", None)),
             }
         )
+        # The owner frame is the owner's ONLY slots frame — `_send_ws_all` skips
+        # owner sockets for `slots` (see there for why), so this envelope has to
+        # carry every key the generic one does. It previously carried a subset,
+        # which is why the owner had to receive both: `folders` seeds the
+        # first-paint folder tree and `gitlabHostsGeneration` drives the
+        # dashboard-config invalidation, and neither was here. Both frames are now
+        # built by `_slots_ws_frame`, so a key can no longer reach one and not the
+        # other.
         owner_ws_clients = getattr(self, "_owner_ws_clients", None)
         if owner_ws_clients:
             owner_slots = self.serialize_slots(include_check_status=True)
             self._send_ws_owners(
-                json.dumps(
-                    {
-                        "type": "slots",
-                        "data": owner_slots,
-                        "yolo": yolo_active,
-                        "channelTrusted": ch_trusted,
-                    }
+                _slots_ws_frame(
+                    owner_slots,
+                    yolo=yolo_active,
+                    channel_trusted=ch_trusted,
+                    gitlab_hosts_gen=gitlab_hosts_generation(),
+                    folders=_safe_folder_tree(getattr(self, "_folders", None)),
                 )
             )
 
@@ -8595,24 +8643,15 @@ class DashboardState:
                     "yolo": note.get("_yolo", False),
                     "channelTrusted": note.get("channelTrusted", False),
                 }
-                ws_msg = json.dumps(
-                    {
-                        "type": "slots",
-                        "data": slots_list,
-                        "yolo": ws_data["yolo"],
-                        "channelTrusted": ws_data["channelTrusted"],
-                        # Forwarded explicitly: this envelope is rebuilt key-by-key,
-                        # so anything not named here is silently dropped. The client
-                        # invalidates its cached dashboard config when this changes.
-                        "gitlabHostsGeneration": note.get("gitlabHostsGeneration"),
-                        # Folder tree (no history_count) so the sidebar groups
-                        # sessions on first paint without waiting for the separate
-                        # GET /api/chat/folders. Only the dashboard-user frame
-                        # (default_msg) carries it; app-token frames are rebuilt in
-                        # the scope chokepoint and deliberately omit it (apps do not
-                        # render the chat folder tree).
-                        "folders": note.get("folders"),
-                    }
+                # Built by `_slots_ws_frame`, NOT inline: the owner frame in
+                # `_do_slots_broadcast` has to carry an identical key set, and it
+                # cannot if each site names its own keys. See that function.
+                ws_msg = _slots_ws_frame(
+                    slots_list,
+                    yolo=bool(ws_data["yolo"]),
+                    channel_trusted=bool(ws_data["channelTrusted"]),
+                    gitlab_hosts_gen=note.get("gitlabHostsGeneration"),
+                    folders=note.get("folders"),
                 )
             elif msg_type == "slot_title":
                 ws_data = {"key": note["key"], "title": note["title"]}
@@ -8883,9 +8922,22 @@ class DashboardState:
         :meth:`_serialize_for_client`.
         """
         dead: list[web.WebSocketResponse] = []
+        # An owner socket gets its own `slots` frame from `_do_slots_broadcast`,
+        # serialized WITH chip check status. Sending it this one too delivered the
+        # SAME list twice per push, the first copy missing `ci`/`state`/`mergeable`
+        # — and the client replaces `slots` wholesale per frame, so every decorated
+        # PR chip lost its status glyph on the first and regained it on the second.
+        # A glyph is a 14px flex child, so a session card's chip strip visibly
+        # re-wrapped on every push. Owners are excluded here rather than merged
+        # into one frame at the call site because the two payloads genuinely differ:
+        # the status fields are owner-gated and must stay off the generic frame.
+        skip_owners = msg_type == "slots"
+        owners = getattr(self, "_owner_ws_clients", None) or set()
         for ws in list(self._ws_clients):
             if ws.closed:
                 dead.append(ws)
+                continue
+            if skip_owners and ws in owners:
                 continue
             if not self._ws_client_allowed(ws, msg_type, data):
                 continue

@@ -826,10 +826,56 @@ class TestOwnerSourceStatusTransport:
         assert len(generic_messages) == 1
         assert "ci" not in str(generic_messages[0]["data"])
         assert "state" not in generic_messages[0]["data"][0]["source_links"][0]
-        assert len(owner_messages) == 2
-        assert "ci" not in str(owner_messages[0]["data"])
-        assert owner_messages[1]["data"][0]["source_links"][0]["ci"] == "passed"
-        assert owner_messages[1]["data"][0]["source_links"][0]["state"] == "OPEN"
+        # EXACTLY ONE frame for the owner, and it is the enriched one. Two frames
+        # delivered the same list twice, the first without `ci`/`state`, and the
+        # client replaces its slot list per frame — so every decorated PR chip lost
+        # its status glyph on frame one and regained it on frame two, re-wrapping
+        # the sidebar chip strip on every push.
+        assert len(owner_messages) == 1
+        assert owner_messages[0]["data"][0]["source_links"][0]["ci"] == "passed"
+        assert owner_messages[0]["data"][0]["source_links"][0]["state"] == "OPEN"
+        # The owner frame is now the owner's only one, so it must carry every key
+        # the generic frame does. Asserted as SET EQUALITY over the whole envelope,
+        # not as a list of the keys known today: `_send_ws_all` skips owner sockets
+        # for `slots`, so the generic frame no longer backstops an owner, and a key
+        # added to one site and not the other would silently deprive every owner
+        # window. Both frames come from `_slots_ws_frame`, which makes that
+        # impossible by construction; this pins the property so a future site that
+        # hand-builds the envelope again fails here instead of in production.
+        assert set(owner_messages[0]) == set(generic_messages[0])
+        assert owner_messages[0]["folders"] == generic_messages[0]["folders"]
+        assert (
+            owner_messages[0]["gitlabHostsGeneration"]
+            == generic_messages[0]["gitlabHostsGeneration"]
+        )
+
+    def test_owner_sockets_still_receive_non_slot_broadcasts(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
+        """The `slots` exclusion must not silence an owner socket generally.
+
+        The generic fan-out skips owner sockets for `slots` alone, because that is
+        the one message type they receive twice. Every other type has no
+        owner-specific frame to fall back on, so a skip that keyed on the socket
+        rather than on the message type would drop it entirely — an owner window
+        that stops seeing refreshes, with nothing raised anywhere. This is the
+        control for that: it fails if the exclusion is ever widened.
+        """
+        sent: list[tuple[object, dict]] = []
+        monkeypatch.setattr(
+            state,
+            "_spawn_ws_send",
+            lambda client, message: sent.append((client, json.loads(message))),
+        )
+        owner_ws = MagicMock(closed=False)
+        state.register_ws(owner_ws, owner=True)
+
+        state._broadcast({"_type": "refresh", "kinds": "crons,agents"})
+
+        owner_messages = [message for client, message in sent if client is owner_ws]
+        assert len(owner_messages) == 1
+        assert owner_messages[0]["type"] == "refresh"
+        assert owner_messages[0]["data"]["kinds"] == ["crons", "agents"]
 
     @pytest.mark.parametrize(
         ("claims", "owner_request"),
