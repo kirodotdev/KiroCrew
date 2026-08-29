@@ -1611,11 +1611,16 @@ caller served one resolves `profile=None` and `governance_permits` returns its
 `ungoverned` **default-permit** — a fail-OPEN that `fail_closed=True` cannot catch,
 because the default-permit is a normal return rather than an exception.
 
-`_ensure_fresh` **never blocks** — it takes the reload lock with
-`acquire(blocking=False)` only, because it is reachable on the event loop (the
+`_ensure_fresh` **never blocks on the event loop** — it takes the reload lock with
+`acquire(blocking=False)` there, because it is reachable on the loop (the
 synchronous PreToolUse gate) and waiting there on another thread's filesystem I/O
 would wedge the gateway (a slow first profile load in a worker plus a concurrent
-dashboard tool approval is exactly that stall). It returns whether the snapshot is
+dashboard tool approval is exactly that stall). Off the loop, and ONLY while the
+store is still unprimed, it waits a bounded `_COLD_LOAD_WAIT_S` for the sibling
+that owns the first load, so the loser of a cold-load race authorizes against real
+profiles instead of a deny-all. `_on_event_loop()` decides which of the two applies,
+and the `and` short-circuits so a loop-thread caller never reaches the timed
+acquire. It returns whether the snapshot is
 **resolved**, i.e. safe to authorize against, and a caller that loses the lock
 does not wait:
 
@@ -2546,7 +2551,7 @@ rather than weaker:
 - A bare not-permitted test is **wrong in a way no `except` can catch**:
   `resolve_active_scope` returns a synthetic deny-all *profile*
   (`_deny_all_unloaded:…`) when the profile store is unprimed and another thread
-  holds its non-blocking reload lock. That is a transient race on a host with **no
+  holds its reload lock and the caller is on the event loop, where it cannot wait. That is a transient race on a host with **no
   policy at all**, and it arrives as an ordinary `Decision`, not an exception — so
   reading it as a pin would make the CLI, the 403, and the UI note all blame an
   administrator who does not exist. `TestGovernancePin` pins both directions.

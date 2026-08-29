@@ -2585,6 +2585,10 @@ _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queue
 # Slack thread backfill). Shared so the two eviction sites cannot drift.
 _MAX_PENDING_CONTEXT = 50
 
+# Safety valve for rows held behind an unreleased row, on either delivery path: past this
+# the hold is flushed rather than grown, so an unresolved row cannot swallow a session.
+_MAX_WITHHELD_ROWS = 64
+
 
 def context_entry_expired(entry: dict, now: float) -> bool:
     """True if a pending-context entry's TTL has elapsed.
@@ -3406,10 +3410,14 @@ class _ChatSlot:
         "_buffers",
         "_decision_dismissed_ts",
         "_projection",
+        "_push_waiting",
+        "_push_withheld_rows",
         "_queue_repository",
         "_source_links_cache",
         "_source_links_revision",
         "_closing",
+        "_stream_waiting",
+        "_withheld_ws_frames",
         "key",
         "title",
         "agent",
@@ -3432,6 +3440,7 @@ class _ChatSlot:
         "_chunk_seq",
         "event",
         "_pending",
+        "_note_commit_lock",
         "_pending_consumers",
         "_pending_release_deferred",
         "_queue",
@@ -3648,6 +3657,14 @@ class _ChatSlot:
         self._relay_in_flight: bool = False
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.messages: list[dict[str, Any]] = []
+        # Rows appended with ``broadcast=False, defer_stream=True`` and not yet released,
+        # and the later rows whose PUSH and STREAM delivery wait behind them.
+        self._push_withheld_rows: list[dict[str, Any]] = []
+        self._push_waiting: list[dict[str, Any]] = []
+        self._stream_waiting: list[dict[str, Any]] = []
+        # Direct WS frames (turn output) held behind an unreleased row: they bypass both
+        # queues above, so nothing else orders them against a withheld note.
+        self._withheld_ws_frames: list[tuple[Any, str, dict[str, Any]]] = []
         self._buffers = SlotBufferCoordinator()
         self._projection = SlotProjection()
         self._queue_repository = SlotQueueRepository(
@@ -3674,6 +3691,9 @@ class _ChatSlot:
         self._chunk_seq: int = 0
         self.event = asyncio.Event()
         self._pending: list[dict[str, str]] = []
+        # Immediate note commits take this in turn, so overlapping notes queue their
+        # context in submission order; a turn meanwhile drains, leaving it for a later one.
+        self._note_commit_lock: asyncio.Lock = asyncio.Lock()
         # Number of readers currently treating ``_pending`` as their delivery
         # queue -- see ``pending_consumer``. Zero means a row left in the queue
         # can never reach a client, which is what makes releasing it safe.
@@ -4510,6 +4530,7 @@ class _ChatSlot:
         *,
         broadcast: bool = True,
         broadcast_user: bool = False,
+        defer_stream: bool = False,
         meta: dict | None = None,
         mint_mid: bool = True,
     ) -> dict[str, Any]:
@@ -4629,8 +4650,18 @@ class _ChatSlot:
         self.invalidate_source_links()
         self.total_messages += 1
         self._dirty = True
-        self._pending.append(msg)
-        self.event.set()
+        # An unbroadcast row is withheld from the STREAM too: queueing it here lets an
+        # active reader drain and render a row its appender has not yet confirmed.
+        if not defer_stream:
+            # HELD behind an unreleased row for the same reason the push is: a reader can
+            # drain this before that row is released, and a delivered row cannot be recalled.
+            if self._push_withheld_rows and len(self._stream_waiting) < _MAX_WITHHELD_ROWS:
+                self._stream_waiting.append(msg)
+            else:
+                if self._push_withheld_rows:
+                    self._release_waiting_stream_rows()
+                self._pending.append(msg)
+                self.event.set()
         # Broadcast via global SSE when no HTTP stream reader is active
         # Skip: chunk (too noisy), done (internal). A "user" row is skipped by
         # DEFAULT because the composer that submitted it already rendered it
@@ -4639,14 +4670,25 @@ class _ChatSlot:
         # Slack, so nothing rendered it here; those callers pass
         # ``broadcast_user=True`` or the message stays invisible until a full
         # transcript reload, arriving AFTER the reply it came before.
-        if (
+        if defer_stream and not broadcast:
+            self._push_withheld_rows.append(msg)
+        elif (
             broadcast
             and self._on_message
             and role not in ("chunk", "done")
             and (role != "user" or broadcast_user)
             and not self._has_reader
         ):
-            self._on_message(self.key, msg)  # type: ignore[operator]
+            # HELD behind an unreleased row: the push carries no ordering, so pushing this
+            # now and that row on release would render the two inverted until a reload.
+            if self._push_withheld_rows:
+                if len(self._push_waiting) >= _MAX_WITHHELD_ROWS:
+                    self._flush_waiting_pushes()
+                    self._on_message(self.key, msg)  # type: ignore[operator]
+                else:
+                    self._push_waiting.append(msg)
+            else:
+                self._on_message(self.key, msg)  # type: ignore[operator]
         # Trim old messages to bound memory usage
         if len(self.messages) > _MAX_SLOT_MESSAGES:
             excess = len(self.messages) - _MAX_SLOT_MESSAGES
@@ -4745,6 +4787,160 @@ class _ChatSlot:
     def purge_chunks(self) -> int:
         """Drop finalized stream chunks from the transcript and live queue."""
         return self._buffers.purge_chunks(self)
+
+    def broadcast_appended_row(self, msg: dict[str, Any]) -> None:
+        """Release a row appended with ``broadcast=False, defer_stream=True``.
+
+        For a caller that must confirm something about a row before observers may see
+        it. Releases BOTH delivery paths the append withheld: the stream queue an
+        active reader drains, and the push used when no reader is attached. Withholding
+        only the push would still let a reader render an unconfirmed row.
+
+        Position is decided by the row's OWN timestamp against the timestamps already
+        queued, never by an index recorded at append time: an index describes a queue
+        that a drain or another release can reshape underneath it, so it survives only
+        by timing. Comparing timestamps places the row ahead of everything appended
+        after it and behind everything appended before it, whatever the queue did in
+        between, and needs no bookkeeping that a drain would have to clean up.
+        """
+        mine = str(msg.get("ts") or "")
+        # Confirmed now, so clear the marker _prepare_messages hides on; a refused
+        # row is removed by discard_appended_row and never reaches this method.
+        row_meta = msg.get("meta")
+        if isinstance(row_meta, dict):
+            row_meta.pop("provisional", None)
+        at = len(self._pending)
+        if mine:
+            for i, queued in enumerate(self._pending):
+                other = str(queued.get("ts") or "")
+                if other and other > mine:
+                    at = i
+                    break
+        self._pending.insert(at, msg)  # type: ignore[arg-type]
+        self.event.set()
+        for i in range(len(self._push_withheld_rows) - 1, -1, -1):
+            if self._push_withheld_rows[i] is msg:
+                del self._push_withheld_rows[i]
+                break
+        if self._on_message and not self._has_reader:
+            self._on_message(self.key, msg)  # type: ignore[operator]
+        # This row is out first because its timestamp precedes theirs; the rows held
+        # behind it follow in timestamp order, which is what the reader queue already did.
+        if not self._push_withheld_rows:
+            self._release_waiting_stream_rows()
+            self._flush_waiting_pushes()
+            self._release_withheld_ws_frames()
+
+    def broadcast_ws_or_hold(self, state: Any, event: str, payload: dict[str, Any]) -> None:
+        """Send a direct WS frame, or hold it behind an unreleased row.
+
+        Turn output goes straight to the socket, bypassing ``_pending`` and the push, so
+        nothing else orders it against a note withheld pending its own durable save -- a
+        reply streaming inside that window would render before the note it answers.
+        """
+        if self._push_withheld_rows:
+            if len(self._withheld_ws_frames) < _MAX_WITHHELD_ROWS:
+                self._withheld_ws_frames.append((state.broadcast_ws, event, payload))
+                return
+            self._release_withheld_ws_frames()
+        state.broadcast_ws(event, payload)
+
+    def _release_withheld_ws_frames(self) -> None:
+        """Send frames held behind an unreleased row, in the order they were produced."""
+        if not self._withheld_ws_frames:
+            return
+        held, self._withheld_ws_frames = self._withheld_ws_frames, []
+        for send, event, payload in held:
+            send(event, payload)
+
+    def _release_waiting_stream_rows(self) -> None:
+        """Queue rows held behind an unreleased row, oldest timestamp first.
+
+        Appended rather than ts-inserted: everything already in ``_pending`` predates the
+        released row, because every later row went here instead while the hold was on.
+        """
+        if not self._stream_waiting:
+            return
+        waiting, self._stream_waiting = self._stream_waiting, []
+        for row in sorted(waiting, key=lambda m: str(m.get("ts") or "")):
+            self._pending.append(row)  # type: ignore[arg-type]
+        self.event.set()
+
+    def _flush_waiting_pushes(self) -> None:
+        """Push rows held behind an unreleased row, oldest timestamp first.
+
+        Dropped rather than pushed when a reader is attached: those rows entered
+        ``_pending`` at append time, so the reader path has already ordered them.
+        """
+        if not self._push_waiting:
+            return
+        waiting, self._push_waiting = self._push_waiting, []
+        if not self._on_message or self._has_reader:
+            return
+        for row in sorted(waiting, key=lambda m: str(m.get("ts") or "")):
+            self._on_message(self.key, row)  # type: ignore[operator]
+
+    def discard_appended_row(self, msg: dict[str, Any]) -> bool:
+        """Undo an append whose row was refused before anyone was shown it.
+
+        Only sound for a row appended with ``broadcast=False`` and not yet passed
+        to :meth:`broadcast_appended_row`: an observer cannot un-see a row, so a
+        broadcast one has to be superseded rather than withdrawn. Identity, not
+        equality, decides which row goes, because two notes can carry the same
+        text. Returns whether the row was still there to remove.
+        """
+        found = False
+        for i in range(len(self.messages) - 1, -1, -1):
+            if self.messages[i] is msg:
+                del self.messages[i]
+                found = True
+                break
+        if not found:
+            return False
+        for i in range(len(self._pending) - 1, -1, -1):
+            if self._pending[i] is msg:
+                del self._pending[i]
+                break
+        # The withdrawn row is never pushed, but rows held behind it still must be.
+        for i in range(len(self._push_withheld_rows) - 1, -1, -1):
+            if self._push_withheld_rows[i] is msg:
+                del self._push_withheld_rows[i]
+                break
+        if not self._push_withheld_rows:
+            self._release_waiting_stream_rows()
+            self._flush_waiting_pushes()
+            self._release_withheld_ws_frames()
+        self.total_messages = max(0, self.total_messages - 1)
+        return True
+
+    def pending_context_at_capacity(self, excluding: dict[str, Any] | None = None) -> bool:
+        """True when a further append would evict another caller's LIVE oldest entry.
+
+        ``append_pending_context`` makes room by shedding expired entries first and only
+        then dropping live ones. Shedding is free, so a queue full of dead entries is not
+        at capacity; counting them would lock out an entry the queue has room for. A
+        caller that would rather be skipped than displace someone else's queued context
+        asks this first, because the append itself reports nothing about what it dropped.
+        """
+        now = time.time()
+        live = [
+            e
+            for e in self._pending_context
+            if not context_entry_expired(e, now) and e is not excluding
+        ]
+        return len(live) >= _MAX_PENDING_CONTEXT
+
+    def remove_pending_context(self, entry: dict[str, Any]) -> bool:
+        """Withdraw one queued context entry, matched by IDENTITY.
+
+        Identity because two notes can carry equal content and equal source, so an
+        equality match would withdraw whichever copy came first.
+        """
+        for i, queued in enumerate(self._pending_context):
+            if queued is entry:
+                del self._pending_context[i]
+                return True
+        return False
 
     def append_pending_context(self, entry: dict[str, Any]) -> None:
         """Append one live context entry after expiry pruning and FIFO eviction."""

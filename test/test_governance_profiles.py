@@ -1365,6 +1365,112 @@ def test_no_profiles_dir_is_safe(tmp_path, monkeypatch):
         gp.reset_store()
 
 
+def test_the_cold_load_barrier_never_blocks_the_event_loop(profiles_dir, monkeypatch):
+    """A loop-thread caller must not wait on a cold load another thread owns.
+
+    This path is pinned as never blocking on the event loop: the synchronous
+    tool-approval gate runs there, so waiting on another thread's filesystem I/O
+    stalls every other task on that loop. The barrier is confined to callers holding
+    their own thread, and a loop caller keeps the unresolved fail-closed answer.
+    """
+    import asyncio
+    import time
+
+    (profiles_dir / "host.json").write_text(
+        json.dumps(
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+            }
+        )
+    )
+    gp.reset_store()
+    try:
+        store = gp._STORE
+        assert not store._snap.loaded, "precondition: the store must be cold"
+        assert store._lock.acquire(blocking=False), "precondition: own the reload lock"
+        try:
+
+            async def _resolve_on_the_loop():
+                started = time.monotonic()
+                prof = gp.resolve_active_scope(gp.HOST_SESSION_KEY)
+                return time.monotonic() - started, prof
+
+            elapsed, prof = asyncio.run(_resolve_on_the_loop())
+        finally:
+            store._lock.release()
+
+        assert elapsed < gp._COLD_LOAD_WAIT_S / 2, (
+            f"a loop-thread caller waited {elapsed:.2f}s for a cold load another "
+            f"thread owned; the barrier must be confined to off-loop callers"
+        )
+        assert prof is not None and prof.name.startswith(
+            "_deny_all_unloaded"
+        ), f"a loop caller keeps the unresolved fail-closed answer; got {prof}"
+    finally:
+        gp.reset_store()
+
+
+def test_a_concurrent_cold_load_does_not_deny_the_loser(profiles_dir, monkeypatch):
+    """Two first-touch callers must both resolve: the store serialises its cold load.
+
+    A loser refused outright here -- denied by nothing but the presence of its
+    sibling -- silently drops a real delivery on the first note after a restart. The
+    store owns that window, so the loser waits for the owner's load and reads its
+    result instead of being turned away.
+    """
+    import threading
+    import time
+
+    (profiles_dir / "host.json").write_text(
+        json.dumps(
+            {
+                "name": "host",
+                "bind": {"type": "surface", "id": "host"},
+                "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+            }
+        )
+    )
+    gp.reset_store()
+    try:
+        store = gp._STORE
+        assert not store._snap.loaded, "precondition: the store must be cold"
+        real_reload = store._reload
+        owns_the_load = threading.Event()
+
+        def _slow_reload(directory):
+            owns_the_load.set()
+            time.sleep(0.3)
+            return real_reload(directory)
+
+        monkeypatch.setattr(store, "_reload", _slow_reload)
+        got: "dict[str, object]" = {}
+
+        def _resolve(tag):
+            got[tag] = gp.resolve_active_scope(gp.HOST_SESSION_KEY)
+
+        winner = threading.Thread(target=_resolve, args=("winner",), daemon=True)
+        winner.start()
+        assert owns_the_load.wait(5.0), "precondition: one thread must own the cold load"
+        loser = threading.Thread(target=_resolve, args=("loser",), daemon=True)
+        loser.start()
+        winner.join(15)
+        loser.join(15)
+
+        assert set(got) == {"winner", "loser"}, f"both callers must answer; got {set(got)}"
+        for tag, prof in got.items():
+            assert prof is not None, f"{tag} resolved to policy-only"
+            assert not prof.name.startswith(
+                "_deny_all_unloaded"
+            ), f"{tag} was denied for the cold load a sibling owned: {prof.name}"
+        assert (
+            got["winner"].name == got["loser"].name == "host"
+        ), f"both must read the same loaded snapshot; got {got}"
+    finally:
+        gp.reset_store()
+
+
 def test_resolution_is_checked_before_bind_lookups(profiles_dir, monkeypatch):
     # Resolution must be confirmed BEFORE any bind
     # lookup, not after. Checking afterwards is a check-AFTER-use: the lookup can
@@ -1387,6 +1493,9 @@ def test_resolution_is_checked_before_bind_lookups(profiles_dir, monkeypatch):
     assert not store._snap.loaded
 
     # Hold the reload lock: the caller is an unprimed contender that cannot load.
+    # The holder never publishes, so this exercises the barrier's TIMEOUT floor;
+    # shorten the wait because the assertions below are about ordering, not duration.
+    monkeypatch.setattr(gp, "_COLD_LOAD_WAIT_S", 0.01)
     assert store._lock.acquire(blocking=False)
     try:
         looked_up: "list[object]" = []

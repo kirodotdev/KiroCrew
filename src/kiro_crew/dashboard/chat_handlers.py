@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -53,6 +54,10 @@ from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_project_dir,
     _unhide_folder,
 )
+from kiro_crew.dashboard.chat_note_mirror import (
+    dispatch_note_mirror,
+    snapshot_note_destinations,
+)
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
     _FLUSH_SNAPSHOT_RETRIES,
@@ -65,6 +70,7 @@ from kiro_crew.dashboard.chat_persistence import (
     get_reasoning_effort_values,
     pin_private_agent_store,
     save_slot_off_loop,
+    session_was_deleted,
 )
 from kiro_crew.dashboard.chat_runner import (
     _context_usage_payload,
@@ -10488,8 +10494,13 @@ def _reauthorize_after_await(
     return _check_slot_app_ownership(slot, name, request_app, operation)
 
 
-def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
+def _source_cap_reached(
+    slot: _ChatSlot, source: str, excluding: dict[str, Any] | None = None
+) -> bool:
     """True if ``source`` already holds the max pending context entries.
+
+    ``excluding`` skips one entry by IDENTITY, so a caller re-checking the cap after its
+    own entry is already queued does not count itself and refuse its own note.
 
     An empty source is uncapped (it shares no bucket). Shared by
     ``_enqueue_pending_context`` and the /note handler, which uses it to keep the
@@ -10511,11 +10522,11 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     if not source:
         return False
     now = time.time()
-    held = [n["context"] for n in slot._deferred_notes if n.get("context") is not None]
+    held = [c for c in (n.get("context") for n in slot._deferred_notes) if c is not None]
     pending = sum(
         1
         for e in (*slot._pending_context, *held)
-        if e.get("source") == source and not context_entry_expired(e, now)
+        if e.get("source") == source and not context_entry_expired(e, now) and e is not excluding
     )
     return pending >= _MAX_CONTEXT_PER_SOURCE
 
@@ -10888,6 +10899,142 @@ async def _note_already_durable(
     )
 
 
+async def _immediate_note_is_durable(
+    state: DashboardState, slot: _ChatSlot
+) -> tuple[bool, bool, bool]:
+    """``(on_disk, routing_intact, deleted)`` for an immediate note's appended line.
+
+    ``slot.append`` only updates the in-memory window, so dispatching the channel
+    send first lets a gateway crash leave a channel note no transcript backs.
+
+    ``save_slot_off_loop`` answers the SAME ``False`` for two different outcomes:
+    the session was permanently deleted while the save awaited the lock, or its
+    routing moved off the key this note was authorized against. The third flag
+    separates them, because only the first means the row will NEVER reach disk, so
+    reporting ``appended`` for it describes a session that is already gone.
+
+    An I/O error is a third answer: not on disk, routing untouched, retried by the
+    periodic flush. An install with no conversation log is durable-EQUIVALENT, and
+    the attribute is read defensively because a partially-constructed state
+    (``DashboardState.__new__``) carries neither.
+    """
+    if not getattr(state, "conversation_log", None):
+        return True, True, False
+    authorized_key = slot_history_key(slot)
+    try:
+        committed = await save_slot_off_loop(
+            state,
+            slot,
+            expected_history_key=authorized_key,
+            best_effort=False,
+        )
+    except Exception:
+        logger.warning(
+            "note mirror: visible line for slot %s is not durable yet; "
+            "skipping the channel send rather than orphaning it",
+            slot.key,
+            exc_info=True,
+        )
+        return False, True, False
+    if committed:
+        # A rebind can land AFTER the write commits: the row is durable on the
+        # authorized transcript, but the drain now answers to the slot's new routing.
+        return True, slot_history_key(slot) == authorized_key, False
+    # Rule the REBIND out first: the witness reads the slot's live routing, which after
+    # a rebind names a session with no file yet and would read as a delete.
+    if slot_history_key(slot) != authorized_key:
+        return False, False, False
+    # Routing is still pinned, so only the delete-won guard can have refused; the
+    # witness confirms it, and answering conditionally is the safe fallback. It runs in
+    # a thread because it stats a path and reads a metadata line to answer.
+    return False, False, await asyncio.to_thread(session_was_deleted, state, slot)
+
+
+def _note_commit_settled(task: "asyncio.Future[Any]") -> tuple[bool, bool]:
+    """A durability task's ``(reached the transcript, routing still intact)`` pair.
+
+    Both halves are carried, not just the first: a committed save whose slot rebound is
+    NOT a note this window may keep, and collapsing the pair to ``on_disk`` alone hides
+    exactly the signal the non-cancelled path discards the row on.
+    """
+    if task.cancelled() or task.exception() is not None:
+        return (False, False)
+    on_disk, routing_intact = task.result()[0], task.result()[1]
+    return (bool(on_disk), bool(routing_intact))
+
+
+def _resolve_cancelled_note_commit(
+    slot: _ChatSlot,
+    visible_row: dict[str, Any] | None,
+    context_entry: dict[str, Any] | None,
+    committed: bool,
+    routing_intact: bool,
+) -> None:
+    """Settle a note whose request was cancelled, once its save has resolved.
+
+    Both halves live or both go, and only when the note still belongs to this window.
+    A committed save with intact routing releases the context half to the next drain --
+    withdrawing it would restore a visible note the model has no context for. Anything
+    else takes both: an uncommitted save persisted nothing, and a rebind means the row is
+    authorized for a session other than the one this slot now serves, so keeping it would
+    serve one session's note as another's history. This mirrors the non-cancelled path.
+    """
+    if committed and routing_intact:
+        # Broadcast here too: the row was appended with `broadcast=False` pending this
+        # decision, so releasing the context alone cites a line no observer ever saw.
+        if visible_row is not None:
+            slot.broadcast_appended_row(visible_row)
+        if context_entry is not None:
+            # TTL restarted like the non-cancelled path: the save it waited on can outlast
+            # its own maxAge, and a stale stamp has the next read discard it unseen.
+            context_entry["injectedAt"] = time.time()
+            context_entry.pop("awaitingCommit", None)
+        return
+    if visible_row is not None:
+        slot.discard_appended_row(visible_row)
+    if context_entry is not None:
+        slot.remove_pending_context(context_entry)
+
+
+def _release_after_cancelled_note_commit(
+    state: DashboardState,
+    slot: _ChatSlot,
+    visible_row: dict[str, Any] | None,
+    context_entry: dict[str, Any] | None,
+    task: asyncio.Future[Any],
+    authored_history_key: str | None = None,
+) -> None:
+    """Roll a cancelled note back, then make the rollback DURABLE.
+
+    ``discard_appended_row`` only deletes from memory, and a durable write rewrites the
+    slot's whole window -- so an overlapping note that saved before the rollback leaves the
+    cancelled row on disk, where a restart restores it. Re-saving after the withdrawal
+    corrects that copy promptly instead of waiting for an unguaranteed later flush. The
+    lock is NOT held across this: the save can be arbitrarily slow, and blocking every
+    later note on it would trade a stale row for a wedged slot.
+    """
+    committed, routing_intact = _note_commit_settled(task)
+    # Re-read here too: the task decided routing before this callback ran, so a rebind in
+    # between would leave the row authorized for a session it does not answer.
+    if authored_history_key is not None and slot_history_key(slot) != authored_history_key:
+        routing_intact = False
+    _resolve_cancelled_note_commit(slot, visible_row, context_entry, committed, routing_intact)
+    if visible_row is None:
+        return
+    # PINNED to the authorized key: an unpinned write lands the old window in whatever
+    # session the slot now answers, and on a rebind there is nothing safe to correct.
+    if authored_history_key is not None:
+        if not routing_intact:
+            return
+        resave = asyncio.ensure_future(
+            save_slot_off_loop(state, slot, expected_history_key=authored_history_key)
+        )
+    else:
+        resave = asyncio.ensure_future(save_slot_off_loop(state, slot))
+    state._background_tasks.add(resave)
+    resave.add_done_callback(state._background_tasks.discard)
+
+
 async def api_chat_slot_note(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/note — visible transcript line + silent next-turn context.
 
@@ -10937,6 +11084,34 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     If the source's per-source context cap is already full the visible line is
     still written and ``contextSkipped`` is true: the cap protects the context
     queue, not the transcript, so the call is NOT 429'd.
+
+    The visible line is ALSO mirrored to whatever channel this session is bound to
+    -- see ``chat_note_mirror``. Without that the context half, which is
+    surface-agnostic, would reach the model while the visible half reached only
+    the dashboard, leaving a channel-driven user with an agent that knew something
+    they were never shown. It is dispatched in the BACKGROUND and deliberately not
+    reported: the note's contract is the transcript line and the context entry,
+    and waiting on a channel here would put a wedged transport on this POST's
+    critical path, where a client that gave up and retried would write both halves
+    a second time. A HELD visible line is mirrored too, but not from here: while
+    held neither half is committed, so publishing at this point would announce
+    content the transcript may never receive. The dispatch rides on the held
+    record instead and fires once the flush has committed both halves.
+
+    THE HELD RECORD'S SHAPE IS A CONTRACT, and ``mirror`` is its load-bearing
+    part. Each entry appended to ``_deferred_notes`` carries exactly ``id``,
+    ``content``, ``cls``, ``context``, ``session`` and ``mirror``. The first five
+    are the durable fields, copied verbatim into the slot's metadata; ``mirror``
+    is a zero-argument callable that already holds the destinations snapshotted
+    at WRITE time, and is the one field the durable copy does NOT carry -- so a
+    restart drops the channel copy, exactly as the six other drop reasons already
+    permit, while both of the note's own halves are replayed.
+    ``flush_deferred_notes`` calls it after ``written`` is counted, in
+    a ``try`` of its own so a delivery fault cannot restore the unwritten suffix,
+    and its rebind-drop branch continues before reaching it so a dropped note
+    never dispatches. A flush refactor that stops calling it reopens the
+    provenance gap this endpoint closes, and does so silently: the channel would
+    go quiet for held notes only, which is the case no dashboard reader sees.
 
     When a turn is already running BOTH halves are held and written at that
     turn's end, so ``appended`` is false and ``visibleDeferred`` is true. Its
@@ -11062,7 +11237,6 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             # records the session it was authorized against -- same reason the
             # deferred arm below does, and checked at those later seams.
             context_entry["noteSession"] = effective_session_key(slot)
-            slot.append_pending_context(context_entry)
 
     # Caller-controlled content reaching the visible transcript (SSE plus the
     # on-disk JSONL). Redact at this sink so a secret or exfil URL cannot land
@@ -11090,7 +11264,69 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             },
             status=413,
         )
+    mirror_backed_by_transcript = False
+    mirror_can_dispatch = False
+    routing_intact = True
+    visible_row_withdrawn = False
+    note_commit_held = False
+    if not deferred:
+        # Re-read AFTER the wait: the lock can be contended for another note's whole
+        # durable save, and an `inject` row for a running slot replays the request twice.
+        await slot._note_commit_lock.acquire()
+        note_commit_held = True
+        deferred = slot.running or slot._in_stage_execution
+        if deferred:
+            slot._note_commit_lock.release()
+            note_commit_held = False
+            # Re-run on THIS branch too: the hold path stamps the note's session and
+            # history key after the wait, so a rebind would be validated against itself.
+            stale = _reauthorize_after_await(state, slot, name, request_app, "note_post")
+            if stale is not None:
+                return stale
+            # Caps re-read too: they were evaluated before the wait, and a queue that
+            # filled meanwhile would have this entry evict one already accepted.
+            if context_entry is not None and (
+                _source_cap_reached(slot, source) or slot.pending_context_at_capacity()
+            ):
+                context_entry = None
+                context_skipped = True
+            if len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
+                return web.json_response(
+                    {
+                        "error": f"slot already holds {_MAX_DEFERRED_NOTES} deferred notes",
+                        "code": "deferred_notes_full",
+                    },
+                    status=429,
+                )
+            # Re-applied under the NEW decision: a note inside the larger immediate bound
+            # reaches the hold path on a flip, where the restore sanitizer drops it.
+            if (
+                len(content) > MAX_DEFERRED_NOTE_CHARS
+                or len(visible_content) > MAX_DEFERRED_NOTE_CHARS
+            ):
+                return web.json_response(
+                    {
+                        "error": (
+                            f"a note posted during a running turn is capped at "
+                            f"{MAX_DEFERRED_NOTE_CHARS} characters; shorten it or wait "
+                            "for the turn to end"
+                        ),
+                        "code": "deferred_note_too_large",
+                    },
+                    status=413,
+                )
+        else:
+            # Re-run because the pre-lock gate predates the wait: a rebind landing in it
+            # would be re-validated against the session it moved to.
+            stale = _reauthorize_after_await(state, slot, name, request_app, "note_post")
+            if stale is not None:
+                slot._note_commit_lock.release()
+                note_commit_held = False
+                return stale
     if deferred:
+        # SNAPSHOTTED NOW, dispatched at flush. The destinations a held note is
+        # authorized for are the ones live when it was WRITTEN, not when it lands.
+        _held_destinations = snapshot_note_destinations(state, slot, effective_session_key(slot))
         note: dict[str, object] = {
             # Identity for the durable hold's merge (slot_buffers.
             # persist_deferred_notes_sync): a disk entry whose id is absent
@@ -11104,6 +11340,17 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             # an unbound slot can acquire a foreign binding while the note
             # is held, and the flush resolves its target late.
             "session": effective_session_key(slot),
+            # Dispatched at flush. In-memory ONLY: the durable copy carries neither
+            # this callable nor its destinations, so a restart drops the channel copy.
+            "mirror": functools.partial(
+                dispatch_note_mirror,
+                state,
+                slot,
+                effective_session_key(slot),
+                visible_content,
+                source,
+                _held_destinations,
+            ),
         }
         # The transcript this authorization resolves to, captured in the SAME
         # routing observation as the session stamp above: the durable write
@@ -11123,13 +11370,161 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         if err is not None:
             return err
     else:
-        slot.append(
-            role="inject",
-            content=visible_content,
-            cls="reconcile-note",
-            broadcast=True,
-            meta={"noteSession": effective_session_key(slot)},
-        )
+        # Already held from before the branch decided, so the turn state the immediate path
+        # relies on was re-read under it and cannot have gone stale since.
+        visible_row = None
+        durability = None
+        try:
+            # Appended WITHOUT broadcasting because the durability check below can still
+            # refuse it, and an observer cannot un-see a note the caller is 404-ed for.
+            visible_row = slot.append(
+                role="inject",
+                content=visible_content,
+                cls="reconcile-note",
+                broadcast=False,
+                defer_stream=True,
+                meta={
+                    "noteSession": effective_session_key(slot),
+                    # Hide from the slot-detail read projection until confirmed;
+                    # broadcast_appended_row clears it, discard deletes the row.
+                    "provisional": True,
+                },
+            )
+            # Captured BEFORE the durability await and handed to the dispatch verbatim: a
+            # rebind during that await would otherwise retarget it to its replacement.
+            authored_session_key = effective_session_key(slot)
+            # Captured for a SYNCHRONOUS re-read before the broadcast: the durability task
+            # checks routing inside itself, and a rebind can land after it returns.
+            authored_history_key = slot_history_key(slot)
+            authored_destinations = snapshot_note_destinations(state, slot, authored_session_key)
+            # With no destination no channel note can outlive the line it asserts, so the
+            # forced durable write is pure cost on a session no mirror can reach.
+            mirror_can_dispatch = authored_destinations is not None and (
+                bool(authored_destinations[0][0]) or authored_destinations[1] is not None
+            )
+            # Transports present plus an unbound slot is a permission decision, and the
+            # dispatch is the only path that reaches its SEL row.
+            mirror_refusal_is_auditable = (
+                authored_destinations is not None
+                and not mirror_can_dispatch
+                and bool(getattr(state, "channel_transports", None))
+            )
+            # Vacuously backed when nothing can be sent, exactly as an install with no
+            # conversation log is: the default must not suppress the dispatch itself.
+            mirror_backed_by_transcript, routing_intact = (True, True)
+            note_lost_to_delete = False
+            # Queued BEFORE the await, flagged so no drain emits it yet. A drain HOLDS a
+            # flagged entry, so the turn path neither blocks nor loses the note.
+            if context_entry is not None:
+                if _source_cap_reached(slot, source) or slot.pending_context_at_capacity():
+                    context_skipped = True
+                    context_entry = None
+                else:
+                    context_entry["awaitingCommit"] = True
+                    slot.append_pending_context(context_entry)
+            if mirror_can_dispatch:
+                # Shielded so a cancellation cannot decide the rollback while the executor
+                # save is still running and may yet commit the row to the transcript.
+                durability = asyncio.ensure_future(_immediate_note_is_durable(state, slot))
+                (
+                    mirror_backed_by_transcript,
+                    routing_intact,
+                    note_lost_to_delete,
+                ) = await asyncio.shield(durability)
+            # The save was REFUSED, or its routing moved off the key this note was
+            # authorized against, so the row belongs to neither conversation as it stands.
+            if note_lost_to_delete or not routing_intact:
+                # Authorized for the old session, so a rebound slot's window would serve
+                # it as another session's history. The committed transcript row stays.
+                slot.discard_appended_row(visible_row)
+                visible_row_withdrawn = True
+                # The context half is STAGED until durability settles, so it cannot have
+                # been consumed and the 404 always recalls a note that took no effect.
+                if note_lost_to_delete:
+                    if context_entry is not None:
+                        slot.remove_pending_context(context_entry)
+                    return web.json_response(
+                        {"error": "not found", "code": "slot_not_found"}, status=404
+                    )
+                routing_intact = False
+            # Re-read SYNCHRONOUSLY here: the value above was decided inside the durability
+            # task, and a rebind landing after it returned would retarget this broadcast.
+            if routing_intact and slot_history_key(slot) != authored_history_key:
+                routing_intact = False
+                if not visible_row_withdrawn:
+                    slot.discard_appended_row(visible_row)
+                    visible_row_withdrawn = True
+                if context_entry is not None:
+                    slot.remove_pending_context(context_entry)
+                    context_entry = None
+                    context_skipped = True
+            # The context half carries its pre-lock session, and a bind during that wait
+            # makes the next drain drop it as foreign -- so `contextSkipped` reports it.
+            if context_entry is not None and context_entry.get("noteSession") != (
+                effective_session_key(slot)
+            ):
+                slot.remove_pending_context(context_entry)
+                context_entry = None
+                context_skipped = True
+            # Persistence settled in the note's favour, so observers may see it now.
+            # Neither a WITHDRAWN row nor a replaced session is shown: that would retarget.
+            if not visible_row_withdrawn and routing_intact:
+                slot.broadcast_appended_row(visible_row)
+                # Cleared LAST, so the entry becomes drainable only once the visible half
+                # is committed and shown: both halves reach a turn together or not at all.
+                if context_entry is not None:
+                    # Displaced while it waited, so its slot went to an accepted entry and
+                    # the caller is told the context half did not make it.
+                    if not any(q is context_entry for q in slot._pending_context):
+                        context_skipped = True
+                    # Re-checked because the save is long enough for the queue to fill
+                    # behind us, and an over-cap entry evicts another source's context.
+                    elif _source_cap_reached(
+                        slot, source, excluding=context_entry
+                    ) or slot.pending_context_at_capacity(excluding=context_entry):
+                        slot.remove_pending_context(context_entry)
+                        context_skipped = True
+                    else:
+                        # TTL restarted from the moment it becomes drainable, so time spent
+                        # held for this commit cannot expire it before any turn sees it.
+                        context_entry["injectedAt"] = time.time()
+                        context_entry.pop("awaitingCommit", None)
+            elif context_entry is not None:
+                # The routing gate suppressed this note, so its queued context half is
+                # withdrawn rather than left held forever, and the response says so.
+                slot.remove_pending_context(context_entry)
+                context_skipped = True
+        except asyncio.CancelledError:
+            # The shielded save may still commit, so the decision follows the save rather
+            # than the unwind: rolling both back now could strand a restored note.
+            if durability is None:
+                _resolve_cancelled_note_commit(slot, visible_row, context_entry, False, False)
+            elif durability.done():
+                settled_committed, settled_routing = _note_commit_settled(durability)
+                # Re-read like the callback path: the task decided routing at its own final
+                # line, and a rebind in the resume window would broadcast to a replacement.
+                if (
+                    authored_history_key is not None
+                    and slot_history_key(slot) != authored_history_key
+                ):
+                    settled_routing = False
+                _resolve_cancelled_note_commit(
+                    slot, visible_row, context_entry, settled_committed, settled_routing
+                )
+            else:
+                # Rollback only deletes from memory, and an overlapping note's save rewrites
+                # the slot's whole window -- so the callback re-saves to correct disk.
+                durability.add_done_callback(
+                    lambda task: _release_after_cancelled_note_commit(
+                        state, slot, visible_row, context_entry, task, authored_history_key
+                    )
+                )
+            raise
+        finally:
+            # Guarded by the local flag so a cancellation while waiting cannot release a
+            # lock this request never held, which would let two notes commit at once.
+            if note_commit_held:
+                slot._note_commit_lock.release()
 
     sel().log_api_access(
         caller=request_app or request.get("user", "dashboard"),
@@ -11139,17 +11534,72 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         resources=f"slot={name}",
     )
 
+    # Deliver the visible line to whatever CHANNEL this session belongs to. The
+    # dashboard broadcast above reaches only the dashboard, so without this a
+    # session driven from Slack or Telegram gained the note's context — the half
+    # that IS surface-agnostic — with no visible provenance anywhere its user was
+    # looking.
+    #
+    # NOT mirrored when the visible line is HELD -- the dispatch below is guarded
+    # by ``if not deferred``. While held, neither half is committed: the visible
+    # write is skipped and the context sits in ``_deferred_notes``, so a foreign
+    # binding acquired before the flush drops BOTH halves. Mirroring at POST would
+    # therefore publish a channel note asserting content the session never
+    # received, which is a worse failure than losing a best-effort delivery.
+    # Mirroring held notes happens at FLUSH, once their halves land: the in-memory
+    # record holds the authored destinations and the flush dispatches them.
+    #
+    # BACKGROUNDED, not awaited, and THE DISPATCH ITSELF MUST NOT BE ABLE TO FAIL
+    # THIS POST. Both halves of the note are committed above, so any raise from here
+    # 500s a request whose work is done -- and the caller's retry then writes both
+    # halves a SECOND time. Nothing needs the mirror's result either: the note's
+    # contract is the transcript line and the context entry, and waiting on a wedged
+    # transport would put it on this POST's critical path. Each leg is already
+    # bounded and absorbs its own failure (`chat_note_mirror._run_leg`), so the
+    # delivery half is safe; the guarantee has to cover REGISTRATION too, because a
+    # partially-constructed state (`DashboardState.__new__`, which fixtures use)
+    # carries no `_background_tasks` and reaching for it unguarded turns a
+    # best-effort leg into a load-bearing one. The task is held by a strong
+    # reference for the same reason auto-title and auto-tag hold theirs: without it
+    # the loop can garbage-collect a running task mid-flight.
+    #
+    # BOTH SNAPSHOTS ARE TAKEN BEFORE THE DURABILITY AWAIT and passed here verbatim, so
+    # no rebind during it can interleave: they are the ones the note was AUTHORED for.
+    # Resolving them inside the task instead would read the binding LATER than the
+    # note was written, and a rebind landing in that gap would deliver a note
+    # authored for one conversation into its replacement -- a recipient it was never
+    # authorized for. The task revalidates against these snapshots and REFUSES on
+    # mismatch rather than retargeting. They are taken inside the append branch, which
+    # a partially-constructed state without `state.sessions` never reaches.
+    # Ordered after the visible line's DURABLE write, not merely after its append:
+    # the send is the half a crash cannot take back.
+    if (
+        not deferred
+        and mirror_backed_by_transcript
+        and (mirror_can_dispatch or mirror_refusal_is_auditable)
+    ):
+        dispatch_note_mirror(
+            state,
+            slot,
+            authored_session_key,
+            visible_content,
+            source,
+            authored_destinations,
+        )
+
     # A hold is delivered only if the slot still routes to the same session at
     # flush; a rebind during the hold drops it. An IMMEDIATE note is equally
     # conditional while the slot is UNBOUND, because both halves resolve their
     # destination late and every binding site claims an EMPTY binding
     # (``if not slot.linked_session_key``) -- so an already-bound slot cannot be
     # re-claimed and its immediate note is genuinely unconditional.
-    delivery_conditional = deferred or not slot.linked_session_key
+    delivery_conditional = deferred or not slot.linked_session_key or not routing_intact
     return web.json_response(
         {
             "ok": True,
-            "appended": not deferred,
+            # An IN-MEMORY transcript append, not a durability claim: a forced save that
+            # RAISED still reports true, and withholds the mirror dispatch as the protection.
+            "appended": not deferred and (not visible_row_withdrawn or mirror_backed_by_transcript),
             "visibleDeferred": deferred,
             "deliveryConditional": delivery_conditional,
             "contextSkipped": context_skipped,

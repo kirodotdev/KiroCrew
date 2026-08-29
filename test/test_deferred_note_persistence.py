@@ -28,6 +28,8 @@ What these tests pin, per the issue's regression gates:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -116,6 +118,2038 @@ class TestEnqueueDurability:
         app.router.add_post("/api/chat/slots/{slot}/note", api_chat_slot_note)
         async with TestClient(TestServer(app)) as c:
             yield c
+
+    @pytest.mark.asyncio
+    async def test_a_bind_during_the_save_is_reported_as_conditional_delivery(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A note the drain will drop must never be acknowledged as unconditional.
+
+        ``deliveryConditional`` is computed AFTER the durability await, so a cron
+        binding an unbound slot during that save flips ``not linked_session_key`` to
+        false and the flag reported ``false`` -- for a note whose halves the next
+        drain drops, because both were stamped for the empty binding. The guarded
+        save already answers this: it returns ``False`` only when routing moved off
+        the key the note was authorized against.
+
+        The bind is landed INSIDE the patched save so it lands in the real window
+        rather than before the note is written, which would be a different case
+        (an already-bound slot, genuinely unconditional).
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "bind-race")
+        slot.linked_session_key = ""
+        shown: list[dict] = []
+        slot._on_message = lambda _key, msg: shown.append(msg)
+        slot._has_reader = False
+
+        async def _save_rebinds_then_refuses(state_, slot_, *a, **kw):
+            slot_.linked_session_key = "cron:9001"
+            return False
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_rebinds_then_refuses)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *a, **kw: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/bind-race/note", json={"content": "note during a rebind"}
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert body["visibleDeferred"] is False, "must exercise the IMMEDIATE path"
+        assert slot.linked_session_key == "cron:9001", "the bind must have landed in the window"
+        assert (
+            body["appended"] is False
+        ), f"the guarded save REFUSED the write, so nothing reached disk: {body}"
+        assert body["deliveryConditional"] is True, (
+            "a refused guarded save means routing moved off the authorized key, so the "
+            f"halves will be dropped and the 200 must say so; got {body}"
+        )
+        assert [
+            m for m in shown if m.get("cls") == "reconcile-note"
+        ] == [], f"the note was released into the session that replaced its own: {shown}"
+        assert [
+            m for m in slot._pending if m.get("cls") == "reconcile-note"
+        ] == [], "the note was left drainable by a reader of the replacement session"
+
+    @pytest.mark.asyncio
+    async def test_both_halves_are_settled_before_the_durable_save_can_be_outrun(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Probe what a turn admitted DURING the durable save would observe.
+
+        The save is the slow step, so a concurrent message can drive a turn while it
+        runs, and what that turn could see mid-save is what decides correctness. The
+        context entry must already be queued, or the drain misses it and the note is
+        applied to a later turn. The visible row must NOT be in the stream queue, or an
+        active reader renders a row a 404 is about to withdraw.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "ordering-at-the-save")
+        assert slot is not None, "precondition: the slot must exist to accept a note"
+        seen: dict[str, object] = {}
+
+        async def _observe_then_commit(_state, observed_slot, *_a, **_k):
+            # What a turn admitted here would ACTUALLY receive, which is the property:
+            # the entry may be queued mid-save so long as a drain refuses to emit it.
+            seen["context_drainable"] = [
+                e
+                for e in observed_slot._pending_context
+                if "ordering probe" in str(e.get("content", "")) and not e.get("awaitingCommit")
+            ]
+            seen["streamable"] = [
+                m for m in observed_slot._pending if m.get("cls") == "reconcile-note"
+            ]
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _observe_then_commit)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/ordering-at-the-save/note",
+                json={"content": "ordering probe"},
+            )
+            assert resp.status == 200, f"the note should be accepted; got {resp.status}"
+
+        assert seen, "precondition: the durable save must have run"
+        assert seen.get("context_drainable") == [], (
+            "a turn admitted during the save could drain this note's context while its "
+            f"visible row was still withheld: {seen.get('context_drainable')}"
+        )
+        assert (
+            seen.get("streamable") == []
+        ), f"an unconfirmed row was already drainable by a reader: {seen.get('streamable')}"
+
+    @pytest.mark.asyncio
+    async def test_a_drain_between_hold_and_release_cannot_reorder_the_held_row(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A held row must land ahead of rows appended after it, whatever the queue did.
+
+        A reader draining while a row is held empties the queue the row was going to
+        rejoin, so any index recorded at append time describes a queue that has since
+        been reshaped -- clamping such an index to the tail puts the held row BEHIND rows
+        that were appended later. Position has to come from the row itself, not from
+        where the queue happened to be.
+        """
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "drain-between")
+        slot._pending.clear()
+
+        for i in range(5):
+            slot.append("assistant", f"earlier {i}", "")
+        held = slot.append("inject", "held across the drain", "reconcile-note", defer_stream=True)
+        assert [m.get("content") for m in slot._pending] == [
+            f"earlier {i}" for i in range(5)
+        ], "precondition: the held row must not be queued"
+
+        slot.drain()
+        assert slot._pending == [], "precondition: the reader drained everything queued"
+        later = slot.append("assistant", "appended after the held row", "")
+        slot.broadcast_appended_row(held)
+
+        order = [m.get("content") for m in slot._pending]
+        assert order == ["held across the drain", "appended after the held row"], (
+            f"the held row was appended before {later.get('content')!r}, so a reader must "
+            f"receive it first; got {order}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_staged_note_never_evicts_an_accepted_context_entry(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A note's provisional half must not push someone else's accepted context out.
+
+        The note stages its context before the durability await so a drain can hold rather
+        than miss it, which means it occupies a slot while the save runs. With one slot
+        free, a `/context` post landing inside that window found the queue full and the
+        bounded FIFO dropped the OLDEST entry -- an accepted one -- to make room. A
+        provisional entry may be displaced; an accepted one may not.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        from kiro_crew.dashboard.state import _MAX_PENDING_CONTEXT
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "staging-evicts-accepted")
+        slot._pending_context.clear()
+        now = time.time()
+        for i in range(_MAX_PENDING_CONTEXT - 1):
+            slot._pending_context.append(
+                {
+                    "content": f"accepted entry {i}",
+                    "source": f"producer-{i}",
+                    "injectedAt": now,
+                    "maxAge": 86400,
+                }
+            )
+        assert len(slot._pending_context) == _MAX_PENDING_CONTEXT - 1
+
+        released = _asyncio.Event()
+
+        async def _save_holds_the_window_open(state_, slot_, *a, **kw):
+            # A concurrent producer lands while the note's provisional half holds a slot.
+            slot_.append_pending_context(
+                {
+                    "content": "the newcomer's accepted entry",
+                    "source": "newcomer",
+                    "injectedAt": time.time(),
+                    "maxAge": 86400,
+                }
+            )
+            released.set()
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_holds_the_window_open)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/staging-evicts-accepted/note",
+                json={"content": "the staged note"},
+            )
+            assert resp.status == 200
+        assert released.is_set(), "precondition: the concurrent producer must have run"
+
+        contents = [str(e.get("content", "")) for e in slot._pending_context]
+        assert "accepted entry 0" in contents, (
+            "the staged note's provisional half filled the queue, so the concurrent "
+            f"producer evicted an ACCEPTED entry to make room; queue={contents[:3]}..."
+        )
+        assert "the newcomer's accepted entry" in contents
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_note_whose_slot_rebound_leaves_no_row_behind(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A cancelled note must not survive in a window whose routing moved.
+
+        The cancellation path settles from the save's outcome, and reading only "reached the
+        transcript" from that outcome drops the routing half. A committed save whose slot
+        rebound then keeps a row authorized for the previous session, so a detail read
+        returns one session's note as the replacement session's history -- the same harm the
+        non-cancelled path already discards the window row for.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "cancelled-then-rebound")
+        slot._pending_context.clear()
+        authored_key = effective_session_key(slot)
+
+        async def _commit_then_rebind(state_, slot_, *a, **kw):
+            await _asyncio.sleep(0.25)
+            slot_.linked_session_key = "cron:9411"
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _commit_then_rebind)
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/cancelled-then-rebound/note",
+                    json={"content": "authorized for the first session"},
+                )
+            )
+            await _asyncio.sleep(0.08)
+            posting.cancel()
+            with contextlib.suppress(_asyncio.CancelledError, Exception):
+                await posting
+            # Let the shielded save finish and its resolution callback run.
+            await _asyncio.sleep(0.40)
+
+        assert slot.linked_session_key == "cron:9411", "precondition: the rebind must land"
+        assert effective_session_key(slot) != authored_key
+        leaked = [
+            m
+            for m in slot.messages
+            if "authorized for the first session" in str(m.get("content", ""))
+        ]
+        assert leaked == [], (
+            "a cancelled note stayed in the window after its slot rebound, so a detail read "
+            f"serves it as the replacement session's history; {leaked}"
+        )
+        assert (
+            runner_mod.drain_pending_context(slot) == ""
+        ), "its context half also survived the rebind"
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_commits_despite_cancellation_keeps_both_halves(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """If the save commits, cancellation must not strip the note's context half.
+
+        Shutdown cancels the handler but the executor save runs on and commits the row, so
+        a cleanup that withdraws the in-memory halves leaves a restored note the model has
+        no context for. The decision therefore follows the save rather than the unwind:
+        committed means both halves live, and the context half is released to a drain.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "commits-despite-cancel")
+        slot._pending_context.clear()
+
+        async def _save_commits_after_the_cancel(state_, slot_, *a, **kw):
+            await _asyncio.sleep(0.25)
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_commits_after_the_cancel)
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/commits-despite-cancel/note",
+                    json={"content": "committed but abandoned"},
+                )
+            )
+            await _asyncio.sleep(0.08)
+            posting.cancel()
+            with contextlib.suppress(_asyncio.CancelledError, Exception):
+                await posting
+            # Let the shielded save finish and its resolution callback run.
+            await _asyncio.sleep(0.35)
+
+        rows = [m for m in slot.messages if "committed but abandoned" in str(m.get("content", ""))]
+        drained = runner_mod.drain_pending_context(slot)
+        assert rows and "committed but abandoned" in drained, (
+            "the save committed the row, but cancellation settled the note against the "
+            "unwind instead of the save, so the halves disagree: "
+            f"row_kept={bool(rows)} context_drainable={'committed but abandoned' in drained}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_completed_cancellation_rechecks_routing_before_broadcasting(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A cancelled note whose save ALREADY completed must re-read routing first.
+
+        `_note_commit_settled` returns the routing verdict the durability task computed
+        at its own final line. Between that line and this coroutine resuming there is an
+        ordinary scheduling window, and a rebind landing in it leaves the verdict stale --
+        so the completed-cancellation branch broadcast the OLD session's row from the
+        REPLACEMENT session's window. The two sibling paths re-read the history key
+        synchronously; this branch did not.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "completed-cancel-rebind")
+        slot._pending_context.clear()
+        broadcast: list[object] = []
+        monkeypatch.setattr(
+            type(slot), "broadcast_appended_row", lambda self, row: broadcast.append(row)
+        )
+        monkeypatch.setattr(
+            handlers_mod,
+            "snapshot_note_destinations",
+            lambda *a, **kw: (("telegram", "c1"), None),
+        )
+
+        # The save COMMITS and reports routing intact, so the task's own verdict is True.
+        async def _durable_and_intact(state_, slot_, *a, **kw):
+            return True, True, False
+
+        monkeypatch.setattr(handlers_mod, "_immediate_note_is_durable", _durable_and_intact)
+
+        real_shield = _asyncio.shield
+
+        # Models the finding's window: the task reaches done, a rebind lands, and the
+        # coroutine is then cancelled at the shield, so the verdict predates the rebind.
+        async def _shield_then_rebind_and_cancel(awaitable, **kw):
+            await awaitable
+            slot.linked_session_key = "telegram:replacement-session"
+            raise _asyncio.CancelledError
+
+        monkeypatch.setattr(_asyncio, "shield", _shield_then_rebind_and_cancel)
+
+        async with self._make_client(state) as client:
+            with contextlib.suppress(Exception):
+                await client.post(
+                    "/api/chat/slots/completed-cancel-rebind/note",
+                    json={"content": "authored before the rebind"},
+                )
+
+        monkeypatch.setattr(_asyncio, "shield", real_shield)
+
+        assert broadcast == [], (
+            "the completed-cancellation branch broadcast a row authored for the previous "
+            "session after the slot rebound, so the replacement session's window shows "
+            f"another conversation's note; {broadcast}"
+        )
+        drainable = [
+            e
+            for e in slot._pending_context
+            if "authored before the rebind" in str(e.get("content", ""))
+            and not e.get("awaitingCommit")
+        ]
+        assert (
+            drainable == []
+        ), f"its context half was released into the rebound session; {drainable}"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_commit_restarts_the_ttl_it_released(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A released context half must not expire on time spent waiting for its own save.
+
+        Expiry is ``injectedAt + maxAge < now``. The cancelled path popped
+        awaitingCommit but left the original stamp, so a note whose save outlasted its
+        maxAge was released already-expired and the next read discarded it unseen -- the
+        non-cancelled path restarts the stamp for exactly this reason.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "cancelled-ttl")
+        slot._pending_context.clear()
+
+        # The save outlasts the note's own maxAge, which is what makes the stamp stale.
+        async def _save_outlasts_the_ttl(state_, slot_, *a, **kw):
+            await _asyncio.sleep(0.5)
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_outlasts_the_ttl)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/cancelled-ttl/note",
+                    json={"content": "held past its own ttl", "maxAge": 0.35},
+                )
+            )
+            await _asyncio.sleep(0.08)
+            posting.cancel()
+            with contextlib.suppress(_asyncio.CancelledError, Exception):
+                await posting
+            # Past the save (0.5s) so the release has happened, but well inside the
+            # RESTARTED ttl -- the original stamp is already expired by this point.
+            await _asyncio.sleep(0.55)
+
+        entries = [
+            e for e in slot._pending_context if "held past its own ttl" in str(e.get("content", ""))
+        ]
+        assert entries, "precondition: the committed save must have released the context half"
+        assert not entries[0].get(
+            "awaitingCommit"
+        ), "precondition: the entry must be released for this test to be about its stamp"
+        drained = runner_mod.drain_pending_context(slot)
+        assert "held past its own ttl" in drained, (
+            "the released context half was discarded as expired, because the stamp still "
+            "dated from before a save that outlasted its maxAge; the note reached no turn"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancellation_at_the_save_leaves_neither_half_behind(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A cancelled note commit must leave no row without its context, nor the reverse.
+
+        An ordinary client disconnect cancels the handler at the durability await. Unwinding
+        released only the lock, so the appended row stayed in the window -- persisted by the
+        next save -- while its context half sat flagged awaitingCommit, which every drain
+        holds and only a TTL ever clears. Neither half may survive alone.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "cancelled-mid-commit")
+        slot._pending_context.clear()
+
+        async def _save_never_returns(state_, slot_, *a, **kw):
+            await _asyncio.Event().wait()
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_never_returns)
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/cancelled-mid-commit/note",
+                    json={"content": "abandoned mid-commit"},
+                )
+            )
+            await _asyncio.sleep(0.15)
+            posting.cancel()
+            with contextlib.suppress(_asyncio.CancelledError, Exception):
+                await posting
+
+        stranded_rows = [
+            m for m in slot.messages if "abandoned mid-commit" in str(m.get("content", ""))
+        ]
+        drainable_context = [
+            e
+            for e in slot._pending_context
+            if "abandoned mid-commit" in str(e.get("content", "")) and not e.get("awaitingCommit")
+        ]
+        assert drainable_context == [], (
+            "a cancelled commit released its context half while its save was unresolved, so "
+            f"a turn can cite a note that may never have persisted; {drainable_context}"
+        )
+        assert (
+            runner_mod.drain_pending_context(slot) == ""
+        ), "the abandoned note still reaches a turn"
+        assert not any(
+            m.get("broadcast") for m in stranded_rows
+        ), "an unresolved note's row was shown to observers, who cannot un-see it"
+        assert (
+            not slot._note_commit_lock.locked()
+        ), "the commit lock was not released, so every later note would block"
+
+    @pytest.mark.asyncio
+    async def test_time_held_for_a_commit_does_not_consume_a_notes_ttl(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Being held for its own commit must not expire a note's context.
+
+        A drain during the durability window holds the entry rather than emitting it, so a
+        short-TTL note whose save outlasts that TTL would be re-queued already expired and
+        silently dropped by the next drain -- lost to the race, not to the caller's TTL.
+        The clock restarts when the entry becomes drainable, so the hold costs it nothing.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "held-past-its-ttl")
+        slot._pending_context.clear()
+
+        async def _save_outlasting_the_ttl(state_, slot_, *a, **kw):
+            runner_mod.drain_pending_context(slot_)
+            await _asyncio.sleep(0.30)
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_outlasting_the_ttl)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/held-past-its-ttl/note",
+                json={"content": "short lived note", "maxAge": 0.2},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["contextSkipped"] is False
+
+        after = runner_mod.drain_pending_context(slot)
+        assert "short lived note" in after, (
+            "the entry expired while held for its own commit, so the note was lost to the "
+            f"race rather than to its TTL; got {after!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_committed_note_leaves_no_row_in_a_rebound_window(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A note authorized for one session must not sit in another's window.
+
+        Retaining the in-memory row after a rebind because it reached disk leaves content
+        authorized for session A inside the buffer a rebound slot now serves as B. Only
+        one call site purges foreign-authorized rows, ``drain_pending_context`` on the
+        turn path, so a detail read before any turn returns A's note as B's history.
+        The committed row is untouched: withdrawal is from the window, not the transcript.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "rebound-window")
+        authored_key = effective_session_key(slot)
+
+        async def _save_commits_then_rebinds(state_, slot_, *a, **kw):
+            slot_.linked_session_key = "cron:9100"
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_commits_then_rebinds)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/rebound-window/note",
+                json={"content": "authorized for the first session only"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert slot.linked_session_key == "cron:9100", "precondition: the rebind landed"
+        assert (
+            effective_session_key(slot) != authored_key
+        ), "precondition: the slot must now serve a DIFFERENT session"
+        leaked = [
+            m
+            for m in slot.messages
+            if "authorized for the first session only" in str(m.get("content", ""))
+        ]
+        assert leaked == [], (
+            "a note authorized for the previous session is still in the window this slot "
+            f"now serves, so a detail read returns it as the new session's history; {leaked}"
+        )
+        assert body["appended"] is True, (
+            "the row did reach the transcript it was authorized for; only the window copy "
+            f"is withdrawn, so the caller must not be told the append failed; got {body}"
+        )
+        assert body["deliveryConditional"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_turn_starting_during_the_lock_wait_holds_the_note(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A turn dispatched while the commit lock is contended must defer the note.
+
+        The immediate-vs-held decision reads ``running``/``_in_stage_execution`` once. The
+        commit lock can then be contended for the length of another note's durable save,
+        and a turn dispatching in that window leaves the decision stale: an ``inject`` row
+        appended for a running slot takes the tail the replay path skips, so the user's
+        request is replayed twice. The state has to be re-read after the wait.
+        """
+        import asyncio as _asyncio
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "turn-starts-during-wait")
+        slot._pending_context.clear()
+        rows_before = len(slot.messages)
+
+        # Held from here, so the note blocks on acquire exactly as it would behind
+        # another note's durable save -- without a second in-flight request.
+        await slot._note_commit_lock.acquire()
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/turn-starts-during-wait/note",
+                    json={"content": "arrives while contended"},
+                )
+            )
+            # No timing assertion needed: the handler cannot pass its acquire while this
+            # test holds the lock, so the flag flips strictly before the recheck runs.
+            await _asyncio.sleep(0.05)
+            slot._in_stage_execution = True
+            slot._note_commit_lock.release()
+            resp = await posting
+            assert resp.status == 200
+            body = await resp.json()
+
+        appended = [
+            m for m in slot.messages if "arrives while contended" in str(m.get("content", ""))
+        ]
+        assert appended == [], (
+            "a note whose slot began a turn while it waited for the commit lock was "
+            f"appended anyway, so the replay path drops the user's message; {appended}"
+        )
+        assert body["visibleDeferred"] is True, (
+            "the note must be HELD once the slot is running, not reported as appended; "
+            f"got {body}"
+        )
+        assert len(slot.messages) == rows_before
+
+    @pytest.mark.asyncio
+    async def test_a_failed_durable_write_withholds_the_channel_mirror(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A forced write that raised must withhold the channel mirror.
+
+        This is the protection against a channel note outliving the line it asserts: the
+        dispatch is gated on the durable write, not on any response flag. The 200 still
+        reports the row as appended, because the row WAS written -- what the failure costs
+        is the channel copy, which is the half that could otherwise be orphaned.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "durable-write-raises")
+        slot._pending_context.clear()
+        dispatched: list[object] = []
+        monkeypatch.setattr(
+            handlers_mod, "dispatch_note_mirror", lambda *a, **kw: dispatched.append(a)
+        )
+
+        # Forces the dispatchable branch, which is the only one that awaits the durable
+        # write; without it the note never reaches the failure this test is about.
+        monkeypatch.setattr(
+            handlers_mod, "snapshot_note_destinations", lambda *a, **kw: (("telegram", "c1"), None)
+        )
+
+        async def _save_raises(state_, slot_, *a, **kw):
+            raise OSError("disk is gone")
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_raises)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/durable-write-raises/note",
+                json={"content": "acknowledged but not on disk"},
+            )
+            body = await resp.json()
+
+        assert dispatched == [], (
+            "the channel mirror was dispatched after the forced durable write raised, so a "
+            f"channel note can assert a line the transcript may lose; {dispatched} {body}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_flip_to_deferred_rechecks_the_context_cap(self, tmp_path: Path):
+        """A queue that filled during the lock wait must not have this entry evict from it.
+
+        The source cap is evaluated before the commit lock is taken. On a flip to the hold
+        path the pre-wait decision would otherwise stand, so an entry admitted against a
+        clear cap lands in a queue that filled meanwhile and displaces one already accepted.
+        """
+        import asyncio as _asyncio
+
+        from kiro_crew.dashboard.chat_handlers import _MAX_CONTEXT_PER_SOURCE
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "flip-context-cap")
+        slot._pending_context.clear()
+        await slot._note_commit_lock.acquire()
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/flip-context-cap/note",
+                    json={"content": "arrives while the queue fills", "source": "cron"},
+                )
+            )
+            await _asyncio.sleep(0.05)
+            # The queue fills to the per-source cap while the note waits on the lock.
+            for i in range(_MAX_CONTEXT_PER_SOURCE):
+                slot.append_pending_context(
+                    {
+                        "content": f"already accepted {i}",
+                        "source": "cron",
+                        "injectedAt": time.time(),
+                        "maxAge": 3600,
+                    }
+                )
+            slot._in_stage_execution = True
+            slot._note_commit_lock.release()
+            resp = await posting
+            body = await resp.json()
+
+        assert body.get("contextSkipped") is True, (
+            "the note was admitted against a cap read before the lock wait, so its context "
+            f"half displaces an already-accepted entry; got {body}"
+        )
+        survivors = [
+            e for e in slot._pending_context if "already accepted" in str(e.get("content"))
+        ]
+        assert (
+            len(survivors) == _MAX_CONTEXT_PER_SOURCE
+        ), f"an accepted entry was evicted by the flipped note; {len(survivors)} survived"
+
+    def test_a_cancelled_committed_note_is_published_not_just_released(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A cancelled note whose save committed must be broadcast, not silently released.
+
+        The row is appended with `broadcast=False` pending the durability decision. Releasing
+        the context half without broadcasting leaves a turn citing a line no observer saw --
+        the note exists in the transcript and never appeared in the conversation.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "cancelled-but-committed")
+        slot._pending_context.clear()
+        shown: list[object] = []
+        monkeypatch.setattr(
+            type(slot), "broadcast_appended_row", lambda self, row: shown.append(row)
+        )
+        row = {"role": "inject", "content": "committed under cancellation"}
+        entry = {"content": "committed under cancellation", "awaitingCommit": True}
+
+        handlers_mod._resolve_cancelled_note_commit(slot, row, entry, True, True)
+
+        assert "awaitingCommit" not in entry, "a committed note's context must be released"
+        assert shown == [row], (
+            "the context half was released without broadcasting the visible row, so a turn "
+            f"cites a line no observer ever saw; shown={shown}"
+        )
+
+    def test_a_provisional_entry_survives_a_drain_after_its_ttl_elapses(
+        self, tmp_path: Path
+    ) -> None:
+        """An `awaitingCommit` entry must be held even once its TTL has elapsed.
+
+        A short-TTL note whose durable save runs long can have its lifetime expire while it
+        is still provisional. Checking expiry first discards it before the hold applies, so
+        the note's context is lost permanently without ever having been offered to a turn --
+        and the hold exists precisely because the note is not yet committed.
+        """
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "provisional-ttl")
+        slot._pending_context.clear()
+        entry = {
+            "content": "provisional and past its ttl",
+            "source": "cron",
+            "injectedAt": time.time() - 600,
+            "maxAge": 1,
+            "awaitingCommit": True,
+        }
+        slot._pending_context.append(entry)
+
+        rendered = runner_mod.drain_pending_context(slot)
+
+        assert "provisional and past its ttl" not in rendered, (
+            "a provisional entry was emitted to a turn before its note committed; it could "
+            "cite a transcript line that is still withdrawable"
+        )
+        assert any(q is entry for q in slot._pending_context), (
+            "the provisional entry was expired away before the hold applied, so a slow "
+            "durable write silently discards the note's context half"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_written_row_reports_appended_even_when_the_forced_save_fails(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """`appended` means "the visible line was written", not "the write reached disk".
+
+        Folding durability into it forked the field's meaning by hidden server state and
+        needed a second field to disambiguate, whose documented handling was identical to
+        `appended: true`. The protection against a channel note outliving its line is the
+        withheld mirror dispatch, not the response flag; retry stays keyed to the two
+        genuine not-accepted signals, `503` and `404`.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "not-durable-contract")
+        slot._pending_context.clear()
+        monkeypatch.setattr(
+            handlers_mod,
+            "snapshot_note_destinations",
+            lambda *a, **kw: (("telegram", "c1"), None),
+        )
+
+        async def _save_raises(state_, slot_, *a, **kw):
+            raise OSError("disk is gone")
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_raises)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/not-durable-contract/note",
+                json={"content": "written but not durable"},
+            )
+            body = await resp.json()
+
+        assert body["appended"] is True, (
+            "a written row must report appended:true -- durability is not what this field "
+            f"means, and the mirror dispatch is what a failed save withholds; {body}"
+        )
+        assert body["visibleDeferred"] is False, f"the note was not held; {body}"
+        assert "visibleNotDurable" not in body, (
+            "the response must not carry a durability field: its documented handling is "
+            f"identical to appended:true, so it told a caller nothing; {body}"
+        )
+        rows = [m for m in slot.messages if "written but not durable" in str(m.get("content"))]
+        assert rows, "precondition: the row must actually be in the window for this to matter"
+
+    @pytest.mark.asyncio
+    async def test_provisional_note_is_hidden_from_slot_detail_during_the_durability_await(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A slot-detail read landing inside the durability await must not see the note.
+
+        The immediate path appends the visible row into slot.messages
+        (broadcast=False, defer_stream=True) and only then awaits the forced save.
+        Those flags withhold the stream and the push, but _prepare_messages
+        rebuilds off slot.messages, so a fetch in the await window would return
+        the row as settled history -- and if a rebind lands there the write path
+        withdraws it, so serving it hands one session's note to its replacement.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        from kiro_crew.dashboard.chat_utils import _prepare_messages
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "provisional-read-window")
+        slot._pending_context.clear()
+        monkeypatch.setattr(
+            handlers_mod,
+            "snapshot_note_destinations",
+            lambda *a, **kw: (("telegram", "c1"), None),
+        )
+
+        seen_in_window: dict[str, object] = {}
+
+        # Runs inside the durability await, where a slot-detail fetch would land.
+        async def _snapshot_then_durable(state_, slot_, *a, **kw):
+            projected = _prepare_messages(list(slot_.messages), slot_.running, live_child="")
+            seen_in_window["projection_has_note"] = any(
+                "leaked mid-await" in str(m.get("content")) for m in projected
+            )
+            seen_in_window["window_has_note"] = any(
+                "leaked mid-await" in str(m.get("content")) for m in slot_.messages
+            )
+            return True, True, False
+
+        monkeypatch.setattr(handlers_mod, "_immediate_note_is_durable", _snapshot_then_durable)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/provisional-read-window/note",
+                json={"content": "leaked mid-await"},
+            )
+            assert resp.status == 200, await resp.text()
+
+        assert seen_in_window["window_has_note"] is True, (
+            "precondition: the provisional row must be in slot.messages during the await -- "
+            "otherwise this test cannot exercise the read-projection leak"
+        )
+        assert seen_in_window["projection_has_note"] is False, (
+            "the provisional note was returned by the slot-detail read projection while its "
+            "durability was still awaiting -- a fetch here (or a rebind-driven withdrawal) "
+            "would serve it as another session's settled history"
+        )
+        # Released once settled, so the projection shows the confirmed row.
+        after = _prepare_messages(list(slot.messages), slot.running, live_child="")
+        assert any("leaked mid-await" in str(m.get("content")) for m in after), (
+            "a confirmed note must appear in the read projection after release; the gate "
+            "must hide only the provisional window, not the settled row"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_confirmed_note_survives_a_restart_rather_than_being_hidden_forever(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The provisional marker must never reach disk.
+
+        The forced durable save runs BEFORE broadcast_appended_row strips the
+        marker, and _save_slot_to_history then clears _dirty -- so a persisted
+        marker is never corrected on disk. A restart would restore the row with
+        the marker still set and _prepare_messages would hide it permanently,
+        losing an acknowledged visible line.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        from kiro_crew.dashboard.chat_utils import _prepare_messages
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "survives-restart")
+        slot._pending_context.clear()
+        monkeypatch.setattr(
+            handlers_mod,
+            "snapshot_note_destinations",
+            lambda *a, **kw: (("telegram", "c1"), None),
+        )
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/survives-restart/note",
+                json={"content": "must survive the restart"},
+            )
+            assert resp.status == 200, await resp.text()
+
+        # NO save here on purpose: the forced durability save inside the request
+        # already wrote this row, and it ran BEFORE the marker was stripped.
+        slot_key = slot.key
+
+        # The restart: a fresh slot rehydrated from what is actually on disk.
+        fresh_state = _make_state(tmp_path)
+        fresh = _rehydrate_slot_from_history(fresh_state, slot_key)
+        assert fresh is not None, "precondition: the slot must rehydrate from disk"
+
+        restored = [
+            m for m in fresh.messages if "must survive the restart" in str(m.get("content"))
+        ]
+        assert restored, (
+            "precondition: the note must be on disk and restored into the window -- "
+            "otherwise this test cannot exercise the permanent-hiding regression"
+        )
+        assert all(
+            not (isinstance(m.get("meta"), dict) and m["meta"].get("provisional")) for m in restored
+        ), (
+            "the provisional marker was persisted, so the restored row carries it and the "
+            "read projection hides an acknowledged note forever"
+        )
+        projected = _prepare_messages(list(fresh.messages), fresh.running, live_child="")
+        assert any("must survive the restart" in str(m.get("content")) for m in projected), (
+            "a confirmed note vanished from the read projection after a restart -- the "
+            "visible line the 200 promised is permanently invisible"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_after_the_durability_await_blocks_the_broadcast(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A rebind landing after the durability task returns must not retarget the row.
+
+        The task checks routing inside itself, then the parent broadcasts using that
+        captured value. A cron rebind landing in the scheduling gap between the shield
+        returning and the broadcast would publish the old session's row from the new
+        session's window, and release its context half there too.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "rebind-after-await")
+        slot._pending_context.clear()
+        broadcast: list[object] = []
+        monkeypatch.setattr(
+            type(slot), "broadcast_appended_row", lambda self, row: broadcast.append(row)
+        )
+        monkeypatch.setattr(
+            handlers_mod,
+            "snapshot_note_destinations",
+            lambda *a, **kw: (("telegram", "c1"), None),
+        )
+
+        real_key = handlers_mod.slot_history_key
+
+        # The rebind lands exactly once, as the durability task reports success -- inside
+        # the scheduling gap between that return and the broadcast.
+        async def _durable_then_rebind(state_, slot_, *a, **kw):
+            slot_.linked_session_key = "telegram:someone-else"
+            return True, True, False
+
+        monkeypatch.setattr(handlers_mod, "_immediate_note_is_durable", _durable_then_rebind)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/rebind-after-await/note",
+                json={"content": "authored before the rebind"},
+            )
+            assert resp.status in (200, 404)
+
+        assert broadcast == [], (
+            "the row was broadcast after the slot was rebound, so the old session's note "
+            f"is published from the new session's window; {broadcast}"
+        )
+        drainable = [
+            e
+            for e in slot._pending_context
+            if "authored before the rebind" in str(e.get("content")) and not e.get("awaitingCommit")
+        ]
+        assert (
+            drainable == []
+        ), f"its context half was released into the rebound session; {drainable}"
+        assert real_key is handlers_mod.slot_history_key
+
+    def test_note_reauthorizes_after_the_commit_lock(self) -> None:
+        """The ownership gate must run again AFTER the commit lock is acquired.
+
+        The pre-lock gate predates the wait, while the session stamp and the
+        ``routing_intact`` comparison are captured after it, so a cron or workflow rebind
+        landing in that window would be stamped and validated against the NEW session --
+        the comparison then holds against itself and app content lands in a session the
+        caller does not own. Driving this over HTTP needs the app-auth middleware that
+        populates ``request.get("app")``; a dashboard-user request returns early from the
+        gate, so it would pass whether or not the re-check exists. This pins the ordering
+        instead: the re-check must appear after the acquire, and release before returning.
+        """
+        import inspect
+
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_note
+
+        src = inspect.getsource(api_chat_slot_note)
+        acquire = src.index("await slot._note_commit_lock.acquire()")
+        needle = '_reauthorize_after_await(state, slot, name, request_app, "note_post")'
+        post_wait = src[acquire:]
+        assert post_wait.count(needle) >= 2, (
+            "the ownership gate must be re-run after the commit lock on BOTH post-wait "
+            "branches; the deferred-transition branch stamps the note's session and history "
+            "key from the possibly-rebound slot, so skipping it there validates a rebind "
+            "against itself"
+        )
+        # The not-deferred branch still HOLDS the lock, so its denial must release first.
+        last = post_wait.rindex(needle)
+        assert "_note_commit_lock.release()" in post_wait[last : last + 400], (
+            "the still-holding branch's denial path must release the commit lock before "
+            "returning, or a refused note leaves the lock held and every later note blocks"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_note_flipping_to_deferred_is_refused(self, tmp_path: Path):
+        """A note inside the immediate bound must be refused if a turn flips it to held.
+
+        The size guards run under the pre-lock decision, so a note between the held bound
+        and the larger immediate bound passes them. When the post-acquire re-read flips it
+        to the hold path it is persisted verbatim, and the restore sanitizer drops it --
+        silently losing a note the 200 acknowledged.
+        """
+        import asyncio as _asyncio
+
+        from kiro_crew.dashboard.slot_buffers import MAX_DEFERRED_NOTE_CHARS
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "oversized-flip")
+        slot._pending_context.clear()
+        oversized = "x" * (MAX_DEFERRED_NOTE_CHARS + 200)
+        await slot._note_commit_lock.acquire()
+
+        async with self._make_client(state) as client:
+            posting = _asyncio.ensure_future(
+                client.post(
+                    "/api/chat/slots/oversized-flip/note",
+                    json={"content": oversized},
+                )
+            )
+            await _asyncio.sleep(0.05)
+            slot._in_stage_execution = True
+            slot._note_commit_lock.release()
+            resp = await posting
+            body = await resp.json()
+
+        assert resp.status == 413, (
+            "a note too large for the hold path was accepted once a turn flipped it "
+            f"there, so a restart drops it; status={resp.status} body={body}"
+        )
+        assert body["code"] == "deferred_note_too_large"
+        assert slot._deferred_notes == [], (
+            "the oversized note was persisted into the hold queue, where the restore "
+            f"sanitizer drops it; {slot._deferred_notes}"
+        )
+
+    def test_no_second_consumer_can_deliver_a_staged_note(self) -> None:
+        """Only the drain may consume the context queue, and it must honour the hold.
+
+        A staged note is invisible to a turn because ONE function reads the queue for
+        delivery and that function holds a flagged entry. That is an invariant, not an
+        accident: a second consumer added later would deliver a note whose visible half
+        can still be withdrawn, and no test elsewhere would notice. This pins both halves
+        -- the hold itself, and the fact that nothing else drains.
+        """
+        import inspect
+        from pathlib import Path as _Path
+
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        drain_src = inspect.getsource(runner_mod.drain_pending_context)
+        assert 'entry.get("awaitingCommit")' in drain_src, (
+            "the only delivery path stopped honouring the staged-note hold, so a turn can "
+            "take a note whose visible half may yet be withdrawn"
+        )
+        root = _Path(runner_mod.__file__).parent
+        readers = {
+            path.name
+            for path in root.glob("*.py")
+            if "_pending_context" in path.read_text(encoding="utf-8")
+        }
+        assert readers == {
+            "chat_handlers.py",  # produces entries and withdraws its own
+            "chat_note_mirror.py",  # docstring reference only
+            "chat_runner.py",  # the single drain
+            "slot_buffers.py",  # append/evict/purge mechanics
+            "state.py",  # the queue itself
+        }, (
+            "a new module touches the pending-context queue; if it DELIVERS entries it must "
+            f"skip any carrying awaitingCommit, as drain_pending_context does; got {readers}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_slow_commit_neither_blocks_a_turn_nor_loses_its_note(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A note whose save outlasts any cap must still reach a turn, and block none.
+
+        Capping the wait made inclusion depend on wall-clock luck: a save slower than the
+        cap let the drain proceed without the note, so it landed a turn late. The context
+        half is now queued before the save and HELD by the drain until the commit clears
+        it, so a turn never waits and the note is never skipped -- the interleaving is
+        impossible rather than unlikely.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.chat_runner as runner_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "slow-commit-one-turn")
+        slot._pending_context.clear()
+        released = _asyncio.Event()
+        save_completed = {"v": False}
+
+        async def _save_slower_than_any_cap(state_, slot_, *a, **kw):
+            await released.wait()
+            save_completed["v"] = True
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_slower_than_any_cap)
+        observed: dict[str, object] = {}
+
+        async def _a_turn_drains_mid_commit():
+            await _asyncio.sleep(0.05)
+            mid = runner_mod.drain_pending_context(slot)
+            observed["save_done_when_drain_returned"] = save_completed["v"]
+            observed["mid_had_note"] = "the slow note" in mid
+            released.set()
+
+        async with self._make_client(state) as client:
+            resp, _ = await _asyncio.gather(
+                client.post(
+                    "/api/chat/slots/slow-commit-one-turn/note",
+                    json={"content": "the slow note"},
+                ),
+                _a_turn_drains_mid_commit(),
+            )
+            assert resp.status == 200
+
+        assert (
+            observed["save_done_when_drain_returned"] is False
+        ), "the drain returned only after the commit completed, so a slow save stalls a turn"
+        assert not observed[
+            "mid_had_note"
+        ], "the mid-commit drain emitted a note whose visible half could still be withdrawn"
+        after = runner_mod.drain_pending_context(slot)
+        assert "the slow note" in after, (
+            "the note was dropped rather than held: a drain during the commit must leave "
+            f"it queued for the next one; got {after!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_overlapping_notes_queue_context_in_submission_not_completion_order(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Concurrent same-slot notes must reach the model in transcript order.
+
+        The context half is queued after the durability await, so without serialization
+        the note whose save settles FIRST queues first -- and if the later submission
+        settles sooner the model reads the two background blocks reversed against the
+        transcript, citing an older note as though it came after a newer one.
+        """
+        import asyncio as _asyncio
+
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "reverse-settling-notes")
+        slot._pending_context.clear()
+
+        settle_order: list[str] = []
+        calls = {"n": 0}
+
+        async def _save_settles_out_of_order(state_, slot_, *a, **kw):
+            calls["n"] += 1
+            mine = calls["n"]
+            await _asyncio.sleep(0.25 if mine == 1 else 0.02)
+            settle_order.append(f"save{mine}")
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_settles_out_of_order)
+
+        async with self._make_client(state) as client:
+
+            async def _post(label: str):
+                return await client.post(
+                    "/api/chat/slots/reverse-settling-notes/note",
+                    json={"content": label},
+                )
+
+            first, second = await _asyncio.gather(_post("first note"), _post("second note"))
+            assert (first.status, second.status) == (200, 200)
+
+        queued = [str(e.get("content", "")) for e in slot._pending_context]
+        assert len(queued) == 2, f"both notes must queue a context half; got {queued}"
+        assert settle_order == ["save1", "save2"], (
+            "serialization must make the first save to start settle first; without it the "
+            f"second overtakes it, which is the race under test; got {settle_order}"
+        )
+        # Arrival order across two concurrent POSTs is not ours to fix -- the platform's
+        # scheduler decides it -- so the invariant is queue order MATCHING transcript order.
+        transcript = [
+            str(m.get("content", "")) for m in slot.messages if m.get("cls") == "reconcile-note"
+        ]
+        assert len(transcript) == 2, f"both rows must be on the transcript; got {transcript}"
+        assert queued == transcript, (
+            "the later-settling note queued first, so the model reads the two background "
+            f"blocks reversed against the transcript; queue={queued} transcript={transcript}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_same_source_add_racing_the_save_cannot_pass_the_per_source_cap(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The per-source cap must be re-read at the commit, not only before the await.
+
+        The pre-await gate counts this source's live entries, then the durability await
+        gives another caller of the SAME source time to take the last slot. Appending on
+        the stale count pushes that source one past its cap, and the next append then
+        evicts a different source's context early. Both caps have to be read where the
+        entry is actually queued.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "source-cap-races-the-save")
+        slot._pending_context.clear()
+        cap = handlers_mod._MAX_CONTEXT_PER_SOURCE
+        for i in range(cap - 1):
+            slot._pending_context.append(
+                {"content": f"same source {i}", "source": "note", "ephemeral": True}
+            )
+        assert not handlers_mod._source_cap_reached(
+            slot, "note"
+        ), "precondition: one same-source slot free"
+
+        async def _a_same_source_add_takes_the_last_slot(_state, observed_slot, *_a, **_k):
+            observed_slot._pending_context.append(
+                {"content": "same-source add mid-save", "source": "note", "ephemeral": True}
+            )
+            return True
+
+        monkeypatch.setattr(
+            handlers_mod, "save_slot_off_loop", _a_same_source_add_takes_the_last_slot
+        )
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/source-cap-races-the-save/note",
+                json={"content": "a note that must not exceed its source cap"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        live = [e for e in slot._pending_context if e.get("source") == "note"]
+        assert len(live) <= cap, (
+            f"this source now holds {len(live)} entries against a cap of {cap}, so the next "
+            f"append evicts another source's context early"
+        )
+        assert (
+            body["contextSkipped"] is True
+        ), f"a source that filled during the save must report the skip: {body}"
+
+    @pytest.mark.asyncio
+    async def test_a_filler_racing_the_save_cannot_evict_another_callers_context(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Capacity read before the await is stale by the time the note commits.
+
+        The note's context is queued only once durability settles, and that await is long
+        enough for another caller to take the last free slot. Appending then would make
+        room by dropping someone else's oldest live entry, which nothing reports and no
+        rollback recovers. Capacity has to be read at the commit, and a full queue reports
+        contextSkipped rather than displacing a caller that got there first.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        import kiro_crew.dashboard.state as state_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "filler-races-the-save")
+        oldest = {"content": "another caller's oldest entry", "source": "other"}
+        slot._pending_context.clear()
+        slot._pending_context.append(oldest)
+        while len(slot._pending_context) < state_mod._MAX_PENDING_CONTEXT - 1:
+            slot._pending_context.append({"content": "filler", "source": "other"})
+        assert not slot.pending_context_at_capacity(), "precondition: one slot must be free"
+
+        async def _a_concurrent_caller_takes_the_last_slot(_state, observed_slot, *_a, **_k):
+            observed_slot._pending_context.append(
+                {"content": "took the last slot mid-save", "source": "other"}
+            )
+            return True
+
+        monkeypatch.setattr(
+            handlers_mod, "save_slot_off_loop", _a_concurrent_caller_takes_the_last_slot
+        )
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/filler-races-the-save/note",
+                json={"content": "a note that must not displace anyone"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert (
+            slot._pending_context[0] is oldest
+        ), "the note evicted another caller's oldest live entry to make room for itself"
+        assert (
+            body["contextSkipped"] is True
+        ), f"a queue that filled during the save must report the skip: {body}"
+        assert not [
+            e for e in slot._pending_context if "must not displace" in str(e.get("content", ""))
+        ], "the note's context was queued despite the queue being full at commit"
+
+    @pytest.mark.asyncio
+    async def test_a_full_context_queue_skips_rather_than_evicting_another_caller(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A note must not make room by dropping an entry it cannot give back.
+
+        The queue evicts its oldest entries to fit a new one. That is safe for a caller
+        that keeps what it queues, but a note's entry can be rolled back by a routing
+        race, and the rollback cannot restore what the append evicted -- another
+        caller's queued context would be gone for a note that was then refused. At
+        capacity the note reports contextSkipped instead, leaving the queue untouched.
+        """
+        import kiro_crew.dashboard.state as state_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "context-queue-full")
+        oldest = {"content": "another caller's oldest entry", "source": "other"}
+        slot._pending_context.clear()
+        slot._pending_context.append(oldest)
+        while len(slot._pending_context) < state_mod._MAX_PENDING_CONTEXT:
+            slot._pending_context.append({"content": "filler", "source": "other"})
+        assert slot.pending_context_at_capacity(), "precondition: the queue must be full"
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/context-queue-full/note",
+                json={"content": "a note arriving at a full queue"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert body["contextSkipped"] is True, f"a full queue must report the skip: {body}"
+        assert (
+            slot._pending_context[0] is oldest
+        ), "the note evicted another caller's oldest entry to make room for itself"
+        assert not [
+            e for e in slot._pending_context if "full queue" in str(e.get("content", ""))
+        ], "the note's context was queued despite the cap"
+
+    @pytest.mark.asyncio
+    async def test_two_held_rows_release_in_append_order_either_way_round(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Two notes held at once must reach a live reader in the order they were appended.
+
+        Each held row reserves the queue position it would have taken, and the save is an
+        await, so two notes can be outstanding together. If both reserved the same index
+        the second to release would land in front of the first, handing a reader an order
+        the transcript never had. Checked in BOTH release orders, because which save
+        settles first is not the order the notes were written in.
+        """
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "two-held-rows")
+        slot._pending.clear()
+
+        first = slot.append("inject", "note one", "reconcile-note", defer_stream=True)
+        second = slot.append("inject", "note two", "reconcile-note", defer_stream=True)
+        assert [m.get("content") for m in slot._pending] == [], "neither may be queued yet"
+
+        slot.broadcast_appended_row(second)
+        slot.broadcast_appended_row(first)
+        assert [m.get("content") for m in slot._pending] == ["note one", "note two"], (
+            "released newest-first, the queue must still read in APPEND order; got "
+            f"{[m.get('content') for m in slot._pending]}"
+        )
+
+        slot._pending.clear()
+        third = slot.append("inject", "note three", "reconcile-note", defer_stream=True)
+        fourth = slot.append("inject", "note four", "reconcile-note", defer_stream=True)
+        slot.broadcast_appended_row(third)
+        slot.broadcast_appended_row(fourth)
+        assert [m.get("content") for m in slot._pending] == ["note three", "note four"], (
+            "released oldest-first, the queue must read in append order; got "
+            f"{[m.get('content') for m in slot._pending]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_released_note_rejoins_the_stream_in_transcript_order(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A held row must reach a live reader in the order the transcript records.
+
+        The row enters the durable window before the guarded save and rejoins the live
+        stream after it, so anything appended during that save is queued in between.
+        Releasing at the tail would hand a reader the two rows inverted, and no later
+        frame corrects it -- the client renders what the stream delivered.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "stream-order")
+
+        async def _another_row_lands_inside_the_save(_state, observed_slot, *_a, **_k):
+            observed_slot.append("assistant", "a reply appended during the save", "")
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _another_row_lands_inside_the_save)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/stream-order/note", json={"content": "the note came first"}
+            )
+            assert resp.status == 200
+
+        streamed = [
+            m
+            for m in slot._pending
+            if m.get("cls") == "reconcile-note" or m.get("role") == "assistant"
+        ]
+        assert len(streamed) == 2, f"both rows must be queued for the reader; got {streamed}"
+        assert streamed[0].get("cls") == "reconcile-note", (
+            "the note was appended first, so a live reader must receive it first; got "
+            f"{[(m.get('role'), m.get('cls')) for m in streamed]}"
+        )
+        window = [
+            m
+            for m in slot.messages
+            if m.get("cls") == "reconcile-note" or m.get("role") == "assistant"
+        ]
+        assert [m.get("cls") for m in window] == [
+            m.get("cls") for m in streamed
+        ], "the live stream order must match the durable window order"
+
+    @pytest.mark.asyncio
+    async def test_a_row_landing_during_the_save_is_not_pushed_ahead_of_the_note(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The live PUSH must not invert what the window and the reader queue order.
+
+        A note's row is appended withheld and pushed only on release, so a row landing
+        during the slow save pushed IMMEDIATELY and the note pushed after it -- leaving a
+        dashboard with no stream reader showing the reply before the note it answered,
+        until a reload. The window and the reader queue were already correct; only the
+        push had no ordering.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "push-order")
+        slot._pending_context.clear()
+        pushed: list[dict] = []
+        # No reader attached, which is the branch that pushes rather than queueing.
+        slot._on_message = lambda _key, msg: pushed.append(msg)
+        slot._has_reader = False
+
+        async def _another_row_lands_inside_the_save(_state, observed_slot, *_a, **_k):
+            observed_slot.append("assistant", "a reply appended during the save", "")
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _another_row_lands_inside_the_save)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/push-order/note", json={"content": "the note came first"}
+            )
+            assert resp.status == 200, await resp.text()
+
+        relevant = [
+            m for m in pushed if m.get("cls") == "reconcile-note" or m.get("role") == "assistant"
+        ]
+        assert len(relevant) == 2, f"both rows must reach the push path; got {relevant}"
+        assert relevant[0].get("cls") == "reconcile-note", (
+            "the reply was pushed before the note it answered, so a dashboard with no "
+            "stream reader renders them inverted; got "
+            f"{[(m.get('role'), m.get('cls')) for m in relevant]}"
+        )
+        window = [
+            m
+            for m in slot.messages
+            if m.get("cls") == "reconcile-note" or m.get("role") == "assistant"
+        ]
+        assert [m.get("cls") for m in window] == [
+            m.get("cls") for m in relevant
+        ], "the push order must match the durable window order"
+
+    @pytest.mark.asyncio
+    async def test_a_reader_draining_mid_save_still_sees_transcript_order(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A reader must not receive a later row before the note it follows.
+
+        The note is withheld from ``_pending`` until it settles, while later rows entered
+        it immediately -- so an attached reader draining during the slow save took the
+        later row first, and ``broadcast_appended_row``'s timestamp insert cannot recall
+        a row already delivered. Ordering has to hold across the drain, not just within
+        the queue.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "reader-order")
+        slot._pending_context.clear()
+        observed: list[dict] = []
+
+        # A reader consuming DURING the save: this is the drain the note cannot undo.
+        async def _row_lands_then_a_reader_drains(_state, observed_slot, *_a, **_k):
+            observed_slot.append("assistant", "a reply appended during the save", "")
+            observed.extend(observed_slot.drain())
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _row_lands_then_a_reader_drains)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/reader-order/note", json={"content": "the note came first"}
+            )
+            assert resp.status == 200, await resp.text()
+
+        observed.extend(slot.drain())
+        seen = [
+            m for m in observed if m.get("cls") == "reconcile-note" or m.get("role") == "assistant"
+        ]
+        assert len(seen) == 2, f"the reader must receive both rows; got {seen}"
+        assert seen[0].get("cls") == "reconcile-note", (
+            "the reader received the reply before the note it follows, and a delivered row "
+            f"cannot be recalled; got {[(m.get('role'), m.get('cls')) for m in seen]}"
+        )
+        window = [
+            m
+            for m in slot.messages
+            if m.get("cls") == "reconcile-note" or m.get("role") == "assistant"
+        ]
+        assert [m.get("cls") for m in window] == [
+            m.get("cls") for m in seen
+        ], "the reader's order must match the durable window order"
+
+    @pytest.mark.asyncio
+    async def test_turn_ws_frames_wait_for_a_provisional_note(self, tmp_path: Path, monkeypatch):
+        """Direct turn frames must not reach the socket before a withheld note.
+
+        Turn output is broadcast straight to WS clients, bypassing ``_pending`` and the
+        push, so a reply streaming inside the note's durable-save window rendered before
+        the note it answers -- and a frame already on the wire cannot be recalled. The
+        immediate arm is only taken on an idle, channel-bound slot, which is the window
+        this drives.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+        from kiro_crew.dashboard.chat_runner import chunk_generation
+
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "ws-order")
+        slot._pending_context.clear()
+        wire: list[tuple[str, object]] = []
+        state.broadcast_ws = lambda event, payload: wire.append((event, payload))
+        # Both deliveries land on ONE sink, which is the only way their order is comparable:
+        # the note goes out via the slot push, the turn frame straight to the socket.
+        slot._on_message = lambda _key, msg: wire.append(("note_push", msg))
+        slot._has_reader = False
+        monkeypatch.setattr(
+            handlers_mod,
+            "snapshot_note_destinations",
+            lambda *a, **kw: (("telegram", "c1"), None),
+        )
+
+        # A turn streaming a chunk INSIDE the durability await: the real call site routes
+        # its frame through the slot, so the hold is what decides the wire order.
+        async def _a_turn_streams_during_the_save(_state, observed_slot, *_a, **_k):
+            observed_slot.broadcast_ws_or_hold(
+                _state,
+                "chat_chunk",
+                {
+                    "slot": observed_slot.key,
+                    "content": "a reply chunk",
+                    "seq": 1,
+                    "gen": chunk_generation(),
+                },
+            )
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _a_turn_streams_during_the_save)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/ws-order/note", json={"content": "the note came first"}
+            )
+            assert resp.status == 200, await resp.text()
+
+        chunks = [i for i, (event, _p) in enumerate(wire) if event == "chat_chunk"]
+        notes = [
+            i
+            for i, (event, p) in enumerate(wire)
+            if event == "note_push" and "the note came first" in str(p)
+        ]
+        assert chunks, f"precondition: the turn frame must reach the wire; got {wire}"
+        assert notes, f"precondition: the note must reach the wire; got {wire}"
+        assert notes[0] < chunks[0], (
+            "the turn's chunk reached the socket before the note it follows, and a frame "
+            f"already sent cannot be recalled; wire order was {[e for e, _ in wire]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_withdrawn_row_is_not_broadcast_when_the_context_was_consumed(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A row removed from the window must never reach observers.
+
+        Under the double race -- a permanent delete winning the guarded save while a
+        turn has already drained the pending context -- the response stays a 200,
+        because the model did receive the note and that cannot be taken back. The
+        visible row is still withdrawn, though, so it has no transcript line for an
+        observer to anchor on: pushing it renders a note that the same response reports
+        as `appended: false`, and no later reload can reproduce it.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "withdrawn-not-broadcast")
+        shown: list[dict] = []
+        slot._on_message = lambda _key, msg: shown.append(msg)
+        slot._has_reader = False
+
+        async def _turn_drains_then_delete_wins(_state, observed_slot, *_a, **_k):
+            observed_slot._pending_context.clear()
+            return False
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _turn_drains_then_delete_wins)
+        monkeypatch.setattr(handlers_mod, "session_was_deleted", lambda *_a, **_k: True)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/withdrawn-not-broadcast/note",
+                json={"content": "a withdrawn note nobody should be shown"},
+            )
+            assert (
+                resp.status == 404
+            ), f"the context was staged, so the note took no effect; got {resp.status}"
+
+        assert [
+            m for m in shown if m.get("cls") == "reconcile-note"
+        ] == [], f"a withdrawn row was pushed to observers: {shown}"
+        assert [
+            m for m in slot._pending if m.get("cls") == "reconcile-note"
+        ] == [], "a withdrawn row was left drainable by a reader"
+        assert [
+            m for m in slot.messages if m.get("cls") == "reconcile-note"
+        ] == [], "the withdrawn row is still in the window"
+
+    @pytest.mark.asyncio
+    async def test_a_context_consumed_during_the_save_is_not_denied_by_a_404(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A 404 must not deny an effect the model already received.
+
+        The context half is queued before the durable save so a turn admitted during
+        that save drains it with the note. That same interleaving means a turn can
+        consume it and the save can THEN be refused by a session delete. The visible
+        row is recallable; a context already folded into a prompt is not, so answering
+        404 -- the note took no effect -- would be false. The honest answer keeps the
+        200 and reports the halves: nothing appended, delivery conditional.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "context-consumed-then-deleted")
+
+        async def _turn_drains_then_delete_wins(_state, observed_slot, *_a, **_k):
+            # Exactly what drain_pending_context does when a turn folds the queue into
+            # its prompt, and then the guarded save loses to a permanent delete.
+            observed_slot._pending_context.clear()
+            return False
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _turn_drains_then_delete_wins)
+        monkeypatch.setattr(handlers_mod, "session_was_deleted", lambda *_a, **_k: True)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/context-consumed-then-deleted/note",
+                json={"content": "a note whose context a turn already consumed"},
+            )
+            assert resp.status == 404, (
+                f"the context was STAGED, so a turn could not have consumed it and the "
+                f"note took no effect; got {resp.status}"
+            )
+
+        assert [
+            m for m in slot.messages if m.get("cls") == "reconcile-note"
+        ] == [], "the refused visible row is still in the window"
+        assert not [
+            e for e in slot._pending_context if "already consumed" in str(e.get("content", ""))
+        ], "the staged context must never reach the queue when the note is refused"
+
+    @pytest.mark.asyncio
+    async def test_a_note_lost_to_delete_is_never_shown_and_leaves_no_half(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A 404-ed note must not have been broadcast, and must leave nothing behind.
+
+        The visible row has to be appended before the guarded save, because that save
+        is what persists it -- so showing it at append time would let observers read a
+        note whose caller is then told the session does not exist. Broadcasting is
+        therefore deferred until persistence settles, and the refused row is withdrawn
+        along with its context half.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "lost-to-delete-broadcast")
+        shown: list[dict] = []
+        slot._on_message = lambda _key, msg: shown.append(msg)
+        slot._has_reader = False
+
+        async def _save_refuses(*_a, **_k):
+            return False
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_refuses)
+        monkeypatch.setattr(handlers_mod, "session_was_deleted", lambda *_a, **_k: True)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *_a, **_k: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/lost-to-delete-broadcast/note",
+                json={"content": "a note for a session that is being deleted"},
+            )
+            assert resp.status == 404, f"a lost note must answer 404; got {resp.status}"
+
+        assert [
+            m for m in shown if m.get("cls") == "reconcile-note"
+        ] == [], f"observers were shown a note the caller was told does not exist: {shown}"
+        assert [
+            m for m in slot.messages if m.get("cls") == "reconcile-note"
+        ] == [], "the refused row is still in the window"
+        assert not [
+            e for e in slot._pending_context if "being deleted" in str(e.get("content", ""))
+        ], "the context half outlived the 404"
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_after_the_save_commits_is_not_reported_unconditional(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A committed write does not make delivery unconditional if routing then moved.
+
+        The save pins its write to the authorized key, so a commit proves the ROW
+        landed there -- but a rebind can land after it, and the drain answers to the
+        slot's new routing. Reporting ``deliveryConditional`` false there promises a
+        delivery to a session the note is not routed to.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "post-commit-rebind")
+        shown: list[dict] = []
+        slot._on_message = lambda _key, msg: shown.append(msg)
+        slot._has_reader = False
+
+        async def _save_commits_then_rebinds(state_, slot_, *a, **kw):
+            slot_.linked_session_key = "cron:8003"
+            return True
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_commits_then_rebinds)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *a, **kw: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/post-commit-rebind/note",
+                json={"content": "note whose routing moved after the commit"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+
+        assert slot.linked_session_key == "cron:8003", "the rebind must land after the commit"
+        assert body["appended"] is True, "the row DID land on the authorized transcript"
+        assert body["contextSkipped"] is True, (
+            "the routing gate dropped the context half, so reporting contextSkipped=false "
+            f"would tell the caller their note reaches a turn it can never reach; got {body}"
+        )
+        assert (
+            not slot._pending_context
+        ), "the context half must NOT be queued once routing moved off the authorized key"
+        assert body["deliveryConditional"] is True, (
+            f"routing moved off the authorized key after the commit, so delivery is "
+            f"conditional; got {body}"
+        )
+        assert [
+            m for m in shown if m.get("cls") == "reconcile-note"
+        ] == [], f"the committed row was pushed into the session that replaced its own: {shown}"
+        assert [
+            m for m in slot._pending if m.get("cls") == "reconcile-note"
+        ] == [], "the committed row was left drainable by a reader of the replacement session"
+
+    @pytest.mark.asyncio
+    async def test_a_delete_winning_the_save_answers_404_not_a_false_success(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A note whose session was destroyed mid-save must not be reported appended.
+
+        ``save_slot_off_loop`` answers the same ``False`` for a permanent deletion and
+        for a rebind, so collapsing the two let the 200 claim ``appended`` for a row
+        that will never reach disk -- describing a session the operator had just
+        destroyed. The delete arm now answers the endpoint's uniform 404.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        _seeded_slot(state, "delete-race")
+        dispatched: list[str] = []
+
+        async def _save_refuses(state_, slot_, *a, **kw):
+            return False
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_refuses)
+        monkeypatch.setattr(handlers_mod, "session_was_deleted", lambda state_, slot_: True)
+        monkeypatch.setattr(
+            handlers_mod, "dispatch_note_mirror", lambda *a, **kw: dispatched.append("sent")
+        )
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/delete-race/note", json={"content": "note into a deleted session"}
+            )
+            body = await resp.json()
+
+        assert resp.status == 404, (
+            f"the save was refused because the session is gone, so the response must not "
+            f"report success; got {resp.status} {body}"
+        )
+        assert body.get("code") == "slot_not_found", f"expected the uniform 404 shape, got {body}"
+        assert "appended" not in body, f"a 404 must not carry an append claim: {body}"
+        assert dispatched == [], "no channel note may be dispatched for a lost transcript row"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_save_without_a_delete_witness_answers_200_conditionally(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A refusal the delete witness does not confirm keeps its conditional 200.
+
+        Guards the discrimination in the other direction -- answering 404 for every
+        refused save would turn an ordinary routing move into a missing slot -- and pins
+        the fail-SAFE fallback: an unconfirmed refusal reports conditional, not gone.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        _seeded_slot(state, "rebind-race")
+
+        async def _save_refuses(state_, slot_, *a, **kw):
+            return False
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_refuses)
+        monkeypatch.setattr(handlers_mod, "session_was_deleted", lambda state_, slot_: False)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", lambda *a, **kw: None)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/rebind-race/note", json={"content": "note during a rebind"}
+            )
+            body = await resp.json()
+
+        assert resp.status == 200, f"a rebind is not a missing slot; got {resp.status} {body}"
+        assert (
+            body["deliveryConditional"] is True
+        ), f"the routing moved off the authorized key, so delivery is conditional: {body}"
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_during_the_durable_write_cannot_retarget_the_mirror(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The mirror must carry the binding the note was AUTHORED for.
+
+        The session key and the destinations were both resolved AFTER the durability
+        await, so a rebind landing inside that window was the one snapshotted -- and the
+        mirror then delivered content authored for one conversation to the binding that
+        replaced it, a recipient it was never authorized for.
+
+        The rebind lands INSIDE the patched save so it falls in the real window; landing
+        it before the post would be an ordinary already-bound slot and pass vacuously.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "retarget-race")
+        authored_key = handlers_mod.effective_session_key(slot)
+        seen: list[tuple[str, str]] = []
+
+        async def _save_rebinds(state_, slot_, *a, **kw):
+            slot_.linked_session_key = "cron:7002"
+            return True
+
+        def _fake_snapshot(state_, slot_, key_):
+            # Tags WHEN it ran, so resolving after the rebind is visible in the payload.
+            tag = "replacement" if slot_.linked_session_key == "cron:7002" else "authored"
+            return ((tag, "C1"), None)
+
+        def _fake_dispatch(state_, slot_, session_, content_, source_, destinations_):
+            seen.append((session_, destinations_[0][0]))
+
+        monkeypatch.setattr(handlers_mod, "save_slot_off_loop", _save_rebinds)
+        monkeypatch.setattr(handlers_mod, "snapshot_note_destinations", _fake_snapshot)
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", _fake_dispatch)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/retarget-race/note",
+                json={"content": "authored before the rebind"},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["appended"] is True, "must exercise the IMMEDIATE path"
+
+        assert slot.linked_session_key == "cron:7002", "the rebind must land inside the window"
+        assert seen == [(authored_key, "authored")], (
+            f"the mirror was handed {seen} instead of the authoring binding "
+            f"({authored_key!r}, 'authored'): a rebind during the durable write "
+            f"retargeted the session key, the destinations, or both"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_immediate_note_reaches_disk_before_its_channel_note_is_sent(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A channel send must not be able to outlive the transcript row it claims.
+
+        ``slot.append`` only updates the in-memory window, so a mirror dispatched
+        straight after it can reach a user while an ordinary gateway crash still
+        loses the transcript line, leaving an orphan channel note nothing recovers.
+
+        Asserted AT THE DISPATCH MOMENT by reading the on-disk transcript from
+        inside the fake mirror, not by recording call order: an order assertion
+        also passes when the save runs first but commits nothing, which is the
+        failure this is meant to catch.
+        """
+        import kiro_crew.dashboard.chat_handlers as handlers_mod
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "durable-first")
+        key = slot_history_key(slot)
+        durable_at_dispatch: list[bool] = []
+
+        def _fake_dispatch(state_, slot_, session_, content_, source_, destinations_):
+            rows = state.conversation_log.read_messages(key)
+            durable_at_dispatch.append(any(content_ == (row.get("content") or "") for row in rows))
+
+        monkeypatch.setattr(handlers_mod, "dispatch_note_mirror", _fake_dispatch)
+
+        async with self._make_client(state) as client:
+            resp = await client.post(
+                "/api/chat/slots/durable-first/note",
+                json={"content": "durable before mirrored"},
+            )
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["appended"] is True, (
+                "this test must exercise the IMMEDIATE path; a held note is not "
+                "mirrored here at all and would pass vacuously"
+            )
+
+        assert durable_at_dispatch == [True], (
+            "the mirror must be dispatched only once the visible line is on disk; "
+            f"durable-at-dispatch={durable_at_dispatch}"
+        )
 
     @pytest.mark.asyncio
     async def test_200_means_the_hold_is_already_durable(self, tmp_path: Path, monkeypatch):

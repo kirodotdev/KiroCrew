@@ -434,6 +434,10 @@ _CONTEXT_FRAME_CONTRACT = (
 def drain_pending_context(slot: "_ChatSlot") -> str:
     """Drain ``slot._pending_context`` into a prepend-ready context prefix.
 
+    An entry flagged ``awaitingCommit`` is HELD RATHER THAN EMITTED and stays queued,
+    so a turn never blocks on a note commit and never emits a note whose visible half
+    could still be withdrawn. Whichever drain runs first after the commit takes it.
+
     Returns the concatenated ``[Background context from "<source>"] … [End of
     background context]`` blocks (empty string when there is nothing to inject)
     and clears the queue. Expired entries (``maxAge`` elapsed) are discarded.
@@ -462,7 +466,13 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
         return ""
     now = time.time()
     ctx_parts: list[str] = []
+    held_back: list[dict] = []
     for entry in slot._pending_context:
+        if entry.get("awaitingCommit"):
+            # Checked BEFORE expiry: a slow durable save can outlast a short TTL, and
+            # expiring a provisional entry discards a note no turn was ever offered.
+            held_back.append(entry)
+            continue
         if context_entry_expired(entry, now):
             continue  # expired — silently discard
         # `or "app"` (not a dict default): api_chat_slot_context always writes
@@ -477,6 +487,7 @@ def drain_pending_context(slot: "_ChatSlot") -> str:
             f"[End of background context]\n"
         )
     slot._pending_context.clear()
+    slot._pending_context.extend(held_back)
     return "\n".join(ctx_parts) + "\n" if ctx_parts else ""
 
 
@@ -7953,6 +7964,8 @@ async def _run_chat(
             _user_msg_for_mirror = message
             # Drain pending context injections (silent background context
             # from apps/subagents).  Expired entries are discarded.
+            # A note's half enqueued provisionally is HELD here, not returned, until its
+            # commit releases it -- so this never waits and never emits an unsettled note.
             _ctx_prefix = drain_pending_context(slot)
             if _ctx_prefix:
                 message = _ctx_prefix + message
@@ -8472,8 +8485,10 @@ async def _run_chat(
                     row = slot.append("chunk", wire, "chunk")
                     row["seq"] = chunk_seq
                     row["gen"] = chunk_generation()
-                    # Push chunk to WS clients (HTTP SSE reader drains from slot._pending)
-                    state.broadcast_ws(
+                    # Push chunk to WS clients (HTTP SSE reader drains from slot._pending).
+                    # Held behind a provisional note so a reply cannot precede it on the wire.
+                    slot.broadcast_ws_or_hold(
+                        state,
                         "chat_chunk",
                         {
                             "slot": slot.key,
