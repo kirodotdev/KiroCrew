@@ -5435,6 +5435,43 @@ class TestRunChatSegmentFlush:
         assert "tool_call" in ws_types
 
     @pytest.mark.asyncio
+    async def test_tool_turn_progress_claim_surfaces_idle_notice(self, tmp_path, monkeypatch):
+        """A mixed turn must not replay tools, but it must not claim it keeps running."""
+        from kiro_crew.acp.types import STOP_REASON_END_TURN
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        claim = (
+            "I'm continuing with the full local gate run; the new screenshot is "
+            "the lower frame above."
+        )
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="Prepared the gate script."),
+            LLMEvent(kind=EVENT_TOOL_CALL, title="write_file", tool_kind="write"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=claim),
+            LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        state.refresh_slot_source_status = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot._titled = True
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "run the full gate")
+
+        notices = [m["content"] for m in slot.messages if m.get("role") == "notice"]
+        assert any("No further main-agent steps run" in text for text in notices)
+        assert claim in [m["content"] for m in slot.messages if m.get("role") == "assistant"]
+        assert slot._queue == []
+
+    @pytest.mark.asyncio
     async def test_idle_turn_boundary_refreshes_source_status(self, tmp_path, monkeypatch):
         """Reaching idle at a turn boundary must re-read the slot's PR/MR status.
 

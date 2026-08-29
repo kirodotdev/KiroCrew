@@ -171,6 +171,17 @@ none is mirrored to a linked Slack or Telegram thread as though the user typed i
 | `[Empty response — automatic recovery]` | The model returned no output twice. Continue the pending request; do not restart from scratch or re-run steps that already succeeded. |
 | `[Unfinished action — automatic recovery]` | The turn ended right after announcing an immediate action ("I'll do that now") without making the tool call, so nothing actually happened yet a billed turn was recorded. Instructs the model to carry out the announced action now — unless it was actually deferred pending the user's approval or an unmet condition, in which case it is told to hold and say what it is waiting for (a semantic consent backstop, since the terminal-promise detector's approval-gate deny-list cannot enumerate every conditional phrasing). Bounded to one attempt per turn; a second consecutive promise-only ending falls through and lands normally with a give-up notice. |
 
+A related notice-only guard handles turns that cannot be replayed safely. When a
+normal top-level turn ends after earlier tool calls with a new immediate-action
+promise, or its final segment claims foreground work is still continuing, the
+runner keeps the completed tool work landed and appends an informational notice:
+the main-agent turn has ended, separately shown subagents or monitor loops may
+continue, and otherwise the user must send a message to resume. This path never
+injects a continuation because replaying a mixed turn could duplicate a push,
+deployment, message, or other side effect. The detector is model-agnostic and
+matches only first-person progress claims at a sentence boundary; statements
+about a subagent or monitor are not classified as foreground work.
+
 **A tool deny is explained IN-BAND first, and the injection above is the
 fallback.** ACP's permission response carries only `outcome`/`optionId`, so the
 host cannot attach a reason to a rejection — kiro-cli hands the model the fixed

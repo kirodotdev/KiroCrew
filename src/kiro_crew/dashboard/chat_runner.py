@@ -259,6 +259,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     TRANSIENT_RETRY_KIND,
     RecoveryPayload,
     has_leaked_tool_call,
+    has_unfinished_progress_claim,
     is_promise_only_terminal,
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
@@ -8654,6 +8655,39 @@ async def _run_chat(
                 "ℹ️ The model again ended after saying it would act but didn't. The "
                 "one automatic retry is already spent — send the request again to "
                 "perform the action.",
+                "msg msg-info",
+            )
+        # A long mixed turn may execute many tools and then end with a NEW
+        # foreground-progress claim ("I'm continuing with the gate run"). The
+        # zero-tool promise recovery above intentionally refuses mixed turns:
+        # replaying one could duplicate a push, deployment, message, or other
+        # side effect. Silence is not acceptable either, because the terminal
+        # assistant bubble then claims work is running after the turn is idle.
+        # Diagnose only: keep the valid earlier work landed and state the true
+        # lifecycle. The same notice covers present-progressive claims with no
+        # tool calls, which are outside the narrow "I'll do it now" detector.
+        elif (
+            not _armed_final
+            and not slot._in_stage_execution
+            and _prompt_depth == 0
+            and (bool(assistant_text.strip()) or _produced_visible_output)
+            and _stop_reason == STOP_REASON_END_TURN
+            and not _refusal_reasons
+            and not _should_suppress_requeue(slot)
+            and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+            and not _has_user_queued_followup(slot)
+            and not getattr(slot, "_pending_steers", None)
+            and (
+                has_unfinished_progress_claim(assistant_text)
+                or (_turn_tool_calls > 0 and is_promise_only_terminal(assistant_text))
+            )
+        ):
+            slot.append(
+                "notice",
+                "ℹ️ This turn ended after the model said work was still in progress. "
+                "No further main-agent steps run from this completed turn. Separately "
+                "shown subagents or monitor loops, if any, continue on their own; "
+                "otherwise send a message to resume.",
                 "msg msg-info",
             )
         # On an empty-response re-queue the turn produced nothing and will
