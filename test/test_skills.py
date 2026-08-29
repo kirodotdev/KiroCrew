@@ -2038,6 +2038,85 @@ class TestDisabledAppSkillsAreNotTriggered:
 
         assert loader.get_triggered_skills("find hotspots for me") == ["ai-discover"]
 
+    def test_disabled_app_skills_excluded_from_list_skills_and_context(self, tmp_path, monkeypatch):
+        """#5781: Disabled app skills must not appear in list_skills or get_context index."""
+        skills = tmp_path / "skills"
+        self._write_app_skill(skills, "deploy_web", "artifact-deploy", "deploy")
+        self._write_app_skill(skills, "ops_mc", "ops-mission-control", "deploy")
+        self._apps(monkeypatch, deploy_web=False, ops_mc=True)
+        loader = SkillsLoader(
+            skills_path=skills,
+            install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        listed_keys = [s["key"] for s in loader.list_skills()]
+        assert "deploy_web/artifact-deploy" not in listed_keys
+        assert "ops_mc/ops-mission-control" in listed_keys
+
+        context = loader.get_context(budget=10000)
+        assert "artifact-deploy" not in context
+        assert "ops-mission-control" in context
+
+    def test_disabled_app_always_skill_is_excluded(self, tmp_path, monkeypatch):
+        """#5781: Disabled app skills with always: true must not be injected."""
+        skills = tmp_path / "skills"
+        d = skills / "deploy_web" / "always-helper"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: always-helper\nalways: true\n---\n\nBody of always helper\n"
+        )
+        self._apps(monkeypatch, deploy_web=False)
+        loader = SkillsLoader(
+            skills_path=skills,
+            install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.get_always_skills() == []
+
+        loader._invalidate_iter_cache()
+        self._apps(monkeypatch, deploy_web=True)
+        assert loader.get_always_skills() == ["deploy_web/always-helper"]
+
+    def test_disabled_app_dollar_skill_is_not_resolved(self, tmp_path, monkeypatch):
+        """#5781: Explicit $skill invocation must not resolve a disabled app's skill."""
+        skills = tmp_path / "skills"
+        self._write_app_skill(skills, "deploy_web", "artifact-deploy", "deploy")
+        self._apps(monkeypatch, deploy_web=False)
+        loader = SkillsLoader(
+            skills_path=skills,
+            install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.resolve_dollar_skills("run $artifact-deploy please") == []
+
+        loader._invalidate_iter_cache()
+        self._apps(monkeypatch, deploy_web=True)
+        res = loader.resolve_dollar_skills("run $artifact-deploy please")
+        assert len(res) == 1
+        assert res[0][1] == "deploy_web/artifact-deploy"
+
+    def test_disabled_app_skill_is_excluded_from_search(self, tmp_path, monkeypatch):
+        """#5781: skill_search must not return results from disabled apps."""
+        skills = tmp_path / "skills"
+        self._write_app_skill(skills, "deploy_web", "artifact-deploy", "deploy")
+        self._apps(monkeypatch, deploy_web=False)
+        loader = SkillsLoader(
+            skills_path=skills,
+            install_builtins=False,
+            config=KiroCrewConfig(skills=SkillsConfig(max_triggered=3)),
+        )
+
+        assert loader.search_skills("artifact-deploy") == []
+
+        loader._invalidate_iter_cache()
+        self._apps(monkeypatch, deploy_web=True)
+        results = loader.search_skills("artifact-deploy")
+        assert len(results) == 1
+        assert results[0]["key"] == "deploy_web/artifact-deploy"
+
 
 class TestStripFrontmatterCloserParity:
     """#6182: strip_frontmatter's closer must accept everything the display

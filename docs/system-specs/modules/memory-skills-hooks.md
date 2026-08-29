@@ -1061,6 +1061,16 @@ The `false` value carries no new privilege surface: it can only reduce what a
 skill delivers, and foreign-imported skills are refused for declaring `triggers`
 at all (`onboarding_import.py`), so an import cannot reach either path.
 
+**Disabled-app skill gating.** When an app is disabled (`_disabled_app_names()`),
+its bundled skills are withheld across all user-facing surfaces: trigger matching
+(`get_triggered_skills`), per-turn index listing and search (`list_skills`,
+`get_context`, `search_skills`), always-injected bodies (`get_always_skills`),
+and explicit `$skill` token resolution (`resolve_dollar_skills`). An unreadable
+app registry fails open so a transient read error never hides enabled skills.
+Internal plumbing helpers (`load_skill`, `_served_key_by_realpath`,
+`resolve_ledger_aliases`, `_resolve_path_and_root`) remain ungated so
+reconciliation and pinned paths function without modification.
+
 **Setting it from the dashboard.** `POST /api/skills/-/inject-on-trigger` (body
 `{name, inject}`) edits that one frontmatter line server-side via
 `SkillsLoader.set_inject_on_trigger()`, mirroring `set_pinned()` — atomic write,
