@@ -1534,8 +1534,11 @@ export const switchSlot = createAsyncThunk<
     // can omit `slotRun` entirely, and throwing here would skip the fetch.
     const state = (getState() as { chat: ChatState }).chat
     const streaming = (state.slotRun?.[key]?.state ?? 'idle') !== 'idle'
+    // A bounded page is a WINDOW, and unseen server growth can push that window clear
+    // of a small cache entirely, so only a slot with nothing painted may be bounded.
+    const cached = state.slotMessages?.[safeKey(key)]?.length ?? 0
     try {
-      return await fetchSlotDetail(key, streaming ? undefined : OLDER_PAGE_LIMIT)
+      return await fetchSlotDetail(key, streaming || cached > 0 ? undefined : OLDER_PAGE_LIMIT)
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,
       // which keeps string fields only -- `ApiError.status` (a number) never
@@ -2133,7 +2136,10 @@ export const warmSlotCache = createAsyncThunk(
     // Captured BEFORE the fetch: two warms for one slot resolve in any order,
     // and the later-dispatched response is the newer view of the transcript.
     const warmSeq = nextWarmSeq()
-    return { ...(await fetchSlotDetail(key, streaming ? undefined : PANE_HYDRATE_LIMIT)), warmSeq }
+    // `switchSlot.pending` paints the active view from this cache, and a window can miss
+    // a small cache entirely once the server has grown, so refetch any of it whole.
+    const cached = state.slotMessages?.[safeKey(key)]?.length ?? 0
+    return { ...(await fetchSlotDetail(key, streaming || cached > 0 ? undefined : PANE_HYDRATE_LIMIT)), warmSeq }
   },
 )
 
