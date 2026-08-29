@@ -770,7 +770,7 @@ class TestNoCronsFlag:
 
         with patch("kiro_crew.cli_server.config_path") as mock_cp, patch(
             "kiro_crew.cli_server.KiroCrewConfig"
-        ) as mock_cfg_cls, patch("kiro_crew.cli_chat._ensure_config_key"), patch(
+        ) as mock_cfg_cls, patch(
             "kiro_crew.cli_server.run_gateway", new_callable=AsyncMock
         ) as mock_run:
             mock_cp.return_value.exists.return_value = True
