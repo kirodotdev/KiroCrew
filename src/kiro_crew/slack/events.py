@@ -778,6 +778,13 @@ async def _handle_restart(
         )
     except Exception:
         logger.debug("SEL flush before restart failed", exc_info=True)
+    # Same reason, same shape, for the OTHER async log sink: gateway.log runs
+    # through a QueueListener thread, so its queued tail -- the restart
+    # decision and everything logged during the teardown above -- dies with
+    # the os._exit below unless it is drained first.
+    from kiro_crew.cli import drain_log_queue_before_hard_exit
+
+    await drain_log_queue_before_hard_exit()
     os._exit(1)
 
 

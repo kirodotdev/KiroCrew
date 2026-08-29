@@ -10382,6 +10382,15 @@ class GatewayOrchestrator:
         print("👻 Goodbye!")
         # Kill any kiro-cli processes that survived graceful shutdown
         cleanup_orphaned_sessions()
+        # This is a hard exit too: os._exit skips atexit, so the log queue's
+        # drain hook never runs here either. Without this the whole shutdown
+        # tail is lost -- including the "Graceful shutdown timed out" warning
+        # logged a few lines up, the one record a stuck-shutdown post-mortem
+        # actually needs. Bounded and off-loop so a wedged disk cannot delay
+        # the exit (see drain_log_queue_before_hard_exit).
+        from kiro_crew.cli import drain_log_queue_before_hard_exit
+
+        await drain_log_queue_before_hard_exit()
         os._exit(0)
 
     async def _start_channel_transports(

@@ -18,6 +18,7 @@ Covers:
   ``_stop_log_queue_listener`` drains every queued record to disk
 """
 
+import ast
 import logging
 import os
 import threading
@@ -35,6 +36,7 @@ from kiro_crew.cli import (
     _redirect_fds_to,
     _setup_cli_logging,
     _stop_log_queue_listener,
+    drain_log_queue_before_hard_exit,
 )
 from kiro_crew.config import config_dir
 
@@ -465,3 +467,182 @@ class TestQueueOffLoop:
         release.set()  # unblock the daemon thread so teardown closes cleanly
         assert elapsed < 2.0
         assert cli_mod._LOG_QUEUE_LISTENER is None
+
+
+class TestDrainBeforeHardExit:
+    """``os._exit`` runs no ``atexit`` handler, so every ``async`` path that
+    hard-exits the gateway must drain the log queue itself - bounded, and off
+    the event loop."""
+
+    @pytest.fixture(autouse=True)
+    def _foreground(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        monkeypatch.setattr("kiro_crew.cli._redirect_fds_to", MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_queued_tail_reaches_disk(self):
+        """The records logged immediately before a hard exit - the ones a
+        post-mortem actually needs - are on disk when the drain returns."""
+        _setup_cli_logging("gateway", 1)
+        logging.getLogger("kiro_crew.shutdown").warning("shutdown-tail-record")
+        await drain_log_queue_before_hard_exit()
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert "shutdown-tail-record" in text
+        assert cli_mod._LOG_QUEUE_LISTENER is None
+
+    @pytest.mark.asyncio
+    async def test_join_runs_off_the_event_loop_thread(self):
+        """The synchronous listener join happens on an executor thread: doing
+        it inline would park the loop for up to the drain deadline."""
+        _setup_cli_logging("gateway", 1)
+        join_threads: list[threading.Thread] = []
+        real_stop = cli_mod._stop_log_queue_listener
+
+        def recording_stop(timeout=None):
+            join_threads.append(threading.current_thread())
+            real_stop(timeout)
+
+        cli_mod._stop_log_queue_listener = recording_stop  # type: ignore[assignment]
+        try:
+            await drain_log_queue_before_hard_exit()
+        finally:
+            cli_mod._stop_log_queue_listener = real_stop  # type: ignore[assignment]
+        assert join_threads, "drain never reached the listener stop"
+        assert all(t is not threading.current_thread() for t in join_threads)
+
+    @pytest.mark.asyncio
+    async def test_wedged_handler_does_not_delay_the_exit(self):
+        """A wedged disk must not hold the loop past the deadline: the drain
+        returns bounded, and the exit proceeds without it."""
+        import time
+
+        _setup_cli_logging("gateway", 1)
+        (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
+        release = threading.Event()
+        orig_emit = fh.emit
+
+        def wedged_emit(record):
+            release.wait(10.0)  # simulate blocking handler I/O
+            orig_emit(record)
+
+        fh.emit = wedged_emit  # type: ignore[method-assign]
+        logging.getLogger("kiro_crew.wedged").warning("wedged-shutdown-record")
+        t0 = time.monotonic()
+        await drain_log_queue_before_hard_exit(timeout=0.2)
+        elapsed = time.monotonic() - t0
+        release.set()  # unblock the daemon thread so teardown closes cleanly
+        assert elapsed < 3.0
+
+    @pytest.mark.asyncio
+    async def test_no_listener_is_a_silent_no_op(self):
+        """Short-lived verbs never start a listener; the drain must still be
+        safe to await, and must never raise into a hard-exit path."""
+        _setup_cli_logging("status", 1)
+        assert cli_mod._LOG_QUEUE_LISTENER is None
+        await drain_log_queue_before_hard_exit()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_drain_never_blocks_the_exit(self):
+        """Logging must not be able to abort a shutdown: a stop that raises is
+        swallowed, not propagated to the caller about to ``os._exit``."""
+        _setup_cli_logging("gateway", 1)
+        real_stop = cli_mod._stop_log_queue_listener
+
+        def exploding_stop(timeout=None):
+            raise RuntimeError("interpreter teardown race")
+
+        cli_mod._stop_log_queue_listener = exploding_stop  # type: ignore[assignment]
+        try:
+            await drain_log_queue_before_hard_exit()
+        finally:
+            cli_mod._stop_log_queue_listener = real_stop  # type: ignore[assignment]
+
+
+class TestEveryGatewayHardExitDrainsTheQueue:
+    """Ratchet: the queue only helps if EVERY hard exit in the gateway process
+    drains it. ``src/kiro_crew/slack/gateway.py`` and ``.../events.py`` are the
+    two modules that call ``os._exit`` from inside the long-lived gateway
+    process - the other ``os._exit`` sites in the tree (``sandbox.py``,
+    ``_process_group_supervisor.py``) run in forked/pre-exec children that
+    never install the CLI's queue listener.
+
+    The check is per-function and does NOT look inside nested functions, so a
+    drain in a sibling closure cannot vouch for its parent."""
+
+    _MODULES = (
+        Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/gateway.py",
+        Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/events.py",
+    )
+    _DRAINS = {"_stop_log_queue_listener", "drain_log_queue_before_hard_exit"}
+
+    @staticmethod
+    def _own_body_names(fn):
+        """Every Name/Attribute identifier in ``fn``'s own body, skipping the
+        bodies of functions nested inside it."""
+        names: set[str] = set()
+
+        class _Walk(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):  # nested def: not fn's own body
+                if node is fn:
+                    self.generic_visit(node)
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_Name(self, node):
+                names.add(node.id)
+
+            def visit_Attribute(self, node):
+                names.add(node.attr)
+                self.generic_visit(node)
+
+        _Walk().visit(fn)
+        return names
+
+    def _hard_exit_functions(self, tree):
+        """(function node, line) for each ``os._exit(...)`` call, attributed to
+        the nearest enclosing function."""
+        parents: "dict[ast.AST, ast.AST]" = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+        found = []
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_exit"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "os"
+            ):
+                continue
+            cur = parents.get(node)
+            while cur is not None and not isinstance(
+                cur, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                cur = parents.get(cur)
+            if cur is not None:
+                found.append((cur, node.lineno))
+        return found
+
+    def test_the_ratchet_actually_finds_the_hard_exits(self):
+        """A scan that matches nothing would pass vacuously."""
+        total = 0
+        for path in self._MODULES:
+            total += len(
+                self._hard_exit_functions(ast.parse(path.read_text(encoding="utf-8")))
+            )
+        assert total >= 3, f"expected the known os._exit sites, found {total}"
+
+    def test_no_hard_exit_strands_the_queued_log_tail(self):
+        violations = []
+        for path in self._MODULES:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for fn, lineno in self._hard_exit_functions(tree):
+                if not (self._own_body_names(fn) & self._DRAINS):
+                    violations.append(f"{path.name}:{lineno} in {fn.name}()")
+        assert not violations, (
+            "os._exit skips atexit, so these hard exits drop the queued "
+            "gateway.log tail; await drain_log_queue_before_hard_exit() (or "
+            "call _stop_log_queue_listener(timeout=...) from a sync handler) "
+            "first: " + ", ".join(violations)
+        )

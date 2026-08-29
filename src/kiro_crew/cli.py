@@ -829,6 +829,38 @@ def _stop_log_queue_listener(timeout: float | None = None) -> None:
             pass  # a broken handler must not block shutdown
 
 
+async def drain_log_queue_before_hard_exit(timeout: float = 2.0) -> None:
+    """Flush the queued ``gateway.log`` tail from an ``async`` hard-exit path.
+
+    ``os._exit`` runs no ``atexit`` handler, so the drain registered by
+    :func:`_setup_cli_logging` never fires on a path that hard-exits -- every
+    record still sitting in the queue is lost, including the ones logged
+    immediately before the exit, which are the most diagnostic ones a
+    post-mortem has.
+
+    :func:`_stop_log_queue_listener` is a *synchronous* bounded drain (it
+    joins the listener thread), so calling it inline from a coroutine would
+    park the event loop for up to ``timeout``. Offload it to
+    :func:`~kiro_crew.executors.subprocess_executor` -- the pool reserved for
+    teardown work that can block on a wedged resource -- under an outer
+    deadline, exactly as the restart path already does for the SEL flush. A
+    wedged disk therefore delays neither the loop nor the exit.
+
+    Never raises: a hard exit must not be blocked, or replaced, by logging.
+    """
+    from kiro_crew.executors import subprocess_executor
+
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _stop_log_queue_listener, timeout
+            ),
+            timeout=timeout + 1.0,
+        )
+    except Exception:
+        pass  # includes TimeoutError: reaching the exit is what matters
+
+
 def _setup_cli_logging(command: str | None, verbose: int) -> None:
     """Configure console echo + persistent ``gateway.log`` logging.
 
