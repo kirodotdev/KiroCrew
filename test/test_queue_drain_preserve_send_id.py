@@ -219,7 +219,17 @@ class TestDrainedRow:
 
 class TestQueueForNextTurnSeam:
     def test_send_id_is_stamped_only_when_given(self, tmp_path, monkeypatch):
-        """The helper's own contract, independent of the HTTP handler."""
+        """The helper's own contract, independent of the HTTP handler.
+
+        The announce assertion below inverts a pin written by 16ec93beff, whose wording
+        settles what that pin meant: "the entry / row shape is unchanged. The `queue_push`
+        broadcast is untouched." It reads as an ADDITIVITY claim under that commit's own
+        "Additive:" heading, so "no id leaks onto the broadcast" pinned SHAPE STABILITY, not a
+        deliberate exclusion of the id from other clients. That commit's stated purpose was to
+        give a client a way "to prove ITS message landed (an unconfirmed-send notice deciding
+        whether to retire)" -- the consumer this carry serves -- so withholding the id from the
+        live announce would work against the reason the id was threaded through at all.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -233,8 +243,12 @@ class TestQueueForNextTurnSeam:
         by_id = {i["id"]: i for i in slot._queue}
         assert by_id[qid_with]["meta"].get("sendId") == _SEND_ID
         assert "sendId" not in by_id[qid_without]["meta"]
-        # The queue_push announce shape is unchanged: no id leaks onto the broadcast.
+        # Composed with the optimistic-bubble release path: the announce carries the id
+        # when one was given, and is byte-for-byte the prior shape when none was.
         for call in state.broadcast_ws.call_args_list:
             event, payload = call.args
             assert event == "queue_push"
-            assert "sendId" not in payload
+            if payload["queue_id"] == qid_with:
+                assert payload["sendId"] == _SEND_ID
+            else:
+                assert "sendId" not in payload

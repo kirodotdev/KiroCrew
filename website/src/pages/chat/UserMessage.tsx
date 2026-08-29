@@ -10,6 +10,7 @@ import { applySearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
+import { deliveryInDoubt } from '../../utils/sendDelivery'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -30,6 +31,9 @@ interface UserMessageProps {
   messageIndex?: number
   messageTs?: string
   onEditResend?: (index: number, ts: string, newContent: string) => void
+  /** Drop this row when its delivery was never confirmed. Supplied by a host that owns the store, so
+   *  the row keeps an exit after an edit releases the composer strip -- the only other place it lives. */
+  onRemoveUnconfirmed?: (sendId: string) => void
   slotKey?: string
   slotTitle?: string
   mode?: string
@@ -51,7 +55,7 @@ interface UserMessageProps {
   hideSteerBadge?: boolean
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, slotKey, slotTitle, mode, pinned, onTogglePin, slotRunning, hideSteerBadge }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, onRemoveUnconfirmed, slotKey, slotTitle, mode, pinned, onTogglePin, slotRunning, hideSteerBadge }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -258,12 +262,35 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     )
   }
 
+  // One derivation, not per-reader booleans: the markers are independent, so resolving their
+  // precedence here as well is how the bubble and the composer caption come to disagree.
+  const deliveryDoubted = deliveryInDoubt(meta as Record<string, unknown> | undefined)
   const bubble = (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
-    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-2 text-sm leading-6 rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    // No `aria-label` for the unconfirmed state: the COMPOSER echo is the one live region
+    // announcing that string, so labelling here would have it read twice.
+    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-2 text-sm leading-6 rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'} ${deliveryDoubted ? 'opacity-70 outline-dashed outline-1 -outline-offset-2 outline-border-strong' : ''}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       {renderContent(content, meta)}
     </div>
   )
+  // Not a live region and not the resend clause -- the composer echo owns both. The exit is on the
+  // ROW because an edit retires the strip while this mark stays, leaving the bubble otherwise stuck.
+  const unknownSendId = (meta as Record<string, unknown> | undefined)?.sendId
+  const deliveryCaption = deliveryDoubted ? (
+    <div data-delivery-caption className="text-[12px] leading-5 mt-0.5 pr-1 text-right text-warn">
+      {i18nT('pages.chatPage.delivery_unconfirmed_short')}
+      {onRemoveUnconfirmed && typeof unknownSendId === 'string' && unknownSendId ? (
+        <button
+          type="button"
+          data-testid="row-exit-remove"
+          className="ml-2 p-0 border-none bg-transparent text-[12px] leading-5 underline text-muted hover:text-text"
+          onClick={() => onRemoveUnconfirmed(unknownSendId)}
+        >
+          {i18nT('pages.chatPage.delivery_remove')}
+        </button>
+      ) : null}
+    </div>
+  ) : null
 
   return (
     // Every box between the content column and the bubble is a fit-content flex
@@ -350,6 +377,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           {bubble}
         </>
       )}
+      {deliveryCaption}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px
           icon + 10px padding); hover-capable pointers keep the reveal-on-hover

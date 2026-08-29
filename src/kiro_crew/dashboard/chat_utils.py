@@ -1569,6 +1569,39 @@ def _redact_for_display(text: str) -> str:
     return text
 
 
+def queue_entry_for_detail(q: dict) -> dict:
+    """One slot-detail queue entry.
+
+    Carries ``meta.sendId`` when the entry has one, so a client that MISSED the
+    ``queue_push`` broadcast can still adopt its pre-send stash. An id-less card
+    falls back to the parser on cancel and restores the redacted text WITHOUT
+    the attachments, which is exactly the loss that stash exists to prevent.
+    Additive: omitted entirely when the entry carries no id, so an entry from a
+    send that minted none keeps its shape.
+
+    Also carries ``edited`` once the entry has been edited, so that same client
+    does not adopt a pre-send record whose text and files predate the edit, and
+    ``editId`` naming WHICH edit produced the text. Without the id the client can
+    only compare the redacted display, and redaction erases image markers -- so a
+    concurrent same-display edit elsewhere left a stale record alive to answer a
+    cancel with obsolete text and attachments.
+    """
+    entry = {"id": q["id"], "content": _redact_for_display(q["content"])}
+    send_id = (q.get("meta") or {}).get("sendId")
+    if isinstance(send_id, str) and send_id:
+        entry["sendId"] = send_id
+    if q.get("edited"):
+        entry["edited"] = True
+    edit_id = q.get("edit_id") or q.get("editId")
+    if isinstance(edit_id, str) and edit_id:
+        entry["editId"] = edit_id
+    # Carried through a refetch too, or the order the echo established is lost on the next detail.
+    edit_rev = q.get("edit_rev") or q.get("editRev")
+    if isinstance(edit_rev, int):
+        entry["editRev"] = edit_rev
+    return entry
+
+
 def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
     """Remove a 'queued' placeholder by queue_id stored in cls JSON."""
     for i, m in enumerate(messages):

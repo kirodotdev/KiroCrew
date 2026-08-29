@@ -7268,7 +7268,8 @@
       "send_now": "Enviar agora",
       "sub_agent_result_many": "{{count}} resultados de subagente",
       "sub_agent_result_one": "{{count}} resultado de subagente",
-      "sub_agent_result_other": "{{count}} resultados de subagente"
+      "sub_agent_result_other": "{{count}} resultados de subagente",
+      "edit_failed": "Falha ao salvar edição: {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "T",
@@ -10118,7 +10119,6 @@
       "return_to_split_view": "Voltar para a visualização dividida",
       "scroll_to_bottom": "Rolar para o final",
       "send_failed": "Falha no envio",
-      "send_failed_connection": "Não foi possível enviar — verifique sua conexão e tente novamente.",
       "session_not_found": "Sessão \"{{name}}\" não encontrada",
       "session_options": "Opções da sessão",
       "show_sessions": "Mostrar sessões",
@@ -10152,7 +10152,7 @@
       "loading_earlier_messages": "Carregando mensagens anteriores…",
       "send_failed_with_error": "Falha ao enviar: {{error}}",
       "send_failed_with_error_restored": "Não foi possível enviar esta mensagem: {{error}}. Seu texto voltou para a caixa de composição.",
-      "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para a caixa de composição; verifique a conversa antes de enviar novamente.",
+      "delivery_unconfirmed": "Entrega não confirmada — seu texto voltou para o campo de mensagem; verifique a conversa antes de enviar novamente.",
       "could_not_read_file_reason": "Não foi possível ler {{path}} ({{reason}})",
       "screenshot_failed_reason": "Falha na captura de tela: {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -10160,7 +10160,15 @@
       "could_not_generate_title": "Não foi possível gerar um título",
       "could_not_open_side_chat": "Não foi possível abrir o chat lateral",
       "side_command_not_run": "O comando /side não foi executado. Sua mensagem continua no editor.",
-      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral"
+      "could_not_send_to_side_chat": "Não foi possível enviar para o chat lateral",
+      "delivery_delivered": "Mensagem entregue — reenviá-la a enviará duas vezes.",
+      "delivery_discard": "Descartar mensagem e campo de mensagem",
+      "delivery_remove": "Remover mensagem, manter o texto",
+      "delivery_unconfirmed_short": "Entrega não confirmada",
+      "send_no_response": "Nenhuma confirmação voltou para esta mensagem.",
+      "delivery_unconfirmed_resend": "Entrega não confirmada — seu texto voltou ao campo de mensagem; reenviá-lo pode enviá-lo duas vezes.",
+      "delivery_unconfirmed_dismiss_note": "Se esta mensagem nunca chegou ao servidor, removê-la a retira desta conversa; seu texto volta ao campo de mensagem.",
+      "delivery_clear": "Limpar o campo de mensagem"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorada — atualmente selecionada)",

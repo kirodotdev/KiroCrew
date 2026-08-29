@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, memo } from 'react'
+import ErrorNotice from './ErrorNotice'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
 import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown } from 'lucide-react'
 import type { ChatMessage } from '../types'
@@ -193,7 +194,8 @@ function EditInput({ initial, onCommit, onCancel }: {
   )
 }
 
-function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true, pendingIds }: {
+function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, fuseBelow = true, pendingIds,
+  editError, editRejected, onDismissEditError }: {
   messages: ChatMessage[]
   onCancel?: (queueId: string) => void
   onInterrupt?: (queueId: string) => void
@@ -206,6 +208,11 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
    *  is only retired once the server confirms, that second request races the
    *  first and comes back 404, reporting a failure for an action that worked. */
   pendingIds?: ReadonlySet<string>
+  /** A rejected edit, rendered here so every host that draws cards reports it. */
+  editError?: string | null
+  /** The text each rejected edit threw away, keyed by card. Reopens that card's input seeded. */
+  editRejected?: Record<string, string>
+  onDismissEditError?: () => void
   /** When true (default) the front collapsed card fuses into the surface directly
    *  below it (the input box) via a negative bottom margin + a flat, borderless bottom
    *  edge. Set false when a non-fusable element sits between the queue and the input box
@@ -228,6 +235,16 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
   useEffect(() => {
     if (editingId && !messages.some(m => (m.meta?.queueId as string) === editingId)) setEditingId(null)
   }, [messages, editingId])
+
+  // A rejected edit closed its input before the failure landed, so the typed text existed nowhere.
+  // Reopen that card seeded with it rather than making the user retype work the server never took.
+  useEffect(() => {
+    if (!editRejected) return
+    const target = messages
+      .map(m => m.meta?.queueId as string | undefined)
+      .find(id => !!id && id in editRejected)
+    if (target) setEditingId(target)
+  }, [editRejected, messages])
 
   const commitEdit = (queueId: string, content: string) => {
     setEditingId(null)
@@ -283,6 +300,14 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
     // composer's own `z-10`, so the collapsed card's -OVERLAP fuse keeps sliding
     // UNDER the input box rather than over it.
     <div className="px-4 mx-auto w-full relative" style={{ maxWidth: 'var(--mc-content-width, 900px)', zIndex: 2 }}>
+      {/* No hand-off: protects the composer draft below */}
+      <ErrorNotice
+        message={editError}
+        variant="inline"
+        onDismiss={onDismissEditError}
+        testId="queue-edit-error"
+        className="mb-1"
+      />
       <motion.div
         className="relative cursor-pointer"
         animate={{ height: targetHeight }}
@@ -372,7 +397,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                     </span>
                   )}
                   {isEditing && onEdit ? (
-                    <EditInput initial={m.content} onCommit={v => commitEdit(queueId!, v)} onCancel={cancelEdit} />
+                    <EditInput initial={(queueId && editRejected?.[queueId]) ?? m.content} onCommit={v => commitEdit(queueId!, v)} onCancel={cancelEdit} />
                   ) : (
                     <>
                       <span className="truncate flex-1">{m.content}</span>
@@ -461,6 +486,8 @@ export default memo(QueueStackInner, (prev, next) =>
   prev.messages.length === next.messages.length &&
   prev.fuseBelow === next.fuseBelow &&
   prev.pendingIds === next.pendingIds &&
+  prev.editError === next.editError &&
+  prev.editRejected === next.editRejected &&
   prev.messages.every((m, i) => m === next.messages[i]) &&
   prev.onCancel === next.onCancel &&
   prev.onInterrupt === next.onInterrupt &&

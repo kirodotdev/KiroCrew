@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import UserMessage from '../pages/chat/UserMessage'
+import { readFile } from 'node:fs/promises'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../utils/shareUrl', () => ({ copySessionLink: vi.fn().mockResolvedValue(undefined) }))
@@ -13,8 +14,65 @@ import { copySessionLink } from '../utils/shareUrl'
 const renderContent = (content: string) => <span data-testid="content">{content}</span>
 
 describe('UserMessage', () => {
-  it('renders message content', () => {
-    render(<UserMessage content="hello" renderContent={renderContent} />)
+  // Nothing clears `deliveryUnknown` when a send later confirms, so without gating on the
+  // positive proof a delivered bubble stays muted.
+  it('drops the doubt once the send is confirmed', () => {
+    const { container } = render(
+      <UserMessage content="hi" meta={{ deliveryUnknown: true, deliveryConfirmed: true }} renderContent={renderContent} />)
+
+    const bubble = container.querySelector('.message-bubble')
+    expect(bubble?.className, 'a delivered bubble must not render muted').not.toMatch(/opacity-70/)
+    expect(bubble?.className, 'nor dashed-outlined as uncertain').not.toMatch(/outline-dashed/)
+    const caption = container.querySelector('[data-delivery-caption]')
+    expect(caption, 'and it must carry no doubt caption at all').toBeNull()
+  })
+
+  // The composer echo announces the identical "Delivery unconfirmed" string, so making this
+  // caption a live region too has a screen reader read the same state twice.
+  it('states the unconfirmed delivery in words but is not a second live region', () => {
+    const { container } = render(
+      <UserMessage content="hi" meta={{ deliveryUnknown: true }} renderContent={renderContent} />)
+    const caption = Array.from(container.querySelectorAll('div'))
+      .find(el => /Delivery unconfirmed/i.test(el.textContent ?? '') && el.children.length === 0)
+    expect(caption, 'the caption must still state the state in words').toBeTruthy()
+    expect(container.querySelectorAll('[role="status"]').length).toBe(0)
+  })
+
+  // Dropping the live region above left the capture harness with nothing to select, so the
+  // hook it greps for is a CONTRACT: assert the component and the script still agree.
+  it('carries the capture hook the delivery screenshot script selects on', async () => {
+    const { container } = render(
+      <UserMessage content="hi" meta={{ deliveryUnknown: true }} renderContent={renderContent} />)
+    const hooked = container.querySelectorAll('[data-delivery-caption]')
+    expect(hooked.length, 'exactly one caption must carry the capture hook').toBe(1)
+    expect(hooked[0].textContent).toMatch(/Delivery unconfirmed/i)
+
+    const script = await readFile('scripts/capture-user-message-delivery-unknown.mjs', 'utf8')
+    // Positive control: prove we actually read the script, not an empty string.
+    expect(script, 'failed to read the capture script').toMatch(/data-capture-root/)
+    expect(script, 'the capture script no longer selects the hook this caption renders')
+      .toMatch(/\[data-capture-root\] \[data-delivery-caption\]/)
+  })
+
+  it('keeps the LIVE nag at warn urgency', () => {
+    // Negative control: if both states rendered identically the muting above would be vacuous.
+    const { container } = render(
+      <UserMessage content="hi" meta={{ deliveryUnknown: true }} renderContent={renderContent} />)
+    const caption = container.querySelector('[data-delivery-caption]')
+    expect(caption?.className).toMatch(/text-warn/)
+    expect(caption?.className).not.toMatch(/text-muted/)
+  })
+
+  it('leaves an ordinary prompt unmarked', () => {
+    // Negative control: without this the outline assertion above passes on any bubble.
+    const { container } = render(
+      <UserMessage content="hi" renderContent={renderContent} />)
+    const bubble = container.querySelector('.message-bubble')
+    expect(bubble?.className).not.toMatch(/outline-dashed/)
+    expect(bubble?.className).not.toMatch(/opacity-70/)
+  })
+
+  it('renders message content', () => {    render(<UserMessage content="hello" renderContent={renderContent} />)
     expect(screen.getByTestId('content')).toHaveTextContent('hello')
   })
 

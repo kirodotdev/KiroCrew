@@ -7268,7 +7268,8 @@
       "send_now": "Envoyer maintenant",
       "sub_agent_result_many": "{{count}} résultats de sous-agent",
       "sub_agent_result_one": "{{count}} résultat de sous-agent",
-      "sub_agent_result_other": "{{count}} résultats de sous-agent"
+      "sub_agent_result_other": "{{count}} résultats de sous-agent",
+      "edit_failed": "Échec de l'enregistrement de la modification : {{error}}"
     },
     "readingWidthToggle": {
       "label_full": "P",
@@ -10118,7 +10119,6 @@
       "return_to_split_view": "Revenir à la vue divisée",
       "scroll_to_bottom": "Aller en bas",
       "send_failed": "Échec de l’envoi",
-      "send_failed_connection": "Envoi impossible — vérifiez votre connexion et réessayez.",
       "session_not_found": "Session « {{name}} » introuvable",
       "session_options": "Options de session",
       "show_sessions": "Afficher les sessions",
@@ -10151,8 +10151,8 @@
       "worktree_creation_returned_no_path": "La création du worktree n’a renvoyé aucun chemin",
       "loading_earlier_messages": "Chargement des messages précédents…",
       "send_failed_with_error": "Échec de l'envoi : {{error}}",
-      "send_failed_with_error_restored": "Impossible d'envoyer ce message : {{error}}. Votre texte est de retour dans le champ de saisie.",
-      "delivery_unconfirmed": "Envoi non confirmé — votre texte est de retour dans le champ de saisie ; vérifiez la conversation avant de renvoyer.",
+      "send_failed_with_error_restored": "Impossible d'envoyer ce message : {{error}}. Votre texte est de retour dans la zone de saisie.",
+      "delivery_unconfirmed": "Livraison non confirmée — votre texte est de retour dans la zone de saisie ; vérifiez la conversation avant de renvoyer.",
       "could_not_read_file_reason": "Impossible de lire {{path}} ({{reason}})",
       "screenshot_failed_reason": "Échec de la capture d’écran : {{reason}}",
       "http_status": "HTTP {{status}}",
@@ -10160,7 +10160,15 @@
       "could_not_generate_title": "Impossible de générer un titre",
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
-      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe"
+      "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
+      "delivery_delivered": "Message livré — le renvoyer l’enverra deux fois.",
+      "delivery_discard": "Abandonner le message et la zone de saisie",
+      "delivery_remove": "Retirer le message, garder le texte",
+      "delivery_unconfirmed_short": "Livraison non confirmée",
+      "send_no_response": "Aucune confirmation n’est revenue pour ce message.",
+      "delivery_unconfirmed_resend": "Livraison non confirmée — votre texte est de retour dans la zone de saisie ; le renvoyer pourrait l’envoyer deux fois.",
+      "delivery_unconfirmed_dismiss_note": "Si ce message n’a jamais atteint le serveur, le retirer l’enlève de cette conversation ; son texte revient dans la zone de saisie.",
+      "delivery_clear": "Vider la zone de saisie"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",

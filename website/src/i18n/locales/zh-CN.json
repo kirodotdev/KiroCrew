@@ -7048,7 +7048,8 @@
       "save": "保存",
       "save_edit": "保存修改",
       "send_now": "立即发送",
-      "sub_agent_result_other": "{{count}} 个子代理结果"
+      "sub_agent_result_other": "{{count}} 个子代理结果",
+      "edit_failed": "保存修改失败：{{error}}"
     },
     "readingWidthToggle": {
       "label_full": "全",
@@ -9832,7 +9833,6 @@
       "return_to_split_view": "返回分屏视图",
       "scroll_to_bottom": "滚动到底部",
       "send_failed": "发送失败",
-      "send_failed_connection": "发送失败——请检查网络连接后重试。",
       "session_not_found": "未找到会话“{{name}}”",
       "session_options": "会话选项",
       "show_sessions": "展开会话",
@@ -9866,7 +9866,7 @@
       "loading_earlier_messages": "正在加载较早的消息…",
       "send_failed_with_error": "发送失败：{{error}}",
       "send_failed_with_error_restored": "无法发送这条消息：{{error}}。你的文字已放回输入框。",
-      "delivery_unconfirmed": "尚未确认送达——你的文字已放回输入框；再次发送前请先查看对话记录。",
+      "delivery_unconfirmed": "送达未确认 — 你的文字已放回输入框；再次发送前请先查看对话记录。",
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
       "screenshot_failed_reason": "截图失败：{{reason}}",
       "http_status": "HTTP {{status}}",
@@ -9874,7 +9874,15 @@
       "could_not_generate_title": "无法生成标题",
       "could_not_open_side_chat": "无法打开随手问",
       "side_command_not_run": "/side 命令未执行。你的消息仍保留在输入框中。",
-      "could_not_send_to_side_chat": "无法发送到随手问"
+      "could_not_send_to_side_chat": "无法发送到随手问",
+      "delivery_delivered": "消息已送达 — 重新发送会发送两次。",
+      "delivery_discard": "放弃该消息并清空输入框中的文字",
+      "delivery_remove": "移除该消息，保留文字",
+      "delivery_unconfirmed_short": "送达未确认",
+      "send_no_response": "这条消息没有收到任何确认。",
+      "delivery_unconfirmed_resend": "送达未确认 — 文字已回到输入框；重新发送可能会发送两次。",
+      "delivery_unconfirmed_dismiss_note": "如果消息从未到达服务器，移除它会将其从此对话中移出；文字会回到输入框。",
+      "delivery_clear": "清空输入框"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "（跳过 1 个 — 当前已选中）",
