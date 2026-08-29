@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1445,3 +1446,160 @@ class TestNonObjectBodiesAcrossConvertedHandlers:
         resp = await handler(req)
         assert resp.status == 400, f"{handler.__name__} on {payload!r}: expected 400"
         assert _body(resp)["code"] == "body_not_object", handler.__name__
+
+
+# ── AUTOSDE no-blocking-call-on-event-loop ──
+
+
+class TestSpecIoRunsOffTheEventLoop:
+    """The handler's potentially blocking filesystem calls run in workers."""
+
+    @staticmethod
+    def _spy(monkeypatch, method: str, match, sink: list[int]):
+        original = getattr(Path, method)
+
+        def _wrapper(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if match(self):
+                sink.append(threading.get_ident())
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, method, _wrapper)
+
+    @pytest.mark.asyncio
+    async def test_inline_spec_write_runs_off_the_event_loop_thread(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        loop_thread = threading.get_ident()
+        writes: list[int] = []
+        self._spy(monkeypatch, "write_text", lambda p: p.name.startswith("TASK_"), writes)
+        runner = _runner(tmp_path)
+        resp = await api_taskrunner_start(
+            _request(_state(runner), json_body={"spec": "__inline__:# hello"})
+        )
+        assert resp.status == 200
+        assert Path(_body(resp)["spec"]).read_text(encoding="utf-8") == "# hello"
+        assert writes and all(thread != loop_thread for thread in writes)
+
+    @pytest.mark.asyncio
+    async def test_spec_path_guard_runs_off_the_event_loop_thread(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("# s", encoding="utf-8")
+        loop_thread = threading.get_ident()
+        stats: list[int] = []
+        self._spy(monkeypatch, "is_file", lambda p: p.name == "spec.md", stats)
+        runner = _runner(tmp_path)
+        resp = await api_taskrunner_start(_request(_state(runner), json_body={"spec": str(spec)}))
+        assert resp.status == 200
+        assert stats and all(thread != loop_thread for thread in stats)
+
+    @pytest.mark.asyncio
+    async def test_rejected_start_removes_inline_spec_off_the_loop(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        loop_thread = threading.get_ident()
+        unlinks: list[int] = []
+        self._spy(monkeypatch, "unlink", lambda p: p.name.startswith("TASK_"), unlinks)
+        runner = _runner(tmp_path)
+        runner.start_background = AsyncMock(side_effect=RuntimeError("cannot start"))
+        resp = await api_taskrunner_start(
+            _request(_state(runner), json_body={"spec": "__inline__:# t"})
+        )
+        assert resp.status == 400
+        assert unlinks and all(thread != loop_thread for thread in unlinks)
+
+    @pytest.mark.asyncio
+    async def test_from_chat_plan_mkdir_runs_off_the_event_loop_thread(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        loop_thread = threading.get_ident()
+        mkdirs: list[int] = []
+        self._spy(monkeypatch, "mkdir", lambda p: p.name.startswith("plan_"), mkdirs)
+        runner = _runner(tmp_path)
+        runner.update_plan = AsyncMock(return_value=_planned_run("plan_x"))
+        resp = await api_taskrunner_from_chat(
+            _request(_state(runner), json_body={"steps": [{"title": "first"}]})
+        )
+        assert resp.status == 200
+        assert mkdirs and all(thread != loop_thread for thread in mkdirs)
+
+    @pytest.mark.asyncio
+    async def test_from_chat_rollback_rmdir_runs_off_the_event_loop_thread(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        loop_thread = threading.get_ident()
+        rmdirs: list[int] = []
+        self._spy(monkeypatch, "rmdir", lambda p: p.name.startswith("plan_"), rmdirs)
+        runner = _runner(tmp_path)
+        runner.update_plan = AsyncMock(side_effect=ValueError("bad plan"))
+        resp = await api_taskrunner_from_chat(
+            _request(_state(runner), json_body={"steps": [{"title": "first"}]})
+        )
+        assert resp.status == 400
+        assert rmdirs and all(thread != loop_thread for thread in rmdirs)
+
+    @pytest.mark.asyncio
+    async def test_cancelled_inline_write_does_not_orphan_spec(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import taskrunner as handlers
+
+        started = threading.Event()
+        release = threading.Event()
+        original = handlers._write_inline_spec
+
+        def _blocked_write(work_dir: str | Path, content: str) -> Path:
+            result = original(work_dir, content)
+            started.set()
+            assert release.wait(30)
+            return result
+
+        monkeypatch.setattr(handlers, "_write_inline_spec", _blocked_write)
+        runner = _runner(tmp_path)
+        request_task = asyncio.create_task(
+            api_taskrunner_start(
+                _request(_state(runner), json_body={"spec": "__inline__:# cancel"})
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 30)
+        request_task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        assert list(runner._work_dir.glob("TASK_*.md")) == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_plan_claim_does_not_orphan_directory(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from kiro_crew.dashboard.handlers import taskrunner as handlers
+
+        started = threading.Event()
+        release = threading.Event()
+        original = handlers._make_plan_dir
+
+        def _blocked_claim(work_dir: Path) -> tuple[str, Path]:
+            result = original(work_dir)
+            started.set()
+            assert release.wait(30)
+            return result
+
+        monkeypatch.setattr(handlers, "_make_plan_dir", _blocked_claim)
+        runner = _runner(tmp_path)
+        request_task = asyncio.create_task(
+            api_taskrunner_from_chat(
+                _request(_state(runner), json_body={"steps": [{"title": "first"}]})
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 30)
+        request_task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        assert runner._runs == {}
+        assert list(runner._work_dir.glob("plan_*")) == []
