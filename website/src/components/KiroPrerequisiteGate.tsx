@@ -686,16 +686,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // background poll below reads latched state for free. A user-driven Refresh
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
-  // When the user has selected the OpenCode backend, Kiro CLI readiness is
-  // irrelevant — OpenCode authenticates via its own provider credentials
-  // (SAKANA_API_KEY / opencode auth). Without this bypass the first-run gate
-  // would block the entire dashboard, including the Developer → Agent Backend
-  // picker that is the only way to switch away from Kiro.
-  const backendQuery = useQuery({
-    queryKey: ['kirocrewConfig-backend-gate'],
-    queryFn: () => (api.kirocrewConfig as unknown as () => Promise<{ agent?: { acp_backend?: string } }>)?.() ?? Promise.resolve({} as { agent?: { acp_backend?: string } }),
-  })
-  const backend = backendQuery.data?.agent?.acp_backend
   const statusQuery = useQuery({
     queryKey: QUERY_KEY,
     queryFn: () => {
@@ -729,10 +719,11 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   })
   const switchBackendMutation = useMutation({
     mutationFn: () => api.patchConfig('agent.acp_backend', 'opencode'),
-    onSuccess: () => {
-      void backendQuery.refetch()
-      void queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] })
-      void queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] }),
+        queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+      ])
     },
   })
 
@@ -758,12 +749,6 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // setup-branded shell here would show first-run setup on every launch for as
   // long as the gateway's two kiro-cli subprocesses take to answer.
   if (statusQuery.isPending) {
-    return <>{children}</>
-  }
-  // OpenCode does not require Kiro CLI. If the user has already selected
-  // the opencode harness, bypass the entire Kiro gate — the dashboard,
-  // model picker and chat all work via the OpenCode ACP path.
-  if (backend === 'opencode') {
     return <>{children}</>
   }
   const retrying = statusQuery.isFetching
@@ -1022,10 +1007,22 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             <p className="mt-1 text-[12px] leading-relaxed text-muted">
               {i18nT('components.kiroPrerequisiteGate.opencode_does_not_need_kiro_login')}
             </p>
+            <a
+              href="https://opencode.ai/docs/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 inline-flex items-center gap-1 text-[13px] text-accent hover:underline"
+            >
+              {i18nT('components.kiroPrerequisiteGate.open_opencode_setup')}
+              <ExternalLink size={12} aria-hidden />
+            </a>
+            <CopyCommand>
+              <code>opencode auth login</code>
+            </CopyCommand>
             <Btn
               type="button"
               className="mt-3"
-              disabled={switchBackendMutation.isPending || backendQuery.isPending}
+              disabled={switchBackendMutation.isPending}
               onClick={() => switchBackendMutation.mutate()}
             >
               {switchBackendMutation.isPending
@@ -1034,7 +1031,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
             </Btn>
             {switchBackendMutation.isError && (
               <p className="mt-2 text-[12px] text-danger" role="alert">
-                {(switchBackendMutation.error as Error)?.message || i18nT('components.kiroPrerequisiteGate.switch_failed')}
+                {i18nT('components.kiroPrerequisiteGate.switch_failed')}
               </p>
             )}
           </div>

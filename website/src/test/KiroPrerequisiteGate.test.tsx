@@ -13,6 +13,10 @@ vi.mock('../utils/clipboard', () => ({
   copyCode: vi.fn(),
 }))
 
+const { patchConfigMock } = vi.hoisted(() => ({
+  patchConfigMock: vi.fn(),
+}))
+
 vi.mock('../api/client', () => ({
   ApiError: class ApiError extends Error {
     status: number
@@ -27,6 +31,7 @@ vi.mock('../api/client', () => ({
   api: {
     kiroPrerequisite: vi.fn(),
     repairKiroPrerequisiteSpecs: vi.fn(),
+    patchConfig: patchConfigMock,
   },
 }))
 
@@ -57,6 +62,7 @@ function status(overrides: Partial<KiroPrerequisiteStatus> = {}): KiroPrerequisi
 describe('KiroPrerequisiteGate', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    patchConfigMock.mockResolvedValue({})
     // The gate remembers first-run completion in localStorage, so each case
     // must start from a clean slate or a prior test's completion would leak in
     // and silently bypass the setup assertions.
@@ -146,6 +152,49 @@ describe('KiroPrerequisiteGate', () => {
     expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
   })
 
+  it('switches to OpenCode from first-run setup and renders the dashboard', async () => {
+    vi.mocked(api.kiroPrerequisite)
+      .mockResolvedValueOnce(status())
+      .mockResolvedValue(status({
+        installed: true,
+        authenticated: true,
+        ready: true,
+        initial_setup_complete: true,
+      }))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    const setupLink = await screen.findByRole('link', { name: 'Open OpenCode setup' })
+    expect(setupLink).toHaveAttribute('href', 'https://opencode.ai/docs/')
+    expect(screen.getByText('opencode auth login').tagName).toBe('CODE')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue with OpenCode' }))
+
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith(
+      'agent.acp_backend',
+      'opencode',
+    ))
+    expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+  })
+
+  it('keeps first-run setup visible when the OpenCode switch fails', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
+    patchConfigMock.mockRejectedValue(new Error('backend detail must stay private'))
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with OpenCode' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not switch backend. Try again.',
+    )
+    expect(screen.queryByText('backend detail must stay private')).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
   it('renders the application immediately when Kiro is ready', async () => {
     vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
       installed: true,
@@ -229,10 +278,11 @@ describe('KiroPrerequisiteGate', () => {
     await screen.findByText(/Sign in with Kiro CLI on the gateway host/)
     expect(api).not.toHaveProperty('loginKiroPrerequisite')
     expect(screen.queryByRole('link', { name: /Open Kiro sign-in page/ })).not.toBeInTheDocument()
-    // Only the two step cards' own affordances: the setup link is gone once the
-    // CLI is found, leaving exactly one control — Check again.
+    // Kiro authentication itself still has exactly one control — Check again.
+    // The independent OpenCode setup card may offer its own backend switch.
     const buttons = screen.getAllByRole('button').map(b => b.textContent || '')
     expect(buttons.filter(t => /Check again/.test(t))).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Continue with OpenCode' })).toBeEnabled()
   })
 
   it('shows non-owners a redacted owner-setup state', async () => {

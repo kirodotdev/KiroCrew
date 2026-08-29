@@ -48,6 +48,22 @@ def _not_ready_snapshot(initial_setup_complete: bool = False) -> dict[str, Any]:
     return result
 
 
+def _opencode_ready_snapshot(*, setup_allowed: bool) -> dict[str, Any]:
+    """Kiro-gate-compatible ready state for the independent OpenCode harness."""
+    result: dict[str, Any] = asdict(
+        PrerequisiteStatus(
+            platform="gateway",
+            installed=setup_allowed,
+            authenticated=setup_allowed,
+            ready=True,
+            initial_setup_complete=True,
+        )
+    )
+    result["setup_allowed"] = setup_allowed
+    result["operation"] = legacy_idle_operation()
+    return result
+
+
 def _service(request: web.Request) -> KiroPrerequisiteService:
     service = request.app.get("kiro_prerequisite_service")
     if not isinstance(service, KiroPrerequisiteService):
@@ -125,57 +141,16 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     explicit = refresh in ("1", "true", "explicit") and is_owner
     auto = refresh == "auto" and is_owner
 
-    # OpenCode does not require Kiro CLI. When the selected harness is
-    # opencode, bypass the Kiro probe entirely and report ready so the
-    # dashboard gate (and any CLI caller) does not block on kiro-cli login.
+    # OpenCode does not read Kiro's identity store. Bypass the Kiro probe
+    # entirely so refresh polling cannot spawn kiro-cli for that harness.
     try:
         from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
         from kiro_crew.config.loader import KiroCrewConfig
 
-        cfg = KiroCrewConfig.load()
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
         if cfg.agent.acp_backend == ACP_BACKEND_OPENCODE:
-            snapshot: dict[str, object] = {
-                "platform": "gateway",
-                "installed": True,
-                "authenticated": True,
-                "ready": True,
-                "initial_setup_complete": True,
-                "repair_required": False,
-                "docs_url": OFFICIAL_INSTALL_DOCS_URL,
-                "login_command": KIRO_CLI_LOGIN_COMMAND,
-                "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
-                "sandbox_unavailable": False,
-                "sandbox_failure_kind": "",
-                "sandbox_detail": "",
-                "sandbox_remedy": "",
-                "probe_timed_out": False,
-                "missing_agent_specs": [],
-                "agent_spec_repair_error": "",
-                "operation": legacy_idle_operation(),
-            }
-            if _is_dashboard_owner(request):
-                return web.json_response({**snapshot, "setup_allowed": True})
             return web.json_response(
-                {
-                    "platform": "gateway",
-                    "installed": False,
-                    "authenticated": False,
-                    "ready": True,
-                    "initial_setup_complete": True,
-                    "repair_required": False,
-                    "docs_url": OFFICIAL_INSTALL_DOCS_URL,
-                    "login_command": KIRO_CLI_LOGIN_COMMAND,
-                    "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
-                    "setup_allowed": False,
-                    "sandbox_unavailable": False,
-                    "sandbox_failure_kind": "",
-                    "sandbox_detail": "",
-                    "sandbox_remedy": "",
-                    "probe_timed_out": False,
-                    "missing_agent_specs": [],
-                    "agent_spec_repair_error": "",
-                    "operation": legacy_idle_operation(),
-                }
+                _opencode_ready_snapshot(setup_allowed=_is_dashboard_owner(request))
             )
     except Exception:
         logger.debug("OpenCode bypass check failed; falling through to Kiro probe", exc_info=True)

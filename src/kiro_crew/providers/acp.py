@@ -439,6 +439,11 @@ class AcpProvider(LLMProvider):
         return "" if model == DEFAULT_MODEL else model
 
     @property
+    def acp_backend(self) -> str:
+        """The positively identified ACP harness serving this provider."""
+        return self._client.backend
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 

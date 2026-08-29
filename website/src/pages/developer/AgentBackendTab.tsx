@@ -207,7 +207,7 @@ export function AgentBackendTab() {
           ]}
           onChange={v => patchMut.mutate(v)}
         />
-        {/* One line per agent, always all three — the reader is choosing BETWEEN
+        {/* One line per agent, always all four — the reader is choosing BETWEEN
             them, so showing only the selected one's status would hide the very
             comparison the control is for. */}
         <dl className="mt-2 space-y-1.5">
