@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
 
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { i18nT } from '../i18n/t'
 interface ModalProps {
   /** Whether the modal is open */
@@ -61,10 +62,47 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   // Focus in on open, restore to whatever opened the dialog on close, Escape
   // dismissal, and the Tab/Shift+Tab trap — one implementation shared with the
   // hand-rolled dialogs (see hooks/useDialogFocusTrap). Implemented here rather
-  // than per call site so all ~14 `Modal` users get it.
+  // than per call site so all ~24 `Modal` users get it.
   // Escape remains on Modal's bubble-phase listener so a nested layer can
   // consume it with preventDefault before the outer dialog decides to close.
   useDialogFocusTrap(dialogRef, dismiss, true, false)
+
+  // Keyboard isolation for the whole dialog, the header X button included. The
+  // page's global shortcuts bind bubble-phase `document` keydown
+  // (useKeyboardShortcuts), and some chords deliberately fire while an input
+  // has focus (the Ctrl+digit session jumps, the Settings chord) — unguarded,
+  // one of those typed into a part-filled form navigates away and unmounts the
+  // dialog with the draft still in it. Modal portals its panel to
+  // document.body, but portal events still propagate through the React tree,
+  // so this one handler on the PANEL (not the backdrop) sees every keystroke
+  // inside the dialog and stops it before the page's document-level listener.
+  //
+  // Escape is excepted, and the exception is load-bearing: Modal's own
+  // dismissal is a bubble-phase `window` listener (see the `open` effect
+  // below), and stopPropagation() on the synthetic event also stops the native
+  // event from travelling on to `window` — a blanket stop would break
+  // dismissal for every consumer. (The Radix `ui/dialog` family CAN stop
+  // everything because its dismissal is capture-phase; see
+  // DialogKeyboardIsolation.test.tsx.) Modal's own Escape/Tab handling is
+  // otherwise capture-phase (`useDialogFocusTrap` on window), so the trap
+  // survives the stop.
+  //
+  // One exception to the exception: an Escape the IME owns is cancelling a
+  // candidate list, not the dialog — the latch claims it (consuming the native
+  // event) so it never reaches the window listener and cannot discard a
+  // part-composed draft. The latch is document-tracked because the composing
+  // input can be anywhere inside the dialog; ModalDialog is mounted only while
+  // open, which is the lifecycle the tracking keys on.
+  const imeLatch = useDocumentImeLatch()
+  const isolateKeys = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      // A declined claim consumed the NATIVE event; React walks its own flag
+      // when dispatching to component ancestors, so stop the synthetic too.
+      if (!imeLatch.claimKey(e.nativeEvent)) e.stopPropagation()
+      return
+    }
+    e.stopPropagation()
+  }
 
   // When layoutId is provided, use layout animation (card morph) — no initial/animate/exit needed.
   // Otherwise, use scale+opacity entrance.
@@ -87,6 +125,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
       aria-label={ariaLabel}
       aria-labelledby={ariaLabel ? undefined : titleId}
       tabIndex={-1}
+      onKeyDown={isolateKeys}
       {...motionProps}
       className="bg-card border border-border rounded-xl shadow-2xl w-full flex flex-col pointer-events-auto overflow-hidden outline-none"
       style={{ maxWidth, height, maxHeight: '90vh' }}

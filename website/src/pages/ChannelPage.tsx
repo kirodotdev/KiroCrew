@@ -330,7 +330,6 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
   const [topic, setTopic] = useState('')
   const [preset, setPreset] = useState(presets[0]?.id || 'custom')
   const topicRef = useRef<HTMLInputElement>(null)
-  const ime = useImeGuard()
 
   // Initial focus belongs on the Topic field — the one input this dialog
   // exists to collect. Modal's shared focus trap focuses the dialog's FIRST
@@ -345,73 +344,52 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
     onCreate(topic.trim(), preset)
   }
 
-  // The page's global shortcuts bind bubble-phase document keydown, and some
-  // chords deliberately fire from inside inputs (Ctrl+digit session jumps, the
-  // Settings chord) — unguarded, one of those typed into a part-filled form
-  // navigates away and unmounts the dialog with the text still in it. The old
-  // overlay stopped ALL keydown propagation; Escape must keep bubbling now,
-  // because Modal's own dismissal listens bubble-phase on window (unlike the
-  // Radix dialog family, whose capture-phase dismissal survives a blanket
-  // stop — see DialogKeyboardIsolation.test.tsx). One exception to the
-  // exception: an Escape the IME owns is cancelling a candidate list, not the
-  // dialog — claimKey consumes it (stops propagation) so it never reaches
-  // Modal's listener and cannot discard the composed topic.
-  const isolateKeys = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') { ime.claimKey(e); return }
-    e.stopPropagation()
-  }
-
   return (
-    // The shared Modal owns the backdrop, Escape dismissal, scroll lock, and the
-    // focus trap/restore the hand-rolled overlay lacked. `open` is constant
+    // The shared Modal owns the backdrop, Escape dismissal, keyboard isolation
+    // (global chords stopped at the dialog panel, header X included; Escape
+    // excepted; an IME-owned Escape claimed — see Modal.tsx), scroll lock, and
+    // the focus trap/restore the hand-rolled overlay lacked. `open` is constant
     // because the call site conditionally mounts this component — that is what
     // resets topic/preset on every open (an always-mounted dialog would compute
     // the default preset once, before the presets fetch resolves).
     // `ariaLabel` keeps the dialog's established accessible name ("New channel"),
     // which predates this conversion and differs from the rendered title only in
-    // case.
-    //
-    // The wrapper is the keyboard-isolation boundary for the WHOLE dialog,
-    // header X button included: Modal portals its panel to document.body, but
-    // portal events still propagate through the React tree, so this one
-    // handler sees every keystroke inside the dialog and stops it before the
-    // page's document-level shortcut listener. Modal's own Escape/Tab handling
-    // is capture-phase (window) or excepted by isolateKeys, so dismissal and
-    // the focus trap survive. Not an interactive control — eslint disables
-    // below cover the isolation handler and the label/Input association
+    // case. The eslint disable below covers the label/Input association
     // (label-has-for cannot see through the custom <Input>).
-    /* eslint-disable jsx-a11y/no-static-element-interactions, jsx-a11y/label-has-for */
-    <div className="contents" onKeyDown={isolateKeys}>
-      <Modal
-        open
-        onClose={onClose}
-        title={i18nT('pages.channelPage.new_channel_2')}
-        ariaLabel={i18nT('pages.channelPage.new_channel')}
-        maxWidth={384}
-        footer={
-          <>
-            <Btn onClick={onClose}>{i18nT('pages.channelPage.cancel')}</Btn>
-            <Btn onClick={handleCreate} disabled={!topic.trim()} primary>{i18nT('pages.channelPage.create')}</Btn>
-          </>
-        }
-      >
-        <label htmlFor="new-channel-topic" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.topic')}</label>
-        <Input ref={topicRef} id="new-channel-topic" aria-label={i18nT('pages.channelPage.topic')} value={topic} onChange={e => setTopic(e.target.value)}
-          className="w-full mb-4" {...ime.bindComposition()}
-          placeholder={i18nT('pages.channelPage.e_g_investigate_gamma_deployment_failure')} />
-        <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.team_preset')}</span>
-        <div role="radiogroup" aria-labelledby="new-channel-preset-label" className="space-y-1.5">
-          {presets.map(p => (
-            <Btn key={p.id} onClick={() => setPreset(p.id)}
-              className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
-              <span className="font-medium">{presetLabel(p)}</span>
-              {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({p.agents.map(a => a.role).join(', ')})</span>}
-            </Btn>
-          ))}
-        </div>
-      </Modal>
-    </div>
-    /* eslint-enable jsx-a11y/no-static-element-interactions, jsx-a11y/label-has-for */
+    /* eslint-disable jsx-a11y/label-has-for */
+    <Modal
+      open
+      onClose={onClose}
+      title={i18nT('pages.channelPage.new_channel_2')}
+      ariaLabel={i18nT('pages.channelPage.new_channel')}
+      maxWidth={384}
+      footer={
+        <>
+          <Btn onClick={onClose}>{i18nT('pages.channelPage.cancel')}</Btn>
+          <Btn onClick={handleCreate} disabled={!topic.trim()} primary>{i18nT('pages.channelPage.create')}</Btn>
+        </>
+      }
+    >
+      <label htmlFor="new-channel-topic" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.topic')}</label>
+      {/* No composition tracking here: the IME-owned-Escape claim moved into
+        * Modal with the keyboard boundary, and Modal's document-tracked latch
+        * hears this input's composition events natively — a local latch would
+        * have no reader. */}
+      <Input ref={topicRef} id="new-channel-topic" aria-label={i18nT('pages.channelPage.topic')} value={topic} onChange={e => setTopic(e.target.value)}
+        className="w-full mb-4"
+        placeholder={i18nT('pages.channelPage.e_g_investigate_gamma_deployment_failure')} />
+      <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.team_preset')}</span>
+      <div role="radiogroup" aria-labelledby="new-channel-preset-label" className="space-y-1.5">
+        {presets.map(p => (
+          <Btn key={p.id} onClick={() => setPreset(p.id)}
+            className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
+            <span className="font-medium">{presetLabel(p)}</span>
+            {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({p.agents.map(a => a.role).join(', ')})</span>}
+          </Btn>
+        ))}
+      </div>
+    </Modal>
+    /* eslint-enable jsx-a11y/label-has-for */
   )
 }
 
