@@ -445,6 +445,14 @@ async def api_cron_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    # A syntactically valid scalar or array parses fine and then has no .get,
+    # so the field reads below would raise AttributeError and surface as a 500.
+    # This route already refuses an unparseable body; a non-object is refused
+    # the same way rather than by crashing.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "invalid_json"}, status=400
+        )
     kwargs: dict[str, Any] = {}
     for key in (
         "name",
@@ -670,6 +678,12 @@ async def api_cron_enable(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         body = {}
+    # This route tolerates a missing or unreadable body and falls back to its
+    # defaults. A scalar or array parses but carries no fields, so it gets the
+    # same tolerance -- reading .get off it would raise AttributeError -> 500,
+    # which is a harsher answer than the one an unparseable body already gets.
+    if not isinstance(body, dict):
+        body = {}
     enabled = body.get("enabled", True)
     try:
         ok = await state.crons.enable_job_async(job_id, enabled=enabled)
@@ -692,6 +706,8 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        body = {}  # same tolerance as an unparseable body; see api_cron_enable
     summary = body.get("summary", "acknowledged")
     notification_ts = body.get("ts", "")
     try:
@@ -1294,6 +1310,10 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "invalid_json"}, status=400
+        )
     rule_sub = body.get("rule", "").strip()
     if not rule_sub:
         return web.json_response({"error": "rule substring required"}, status=400)
