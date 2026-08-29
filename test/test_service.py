@@ -2240,24 +2240,20 @@ class TestAppArmorGate:
 class TestAppArmorProfileRendering:
     """The rendered profile's shape is load-bearing for security."""
 
-    def test_has_no_attachment_path(self):
-        """A path attachment here would be a privilege leak, not a detail.
+    _EXEC = Path("/opt/kirocrew-venv/bin/kirocrew")
 
-        The gateway's interpreter (``~/.kiro/crew-venv/bin/python3``) is a
-        SYMLINK to the system python, and AppArmor matches the resolved path. So
-        attaching to the venv path silently never matches, and attaching to the
-        resolved path grants unprivileged userns to EVERY Python process on the
-        host. The profile is therefore named-only and applied by systemd to the
-        one unit. This test fails if anyone reintroduces an attachment.
+    def test_attaches_to_the_given_path_and_nothing_else(self):
+        """The attachment is the whole point (#3463), and it must be exactly the
+        validated launcher path — never the interpreter behind its shebang,
+        which is a symlink to the system python: attaching there would grant
+        unprivileged userns to EVERY Python process on the host.
         """
         from kiro_crew.service import apparmor as aa
 
-        text = aa.render_profile("4.0")
+        text = aa.render_profile("4.0", self._EXEC)
 
-        assert f"profile {aa.PROFILE_NAME} flags=(unconfined) {{" in text
-        # The declaration line must carry no path between the name and the flags.
         decl = [ln for ln in text.splitlines() if ln.startswith(f"profile {aa.PROFILE_NAME}")]
-        assert decl == [f"profile {aa.PROFILE_NAME} flags=(unconfined) {{"]
+        assert decl == [f'profile {aa.PROFILE_NAME} "{self._EXEC}" flags=(unconfined) {{']
         # And no interpreter path anywhere in the RULES (comments may explain why).
         body = text.split("{", 1)[1]
         assert "python" not in body
@@ -2266,7 +2262,7 @@ class TestAppArmorProfileRendering:
     def test_grants_only_userns(self):
         from kiro_crew.service import apparmor as aa
 
-        body = aa.render_profile("4.0").split("{", 1)[1]
+        body = aa.render_profile("4.0", self._EXEC).split("{", 1)[1]
 
         assert "userns," in body
         # No capability/file grants smuggled in alongside.
@@ -2276,14 +2272,14 @@ class TestAppArmorProfileRendering:
     def test_abi_line_matches_the_detected_abi(self):
         from kiro_crew.service import apparmor as aa
 
-        assert "abi <abi/4.0>," in aa.render_profile("4.0")
-        assert "abi <abi/5.0>," in aa.render_profile("5.0")
+        assert "abi <abi/4.0>," in aa.render_profile("4.0", self._EXEC)
+        assert "abi <abi/5.0>," in aa.render_profile("5.0", self._EXEC)
 
     def test_abi_line_is_omitted_when_none_is_available(self):
         """Declaring an abi file the host lacks makes the profile fail to load."""
         from kiro_crew.service import apparmor as aa
 
-        assert "abi <" not in aa.render_profile(None)
+        assert "abi <" not in aa.render_profile(None, self._EXEC)
 
     def test_detect_abi_picks_the_highest_numeric_file(self, monkeypatch, tmp_path):
         """Ubuntu 25.10 ships parser 5.x but only abi/3.0 and abi/4.0 on disk."""
@@ -2305,13 +2301,17 @@ class TestAppArmorProfileRendering:
         """The file is the only record a future reader has — it must say why."""
         from kiro_crew.service import apparmor as aa
 
-        text = aa.render_profile("4.0")
-        assert "Managed by KiroCrew" in text
+        text = aa.render_profile("4.0", self._EXEC)
+        assert "Managed by Kiro Crew" in text
         assert "Removing this file" in text
 
 
 class TestAppArmorInstall:
     """Install must be fail-soft, validate before loading, and verify enforcement."""
+
+    # A stand-in launcher path for tests that exercise branches past exec-path
+    # validation; tests that reach validation stub validate_exec_path to accept it.
+    _EXEC = "/opt/kirocrew-venv/bin/kirocrew"
 
     @staticmethod
     def _writers():
@@ -2326,13 +2326,28 @@ class TestAppArmorInstall:
 
         return writes, runs, write, run
 
+    @staticmethod
+    def _accept_exec_path(monkeypatch):
+        """Stub exec-path validation so a test can reach the branch it is about.
+
+        Validation itself has its own tests (TestValidateExecPath); here it
+        would otherwise refuse the stand-in path for not existing on disk.
+        """
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(
+            aa,
+            "validate_exec_path",
+            lambda raw, expected_uid=None: (Path(raw), ""),
+        )
+
     def test_skips_cleanly_when_the_host_does_not_need_it(self, monkeypatch):
         from kiro_crew.service import apparmor as aa
 
         writes, runs, write, run = self._writers()
         monkeypatch.setattr(aa, "should_install", lambda: (False, "no restriction here"))
 
-        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000)
+        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000, self._EXEC)
 
         assert outcome.changed is False
         assert outcome.ok is True  # a skip is not a failure
@@ -2348,8 +2363,9 @@ class TestAppArmorInstall:
         monkeypatch.setattr(aa, "parser_version", lambda _p: (5, 0))
         monkeypatch.setattr(aa, "detect_abi", lambda: "5.0")
         monkeypatch.setattr(aa, "validate", lambda _p, _t: (False, "syntax error at line 9"))
+        self._accept_exec_path(monkeypatch)
 
-        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000)
+        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000, self._EXEC)
 
         assert outcome.ok is False
         assert outcome.changed is False
@@ -2365,11 +2381,12 @@ class TestAppArmorInstall:
         monkeypatch.setattr(aa, "parser_version", lambda _p: (5, 0))
         monkeypatch.setattr(aa, "detect_abi", lambda: "5.0")
         monkeypatch.setattr(aa, "validate", lambda _p, _t: (True, ""))
+        self._accept_exec_path(monkeypatch)
 
         def boom(*_a, **_k):
             raise RuntimeError("sudo: a password is required")
 
-        outcome = aa.install(boom, lambda *_a: None, lambda *_a: (0, ""), 1000, 1000)
+        outcome = aa.install(boom, lambda *_a: None, lambda *_a: (0, ""), 1000, 1000, self._EXEC)
 
         assert outcome.ok is False
         assert outcome.changed is False
@@ -2387,8 +2404,9 @@ class TestAppArmorInstall:
         monkeypatch.setattr(aa, "detect_abi", lambda: "5.0")
         monkeypatch.setattr(aa, "validate", lambda _p, _t: (True, ""))
         monkeypatch.setattr(aa, "verify_enforcement", lambda _c, _u, _g: (False, "probe still fails"))
+        self._accept_exec_path(monkeypatch)
 
-        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000)
+        outcome = aa.install(write, run, lambda *_a: (0, ""), 1000, 1000, self._EXEC)
 
         assert outcome.changed is True  # the file WAS written
         assert outcome.ok is False
@@ -2420,7 +2438,11 @@ class TestAppArmorInstall:
             order.append("load")
             run(*argv)
 
-        outcome = aa.install(tracked_write, tracked_run, lambda *_a: (0, ""), 1000, 1000)
+        self._accept_exec_path(monkeypatch)
+
+        outcome = aa.install(
+            tracked_write, tracked_run, lambda *_a: (0, ""), 1000, 1000, self._EXEC
+        )
 
         assert outcome.ok is True and outcome.changed is True
         assert str(aa.PROFILE_PATH) in outcome.message
@@ -2490,24 +2512,6 @@ class TestAppArmorInstall:
         assert "AppArmor profile not installed" in outcome.message
         assert writes == [] and runs == []
 
-    def test_no_exec_path_still_renders_the_legacy_unattached_form(self, monkeypatch):
-        """Backward-compatible default: omitting ``exec_path`` renders exactly
-        the pre-#3463 unattached profile, so this stays a pure addition."""
-        from kiro_crew.service import apparmor as aa
-
-        writes, runs, write, run = self._writers()
-        monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
-        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
-        monkeypatch.setattr(aa, "parser_version", lambda _p: (5, 0))
-        monkeypatch.setattr(aa, "detect_abi", lambda: None)
-        monkeypatch.setattr(aa, "validate", lambda _p, _t: (True, ""))
-        monkeypatch.setattr(aa, "verify_enforcement", lambda _c, _u, _g: (True, None))
-
-        aa.install(write, run, lambda *_a: (0, ""), 1000, 1000)
-
-        assert writes[0][0] == aa.render_profile(None)
-        assert f"profile {aa.PROFILE_NAME} flags=" in writes[0][0]
-
     def test_uninstall_is_a_noop_when_no_profile_is_present(self, monkeypatch, tmp_path):
         from kiro_crew.service import apparmor as aa
 
@@ -2537,7 +2541,11 @@ class TestAppArmorInstall:
 
 
 class TestAppArmorUnitDirective:
-    """The unit carries the profile, so it applies to this service only."""
+    """The retired ``AppArmorProfile=`` directive must never reappear in the unit.
+
+    The profile is attached by path (#3463); when both mechanisms are present,
+    systemd's ``change_onexec`` silently wins and defeats the path attachment.
+    """
 
     def test_no_directive_by_default(self, monkeypatch):
         from kiro_crew.service import linux as svc_linux
@@ -2551,35 +2559,15 @@ class TestAppArmorUnitDirective:
 
         assert "AppArmorProfile" not in unit
 
-    def test_directive_is_best_effort_when_requested(self, monkeypatch):
-        """The "-" prefix matters: a missing profile must not stop the gateway.
-
-        Without it systemd refuses to start the unit when the profile is absent,
-        turning a hardening step into an outage. With it the gateway starts and
-        simply fails closed per-spawn, which is the pre-existing behaviour.
-        """
-        from kiro_crew.service import apparmor as aa
-        from kiro_crew.service import linux as svc_linux
-
-        monkeypatch.setenv("USER", "tester")
-        gid = MagicMock(returncode=0, stdout="tester\n", stderr="")
-        with patch(
-            "kiro_crew.service.common.shutil.which", return_value="/usr/bin/kirocrew"
-        ), patch("kiro_crew.service.linux.subprocess.run", return_value=gid):
-            unit = svc_linux.render_unit(aa.PROFILE_NAME)
-
-        assert f"AppArmorProfile=-{aa.PROFILE_NAME}" in unit
-        assert "AppArmorProfile=kirocrew" not in unit  # never the hard form
-
-    def test_install_never_requests_the_directive_even_when_the_host_needs_a_profile(
+    def test_install_never_writes_the_directive_even_when_the_host_needs_a_profile(
         self, monkeypatch
     ):
-        """#3463: ``linux.install()`` must never call ``render_unit(profile_name)``
-        — a unit written WITH the directive silently defeats the path-attached
+        """#3463: the unit ``linux.install()`` writes must never carry the
+        directive — a unit written WITH it silently defeats the path-attached
         profile it installs (systemd's change_onexec wins over the kernel's
         automatic path attachment). Asserted end-to-end through ``install()``,
         not just on ``render_unit`` in isolation, so a regression that starts
-        threading the profile name back through the real call site is caught."""
+        threading a profile name back into the written unit is caught."""
         from kiro_crew.service import apparmor as aa
         from kiro_crew.service import linux as svc_linux
 

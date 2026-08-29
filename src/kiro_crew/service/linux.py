@@ -138,7 +138,7 @@ def _home_for_user(user: str) -> str:
         return str(Path.home())
 
 
-def render_unit(apparmor_profile: str = "") -> str:
+def render_unit() -> str:
     """Render the systemd system-unit file contents.
 
     Runs the gateway as the invoking user (``User=``, ``Group=``) so it
@@ -150,11 +150,11 @@ def render_unit(apparmor_profile: str = "") -> str:
     systemd instance is also wired up explicitly — see the ``XDG_RUNTIME_DIR`` /
     ``DBUS_SESSION_BUS_ADDRESS`` lines below.
 
-    ``apparmor_profile`` renders the legacy ``AppArmorProfile=`` directive when
-    non-empty. ``install()`` never passes one (#3463): the profile is now
-    attached by path instead, and having BOTH present makes systemd's directive
-    silently win, defeating the path attachment. Kept as a parameter only for
-    this function's own unit coverage of that legacy directive shape.
+    The unit deliberately carries no ``AppArmorProfile=`` directive (#3463):
+    the profile is attached by PATH to the resolved launcher script instead
+    (:func:`install_apparmor_profile`), and when both mechanisms are present
+    systemd's ``change_onexec`` transition silently wins over the kernel's
+    automatic path attachment, defeating it.
     """
     bin_path = kirocrew_bin()
     user = _current_user()
@@ -208,10 +208,6 @@ def render_unit(apparmor_profile: str = "") -> str:
         "\n"
         "[Service]\n"
         "Type=simple\n"
-        # "-" = best-effort: a missing or unloaded profile must never stop the
-        # gateway from starting. Without it the sandbox simply cannot be built,
-        # which fails closed per-spawn rather than bricking the service.
-        f"{('AppArmorProfile=-' + apparmor_profile + chr(10)) if apparmor_profile else ''}"
         f"User={user}\n"
         f"Group={group}\n"
         f"WorkingDirectory={home}\n"
@@ -497,14 +493,6 @@ def install() -> apparmor.ProfileOutcome:
             "service install`), or set $USER to a non-root account."
         )
 
-    # The AppArmorProfile= directive is deliberately NEVER requested here (#3463):
-    # the profile is now attached by PATH to the resolved launcher script
-    # (install_apparmor_profile, below), and #3463 found that when both mechanisms
-    # are present on the same unit, systemd's change_onexec transition silently
-    # takes precedence over the kernel's automatic path attachment and the path
-    # attachment has no effect — the two are mutually exclusive in practice, not
-    # redundant. render_unit() still accepts a profile name (tested on its own
-    # for that legacy shape) but this call site must never pass one.
     needs_profile, profile_reason = apparmor.should_install()
     write_res = _write_unit_via_sudo(render_unit())
     if write_res.returncode != 0:
