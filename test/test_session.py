@@ -2977,12 +2977,6 @@ class TestSlackLinkHelpers:
         assert mgr.find_key_by_sid("sid-abc") == "k1"
         assert mgr.find_key_by_sid("unknown") is None
 
-    def test_delete_session_map_entry(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        mgr._session_map.set("k1", "sid-abc")
-        mgr.delete_session_map_entry("k1")
-        assert mgr.find_key_by_sid("sid-abc") is None
-
 
 class TestGetPid:
     """Tests for get_pid."""

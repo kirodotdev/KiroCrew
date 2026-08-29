@@ -153,14 +153,6 @@ class WorkerPool:
 
     # ── Introspection (status / tests) ──
     @property
-    def idle_count(self) -> int:
-        return len(self._idle)
-
-    @property
-    def created_count(self) -> int:
-        return self._created
-
-    @property
     def max_workers(self) -> int:
         return self._max_workers
 

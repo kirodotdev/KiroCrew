@@ -2392,9 +2392,6 @@ class AcpRuntime:
         else:
             self._turn_active_sessions.discard(session_id)
 
-    # Alias for backward compat
-    remove_session = unregister_session
-
     async def terminate_session(self, session_id: str) -> None:
         """Evict a session from kiro-cli (freeing its memory), then unregister locally.
 

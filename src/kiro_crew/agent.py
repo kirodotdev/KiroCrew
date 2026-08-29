@@ -4325,16 +4325,6 @@ def _install_aim_capabilities() -> None:
     _install_lite_agent_fallback()
 
 
-def _remove_bare_lite_if_aim_installed() -> None:
-    """No-op on public installs (AIM package manager absent).
-
-    Symbol preserved for backward compatibility.  Previously removed the
-    bare ``kirocrew-lite.json`` when an AIM-installed duplicate existed; with
-    AIM install neutralized there is no AIM-managed copy to deduplicate.
-    """
-    return None
-
-
 def _install_lite_agent_fallback() -> None:
     """Write a bare kirocrew-lite config (cheap background agent)."""
     lite_path = kiro_agents_dir_path() / _LITE_AGENT_FILENAME

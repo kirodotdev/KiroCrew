@@ -91,18 +91,6 @@ class TestConversationLog:
         log = ConversationLog(base_dir=tmp_path)
         log.mark_consolidated("nonexistent", 5)  # should not raise
 
-    def test_load_transcript(self, tmp_path):
-        log = ConversationLog(base_dir=tmp_path)
-        log.append("t1", "user", "what is 2+2?")
-        log.append("t1", "assistant", "4")
-        transcript = log.load_transcript("t1")
-        assert "User: what is 2+2?" in transcript
-        assert "Assistant: 4" in transcript
-
-    def test_load_transcript_empty(self, tmp_path):
-        log = ConversationLog(base_dir=tmp_path)
-        assert log.load_transcript("nonexistent") == ""
-
     def test_safe_key_sanitizes(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
         log.append("thread:with/special chars!", "user", "hi")
@@ -4077,7 +4065,7 @@ class TestTailReads:
         log._msg_cache.clear()
         log.recent("t1", max_messages=3)
         # Tail path returned a partial view — the full cache must stay empty
-        # so load_transcript()/search still parse the whole file.
+        # so search still parses the whole file.
         assert "t1" not in log._msg_cache
 
     def test_tail_window_grows_when_insufficient(self, tmp_path):

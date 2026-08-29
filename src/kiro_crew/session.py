@@ -5764,9 +5764,6 @@ class SessionManager:
         """Highest persisted DM generation for a session bucket (see SessionMap)."""
         return self._session_map.max_generation(bucket)
 
-    def delete_session_map_entry(self, key: str) -> None:
-        self._session_map.delete(key)
-
     async def set_thread(self, key: str, thread_ts: str) -> None:
         """Set thread for a session. Prefer set_slack_link for new code."""
         _, channel_id = self.get_slack_link(key)

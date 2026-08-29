@@ -3506,17 +3506,6 @@ class ConversationLog:
             )
         return failures, retry_at
 
-    def load_transcript(self, key: str) -> str:
-        """Load full session as formatted text for LLM summarization."""
-        messages = self._read_messages(key)
-        if not messages:
-            return ""
-        lines: list[str] = []
-        for m in messages:
-            role = m["role"].title()
-            lines.append(f"{role}: {m['content']}")
-        return "\n\n".join(lines)
-
     @staticmethod
     def _canonical_key(key: str) -> str:
         """Collapse stacked ``dashboard_`` prefixes to a single one.
