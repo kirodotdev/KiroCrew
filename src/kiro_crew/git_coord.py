@@ -7,7 +7,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import Project, Task
@@ -119,7 +123,9 @@ async def _is_git_repo(path: str) -> bool:
     # git runs against an agent-selected repo whose local hooks and config can
     # execute code, so route through the sandbox chokepoint (OS isolation +
     # credential-scrubbed env).
-    argv, env, cleanup = sandboxed_spawn_argv(["git", "rev-parse", "--is-inside-work-tree"])
+    argv, env, cleanup = await sandboxed_spawn_argv_async(
+        ["git", "rev-parse", "--is-inside-work-tree"], _prepare=sandboxed_spawn_argv
+    )
     try:
         proc = await create_subprocess_limited(
             *argv,
@@ -143,7 +149,9 @@ async def _is_git_repo(path: str) -> bool:
 
 async def _git(work_dir: str, *args: str) -> str:
     # Agent-influenced git invocation: sandbox + scrubbed env.
-    argv, env, cleanup = sandboxed_spawn_argv(["git", *args])
+    argv, env, cleanup = await sandboxed_spawn_argv_async(
+        ["git", *args], _prepare=sandboxed_spawn_argv
+    )
     try:
         proc = await create_subprocess_limited(
             *argv,

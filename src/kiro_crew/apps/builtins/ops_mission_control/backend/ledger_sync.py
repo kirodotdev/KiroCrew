@@ -52,7 +52,11 @@ from typing import Any
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, policy_store
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import read_config
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -363,7 +367,9 @@ async def _git(*args: str) -> tuple[int, str, str]:
     # even against a repo-local `user.email` an agent could have written, and it needs
     # no `git config` write of our own. Passed on every verb -- the read-only ones
     # ignore it, and scoping it to `commit` would miss the next verb that makes one.
-    argv, env, cleanup = sandboxed_spawn_argv([_GIT_BINARY, *_COMMIT_IDENTITY, *args])
+    argv, env, cleanup = await sandboxed_spawn_argv_async(
+        [_GIT_BINARY, *_COMMIT_IDENTITY, *args], _prepare=sandboxed_spawn_argv
+    )
     try:
         proc = await create_subprocess_limited(
             *argv,

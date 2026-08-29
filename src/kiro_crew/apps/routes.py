@@ -130,7 +130,12 @@ from kiro_crew.pinned_fs import (
     supports_pinned_walk,
 )
 from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    create_subprocess_limited,
+    wrap_argv,
+    wrap_argv_async,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -1772,7 +1777,9 @@ async def handle_open_app(request: web.Request) -> web.Response:
 
     try:
         base_cmd = ["/bin/sh", "-c", open_cmd]
-        sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="standard")
+        sandboxed_cmd, _cleanup = await wrap_argv_async(
+            base_cmd, mode="standard", _prepare=wrap_argv
+        )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
@@ -2859,7 +2866,9 @@ async def _fetch_git_blob(
                 git_url,
                 tmp_root,
             ]
-            sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=clone_mode)
+            sandboxed_cmd, _cleanup = await wrap_argv_async(
+                clone_cmd, mode=clone_mode, _prepare=wrap_argv
+            )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,

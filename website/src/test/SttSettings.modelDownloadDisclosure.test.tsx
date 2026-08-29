@@ -3,11 +3,10 @@
  * offer a way to pay that cost at a moment the user chose.
  *
  * Weights are fetched once per model, and the smallest is 78 MB while the largest
- * is 1.6 GB. If that transfer starts inside the first dictation, the session looks
- * identical to a hung microphone. Three things prevent that, and all three are
- * pinned here because each fails silently: the per-option size, the description
- * naming the first-use download, and the explicit download control with the size
- * on it.
+ * is 1.6 GB. Desktop releases bundle the recogniser and every runtime dependency,
+ * so model download must be the user's only setup action. Three things pin that
+ * contract: the per-option size, copy naming the one-click path, and the explicit
+ * download control with the size on it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
@@ -82,16 +81,12 @@ describe('SttSettings model download disclosure', () => {
   })
   afterEach(() => cleanup())
 
-  it('discloses the first-use download and its visible symptom on the Model row', async () => {
+  it('says model download is the only desktop setup action', async () => {
     mount()
     await waitFor(() => expect(modelSelect()).toBeTruthy())
-    // The fact: weights download on first use, not at install or save time.
-    const desc = screen.getByText(/downloads on first use/i)
-    // The symptom, in the same description: without it the fact reads as
-    // harmless trivia instead of explaining a hung-then-empty first dictation.
-    expect(desc.textContent).toMatch(/hang or time out/i)
-    // It is the Model row's own description, not copy that drifted elsewhere.
-    expect(desc.textContent).toMatch(/larger models are more accurate/i)
+    const desc = screen.getByText(/models download on demand/i)
+    expect(desc.textContent).toMatch(/click Download now/i)
+    expect(desc.textContent).toMatch(/every other runtime dependency/i)
   })
 
   it('states each model size in its own option, from the served catalog', async () => {

@@ -121,6 +121,79 @@ esac
 
 log() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 
+is_macos_intel_backend() {
+  local want_arch="$1"
+  [ "$OS" = "darwin" ] && {
+    [ "$want_arch" = "x86_64" ] ||
+      { [ -z "$want_arch" ] && [ "$HOST_ARCH" = "x86_64" ]; }
+  }
+}
+
+# Keep the Apple-Silicon decoder byte-for-byte identical to the pinned upstream
+# wheel after packaging. electron-builder signs every Mach-O it finds, which
+# replaces the upstream linker/ad-hoc signature and necessarily changes both
+# size and SHA-256 after our pre-sign gate. The upstream arm64 executable already
+# carries the ad-hoc LC_CODE_SIGNATURE Apple Silicon requires. Store those exact
+# signed bytes as inert gzip data; runtime expands them beneath its agent-denied
+# runtime root, makes the private snapshot non-writable, verifies the ORIGINAL
+# wheel digest, and keeps its descriptor open through spawn. The app signer never
+# sees a Mach-O to rewrite, while the user still receives the complete offline
+# decoder payload.
+seal_macos_ffmpeg_payload() {
+  local python="$1" want_arch="$2"
+  [ "$OS" = "darwin" ] || return 0
+  is_macos_intel_backend "$want_arch" && return 0
+  "$python" -s -c '
+import gzip
+import os
+import shutil
+import sys
+from pathlib import Path
+
+binaries = (
+    Path(sys.prefix)
+    / "lib"
+    / "python3.12"
+    / "site-packages"
+    / "imageio_ffmpeg"
+    / "binaries"
+)
+source = binaries / "ffmpeg-macos-aarch64-v7.1"
+target = source.with_name(source.name + ".gz")
+staged = target.with_name(target.name + ".tmp")
+with source.open("rb") as incoming, staged.open("xb") as outgoing:
+    with gzip.GzipFile(filename="", fileobj=outgoing, mode="wb", mtime=0) as encoded:
+        shutil.copyfileobj(incoming, encoded, length=1 << 20)
+os.chmod(staged, 0o444)
+os.replace(staged, target)
+source.unlink()
+'
+}
+
+# Prove that the installed native wheel, audio decoder, and their transitive
+# libraries can actually run from the pruned bundle. A successful pip resolution
+# is not enough: an ABI mismatch or missing executable otherwise reaches every
+# user as an unusable Download button. Model weights are deliberately not involved
+# in this gate.
+#   $1 = bundled interpreter
+local_voice_runtime_gate() {
+  local python="$1"
+  log "Verifying bundled local voice runtime…"
+  env PYTHONNOUSERSITE=1 PYTHONPATH= "$python" -s -c '
+from kiro_crew.stt.engine import probe
+from kiro_crew.transcribe import _packaged_ffmpeg_version_probe
+
+state = probe()
+if not state.ok:
+    raise SystemExit(f"{state.code}: {state.detail}")
+if not _packaged_ffmpeg_version_probe():
+    raise SystemExit("bundled ffmpeg executable is missing, modified, or cannot run")
+' || {
+    echo "ERROR: bundled local voice runtime cannot load" >&2
+    exit 1
+  }
+}
+
 # Re-stamp every staged backend tree with <dist>, for the Linux multi-format
 # path (see LINUX_TARGET_DISTS). Rewrites one generated module per tree, so it
 # is cheap enough to run between electron-builder invocations. Finding the trees
@@ -341,18 +414,24 @@ build_backend() {
   # the recogniser is attempted on its own.
   #
   # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
-  # installs from this checkout) turns the no-wheel case into a clean skip rather
-  # than a from-source whisper.cpp build needing CMake and a C++ toolchain, which
-  # would fail the whole release. `kiro_crew.stt.engine` reports the resulting state
-  # as `stt_no_wheel_for_platform` rather than as a missing extra.
+  # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
+  # recogniser wheels fail every supported desktop build: local dictation is the
+  # default and must be usable immediately. macOS Intel is the sole legacy exception.
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/bin/python3.12" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check "$ROOT[voice-aws]"
+    --no-warn-script-location --disable-pip-version-check \
+    "$ROOT[voice-aws]" "imageio-ffmpeg==0.6.0"
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
       --no-warn-script-location --disable-pip-version-check "$ROOT[voice]"; then
-    log "No prebuilt speech recogniser for this arch — bundling without it."
+    if is_macos_intel_backend "$want_arch"; then
+      log "No prebuilt speech recogniser for macOS Intel — leaving that legacy backend unsupported."
+    else
+      echo "ERROR: no prebuilt speech recogniser for supported target ${OS}/${want_arch:-$HOST_ARCH}" >&2
+      echo "       Refusing to ship a desktop app whose default local voice provider is unusable." >&2
+      exit 1
+    fi
   fi
 
   # Stage the dashboard dist into the package's static dir.
@@ -416,6 +495,11 @@ LAUNCH
     rm -rf lib/python3.12/test lib/python3.12/idlelib lib/python3.12/tkinter \
            lib/python3.12/turtledemo lib/python3.12/ensurepip lib/python3.12/lib2to3 2>/dev/null || true )
 
+  seal_macos_ffmpeg_payload "$out/bin/python3.12" "$want_arch"
+  if ! is_macos_intel_backend "$want_arch"; then
+    local_voice_runtime_gate "$out/bin/python3.12"
+  fi
+
   # After pruning, so it validates what actually ships.
   stdlib_probe_gate "$out"
 
@@ -430,7 +514,7 @@ LAUNCH
 # python.exe directly -- see main.js).
 #   $1 = PBS interpreter dir   $2 = output dir
 build_backend_windows() {
-  local pbs_dir="$1" out="$2" sp
+  local pbs_dir="$1" out="$2" sp root_uri
 
   log "Installing kiro_crew into the bundled interpreter ($(basename "$out"))…"
   mkdir -p "$(dirname "$out")"
@@ -441,34 +525,34 @@ build_backend_windows() {
     "$out/python.exe" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check "$ROOT"
 
-  # The voice extras, in TWO steps.
+  # Git Bash normally rewrites a plain /d/a/... argument for a native Windows
+  # process, which is why the core install above works. Appending `[voice]`
+  # defeats that MSYS path conversion and pip receives the literal POSIX path,
+  # then rejects it as an invalid requirement. Derive a real file URI from the
+  # native interpreter's cwd and use explicit PEP 508 direct references for both
+  # extras, so spaces and the drive-letter boundary are unambiguous too.
+  root_uri="$(cd "$ROOT" && "$out/python.exe" -c \
+    'import sys; from pathlib import Path; sys.stdout.write(Path.cwd().as_uri())')"
+
+  # The voice extras, in two steps so an independent AWS-provider dependency
+  # cannot be omitted by recogniser resolution. Windows is a supported local-
+  # dictation target, so the recogniser is a hard gate. Model weights remain an
+  # explicit one-click download after installation.
   #
   # They have to be in the bundle at all because `local` is the default
   # speech-to-text provider and nothing in the app can install it later: the
   # pip-invoking endpoint was deliberately removed, so a bundle without them
   # reports the default provider as unavailable with no in-app way to fix it.
   #
-  # Two steps because pip resolves an extra ATOMICALLY, and this bundle is
-  # UNIVERSAL on macOS where Intel has no published pywhispercpp wheel. A single
-  # `[voice]` install there fails as a whole and omits boto3 and amazon-transcribe
-  # with it, taking the `transcribe` provider down alongside the `local` one it has
-  # nothing to do with. So the cloud half goes in first and unconditionally, then
-  # the recogniser is attempted on its own.
-  #
-  # `--only-binary pywhispercpp` (scoped to that one name, so kirocrew itself still
-  # installs from this checkout) turns the no-wheel case into a clean skip rather
-  # than a from-source whisper.cpp build needing CMake and a C++ toolchain, which
-  # would fail the whole release. `kiro_crew.stt.engine` reports the resulting state
-  # as `stt_no_wheel_for_platform` rather than as a missing extra.
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/python.exe" -m pip install --prefer-binary \
-    --no-warn-script-location --disable-pip-version-check "$ROOT[voice-aws]"
-  if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
-      "$out/python.exe" -m pip install --prefer-binary \
-      --only-binary pywhispercpp \
-      --no-warn-script-location --disable-pip-version-check "$ROOT[voice]"; then
-    log "No prebuilt speech recogniser for this arch — bundling without it."
-  fi
+    --no-warn-script-location --disable-pip-version-check \
+    "kirocrew[voice-aws] @ $root_uri" "imageio-ffmpeg==0.6.0"
+  env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
+    "$out/python.exe" -m pip install --prefer-binary \
+    --only-binary pywhispercpp \
+    --no-warn-script-location --disable-pip-version-check \
+    "kirocrew[voice] @ $root_uri"
 
   sp="$out/Lib/site-packages"
   log "Staging dashboard dist into kiro_crew/static/dist…"
@@ -505,6 +589,8 @@ build_backend_windows() {
            Lib/site-packages/kiro_crew/_vendor/llama_cpp_libs/macos_x86_64 \
            2>/dev/null || true
     rm -f DLLs/_tkinter.pyd DLLs/tcl*.dll DLLs/tk*.dll 2>/dev/null || true )
+
+  local_voice_runtime_gate "$out/python.exe"
 
   # After pruning, so it validates what actually ships.
   stdlib_probe_gate "$out"

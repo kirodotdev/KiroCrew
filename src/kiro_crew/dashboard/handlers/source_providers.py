@@ -49,7 +49,11 @@ from kiro_crew.github_runner import (
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
 from kiro_crew.loop_lock import LoopBoundLock
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+)
 from kiro_crew.secrets import SecretVault
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -800,8 +804,11 @@ async def _run_json(
     try:
         async with _provider_semaphore:
             try:
-                wrapped_argv, env, cleanup_path = sandboxed_spawn_argv(
-                    [resolved_executable, *argv[1:]], mode="standard", env=base_env
+                wrapped_argv, env, cleanup_path = await sandboxed_spawn_argv_async(
+                    [resolved_executable, *argv[1:]],
+                    mode="standard",
+                    env=base_env,
+                    _prepare=sandboxed_spawn_argv,
                 )
             except RuntimeError as exc:
                 _audit_provider_cli(executable, "denied", "sandbox_rejected")

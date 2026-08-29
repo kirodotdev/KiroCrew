@@ -4117,7 +4117,9 @@ class TestFirstPartyManagedArgv:
         seen: dict[str, bool] = {}
 
         def _capture(argv, **kwargs):
-            seen["flag"] = kwargs.get("first_party_fixed_argv", True)
+            # Omitting the synchronous API's default is equivalent to passing
+            # False and keeps narrow injected preparation seams compatible.
+            seen["flag"] = kwargs.get("first_party_fixed_argv", False)
             raise RuntimeError("stop at the wrap")
 
         server = McpServerInfo(name="playwright-mcp", command="node")

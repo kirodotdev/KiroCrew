@@ -2813,12 +2813,10 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     else:
         print(f"  provider:    ✅ {cfg.stt.provider}")
 
-    # STT ships enabled-by-default, but ffmpeg is absent from a stock Windows box
-    # and is not a Kiro Crew dependency there. Reporting it as a hard issue makes
-    # `kirocrew doctor` exit 1 on a healthy first install, so the guide's
-    # `kirocrew doctor && kirocrew gateway` never launches the gateway. On Windows
-    # treat these as non-fatal notes; POSIX keeps failing so a real STT setup gap
-    # is still surfaced.
+    # Source installs may omit the optional voice extra. Preserve Windows's
+    # historical non-fatal report for that case so an enabled-by-default feature
+    # cannot block gateway startup; desktop releases gate both native components
+    # at build time and should never reach the missing branches.
     stt_fatal = not platform_compat.IS_WINDOWS
     stt_mark = "❌" if stt_fatal else "⚠️ "
 
@@ -2848,21 +2846,26 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # `_find_ffmpeg` would decline, which is the more misleading of the two failures.
     ffmpeg_bin = _find_ffmpeg()
     if ffmpeg_bin:
-        print(f"  ffmpeg:      ✅ {ffmpeg_bin}")
+        # The resolved path can contain a username or a credential-bearing mount
+        # name. Doctor only needs to confirm the exact resolver found a decoder.
+        print("  ffmpeg:      ✅ available")
     elif stt_active:
         # A prerequisite of every provider, not of one of them: a Slack voice memo
         # arrives as ogg/Opus and the dashboard records webm, so the only input
         # that reaches a recogniser without ffmpeg is a 16 kHz mono WAV.
         print(f"  ffmpeg:      {stt_mark} not found")
-        print(
-            "               Fix: "
-            + _os_fix_hint(
-                "brew install ffmpeg",
-                "drop a static ffmpeg build into ~/.local/bin "
-                "(not in AL2023 repos; KiroCrew auto-detects it)",
-                windows="winget install Gyan.FFmpeg",
+        if platform_compat.is_bundled_interpreter():
+            print("               Fix: reinstall Kiro Crew (the bundled audio decoder is missing)")
+        else:
+            print(
+                "               Fix: "
+                + _os_fix_hint(
+                    "brew install ffmpeg",
+                    "drop a static ffmpeg build into ~/.local/bin "
+                    "(not in AL2023 repos; Kiro Crew auto-detects it)",
+                    windows="winget install Gyan.FFmpeg",
+                )
             )
-        )
         if stt_fatal:
             issues.append("ffmpeg")
     else:

@@ -39,7 +39,11 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import (
     TruncatedSignals,
 )
 from kiro_crew.platform_compat import kill_and_reap
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +78,9 @@ async def _run_gh(args: list[str]) -> tuple[int, str, str]:
     Never raises for a non-zero exit — the caller decides whether that is a
     source-level error or an expected condition (e.g. a repo without issues).
     """
-    argv, env, cleanup = sandboxed_spawn_argv([_GH_BINARY, *args])
+    argv, env, cleanup = await sandboxed_spawn_argv_async(
+        [_GH_BINARY, *args], _prepare=sandboxed_spawn_argv
+    )
     try:
         # `create_subprocess_limited`, NOT `preexec_fn=resource_limit_preexec()`: on an
         # ASYNC spawn a preexec_fn forces a plain fork() of the threaded gateway and runs

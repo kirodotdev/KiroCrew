@@ -8,7 +8,7 @@ All selectable providers implement streaming (`stt_stream._STREAMING_PROVIDERS`)
 
 | `stt.provider` | Where recognition runs | Cost | Precondition |
 |---|---|---|---|
-| `local` (default) | this process, whisper.cpp held loaded by [`kiro_crew.stt`](../../../src/kiro_crew/stt/__init__.py) | free | the `voice` extra, plus one model download on first use |
+| `local` (default) | this process, whisper.cpp held loaded by [`kiro_crew.stt`](../../../src/kiro_crew/stt/__init__.py) | free | desktop builds include the runtime; select a model and click **Download now** |
 | `apple` | the OS, on-device SpeechAnalyzer | free | macOS 26 or later, and a Swift toolchain to build the helper |
 | `transcribe` | AWS Transcribe Streaming | billed per audio-second | the `voice` extra, and a recorded AWS consent |
 
@@ -22,7 +22,16 @@ emptied transcript is reported as nothing heard rather than written into an agen
 notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 `transcribe`.
 
-Legacy provider values and the loader behavior for persisted values are in [Legacy provider values](#legacy-provider-values).
+Compressed files are decoded by the FFmpeg executable in the pinned
+`imageio-ffmpeg` wheel. It is part of the desktop voice runtime, not a desktop
+system prerequisite. The release gate resolves that exact packaged resource and
+executes `ffmpeg -version`; a supported artifact cannot publish with only
+dependency metadata or an ambient PATH copy satisfying the check. Source
+environments use the fixed system-decoder search instead, because a project venv
+is agent-writable executable storage.
+
+Legacy provider values and the loader behavior for persisted values are in
+[Legacy provider values](#legacy-provider-values).
 
 ## Architecture
 
@@ -110,11 +119,13 @@ that capability instead of on a hardcoded name.
 After the three gates, each provider has its own precondition and failure frame:
 
 - **local**: the recogniser must import (`stt.engine.probe`) and the configured
-  model must be on disk. Neither is checked as an activation gate, because both
-  resolve themselves: a missing model downloads, and a failed import is not
-  cached in `sys.modules`, so installing the extra takes effect without a gateway
-  restart. What cannot be fixed by waiting arrives as an `error` frame carrying
-  `stt_extra_missing`, `stt_no_wheel_for_platform` or `stt_import_failed`.
+  model must be on disk. Supported desktop releases bundle the recogniser and
+  fail their build if it is missing; macOS Intel is the unsupported exception.
+  The model remains an explicit one-click download, and first dictation can join
+  the same transfer. Source/PyPI installs can still add the `voice` extra without
+  a gateway restart. What cannot be fixed by waiting arrives as an `error` frame
+  carrying `stt_extra_missing`, `stt_no_wheel_for_platform` or
+  `stt_import_failed`.
 - **apple**: `apple_speech.availability()` decides, and separates "this macOS
   cannot run it" from "the Swift toolchain is missing", because only the second
   has a fix.
@@ -216,8 +227,12 @@ transcription surfaces are deliberately open to an app token):
 - `POST /api/stt/prepare`: starts or joins the transfer and returns its current state. Concurrent callers share one transfer behind the store's lock.
 - `POST /api/stt/prewarm`: starts local-provider preparation without waiting for completion. `useVoiceInput` calls it while the user reaches for the microphone so local initialization can overlap capture.
 
-The first use of voice input fetches one model and every later session loads it
-from disk. The digest is the trust anchor for that fetch: bytes are streamed to a
+Desktop installers intentionally contain no speech-model weights. Settings shows
+the selected model's exact size and a **Download now** action; that is the only
+setup action a desktop user needs because the recogniser and its dependencies are
+already in the application. First use can start or join the same download, and
+every later session loads the verified model from disk. The digest is the trust
+anchor for that fetch: bytes are streamed to a
 staging file inside the target directory and renamed into place only after the
 computed digest matches, so a tampered mirror, a truncated transfer or a
 captive-portal HTML body can only fail verification. The pinned **size** is enforced

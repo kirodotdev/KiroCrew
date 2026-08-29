@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import os
 import re
@@ -224,6 +225,286 @@ class TestBuildSeatbeltProfile:
         profile = _build_seatbelt_profile("strict")
         assert "(deny file-write*" in profile
         assert ".ssh" in profile
+
+    @pytest.mark.parametrize("level", ["standard", "cc", "strict"])
+    def test_every_mode_seals_voice_runtime_from_agents(self, level):
+        profile = _build_seatbelt_profile(level)
+        home = str(Path.home())
+        for relative in (".kiro/crew/run/voice-runtime", ".kirocrew/run/voice-runtime"):
+            path = os.path.join(home, relative)
+            assert f'(deny file-read* (subpath "{path}"))' in profile
+            assert f'(deny file-write* (subpath "{path}"))' in profile
+            assert f'(deny file-link (subpath "{path}"))' in profile
+
+    def test_voice_runtime_cannot_be_reexposed_or_missed_by_relocation(
+        self, monkeypatch, tmp_path
+    ):
+        custom_home = tmp_path / "custom-home"
+        custom_home.mkdir()
+        relocated = custom_home / "run" / "voice-runtime"
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: custom_home)
+
+        profile = _build_seatbelt_profile(
+            "standard", extra_visible_dirs=(str(relocated),)
+        )
+
+        assert f'(deny file-read* (subpath "{relocated}"))' in profile
+        assert f'(deny file-write* (subpath "{relocated}"))' in profile
+        assert f'(deny file-link (subpath "{relocated}"))' in profile
+
+    def test_voice_runtime_denies_lexical_and_canonical_paths_and_parent_renames(
+        self, monkeypatch, tmp_path
+    ):
+        lexical_home = tmp_path / "linked-home"
+        canonical_home = tmp_path / "real-home"
+        lexical_run = lexical_home / "run"
+        canonical_run = canonical_home / "run"
+        lexical_root = lexical_run / "voice-runtime"
+        canonical_root = canonical_run / "voice-runtime"
+        guards = sandbox_mod._literal_ancestor_guards(
+            (str(lexical_run), str(canonical_run))
+        )
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: lexical_home)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_paths_cache",
+            (
+                str(lexical_home),
+                str(canonical_root),
+                (str(lexical_root), str(canonical_root)),
+                (str(lexical_run), str(canonical_run)),
+                guards,
+            ),
+        )
+
+        profile = _build_seatbelt_profile("standard")
+
+        for root in (lexical_root, canonical_root):
+            assert f'(deny file-read* (subpath "{root}"))' in profile
+            assert f'(deny file-write* (subpath "{root}"))' in profile
+        for parent in (lexical_run, canonical_run):
+            assert f'(deny file-write* (literal "{parent}"))' in profile
+            assert f'(deny file-write* (subpath "{parent}"))' in profile
+        for guard in guards:
+            assert f'(deny file-write* (literal "{guard}"))' in profile
+
+    def test_delegated_macos_agent_workspace_cannot_reach_voice_runtime(
+        self, monkeypatch, tmp_path
+    ):
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        sibling = tmp_path / "workspace"
+        runtime.mkdir(parents=True)
+        sibling.mkdir()
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+
+        for unsafe in (runtime, runtime / "nested", runtime.parent, tmp_path):
+            with pytest.raises(RuntimeError, match="protected voice runtime"):
+                sandbox_mod.assert_voice_runtime_outside_agent_workspace(unsafe)
+
+        sandbox_mod.assert_voice_runtime_outside_agent_workspace(sibling)
+
+    def test_delegated_macos_agent_workspace_checks_canonical_alias(self, monkeypatch, tmp_path):
+        runtime = tmp_path / "real-data" / "run" / "voice-runtime"
+        alias = tmp_path / "linked-runtime"
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        realpath = sandbox_mod.os.path.realpath
+        monkeypatch.setattr(
+            sandbox_mod.os.path,
+            "realpath",
+            lambda path: str(runtime) if os.fspath(path) == str(alias) else realpath(path),
+        )
+
+        with pytest.raises(RuntimeError, match="protected voice runtime"):
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(alias)
+
+    @pytest.mark.parametrize(
+        ("runtime_leaf", "workspace_leaf"),
+        [
+            ("voice-runtime", "VOICE-RUNTIME"),
+            (
+                "v\N{LATIN SMALL LETTER E WITH ACUTE}locit\N{LATIN SMALL LETTER Y WITH ACUTE}",
+                "ve\N{COMBINING ACUTE ACCENT}locity\N{COMBINING ACUTE ACCENT}",
+            ),
+        ],
+    )
+    def test_delegated_macos_agent_workspace_rejects_apfs_spelling_aliases(
+        self, monkeypatch, tmp_path, runtime_leaf, workspace_leaf
+    ):
+        runtime = tmp_path / "data" / "run" / runtime_leaf
+        workspace = tmp_path / "data" / "run" / workspace_leaf
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+
+        with pytest.raises(RuntimeError, match="protected voice runtime"):
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+    def test_delegated_macos_agent_workspace_rejects_filesystem_identity_alias(
+        self, monkeypatch, tmp_path
+    ):
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        workspace = tmp_path / "workspace"
+        runtime.mkdir(parents=True)
+        workspace.mkdir()
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        real_stat = sandbox_mod.os.stat
+        runtime_info = real_stat(runtime)
+        monkeypatch.setattr(
+            sandbox_mod.os,
+            "stat",
+            lambda path: runtime_info
+            if os.path.abspath(os.fspath(path)) == os.path.abspath(str(workspace))
+            else real_stat(path),
+        )
+
+        with pytest.raises(RuntimeError, match="protected voice runtime"):
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+    def test_macos_workspace_binding_uses_opened_ancestor_identities(self, monkeypatch):
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: ("/protected/voice-runtime",),
+        )
+        opened = iter((41, 42))
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_open_directory_descriptor",
+            lambda path, **_kwargs: next(opened),
+        )
+
+        def fake_fstat(descriptor):
+            identities = {41: (7, 101), 42: (7, 202)}
+            dev, inode = identities[descriptor]
+            result = MagicMock()
+            result.st_dev = dev
+            result.st_ino = inode
+            return result
+
+        monkeypatch.setattr(sandbox_mod.os, "fstat", fake_fstat)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_directory_ancestor_identities",
+            lambda descriptor: (
+                ((7, 101), (7, 11), (7, 1))
+                if descriptor == 41
+                else ((7, 202), (7, 22), (7, 1))
+            ),
+        )
+        closed: list[int] = []
+        monkeypatch.setattr(sandbox_mod.os, "close", closed.append)
+
+        path, descriptor = sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace")
+
+        assert (path, descriptor) == ("/dev/fd/41", 41)
+        assert closed == [42]
+
+    def test_macos_workspace_binding_rejects_opened_runtime_ancestor(self, monkeypatch):
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: ("/protected/voice-runtime",),
+        )
+        opened = iter((51, 52))
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_open_directory_descriptor",
+            lambda path, **_kwargs: next(opened),
+        )
+
+        def fake_fstat(descriptor):
+            identities = {51: (8, 301), 52: (8, 302)}
+            dev, inode = identities[descriptor]
+            result = MagicMock()
+            result.st_dev = dev
+            result.st_ino = inode
+            return result
+
+        monkeypatch.setattr(sandbox_mod.os, "fstat", fake_fstat)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_directory_ancestor_identities",
+            lambda descriptor: (
+                ((8, 301), (8, 302), (8, 1))
+                if descriptor == 51
+                else ((8, 302), (8, 1))
+            ),
+        )
+        closed: list[int] = []
+        monkeypatch.setattr(sandbox_mod.os, "close", closed.append)
+
+        with pytest.raises(RuntimeError, match="protected voice runtime"):
+            sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace")
+
+        assert closed == [51, 52]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_async_workspace_binding_closes_returned_descriptor(self, monkeypatch):
+        entered = threading.Event()
+        release = threading.Event()
+        closed = threading.Event()
+        loop_thread = threading.get_ident()
+        close_threads: list[int] = []
+
+        def delayed_binding(_workspace):
+            entered.set()
+            assert release.wait(timeout=2)
+            return "/dev/fd/61", 61
+
+        def record_close(descriptor):
+            assert descriptor == 61
+            close_threads.append(threading.get_ident())
+            closed.set()
+
+        monkeypatch.setattr(sandbox_mod, "bind_voice_safe_agent_workspace", delayed_binding)
+        monkeypatch.setattr(sandbox_mod, "_close_bound_agent_workspace", record_close)
+
+        task = asyncio.create_task(
+            sandbox_mod.bind_voice_safe_agent_workspace_async("/mutable/workspace")
+        )
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert closed.is_set()
+        assert len(close_threads) == 1
+        assert close_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_release_bound_workspace_closes_off_event_loop(self, monkeypatch):
+        loop_thread = threading.get_ident()
+        close_threads: list[int] = []
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_close_bound_agent_workspace",
+            lambda _descriptor: close_threads.append(threading.get_ident()),
+        )
+
+        await sandbox_mod.release_bound_agent_workspace(62)
+
+        assert close_threads and close_threads[0] != loop_thread
 
     def test_standard_does_not_deny_aws(self):
         profile = _build_seatbelt_profile("standard")

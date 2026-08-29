@@ -434,11 +434,30 @@ class TestTranscribePlumbing:
         ffmpeg we still hand the original path over so the caller surfaces the
         framework's own error rather than a silent unavailability."""
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value=None),
+            patch("kiro_crew.transcribe._open_ffmpeg_for_execution", return_value=None),
             patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
         ):
             path, is_temp = await apple_speech._to_native_audio("/tmp/voice.webm")
         assert (path, is_temp) == ("/tmp/voice.webm", False)
+
+    @pytest.mark.asyncio
+    async def test_packaged_decoder_authentication_runs_off_the_event_loop(self, monkeypatch):
+        from kiro_crew import transcribe as tr
+
+        offloaded = []
+
+        async def run_off_loop(function, *args, **kwargs):
+            offloaded.append(function)
+            return function(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", run_off_loop)
+        monkeypatch.setattr(tr, "ensure_ffmpeg_in_path", lambda: None)
+        monkeypatch.setattr(tr, "_open_ffmpeg_for_execution", lambda: None)
+
+        path, is_temp = await apple_speech._to_native_audio("/tmp/voice.webm")
+
+        assert (path, is_temp) == ("/tmp/voice.webm", False)
+        assert tr._open_ffmpeg_for_execution in offloaded
 
     @pytest.mark.asyncio
     async def test_helper_error_json_is_propagated(self):
@@ -529,7 +548,10 @@ class TestTranscodeTempOwnership:
         src = tmp_path / "voice.webm"
         src.write_bytes(b"data")
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
             patch("asyncio.create_subprocess_exec", side_effect=OSError("spawn failed")),
         ):
@@ -537,6 +559,39 @@ class TestTranscodeTempOwnership:
                 await apple_speech._to_native_audio(str(src))
         assert not owned.exists()
         assert src.exists()
+
+    @pytest.mark.asyncio
+    async def test_temp_creation_failure_closes_authenticated_decoder_off_loop(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import transcribe as tr
+
+        binary = tmp_path / "ffmpeg"
+        binary.write_bytes(b"decoder")
+        opened = tr._AuthenticatedFfmpeg(str(binary), os.open(binary, os.O_RDONLY), str(binary))
+        event_loop_thread = threading.get_ident()
+        close_threads = []
+        original_close = tr._AuthenticatedFfmpeg.close
+
+        def recording_close(self):
+            if self.descriptor >= 0:
+                close_threads.append(threading.get_ident())
+            original_close(self)
+
+        def disk_full(_suffix):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(tr._AuthenticatedFfmpeg, "close", recording_close)
+        monkeypatch.setattr(apple_speech, "_mkstemp_path", disk_full)
+        with (
+            patch.object(tr, "_resolve_ffmpeg_for_execution", return_value=opened),
+            patch.object(tr, "ensure_ffmpeg_in_path"),
+            pytest.raises(OSError, match="disk full"),
+        ):
+            await apple_speech._to_native_audio(str(tmp_path / "voice.webm"))
+
+        assert len(close_threads) == 1
+        assert close_threads[0] != event_loop_thread
 
     @pytest.mark.asyncio
     async def test_cancellation_reaps_ffmpeg_before_removing_the_owned_temp(
@@ -574,7 +629,10 @@ class TestTranscodeTempOwnership:
 
         monkeypatch.setattr(apple_speech.os, "unlink", tracked_unlink)
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
             patch("asyncio.create_subprocess_exec", return_value=_Proc()),
         ):
@@ -597,7 +655,10 @@ class TestTranscodeTempOwnership:
         proc.communicate = AsyncMock(return_value=(b"", b""))
         proc.returncode = 0
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
             patch("asyncio.create_subprocess_exec", return_value=proc),
         ):

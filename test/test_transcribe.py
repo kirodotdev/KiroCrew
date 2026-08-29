@@ -10,10 +10,12 @@ whisper.cpp decodes one.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import importlib.machinery
 import importlib.util
 import os
 import sys
+import threading
 import types
 import wave
 from types import SimpleNamespace
@@ -589,7 +591,10 @@ class TestTranscribeAudio:
             return proc
 
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
         ):
             result = await transcribe_audio(str(audio), cfg)
@@ -621,7 +626,7 @@ class TestTranscribeAudio:
             raise AssertionError("no child may be spawned without an ffmpeg binary")
 
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value=None),
+            patch("kiro_crew.transcribe._open_ffmpeg_for_execution", return_value=None),
             patch("asyncio.create_subprocess_exec", side_effect=_never),
         ):
             assert await transcribe_audio(str(audio), cfg) is None
@@ -660,7 +665,10 @@ class TestTranscribeAudio:
                 raise AssertionError("reap via communicate(), never wait()")
 
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=_Proc()),
         ):
             result = await transcribe_audio(str(audio), cfg)
@@ -715,7 +723,10 @@ class TestTranscribeAudio:
                 events.append("killed")
 
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=_Proc()),
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -1201,8 +1212,499 @@ class TestTranscriptRedaction:
 
 
 # ---------------------------------------------------------------------------
-# ffmpeg discovery: a prerequisite of every provider
+# ffmpeg discovery: bundled with desktop releases, with system fallback for source
 # ---------------------------------------------------------------------------
+
+
+class TestBundledFfmpeg:
+    """Resolve only the executable inside the pinned imageio-ffmpeg wheel."""
+
+    @staticmethod
+    def _fake_package(
+        monkeypatch, tmp_path, *, create_binary: bool = True, compressed: bool = False
+    ):
+        package_dir = tmp_path / "imageio_ffmpeg"
+        binaries = package_dir / "binaries"
+        binaries.mkdir(parents=True)
+        filename = (
+            "ffmpeg-test.gz"
+            if compressed
+            else ("ffmpeg-test.exe" if _pc.IS_WINDOWS else "ffmpeg-test")
+        )
+        binary = binaries / filename
+        payload = b"bundled decoder"
+        if create_binary:
+            binary.write_bytes(gzip.compress(payload, mtime=0) if compressed else payload)
+            binary.chmod(0o444 if compressed else 0o755)
+
+        monkeypatch.setattr(transcribe, "_trusted_site_package_roots", lambda: (str(tmp_path),))
+        monkeypatch.setattr(
+            transcribe,
+            "_PACKAGED_FFMPEG_ARTIFACTS",
+            {filename: (len(payload), transcribe.hashlib.sha256(payload).hexdigest())},
+        )
+        monkeypatch.setattr(transcribe.platform_compat, "is_bundled_interpreter", lambda: True)
+        return binary
+
+    def test_resolves_the_exact_wheel_resource(self, monkeypatch, tmp_path):
+        binary = self._fake_package(monkeypatch, tmp_path)
+        assert transcribe._bundled_ffmpeg() == str(binary)
+
+    def test_missing_wheel_resource_is_not_replaced_by_path(self, monkeypatch, tmp_path):
+        self._fake_package(monkeypatch, tmp_path, create_binary=False)
+        monkeypatch.setenv("IMAGEIO_FFMPEG_EXE", str(tmp_path / "attacker-controlled"))
+        assert transcribe._bundled_ffmpeg() is None
+
+    def test_missing_bundle_never_falls_back_to_system_for_status(self, monkeypatch, tmp_path):
+        self._fake_package(monkeypatch, tmp_path, create_binary=False)
+
+        def _unexpected_system_lookup():
+            raise AssertionError("bundled runtime fell back to a system decoder")
+
+        monkeypatch.setattr(transcribe, "_find_system_ffmpeg", _unexpected_system_lookup)
+        assert transcribe._find_ffmpeg() is None
+
+    def test_missing_bundle_never_falls_back_to_system_for_execution(self, monkeypatch, tmp_path):
+        self._fake_package(monkeypatch, tmp_path, create_binary=False)
+
+        def _unexpected_system_lookup():
+            raise AssertionError("bundled runtime fell back to a system decoder")
+
+        monkeypatch.setattr(transcribe, "_find_system_ffmpeg", _unexpected_system_lookup)
+        assert transcribe._open_ffmpeg_for_execution() is None
+
+    def test_project_venv_is_never_trusted_as_a_bundled_runtime(self, monkeypatch):
+        monkeypatch.setattr(transcribe.platform_compat, "is_bundled_interpreter", lambda: False)
+
+        def _unexpected_roots():
+            raise AssertionError("source environment was scanned for an executable")
+
+        monkeypatch.setattr(transcribe, "_trusted_site_package_roots", _unexpected_roots)
+        assert transcribe._bundled_ffmpeg() is None
+
+    def test_packaged_cli_without_electron_parent_uses_release_decoder(self, monkeypatch, tmp_path):
+        binary = self._fake_package(monkeypatch, tmp_path)
+
+        assert transcribe._bundled_ffmpeg() == str(binary)
+
+    def test_same_size_replacement_is_rejected_by_digest(self, monkeypatch, tmp_path):
+        binary = self._fake_package(monkeypatch, tmp_path)
+        binary.write_bytes(b"changed decoder")
+
+        assert transcribe._bundled_ffmpeg() is None
+
+    def test_truncated_payload_is_rejected_by_size(self, monkeypatch, tmp_path):
+        binary = self._fake_package(monkeypatch, tmp_path)
+        binary.write_bytes(b"short")
+
+        assert transcribe._bundled_ffmpeg() is None
+
+    def test_gzip_payload_chunks_expand_original_bytes(self, tmp_path):
+        encoded = tmp_path / "ffmpeg.gz"
+        encoded.write_bytes(gzip.compress(b"bundled decoder", mtime=0))
+        descriptor = os.open(encoded, os.O_RDONLY)
+        try:
+            assert (
+                b"".join(transcribe._ffmpeg_payload_chunks(descriptor, compressed=True))
+                == b"bundled decoder"
+            )
+        finally:
+            os.close(descriptor)
+
+    def test_gzip_payload_chunks_reject_corruption(self, tmp_path):
+        encoded = tmp_path / "ffmpeg.gz"
+        encoded.write_bytes(b"not a gzip stream")
+        descriptor = os.open(encoded, os.O_RDONLY)
+        try:
+            with pytest.raises(OSError):
+                b"".join(transcribe._ffmpeg_payload_chunks(descriptor, compressed=True))
+        finally:
+            os.close(descriptor)
+
+    @pytest.mark.skipif(_pc.IS_WINDOWS, reason="gzip payload is Apple-Silicon-only")
+    def test_gzip_payload_is_expanded_then_authenticated(self, monkeypatch, tmp_path):
+        binary = self._fake_package(monkeypatch, tmp_path, compressed=True)
+
+        opened = transcribe._open_packaged_ffmpeg_resource()
+
+        assert opened is not None
+        try:
+            assert opened.source_path == str(binary)
+            assert not os.access(binary, os.X_OK)
+            assert os.read(opened.descriptor, 1024) == b"bundled decoder"
+        finally:
+            opened.close()
+
+    @pytest.mark.skipif(_pc.IS_WINDOWS, reason="gzip payload is Apple-Silicon-only")
+    def test_corrupt_gzip_payload_is_rejected(self, monkeypatch, tmp_path):
+        binary = self._fake_package(monkeypatch, tmp_path, compressed=True)
+        binary.chmod(0o644)
+        binary.write_bytes(b"not a gzip stream")
+
+        assert transcribe._bundled_ffmpeg() is None
+
+    def test_deflate_error_is_reported_as_an_invalid_payload(self, monkeypatch, tmp_path):
+        self._fake_package(monkeypatch, tmp_path, compressed=True)
+
+        def broken_payload(*_args, **_kwargs):
+            raise transcribe.zlib.error("corrupt deflate block")
+            yield b""  # pragma: no cover - make this a generator
+
+        monkeypatch.setattr(transcribe, "_ffmpeg_payload_chunks", broken_payload)
+
+        assert transcribe._bundled_ffmpeg() is None
+
+    def test_linux_memfd_explicitly_requests_executable_mode(self, monkeypatch):
+        calls = []
+
+        def create_memfd(name, flags):
+            calls.append((name, flags))
+            return 41
+
+        monkeypatch.setattr(transcribe.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(transcribe.os, "memfd_create", create_memfd, raising=False)
+
+        assert transcribe._new_executable_snapshot() == (41, -1, True, None)
+        assert len(calls) == 1
+        assert calls[0][0] == "kirocrew-ffmpeg"
+        assert calls[0][1] & getattr(transcribe.os, "MFD_EXEC", 0x0010)
+
+    def test_linux_memfd_exec_flag_falls_back_on_old_kernels(self, monkeypatch):
+        calls = []
+
+        def create_memfd(_name, flags):
+            calls.append(flags)
+            if len(calls) == 1:
+                raise OSError(transcribe.errno.EINVAL, "unsupported flag")
+            return 42
+
+        monkeypatch.setattr(transcribe.platform_compat, "IS_LINUX", True)
+        monkeypatch.setattr(transcribe.os, "memfd_create", create_memfd, raising=False)
+
+        assert transcribe._new_executable_snapshot() == (42, -1, True, None)
+        assert calls[0] & getattr(transcribe.os, "MFD_EXEC", 0x0010)
+        assert not calls[1] & getattr(transcribe.os, "MFD_EXEC", 0x0010)
+
+    def test_linux_seal_constants_work_with_old_python_headers(self, monkeypatch):
+        calls = []
+        fake_fcntl = SimpleNamespace(fcntl=lambda *args: calls.append(args))
+        monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+        monkeypatch.setattr(
+            transcribe.os, "open", lambda path, flags: (calls.append((path, flags)), 52)[1]
+        )
+
+        assert transcribe._seal_linux_memfd(51) == 52
+        assert calls[0] == (51, 1033, 0x000F)
+        assert calls[1][0] == "/proc/self/fd/51"
+
+    def test_macos_snapshot_keeps_a_private_name_until_close(self, monkeypatch, tmp_path):
+        parent = tmp_path / "private"
+
+        def make_private_dir(*_args, **_kwargs):
+            parent.mkdir(mode=0o700)
+            return str(parent)
+
+        monkeypatch.setattr(transcribe.platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(transcribe, "_ffmpeg_snapshot_root", lambda: str(tmp_path))
+        monkeypatch.setattr(transcribe.tempfile, "mkdtemp", make_private_dir)
+
+        writer, reader, seal_writer, path = transcribe._new_executable_snapshot()
+        assert path is not None
+        assert not seal_writer
+        os.write(writer, b"bundled decoder")
+        os.close(writer)
+        opened = transcribe._AuthenticatedFfmpeg("source", reader, path, cleanup_path=path)
+        assert os.path.isfile(path)
+
+        opened.close()
+
+        assert not parent.exists()
+
+    def test_macos_snapshot_is_staged_under_agent_denied_root(self, monkeypatch, tmp_path):
+        calls = []
+
+        def make_private_dir(*, prefix, dir):
+            calls.append((prefix, dir))
+            parent = tmp_path / "private"
+            parent.mkdir(mode=0o700)
+            return str(parent)
+
+        root = tmp_path / "voice-runtime"
+        root.mkdir()
+        monkeypatch.setattr(transcribe.platform_compat, "IS_LINUX", False)
+        monkeypatch.setattr(transcribe, "_ffmpeg_snapshot_root", lambda: str(root))
+        monkeypatch.setattr(transcribe.tempfile, "mkdtemp", make_private_dir)
+
+        writer, reader, _seal_writer, path = transcribe._new_executable_snapshot()
+        os.close(writer)
+        opened = transcribe._AuthenticatedFfmpeg("source", reader, path, cleanup_path=path)
+        try:
+            assert calls == [(f".kirocrew-ffmpeg-{os.getpid()}-", str(root))]
+        finally:
+            opened.close()
+
+    def test_snapshot_root_is_private_and_pruned_once(self, monkeypatch, tmp_path):
+        root = tmp_path / "voice-runtime"
+        root.mkdir(mode=0o755)
+        cleanup_calls = []
+        monkeypatch.setattr(
+            "kiro_crew.sandbox.prime_voice_runtime_sandbox_paths",
+            lambda: str(root),
+        )
+        monkeypatch.setattr(transcribe, "_ffmpeg_snapshot_roots_cleaned", set())
+        monkeypatch.setattr(
+            transcribe,
+            "_cleanup_stale_ffmpeg_snapshots",
+            lambda path: cleanup_calls.append(path),
+        )
+
+        assert transcribe._ffmpeg_snapshot_root() == str(root)
+        assert transcribe._ffmpeg_snapshot_root() == str(root)
+
+        assert cleanup_calls == [str(root)]
+        if not _pc.IS_WINDOWS:
+            assert os.stat(root).st_mode & 0o777 == 0o700
+
+    def test_snapshot_root_rejects_a_regular_file(self, monkeypatch, tmp_path):
+        root = tmp_path / "not-a-directory"
+        root.write_bytes(b"not a runtime root")
+        monkeypatch.setattr(
+            "kiro_crew.sandbox.prime_voice_runtime_sandbox_paths",
+            lambda: str(root),
+        )
+
+        with pytest.raises(OSError, match="not a real directory"):
+            transcribe._ffmpeg_snapshot_root()
+
+    def test_snapshot_cleanup_is_best_effort_for_every_operation(self, tmp_path):
+        payload = tmp_path / "private" / "ffmpeg"
+        calls = []
+
+        def fail(operation):
+            def _raise(path, *_args):
+                calls.append((operation, path))
+                raise OSError(f"{operation} denied")
+
+            return _raise
+
+        with (
+            patch.object(transcribe.os, "chmod", fail("chmod")),
+            patch.object(transcribe.os, "unlink", fail("unlink")),
+            patch.object(transcribe.os, "rmdir", fail("rmdir")),
+        ):
+            transcribe._remove_named_snapshot(str(payload))
+
+        assert calls == [
+            ("chmod", str(payload.parent)),
+            ("unlink", str(payload)),
+            ("rmdir", str(payload.parent)),
+        ]
+
+    def test_stale_macos_snapshots_are_pruned_without_following_unknown_entries(
+        self, monkeypatch, tmp_path
+    ):
+        stale = tmp_path / ".kirocrew-ffmpeg-123-dead"
+        stale.mkdir()
+        (stale / "ffmpeg").write_bytes(b"stale")
+        active = tmp_path / f".kirocrew-ffmpeg-{os.getpid()}-active"
+        active.mkdir()
+        (active / "ffmpeg").write_bytes(b"active")
+        unknown = tmp_path / ".kirocrew-ffmpeg-not-a-pid"
+        unknown.mkdir()
+        monkeypatch.setattr(
+            transcribe.platform_compat,
+            "pid_liveness",
+            lambda pid: transcribe.platform_compat.PID_DEAD if pid == 123 else "alive",
+        )
+
+        transcribe._cleanup_stale_ffmpeg_snapshots(str(tmp_path))
+
+        assert not stale.exists()
+        assert active.exists()
+        assert unknown.exists()
+
+    def test_release_artifact_pins_cover_every_supported_desktop(self):
+        assert transcribe._PACKAGED_FFMPEG_ARTIFACTS == {
+            "ffmpeg-macos-aarch64-v7.1.gz": (
+                49_368_728,
+                "6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617",
+            ),
+            "ffmpeg-linux-aarch64-v7.0.2": (
+                51_134_160,
+                "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce",
+            ),
+            "ffmpeg-linux-x86_64-v7.0.2": (
+                79_826_272,
+                "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99",
+            ),
+            "ffmpeg-win-x86_64-v7.1.exe": (
+                87_638_016,
+                "2ce797a0f88d7f067180338fb227f7b1928ea727bd9a4d7a1d022f7c52af71a3",
+            ),
+        }
+
+    @pytest.mark.asyncio
+    async def test_authenticated_bytes_remain_bound_until_spawn(self, monkeypatch, tmp_path):
+        binary = self._fake_package(monkeypatch, tmp_path)
+        opened = transcribe._open_packaged_ffmpeg_resource()
+        assert opened is not None
+        descriptor = opened.descriptor
+
+        if _pc.IS_WINDOWS:
+            # CreateFileW denies writes and replacement while CreateProcess
+            # opens this exact image.
+            with pytest.raises(PermissionError):
+                binary.write_bytes(b"changed decoder")
+        else:
+            # The source pathname may change freely: execution uses the sealed
+            # memfd/private snapshot, never this name again.
+            binary.write_bytes(b"changed decoder")
+
+        sentinel = object()
+
+        async def fake_spawn(execution_path, *args, **kwargs):
+            os.fstat(descriptor)  # still open for the whole spawn operation
+            if _pc.IS_WINDOWS:
+                assert execution_path == str(binary)
+            else:
+                assert kwargs["pass_fds"] == (descriptor,)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                assert os.read(descriptor, 1024) == b"bundled decoder"
+            return sentinel
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+        assert await transcribe._create_ffmpeg_subprocess(opened, "-version") is sentinel
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+    @pytest.mark.asyncio
+    async def test_authenticated_handle_closes_off_event_loop(self, monkeypatch, tmp_path):
+        self._fake_package(monkeypatch, tmp_path)
+        opened = transcribe._open_packaged_ffmpeg_resource()
+        assert opened is not None
+        event_loop_thread = threading.get_ident()
+        close_threads = []
+        original_close = transcribe._AuthenticatedFfmpeg.close
+
+        def recording_close(self):
+            if self.descriptor >= 0:
+                close_threads.append(threading.get_ident())
+            original_close(self)
+
+        async def fake_spawn(*_args, **_kwargs):
+            return object()
+
+        monkeypatch.setattr(transcribe._AuthenticatedFfmpeg, "close", recording_close)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+        await transcribe._create_ffmpeg_subprocess(opened, "-version")
+
+        assert len(close_threads) == 1
+        assert close_threads[0] != event_loop_thread
+
+    @pytest.mark.asyncio
+    async def test_pre_spawn_temp_failure_closes_handle_off_event_loop(self, monkeypatch, tmp_path):
+        self._fake_package(monkeypatch, tmp_path)
+        event_loop_thread = threading.get_ident()
+        close_threads = []
+        original_close = transcribe._AuthenticatedFfmpeg.close
+
+        def recording_close(self):
+            if self.descriptor >= 0:
+                close_threads.append(threading.get_ident())
+            original_close(self)
+
+        def disk_full():
+            raise OSError("disk full")
+
+        monkeypatch.setattr(transcribe._AuthenticatedFfmpeg, "close", recording_close)
+        monkeypatch.setattr(transcribe, "_make_temp_wav", disk_full)
+
+        with pytest.raises(OSError, match="disk full"):
+            await transcribe._pcm_via_ffmpeg(str(tmp_path / "memo.webm"), 1)
+
+        assert len(close_threads) == 1
+        assert close_threads[0] != event_loop_thread
+
+    @pytest.mark.asyncio
+    async def test_cancelled_resolver_closes_eventual_handle_off_loop(self, monkeypatch, tmp_path):
+        binary = tmp_path / "ffmpeg"
+        binary.write_bytes(b"decoder")
+        descriptor = os.open(binary, os.O_RDONLY)
+        opened = transcribe._AuthenticatedFfmpeg(str(binary), descriptor, str(binary))
+        event_loop_thread = threading.get_ident()
+        resolver_started = threading.Event()
+        release_resolver = threading.Event()
+        handle_closed = threading.Event()
+        close_threads = []
+        original_close = transcribe._AuthenticatedFfmpeg.close
+
+        def recording_close(self):
+            if self.descriptor >= 0:
+                close_threads.append(threading.get_ident())
+            original_close(self)
+            handle_closed.set()
+
+        def slow_resolver():
+            resolver_started.set()
+            release_resolver.wait(timeout=5)
+            return opened
+
+        monkeypatch.setattr(transcribe._AuthenticatedFfmpeg, "close", recording_close)
+        monkeypatch.setattr(transcribe, "_open_ffmpeg_for_execution", slow_resolver)
+        task = asyncio.create_task(transcribe._resolve_ffmpeg_for_execution())
+        assert await asyncio.to_thread(resolver_started.wait, 1)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release_resolver.set()
+        assert await asyncio.to_thread(handle_closed.wait, 2)
+
+        assert close_threads
+        assert close_threads[0] != event_loop_thread
+
+    def test_cwd_package_shadow_cannot_supply_the_decoder(self, monkeypatch, tmp_path):
+        repo = tmp_path / "repo"
+        shadow = repo / "imageio_ffmpeg"
+        shadow.mkdir(parents=True)
+        (shadow / "__init__.py").write_text(
+            "raise AssertionError('cwd package imported')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(repo)
+        monkeypatch.syspath_prepend(str(repo))
+        binary = self._fake_package(monkeypatch, tmp_path / "trusted")
+
+        assert transcribe._bundled_ffmpeg() == str(binary)
+
+    def test_resolved_binary_cannot_escape_the_binaries_directory(self, monkeypatch, tmp_path):
+        attacker = tmp_path / "attacker-ffmpeg"
+        attacker.write_text("attacker decoder", encoding="utf-8")
+        attacker.chmod(0o755)
+        binary = self._fake_package(monkeypatch, tmp_path)
+        realpath = transcribe.os.path.realpath
+
+        def escape_candidate(path):
+            resolved = realpath(path)
+            if resolved == str(binary):
+                return str(attacker)
+            return resolved
+
+        monkeypatch.setattr(transcribe.os.path, "realpath", escape_candidate)
+
+        assert transcribe._bundled_ffmpeg() is None
+
+    def test_bundle_wins_before_every_system_candidate(self, monkeypatch, tmp_path):
+        binary = tmp_path / "bundle" / ("ffmpeg.exe" if _pc.IS_WINDOWS else "ffmpeg")
+        monkeypatch.setattr(transcribe.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(transcribe, "_bundled_ffmpeg", lambda: str(binary))
+
+        def _system_probe(*_args, **_kwargs):
+            raise AssertionError("system lookup ran before the bundled decoder")
+
+        monkeypatch.setattr(transcribe.shutil, "which", _system_probe)
+        assert transcribe._find_ffmpeg() == str(binary)
 
 
 class TestFfmpegCandidateDirsWindows:
@@ -1438,7 +1940,10 @@ class TestTranscribeAwsTempOwnership:
         monkeypatch.setattr(tr, "_load_aws_transcribe_components", lambda: (object, object))
         monkeypatch.setattr(tr, "_unlink_if_exists", tracked_unlink)
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=_Proc()),
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -1465,7 +1970,10 @@ class TestTranscribeAwsTempOwnership:
         monkeypatch.setattr(tr, "boto3", object())
         monkeypatch.setattr(tr, "_load_aws_transcribe_components", lambda: (object, object))
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=proc),
         ):
             result = await tr._transcribe_aws(str(src), cfg)
@@ -1518,7 +2026,10 @@ class TestTranscribeAwsTempOwnership:
             tr, "_load_aws_transcribe_components", lambda: (FakeClient, FakeHandler)
         )
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=remux_proc),
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -1560,7 +2071,10 @@ class TestTranscribeAwsTempOwnership:
         monkeypatch.setattr(tr, "_load_aws_transcribe_components", lambda: (object, object))
         monkeypatch.setattr(tr, "_unlink_if_exists", locked_unlink)
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=_Proc()),
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -1589,7 +2103,10 @@ class TestTranscribeAwsTempOwnership:
         monkeypatch.setattr(tr, "boto3", object())
         monkeypatch.setattr(tr, "_load_aws_transcribe_components", lambda: (object, object))
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch(
                 "asyncio.create_subprocess_exec",
                 side_effect=asyncio.CancelledError(),
@@ -1657,7 +2174,10 @@ class TestTranscribeAwsTempOwnership:
         monkeypatch.setattr(tr, "_unlink_if_exists", locked_unlink)
         monkeypatch.setattr(asyncio, "to_thread", cancelled_unlink_hop)
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=remux_proc),
         ):
             with pytest.raises(asyncio.CancelledError):
@@ -1689,7 +2209,10 @@ class TestTranscribeAwsTempOwnership:
         monkeypatch.setattr(tr, "boto3", object())
         monkeypatch.setattr(tr, "_load_aws_transcribe_components", lambda: (object, object))
         with (
-            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch(
+                "kiro_crew.transcribe._open_ffmpeg_for_execution",
+                return_value="/fake/ffmpeg",
+            ),
             patch("asyncio.create_subprocess_exec", return_value=proc),
         ):
             result = await tr._transcribe_aws(str(src), cfg)
@@ -1715,6 +2238,11 @@ class TestFfmpegIsNotResolvedFromPath:
     the gateway's environment and credentials. `_find_ffmpeg` therefore searches fixed
     directories, most-trusted first, and never the ambient PATH.
     """
+
+    @pytest.fixture(autouse=True)
+    def _without_the_optional_bundle(self, monkeypatch):
+        """Keep these fallback tests independent of installed optional extras."""
+        monkeypatch.setattr(transcribe, "_bundled_ffmpeg", lambda: None)
 
     @staticmethod
     def _plant(directory):

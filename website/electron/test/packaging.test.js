@@ -320,6 +320,45 @@ describe("first-download installer design contract", () => {
     );
   });
 
+  it("bundles the voice runtime, downloads models on demand, and gates supported targets", () => {
+    const buildScript = fs.readFileSync(
+      path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
+      "utf8"
+    );
+    const windowsStart = buildScript.indexOf("build_backend_windows() {");
+    const windowsEnd = buildScript.indexOf("\n# Stdlib-probe agreement gate", windowsStart);
+    assert.ok(windowsStart >= 0 && windowsEnd > windowsStart);
+    const windowsBuilder = buildScript.slice(windowsStart, windowsEnd);
+    // A model remains a deliberate one-click download, not installer payload.
+    assert.doesNotMatch(buildScript, /bundled-models|bundle_default_stt_model/);
+    // The recogniser, compressed-audio decoder, and every Python/runtime
+    // dependency are installer payload. The gate executes a hash-authenticated,
+    // immutable view of the decoder, so pip metadata alone cannot make a release pass.
+    assert.match(buildScript, /imageio-ffmpeg==0\.6\.0/);
+    assert.match(buildScript, /ERROR: no prebuilt speech recogniser for supported target/);
+    assert.match(buildScript, /macOS Intel[^\n]+legacy backend unsupported/);
+    assert.doesNotMatch(buildScript, /bundling without it/);
+    assert.match(buildScript, /from kiro_crew\.stt\.engine import probe/);
+    assert.match(buildScript, /from kiro_crew\.transcribe import _packaged_ffmpeg_version_probe/);
+    assert.match(buildScript, /if not _packaged_ffmpeg_version_probe\(\)/);
+    assert.match(buildScript, /source\.with_name\(source\.name \+ "\.gz"\)/);
+    assert.match(buildScript, /seal_macos_ffmpeg_payload "\$out\/bin\/python3\.12"/);
+    assert.match(buildScript, /local_voice_runtime_gate "\$out\/bin\/python3\.12"/);
+    assert.match(windowsBuilder, /local_voice_runtime_gate "\$out\/python\.exe"/);
+
+    // Git Bash does not convert /d/a/... once an extras suffix is appended. The
+    // Windows build must pass pip a PEP 508 file URI and must not tolerate a
+    // failed recogniser install.
+    assert.match(
+      windowsBuilder,
+      /root_uri="\$\(cd "\$ROOT" && "\$out\/python\.exe" -c[\s\S]*?sys\.stdout\.write\(Path\.cwd\(\)\.as_uri\(\)\)/
+    );
+    assert.match(windowsBuilder, /"kirocrew\[voice-aws\] @ \$root_uri"/);
+    assert.match(windowsBuilder, /"kirocrew\[voice\] @ \$root_uri"/);
+    assert.doesNotMatch(windowsBuilder, /"\$ROOT\[voice(?:-aws)?\]"/);
+    assert.doesNotMatch(windowsBuilder, /if\s+!\s+[\s\S]*?kirocrew\[voice\]/);
+  });
+
   it("shows native progress for updates without adding setup decisions", () => {
     assert.deepEqual(
       [...installer.matchAll(/^LangString KiroUpdateProgress (\d+) /gm)].map((match) => Number(match[1])),

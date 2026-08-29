@@ -1048,6 +1048,8 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
         resolve_installed,
     )
     monkeypatch.setattr(runtime_mod, "wrap_argv", capture_wrap)
+    voice_guard = MagicMock()
+    monkeypatch.setattr(runtime_mod, "assert_voice_runtime_outside_agent_workspace", voice_guard)
     monkeypatch.setattr(
         runtime_mod,
         "cgroup_scope_argv",
@@ -1065,6 +1067,7 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
         "strip_python_env": True,
         "is_kiro_cli": True,
     }
+    voice_guard.assert_called_once_with(runtime._work_dir)
     assert strip_spawn_shim(wrapped["spawn_args"]) == (
         "/usr/bin/cgroup-wrapper",
         "/usr/bin/sandbox-wrapper",
@@ -1080,6 +1083,80 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     # reachable beside the launch path.
     assert "pass_fds" not in spawn_kwargs
     assert (Path(launch_path).parent / "kiro-cli-chat").exists()
+
+
+@pytest.mark.asyncio
+async def test_bound_macos_runtime_reuses_descriptor_cwd_for_sessions(monkeypatch, tmp_path):
+    import kiro_crew.acp.runtime as runtime_mod
+
+    runtime = AcpRuntime(work_dir=tmp_path)
+    runtime._bound_workspace_fd = 71
+    runtime._spawn_work_dir = "/dev/fd/71"
+    matches = MagicMock(return_value=True)
+    monkeypatch.setattr(runtime_mod, "bound_agent_workspace_matches", matches)
+
+    assert await runtime._session_work_dir(tmp_path) == "/dev/fd/71"
+    matches.assert_called_once_with(71, tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_bound_macos_runtime_rejects_descendant_session_workspace(monkeypatch, tmp_path):
+    import kiro_crew.acp.runtime as runtime_mod
+
+    runtime = AcpRuntime(work_dir=tmp_path)
+    runtime._bound_workspace_fd = 71
+    runtime._spawn_work_dir = "/dev/fd/71"
+    descendant = tmp_path / "packages" / "app"
+    matches = MagicMock(return_value=False)
+    monkeypatch.setattr(runtime_mod, "bound_agent_workspace_matches", matches)
+
+    with pytest.raises(AcpRuntimeError, match="exact workspace"):
+        await runtime._session_work_dir(descendant)
+    matches.assert_called_once_with(71, descendant)
+
+
+@pytest.mark.asyncio
+async def test_bound_macos_runtime_rejects_different_session_workspace(monkeypatch, tmp_path):
+    import kiro_crew.acp.runtime as runtime_mod
+
+    runtime = AcpRuntime(work_dir=tmp_path)
+    runtime._bound_workspace_fd = 72
+    runtime._spawn_work_dir = "/dev/fd/72"
+    monkeypatch.setattr(runtime_mod, "bound_agent_workspace_matches", MagicMock(return_value=False))
+
+    with pytest.raises(AcpRuntimeError, match="exact workspace"):
+        await runtime._session_work_dir(tmp_path / "retargeted")
+
+
+@pytest.mark.asyncio
+async def test_kill_cancellation_still_releases_bound_workspace(monkeypatch, tmp_path):
+    import kiro_crew.acp.runtime as runtime_mod
+
+    runtime = AcpRuntime(work_dir=tmp_path)
+    runtime._bound_workspace_fd = 73
+    runtime._spawn_work_dir = "/dev/fd/73"
+    entered = asyncio.Event()
+    closed: list[int] = []
+
+    async def stalled_teardown(*, expected=False):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def record_release(descriptor):
+        closed.append(descriptor)
+
+    monkeypatch.setattr(runtime, "_kill_inner", stalled_teardown)
+    monkeypatch.setattr(runtime_mod, "release_bound_agent_workspace", record_release)
+
+    task = asyncio.create_task(runtime.kill())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert closed == [73]
+    assert runtime._bound_workspace_fd is None
+    assert runtime._spawn_work_dir == str(tmp_path)
 
 
 # ── Process death propagation ──

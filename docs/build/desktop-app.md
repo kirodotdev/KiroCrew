@@ -284,7 +284,10 @@ Step by step:
 3. **Install into bundle** — copies the PBS interpreter into
    `website/electron/backend-dist/kirocrew-backend/`, removes the
    `EXTERNALLY-MANAGED` marker, then runs `pip install` with
-   `PYTHONNOUSERSITE=1` to force the full closure into the bundle.
+   `PYTHONNOUSERSITE=1` to force the full closure into the bundle. The local
+   speech recogniser and its runtime dependencies are required on Windows,
+   Linux x64/arm64, and macOS Apple Silicon; a missing binary wheel fails the
+   release build. macOS Intel is the sole unsupported exception.
 4. **Stage dashboard** — copies the built SPA into the bundled
    `kiro_crew/static/dist` inside site-packages.
 5. **Prune** — removes `__pycache__`, test dirs, and unused stdlib modules
@@ -328,6 +331,13 @@ same way). Key details:
 - **Self-containment verified** — the build script runs
   `PYTHONNOUSERSITE=1 bin/python3.12 -m kiro_crew --version` to catch any
   missing dependency before packaging.
+- **Local dictation runtime bundled** — supported desktop builds include
+  `pywhispercpp`, the platform `imageio-ffmpeg` executable used for compressed
+  recordings, and all transitive runtime dependencies. The build imports the
+  recognizer and executes the exact packaged decoder before publishing. Model
+  weights are deliberately excluded from the installer: the user selects a
+  model and clicks **Download now**, with no package manager or separate
+  dependency step. Intel macOS is the unsupported recognizer exception.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,

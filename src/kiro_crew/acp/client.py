@@ -138,10 +138,14 @@ from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
     apply_windows_resource_ceiling,
+    assert_voice_runtime_outside_agent_workspace,
+    bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
     create_subprocess_limited,
+    release_bound_agent_workspace,
     scrub_agent_subprocess_env,
     wrap_argv,
+    wrap_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -2155,6 +2159,8 @@ class AcpClient:
         )
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         self._sandbox_cleanup: str | None = None
+        self._bound_workspace_fd: int | None = None
+        self._spawn_work_dir = str(self._work_dir)
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
         self._start_time: int | None = None  # process start time for PID recycling detection
@@ -2706,6 +2712,27 @@ class AcpClient:
                 pass
             self._sandbox_cleanup = None
 
+    async def _discard_bound_workspace(self) -> None:
+        """Close the parent copy of a macOS workspace identity off-loop."""
+        descriptor = getattr(self, "_bound_workspace_fd", None)
+        self._bound_workspace_fd = None
+        work_dir = getattr(self, "_work_dir", None)
+        if work_dir is not None:
+            self._spawn_work_dir = str(work_dir)
+        if descriptor is not None:
+            await release_bound_agent_workspace(descriptor)
+
+    def _session_work_dir(self) -> str:
+        """Return the ACP cwd backed by the process's bound directory identity."""
+        return self._spawn_work_dir
+
+    async def _cleanup_failed_live_spawn(self) -> None:
+        """Kill a failed live child and always release its workspace binding."""
+        try:
+            await self._kill_process(force=True)
+        finally:
+            await self._discard_bound_workspace()
+
     async def _to_thread_guarding_sandbox(
         self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
     ) -> _T:
@@ -2735,6 +2762,13 @@ class AcpClient:
         # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
         # slow storage; the loop must never wait on the kernel here.
         await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+
+        # Kiro's internal macOS sandbox replaces (rather than nests inside)
+        # Kiro Crew's Seatbelt profile. Refuse a delegated agent workspace that
+        # can reach the protected named decoder snapshots; otherwise a same-UID
+        # agent could replace verified bytes before the decoder spawn opens them.
+        if self.backend in ACP_BACKENDS_INTERNAL_SANDBOX:
+            await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
 
         if self._is_claude:
             # Dormant seam — see method docstring. Binary resolution only; the
@@ -2806,11 +2840,12 @@ class AcpClient:
         # Crew's seatbelt on macOS and grants Windows's Kiro-only delegation in
         # favour of the harness's own internal sandbox, so a harness without one
         # must never be granted it by the absence of another harness.
-        argv, self._sandbox_cleanup = wrap_argv(
+        argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
             is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
+            _prepare=wrap_argv,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -2921,22 +2956,47 @@ class AcpClient:
         # stops an inherited Ctrl-C propagating into the gateway. The flag comes
         # from platform_compat (getattr) so referencing it doesn't fail mypy's
         # [attr-defined] check on Linux where subprocess.* lacks it.
-        self._process = await create_subprocess_limited(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(self._work_dir),
-            limit=_STDOUT_BUFFER_LIMIT,
-            env=env,
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=(
-                platform_compat.CREATE_NEW_PROCESS_GROUP
-                | platform_compat._SUBPROCESS_NO_WINDOW
-                | platform_compat.CREATE_SUSPENDED
-            ),
-            profile=RLIMIT_PROFILE_SESSION_HOST,
-        )
+        await self._discard_bound_workspace()
+        if self.backend in ACP_BACKENDS_INTERNAL_SANDBOX:
+            self._spawn_work_dir, self._bound_workspace_fd = (
+                await bind_voice_safe_agent_workspace_async(self._work_dir)
+            )
+        try:
+            if self._bound_workspace_fd is not None:
+                self._process = await create_subprocess_limited(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    env=env,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=0,
+                    pass_fds=(self._bound_workspace_fd,),
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
+                )
+            else:
+                self._process = await create_subprocess_limited(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    env=env,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=(
+                        platform_compat.CREATE_NEW_PROCESS_GROUP
+                        | platform_compat._SUBPROCESS_NO_WINDOW
+                        | platform_compat.CREATE_SUSPENDED
+                    ),
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
+                )
+        except BaseException:
+            await self._discard_bound_workspace()
+            self._discard_sandbox_cleanup()
+            raise
         self._pid = self._process.pid
         _spawn_label = (
             "claude-agent-acp" if self._is_claude else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
@@ -3026,7 +3086,7 @@ class AcpClient:
                 exc_info=True,
             )
             try:
-                await self._kill_process(force=True)
+                await self._cleanup_failed_live_spawn()
             except Exception:
                 logger.warning(
                     "Cleanup kill after a failed spawn did not complete for PID %s",
@@ -3327,7 +3387,7 @@ class AcpClient:
         the internal companion, not the public core.
         """
         new_params: dict = {
-            "cwd": str(self._work_dir),
+            "cwd": self._session_work_dir(),
             # kiro-cli loads servers from --agent; claude-agent-acp must be
             # told here -- it does not read kirocrew.mcp.json on its own. The
             # Default hook returns [] (kiro-cli path unchanged); an internal
@@ -3450,7 +3510,7 @@ class AcpClient:
                 try:
                     load_params: dict = {
                         "sessionId": resume_sid,
-                        "cwd": str(self._work_dir),
+                        "cwd": self._session_work_dir(),
                         # kiro-cli gets its servers via --agent; the claude
                         # backend must receive them here (it does not read
                         # kirocrew.mcp.json itself). Default [] leaves kiro-cli
@@ -3605,6 +3665,7 @@ class AcpClient:
             for attempt in range(2):
                 try:
                     if self._process and self._process.returncode is not None:
+                        await self._discard_bound_workspace()
                         self._reset_state()
 
                     if not self._process:
@@ -3622,7 +3683,7 @@ class AcpClient:
                 except (AcpTimeoutError, AcpError) as exc:
                     if attempt == 0:
                         logger.warning("ACP init failed (%s), retrying with fresh process...", exc)
-                        await self._kill_process(force=True)
+                        await self._cleanup_failed_live_spawn()
                         self._reset_state()
                     else:
                         # AcpAuthRequired subclasses AcpError; label it distinctly
@@ -3632,7 +3693,7 @@ class AcpClient:
                         _startup_outcome = (
                             "auth_required" if isinstance(exc, AcpAuthRequired) else "error"
                         )
-                        await self._kill_process(force=True)
+                        await self._cleanup_failed_live_spawn()
                         self._reset_state()
                         raise
         finally:
@@ -3675,6 +3736,7 @@ class AcpClient:
         try:
             await self._kill_process(force=True)
         finally:
+            await self._discard_bound_workspace()
             self._reset_state()  # untracks all PIDs (root + children)
 
     # ── JSON-RPC Transport ──

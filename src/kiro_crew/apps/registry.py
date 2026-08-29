@@ -66,7 +66,12 @@ from kiro_crew.apps.manifest import (
     app_name_error,
     is_reserved_app_name,
 )
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    create_subprocess_limited,
+    wrap_argv,
+    wrap_argv_async,
+)
 from kiro_crew.sel import sel
 
 try:
@@ -1535,7 +1540,9 @@ async def _fetch_app_manifest(
                 git_url,
                 tmp_root,
             ]
-            sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=sandbox_mode)
+            sandboxed_cmd, _cleanup = await wrap_argv_async(
+                clone_cmd, mode=sandbox_mode, _prepare=wrap_argv
+            )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             transport_env = _git_transport_env(credential_target, git_url, clone_env)
             proc = await create_subprocess_limited(
@@ -2912,8 +2919,8 @@ async def _fetch_external_registry_index(
                 git_url,
                 tmp_root,
             ]
-            sandboxed_cmd, _ = wrap_argv(
-                clone_cmd, mode=_context_clone_sandbox_mode(git_url)
+            sandboxed_cmd, _ = await wrap_argv_async(
+                clone_cmd, mode=_context_clone_sandbox_mode(git_url), _prepare=wrap_argv
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
@@ -3309,7 +3316,9 @@ async def _detect_installed_probe(
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
-            sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
+            sandboxed_cmd, _cleanup = await wrap_argv_async(
+                base_cmd, mode="strict", _prepare=wrap_argv
+            )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
@@ -4317,9 +4326,10 @@ async def _clone_origin_url(dest: Path) -> str | None:
     """
     if not (dest / ".git").is_dir():
         return None
-    origin_cmd, _cleanup = wrap_argv(
+    origin_cmd, _cleanup = await wrap_argv_async(
         ["git", "remote", "get-url", "origin"],
         mode="strict",  # credential-free read; ~/.ssh stays hidden
+        _prepare=wrap_argv,
     )
     origin_cmd = cgroup_scope_argv(origin_cmd)
     try:
@@ -4573,7 +4583,9 @@ async def _git_fetch_ref(
         timeout: int,
         network: bool = False,
     ) -> tuple[int, str]:
-        sandboxed, _cleanup = wrap_argv(argv, mode=sandbox_mode)
+        sandboxed, _cleanup = await wrap_argv_async(
+            argv, mode=sandbox_mode, _prepare=wrap_argv
+        )
         sandboxed = cgroup_scope_argv(sandboxed)
         process_env = (
             _git_transport_env(credential_target, git_url, clone_env) if network else clone_env
@@ -5207,9 +5219,10 @@ async def _git_clone_or_pull(
             # the fresh-clone path below — the cgroup DoS ceiling is the outermost
             # layer but must not replace the wrap_argv sandbox on this
             # agent-influenced git spawn.
-            pull_cmd, _cleanup = wrap_argv(
+            pull_cmd, _cleanup = await wrap_argv_async(
                 ["git", "pull", "--ff-only", git_url, branch],
                 mode=sandbox_mode,
+                _prepare=wrap_argv,
             )
             pull_cmd = cgroup_scope_argv(pull_cmd)
             pull_env = _git_transport_env(credential_target, git_url, clone_env)
@@ -5303,7 +5316,9 @@ async def _git_clone_or_pull(
             git_url,
             str(dest),
         ]
-        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=sandbox_mode)
+        sandboxed_cmd, _cleanup = await wrap_argv_async(
+            clone_cmd, mode=sandbox_mode, _prepare=wrap_argv
+        )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         transport_env = _git_transport_env(credential_target, git_url, clone_env)
 
@@ -5666,7 +5681,7 @@ async def _unpoison_rejected_checkout(
         return
 
     async def _run_git(argv: list[str]) -> int:
-        cmd, _cleanup = wrap_argv(argv, mode="standard")
+        cmd, _cleanup = await wrap_argv_async(argv, mode="standard", _prepare=wrap_argv)
         cmd = cgroup_scope_argv(cmd)
         proc = await create_subprocess_limited(
             *cmd,
@@ -6101,7 +6116,9 @@ async def _run_app_build(
 
     for cmd in build_cmds:
         log_lines.append(f"Running {' '.join(cmd)} in {build_dir}...")
-        sandboxed_cmd, _cleanup = wrap_argv(cmd, mode="standard")
+        sandboxed_cmd, _cleanup = await wrap_argv_async(
+            cmd, mode="standard", _prepare=wrap_argv
+        )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
@@ -6587,7 +6604,9 @@ async def install_from_registry(
         try:
 
             base_cmd = ["/bin/sh", "-c", detect_cmd]
-            sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="strict")
+            sandboxed_cmd, _cleanup = await wrap_argv_async(
+                base_cmd, mode="strict", _prepare=wrap_argv
+            )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
@@ -6848,7 +6867,9 @@ async def install_from_registry(
             safe_script = f"set -euo pipefail\n{install_script}"
 
             base_cmd = ["/bin/bash", "-c", safe_script]
-            sandboxed_cmd, _cleanup = wrap_argv(base_cmd, mode="standard")
+            sandboxed_cmd, _cleanup = await wrap_argv_async(
+                base_cmd, mode="standard", _prepare=wrap_argv
+            )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,

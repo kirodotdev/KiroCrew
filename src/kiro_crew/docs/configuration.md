@@ -284,9 +284,10 @@ captive-portal login page cannot become your speech model. Weights live under
 `models/whisper/` in the data home. Deleting one just costs you the download
 again.
 
-Nothing else needs installing by hand. The recognizer arrives with the optional
-`voice` extra (`pip install "kirocrew[voice]"`), which also carries the AWS
-Transcribe client:
+Desktop users install nothing else by hand: the app already carries the
+recognizer, decoder, and AWS client. In a source environment the recognizer and
+AWS client arrive with the optional `voice` extra
+(`pip install "kirocrew[voice]"`):
 
 - **Intel Macs have no prebuilt recognizer.** Every other platform Kiro Crew
   supports (Apple silicon macOS, glibc and musl Linux on x86_64 and arm64, and
@@ -300,10 +301,11 @@ Transcribe client:
   platform without the recognizer wheel the full `voice` extra installs *nothing* —
   including the Transcribe client, which has no such limitation. This is the way to
   get the paid provider on a host that cannot build the free one.
-- **ffmpeg is still a prerequisite** for audio that did not come from the
-  dashboard's live stream. A voice note arrives as ogg/Opus and a browser
-  recording as webm, and only ffmpeg reads those. `kirocrew doctor` names the
-  install command for your OS.
+- Compressed audio still passes through ffmpeg internally: a voice note arrives
+  as ogg/Opus and a browser recording as webm. Desktop releases bundle and verify
+  a pinned decoder, so there is no separate FFmpeg installation step. Source
+  environments use a system FFmpeg from the fixed platform paths instead of an
+  executable inside an agent-writable project venv.
 
 #### Retired providers
 

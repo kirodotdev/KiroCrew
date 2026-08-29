@@ -17,7 +17,12 @@ from typing import Optional
 
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    create_subprocess_limited,
+    wrap_argv,
+    wrap_argv_async,
+)
 
 try:
     from kiro_crew.acp.client import AcpClient
@@ -442,7 +447,9 @@ class CCWorker(Worker):
         fetch_tools = os.environ.get("KIROCREW_KNOWLEDGE_FETCH_TOOLS", "").strip()
         if fetch_tools:
             cmd += ["--allowedTools", fetch_tools]
-        wrapped = cgroup_scope_argv(wrap_argv(cmd)[0])  # cgroup DoS ceiling
+        wrapped = cgroup_scope_argv(
+            (await wrap_argv_async(cmd, _prepare=wrap_argv))[0]
+        )  # cgroup DoS ceiling
         self._proc = await create_subprocess_limited(
             *wrapped,
             stdin=asyncio.subprocess.PIPE,

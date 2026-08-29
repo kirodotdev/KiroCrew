@@ -36,26 +36,21 @@ as if you had typed it.
 ### Setup
 
 Speech-to-text is on by default, and the default provider runs on this machine.
-Two things have to be present.
+Desktop releases already contain the recognizer and audio decoder; users only
+download their selected model. For a source/PyPI install, add the recognizer:
 
-1. **The `voice` extra**, which carries the recognizer:
+```bash
+pip install "kirocrew[voice]"
+```
 
-   ```bash
-   pip install "kirocrew[voice]"
-   ```
-
-   Prebuilt wheels cover Apple silicon macOS, glibc and musl Linux on x86_64 and
-   arm64, and Windows. An Intel Mac has none, so `pip` builds from source there
-   and needs a C++ toolchain plus CMake. Settings reports that as its own state,
-   not as a missing extra.
-
-2. **ffmpeg**, which is what reads a voice memo's ogg/Opus and a browser
-   recording's webm. The dashboard's live stream does not go through it.
-
-   - macOS: `brew install ffmpeg`
-   - Windows: `winget install Gyan.FFmpeg`
-   - AL2023 and other Linux without an ffmpeg package: drop a static build into
-     `~/.local/bin`, which Kiro Crew auto-detects
+Source environments also need a system FFmpeg for WebM, M4A, and ogg/Opus; Kiro
+Crew deliberately does not execute packaged binaries from an agent-writable
+project venv. Desktop installers instead carry and verify their pinned decoder,
+so desktop users never install Homebrew, Winget, Apt, or FFmpeg. Prebuilt
+recognizer wheels cover Apple silicon
+macOS, glibc and musl Linux on x86_64 and arm64, and Windows. An Intel Mac has
+none, so `pip` builds from source there and needs a C++ toolchain plus CMake.
+Settings reports that as its own state, not as a missing extra.
 
 Then open **Settings > Voice**. The Speech-to-Text card reports whether the
 recognizer loaded and names the reason when it did not, and picks the model:
@@ -67,11 +62,11 @@ recognizer loaded and names the reason when it did not, and picks the model:
 | `small` | 488 MB | Accents or jargon are being misheard |
 | `large-v3-turbo` | 1.6 GB | You want the accuracy ceiling |
 
-The model downloads the first time you dictate, is verified against a pinned
-sha256 digest before it is used, and is reused from disk after that. Nothing else
-needs installing by hand: there is no separate transcription program, and no
-provider-specific runtime. `kirocrew doctor` reports the recognizer, the model
-and ffmpeg.
+Choose the model and click **Download now**. The download is verified against a
+pinned sha256 digest before it is used and is reused from disk after that.
+Nothing else needs installing by hand: there is no separate transcription
+program, provider-specific runtime, or system FFmpeg dependency. `kirocrew
+doctor` reports the recognizer, model, and bundled decoder.
 
 The other two providers, the full setting list and the retired providers are in
 Kiro Crew's own [configuration reference](../../../../src/kiro_crew/docs/configuration.md).

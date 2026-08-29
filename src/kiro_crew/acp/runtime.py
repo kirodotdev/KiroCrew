@@ -99,10 +99,15 @@ from kiro_crew.metrics.events import (
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
+    assert_voice_runtime_outside_agent_workspace,
+    bind_voice_safe_agent_workspace_async,
+    bound_agent_workspace_matches,
     cgroup_scope_argv,
     create_subprocess_limited,
+    release_bound_agent_workspace,
     scrub_agent_subprocess_env,
     wrap_argv,
+    wrap_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_pid import (
@@ -120,6 +125,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AcpRuntime",
     "AcpRuntimeError",
+    "AcpWorkspaceBindingError",
     "AcpRuntimeDead",
     "AcpRequestTimeout",
     "AcpRuntimeProtocol",
@@ -130,6 +136,11 @@ __all__ = [
 # ── AcpRuntime ──
 
 _T = TypeVar("_T")
+
+
+class AcpWorkspaceBindingError(AcpRuntimeError):
+    """A live descriptor-bound runtime cannot safely serve another cwd."""
+
 
 _STDOUT_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
 # How many in-flight request ids to name in the oversize-frame warning. A dropped
@@ -722,6 +733,8 @@ class AcpRuntime:
         # endpointing) don't pay a full ceiling wait that can never be armed.
         self._expect_mcp_reports = expect_mcp_reports
         self._sandbox_cleanup: str | None = None
+        self._bound_workspace_fd: int | None = None
+        self._spawn_work_dir = str(self._work_dir)
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -967,6 +980,41 @@ class AcpRuntime:
                 pass
             self._sandbox_cleanup = None
 
+    async def _discard_bound_workspace(self) -> None:
+        """Close the parent copy of a macOS workspace identity off-loop."""
+        descriptor = getattr(self, "_bound_workspace_fd", None)
+        self._bound_workspace_fd = None
+        work_dir = getattr(self, "_work_dir", None)
+        if work_dir is not None:
+            self._spawn_work_dir = str(work_dir)
+        if descriptor is not None:
+            await release_bound_agent_workspace(descriptor)
+
+    async def _session_work_dir(self, cwd: str | Path | None = None) -> str | Path:
+        """Resolve an ACP cwd without re-authorizing a mutable macOS pathname."""
+        if self._bound_workspace_fd is None:
+            return cwd if cwd else self._work_dir
+        requested = cwd if cwd else self._work_dir
+        try:
+            matches = await asyncio.to_thread(
+                bound_agent_workspace_matches,
+                self._bound_workspace_fd,
+                requested,
+            )
+        except OSError as exc:
+            raise AcpWorkspaceBindingError(
+                "Cannot verify the requested macOS session workspace"
+            ) from exc
+        if not matches:
+            raise AcpWorkspaceBindingError(
+                "A delegated macOS Kiro runtime is bound to one exact workspace; "
+                "create a runtime bound to the requested workspace"
+            )
+        # Return only the inherited descriptor.  Appending a descendant suffix
+        # would perform mutable pathname lookup in the child after this check,
+        # reopening the same-UID symlink-retarget window the binding closes.
+        return f"/dev/fd/{self._bound_workspace_fd}"
+
     async def _to_thread_guarding_sandbox(
         self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
     ) -> _T:
@@ -1074,6 +1122,11 @@ class AcpRuntime:
         # Off-loop: mkdir is a blocking syscall and the parent dirs may live on
         # slow storage; the loop must never wait on the kernel here.
         await asyncio.to_thread(self._work_dir.mkdir, parents=True, exist_ok=True)
+        # Delegated Kiro agents on macOS do not inherit Kiro Crew's Seatbelt
+        # deny rules. Keep their workspace disjoint from the named voice-decoder
+        # runtime so verified executable bytes cannot be replaced before spawn.
+        if self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX:
+            await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
 
         try:
             argv = await self._resolve_spawn_argv()
@@ -1095,11 +1148,12 @@ class AcpRuntime:
         # have Crew's seatbelt skipped in favour of an internal sandbox that never
         # starts. KAS is a Node process with no internal sandbox, so it takes
         # Crew's seatbelt directly, and so does every harness added later.
-        argv, self._sandbox_cleanup = wrap_argv(
+        argv, self._sandbox_cleanup = await wrap_argv_async(
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
             is_kiro_cli=self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX,
+            _prepare=wrap_argv,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -1203,28 +1257,53 @@ class AcpRuntime:
         # file is live, so a cancellation here must not orphan it.
         await self._to_thread_guarding_sandbox(inject_xdist_auto_cap, env)
 
-        self._process = await create_subprocess_limited(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(self._work_dir),
-            limit=_STDOUT_BUFFER_LIMIT,
-            # POSIX: setsid so kill() can killpg the whole tree. Windows:
-            # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
-            # makes the child tree taskkill /T-reapable (see platform_compat
-            # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
-            # window Windows would otherwise pop for this console child spawned
-            # from the windowless gateway (0 on POSIX, so no effect there).
-            start_new_session=platform_compat.IS_POSIX,
-            creationflags=(
-                platform_compat.CREATE_NEW_PROCESS_GROUP
-                | platform_compat._SUBPROCESS_NO_WINDOW
-                | platform_compat.CREATE_SUSPENDED
-            ),
-            env=env,
-            profile=RLIMIT_PROFILE_SESSION_HOST,
-        )
+        await self._discard_bound_workspace()
+        if self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX:
+            self._spawn_work_dir, self._bound_workspace_fd = (
+                await bind_voice_safe_agent_workspace_async(self._work_dir)
+            )
+        try:
+            if self._bound_workspace_fd is not None:
+                self._process = await create_subprocess_limited(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=0,
+                    pass_fds=(self._bound_workspace_fd,),
+                    env=env,
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
+                )
+            else:
+                self._process = await create_subprocess_limited(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self._spawn_work_dir,
+                    limit=_STDOUT_BUFFER_LIMIT,
+                    # POSIX: setsid so kill() can killpg the whole tree. Windows:
+                    # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
+                    # makes the child tree taskkill /T-reapable (see platform_compat
+                    # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
+                    # window Windows would otherwise pop for this console child spawned
+                    # from the windowless gateway (0 on POSIX, so no effect there).
+                    start_new_session=platform_compat.IS_POSIX,
+                    creationflags=(
+                        platform_compat.CREATE_NEW_PROCESS_GROUP
+                        | platform_compat._SUBPROCESS_NO_WINDOW
+                        | platform_compat.CREATE_SUSPENDED
+                    ),
+                    env=env,
+                    profile=RLIMIT_PROFILE_SESSION_HOST,
+                )
+        except BaseException:
+            await self._discard_bound_workspace()
+            self._discard_sandbox_cleanup()
+            raise
         self._pid = self._process.pid
         # The subprocess is LIVE from here on but nothing has recorded it yet, so
         # this window needs the same guard AcpClient._spawn has. finish_suspended_spawn
@@ -1394,6 +1473,14 @@ class AcpRuntime:
     _KILL_REAP_TIMEOUT = 2.0
 
     async def kill(self, *, expected: bool = False) -> None:
+        """Kill the subprocess and release spawn resources even when cancelled."""
+        try:
+            await self._kill_inner(expected=expected)
+        finally:
+            self._discard_sandbox_cleanup()
+            await self._discard_bound_workspace()
+
+    async def _kill_inner(self, *, expected: bool = False) -> None:
         """Kill the subprocess and clean up all state.
 
         ``expected`` changes log severity only: a deliberate teardown of a
@@ -1485,8 +1572,6 @@ class AcpRuntime:
                     unregister_protected_pid(pid)
                 except Exception:
                     logger.debug("AcpRuntime: PID untracking failed for %s", pid, exc_info=True)
-
-        self._discard_sandbox_cleanup()
 
     # ── Reader Task (single owner of stdout) ──
 
@@ -2677,8 +2762,9 @@ class AcpRuntime:
         # so the kiro construction path gains no conditional, no new required
         # argument, and no new failure mode (harness-parity H13).
         kas_agents = await self._kas_custom_agents(active_agent)
+        session_work_dir = await self._session_work_dir(cwd)
         params = build_session_new_params(
-            cwd if cwd else self._work_dir,
+            session_work_dir,
             mcp_servers=mcp_servers,
             kas_custom_agents=kas_agents,
         )
@@ -2819,7 +2905,9 @@ class AcpRuntime:
                 return list(self._entitlement_probe_result)
             if not self._initialized or self._dead or self._process is None:
                 return []
-            params = build_session_new_params(self._work_dir, mcp_servers=[])
+            params = build_session_new_params(
+                await self._session_work_dir(), mcp_servers=[]
+            )
             session_id = ""
             self._session_inits_in_flight += 1
             try:
@@ -2886,7 +2974,7 @@ class AcpRuntime:
         )
         load_params: dict[str, Any] = {
             "sessionId": resume_sid,
-            "cwd": str(cwd if cwd else self._work_dir),
+            "cwd": str(await self._session_work_dir(cwd)),
             "mcpServers": mcp_servers,
         }
         if session_file:

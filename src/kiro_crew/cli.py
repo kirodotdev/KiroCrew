@@ -2512,7 +2512,6 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     # which call config_dir(). Skipped for the seed path above, which set up its
     # own $KIROCREW_HOME (an override → migration is a no-op there anyway).
     ensure_data_home()
-
     # Console + gateway.log logging. Extracted to a helper because the
     # detach-spawned gateway needs double-write protection (stderr IS
     # gateway.log in that mode) — see _setup_cli_logging.

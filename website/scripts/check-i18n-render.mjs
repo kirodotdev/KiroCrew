@@ -375,6 +375,14 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
       download: { step: 'idle', model: '', downloaded_bytes: 0, total_bytes: 0, error: '' },
     })
   }
+  // KnowledgePage treats any resolved value as a stats object. The shared stub's
+  // unknown-path fallback is `[]`, which is truthy: depending on whether its query
+  // settles before the scanner runs, the stats row appears in only one of the HEAD
+  // and base sweeps and creates a false diff. Use the real endpoint shape so both
+  // bundles deterministically expose the same translated row to the scanner.
+  if (path === '/api/knowledge/stats') {
+    return done({ items: 35, entities: 120, relations: 88, sources: 3 })
+  }
   // BUILTIN APP COLLECTION SHAPES. `handleBootRoute`'s fallback answers an
   // unknown path with `[]` (or `{}` for a config-ish name), and for most app
   // endpoints that is fine — the panel renders its empty state, which is exactly

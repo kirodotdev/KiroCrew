@@ -28,7 +28,12 @@ import pytest
 # Ensure the source tree is importable without pip install.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from kiro_crew.sandbox import shielded_prepare_off_loop  # noqa: E402
+from kiro_crew.sandbox import (  # noqa: E402
+    sandboxed_spawn_argv_async,
+    shielded_prepare_off_loop,
+    wrap_argv,
+    wrap_argv_async,
+)
 
 
 def _prepare(argv: list[str]):
@@ -133,6 +138,40 @@ class TestSandboxOffLoopCancellation:
             str(launcher),
         )
 
+    @pytest.mark.asyncio
+    async def test_wrap_argv_async_runs_on_worker(self):
+        loop_thread = threading.get_ident()
+        worker_threads: list[int] = []
+
+        def _fake(argv, mode="auto", **_kwargs):
+            worker_threads.append(threading.get_ident())
+            return ["wrapped", *argv], None
+
+        result = await wrap_argv_async(["/bin/true"], _prepare=_fake)
+
+        assert result == (["wrapped", "/bin/true"], None)
+        assert worker_threads and worker_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_sandboxed_spawn_async_runs_on_worker(self):
+        loop_thread = threading.get_ident()
+        worker_threads: list[int] = []
+        prepared_env = {"PATH": "/usr/bin"}
+
+        def _fake(argv, *, env):
+            worker_threads.append(threading.get_ident())
+            return ["wrapped", *argv], env, None
+
+        result = await sandboxed_spawn_argv_async(["/bin/true"], env=prepared_env, _prepare=_fake)
+
+        assert result == (["wrapped", "/bin/true"], prepared_env, None)
+        assert worker_threads and worker_threads[0] != loop_thread
+
+    @pytest.mark.asyncio
+    async def test_sync_wrap_rejects_event_loop(self):
+        with pytest.raises(RuntimeError, match="await wrap_argv_async"):
+            wrap_argv(["/bin/true"], mode="off")
+
 
 class TestNoBareSandboxedSpawnArgvHops:
     """AST guard: no async code may hop to the sync chokepoint without a shield.
@@ -235,4 +274,48 @@ class TestNoBareSandboxedSpawnArgvHops:
         assert not violations, (
             "Found bare run_in_executor / to_thread hops that reach sandboxed_spawn_argv "
             "(must go through sandbox.shielded_prepare_off_loop):\n" + "\n".join(violations)
+        )
+
+    def test_async_code_never_calls_sync_sandbox_chokepoints(self):
+        violations: list[str] = []
+        sync_chokepoints = {"wrap_argv", "sandboxed_spawn_argv"}
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self, path: Path):
+                self.path = path
+                self.in_async = 0
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self.in_async += 1
+                self.generic_visit(node)
+                self.in_async -= 1
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                if self.in_async:
+                    return
+                self.generic_visit(node)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                if self.in_async:
+                    fn = node.func
+                    name = (
+                        fn.id
+                        if isinstance(fn, ast.Name)
+                        else fn.attr if isinstance(fn, ast.Attribute) else ""
+                    )
+                    if name in sync_chokepoints:
+                        rel = self.path.relative_to(TestNoBareSandboxedSpawnArgvHops._src_root())
+                        violations.append(f"{rel}:{node.lineno}: direct call to {name}")
+                self.generic_visit(node)
+
+        for path in self._python_files():
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except SyntaxError:
+                continue
+            Visitor(path).visit(tree)
+
+        assert not violations, (
+            "Async code called a blocking sandbox chokepoint directly; use the "
+            "corresponding *_async helper:\n" + "\n".join(violations)
         )

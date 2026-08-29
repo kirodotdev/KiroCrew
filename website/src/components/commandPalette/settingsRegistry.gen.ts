@@ -1733,7 +1733,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "voice.model",
     "label": "Model",
     "labelKey": "pages.settings.sttSettings.model",
-    "description": "Larger models are more accurate but slower to run. A model downloads on first use, so the first dictation after switching models may appear to hang or time out while the download completes.",
+    "description": "Models download on demand. Select one and click Download now; the desktop app already includes every other runtime dependency.",
     "tab": "voice",
     "type": "select",
     "occurrence": 1,

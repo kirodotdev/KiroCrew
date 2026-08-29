@@ -307,12 +307,11 @@ class TestSttProviders:
 
 
 class TestFfmpegInstallCommands:
-    """ffmpeg is the one dependency no provider can supply for itself.
+    """Fallback guidance for source installs without the voice extra.
 
     The browser records WebM, so the batch upload path has to decode before it
-    can recognise, and nothing in the package can install a codec for the user.
-    Each branch names the package manager the host actually has, because a
-    command for the wrong one is indistinguishable from no guidance at all.
+    can recognise. The voice extra now supplies that codec; these platform
+    commands remain only for source installs using another recogniser.
     """
 
     @pytest.fixture(autouse=True)
@@ -380,7 +379,8 @@ class TestSttPrereqCommands:
 
     There is no install button behind this list any more: the only thing a
     provider can need beyond an installed Kiro Crew is the optional ``voice``
-    extra in this interpreter, plus ffmpeg. An empty list is the steady state.
+    extra in this interpreter, which includes the decoder. An empty list is the
+    steady state.
 
     The pip command's shell quoting is `_shared.pip_extra_install_command`'s, not
     this module's; these assertions cover the prereq LIST's contract end to end,
@@ -397,6 +397,7 @@ class TestSttPrereqCommands:
         here would make every assertion below depend on the host's PATH.
         """
         monkeypatch.setattr(core_mod, "_ffmpeg_install_commands", lambda: [])
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: False)
 
     @staticmethod
     def _local_availability(monkeypatch, *, ok: bool, code: str = "") -> None:
@@ -439,7 +440,7 @@ class TestSttPrereqCommands:
 
     def test_apple_has_nothing_to_install(self, monkeypatch) -> None:
         """The on-device recogniser is part of the OS and compiles its own helper
-        on demand, so the only thing this provider can ever surface is ffmpeg."""
+        on demand; the fixture pins the optional source-decoder fallback."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
         assert core_mod._stt_prereq_commands("apple") == []
 
@@ -504,11 +505,9 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: True)
         assert core_mod._stt_prereq_commands("transcribe") == []
 
-    def test_transcribe_prereq_includes_ffmpeg_when_missing(self, monkeypatch) -> None:
-        """Transcribe needs ffmpeg to decode the browser's .webm, and
-        availability_detail() reports ready without it, so this list is the one
-        user-visible surface for that gap, and it comes after the extra so the
-        blocking requirement is read first."""
+    def test_source_install_names_the_extra_and_system_decoder_when_both_are_missing(
+        self, monkeypatch
+    ) -> None:
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
         monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod, "_ffmpeg_install_commands", lambda: ["brew install ffmpeg"])
@@ -517,6 +516,22 @@ class TestSttPrereqCommands:
         assert len(cmds) == 2
         assert "kirocrew[voice]" in cmds[0]
         assert cmds[1] == "brew install ffmpeg"
+
+    def test_bundled_desktop_never_offers_a_system_decoder_command(self, monkeypatch) -> None:
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: True)
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: True)
+
+        def _unexpected_system_install():
+            raise AssertionError("desktop tried to make the user install ffmpeg")
+
+        monkeypatch.setattr(core_mod, "_ffmpeg_install_commands", _unexpected_system_install)
+        assert core_mod._stt_prereq_commands("transcribe") == []
+
+    def test_source_install_can_still_offer_the_system_decoder_fallback(self, monkeypatch) -> None:
+        monkeypatch.setattr(core_mod, "_transcribe_extra_importable", lambda: True)
+        monkeypatch.setattr(core_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        monkeypatch.setattr(core_mod, "_ffmpeg_install_commands", lambda: ["brew install ffmpeg"])
+        assert core_mod._stt_prereq_commands("transcribe") == ["brew install ffmpeg"]
 
 
 class TestPipInstallChannel:

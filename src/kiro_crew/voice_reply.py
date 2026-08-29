@@ -35,6 +35,7 @@ from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
     wrap_argv,
+    wrap_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -310,7 +311,7 @@ async def _synthesize_piper(
             # without a backend and returns a cleanup path that we must
             # unlink after the child exits (Linux launcher script /
             # macOS seatbelt profile).
-            cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
+            cmd, sandbox_cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
             cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *cmd,
@@ -535,7 +536,7 @@ async def _synthesize_polly(
             # filesystem areas. ``wrap_argv`` is a no-op on platforms without
             # a backend and returns a cleanup path that we must unlink after
             # the child exits.
-            cmd, sandbox_cleanup = wrap_argv(cmd, mode="standard")
+            cmd, sandbox_cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
             cmd = cgroup_scope_argv(cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
                 *cmd,

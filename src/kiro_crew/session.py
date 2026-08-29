@@ -1992,12 +1992,16 @@ class SessionManager:
         own the runtime (and the key is not the runtime's parent key),
         ``reset`` terminates only this session — the shared runtime survives and
         is freed once via ``release_subagent_runtime(parent_session_key)`` at run
-        end/cancel.
+        end/cancel. Descriptor-bound macOS runtimes are the exception: a step
+        requesting a different exact cwd uses a dedicated provider, because ACP's
+        string-only cwd cannot safely name a later descendant through the fd the
+        shared child inherited.
 
         Returns ``(provider, is_new, resumed)`` mirroring ``get_or_create``.
         Acquires the per-session semaphore; the caller MUST ``release`` it.
         """
         # circular import: session -> acp.session_provider -> acp.client -> session
+        from kiro_crew.acp.runtime import AcpWorkspaceBindingError
         from kiro_crew.acp.session_provider import AcpSessionProvider
 
         key = self._fold_key(session_key)
@@ -2030,7 +2034,20 @@ class SessionManager:
         # I/O (get_subagent_runtime spawn + create_session) is kept OUTSIDE the
         # global lock to avoid pinning it across subprocess/RPC work.
         runtime = await self._get_or_bootstrap_run_runtime(parent_session_key, agent=agent, cwd=cwd)
-        handle = await runtime.create_session(cwd=cwd or None, agent=agent or None)
+        try:
+            handle = await runtime.create_session(cwd=cwd or None, agent=agent or None)
+        except AcpWorkspaceBindingError:
+            # A macOS runtime passes an exact workspace descriptor to its child
+            # at spawn.  ACP accepts only a cwd string, so a later descendant
+            # cannot be represented without reopening mutable pathname lookup.
+            # Preserve the requested cwd by using the normal dedicated-provider
+            # path, which spawns and binds a runtime at that exact directory.
+            return await self.get_or_create(
+                key,
+                agent=agent,
+                approval_policy=approval_policy,
+                cwd=cwd,
+            )
         provider = AcpSessionProvider(handle, runtime)
 
         dup: LLMProvider | None = None

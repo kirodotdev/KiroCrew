@@ -687,12 +687,21 @@ export default function SttSettings({ cardIndex }: {
           </div>
         )}
 
-        {/* Rendered even when Status reads "ready", for every provider: the
-            availability checks treat ffmpeg as optional (it only affects
-            transcoding the browser's recordings), so a missing ffmpeg would
-            otherwise surface only as a silent dictation failure. `prereqs`
-            carries the platform install command(s) for exactly this state. */}
-        {available && !!stt.ffmpeg_missing && stt.prereqs?.length > 0 && (
+        {/* A packaged desktop install owns its decoder. If its authenticated
+            payload is absent or damaged, reinstalling the app is the only
+            supported recovery; the user must not install FFmpeg separately. */}
+        {!!stt.ffmpeg_missing && !!stt.bundled_interpreter && (
+          <div className="mt-2 bg-warn-subtle border border-border rounded-lg p-3 animate-rise">
+            <p className="text-sm text-text font-medium">
+              {i18nT('pages.settings.sttSettings.the_bundled_audio_decoder_is_missing_or_damaged')}
+            </p>
+          </div>
+        )}
+
+        {/* Source installs still report the platform command supplied by the
+            gateway. Render this even when Status reads "ready": availability
+            deliberately treats ffmpeg as optional. */}
+        {available && !!stt.ffmpeg_missing && !stt.bundled_interpreter && stt.prereqs?.length > 0 && (
           <div className="mt-2 bg-warn-subtle border border-border rounded-lg p-3 animate-rise">
             <p className="text-sm text-text font-medium mb-2">{i18nT('pages.settings.sttSettings.ffmpeg_is_missing_voice_recordings_from_the_brow')}</p>
             {stt.prereqs.map((cmd, i) => (

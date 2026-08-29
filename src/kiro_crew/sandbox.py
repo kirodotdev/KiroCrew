@@ -33,6 +33,7 @@ import re
 import select
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -102,6 +103,10 @@ _LEGACY_LAUNCHER_DIR = "/tmp"
 #: this module needs no import from the governance engine.  Pinned equal by
 #: ``test_governance_distribution``.
 _POLICY_CACHE_LEAF = "policy_cache"
+#: Gateway-only runtime subtree that holds authenticated macOS decoder images.
+#: The gateway opens these outside the agent sandbox; every sandbox mode must
+#: hide the whole subtree while the image is still writable and through spawn.
+_VOICE_RUNTIME_LEAF = os.path.join("run", "voice-runtime")
 #: The data home the ``$HOME``-relative entries below assume.
 _CREW_HOME_DEFAULT = ".kiro/crew"
 
@@ -135,6 +140,8 @@ _STRICT_DIRS: list[str] = [
     # loader trusts when deciding whether the cache is this host's last-known-good.
     ".kiro/crew/policy_cache",
     ".kirocrew/policy_cache",
+    ".kiro/crew/run/voice-runtime",
+    ".kirocrew/run/voice-runtime",
 ]
 
 _STANDARD_DIRS: list[str] = [
@@ -158,6 +165,8 @@ _STANDARD_DIRS: list[str] = [
     # loader trusts when deciding whether the cache is this host's last-known-good.
     ".kiro/crew/policy_cache",
     ".kirocrew/policy_cache",
+    ".kiro/crew/run/voice-runtime",
+    ".kirocrew/run/voice-runtime",
 ]
 
 # CC mode: hides all credential dirs including .aws, but selectively exposes
@@ -186,6 +195,8 @@ _CC_DIRS: list[str] = [
     # loader trusts when deciding whether the cache is this host's last-known-good.
     ".kiro/crew/policy_cache",
     ".kirocrew/policy_cache",
+    ".kiro/crew/run/voice-runtime",
+    ".kirocrew/run/voice-runtime",
 ]
 
 
@@ -228,6 +239,340 @@ def _relocated_policy_cache_dirs() -> list[str]:
     return [] if resolved == default else [resolved]
 
 
+_voice_runtime_paths_lock = threading.Lock()
+_voice_runtime_paths_cache: (
+    tuple[str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]] | None
+) = None
+
+
+def _ensure_voice_runtime_directory(path: str) -> None:
+    """Create one gateway-owned runtime directory without following its leaf."""
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise OSError(f"voice runtime path is not a real directory: {path}")
+    os.chmod(path, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- 0o700 is owner-only and the tightest traversable directory mode; Semgrep's suggested 0o644 would remove directory traversal and grant reads to other users.  # noqa: E501  # fmt: skip
+
+
+def _literal_ancestor_guards(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Return every rename-sensitive ancestor below the filesystem root."""
+    guards: list[str] = []
+    for item in paths:
+        current = os.path.normpath(item)
+        while True:
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            if current not in guards:
+                guards.append(current)
+            current = parent
+    return tuple(guards)
+
+
+def prime_voice_runtime_sandbox_paths() -> str:
+    """Cache and create the canonical agent-denied decoder runtime off-loop.
+
+    ``config_dir()`` deliberately preserves a supported symlinked default data
+    home. Seatbelt rules are path-based, so both that lexical spelling and the
+    canonical target must be denied. Realpath resolution and directory creation
+    happen here. Async agent startup reaches this through
+    :func:`bind_voice_safe_agent_workspace_async`, which performs the work in a
+    worker thread so gateway readiness is never gated on data-home filesystem IO.
+    """
+    global _voice_runtime_paths_cache
+
+    lexical_home = os.path.normpath(str(config_dir()))
+    cached = _voice_runtime_paths_cache
+    if cached is not None and cached[0] == lexical_home:
+        return cached[1]
+    with _voice_runtime_paths_lock:
+        cached = _voice_runtime_paths_cache
+        if cached is not None and cached[0] == lexical_home:
+            return cached[1]
+
+        canonical_home = os.path.realpath(lexical_home)
+        home_info = os.lstat(canonical_home)
+        if not stat.S_ISDIR(home_info.st_mode) or stat.S_ISLNK(home_info.st_mode):
+            raise OSError("Kiro Crew data home does not resolve to a real directory")
+
+        canonical_run = os.path.join(canonical_home, "run")
+        canonical_root = os.path.join(canonical_home, _VOICE_RUNTIME_LEAF)
+        _ensure_voice_runtime_directory(canonical_run)
+        _ensure_voice_runtime_directory(canonical_root)
+
+        lexical_run = os.path.join(lexical_home, "run")
+        lexical_root = os.path.join(lexical_home, _VOICE_RUNTIME_LEAF)
+        roots = tuple(dict.fromkeys((lexical_root, canonical_root)))
+        parents = tuple(dict.fromkeys((lexical_run, canonical_run)))
+        guards = _literal_ancestor_guards(parents)
+        _voice_runtime_paths_cache = (
+            lexical_home,
+            canonical_root,
+            roots,
+            parents,
+            guards,
+        )
+        return canonical_root
+
+
+def _voice_runtime_sandbox_paths() -> tuple[str, ...]:
+    """Return lexical and canonical snapshot roots, priming as a safe fallback."""
+    prime_voice_runtime_sandbox_paths()
+    assert _voice_runtime_paths_cache is not None
+    return _voice_runtime_paths_cache[2]
+
+
+def _voice_runtime_parent_paths() -> tuple[str, ...]:
+    """Return runtime parents that agent processes may read but never write."""
+    prime_voice_runtime_sandbox_paths()
+    assert _voice_runtime_paths_cache is not None
+    return _voice_runtime_paths_cache[3]
+
+
+def _voice_runtime_ancestor_guards() -> tuple[str, ...]:
+    """Return literal paths an agent must not rename around path-based rules."""
+    prime_voice_runtime_sandbox_paths()
+    assert _voice_runtime_paths_cache is not None
+    return _voice_runtime_paths_cache[4]
+
+
+def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[str]) -> None:
+    """Fail closed when a macOS agent workspace can reach decoder snapshots.
+
+    Kiro's internal macOS sandbox cannot nest inside Kiro Crew's Seatbelt
+    profile, so delegated Kiro agents do not inherit our voice-runtime deny
+    rules. A workspace that is the voice root, lives below it, or contains it
+    would therefore let a same-UID agent replace a verified named Mach-O image
+    before ``posix_spawn`` opens it. Check both lexical and canonical spellings
+    before either ACP agent path delegates isolation to Kiro.
+    """
+    if sys.platform != "darwin":
+        return
+
+    def _identity_in_ancestor_chain(identity: tuple[int, int], path: str) -> bool:
+        current = os.path.abspath(path)
+        while True:
+            info = os.stat(current)
+            if (info.st_dev, info.st_ino) == identity:
+                return True
+            parent = os.path.dirname(current)
+            if parent == current:
+                return False
+            current = parent
+
+    raw_workspace_paths = tuple(
+        dict.fromkeys(
+            (
+                os.path.abspath(os.fspath(workspace)),
+                os.path.realpath(os.fspath(workspace)),
+            )
+        )
+    )
+    raw_runtime_paths = tuple(
+        dict.fromkeys(os.path.abspath(path) for path in _voice_runtime_sandbox_paths())
+    )
+    for workspace_path in raw_workspace_paths:
+        for runtime_path in raw_runtime_paths:
+            try:
+                common = os.path.commonpath((workspace_path, runtime_path))
+            except ValueError:
+                continue
+            if common in (workspace_path, runtime_path):
+                raise RuntimeError(
+                    "macOS agent workspace overlaps Kiro Crew's protected voice "
+                    "runtime; keep the workspace and Kiro Crew data home disjoint"
+                )
+
+    # Path spelling is only a fast reject. Compare filesystem identities too,
+    # walking both ancestor directions so case, normalization, symlink, and
+    # firmlink aliases on an existing APFS workspace cannot evade the guard.
+    try:
+        workspace_identities = tuple(
+            (info.st_dev, info.st_ino) for info in (os.stat(path) for path in raw_workspace_paths)
+        )
+        runtime_identities = tuple(
+            (info.st_dev, info.st_ino) for info in (os.stat(path) for path in raw_runtime_paths)
+        )
+        if any(
+            _identity_in_ancestor_chain(identity, runtime_path)
+            for identity in workspace_identities
+            for runtime_path in raw_runtime_paths
+        ) or any(
+            _identity_in_ancestor_chain(identity, workspace_path)
+            for identity in runtime_identities
+            for workspace_path in raw_workspace_paths
+        ):
+            raise RuntimeError(
+                "macOS agent workspace aliases Kiro Crew's protected voice "
+                "runtime; keep the workspace and Kiro Crew data home disjoint"
+            )
+    except OSError as exc:
+        raise RuntimeError(
+            "cannot verify that the macOS agent workspace is separate from "
+            "Kiro Crew's protected voice runtime"
+        ) from exc
+
+
+def _open_directory_descriptor(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> int:
+    """Open a directory identity without making its descriptor inheritable."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
+    return os.open(os.fspath(path), flags, dir_fd=dir_fd)
+
+
+def _directory_ancestor_identities(descriptor: int) -> tuple[tuple[int, int], ...]:
+    """Walk directory ancestors by descriptor, immune to pathname retargeting."""
+    current = os.dup(descriptor)
+    identities: list[tuple[int, int]] = []
+    try:
+        while True:
+            current_info = os.fstat(current)
+            current_identity = (current_info.st_dev, current_info.st_ino)
+            identities.append(current_identity)
+            parent = _open_directory_descriptor("..", dir_fd=current)
+            parent_info = os.fstat(parent)
+            parent_identity = (parent_info.st_dev, parent_info.st_ino)
+            if parent_identity == current_identity:
+                os.close(parent)
+                break
+            os.close(current)
+            current = parent
+        return tuple(identities)
+    finally:
+        os.close(current)
+
+
+def bind_voice_safe_agent_workspace(
+    workspace: str | os.PathLike[str],
+) -> tuple[str, int | None]:
+    """Bind a verified macOS workspace identity for delegated Kiro startup.
+
+    A pathname-only overlap check has an unavoidable check/use window: another
+    sandboxed process can retarget a workspace symlink after ``stat`` and before
+    Kiro initializes its own sandbox. On macOS, open the workspace first, compare
+    directory ancestry entirely through descriptors, and make the child chdir via
+    that descriptor. The returned descriptor must stay open until the child exits.
+
+    Other platforms keep their original pathname and do not inherit a descriptor.
+    """
+    workspace_path = os.fspath(workspace)
+    if sys.platform != "darwin":
+        return workspace_path, None
+
+    workspace_fd = -1
+    runtime_fds: list[int] = []
+    try:
+        workspace_fd = _open_directory_descriptor(workspace_path)
+        workspace_identity = os.fstat(workspace_fd)
+        workspace_id = (workspace_identity.st_dev, workspace_identity.st_ino)
+        workspace_ancestors = set(_directory_ancestor_identities(workspace_fd))
+
+        for runtime_path in _voice_runtime_sandbox_paths():
+            runtime_fd = _open_directory_descriptor(runtime_path)
+            runtime_fds.append(runtime_fd)
+            runtime_identity = os.fstat(runtime_fd)
+            runtime_id = (runtime_identity.st_dev, runtime_identity.st_ino)
+            runtime_ancestors = set(_directory_ancestor_identities(runtime_fd))
+            if workspace_id in runtime_ancestors or runtime_id in workspace_ancestors:
+                raise RuntimeError(
+                    "macOS agent workspace overlaps Kiro Crew's protected voice "
+                    "runtime; keep the workspace and Kiro Crew data home disjoint"
+                )
+
+        return f"/dev/fd/{workspace_fd}", workspace_fd
+    except OSError as exc:
+        if workspace_fd >= 0:
+            os.close(workspace_fd)
+        raise RuntimeError(
+            "cannot bind a macOS agent workspace separately from Kiro Crew's "
+            "protected voice runtime"
+        ) from exc
+    except BaseException:
+        if workspace_fd >= 0:
+            os.close(workspace_fd)
+        raise
+    finally:
+        for runtime_fd in runtime_fds:
+            os.close(runtime_fd)
+
+
+def _close_bound_agent_workspace(descriptor: int) -> None:
+    """Close a workspace descriptor, swallowing an already-closed race."""
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+async def release_bound_agent_workspace(descriptor: int) -> None:
+    """Close a bound workspace descriptor off-loop before honoring cancellation."""
+    closing = asyncio.create_task(asyncio.to_thread(_close_bound_agent_workspace, descriptor))
+    cancellation: asyncio.CancelledError | None = None
+    while not closing.done():
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError as exc:
+            # A descriptor is a process-lifetime resource.  A second cancellation
+            # must not detach the worker that owns its close and leak it until the
+            # gateway exits, so settle the tiny close before propagating cancel.
+            cancellation = exc
+    closing.result()
+    if cancellation is not None:
+        raise cancellation
+
+
+async def bind_voice_safe_agent_workspace_async(
+    workspace: str | os.PathLike[str],
+) -> tuple[str, int | None]:
+    """Cancellation-safe off-loop wrapper for workspace identity binding.
+
+    ``asyncio.to_thread`` cannot stop a running worker.  If its awaiter is
+    cancelled after the worker opens the descriptor but before ownership is
+    transferred, a plain await loses the returned fd.  Shield and settle the
+    worker; on cancellation, close any descriptor it produced before re-raising.
+    """
+    binding = asyncio.create_task(asyncio.to_thread(bind_voice_safe_agent_workspace, workspace))
+    cancellation: asyncio.CancelledError | None = None
+    while not binding.done():
+        try:
+            await asyncio.shield(binding)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+
+    if cancellation is None:
+        return binding.result()
+
+    try:
+        _path, descriptor = binding.result()
+    except BaseException:
+        # The caller's cancellation remains authoritative, but retrieving the
+        # worker exception prevents a false "Task exception was never retrieved".
+        raise cancellation
+    if descriptor is not None:
+        try:
+            await release_bound_agent_workspace(descriptor)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    raise cancellation
+
+
+def bound_agent_workspace_matches(descriptor: int, workspace: str | os.PathLike[str]) -> bool:
+    """Whether *workspace* currently names an already-bound directory identity.
+
+    The caller uses the bound identity after this comparison, never the supplied
+    pathname, so a subsequent symlink retarget cannot change what is authorized.
+    """
+    candidate = _open_directory_descriptor(workspace)
+    try:
+        expected = os.fstat(descriptor)
+        actual = os.fstat(candidate)
+        return (expected.st_dev, expected.st_ino) == (actual.st_dev, actual.st_ino)
+    finally:
+        os.close(candidate)
+
+
 def _is_policy_cache_dir(path: str) -> bool:
     """Whether *path* is a governance-cache directory, by leaf name.
 
@@ -238,6 +583,14 @@ def _is_policy_cache_dir(path: str) -> bool:
     spawn path.
     """
     return os.path.basename(path.rstrip("/" + os.sep)) == _POLICY_CACHE_LEAF
+
+
+def _is_voice_runtime_dir(path: str) -> bool:
+    """Whether *path* is the gateway-only voice runtime subtree."""
+    normalized = os.path.normpath(path)
+    return normalized.endswith(os.sep + _VOICE_RUNTIME_LEAF) or normalized.endswith(
+        "/" + _VOICE_RUNTIME_LEAF.replace(os.sep, "/")
+    )
 
 
 # CC mode: files to expose read-only inside otherwise-hidden dirs.
@@ -1625,6 +1978,7 @@ def _build_launcher_script(
     hide_ssh = sandbox_level == "strict"
     hidden_dirs = [os.path.join(home, d) for d in dirs]
     hidden_dirs.extend(_relocated_policy_cache_dirs())
+    hidden_dirs.extend(_voice_runtime_sandbox_paths())
     hidden_dirs.extend(os.path.abspath(path) for path in extra_hidden_dirs)
     unhidden = [
         path for path in hidden_dirs if _hidden_path_contains_visible_path(path, extra_visible_dirs)
@@ -1640,6 +1994,10 @@ def _build_launcher_script(
     # and an app backend is arbitrary third-party code. Deciding it here means a future
     # caller cannot re-open the hole by passing this path.
     readonly_dirs = [path for path in unhidden if _is_policy_cache_dir(path)]
+    # ``run`` must stay readable because it holds this launcher, but making both
+    # its lexical and canonical spellings read-only prevents an agent from
+    # renaming the hidden voice-runtime mount out from under the path-based rule.
+    readonly_dirs.extend(_voice_runtime_parent_paths())
     # A caller-supplied hidden path may be a FILE, and the two launcher loops hide
     # each kind differently: a directory gets an empty dir bind-mounted over it, a file
     # gets an empty temp file. The dir loop is guarded by `if os.path.isdir(target)`, so
@@ -2392,8 +2750,14 @@ def _build_seatbelt_profile(
     expose_files = _CC_EXPOSE_FILES if sandbox_level == "cc" else []
     expose_abs = {os.path.join(home, f) for f in expose_files}
     rules: list[str] = []
-    for target in [os.path.join(home, d) for d in dirs] + _relocated_policy_cache_dirs():
-        if _hidden_path_contains_visible_path(target, extra_visible_dirs):
+    for target in (
+        [os.path.join(home, d) for d in dirs]
+        + _relocated_policy_cache_dirs()
+        + list(_voice_runtime_sandbox_paths())
+    ):
+        if _hidden_path_contains_visible_path(
+            target, extra_visible_dirs
+        ) and not _is_voice_runtime_dir(target):
             # An exposed governance cache stays READ-only: keep the write and hardlink
             # denies and drop only the read deny. `extra_visible_dirs` otherwise cancels
             # the target's whole rule set, which would hand the one caller that needs to
@@ -2416,15 +2780,13 @@ def _build_seatbelt_profile(
             rules.append(f'(deny file-read* (require-all (subpath "{escaped}") {exceptions}))')
         else:
             rules.append(f'(deny file-read* (subpath "{escaped}"))')
-        if _is_policy_cache_dir(target):
-            # Seatbelt denies READS above; the Linux path bind-mounts an empty dir, which
-            # blocks both directions. For the governance cache the WRITE is the more
-            # dangerous one — its metadata records the source the next boot trusts, so a
-            # planted document plus provenance is a ceiling of the writer's choosing —
-            # so macOS gets an explicit write deny too. Scoped to this directory rather
-            # than applied to every entry: widening the others is a separate change with
-            # its own blast radius (a write deny on ``.aws`` would break tools that
-            # legitimately refresh a cached token).
+        if _is_policy_cache_dir(target) or _is_voice_runtime_dir(target):
+            # Linux bind-mounts these roots away, which blocks both directions.
+            # macOS needs an explicit write deny as well as the read rule above:
+            # governance metadata is a trust root, while a writable voice-runtime
+            # image would race the gateway's authenticated decoder spawn. Keep this
+            # scoped to the two execution/trust roots; widening it to every entry
+            # would break paths such as .aws that legitimately refresh state.
             rules.append(f'(deny file-write* (subpath "{escaped}"))')
         # Deny creating a HARDLINK whose target is under this dir.
         # Seatbelt's file-read* deny is path-based, so a hardlink at a
@@ -2434,6 +2796,19 @@ def _build_seatbelt_profile(
         # exposed-file exception): the agent never needs to hardlink a
         # credential-dir file, and blocking it is harmless.
         rules.append(f'(deny file-link (subpath "{escaped}"))')
+
+    # The voice image lives below ``run``. Keep that parent readable (the
+    # sandbox launcher itself is stored there), but deny every write through
+    # both lexical and canonical spellings. Literal ancestor rules prevent a
+    # same-UID agent from renaming a parent around the path-based subtree deny.
+    for target in _voice_runtime_parent_paths():
+        escaped = target.replace('"', '\\"')
+        rules.append(f'(deny file-write* (literal "{escaped}"))')
+        rules.append(f'(deny file-write* (subpath "{escaped}"))')
+        rules.append(f'(deny file-link (subpath "{escaped}"))')
+    for target in _voice_runtime_ancestor_guards():
+        escaped = target.replace('"', '\\"')
+        rules.append(f'(deny file-write* (literal "{escaped}"))')
     for f in files:
         target = os.path.join(home, f)
         escaped = target.replace('"', '\\"')
@@ -3955,6 +4330,16 @@ def wrap_argv(
             This is the fail-closed behavior — the agent subprocess is NOT
             allowed to run without OS-level isolation unless explicitly opted in.
     """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "wrap_argv() performs blocking sandbox preparation and cannot run on "
+            "an event loop; await wrap_argv_async() instead"
+        )
+
     # Governance ordinal floor: a policy/profile may require a MINIMUM sandbox
     # tier (off < standard < cc < strict).  Clamp the requested mode up to that
     # floor before resolving the level — so an enterprise "min_level: cc" makes
@@ -4432,6 +4817,48 @@ def wrap_argv(
     return argv, None
 
 
+async def wrap_argv_async(
+    argv: list[str],
+    mode: str = "auto",
+    *,
+    strip_python_env: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
+    is_kiro_cli: bool | None = None,
+    first_party_fixed_argv: bool = False,
+    _prepare: Callable[..., tuple[list[str], str | None]] | None = None,
+) -> tuple[list[str], str | None]:
+    """Cancellation-safe, off-loop sandbox preparation for async spawn paths.
+
+    Sandbox construction probes the host and creates a launcher/profile. It also
+    resolves the protected voice-runtime paths on the first call. None of that
+    filesystem work may run on a gateway event loop. If the caller is cancelled
+    while the worker is finishing, settle it and remove any newly-created
+    launcher/profile before propagating cancellation. ``_prepare`` preserves
+    each caller's module-local test seam; production callers pass their imported
+    :func:`wrap_argv`, and the default is this module's implementation.
+    """
+    options: dict[str, Any] = {"mode": mode}
+    if strip_python_env:
+        options["strip_python_env"] = True
+    if extra_hidden_dirs:
+        options["extra_hidden_dirs"] = extra_hidden_dirs
+    if extra_visible_dirs:
+        options["extra_visible_dirs"] = extra_visible_dirs
+    if is_kiro_cli is not None:
+        options["is_kiro_cli"] = is_kiro_cli
+    if first_party_fixed_argv:
+        options["first_party_fixed_argv"] = True
+    prepare = functools.partial(wrap_argv if _prepare is None else _prepare, argv, **options)
+
+    def _prepare_wrapped() -> tuple[list[str], dict[str, str], str | None]:
+        wrapped, cleanup = prepare()
+        return wrapped, {}, cleanup
+
+    wrapped, _unused_env, cleanup = await shielded_prepare_off_loop(_prepare_wrapped)
+    return wrapped, cleanup
+
+
 # Environment keys always scrubbed from an agent-influenced subprocess'
 # environment, regardless of sandbox backend. These are the credential-bearing
 # names that must never reach a spawn whose command, arguments, or working
@@ -4694,6 +5121,47 @@ async def shielded_prepare_off_loop(
                     exc_info=True,
                 )
         raise
+
+
+async def sandboxed_spawn_argv_async(
+    argv: list[str],
+    mode: str | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    strip_python_env: bool = False,
+    extra_hidden_dirs: tuple[str, ...] = (),
+    extra_visible_dirs: tuple[str, ...] = (),
+    first_party_fixed_argv: bool = False,
+    executor: ThreadPoolExecutor | None = None,
+    _prepare: Callable[..., tuple[list[str], dict[str, str], str | None]] | None = None,
+) -> tuple[list[str], dict[str, str], str | None]:
+    """Prepare a sandboxed spawn safely off-loop, retaining caller test seams."""
+    # Preserve the long-standing injectable preparation seam: many focused
+    # callers replace ``sandboxed_spawn_argv`` with a narrow ``(argv, *, env)``
+    # test double. ``None`` means the caller omitted the argument, in which case
+    # the synchronous function supplies its own ``standard`` default. An
+    # explicitly supplied value -- including ``standard`` -- is forwarded.
+    options: dict[str, Any] = {}
+    if mode is not None:
+        options["mode"] = mode
+    if env is not None:
+        options["env"] = env
+    if strip_python_env:
+        options["strip_python_env"] = True
+    if extra_hidden_dirs:
+        options["extra_hidden_dirs"] = extra_hidden_dirs
+    if extra_visible_dirs:
+        options["extra_visible_dirs"] = extra_visible_dirs
+    if first_party_fixed_argv:
+        options["first_party_fixed_argv"] = True
+    return await shielded_prepare_off_loop(
+        functools.partial(
+            sandboxed_spawn_argv if _prepare is None else _prepare,
+            argv,
+            **options,
+        ),
+        executor=executor,
+    )
 
 
 # ── cgroup v2 scope enforcement (fork bomb + memory DoS) ──

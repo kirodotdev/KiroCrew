@@ -191,6 +191,19 @@ describe('SttSettings provider-aware install surface', () => {
     expect(await screen.findByText(/ffmpeg is missing/i)).toBeTruthy()
   })
 
+  it('tells a packaged desktop user to reinstall instead of installing FFmpeg', async () => {
+    mount({
+      provider: 'local',
+      available: true,
+      ffmpeg_missing: true,
+      bundled_interpreter: true,
+      prereqs: [],
+    })
+    expect(await screen.findByText(/bundled audio decoder is missing or damaged/i)).toBeTruthy()
+    expect(screen.getByText(/reinstall the Kiro Crew desktop app/i)).toBeTruthy()
+    expect(screen.queryByText(/run these commands/i)).toBeNull()
+  })
+
   it('shows no ffmpeg warning when ffmpeg is present', async () => {
     mount({ provider: 'transcribe', available: true, ffmpeg_missing: false, prereqs: [] })
     await screen.findByText(/ready/i)

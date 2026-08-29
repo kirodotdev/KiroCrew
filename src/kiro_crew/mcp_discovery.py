@@ -49,6 +49,7 @@ from kiro_crew.sandbox import (
     SandboxUnavailableError,
     create_subprocess_limited,
     sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1808,7 +1809,7 @@ async def probe_server(
         # start?" probe runs for real instead of fail-closing. Third-party
         # probes (and any customized managed command/args/env) pass False and
         # keep the full fail-close + opt-in behavior.
-        wrapped_argv, env, sandbox_cleanup = sandboxed_spawn_argv(
+        wrapped_argv, env, sandbox_cleanup = await sandboxed_spawn_argv_async(
             [resolved, *(server.args or [])],
             mode="standard",
             env=env,
@@ -1816,6 +1817,7 @@ async def probe_server(
             first_party_fixed_argv=_is_first_party_managed_argv(
                 server.name, server.command, server.args or [], server.env or {}
             ),
+            _prepare=sandboxed_spawn_argv,
         )
         # Probe temp containment (#5064): each probe gets its OWN private dir
         # under the managed root, cleaned in this function's finally -- unlike

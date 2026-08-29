@@ -40,6 +40,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     patched for the non-run-dir ``~`` lookups in this module.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".kirocrew").mkdir()
     monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path) + p[1:] if p.startswith("~") else p)
     monkeypatch.setattr("kiro_crew.sandbox.config_dir", lambda: tmp_path / ".kirocrew")
     return tmp_path

@@ -27,7 +27,12 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import apps_dir
 from kiro_crew.apps.registry import minimal_env
-from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
+from kiro_crew.sandbox import (
+    cgroup_scope_argv,
+    create_subprocess_limited,
+    wrap_argv,
+    wrap_argv_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +71,7 @@ async def run_lifecycle_script(
 
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]
-    sandboxed_cmd, cleanup = wrap_argv(base_cmd, mode="standard")
+    sandboxed_cmd, cleanup = await wrap_argv_async(base_cmd, mode="standard", _prepare=wrap_argv)
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     env = minimal_env(NONINTERACTIVE="1")
     if extra_env:

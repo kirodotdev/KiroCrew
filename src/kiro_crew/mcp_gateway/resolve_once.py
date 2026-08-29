@@ -77,7 +77,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from kiro_crew.platform_compat import kill_and_reap
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -702,8 +706,8 @@ async def install(
     # npm launcher, so a registry reachable for those is reachable here -- and
     # one that is not was already unreachable before this module existed, where
     # the fallback lands anyway.
-    wrapped_argv, spawn_env, sandbox_cleanup = sandboxed_spawn_argv(
-        argv, mode="standard", strip_python_env=True
+    wrapped_argv, spawn_env, sandbox_cleanup = await sandboxed_spawn_argv_async(
+        argv, mode="standard", strip_python_env=True, _prepare=sandboxed_spawn_argv
     )
     try:
         # Limits are applied AFTER exec by the spawn shim rather than by a

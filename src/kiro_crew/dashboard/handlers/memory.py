@@ -47,6 +47,7 @@ from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
     wrap_argv,
+    wrap_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -878,9 +879,10 @@ async def _ensure_pip_available() -> tuple[bool, str]:
     except ImportError:
         pass
     try:
-        sandboxed_argv, cleanup = wrap_argv(
+        sandboxed_argv, cleanup = await wrap_argv_async(
             [sys.executable, "-m", "ensurepip", "--upgrade"],
             mode="standard",
+            _prepare=wrap_argv,
         )
     except SandboxUnavailableError as exc:
         # Fail-closed sandbox (any host with no OS backend). Report it as a
@@ -1003,10 +1005,11 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                     {"error": f"{pip_err}. Click Enable to retry."}, status=500
                 )
             try:
-                sandboxed_argv, cleanup = wrap_argv(
+                sandboxed_argv, cleanup = await wrap_argv_async(
                     [sys.executable, "-m", "pip", "install", "-q",
                      "faiss-cpu", "--only-binary=:all:"],
                     mode="standard",
+                    _prepare=wrap_argv,
                 )
             except SandboxUnavailableError:
                 # faiss is a pure accelerator; episodic recall still works via

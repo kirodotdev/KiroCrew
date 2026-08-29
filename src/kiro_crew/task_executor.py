@@ -27,7 +27,11 @@ from kiro_crew.providers.base import (
     LLMEvent,
 )
 from kiro_crew.safety_override import safety_override
-from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import (
+    create_subprocess_limited,
+    sandboxed_spawn_argv,
+    sandboxed_spawn_argv_async,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.task_models import (
@@ -976,7 +980,9 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
     # The test command and its working directory are both agent-influenced, so
     # route the spawn through the sandbox chokepoint: OS-level isolation plus a
     # credential-scrubbed environment.
-    argv, env, cleanup = sandboxed_spawn_argv(list(test_cmd))
+    argv, env, cleanup = await sandboxed_spawn_argv_async(
+        list(test_cmd), _prepare=sandboxed_spawn_argv
+    )
     proc: asyncio.subprocess.Process | None = None
     try:
         proc = await create_subprocess_limited(

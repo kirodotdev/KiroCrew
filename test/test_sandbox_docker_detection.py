@@ -167,8 +167,7 @@ class TestWrapArgvDockerGuidance:
         fake_sel.return_value = fake_sel
         monkeypatch.setattr(sandbox, "sel", fake_sel, raising=False)
 
-    @pytest.mark.asyncio
-    async def test_docker_guidance_mentions_seccomp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_docker_guidance_mentions_seccomp(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Error message references the seccomp option."""
         from kiro_crew.sandbox import SandboxUnavailableError, wrap_argv
 
@@ -177,8 +176,7 @@ class TestWrapArgvDockerGuidance:
             wrap_argv(["kiro-cli", "chat"], mode="auto")
         assert "seccomp" in str(exc_info.value)
 
-    @pytest.mark.asyncio
-    async def test_docker_guidance_mentions_allow_unsandboxed(
+    def test_docker_guidance_mentions_allow_unsandboxed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Error message references KIROCREW_ALLOW_UNSANDBOXED."""
@@ -189,8 +187,7 @@ class TestWrapArgvDockerGuidance:
             wrap_argv(["kiro-cli", "chat"], mode="auto")
         assert "KIROCREW_ALLOW_UNSANDBOXED" in str(exc_info.value)
 
-    @pytest.mark.asyncio
-    async def test_docker_guidance_does_not_say_install_backend(
+    def test_docker_guidance_does_not_say_install_backend(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Docker guidance must NOT tell users to 'install a supported sandbox backend'."""
@@ -201,8 +198,7 @@ class TestWrapArgvDockerGuidance:
             wrap_argv(["kiro-cli", "chat"], mode="auto")
         assert "install a supported sandbox backend" not in str(exc_info.value)
 
-    @pytest.mark.asyncio
-    async def test_docker_error_kind_is_no_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_docker_error_kind_is_no_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Error kind is 'no_backend', not 'transient' or 'foreign_sandbox'."""
         from kiro_crew.sandbox import SandboxUnavailableError, wrap_argv
 
@@ -211,8 +207,7 @@ class TestWrapArgvDockerGuidance:
             wrap_argv(["kiro-cli", "chat"], mode="auto")
         assert exc_info.value.kind == "no_backend"
 
-    @pytest.mark.asyncio
-    async def test_bare_metal_no_backend_gets_generic_guidance(
+    def test_bare_metal_no_backend_gets_generic_guidance(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """On bare-metal Linux without user namespaces the generic message is used."""
@@ -246,8 +241,7 @@ class TestWrapArgvDockerGuidance:
         assert "install a supported sandbox backend" in str(exc_info.value)
         assert "KIROCREW_ALLOW_UNSANDBOXED" not in str(exc_info.value)
 
-    @pytest.mark.asyncio
-    async def test_apparmor_restricted_host_gets_profile_guidance(
+    def test_apparmor_restricted_host_gets_profile_guidance(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """On an AppArmor-restricted host the remedy is the profile, not the opt-out.

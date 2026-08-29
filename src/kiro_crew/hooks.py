@@ -3507,7 +3507,11 @@ async def run_script_hook(
 
     try:
         # circular import: sandbox → registry → apps → hooks, so import at call time
-        from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
+        from kiro_crew.sandbox import (
+            create_subprocess_limited,
+            sandboxed_spawn_argv,
+            sandboxed_spawn_argv_async,
+        )
 
         # A script hook inherits only the minimum env its shell + command need
         # (``_HOOK_BASE_ENV_KEYS``) plus the two hook-metadata variables — NOT a
@@ -3529,7 +3533,9 @@ async def run_script_hook(
         # Calling wrap_argv + cgroup_scope_argv directly would give the wrapper
         # the child-safe allowlist and make it fail before a PreToolUse policy
         # hook could run.
-        wrapped_argv, env, cleanup_path = sandboxed_spawn_argv(argv, env=env)
+        wrapped_argv, env, cleanup_path = await sandboxed_spawn_argv_async(
+            argv, env=env, _prepare=sandboxed_spawn_argv
+        )
         # Process-group isolation for clean tree-kill on timeout. Pass both flags
         # explicitly (NOT **dict unpack — breaks mypy's Popen overload resolution
         # on the build fleet): start_new_session=True is a no-op on Windows,

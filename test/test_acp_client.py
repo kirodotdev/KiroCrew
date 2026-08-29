@@ -900,6 +900,26 @@ class TestSpawnStderrDrainCleanup:
         assert task.cancelled() or task.exception() is not None
 
 
+@pytest.mark.asyncio
+async def test_failed_live_spawn_cleanup_releases_workspace_when_kill_is_cancelled(tmp_path):
+    client = AcpClient(work_dir=tmp_path)
+    client._bound_workspace_fd = 74
+    client._spawn_work_dir = "/dev/fd/74"
+    client._kill_process = AsyncMock(side_effect=asyncio.CancelledError())
+    released: list[int] = []
+
+    async def record_release(descriptor):
+        released.append(descriptor)
+
+    with patch("kiro_crew.acp.client.release_bound_agent_workspace", side_effect=record_release):
+        with pytest.raises(asyncio.CancelledError):
+            await client._cleanup_failed_live_spawn()
+
+    assert released == [74]
+    assert client._bound_workspace_fd is None
+    assert client._spawn_work_dir == str(tmp_path)
+
+
 class TestAcpClientBackendSelection:
     """Verify the right backend binary is launched for kiro vs claude."""
 
@@ -3400,6 +3420,42 @@ class TestEnsureReadyRetryOnAcpError:
         assert call_count == 2
         assert client._session_id == "sess-ok"
         client._kill_process.assert_called_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_retry_kill_releases_bound_workspace(self, tmp_path, monkeypatch):
+        client = AcpClient(work_dir=tmp_path)
+        kill_entered = asyncio.Event()
+        released: list[int] = []
+
+        async def fake_spawn():
+            client._process = MagicMock(returncode=None, pid=123)
+            client._bound_workspace_fd = 77
+            client._spawn_work_dir = "/dev/fd/77"
+
+        async def fake_init():
+            raise AcpError("init failed")
+
+        async def stalled_kill(*, force=False):
+            kill_entered.set()
+            await asyncio.Event().wait()
+
+        async def record_release(descriptor):
+            released.append(descriptor)
+
+        client._spawn = fake_spawn
+        client._initialize_session = fake_init
+        client._kill_process = stalled_kill
+        monkeypatch.setattr(acp_client, "release_bound_agent_workspace", record_release)
+
+        task = asyncio.create_task(client.ensure_ready())
+        await kill_entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert released == [77]
+        assert client._bound_workspace_fd is None
+        assert client._spawn_work_dir == str(tmp_path)
 
 
 class TestEnsureReadyRecreatesWorkDir:
@@ -8481,6 +8537,9 @@ class TestResolveKiroBinEnvOverride:
             ),
             patch.object(client_module, "wrap_argv", side_effect=capture_wrap),
             patch.object(
+                client_module, "assert_voice_runtime_outside_agent_workspace"
+            ) as voice_guard,
+            patch.object(
                 client_module,
                 "cgroup_scope_argv",
                 side_effect=lambda argv: ["/usr/bin/cgroup-wrapper", *argv],
@@ -8503,6 +8562,7 @@ class TestResolveKiroBinEnvOverride:
             "strip_python_env": True,
             "is_kiro_cli": True,
         }
+        voice_guard.assert_called_once_with(client._work_dir)
         spawn_call = mock_exec.await_args
         assert strip_spawn_shim(spawn_call.args) == (
             "/usr/bin/cgroup-wrapper",

@@ -4159,12 +4159,12 @@ class TestAnExposedCacheIsStillReadOnly:
         assert loop.count("_mount_or_die(") == 2
 
     def test_an_unexposed_cache_gets_no_read_only_rule(self):
-        """The ordinary spawn hides it outright; nothing is relaxed by this path."""
+        """The ordinary spawn hides it; only the protected runtime parent is read-only."""
         from kiro_crew import sandbox
 
         script = sandbox._build_launcher_script("standard")
         readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
-        assert readonly == []
+        assert set(readonly) == set(sandbox._voice_runtime_parent_paths())
 
     def test_macos_keeps_the_write_and_link_denies_when_it_drops_the_read_deny(self):
         from kiro_crew import sandbox
@@ -4188,7 +4188,9 @@ class TestAnExposedCacheIsStillReadOnly:
         assert f'(deny file-write* (subpath "{aws}"))' not in profile
 
         script = sandbox._build_launcher_script("strict", extra_visible_dirs=(aws,))
-        assert json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0]) == []
+        readonly = json.loads(script.split("READONLY_DIRS = ", 1)[1].split("\n", 1)[0])
+        assert set(readonly) == set(sandbox._voice_runtime_parent_paths())
+        assert aws not in readonly
 
     @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
     def test_it_holds_for_every_spelling_the_dir_lists_carry(self, prefix):
