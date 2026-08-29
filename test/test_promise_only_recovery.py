@@ -15,6 +15,7 @@ maps to one bullet in the issue's acceptance-coverage list.
 from __future__ import annotations
 
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN, STOP_REASON_REFUSAL
+from kiro_crew.dashboard import chat_utils as chat_utils_module
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     SUBAGENT_COMPLETION_KIND,
@@ -47,6 +48,13 @@ def _recover(**over):
     return should_recover_promise_only(**kw)
 
 
+def _has_progress_claim(text: str) -> bool:
+    """Resolve at call time so a reverted helper fails an assertion, not collection."""
+    detector = getattr(chat_utils_module, "has_unfinished_progress_claim", None)
+    assert detector is not None, "the foreground-progress detector is missing"
+    return bool(detector(text))
+
+
 # 1. A confirmed promise-only response CONTINUES instead of landing.
 def test_promise_only_response_triggers_recovery():
     assert _recover() is True
@@ -54,6 +62,35 @@ def test_promise_only_response_triggers_recovery():
     assert is_promise_only_terminal("Yes. I can open the PR for you, and I’ll do that now.")
     assert is_promise_only_terminal("I'll go ahead and run the gate now.")
     assert is_promise_only_terminal("Let me open that PR right away.")
+
+
+# A progress-status sentence can be honest while the turn is streaming, but it
+# becomes false the instant a normal turn ends unless separately visible
+# background work owns the continuation. This is notice-only: earlier tools may
+# have side effects, so the runner must never replay the turn automatically.
+def test_terminal_foreground_progress_claim_is_detected():
+    assert _has_progress_claim(
+        "I'm continuing with the full local gate run; the new screenshot is the lower frame above."
+    )
+    assert _has_progress_claim("I’m still working on the PR.")
+    assert _has_progress_claim("I am proceeding with the validation now.")
+    assert _has_progress_claim("Next, I'm running the broader test suite.")
+    assert _has_progress_claim("I'll keep working on this.")
+    assert _has_progress_claim("Setup is done. I'm continuing with the full local gate run.")
+    assert _has_progress_claim("Here's the plan\nI'm continuing with the build now.")
+
+
+def test_completed_or_background_status_is_not_foreground_progress_claim():
+    for text in (
+        "The full local gate run passed.",
+        "I finished the validation and opened the PR.",
+        "The subagent is still working on the build.",
+        "The monitor will continue checking every five minutes.",
+        "I'm continuing the quotation from the previous paragraph.",
+        "I'm continuing with the explanation: here is the answer.",
+        "Done. I'm continuing with the explanation: here is the answer.",
+    ):
+        assert _has_progress_claim(text) is False
 
 
 # 2. Ordinary text-only informational answers still COMPLETE (no recovery).
