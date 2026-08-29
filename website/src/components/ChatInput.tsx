@@ -1690,7 +1690,30 @@ function ChatInput({
     el.readOnly = false
     el.focus()
     el.select()
-    document.execCommand('insertText', false, text)
+    // Same reconciliation handlePaste does, for the same reason: execCommand's
+    // boolean is not evidence. It is absent entirely on some engines, and iOS
+    // Safari reports success on a <textarea> while leaving the field untouched.
+    // Here the whole field was just select()ed, so an unverified failure leaves
+    // the ORIGINAL prompt on screen with the optimizer's result discarded and
+    // no error — indistinguishable from "the optimizer changed nothing".
+    let inserted = false
+    try {
+      inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, text)
+    } catch { inserted = false }
+    // Reconcile through the controlled value either way, exactly as handlePaste
+    // does: after a real insert this is the same string the textarea's own
+    // onChange already pushed up (React bails), while an insert React never saw
+    // would be reverted to the stale `value` prop on the next render — the same
+    // silent vanish by a different route. Marked user-driven so the undo
+    // recorder treats it as an edit (a new boundary) rather than a
+    // parent-driven draft restore, which is what keeps this "undoable".
+    const nativeOk = inserted && el.value === text
+    valueFromUserRef.current = true
+    onChange(text)
+    if (nativeOk) return // the native insert placed the caret itself
+    requestAnimationFrame(() => {
+      if (el && document.activeElement === el) el.setSelectionRange(text.length, text.length)
+    })
   }, [onChange])
 
   const optimizeMutation = useMutation({
