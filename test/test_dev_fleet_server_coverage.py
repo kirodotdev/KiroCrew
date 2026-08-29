@@ -191,25 +191,26 @@ def test_launchd_live_worktree_resolves_checkout(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_load_fallback_repos_collects_ancestor_remotes(monkeypatch):
-    """A remote whose base is an ancestor of upstream becomes a fallback repo."""
+    """A differently named repo whose base is an ancestor becomes a fallback repo."""
     async def fake_run(cmd, **kw):
         if cmd[-1] == "remote":
-            return 0, "origin\nfork\nstale\n", ""
+            return 0, "origin\nold\nstale\n", ""
         if "--is-ancestor" in cmd:
-            return (0 if "fork/main" in cmd else 1), "", ""
+            return (0 if "old/main" in cmd else 1), "", ""
         if "get-url" in cmd:
             remote = cmd[-1]
-            # Upstream is a genuinely different repository from the fork, so the
-            # fork's ancestor main still qualifies as a pre-rename fallback repo.
+            # The ancestor remote is a genuinely different REPOSITORY — a
+            # pre-rename name, not a fork of upstream under another owner — so
+            # its ancestor main still qualifies as a fallback repo.
             if remote == "origin":
                 return 0, "git@github.com:kirodotdev/KiroCrew.git\n", ""
-            return 0, "git@github.com:someone/kirocrew.git\n", ""
+            return 0, "git@github.com:someone/kirocrew-old.git\n", ""
         return 1, "", "unexpected"
 
     monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
     monkeypatch.setattr(mod, "_run_cmd", fake_run)
     await mod._load_fallback_repos()
-    assert mod._FALLBACK_REPOS == ["someone/kirocrew"]
+    assert mod._FALLBACK_REPOS == ["someone/kirocrew-old"]
 
 
 @pytest.mark.asyncio
@@ -274,27 +275,85 @@ async def test_load_fallback_repos_recognizes_scp_and_git_suffix_as_same(monkeyp
 
 @pytest.mark.asyncio
 async def test_load_fallback_repos_dedupes_multiple_aliases_of_one_repo(monkeypatch):
-    """Two aliases of one genuine fork collapse to a single fallback entry."""
+    """Two aliases of one genuine pre-rename repo collapse to a single entry."""
     async def fake_run(cmd, **kw):
         if cmd[-1] == "remote":
-            return 0, "kirocrew\nfork-a\nfork-b\n", ""
+            return 0, "kirocrew\nold-a\nold-b\n", ""
         if "--is-ancestor" in cmd:
-            # Both forks' mains are ancestors of upstream's.
+            # Both aliases' mains are ancestors of upstream's.
             return 0, "", ""
         if "get-url" in cmd:
             remote = cmd[-1]
             if remote == "kirocrew":
                 return 0, "https://github.com/kirodotdev/KiroCrew.git\n", ""
-            if remote == "fork-a":
-                return 0, "git@github.com:someone/kirocrew.git\n", ""
-            return 0, "https://github.com/someone/KiroCrew\n", ""  # same repo, other spelling
+            if remote == "old-a":
+                return 0, "git@github.com:someone/kirocrew-old.git\n", ""
+            return 0, "https://github.com/someone/KiroCrew-Old\n", ""  # same repo, other spelling
         return 1, "", "unexpected"
 
     monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
     monkeypatch.setattr(mod, "_UPSTREAM_REMOTE", "kirocrew")
     monkeypatch.setattr(mod, "_run_cmd", fake_run)
     await mod._load_fallback_repos()
-    assert mod._FALLBACK_REPOS == ["someone/kirocrew"]
+    assert mod._FALLBACK_REPOS == ["someone/kirocrew-old"]
+
+
+@pytest.mark.asyncio
+async def test_load_fallback_repos_skips_same_named_fork(monkeypatch):
+    """A fork of upstream under another owner is NOT a fallback repo.
+
+    A fork's main passes ``merge-base --is-ancestor`` against upstream's until it
+    diverges, and its repo NAME is upstream's own. The fallback list is consumed
+    by repo name alone, so admitting the fork yields the ``<name>-wt-`` prefix
+    that every current-convention worktree matches — flagging the whole fleet as
+    legacy.
+    """
+    async def fake_run(cmd, **kw):
+        if cmd[-1] == "remote":
+            return 0, "kirocrew\nfork\n", ""
+        if "--is-ancestor" in cmd:
+            return 0, "", ""  # the fork's main has not diverged yet
+        if "get-url" in cmd:
+            remote = cmd[-1]
+            if remote == "kirocrew":
+                return 0, "https://github.com/kirodotdev/KiroCrew.git\n", ""
+            # Same repo NAME, different owner — a fork, not a pre-rename repo.
+            return 0, "git@github.com:someone/KiroCrew.git\n", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
+    monkeypatch.setattr(mod, "_UPSTREAM_REMOTE", "kirocrew")
+    monkeypatch.setattr(mod, "_run_cmd", fake_run)
+    await mod._load_fallback_repos()
+    assert mod._FALLBACK_REPOS == []
+
+
+@pytest.mark.asyncio
+async def test_load_fallback_repos_keeps_renamed_repo_alongside_a_fork(monkeypatch):
+    """The name guard discriminates: the fork is dropped, the renamed repo kept.
+
+    Both candidates' mains are ancestors of upstream's, so only the repo name
+    tells them apart — proving the guard is not a blanket skip of every ancestor.
+    """
+    async def fake_run(cmd, **kw):
+        if cmd[-1] == "remote":
+            return 0, "kirocrew\nfork\nold\n", ""
+        if "--is-ancestor" in cmd:
+            return 0, "", ""
+        if "get-url" in cmd:
+            remote = cmd[-1]
+            if remote == "kirocrew":
+                return 0, "https://github.com/kirodotdev/KiroCrew.git\n", ""
+            if remote == "fork":
+                return 0, "git@github.com:someone/KiroCrew.git\n", ""
+            return 0, "git@github.com:kirodotdev/kirocrew-old.git\n", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
+    monkeypatch.setattr(mod, "_UPSTREAM_REMOTE", "kirocrew")
+    monkeypatch.setattr(mod, "_run_cmd", fake_run)
+    await mod._load_fallback_repos()
+    assert mod._FALLBACK_REPOS == ["kirodotdev/kirocrew-old"]
 
 
 def test_normalize_repo_identity_spellings_and_host():

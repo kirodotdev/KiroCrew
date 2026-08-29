@@ -786,12 +786,14 @@ async def _load_fallback_repos() -> None:
     repos: list[str] = []
     seen: set[tuple[str, str]] = set()
     upstream = await _upstream_remote()
-    # Resolve upstream's own repo identity so a duplicate alias that merely
-    # points at the SAME repository as upstream (e.g. an ``origin`` left in
-    # place after the tracking remote was renamed) is not mistaken for a
-    # pre-rename fork. Without this, ``merge-base --is-ancestor`` is trivially
-    # true for identical refs and upstream's own repo enters the fallback list,
-    # so the derived ``<reponame>-wt-`` prefix flags every worktree as legacy.
+    # Resolve upstream's own repo identity so a remote carrying upstream's own
+    # repo NAME is not mistaken for a pre-rename repo — whether it is an alias
+    # of upstream (e.g. an ``origin`` left in place after the tracking remote
+    # was renamed) or a fork of it under another owner. ``merge-base
+    # --is-ancestor`` is trivially true for identical refs and stays true for a
+    # fork until it diverges, so either would enter the fallback list under
+    # upstream's own name, and the derived ``<reponame>-wt-`` prefix then flags
+    # every worktree as legacy.
     upstream_identity: tuple[str, str] | None = None
     rc_up, up_url, _ = await _run_cmd(
         ["git", "-C", repo, "remote", "get-url", upstream], timeout=5,
@@ -818,11 +820,21 @@ async def _load_fallback_repos() -> None:
             identity = _normalize_repo_identity(url)
             if identity is None:
                 continue
-            # Skip a remote that names the SAME repository as upstream — it is
-            # an alias, not a distinct fork. This keeps the genuine pre-rename
-            # case (a different repo whose main is an ancestor of upstream's)
-            # while removing upstream's own name from the fallback list.
-            if upstream_identity is not None and identity == upstream_identity:
+            # Skip a remote whose repo NAME is upstream's — an alias of upstream
+            # itself, or a fork of it under another owner. Name equality is the
+            # right predicate for both consumers of the fallback list: the
+            # legacy-worktree prefixes are derived from the repo name alone, so
+            # a same-named entry yields the ``<name>-wt-`` prefix that every
+            # current-convention worktree matches, and the PR-status fallback
+            # should not consult a fork either — a fork is not a pre-rename
+            # repo. Name equality also subsumes identity equality, so the alias
+            # case stays covered. The genuine pre-rename case — a DIFFERENTLY
+            # named repo whose main is an ancestor of upstream's — still
+            # qualifies.
+            if upstream_identity is not None and (
+                identity[1].rsplit("/", 1)[-1]
+                == upstream_identity[1].rsplit("/", 1)[-1]
+            ):
                 continue
             if identity in seen:
                 continue
