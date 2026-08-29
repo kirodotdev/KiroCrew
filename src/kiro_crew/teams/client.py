@@ -399,6 +399,9 @@ class TeamsInbound:
     silently discards every button press. Untrusted client input: it is only ever
     a lookup key into state this process already holds.
     """
+    #: Trusted injector provenance. Unattended synthetics and queue
+    #: drains set this False so the dispatcher omits ``principal_raw_id``.
+    bind_principal: bool = True
 
     @property
     def is_card_action(self) -> bool:

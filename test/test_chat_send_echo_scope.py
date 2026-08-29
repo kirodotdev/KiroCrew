@@ -44,7 +44,7 @@ def echo_state(tmp_path, monkeypatch):
     # Periodic status is unrelated to prompt delivery or its permission check.
     monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
 
-    async def reply(st, slot, message, *, _directive_user_origin):
+    async def reply(st, slot, message, *, _directive_user_origin, **_principal):
         slot.append("assistant", "reply")
         slot.append("done", "", "done", broadcast=False)
 

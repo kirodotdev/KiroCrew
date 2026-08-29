@@ -76,7 +76,11 @@ from kiro_crew.messaging.dispatch import (
     delivery_is_muted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
-from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.identity import (
+    channel_inbound_permitted,
+    exclusive_bind_raw_id,
+    publish_turn_identity,
+)
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import (
     ChannelLink,
@@ -92,6 +96,7 @@ from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import session_is_restricted, uploads_restricted
 from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.monitoring.models import MonitorDispatchResult
+from kiro_crew.platform.agent_identity import principal_bind_kwargs
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import (
     redact,
@@ -806,7 +811,21 @@ class DiscordDispatcher:
                 self._bind_origin_mirror(session_key, channel_id)
             # Publish this turn's session identity so managed MCP tools resolve
             # X-Session-Key; one shared writer lives in messaging.identity.
-            await publish_turn_identity(self.sessions, session_key)
+            # Bind only a DM (no guild thread_id). An allow-listed guild
+            # thread accepts another member's mid-turn steer.
+            await publish_turn_identity(
+                self.sessions,
+                session_key,
+                **principal_bind_kwargs(
+                    text,
+                    surface="discord",
+                    raw_id=exclusive_bind_raw_id(
+                        user_id if msg.bind_principal else "",
+                        exclusive=not thread_id,
+                        session_key=session_key,
+                    ),
+                ),
+            )
             # This conversation's own silo, from the session's RECORDED binding and
             # never from ``agent``: that value is a kiro agent name, a namespace
             # disjoint from ``cfg.agents``, so a store derived from it resolves to
@@ -1174,6 +1193,13 @@ class DiscordDispatcher:
                     text=combined,
                     thread_id=thread_id or None,
                     attachments=attachments,
+                    # Session routing still uses this turn's user_id. Drain
+                    # collapse can mix AutoNudge synthetics with a human
+                    # line and does not preserve per-entry provenance, so
+                    # replay stays unbound until every queued item carries
+                    # its own trusted bind. Live exclusive DMs still bind
+                    # via exclusive_bind_raw_id at ingest.
+                    bind_principal=False,
                 ),
                 drain=False,
                 interpret_commands=False,

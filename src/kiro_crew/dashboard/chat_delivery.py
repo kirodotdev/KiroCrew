@@ -535,6 +535,8 @@ def queue_for_next_turn(
     directive_user_origin: bool = False,
     send_id: str | None = None,
     attachments: dict[str, list[str]] | None = None,
+    principal_surface: str = "",
+    principal_raw_id: str = "",
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
@@ -573,6 +575,8 @@ def queue_for_next_turn(
         message,
         meta=meta,
         directive_user_origin=directive_user_origin,
+        principal_surface=principal_surface,
+        principal_raw_id=principal_raw_id,
     )
     state.broadcast_ws(
         "queue_push",

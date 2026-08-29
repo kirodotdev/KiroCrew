@@ -37,7 +37,11 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
-from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
+from kiro_crew.messaging.identity import (
+    channel_inbound_permitted,
+    exclusive_bind_raw_id,
+    publish_turn_identity,
+)
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import (
     DM_SCOPE_UNIFIED,
@@ -47,6 +51,7 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
 )
 from kiro_crew.messaging.renderer import SilentRenderer
+from kiro_crew.platform.agent_identity import principal_bind_kwargs
 from kiro_crew.security import (
     redact,
     redact_credentials,
@@ -227,6 +232,23 @@ class ChannelTurn:
     has to declare its own address here -- it is the only place holding the
     normalized envelope. ``None`` (the default) means the channel has not adopted
     the spool and its refusal path is byte-identical to before.
+    """
+
+    principal_raw_id: str = ""
+    """Provider user id for an AgentCore ``SessionPrincipal``, or empty.
+
+    Binding also requires :attr:`exclusive_principal`. Empty keeps the
+    pid-sidecar-only publish so an unattended or unidentified turn cannot
+    inherit a leftover human principal. Trusted synthetics (AutoNudge)
+    omit this field; ``principal_bind_kwargs`` does not treat a typed
+    envelope prefix as a skip signal.
+    """
+
+    exclusive_principal: bool = False
+    """True only when this session cannot accept another human's mid-turn
+    steer. Default is false (fail closed): a shared group turn lets a
+    later speaker fold text into the originator's generation, so binding
+    the originator would run that text under their credentials.
     """
 
 
@@ -646,7 +668,25 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 )
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
-        await publish_turn_identity(sessions, session_key)
+        # Bind a principal only when the channel named the sender AND the
+        # session cannot accept another human's mid-turn steer. A shared
+        # group turn — or a ``unified:{agent}`` bucket — lets user B fold
+        # text into user A's generation; binding A would run B's
+        # instruction under A's JWT.
+        bind_raw_id = exclusive_bind_raw_id(
+            turn.principal_raw_id,
+            exclusive=turn.exclusive_principal,
+            session_key=session_key,
+        )
+        await publish_turn_identity(
+            sessions,
+            session_key,
+            **principal_bind_kwargs(
+                turn.user_text,
+                surface=turn.channel_type,
+                raw_id=bind_raw_id,
+            ),
+        )
         # This conversation's own silo, from the session's RECORDED binding and
         # never from ``turn.agent``: that field carries a kiro-cli template id, a
         # namespace disjoint from ``cfg.agents``, so a store derived from it

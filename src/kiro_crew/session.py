@@ -2496,6 +2496,16 @@ class SessionManager:
         if session:
             session.principal = principal
 
+    def retract_principal_credentials(self, key: str) -> None:
+        """Drop live inbound credentials for *key* after a principal unbind.
+
+        This layer only stores metadata on ``_Session.principal``. Gateway
+        sidecar / ACP-child recycle lands in a later stack PR; until then
+        this is a documented no-op so every unbind goes through
+        :func:`kiro_crew.platform.agent_identity.clear_session_principal`
+        and cannot skip the retract hook once it exists.
+        """
+
     def set_approval_policy(self, key: str, policy: str) -> None:
         """Update a folded session approval policy with audit logging."""
         self._allocation_boundary().set_approval_policy(key, policy)
