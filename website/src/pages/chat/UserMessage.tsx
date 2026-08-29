@@ -10,6 +10,7 @@ import { applySearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
+import { rowDeliveryState } from '../../utils/sendDelivery'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -227,12 +228,23 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     )
   }
 
+  // One derivation, not per-reader booleans: the markers are independent, so resolving their
+  // precedence here as well is how the bubble and the composer caption come to disagree.
+  const delivery = rowDeliveryState(meta as Record<string, unknown> | undefined)
+  const deliveryDoubted = delivery !== 'none'
   const bubble = (
     // 'message-bubble' is a stable theming hook — see website/docs/theming-contract.md
-    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-2 text-sm leading-6 rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+    // No `aria-label` for the unconfirmed state: the COMPOSER echo is the one live region
+    // announcing that string, so labelling here would have it read twice.
+    <div ref={userRef} onCopy={handleCopy} className={`message-bubble msg-content px-4 py-2 text-sm leading-6 rounded-xl overflow-hidden min-w-0 w-fit max-w-[min(550px,100%)] ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'} ${deliveryDoubted ? 'opacity-70 outline-dashed outline-1 -outline-offset-2 outline-border-strong' : ''}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
       {renderContent(content, meta)}
     </div>
   )
+  // Not a live region and not the resend clause -- the composer echo owns both. A spent nag gets
+  // its OWN past-tense words, so live and spent doubt never differ by colour alone.
+  const deliveryCaption = deliveryDoubted ? (
+    <div data-delivery-caption className={`text-[12px] leading-5 mt-0.5 pr-1 text-right ${delivery === 'unknown' ? 'text-warn' : 'text-muted'}`}>{i18nT(delivery === 'unknown' ? 'pages.chatPage.delivery_unconfirmed_short' : 'pages.chatPage.delivery_unconfirmed_spent')}</div>
+  ) : null
 
   return (
     // Every box between the content column and the bubble is a fit-content flex
@@ -284,6 +296,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           </motion.div>
         </>
       ) : bubble}
+      {deliveryCaption}
       {/* Where the pointer cannot hover the footer is always visible and its
           descendant overrides grow every action to a 40px touch target (20px
           icon + 10px padding); hover-capable pointers keep the reveal-on-hover

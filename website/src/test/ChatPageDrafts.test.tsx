@@ -676,11 +676,11 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     expect(llmText).not.toContain('[ Paste #1 · 5 lines ]')
   })
 
-  it('restores paste blocks to the active slot on connection error', async () => {
-    // The restore path puts the token text back in the input; the
-    // backing blocks must come back too, or the restored draft shows a dead token.
+  it('restores paste blocks to the active slot when the server refuses', async () => {
+    // Driven by a REFUSAL, the arm that still restores. The token text comes back,
+    // so the backing blocks must too, or the restored draft shows a dead token.
     const { api } = await import('../api/client')
-    vi.mocked(api.sendChat).mockRejectedValueOnce(new Error('Network error'))
+    vi.mocked(api.sendChat).mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) } as unknown as Response)
 
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderAndWaitForInput(store)
@@ -746,10 +746,10 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     expect(saved['new-slot']).toBeUndefined()
   })
 
-  it('restores draft to localStorage on connection error', async () => {
-    // Override sendChat to simulate network failure for this test only
+  it('restores draft to localStorage when the server refuses', async () => {
+    // A refusal means nothing was sent, so the draft is the only surviving copy.
     const { api } = await import('../api/client')
-    vi.mocked(api.sendChat).mockRejectedValueOnce(new Error('Network error'))
+    vi.mocked(api.sendChat).mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) } as unknown as Response)
 
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     await renderAndWaitForInput(store)
@@ -757,7 +757,6 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
     await act(async () => { fireEvent.change(input, { target: { value: 'precious prompt' } }) })
 
-    // Send triggers connection error (sendChat rejects)
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
 
     // Draft should be restored to localStorage after error
@@ -767,13 +766,35 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     })
   })
 
-  it('restores a staged session reference as a chip, not as raw link text', async () => {
-    // The transport-failure path restores what the user TYPED plus the staged
-    // references, rather than the link-appended text. That puts the composer back
-    // in its exact pre-send state, and is what keeps the retry from appending
-    // each link a second time (see sessionRefs.test.ts for the duplication half).
+  it('a TRANSPORT rejection persists the draft even though a bubble was appended', async () => {
+    // The bubble is store-only and this send never reached the server, so after a
+    // reload it is gone -- the persisted draft is the only copy that can survive.
     const { api } = await import('../api/client')
-    vi.mocked(api.sendChat).mockRejectedValueOnce(new Error('Network error'))
+    vi.mocked(api.sendChat).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.change(input, { target: { value: 'survives a reload' } }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+
+    // Precondition: the slot was idle, so a bubble WAS appended. That is the case
+    // the old gate skipped the restore for, so this cannot pass by the busy route.
+    await waitFor(() => {
+      expect(store.getState().chat.messages.some(m => m.role === 'user')).toBe(true)
+    })
+    await waitFor(() => {
+      const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+      expect(drafts['slot-a']).toBe('survives a reload')
+    })
+  })
+
+  it('restores a staged session reference as a chip, not as raw link text', async () => {
+    // Restores what the user TYPED plus the staged references, not the
+    // link-appended text, so a retry cannot append each link a second time.
+    const { api } = await import('../api/client')
+    vi.mocked(api.sendChat).mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) } as unknown as Response)
 
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
     sessionStorage.setItem('mc-chat-session-ref-drafts', JSON.stringify({
@@ -831,9 +852,9 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     // Recovery must MERGE, not overwrite — otherwise it loses newer work to
     // recover older. The failed payload is appended after the newer text.
     const { api } = await import('../api/client')
-    let rejectSend: (e: Error) => void = () => {}
+    let settleSend: (v: unknown) => void = () => {}
     vi.mocked(api.sendChat).mockImplementationOnce(
-      () => new Promise((_res, rej) => { rejectSend = rej }) as unknown as Promise<Response>,
+      () => new Promise((res) => { settleSend = res }) as unknown as Promise<Response>,
     )
 
     const store = makeStore('slot-a', [{ key: 'slot-a' }])
@@ -844,7 +865,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
     // Composer cleared on send; the user types something new while it is pending.
     await act(async () => { fireEvent.change(input, { target: { value: 'second thought' } }) })
-    await act(async () => { rejectSend(new Error('Network error')) })
+    await act(async () => { settleSend({ ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) }) })
 
     await waitFor(() => {
       const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')

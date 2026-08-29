@@ -1319,6 +1319,168 @@ class TestRequeuedSteerCarriesTheClientSendId:
         assert slot._queue[0]["meta"].get("steer_delivery_id")
 
     @pytest.mark.asyncio
+    async def test_queue_push_echoes_the_send_id(self, tmp_path, monkeypatch, _patch_sel):
+        """A plain (non-steer) enqueue must name the send on its broadcast.
+
+        The POST receipt also reports ``queued``, but a 2xx whose body will not
+        parse leaves that unreadable, and the tab then has nothing to retire the
+        optimistic row it already rendered -- so every refetch re-attaches it for
+        the tab's lifetime. This event is the independent release, so the id has
+        to be on it.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = _running_slot(state)
+        slot._acp_client = None
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "slot": "test",
+                    "message": self._TEXT,
+                    "meta": {"sendId": self._SEND_ID},
+                },
+            )
+            assert resp.status == 200
+            assert (await resp.json()).get("queued") is True
+
+        pushes = [
+            c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "queue_push"
+        ]
+        assert pushes, "the enqueue must broadcast queue_push, or nothing can release the row"
+        assert pushes[0].args[1].get("sendId") == self._SEND_ID, (
+            "queue_push must echo the client's sendId: it is the only release for a "
+            "queued send whose POST receipt did not parse"
+        )
+
+    @pytest.mark.asyncio
+    async def test_queue_push_omits_an_absent_send_id(self, tmp_path, monkeypatch, _patch_sel):
+        """Negative control: absence must stay absent, not become a wildcard.
+
+        A payload that always carried the key would hand the client an empty id
+        to match on, and a match-anything release deletes a pending send the
+        queue never took -- the loss the retention exists to prevent.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = _running_slot(state)
+        slot._acp_client = None
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={"slot": "test", "message": self._TEXT},
+            )
+            assert resp.status == 200
+
+        pushes = [
+            c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "queue_push"
+        ]
+        assert pushes, "the enqueue must still broadcast queue_push"
+        assert "sendId" not in pushes[0].args[1]
+
+    @pytest.mark.asyncio
+    async def test_plain_enqueue_persists_the_send_id_on_the_queue_entry(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """The broadcast is live-only; the ENTRY is what survives a lost receipt.
+
+        A tab that misses `queue_push` (reload, dropped socket) has only the drained
+        row to learn the send landed. If the id never reaches the entry, the drain
+        cannot put it on the row, so the executed send reads as never-confirmed and
+        stays staged for resending -- the send is delivered twice.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = _running_slot(state)
+        slot._acp_client = None
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "slot": "test",
+                    "message": self._TEXT,
+                    "meta": {"sendId": self._SEND_ID},
+                },
+            )
+            assert resp.status == 200
+
+        assert slot._queue, "the message must be queued for the test to mean anything"
+        assert (slot._queue[0].get("meta") or {}).get("sendId") == self._SEND_ID, (
+            "the queue entry must carry the send id durably: the live broadcast is "
+            "not available to a tab that missed it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_held_send_persists_the_send_id_on_the_queue_entry(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """The hold branch owes the same durable release as the busy branch.
+
+        A main slot that is IDLE while sub-agents run HOLDS the message instead of
+        starting a turn, and the tab appended a retained bubble because the composer
+        was not busy. If the id never reaches the entry, the drained row cannot carry
+        it, so that bubble stays unconfirmed for the tab's life and invites a resend.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot._acp_client = None
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=["agent-1"])
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "slot": "test",
+                    "message": self._TEXT,
+                    "meta": {"sendId": self._SEND_ID},
+                },
+            )
+            assert resp.status == 200
+
+        assert slot._queue, "the hold branch must have queued the message"
+        assert (slot._queue[0].get("meta") or {}).get("sendId") == self._SEND_ID, (
+            "the HELD entry must carry the send id durably, exactly as the busy "
+            "branch does: a tab that missed queue_push has only the drained row"
+        )
+
+    def test_a_merged_drain_names_every_send_it_stands_for(self, tmp_path, monkeypatch):
+        """Two queued sends fold into one row, so one scalar id cannot speak for both.
+
+        The union is a plain dict update, so a scalar `sendId` is last-wins and the
+        earlier send's bubble is never resolved -- it stays staged for resending.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        slot.queue_append("first", meta={"sendId": "send-A"})
+        slot.queue_append("second", meta={"sendId": "send-B"})
+
+        from kiro_crew.dashboard.chat_utils import _dequeue_next_message
+
+        _, consumed = _dequeue_next_message(slot, merge_enabled=True)
+        assert len(consumed) == 2, "the premise is a MERGE; a single pop tests nothing"
+
+        from kiro_crew.dashboard.chat_runner import _merged_send_ids
+
+        assert _merged_send_ids(consumed) == ["send-A", "send-B"], (
+            "a merged row must name every send it stands for, or the ids it drops "
+            "leave those sends falsely unconfirmed"
+        )
+
+    @pytest.mark.asyncio
     async def test_drained_row_carries_the_send_id(self, tmp_path, monkeypatch):
         """The leg the fix RELIES on rather than changes: entry meta -> row meta.
 

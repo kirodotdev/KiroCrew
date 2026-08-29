@@ -31,6 +31,58 @@ export interface QueuedSendRecord {
  *  three small strings bounded by queued sends per tab session. */
 export const queuedSendStash = new Map<string, QueuedSendRecord>()
 
+/** The same records keyed by `sendId` and written BEFORE the POST, because the queue id only
+ *  arrives with the receipt. A send whose 2xx body is unreadable never learns its queue id, and
+ *  a BUSY send has no optimistic row either, so `appendQueuedMessage` finds no raw text to carry
+ *  and a later cancel would restore only the server's redacted copy, dropping the attachments. */
+export const preSendStash = new Map<string, QueuedSendRecord>()
+
+/** Only an outcome that can still produce a `queue_push` leaves a record unresolved, so the live
+ *  set is the handful of sends whose receipt was unreadable — never the tab's whole send history. */
+const PRE_SEND_STASH_MAX = 20
+
+/** Write a pre-send record, evicting the oldest past the cap. Unlike `queuedSendStash`, whose
+ *  entries die on the cancel that consumes them, an unresolved record has no such reader. */
+export function stashPreSend(sendId: string, rec: QueuedSendRecord): void {
+  // Re-inserted rather than overwritten, so a rewritten record counts as the NEWEST for eviction.
+  preSendStash.delete(sendId)
+  preSendStash.set(sendId, rec)
+  while (preSendStash.size > PRE_SEND_STASH_MAX) {
+    const oldest = preSendStash.keys().next().value
+    if (oldest === undefined) break
+    preSendStash.delete(oldest)
+  }
+}
+
+/** Retire a record once the send's outcome rules out a `queue_push` naming it: an immediate
+ *  dispatch, a refusal, or a queued acceptance whose own receipt already carried the queue id. */
+export function retirePreSendStash(sendId: string | undefined): void {
+  if (sendId) preSendStash.delete(sendId)
+}
+
+/** Move a pre-send record onto the queue id the server assigned, once `queue_push` names both.
+ *
+ *  `content` is the BROADCAST text, and it becomes the record's `sent`: the cancel guard compares
+ *  `sent` against the card's own content, which the server may have REDACTED (image @-tokens are
+ *  erased). Keeping the sender's raw text there failed that guard, so cancel fell to the parser and
+ *  restored the masked copy WITHOUT the attachments — the loss this stash exists to prevent. */
+export function adoptPreSendStash(sendId: string | undefined, queueId: string | undefined, content?: string): void {
+  if (!sendId || !queueId) return
+  const rec = preSendStash.get(sendId)
+  if (!rec) return
+  preSendStash.delete(sendId)
+  // A receipt-path stash is written from the sending surface and is the better copy, so it wins.
+  if (!queuedSendStash.has(queueId)) {
+    queuedSendStash.set(queueId, typeof content === 'string' ? { ...rec, sent: content } : rec)
+  }
+}
+
+/** Drop an adopted record once the entry is EDITED: its raw payload is no longer what the card
+ *  says, so restoring it on a later cancel would clobber the edit with pre-edit state. */
+export function invalidateQueuedSendStash(queueId: string | undefined): void {
+  if (queueId) queuedSendStash.delete(queueId)
+}
+
 /** The four queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
 export interface QueuedMessageActions {
@@ -194,9 +246,14 @@ export function useQueuedMessageActions({
       // worse than the verbatim restore this replaced.
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
+      // Second source for the same fact: when the receipt was unreadable no stash
+      // was written, and the card's own text is the redacted form (#6825).
+      const carried = msg.meta?.rawSend as { text?: string; files?: string[]; sent?: string } | undefined
       const { text, files } = stashed && stashed.sent === msg.content
         ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(msg.content)
+        : carried && typeof carried.text === 'string' && carried.sent === msg.content
+          ? { text: carried.text, files: carried.files || [] }
+          : restoreQueuedContent(msg.content)
       restoreDraftRef.current?.(text, files)
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.
@@ -221,6 +278,8 @@ export function useQueuedMessageActions({
     if (!slot) return
     const trimmed = content.trim()
     if (!trimmed) return
+    // The stashed raw payload is pre-edit state, so a later cancel must not restore it over this.
+    invalidateQueuedSendStash(queueId)
     // Optimistically update the card; the WS event reconciles other clients.
     dispatch(editQueuedMessage({ slot, queue_id: queueId, content: trimmed }))
     run(queueId, api.editQueuedMessage(slot, queueId, trimmed))

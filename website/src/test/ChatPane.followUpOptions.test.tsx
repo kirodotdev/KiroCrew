@@ -11,6 +11,7 @@ import chatReducer, { setQuestionCard, clearQuestionCard, appendSlotMessage } fr
 import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { FOLLOWUP_CHIP_DEBOUNCE_MS } from '../components/FollowUpBar'
+import { loadPaneRecoveries, savePaneRecoveries, setPaneRecovery } from '../utils/chatPaneRecovery'
 
 /* A grid pane must surface the agent's follow-up [OPTIONS:] choices
  * (issue #5870): ChatMessageList strips the marker from the transcript, so a
@@ -755,5 +756,42 @@ describe('ChatPane plan follow-ups dispatch (issue #5893)', () => {
     // And the refusal did not wedge the new row: a fresh click on it goes.
     await act(async () => { clickOption('Go') })
     expect(api.planAction).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+/* GPT F1 at 0b3688f4e: the receipt's recovery clear ran for an option send too. An option consumes
+ * no draft, so it writes no new generation and the gen check passed against someone else's send. */
+describe('ChatPane option sends and an armed recovery', () => {
+  it('leaves a recovered draft alone when an option send succeeds', async () => {
+    await renderPane('pane-opt-recovery')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+
+    // A recovery armed for THIS slot, standing for a send the user has not resent yet.
+    const marks = loadPaneRecoveries()
+    setPaneRecovery(marks, 'pane-opt-recovery', {
+      text: 'still unsent words',
+      files: [],
+      sendId: 's-unrelated',
+      gen: 1,
+      sent: 'still unsent words',
+      sentFiles: [],
+    })
+    savePaneRecoveries(marks)
+
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ ok: true, mid: 'm-option' }),
+    })
+    fireEvent.doubleClick(chip('Alpha'))
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      const [wireText] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect(wireText).toBe('Alpha')
+    })
+
+    // The option carried its own text and consumed no draft, so it has no claim on the recovery.
+    expect(loadPaneRecoveries()['pane-opt-recovery']?.text,
+      'an option send must not delete an unrelated recovered draft').toBe('still unsent words')
   })
 })
