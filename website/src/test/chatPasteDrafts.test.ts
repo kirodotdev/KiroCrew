@@ -14,6 +14,26 @@ describe('chatPasteDrafts', () => {
   beforeEach(() => { localStorage.clear(); __resetForTests() })
   afterEach(() => { vi.useRealTimers() })
 
+
+  it('keeps drafts a user already typed when they sit between the old and new caps', () => {
+    // Deriving the cap from the shared budget LOWERED it to ~1.07 MiB. A store already holding
+    // ~1.4 MiB is under 2 MiB but OVER that, so the next save LRU-evicted work already typed.
+    const each = 460 * 1024
+    const drafts = {
+      'chat-oldest-1': [block(1, 'a'.repeat(each))],
+      'chat-middle-2': [block(1, 'b'.repeat(each))],
+      'chat-newest-3': [block(1, 'c'.repeat(each))],
+    }
+    savePasteDrafts(drafts)
+    const held = JSON.stringify(loadPasteDrafts()).length
+    expect(held, 'premise: the fixture sits between the derived ~1.07 MiB and the 2 MiB cap')
+      .toBeGreaterThan(1_150_000)
+    expect(held, 'premise: and it is genuinely under the retained cap').toBeLessThan(DRAFT_MAX_STORE_BYTES)
+    expect(Object.keys(loadPasteDrafts()).sort(),
+      'no entry may be dropped: the cap moving is not a reason to delete unsent work')
+      .toEqual(['chat-middle-2', 'chat-newest-3', 'chat-oldest-1'])
+  })
+
   it('roundtrips paste blocks through localStorage (survives close/refresh)', () => {
     const drafts = { 'chat-1-100': [block(1)], 'chat-2-200': [block(1), block(2)] }
     savePasteDrafts(drafts)
@@ -81,9 +101,10 @@ describe('chatPasteDrafts', () => {
 
   it('byte-aware LRU evicts oldest slots until the blob fits, keeping the newest', () => {
     const drafts: Record<string, PasteBlock[]> = {}
-    // 4 slots of ~1.5 MB each = ~6 MB, over the 2 MB per-store budget. Oldest are
-    // evicted until it fits; the newest is never the casualty.
-    for (let i = 0; i < 4; i++) setPasteDraft(drafts, `slot-${i}`, [block(i, 'x'.repeat(1_500_000))])
+    // Sized FROM the budget, not a literal: four slots overflow it while any one still fits,
+    // which is what makes eviction rather than the keep-the-newest rule below the behaviour here.
+    const each = Math.floor(DRAFT_MAX_STORE_BYTES / 3)
+    for (let i = 0; i < 4; i++) setPasteDraft(drafts, `slot-${i}`, [block(i, 'x'.repeat(each))])
     savePasteDrafts(drafts)
     const persisted = loadPasteDrafts()
     expect(JSON.stringify(persisted).length).toBeLessThanOrEqual(DRAFT_MAX_STORE_BYTES)
