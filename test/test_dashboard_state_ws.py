@@ -997,7 +997,7 @@ class TestOwnerSourceStatusTransport:
         source_url = "https://github.com/acme/repo/pull/12"
 
         def serialize_slots(
-            *, include_check_status: bool = False, dashboard_user: bool = False
+            *, include_check_status: bool = False, dashboard_user: bool = False, **_kw: object
         ) -> list[dict]:
             link = {"url": source_url, "provider": "github", "number": 12}
             # Owner (include_check_status) sees status for any repo. A
@@ -1163,7 +1163,7 @@ class TestOwnerSourceStatusTransport:
         source_url = "https://github.com/acme/repo/pull/12"
 
         def serialize_slots(
-            *, include_check_status: bool = False, dashboard_user: bool = False
+            *, include_check_status: bool = False, dashboard_user: bool = False, **_kw: object
         ) -> list[dict]:
             link = {"url": source_url, "provider": "github", "number": 12}
             # This connect test seeds no repo visibility, so a dashboard user
@@ -1175,6 +1175,9 @@ class TestOwnerSourceStatusTransport:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.side_effect = serialize_slots
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
         # Real folder list (a MagicMock attr would coerce to [] via
         # _safe_folder_tree); lets the dashboard-user branch below assert the
@@ -1296,7 +1299,7 @@ class TestOwnerSourceStatusTransport:
         private_url = "https://github.com/acme/private/pull/2"
 
         def serialize_slots(
-            *, include_check_status: bool = False, dashboard_user: bool = False
+            *, include_check_status: bool = False, dashboard_user: bool = False, **_kw: object
         ) -> list[dict]:
             return [
                 {
@@ -1311,6 +1314,9 @@ class TestOwnerSourceStatusTransport:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.side_effect = serialize_slots
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
         state._folders = []
 
@@ -1418,6 +1424,9 @@ class TestPeriodicCheckStatusRefresh:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.return_value = []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
         state.source_link_urls.return_value = [url]
 
@@ -1499,6 +1508,9 @@ class TestPeriodicCheckStatusRefresh:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.return_value = []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
         state.source_link_urls.return_value = []
 
@@ -1624,6 +1636,9 @@ class TestPeriodicCheckStatusRefresh:
         state._yolo = False
         state.source_link_urls.return_value = []
         state.serialize_slots.side_effect = lambda **_kwargs: order.append("serialize") or []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
 
         async def fake_ensure() -> frozenset:
             order.append("ensure")
@@ -1693,6 +1708,9 @@ class TestPeriodicCheckStatusRefresh:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.return_value = []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
 
         class Request(dict):
@@ -1764,6 +1782,9 @@ class TestPeriodicCheckStatusRefresh:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.return_value = []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
         # A real list so the loop's modulo has a real length (no MagicMock len).
         state.source_link_urls.return_value = ["https://github.com/acme/repo/pull/1"]
@@ -1840,6 +1861,9 @@ class TestPeriodicCheckStatusRefresh:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.return_value = []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
         state.source_link_urls.return_value = list(urls)
 
@@ -1920,6 +1944,9 @@ class TestPeriodicCheckStatusRefresh:
         state = MagicMock()
         state.owner_id = "U_OWNER"
         state.serialize_slots.return_value = []
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
         state._yolo = False
         state.source_link_urls.return_value = [url]
 

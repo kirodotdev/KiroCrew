@@ -38,9 +38,6 @@ p.add_argument("--ttl", type=float, default=30.0)
 p.add_argument("--leader-ttl", type=float, default=-1.0)
 a = p.parse_args()
 
-if a.pidfile:
-    Path(a.pidfile).write_text(str(os.getpid()))
-
 # Holds the escaped child's pid so the SIGTERM handler can reap its group,
 # modelling the real backend, whose kiro-cli workers setsid into their own
 # session and are reaped by the backend's own graceful shutdown.
@@ -58,6 +55,11 @@ if a.ignore_sigterm:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 else:
     signal.signal(signal.SIGTERM, _on_term)
+
+# Written only once the disposition above is installed: the pidfile IS the readiness
+# signal callers wait on, and a terminate racing it hits SIG_DFL (measured: 149 of 150).
+if a.pidfile:
+    Path(a.pidfile).write_text(str(os.getpid()))
 
 lsock = None
 if a.port:
