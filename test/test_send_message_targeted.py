@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import contextlib
+import itertools
 import sys
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from aiohttp import web
@@ -1067,6 +1068,790 @@ class TestChannelTypeDelivery:
         assert "TAIL-MARKER" in "".join(sent)
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_an_inline_send_refuses_when_governance_tightens_during_resolve(self, mock_sel):
+        """An inline send must not go out on a permit the ceiling has superseded.
+
+        The ceiling is sampled BEFORE the target resolve, and that resolve is offloaded
+        because it walks the profile directory — an unbounded await. A tightening landing
+        inside that window leaves the resolved permit authorized under a ceiling that is
+        not the installed one. The ceiling question is asked UNCONDITIONALLY, for every
+        caller: gating it on an authored link being present would be a fail-OPEN, because
+        the straddled window exists on every path and the inline leg is the LLM-facing one.
+
+        Nothing is delivered: this refuses BEFORE part 1, so there is no partial send.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport, slack_client=MagicMock())
+        app = _make_app(state)
+
+        generation = {"v": 1}
+
+        def _tighten_during_resolve() -> int:
+            generation["v"] += 1
+            return generation["v"]
+
+        # BOTH bindings: the guard re-reads through governance_profiles' own globals, so
+        # patching only the caller compares a fake sample against the real counter.
+        with _governance(True):
+            with (
+                patch(
+                    "kiro_crew.dashboard.handlers.messaging.governance_answer_generation",
+                    side_effect=_tighten_during_resolve,
+                ),
+                patch(
+                    "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                    side_effect=_tighten_during_resolve,
+                ),
+            ):
+                async with TestClient(TestServer(app)) as client:
+                    await client.post(
+                        "/api/send-message",
+                        json={"text": "SHOULD-NOT-SEND", "channel_type": "telegram"},
+                        headers={"X-Session-Key": _TG_KEY},
+                    )
+
+        assert transport.send_message.await_count == 0, (
+            "an inline send went out after the governance ceiling moved during its own "
+            "resolve, so part 1 was delivered under a superseded permit"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_an_inline_send_refuses_when_the_binding_moves_during_resolve(self, mock_sel):
+        """A rebind straddling the resolve must refuse, not retarget, for every caller.
+
+        The governance gate inside the resolve is offloaded and unbounded, so the user
+        can unlink or rebind while it runs. Comparing the post-resolve walk against the
+        destination this send selected needs no captured link, so gating it on one left
+        the inline leg delivering part 1 into whatever binding replaced its own.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport, slack_client=MagicMock())
+        app = _make_app(state)
+
+        walks = {"n": 0}
+        original = state.sessions.get_origin_link.return_value
+
+        def _rebind_after_first_walk(*_args, **_kwargs):
+            walks["n"] += 1
+            return original if walks["n"] <= 1 else None
+
+        state.sessions.get_origin_link.side_effect = _rebind_after_first_walk
+
+        with _governance(True):
+            async with TestClient(TestServer(app)) as client:
+                await client.post(
+                    "/api/send-message",
+                    json={"text": "SHOULD-NOT-SEND", "channel_type": "telegram"},
+                    headers={"X-Session-Key": _TG_KEY},
+                )
+
+        assert transport.send_message.await_count == 0, (
+            "an inline send delivered after its binding changed during the resolve, so "
+            "content reached a conversation the caller never selected"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_inline_send_stops_remaining_parts_when_unlinked(self, mock_sel):
+        """Binding revalidation is UNCONDITIONAL, inline `send_message` included.
+
+        The comparand is `link`, this send's OWN resolved destination, so every caller
+        holds it — being inline never made the check unaskable, only unasked. Being
+        inline also bounds nothing useful: every transport send is an await, so a
+        multi-part inline send spans the same window a dispatched one does, and parts
+        2..N were reaching a conversation the user had already unlinked.
+
+        Earlier revisions gated this to keep the LLM-facing tool's mid-send contract out
+        of a note change. A security review ruled the exposure — content delivered to a
+        revoked conversation — outweighs that, so it is asked before every part.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport, slack_client=MagicMock())
+
+        def _unlink_after_first_part(*_args, **_kwargs):
+            state.sessions.get_origin_link.return_value = None
+            return "tg-1"
+
+        transport.send_message = AsyncMock(side_effect=_unlink_after_first_part)
+        app = _make_app(state)
+        body = "x" * TELEGRAM_MAX_TEXT + "TAIL-AFTER-REVOKE"
+
+        with _governance(True):
+            async with TestClient(TestServer(app)) as client:
+                await client.post(
+                    "/api/send-message",
+                    json={"text": body, "channel_type": "telegram"},
+                    headers={"X-Session-Key": _TG_KEY},
+                )
+
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert len(sent) == 1, (
+            "the inline leg continued past the part in flight when the destination was "
+            f"unlinked, so content reached a revoked conversation (got {len(sent)} parts)"
+        )
+        assert "TAIL-AFTER-REVOKE" not in "".join(
+            sent
+        ), "the tail reached a conversation unlinked before it was sent"
+
+    @pytest.mark.asyncio
+    async def test_a_dispatched_send_stops_remaining_parts_when_unlinked(self, mock_sel):
+        """A DISPATCHED caller's later parts stop when the destination is revoked.
+
+        The pre-send check cannot cover this. It runs once, before part 1, and a
+        multi-part send then spans one await per part -- so a session unlinked after
+        part 1 leaves parts 2..N addressed to a conversation the user has already
+        disconnected.
+
+        The revocation is driven from inside the first send so it lands exactly in
+        that gap, and the assertion is the TAIL: counting parts would also pass if
+        chunking silently collapsed to one message.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport, slack_client=MagicMock())
+
+        def _unlink_after_first_part(*_args, **_kwargs):
+            # The revocation a user performs mid-send: the session owns no
+            # channel, so the next re-walk finds nothing to deliver to.
+            state.sessions.get_origin_link.return_value = None
+            return "tg-1"
+
+        transport.send_message = AsyncMock(side_effect=_unlink_after_first_part)
+        authored = state.sessions.get_origin_link.return_value
+        body = "x" * TELEGRAM_MAX_TEXT + "TAIL-AFTER-REVOKE"
+
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        with _governance(True):
+            await deliver_to_channel(
+                state,
+                _TG_KEY,
+                body,
+                channel_type="telegram",
+                tool_name="send_message",
+                authored_link=(authored, True),
+            )
+
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert len(sent) == 1, (
+            "the send must stop after the part that was already in flight when the "
+            f"destination was unlinked; got {len(sent)} parts"
+        )
+        assert "TAIL-AFTER-REVOKE" not in "".join(
+            sent
+        ), "the tail reached a conversation that was unlinked before it was sent"
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_change_during_the_resolve_re_asks_and_delivers(self, mock_sel):
+        """A token move that narrowed NOTHING must re-ask, not refuse.
+
+        The sampled token spans ceiling AND profile and is a generation counter, so it
+        moves on any unrelated profile publication. Refusing on the move alone rejected
+        a send whose own permission never changed, which is what
+        ``governance_ceiling_unchanged`` documents as the wrong reading: a move means the
+        answer MAY have changed, so the caller re-asks.
+
+        Driven by moving the counter across the resolve while governance stays PERMISSIVE,
+        so the re-ask confirms the same permission and the part goes out. The refusal path
+        is pinned by its sibling below, where the resolve itself stops permitting.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="T9", thread_id=None)
+        )
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        generation = [11]
+        real_resolve = chat_runner._resolve_channel_target
+
+        def _move_token_during_resolve(*args, **kwargs):
+            result = real_resolve(*args, **kwargs)
+            generation[0] = 12
+            return result
+
+        with (
+            _governance(True),
+            patch(
+                "kiro_crew.dashboard.chat_runner._resolve_channel_target",
+                side_effect=_move_token_during_resolve,
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.governance_answer_generation",
+                side_effect=lambda: generation[0],
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                side_effect=lambda: generation[0],
+            ),
+        ):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                "BODY-AFTER-UNRELATED-EDIT",
+                tool_name="send_message",
+                authored_link=(ChannelLink("telegram", channel_id="T9", thread_id=None), True),
+            )
+
+        assert delivered, (
+            "an unrelated profile publication during the resolve refused a send whose "
+            "permission never narrowed; the re-ask should have confirmed it"
+        )
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert any(
+            "BODY-AFTER-UNRELATED-EDIT" in s for s in sent
+        ), f"the body never reached the transport; got {sent}"
+        refusals = [
+            r for r in mock_sel.log_tool_invocation.call_args_list if "governance_changed" in str(r)
+        ]
+        assert not refusals, (
+            "a token move that narrowed nothing filed a governance refusal; got "
+            f"{[str(r) for r in refusals]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_narrowing_during_the_resolve_still_refuses(self, mock_sel):
+        """The straddled window's REAL hazard must stay closed after the early exit went.
+
+        A tightening landing DURING the resolve is the one case the removed pre-part-1
+        check uniquely caught: the resolve read the OLD ceiling and returned a target, so
+        the permit is already superseded when it is handed back. The re-ask closes it
+        instead -- its own resolve reads the NEW ceiling and stops permitting -- so this
+        pins that the removal traded a false refusal for a re-ask, not for a fail-open.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="T9", thread_id=None)
+        )
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        generation = [11]
+        permits = [True]
+        real_resolve = chat_runner._resolve_channel_target
+
+        def _narrow_during_resolve(*args, **kwargs):
+            result = real_resolve(*args, **kwargs)
+            generation[0] = 12
+            permits[0] = False
+            return result
+
+        with (
+            patch(
+                "kiro_crew.platform.governance_profiles.vet_and_audit",
+                side_effect=lambda *a, **k: _permitted(permits[0]),
+            ),
+            patch(
+                "kiro_crew.dashboard.chat_runner._resolve_channel_target",
+                side_effect=_narrow_during_resolve,
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.governance_answer_generation",
+                side_effect=lambda: generation[0],
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                side_effect=lambda: generation[0],
+            ),
+        ):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                "BODY-AFTER-NARROWING",
+                tool_name="send_message",
+                authored_link=(ChannelLink("telegram", channel_id="T9", thread_id=None), True),
+            )
+
+        assert (
+            not delivered
+        ), "a tightening that landed while the authorizing resolve ran reported success"
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert (
+            not sent
+        ), f"the send proceeded on a permit the resolve had already superseded; got {sent}"
+
+    @pytest.mark.asyncio
+    async def test_part_1_refuses_when_the_governance_ceiling_moved_after_resolve(self, mock_sel):
+        """Part 1 must not send on a permit whose ceiling has since been replaced.
+
+        Distinct window from the straddled resolve above: here the resolve completes
+        under the ceiling it read, and the tightening lands between that confirmation
+        and the first send. Part 1 has no re-resolve of its own, so without this check
+        a single-part message had no later part to catch it.
+
+        THE TOKEN NEVER SETTLES HERE, and that is what makes this a refusal. A moved
+        token only means the answer MAY have changed, so part 1 re-asks once -- the same
+        reading mid-send uses. A token still moving across that re-ask is a store nobody
+        can get a stable answer out of, so the permit cannot be confirmed and the send
+        refuses. Its sibling covers the case where the token settles and the permission
+        is unchanged, which must DELIVER rather than 502 on an unrelated profile edit.
+
+        Asserted on the TAIL being absent rather than on a count, so a chunker that
+        collapsed to one message could not pass it vacuously.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="T9", thread_id=None)
+        )
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+        body = "x" * TELEGRAM_MAX_TEXT + "TAIL-AFTER-TIGHTENING"
+
+        # Called directly rather than through the endpoint, so this is the only leg in
+        # flight and the reads are ordered: sample, post-resolve confirm, part 1.
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        # Moving on EVERY read, so no arm's behaviour depends on how many times the
+        # generation is sampled: the token never settles and the permit cannot confirm.
+        counter = itertools.count(11)
+
+        def _next_generation() -> int:
+            return next(counter)
+
+        with (
+            _governance(True),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.governance_answer_generation",
+                side_effect=_next_generation,
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                side_effect=_next_generation,
+            ),
+        ):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                body,
+                tool_name="send_message",
+                authored_link=(ChannelLink("telegram", channel_id="T9", thread_id=None), True),
+            )
+
+        assert not delivered, "the send reported success on a superseded permit"
+
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert not sent, (
+            "part 1 was sent on a permit whose governance ceiling had already been "
+            f"replaced; got {len(sent)} part(s)"
+        )
+        assert "TAIL-AFTER-TIGHTENING" not in "".join(sent), (
+            "content reached the conversation after the ceiling that authorized it "
+            "was superseded"
+        )
+        denials = [
+            r
+            for r in mock_sel.log_tool_invocation.call_args_list
+            if "governance_changed_before_part_1" in str(r)
+        ]
+        assert len(denials) == 1, (
+            "the refusal needs its own audited reason so an operator can tell it from "
+            f"a binding change; got {[str(r) for r in mock_sel.log_tool_invocation.call_args_list]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_tightening_inside_the_pre_part_1_re_ask_refuses_the_send(self, mock_sel):
+        """The generation returned by the pre-part-1 re-ask must be validated, not discarded.
+
+        The ceiling-UNCHANGED arm re-asked the recipient and threw the generation
+        away, while both sibling arms retain it and re-read
+        governance_ceiling_unchanged. So a tightening landing strictly INSIDE that
+        re-ask -- after its own profile read, before part 1 goes out -- settled an
+        already-superseded permit and part 1 reached a newly denied channel. The
+        window matters: a pre-resolve denial is caught by the base code already.
+
+        A moved token alone is NOT a refusal here (see the unrelated-profile-edit
+        sibling): the arm re-asks once, and the tightening surfaces as governance
+        denying on that re-ask.
+        """
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="T9", thread_id=None)
+        )
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+
+        # Single chunk on purpose, so _still_permitted(0) is the only arm that runs.
+        body = "SHORT-BODY-TIGHTENED"
+
+        # permitted for the initial resolve, denied from the pre-part-1 re-ask onward:
+        # the tightening lands strictly inside that window.
+        vets = [_permitted(True), _permitted(True)] + [_permitted(False)] * 20
+
+        with (
+            patch(
+                "kiro_crew.platform.governance_profiles.vet_and_audit",
+                side_effect=vets,
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.governance_ceiling_unchanged",
+                side_effect=[True, False, True] + [True] * 20,
+            ),
+        ):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                body,
+                tool_name="send_message",
+                authored_link=(ChannelLink("telegram", channel_id="T9", thread_id=None), True),
+            )
+
+        assert not delivered, "the send reported success on a permit superseded mid-re-ask"
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert "SHORT-BODY-TIGHTENED" not in "".join(
+            sent
+        ), "content reached a channel the tightened ceiling had already denied"
+        denials = [
+            r
+            for r in mock_sel.log_tool_invocation.call_args_list
+            if "governance_changed_before_part_1" in str(r)
+        ]
+        assert len(denials) == 1, (
+            "the refusal must be audited as a governance change, not as a binding change, "
+            f"so an operator can tell them apart; got "
+            f"{[str(r) for r in mock_sel.log_tool_invocation.call_args_list]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_authored_mirror_survives_revalidation_past_a_live_slack_origin(
+        self, mock_sel
+    ):
+        """The revalidation walk must use the caller's own skips, or it refuses the note.
+
+        Every revalidation compares the live walk against the snapshot the caller
+        authored. The note mirror authors its snapshot with the Slack row skipped,
+        because Slack never registers a transport here and travels on its own leg. A
+        revalidation walk WITHOUT that skip lands on the live Slack origin instead, so
+        the comparison reports the caller's own unchanged mirror as changed and the
+        transport leg is refused whenever a Slack origin exists, which is the common
+        case rather than an edge one.
+
+        Asserted on delivery, so a refusal for any reason fails it.
+        """
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        slack_origin = ChannelLink("slack", channel_id="C1", thread_id="1.1")
+        telegram_mirror = ChannelLink("telegram", channel_id="T9", thread_id=None)
+
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(return_value=slack_origin)
+        state.sessions.get_mirror_link = MagicMock(return_value=telegram_mirror)
+
+        with _governance(True):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                "MIRROR-BODY",
+                skip_paused=True,
+                skip_slack=True,
+                tool_name="send_message",
+                authored_link=(telegram_mirror, False),
+            )
+
+        assert delivered, (
+            "the authored mirror was refused: the revalidation walk read the live Slack "
+            "origin and reported the caller's own unchanged mirror as changed"
+        )
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert "MIRROR-BODY" in "".join(
+            sent
+        ), f"the note never reached the telegram mirror; sent {sent!r}"
+
+    @pytest.mark.asyncio
+    async def test_part_1_delivers_when_a_settled_token_move_changed_no_permission(self, mock_sel):
+        """An unrelated profile edit during the resolve must not 502 a permitted send.
+
+        The composite token spans ceiling AND profile, so ANY publication moves it --
+        including an edit that changes nothing about this destination. Refusing on the
+        bare move read the token as "the answer DID change", which its own contract
+        denies: it means "MAY have changed". Mid-send already re-asks once on exactly
+        this signal, so refusing outright before part 1 made the two paths disagree
+        about one signal, and the disagreement fell on the LLM-facing tool -- a fully
+        permitted single- or multi-part send failing on someone else's profile edit.
+
+        The token moves once and then SETTLES, and governance still permits, so the
+        re-ask confirms the permit and the send proceeds.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="T9", thread_id=None)
+        )
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+        body = "x" * TELEGRAM_MAX_TEXT + "TAIL-AFTER-UNRELATED-EDIT"
+
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        # Sample 11, post-resolve confirm 11, part-1 check 12 (the unrelated edit), then
+        # settled at 12 for the re-ask: moved once, stable after, permission unchanged.
+        generations = iter([11, 11, 12])
+
+        def _next_generation() -> int:
+            return next(generations, 12)
+
+        with (
+            _governance(True),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.governance_answer_generation",
+                side_effect=_next_generation,
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                side_effect=_next_generation,
+            ),
+        ):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                body,
+                tool_name="send_message",
+                authored_link=(ChannelLink("telegram", channel_id="T9", thread_id=None), True),
+            )
+
+        assert delivered, (
+            "a send that governance still permits was refused because an unrelated "
+            "profile publication moved the composite token while the resolve ran"
+        )
+        sent = "".join(c.args[1] for c in transport.send_message.await_args_list)
+        assert "TAIL-AFTER-UNRELATED-EDIT" in sent, (
+            "the send reported success but the tail never reached the conversation, so "
+            "the message was truncated by the token move rather than delivered"
+        )
+        refusals = [
+            r
+            for r in mock_sel.log_tool_invocation.call_args_list
+            if "governance_changed_before_part_1" in str(r)
+        ]
+        assert not refusals, (
+            "a permitted send filed a governance refusal row for a token move that "
+            f"narrowed nothing, which makes a real refusal unreadable; got {refusals}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_audit_names_the_selected_transport_not_the_generic_label(
+        self, mock_sel
+    ):
+        """An egress row must name the destination it refused, not `channel`.
+
+        `channel_type` is the caller's FILTER: a caller that does not constrain the walk
+        passes nothing, so using it as the audit label makes every row from such a
+        caller read `channel` regardless of where the send was actually headed. The note
+        mirror is exactly that caller — it selects by `authored_link` and `skip_slack`
+        rather than by type — so an operator filtering egress rows by transport could
+        not see its sends at all, and two different destinations were indistinguishable
+        in the audit trail. The note mirror's own leg rows already name the link's type;
+        this is the shared helper's internal rows agreeing with them.
+        """
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        # The authored destination and the live one differ, so the send refuses BEFORE
+        # dispatch -- the earliest row that can already name a selected transport.
+        authored = ChannelLink("telegram", channel_id="T-AUTHORED", thread_id=None)
+        live = ChannelLink("telegram", channel_id="T-MOVED", thread_id=None)
+
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(return_value=live)
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+
+        with _governance(True):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                "BODY",
+                tool_name="note_mirror",
+                authored_link=(authored, True),
+            )
+
+        assert not delivered, "precondition: the moved binding must refuse the send"
+        rows = [
+            c
+            for c in mock_sel.log_tool_invocation.call_args_list
+            if "link_changed_before_dispatch" in str(c)
+        ]
+        assert len(rows) == 1, (
+            "the pre-dispatch refusal filed no audited row, so there is nothing to "
+            f"carry a transport label; got {[str(c) for c in mock_sel.log_tool_invocation.call_args_list]}"
+        )
+        assert rows[0].kwargs.get("downstream_service") == "telegram", (
+            "the egress row named the generic label instead of the transport the send "
+            "had selected, so an operator filtering by transport cannot see this "
+            f"caller's sends; got {rows[0].kwargs.get('downstream_service')!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_change_during_the_mid_send_reresolve_refuses(self, mock_sel):
+        """A later chunk must not send while the governance token is still moving.
+
+        Parts 2..N re-resolve, and that resolve evaluates governance internally. A
+        tightening completing BEFORE the read is caught by the recheck; one landing
+        while the resolve runs is not, because the resolve returns a permit computed
+        from the pre-tightening ceiling. So the token is sampled before each re-resolve
+        and confirmed after it, synchronously, last before the send.
+
+        A moved token alone is NOT the refusal: it spans both governance layers, so an
+        unrelated profile edit moves it without changing this send's answer, and
+        truncating there is the defect pinned by
+        ``test_an_unrelated_profile_edit_mid_send_does_not_truncate``. What refuses here
+        is a token that will not SETTLE -- it advances on every read, so the confirming
+        resolve establishes no stable ceiling to have authorized under, and fail-closed
+        is the only honest answer.
+
+        Driven from inside the re-resolve, and asserted on the TAIL so a chunker
+        collapsing to one message cannot pass it vacuously.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="T9", thread_id=None)
+        )
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+        body = "x" * TELEGRAM_MAX_TEXT + "TAIL-AFTER-MIDSEND-TIGHTENING"
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        # Advance only once part 1 is authorized and delivered, so the window under test
+        # is the mid-send one; then advance on every read so it never settles.
+        generation = [11]
+        resolves = [0]
+        real_resolve = chat_runner._resolve_channel_target
+
+        def _tighten_during_second_resolve(*args, **kwargs):
+            result = real_resolve(*args, **kwargs)
+            resolves[0] += 1
+            return result
+
+        def _read_generation() -> int:
+            # Threshold is the MID-SEND resolve: part 1 now validates the generation its
+            # own re-ask returned, so advancing at 2 refuses part 1 instead.
+            if resolves[0] >= 3:
+                generation[0] += 1
+            return generation[0]
+
+        with (
+            _governance(True),
+            patch(
+                "kiro_crew.dashboard.chat_runner._resolve_channel_target",
+                side_effect=_tighten_during_second_resolve,
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.governance_answer_generation",
+                side_effect=_read_generation,
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                side_effect=_read_generation,
+            ),
+        ):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                body,
+                tool_name="send_message",
+                authored_link=(ChannelLink("telegram", channel_id="T9", thread_id=None), True),
+            )
+
+        assert not delivered, "the send reported success after a mid-send ceiling change"
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert sent, "precondition: part 1 must have been delivered before the tightening"
+        assert "TAIL-AFTER-MIDSEND-TIGHTENING" not in "".join(sent), (
+            "a later chunk was sent on a permit the re-resolve computed under a ceiling "
+            "that was replaced while it ran"
+        )
+        denials = [
+            r
+            for r in mock_sel.log_tool_invocation.call_args_list
+            if "governance_changed_mid_send_before_part_" in str(r)
+        ]
+        assert len(denials) == 1, (
+            "the mid-send refusal needs its own audited reason, distinct from a binding "
+            f"change; got {[str(r) for r in mock_sel.log_tool_invocation.call_args_list]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_profile_edit_mid_send_does_not_truncate(self, mock_sel):
+        """A token move that changed nothing for THIS send must not truncate it.
+
+        The token spans both governance layers, so any profile publication moves it --
+        including one that permits this destination exactly as before. Refusing on that
+        move alone abandons a multi-part message after a delivered prefix, which is a
+        partial delivery caused by an edit that authorized nothing differently.
+
+        So a moved token is a reason to RE-ASK, not to stop: the confirming resolve
+        re-derives the permission under the settled ceiling, and only a genuine
+        narrowing, a moved binding, or a token that will not settle refuses. The tail is
+        the assertion, so a chunker collapsing to one message cannot pass it vacuously.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport)
+        state.sessions.get_origin_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="T9", thread_id=None)
+        )
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+        body = "x" * TELEGRAM_MAX_TEXT + "TAIL-AFTER-UNRELATED-EDIT"
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        # One publication lands while the mid-send resolve runs, then the store is quiet,
+        # and the resolve keeps permitting the same destination: only the counter moved.
+        generation = [11]
+        resolves = [0]
+        real_resolve = chat_runner._resolve_channel_target
+
+        def _publish_once_during_second_resolve(*args, **kwargs):
+            result = real_resolve(*args, **kwargs)
+            resolves[0] += 1
+            if resolves[0] == 2:
+                generation[0] += 1
+            return result
+
+        with (
+            _governance(True),
+            patch(
+                "kiro_crew.dashboard.chat_runner._resolve_channel_target",
+                side_effect=_publish_once_during_second_resolve,
+            ),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.governance_answer_generation",
+                side_effect=lambda: generation[0],
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.governance_answer_generation",
+                side_effect=lambda: generation[0],
+            ),
+        ):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                body,
+                tool_name="send_message",
+                authored_link=(ChannelLink("telegram", channel_id="T9", thread_id=None), True),
+            )
+
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert "TAIL-AFTER-UNRELATED-EDIT" in "".join(sent), (
+            "the send was truncated after a delivered prefix by a token move that "
+            f"permitted this destination exactly as before; only {len(sent)} part(s) went"
+        )
+        assert delivered, "every part reached the destination, so this must report success"
+        assert not [
+            r
+            for r in mock_sel.log_tool_invocation.call_args_list
+            if "governance_changed_mid_send_before_part_" in str(r)
+        ], "an unrelated publication was audited as a governance denial"
+
+    @pytest.mark.asyncio
     async def test_a_later_chunk_failing_is_reported_not_swallowed(self, mock_sel):
         # The head landed and the tail did not, which is a partial delivery. It must
         # not read as success: on the cron path a True stands the Slack fallback down
@@ -1444,6 +2229,118 @@ class TestChannelTextIsNotTheNotificationText:
                 assert "session closed" in notified
 
     @pytest.mark.asyncio
+    async def test_revalidation_covers_both_callers_and_authored_link_gates_comparison(
+        self, mock_sel
+    ):
+        """Mid-send revalidation is unconditional; `authored_link` gates only the
+        authored-link COMPARISON.
+
+        An earlier revision keyed the re-walk on `authored_link` too, reasoning that
+        an inline caller had already been checked against a binding that could not
+        have moved. That held for the PRE-SEND check and not for the send: each part
+        is an await, so an inline multi-part send has the same inter-part window, and
+        its later parts reached a destination unlinked after part 1.
+
+        So this pins two things that must not collapse into each other:
+          * BOTH callers re-walk after the governance await -- more than one consult.
+          * `authored_link` still decides whether the live binding is compared
+            against what the WORK WAS AUTHORED FOR, which only a dispatched caller
+            can ask. A stale snapshot must refuse where an inline caller delivers.
+
+        Pinned by consult counts and by a refusal, not by source shape, so a
+        behaviour-preserving refactor stays green.
+        """
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        link = ChannelLink("telegram", channel_id="C1", thread_id=None)
+        moved = ChannelLink("telegram", channel_id="C_MOVED", thread_id=None)
+
+        def _fresh_state():
+            tp = _channel_transport()
+            st = _channel_state(transport=tp)
+            st.sessions.get_origin_link = MagicMock(return_value=link)
+            st.sessions.get_mirror_link = MagicMock(return_value=None)
+            return st, tp
+
+        inline_state, inline_tp = _fresh_state()
+        assert await deliver_to_channel(
+            inline_state, "dashboard:chat-1", "hi", tool_name="send_message"
+        )
+        inline_walks = inline_state.sessions.get_origin_link.call_count
+
+        snap_state, snap_tp = _fresh_state()
+        assert await deliver_to_channel(
+            snap_state,
+            "dashboard:chat-1",
+            "hi",
+            tool_name="chat.note",
+            authored_link=(link, True),
+        )
+        snapshot_walks = snap_state.sessions.get_origin_link.call_count
+
+        assert inline_tp.send_message.await_count == 1, "the inline send must still deliver"
+        assert snap_tp.send_message.await_count == 1, "the snapshot send must still deliver"
+        assert inline_walks > 1, (
+            "the inline caller must re-walk after the governance await; measured "
+            f"{inline_walks} consult(s). One means the revocation window between "
+            "parts is open again for the endpoint every LLM send goes through."
+        )
+        assert (
+            snapshot_walks > 1
+        ), f"the dispatched caller must re-walk too; measured {snapshot_walks}"
+
+        # The part `authored_link` DOES still gate: a snapshot that does not match
+        # the live binding is a refusal, where the inline caller above delivered
+        # against that same live binding.
+        stale_state, stale_tp = _fresh_state()
+        assert not await deliver_to_channel(
+            stale_state,
+            "dashboard:chat-1",
+            "hi",
+            tool_name="chat.note",
+            authored_link=(moved, True),
+        ), "a snapshot naming a different destination must refuse, never retarget"
+        assert stale_tp.send_message.await_count == 0, "a refused send must not deliver"
+
+    @pytest.mark.asyncio
+    async def test_a_rebind_that_moves_only_the_thread_refuses(self, mock_sel):
+        """A binding differing from the snapshot in `thread_id` ALONE must refuse.
+
+        The sibling test above moves `channel_id`, which any comparison catches --
+        including one that has silently stopped covering every field. `thread_id` is
+        the field a hand-written comparison forgets, and forgetting it delivers a note
+        into the wrong THREAD of the right channel, which is a real audience change.
+
+        So this is the discriminating case for field completeness: it fails for a
+        comparison that checks type and id but not thread, and passes for dataclass
+        equality, which covers any field `ChannelLink` gains later.
+        """
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        authored = ChannelLink("telegram", channel_id="C1", thread_id="T_ORIGINAL")
+        live = ChannelLink("telegram", channel_id="C1", thread_id="T_REBOUND")
+
+        tp = _channel_transport()
+        state = _channel_state(transport=tp)
+        state.sessions.get_origin_link = MagicMock(return_value=live)
+        state.sessions.get_mirror_link = MagicMock(return_value=None)
+
+        with _governance(True):
+            delivered = await deliver_to_channel(
+                state,
+                "dashboard:chat-1",
+                "hi",
+                tool_name="chat.note",
+                authored_link=(authored, True),
+            )
+
+        assert not delivered, (
+            "a binding whose thread moved under the snapshot must refuse; delivering "
+            "puts the note in a thread the work was never authorized for"
+        )
+        assert tp.send_message.await_count == 0, "a refused send must not deliver"
+
+    @pytest.mark.asyncio
     async def test_cron_job_session_key_is_used_verbatim(self, mock_sel):
         """A dashboard-born cron's job.session_key must reach the link lookup
         whole. `_resolve_session_target` strips "dashboard:" to get a SLOT name;
@@ -1469,9 +2366,19 @@ class TestChannelTextIsNotTheNotificationText:
                     headers={"X-Session-Key": "cron:job9"},
                 )
                 assert resp.status == 200
-                state.sessions.get_origin_link.assert_called_once_with(
-                    "dashboard:chat-3-1712793600"
-                )
+                # EVERY lookup must carry the WHOLE key. `deliver_to_channel` walks
+                # the ladder to choose a destination and re-walks after the
+                # governance await to catch a binding revoked in between, so the
+                # number of consults is an implementation detail of that discipline.
+                # What this test is about is the KEY: a truncated or prefix-stripped
+                # variant reaching the lookup silently loses the mirror. Asserting
+                # every call's argument rather than the call COUNT keeps it pinning
+                # that, and keeps it green when the revalidation shape changes.
+                consults = state.sessions.get_origin_link.call_args_list
+                assert consults, "the ladder must be consulted at least once"
+                assert all(
+                    c == call("dashboard:chat-3-1712793600") for c in consults
+                ), f"every consult must use the whole key; got {consults}"
 
 
 # ── the MCP tool half: which transport the governance gate names ──

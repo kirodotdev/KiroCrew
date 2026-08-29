@@ -140,7 +140,7 @@ def _permit_governance():
     """
     permit = SimpleNamespace(permitted=True)
     with (
-        patch("kiro_crew.dashboard.chat_compaction_notice.vet_and_audit", return_value=permit),
+        patch("kiro_crew.dashboard.slack_egress.vet_and_audit", return_value=permit),
         patch("kiro_crew.platform.governance_profiles.vet_and_audit", return_value=permit),
     ):
         yield
@@ -174,7 +174,7 @@ class TestNoticeText:
 
 @pytest.mark.asyncio
 class TestSlackDelivery:
-    async def test_posts_into_persisted_thread(self) -> None:
+    async def test_posts_into_persisted_thread(self, monkeypatch) -> None:
         client = _SlackClient()
         state = _state(
             slack_client=client,
@@ -189,7 +189,7 @@ class TestSlackDelivery:
         assert (channel, thread_ts) == ("C123", "ts-1")
         assert "92%" in text
 
-    async def test_posts_top_level_when_no_thread(self) -> None:
+    async def test_posts_top_level_when_no_thread(self, monkeypatch) -> None:
         client = _SlackClient()
         state = _state(slack_client=client, sessions=_Sessions(slack_link=("", "C123")))
 
@@ -197,6 +197,26 @@ class TestSlackDelivery:
             await deliver_channel_compaction_notice(state, "slack:ts-1", 90.0, success=True)
 
         assert client.posted[0][2] is None
+
+    async def test_a_recipient_no_authority_names_is_still_delivered(self, monkeypatch) -> None:
+        """Pins the DEFERRAL, not an ideal: this path does not re-authorize the
+        recipient, so a notice still goes out where the hardened chain would refuse.
+
+        The note mirror covers the refusing behaviour. This test exists so that
+        adopting the chain here later is a visible, reviewed behaviour change --
+        it must be updated in the same commit that widens the refusal, rather than
+        the widening slipping in unnoticed as a rider.
+        """
+        import kiro_crew.slack.handler as h
+
+        monkeypatch.setattr(h, "_tracking_channels", set(), raising=False)
+        client = _SlackClient()
+        state = _state(slack_client=client, sessions=_Sessions(slack_link=("ts-1", "C123")))
+
+        with _permit_governance():
+            await deliver_channel_compaction_notice(state, "slack:ts-1", 92.0, success=True)
+
+        assert len(client.posted) == 1, "the compaction notice unexpectedly re-authorizes"
 
     async def test_noop_without_client(self) -> None:
         state = _state(sessions=_Sessions(slack_link=("ts-1", "C123")))
@@ -218,7 +238,7 @@ class TestSlackDelivery:
         state = _state(slack_client=client, sessions=_Sessions(slack_link=("ts-1", "C123")))
 
         with patch(
-            "kiro_crew.dashboard.chat_compaction_notice.vet_and_audit",
+            "kiro_crew.dashboard.slack_egress.vet_and_audit",
             return_value=SimpleNamespace(permitted=False),
         ):
             await deliver_channel_compaction_notice(state, "slack:ts-1", 90.0, success=True)
@@ -231,7 +251,7 @@ class TestSlackDelivery:
         state = _state(slack_client=client, sessions=_Sessions(slack_link=("ts-1", "C123")))
 
         with patch(
-            "kiro_crew.dashboard.chat_compaction_notice.vet_and_audit",
+            "kiro_crew.dashboard.slack_egress.vet_and_audit",
             return_value=SimpleNamespace(),
         ):
             await deliver_channel_compaction_notice(state, "slack:ts-1", 90.0, success=True)
@@ -243,7 +263,7 @@ class TestSlackDelivery:
         state = _state(slack_client=client, sessions=_Sessions(slack_link=("ts-1", "C123")))
 
         with patch(
-            "kiro_crew.dashboard.chat_compaction_notice.vet_and_audit",
+            "kiro_crew.dashboard.slack_egress.vet_and_audit",
             side_effect=RuntimeError("profile unreadable"),
         ):
             await deliver_channel_compaction_notice(state, "slack:ts-1", 90.0, success=True)
@@ -394,6 +414,61 @@ class TestTransportDelivery:
             await deliver_channel_compaction_notice(
                 state, "discord:kirocrew:direct:u1", 90.0, success=True
             )
+
+    async def test_the_binding_walk_goes_through_the_one_shared_ladder(self, monkeypatch) -> None:
+        """The notice must not carry its own copy of the origin->mirror walk.
+
+        THREE sites spelled that ladder by hand; this consolidates TWO of them --
+        the note mirror's capture and this notice. A hand-written copy is how they
+        come to disagree: a pause-awareness or ordering fix applied to one leaves
+        the others silently on the old rule, and routing both through
+        ``snapshot_channel_link`` is what makes THOSE TWO agree by construction.
+
+        The third, ``slack/gateway.py``'s ``_channel_reply_link``, is deliberately
+        NOT consolidated and is not claimed here: it excludes Slack and dashboard
+        keys up front and falls back to a stored ``get_channel`` value when neither
+        rung answers, so it is a longer ladder doing a partly different job. Folding
+        it in would either widen the shared helper with rungs its other two callers
+        must then reason about, or silently drop that fallback.
+
+        Pinned by SUBSTITUTION rather than by reading the source: the shared helper
+        is replaced, and the notice must end up at the destination the replacement
+        returns. A copy of the walk would ignore it and reach the real binding
+        instead, so this fails on any re-divergence.
+        """
+        from kiro_crew.dashboard.handlers import messaging as messaging_mod
+
+        transport = _Transport()
+        state = _state(
+            transport=transport,
+            sessions=_Sessions(origin=ChannelLink("discord", channel_id="REAL")),
+        )
+
+        seen: list[bool] = []
+
+        def _fake_snapshot(_state, _key, *, skip_paused=False):
+            # Records the pause posture the notice asks for and hands back a
+            # destination the real ladder would never produce.
+            seen.append(skip_paused)
+            return ChannelLink("discord", channel_id="SUBSTITUTED"), True
+
+        monkeypatch.setattr(messaging_mod, "snapshot_channel_link", _fake_snapshot)
+
+        with _permit_governance():
+            await deliver_channel_compaction_notice(
+                state, "discord:kirocrew:direct:u1", 90.0, success=True
+            )
+
+        assert seen == [False], (
+            "the notice must consult the shared ladder exactly once and be "
+            f"pause-BLIND (a paused conversation still needs telling), got {seen}"
+        )
+        assert transport.sent, "the notice was not delivered at all"
+        assert transport.sent[0][0] == "SUBSTITUTED", (
+            "the notice reached the REAL binding, so it resolved the link itself "
+            "instead of through snapshot_channel_link -- the hand-written walk is "
+            f"back. Delivered to {transport.sent[0][0]!r}."
+        )
 
 
 @pytest.mark.asyncio
