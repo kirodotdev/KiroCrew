@@ -1301,9 +1301,3 @@ class DiscordRenderer(Renderer):
         ladder, self._ladder = self._ladder, None
         if ladder is not None:
             await ladder.close()
-
-    # -- helpers ------------------------------------------------------------
-    def _options(self) -> list[str]:
-        raw = "".join(self._buf).strip()
-        _, opts = _extract_options(raw)
-        return opts

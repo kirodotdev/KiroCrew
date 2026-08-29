@@ -91,65 +91,6 @@ def session_task_card(
     return blocks
 
 
-def config_panel(settings: dict) -> list[dict]:
-    """Toggle and select blocks for each setting in the dict.
-
-    Supported value types: bool → toggle, list → static_select, str → plain display.
-    """
-    blocks: list[dict] = []
-    for key, val in settings.items():
-        if isinstance(val, bool):
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"*{key}*"},
-                    "accessory": {
-                        "type": "checkboxes",
-                        "action_id": f"mc_config_{key}",
-                        "options": [
-                            {
-                                "text": {"type": "plain_text", "text": "Enabled"},
-                                "value": key,
-                            }
-                        ],
-                        "initial_options": (
-                            [
-                                {
-                                    "text": {"type": "plain_text", "text": "Enabled"},
-                                    "value": key,
-                                }
-                            ]
-                            if val
-                            else []
-                        ),
-                    },
-                }
-            )
-        elif isinstance(val, list):
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"*{key}*"},
-                    "accessory": {
-                        "type": "static_select",
-                        "action_id": f"mc_config_{key}",
-                        "options": [
-                            {"text": {"type": "plain_text", "text": str(v)}, "value": str(v)}
-                            for v in val
-                        ],
-                    },
-                }
-            )
-        else:
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"*{key}:* {val}"},
-                }
-            )
-    return blocks
-
-
 def confirmation_dialog(title: str, text: str, confirm_text: str, deny_text: str, action_prefix: str = "mc_stop") -> list[dict]:
     """Section with confirm/deny action buttons."""
     return [
@@ -198,45 +139,6 @@ def dashboard_link_block(url: str, link_mins: int, session_mins: int) -> list[di
             },
         },
     ]
-
-
-def agent_buttons(agents: list[str], current: str) -> list[dict]:
-    """Buttons for each available agent, current one marked with ✅."""
-    buttons = []
-    for name in agents:
-        label = f"✅ {name}" if name == current else name
-        btn: dict = {
-            "type": "button",
-            "text": {"type": "plain_text", "text": label[:75]},
-            "action_id": f"mc_agent_select_{name}",
-            "value": name,
-        }
-        if name == current:
-            btn["style"] = "primary"
-        buttons.append(btn)
-    # "Off" button to reset to default
-    off_label = "✅ off" if not current else "off"
-    buttons.append(
-        {
-            "type": "button",
-            "text": {"type": "plain_text", "text": off_label},
-            "action_id": "mc_agent_select_off",
-            "value": "off",
-        }
-    )
-    blocks: list[dict] = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Current agent:* {current or 'default (kirocrew)'}",
-            },
-        },
-    ]
-    # Slack limits 5 buttons per actions block
-    for i in range(0, len(buttons), 5):
-        blocks.append({"type": "actions", "elements": buttons[i : i + 5]})
-    return blocks
 
 
 def deprecation_warning_block(old_cmd: str, new_cmd: str) -> dict:

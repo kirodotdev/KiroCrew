@@ -878,12 +878,6 @@ class DiscordDispatcher:
             session_key, self._receipt_surface(channel_id), answered, deferred
         )
 
-    async def _receipt_finish_cancelled_locked(self, session_key: str, channel_id: str) -> None:
-        """Finalize the receipt to a "🛑 Cancelled" record, if present. Caller
-        MUST hold ``self._queue.lock``."""
-        assert self.client is not None
-        await self._queue.finish_cancelled_locked(session_key, self._receipt_surface(channel_id))
-
     def _receipt_surface(self, channel_id: str) -> ReceiptSurface:
         """A receipt surface with this channel's address already bound."""
         # cast, not assert: mypy does not carry an assert-narrowed local

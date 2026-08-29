@@ -120,18 +120,6 @@ async def _replay_preview(text: str, limit: int, *, reserve: int) -> str:
     return first + _REPLAY_TRUNCATED
 
 
-def _history_dashboard_key(raw_key: object) -> str | None:
-    """Restore the canonical dashboard session key from a JSONL file stem."""
-    key = str(raw_key or "")
-    if key.startswith("dashboard:"):
-        return key
-    if key.startswith("dashboard_"):
-        while key.startswith("dashboard_"):
-            key = key[len("dashboard_") :]
-        return f"dashboard:{key}" if key else None
-    return None
-
-
 def _picker_components(nonce: str, choices: tuple[SessionChoice, ...]) -> list[dict]:
     rows: list[dict] = []
     buttons: list[dict] = []
