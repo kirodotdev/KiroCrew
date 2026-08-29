@@ -703,15 +703,7 @@ describe('VectorMemoryCard — embedding setup progress', () => {
     unmount()
   })
 
-  it('KNOWN DEFECT: polling dies when the setup step advances mid-flight', async () => {
-    // The status-poll effect keys on `embStatus?.setup_step`, so the first step
-    // change (checking -> downloading) runs its cleanup and clears the interval.
-    // The effect body then cannot restart it because its guard requires
-    // `!enabling`, which is already true. The card is left showing the
-    // downloading label forever and never observes 'done'.
-    //
-    // This test pins the current behaviour. When the effect is fixed, flip the
-    // final expectation to assert that polling CONTINUES past the transition.
+  it('continues polling when the setup step advances mid-flight', async () => {
     vi.useFakeTimers()
     setupApi({ stats: IDLE_STATS })
     vi.mocked(api.vectorEmbeddingStatus)
@@ -728,8 +720,8 @@ describe('VectorMemoryCard — embedding setup progress', () => {
 
     const afterTransition = vi.mocked(api.vectorEmbeddingStatus).mock.calls.length
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
-    expect(vi.mocked(api.vectorEmbeddingStatus).mock.calls.length).toBe(afterTransition)
-    expect(screen.getByText('Downloading embedding model (~610MB)…')).toBeInTheDocument()
+    expect(vi.mocked(api.vectorEmbeddingStatus).mock.calls.length).toBeGreaterThan(afterTransition)
+    expect(screen.getByRole('button', { name: /Inspector/i })).toBeInTheDocument()
     unmount()
   })
 
