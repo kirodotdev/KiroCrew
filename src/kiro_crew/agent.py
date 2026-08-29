@@ -4891,9 +4891,17 @@ def _install_heartbeat_agent() -> None:
     # agent's ``--include-tools``/``--include-tool-tags``/``--exclude-tools``
     # filters so all read tools surface to the heartbeat agent — security is
     # enforced gateway-side against ``HEARTBEAT_SAFE_TOOLS`` via
-    # ``_heartbeat_approval``, not by per-agent MCP filtering.
-    main_config = _load_json(kiro_agents_dir_path() / AGENT_FILENAME)
-    main_mcp = main_config.get("mcpServers", {}) or {}
+    # ``_heartbeat_approval``, not by per-agent MCP filtering. Read through the
+    # capped reader (#6736): a refused main spec degrades as absent, but with an
+    # operator-visible signal, because the result is a heartbeat agent with no
+    # MCP servers -- a worker that fails every task.
+    main_path = kiro_agents_dir_path() / AGENT_FILENAME
+    main_config = _read_spec_capped(main_path)
+    if main_config is None and main_path.exists():
+        logger.warning(
+            "Main agent spec %s unusable; heartbeat agent installs with no MCP servers", main_path
+        )
+    main_mcp = (main_config or {}).get("mcpServers", {}) or {}
 
     _strip_flags = ("--include-tools", "--include-tool-tags", "--exclude-tools")
     mcp: dict[str, dict] = {}

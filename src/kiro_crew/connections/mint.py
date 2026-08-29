@@ -59,6 +59,7 @@ from uuid import uuid4
 # binding.
 from kiro_crew import agent as _agent
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_files import AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.loader import data_home
 from kiro_crew.loop_lock import LoopBoundLock
@@ -359,11 +360,26 @@ def _write_mint_agent_spec(slug: str) -> tuple[str, str]:
     this provider's challenge, all of it on the path the card waits on.
 
     Falls back to the main agent name when ``slug`` has no entry in the main spec
-    yet, so a mint never ends up with FEWER servers than it needs.
+    yet, so a mint never ends up with FEWER servers than it needs. A main spec
+    that exists but is REFUSED by the hardened reader raises ``OSError`` instead:
+    the fallback would hand the refused file to the spawned child to reload.
     """
     agents_dir = _agent.kiro_agents_dir_path()
     alias = mcp_server_alias(slug)
-    entry = (_agent._load_json(agents_dir / AGENT_FILENAME).get("mcpServers") or {}).get(alias)
+    # Hardened reader (#6736). A REFUSED main spec (oversize, sensitive symlink,
+    # non-object) must NOT reach the main-agent fallback: that fallback spawns
+    # ``kiro-cli --agent kirocrew``, and the child would reload the very file the
+    # gateway just refused to read -- uncapped and unguarded. Raising instead
+    # lands in the mint flow's failure path (retryable ``failed`` row, holdings
+    # disposed, no child spawned). The fallback below stays reserved for what it
+    # always meant: the file or the alias entry being genuinely absent.
+    spec = _read_agent_spec(agents_dir / AGENT_FILENAME)
+    if spec is None:
+        if (agents_dir / AGENT_FILENAME).exists():
+            logger.warning("Main agent spec unusable; refusing to mint for %r", alias)
+            raise OSError("main agent spec unusable")
+        spec = {}
+    entry = (spec.get("mcpServers") or {}).get(alias)
     if not isinstance(entry, dict):
         logger.debug("No %r entry in the main agent spec; minting with %r", alias, _MAIN_AGENT_NAME)
         return _MAIN_AGENT_NAME, ""
@@ -808,7 +824,10 @@ def _agent_spec_entry_missing(slug: str) -> bool:
     through ``asyncio.to_thread``.
     """
     agents_dir = _agent.kiro_agents_dir_path()
-    servers = _agent._load_json(agents_dir / AGENT_FILENAME).get("mcpServers") or {}
+    # Hardened reader (#6736): a refused main spec reads as absent, so the entry
+    # counts as missing -- the same degrade-as-absent direction as before.
+    spec = _read_agent_spec(agents_dir / AGENT_FILENAME) or {}
+    servers = spec.get("mcpServers") or {}
     return mcp_server_alias(slug) not in servers
 
 

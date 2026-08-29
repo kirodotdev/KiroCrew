@@ -14,6 +14,14 @@ observable without planting symlinks, mirroring #5423's tests. One
 representative symlink test proves the sensitive-target guard applies through
 a migrated caller; the guard itself lives in ``_read_agent_spec`` and has its
 own coverage.
+
+#6736 extends the migration to three more raw ``_load_json`` reads of
+``kirocrew.json`` (``mint._write_mint_agent_spec``,
+``mint._agent_spec_entry_missing``, ``agent._install_heartbeat_agent``); their
+classes below pin the same two properties per site. For those three sites only
+the ``oversized`` and symlink cases are differential against the old path
+(``_load_json`` already normalized a non-object root to ``{}``); the
+``non_object`` cases are kept as non-differential regression pins.
 """
 
 from __future__ import annotations
@@ -25,7 +33,9 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 
-from kiro_crew.agent import migrate_agent_specs
+from kiro_crew.agent import _install_heartbeat_agent, migrate_agent_specs
+from kiro_crew.agent_files import AGENT_FILENAME, HEARTBEAT_AGENT_FILENAME
+from kiro_crew.connections import mint
 from kiro_crew.dashboard.chat_persistence import _build_kiro_model_map
 from kiro_crew.dashboard.handlers.agents import (
     _namespaced_agent_file_exists,
@@ -291,3 +301,121 @@ class TestSensitiveSymlinkGuard:
         out = _build_kiro_model_map()
 
         assert "linked" not in out
+
+
+class TestWriteMintAgentSpec:
+    """connections.mint._write_mint_agent_spec -- the one-server mint spec (#6736).
+
+    A refused main spec must FAIL the mint (raise): the main-agent fallback
+    spawns ``kiro-cli --agent kirocrew``, and the child would reload the very
+    file the gateway just refused. The fallback stays reserved for a genuinely
+    absent file or alias entry. Under the old ``_load_json`` path an oversized
+    main spec was parsed and minted from.
+    """
+
+    @pytest.mark.parametrize("kind", REFUSALS)
+    def test_refused_main_spec_fails_the_mint(self, agents_dir, monkeypatch, kind):
+        # Stubbed for hermeticity: the refusal path never records a mint spec,
+        # but a regression that DID mint must not write a real manifest.
+        monkeypatch.setattr(mint, "_record_mint_spec", lambda spec_path: True)
+        alias = mint.mcp_server_alias("probe")
+        _plant_refused(agents_dir, AGENT_FILENAME, {"mcpServers": {alias: {"command": "x"}}}, kind)
+
+        with pytest.raises(OSError, match="main agent spec unusable"):
+            mint._write_mint_agent_spec("probe")
+
+    def test_absent_main_spec_still_falls_back_to_the_main_agent(self, agents_dir):
+        assert mint._write_mint_agent_spec("probe") == (mint._MAIN_AGENT_NAME, "")
+
+    def test_valid_main_spec_still_mints_under_the_same_cap(self, agents_dir, monkeypatch):
+        monkeypatch.setattr(mint, "_record_mint_spec", lambda spec_path: True)
+        alias = mint.mcp_server_alias("probe")
+        _plant(agents_dir, AGENT_FILENAME, {"mcpServers": {alias: {"command": "x"}}})
+
+        name, path = mint._write_mint_agent_spec("probe")
+
+        # Names carry a per-mint random suffix; pin the stable properties:
+        # a real (non-fallback) mint whose file matches the returned name.
+        assert name != mint._MAIN_AGENT_NAME
+        assert path == str(agents_dir / f"{name}.json")
+        written = json.loads(Path(path).read_text(encoding="utf-8"))
+        assert written["mcpServers"] == {alias: {"command": "x"}}
+
+
+class TestAgentSpecEntryMissing:
+    """connections.mint._agent_spec_entry_missing -- the concurrent-uninstall probe (#6736).
+
+    A refused main spec reads as absent, so the entry counts as missing; the old
+    path PARSED an oversized spec and reported the entry present.
+    """
+
+    @pytest.mark.parametrize("kind", REFUSALS)
+    def test_refused_main_spec_reads_as_entry_missing(self, agents_dir, kind):
+        alias = mint.mcp_server_alias("probe")
+        _plant_refused(agents_dir, AGENT_FILENAME, {"mcpServers": {alias: {"command": "x"}}}, kind)
+
+        assert mint._agent_spec_entry_missing("probe") is True
+
+    def test_valid_main_spec_entry_still_found_under_the_same_cap(self, agents_dir):
+        alias = mint.mcp_server_alias("probe")
+        _plant(agents_dir, AGENT_FILENAME, {"mcpServers": {alias: {"command": "x"}}})
+
+        assert mint._agent_spec_entry_missing("probe") is False
+
+    def test_link_to_a_sensitive_target_reads_as_entry_missing(self, tmp_path, monkeypatch):
+        """The sensitive-symlink guard flows through a migrated mint caller."""
+        from kiro_crew import agent_discovery
+
+        alias = mint.mcp_server_alias("probe")
+        target = tmp_path / "protected.json"
+        target.write_text(json.dumps({"mcpServers": {alias: {"command": "x"}}}), encoding="utf-8")
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / AGENT_FILENAME).symlink_to(target)
+        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
+
+        assert mint._agent_spec_entry_missing("probe") is True
+
+
+class TestInstallHeartbeatAgent:
+    """agent._install_heartbeat_agent -- the main-config mcpServers pull (#6736).
+
+    A refused main spec contributes no MCP entries (the heartbeat agent installs
+    with an empty toolset, same as when the main entry does not exist yet); the
+    old path parsed an oversized main spec and copied its entry through.
+    """
+
+    @pytest.fixture
+    def heartbeat_env(self, monkeypatch):
+        """Keep the install local: no config load, no cc-model sidecar write."""
+        monkeypatch.setattr("kiro_crew.agent._background_agent_model", lambda: "auto")
+        monkeypatch.setattr("kiro_crew.agent.agent_state.set_cc_model", lambda *a, **k: None)
+
+    @pytest.mark.parametrize("kind", REFUSALS)
+    def test_refused_main_spec_yields_no_mcp_servers(self, agents_dir, heartbeat_env, kind):
+        _plant_refused(
+            agents_dir,
+            AGENT_FILENAME,
+            {"mcpServers": {"kirocrew-core": {"command": "x"}}},
+            kind,
+        )
+
+        _install_heartbeat_agent()
+
+        written = json.loads((agents_dir / HEARTBEAT_AGENT_FILENAME).read_text(encoding="utf-8"))
+        assert written["mcpServers"] == {}
+        assert written["tools"] == []
+
+    def test_valid_main_spec_still_feeds_the_heartbeat_agent(self, agents_dir, heartbeat_env):
+        _plant(
+            agents_dir,
+            AGENT_FILENAME,
+            {"mcpServers": {"kirocrew-core": {"command": "x", "args": ["--include-tools", "a"]}}},
+        )
+
+        _install_heartbeat_agent()
+
+        written = json.loads((agents_dir / HEARTBEAT_AGENT_FILENAME).read_text(encoding="utf-8"))
+        assert written["mcpServers"]["kirocrew-core"]["args"] == []
+        assert written["tools"] == ["@kirocrew-core"]
