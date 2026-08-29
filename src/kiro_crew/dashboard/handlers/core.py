@@ -649,9 +649,22 @@ async def api_stt_config(request: web.Request) -> web.Response:
             stt_section = data.setdefault("stt", {})
             if "enabled" in body:
                 stt_section["enabled"] = bool(body["enabled"])
-            if "provider" in body and body["provider"] in _stt_providers():
+            # Guard the type before either membership lookup.  The model catalog
+            # is a dict, so a JSON object or array would otherwise raise
+            # ``TypeError: unhashable type`` and turn this partial update into a
+            # 500.  Wrong-typed fields follow the existing config contract: skip
+            # that field while still applying valid siblings.
+            if (
+                "provider" in body
+                and isinstance(body["provider"], str)
+                and body["provider"] in _stt_providers()
+            ):
                 stt_section["provider"] = body["provider"]
-            if "model" in body and body["model"] in _STT_MODEL_SIZES:
+            if (
+                "model" in body
+                and isinstance(body["model"], str)
+                and body["model"] in _STT_MODEL_SIZES
+            ):
                 stt_section["model"] = body["model"]
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
                 stt_section["transcribe_region"] = body["transcribe_region"]
