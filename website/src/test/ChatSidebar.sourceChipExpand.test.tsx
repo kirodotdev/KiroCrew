@@ -64,17 +64,17 @@ const ISSUE = (n: number) => `https://github.com/kirodotdev/KiroCrew/issues/${n}
 
 /** What the slots payload carries: the per-kind budget, three PRs + one issue. */
 const budgeted = [
-  { provider: 'github', number: 1, url: PR(1), state: 'open', kind: 'change' },
-  { provider: 'github', number: 2, url: PR(2), state: 'open', kind: 'change' },
-  { provider: 'github', number: 3, url: PR(3), state: 'open', kind: 'change' },
-  { provider: 'github', number: 90, url: ISSUE(90), kind: 'issue' },
+  { provider: 'github', number: 1, label: '#1', url: PR(1), state: 'open', kind: 'change' },
+  { provider: 'github', number: 2, label: '#2', url: PR(2), state: 'open', kind: 'change' },
+  { provider: 'github', number: 3, label: '#3', url: PR(3), state: 'open', kind: 'change' },
+  { provider: 'github', number: 90, label: '#90', url: ISSUE(90), kind: 'issue' },
 ]
 /** What the unbudgeted read returns: the same four plus the two behind "+2". */
 const full = [
   ...budgeted.slice(0, 3),
-  { provider: 'github', number: 4, url: PR(4), state: 'merged', kind: 'change' },
+  { provider: 'github', number: 4, label: '#4', url: PR(4), state: 'merged', kind: 'change' },
   budgeted[3],
-  { provider: 'github', number: 91, url: ISSUE(91), kind: 'issue' },
+  { provider: 'github', number: 91, label: '#91', url: ISSUE(91), kind: 'issue' },
 ]
 
 const slots = [
@@ -91,7 +91,7 @@ const swapped = [
   {
     ...slots[0],
     source_links: [
-      { provider: 'github', number: 9, url: PR(9), state: 'open', kind: 'change' },
+      { provider: 'github', number: 9, label: '#9', url: PR(9), state: 'open', kind: 'change' },
       ...budgeted.slice(1),
     ],
     source_links_total: 6,

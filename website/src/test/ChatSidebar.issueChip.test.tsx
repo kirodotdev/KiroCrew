@@ -58,11 +58,11 @@ const slots = [
   {
     key: 's1', title: 'Mixed session', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z',
     source_links: [
-      { provider: 'github', number: 634, url: PR_URL, state: 'open', ci: 'failed', kind: 'change' },
+      { provider: 'github', number: 634, label: '#634', url: PR_URL, state: 'open', ci: 'failed', kind: 'change' },
       // No `kind`: the wire default. Must render as a PR chip, not an issue chip.
-      { provider: 'github', number: 500, url: LEGACY_PR_URL, state: 'merged' },
-      { provider: 'github', number: 701, url: ISSUE_URL, kind: 'issue' },
-      { provider: 'gitlab', number: 8, url: MR_ISSUE_URL, kind: 'issue' },
+      { provider: 'github', number: 500, label: '#500', url: LEGACY_PR_URL, state: 'merged' },
+      { provider: 'github', number: 701, label: '#701', url: ISSUE_URL, kind: 'issue' },
+      { provider: 'gitlab', number: 8, label: '#8', url: MR_ISSUE_URL, kind: 'issue' },
     ],
     source_links_total: 6,
   },
@@ -126,7 +126,13 @@ describe('ChatSidebar – issue chips', () => {
     expect(screen.queryByTestId('session-issue-chip-500')).toBeNull()
   })
 
-  it('uses # for a GitLab issue too (only merge requests use !)', () => {
+  // The RULE that a GitLab issue is `#8` and only a merge request is `!8` now
+  // lives in the serializer (`source_ref_label`, pinned by
+  // test_source_providers.py::TestSourceRefLabel). What is left to check here is
+  // that the chip renders the label it was handed verbatim and adds no
+  // punctuation of its own — which is the property that lets a provider this
+  // build has never heard of still label itself correctly.
+  it('renders the label the server sent, verbatim', () => {
     renderSidebar()
     const chip = screen.getByTestId('session-issue-chip-8')
     expect(chip).toHaveAttribute('href', MR_ISSUE_URL)

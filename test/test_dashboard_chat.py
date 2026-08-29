@@ -223,8 +223,14 @@ class TestChatSlot:
 
         This is the primary Jira flow: people paste the ticket they are working
         from. The scan covers every durable role, and the serialized entry
-        carries the project key in ``repo`` because the chip labels itself
-        PROJ-123 -- the number alone is meaningless outside its project.
+        carries a ready ``label`` because PROJ-123 is the whole identifier --
+        the number alone is meaningless outside its project.
+
+        ``repo`` is still sent, and that overlap is deliberate rather than
+        leftover: the renderer that shipped before ``label`` assembles the Jira
+        chip name from it, and an already-open tab is not reloaded on an upgrade
+        that does not change ``kiro_crew.__version__``. Asserted so the field
+        cannot be dropped by accident before a release has passed.
         """
         slot = _ChatSlot("s1")
         slot.append("user", "Please look at https://acme.atlassian.net/browse/PROJ-123", ts="t1")
@@ -234,6 +240,7 @@ class TestChatSlot:
         link = payload["source_links"][0]
         assert link["provider"] == "jira"
         assert link["kind"] == "issue"
+        assert link["label"] == "PROJ-123"
         assert link["repo"] == "PROJ"
         assert link["number"] == 123
         assert link["url"] == "https://acme.atlassian.net/browse/PROJ-123"
@@ -2647,7 +2654,13 @@ class TestSlotLifecycle:
 
         assert resp.status == 200
         link = next(item for item in payload if item["key"] == "source")["source_links"][0]
-        assert link == {"provider": "github", "number": 12, "url": url, "kind": "change"}
+        assert link == {
+            "provider": "github",
+            "number": 12,
+            "url": url,
+            "kind": "change",
+            "label": "#12",
+        }
         scheduler.assert_not_called()
 
     def test_slot_status_serialization_requires_owner_opt_in(self, tmp_path, monkeypatch):

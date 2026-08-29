@@ -308,6 +308,33 @@ class SourceRef:
     kind: str = "change"
 
 
+def source_ref_label(ref: SourceRef) -> str:
+    """The provider's own short name for this object, as a chip renders it.
+
+    Every provider names its objects differently -- GitHub writes ``#123``,
+    GitLab writes ``!123`` for a merge request but ``#123`` for an issue, and
+    Jira has no bare number at all: ``PROJ-123`` is the whole identifier, the
+    number alone is meaningless outside its project.
+
+    This belongs on the side that parsed the URL. The alternative -- shipping
+    the components and letting the renderer reassemble them -- means the
+    renderer has to know each provider's convention, which is knowledge it can
+    only have about providers that already exist, and it made the payload carry
+    Jira's project key purely so a template string could put it back together.
+
+    Not a translated string: these are the provider's identifiers, not prose,
+    and ``PROJ-123`` reads the same in every locale.
+
+    An unrecognized provider falls to ``#number``, the most widely shared
+    convention, rather than borrowing the punctuation of a specific vendor.
+    """
+    if ref.provider == "jira":
+        return f"{ref.repo}-{ref.number}"
+    if ref.provider == "gitlab" and ref.kind == "change":
+        return f"!{ref.number}"
+    return f"#{ref.number}"
+
+
 _GITLAB_HOSTS_TTL_SECS = 30.0
 # Cached allowlist snapshots. Populated only by _load_provider_hosts() running
 # in a worker thread, so every reader on the event loop is a pure dict lookup.

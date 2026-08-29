@@ -5807,6 +5807,59 @@ def test_self_hosted_jira_rejected_when_allowlist_empty(monkeypatch) -> None:
         source.parse_source_url("https://jira.acme.internal/browse/PROJ-1")
 
 
+class TestSourceRefLabel:
+    """``source_ref_label`` -- what a sidebar chip is CALLED.
+
+    These assertions were previously spread across the sidebar's own render
+    fixtures, where each provider's punctuation was rebuilt by a template
+    string. They live here now because this is the side that knows the
+    convention, and the renderer prints whatever it is handed.
+    """
+
+    def test_github_uses_hash_for_both_namespaces(self) -> None:
+        """GitHub writes ``#123`` for a pull request and an issue alike -- the two
+        namespaces share one number counter, and the provider does not
+        distinguish them in writing either."""
+        pull = source.parse_source_url("https://github.com/acme/widgets/pull/123")
+        issue = source.parse_source_url("https://github.com/acme/widgets/issues/124")
+        assert source.source_ref_label(pull) == "#123"
+        assert source.source_ref_label(issue) == "#124"
+
+    def test_gitlab_bangs_only_the_merge_request(self) -> None:
+        """``!7`` is GitLab's mark for a MERGE REQUEST specifically; its issues
+        are ``#7``. Labelling a GitLab issue ``!7`` names an unrelated object
+        that usually also exists, which is why the split is pinned rather than
+        left to whichever renderer formats the chip."""
+        mr = source.parse_source_url("https://gitlab.com/acme/service/-/merge_requests/7")
+        issue = source.parse_source_url("https://gitlab.com/acme/service/-/issues/7")
+        assert source.source_ref_label(mr) == "!7"
+        assert source.source_ref_label(issue) == "#7"
+
+    def test_jira_label_is_the_whole_key(self) -> None:
+        """Jira has no bare number: ``PROJ-123`` is the identifier. This is the
+        case that had the serializer shipping a project key purely so the
+        renderer could paste it back on."""
+        ref = source.parse_source_url("https://acme.atlassian.net/browse/PROJ-123")
+        assert source.source_ref_label(ref) == "PROJ-123"
+
+    def test_unknown_provider_borrows_no_vendor_punctuation(self) -> None:
+        """A provider this build does not know gets ``#``, the most widely shared
+        convention -- never ``!``, which would assert it is GitLab. Constructed
+        directly because ``parse_source_url`` cannot yet produce such a ref; the
+        point is that the label function is total over its input rather than
+        exhaustive over today's three providers."""
+        ref = source.SourceRef(
+            "acme-review",
+            "https://review.acme.internal/c/4821",
+            "review.acme.internal",
+            "acme",
+            "widgets",
+            4821,
+            kind="change",
+        )
+        assert source.source_ref_label(ref) == "#4821"
+
+
 @pytest.mark.parametrize(
     "url",
     [

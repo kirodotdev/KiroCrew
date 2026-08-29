@@ -4379,6 +4379,7 @@ class _ChatSlot:
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
             parse_source_url,
+            source_ref_label,
         )
 
         # The self-managed GitLab allowlist is part of the cache key, not just the
@@ -4475,11 +4476,28 @@ class _ChatSlot:
                         # "change" for older payloads, so the frontend defaults
                         # rather than requires it.
                         "kind": ref.kind,
-                        # Jira chips label as PROJECT-NUMBER, so the project key
-                        # (carried in ``repo``) is identity, not decoration.
-                        # Sent only for Jira: GitHub/GitLab chips label by
-                        # number alone and their repo would be payload for
-                        # nothing on every slots push.
+                        # What the chip is CALLED (``#123``, ``!123``,
+                        # ``PROJ-123``). Decided here because this is the side
+                        # that parsed the URL and therefore knows the
+                        # provider's convention; see
+                        # :func:`source_ref_label`.
+                        "label": source_ref_label(ref),
+                        # Jira's project key, kept ONLY to survive a version
+                        # skew, and deliberately no longer read by this build.
+                        #
+                        # The renderer that shipped before ``label`` builds the
+                        # Jira chip name as ``{repo}-{number}``, so dropping
+                        # this field renders ``undefined-123`` on an ALREADY
+                        # OPEN dashboard tab. The websocket's reload-on-upgrade
+                        # guard does not save that tab: it compares
+                        # ``kiro_crew.__version__`` between status frames, so a
+                        # restart onto newer code WITHOUT a version bump -- the
+                        # normal case between releases -- never triggers it, and
+                        # the stale bundle keeps rendering until someone
+                        # refreshes by hand.
+                        #
+                        # Removable once no pre-``label`` bundle can still be
+                        # live, i.e. one release after this one.
                         **({"repo": ref.repo} if ref.provider == "jira" else {}),
                     }
         links = list(found.values())

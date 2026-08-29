@@ -188,7 +188,7 @@ describe('useWebSocket pull-request status sync', () => {
     testStore.dispatch(sseSlots([
       {
         key: 'chat-a', messages: 1, running: false,
-        source_links: [{ provider: 'github', number: 7, url: URL_A, state: 'open', ci: 'running' }],
+        source_links: [{ provider: 'github', number: 7, label: '#7', url: URL_A, state: 'open', ci: 'running' }],
       },
     ] as never))
     const { ws, unmount } = connect()

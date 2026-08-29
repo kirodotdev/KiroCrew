@@ -597,6 +597,16 @@ interface Slot {
     provider: 'github' | 'gitlab' | 'jira'
     number: number
     url: string
+    // What the chip is called, decided by the serializer (`source_ref_label`):
+    // `#123`, `!123`, `PROJ-123`. Not translated — a provider's identifier for
+    // one of its own objects reads the same in every locale.
+    //
+    // OPTIONAL on the wire for the same reason `kind` is: a bundle newer than
+    // the gateway it talks to must keep rendering. See `chipLabel`.
+    label?: string
+    // Jira's project key. No longer read — the serializer sends the assembled
+    // `label` instead — and kept on the wire only until no pre-`label` bundle
+    // can still be live.
     repo?: string
     ci?: 'running' | 'passed' | 'failed' | null
     state?: 'open' | 'draft' | 'merged' | 'closed'
@@ -673,6 +683,49 @@ function chipStatusGlyph(
   if (link.ci === 'running') return 'running'
   if (link.ci === 'passed') return 'passed'
   return null
+}
+
+/** What the chip prints. The serializer decides it; this only covers its
+ * absence, which means a bundle newer than the gateway it is talking to.
+ *
+ * Deliberately DUMB -- `#N` for anything, with no provider branch. Reaching for
+ * the provider's real convention here would reinstate the second
+ * implementation this change exists to delete, and a fallback that is a
+ * near-copy of the real rule is the kind that drifts silently. `#N` is
+ * recognisably the object and recognisably generic. */
+function chipLabel(link: SidebarSourceLink): string {
+  return link.label ?? `#${link.number}`
+}
+
+/** The provider's mark for a chip, or a neutral link glyph for a provider this
+ * build does not recognize.
+ *
+ * One resolver rather than a ternary inlined at each chip: the change chip and
+ * the issue chip render the identical mark, so the two copies were pure
+ * duplication. Their LABEL branches were not duplication -- they encoded
+ * genuinely different rules, since `!7` is a merge request and `#7` an issue --
+ * which is exactly the knowledge that belongs with the parser rather than
+ * spread across two render sites.
+ *
+ * The `default` is not dead code even though `provider` is typed as three
+ * literals. That type describes what the serializer sends TODAY; the value
+ * itself arrives over the wire from Python, where nothing enforces it. The
+ * branch it replaced used GitLab as its implicit `else`, so an unrecognized
+ * provider rendered GitLab's brand mark on someone else's review system --
+ * a wrong attribution is worse than an anonymous one, and this is the one
+ * failure mode a chip must not have.
+ */
+function SourceLinkIcon({ provider }: { provider: SidebarSourceLink['provider'] }) {
+  switch (provider) {
+    case 'github':
+      return <GithubLogo size={10} className="shrink-0" />
+    case 'gitlab':
+      return <GitlabLogo size={10} className="shrink-0" />
+    case 'jira':
+      return <JiraLogo size={10} className="shrink-0" />
+    default:
+      return <Link2 className="lucide-inline shrink-0" aria-hidden="true" />
+  }
 }
 
 /** A session row's pull-request / issue chip strip, including the expandable
@@ -826,8 +879,8 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
           onClick={revealInPanel(link)}
           className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
           title={chipTitle(link)}>
-          {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : link.provider === 'jira' ? <JiraLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
-          {link.provider === 'github' ? `#${link.number}` : link.provider === 'jira' ? `${link.repo}-${link.number}` : `!${link.number}`}
+          <SourceLinkIcon provider={link.provider} />
+          {chipLabel(link)}
           {link.state === 'merged' && (
             <span className="inline-flex shrink-0 text-aim" aria-label={i18nT('pages.chatSidebar.merged')} title={i18nT('pages.chatSidebar.merged')}>
               <GitMerge className="lucide-inline" aria-hidden="true" />
@@ -868,16 +921,19 @@ function SessionSourceChips({ slotKey, links, total, connected, isActive, onOpen
         // drag) but deliberately NO ci / state / merge decoration — the
         // chip-status cache is pull-request-only in this phase, so an issue chip
         // has nothing truthful to colour and a borrowed glyph would assert state
-        // we never fetched. Both providers number issues with '#'.
+        // we never fetched. How the number is written is the serializer's call
+        // (`source_ref_label`), so nothing here branches on provider except the
+        // issue dot, which Jira does not get: its label is already a whole
+        // identifier (PROJ-123) rather than a bare number needing a marker.
         <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer"
           data-testid={`session-issue-chip-${link.number}`}
           draggable={false}
           onClick={revealInPanel(link)}
           className="inline-flex items-center gap-1 px-1.5 py-[1px] rounded-[4px] text-[10px] leading-none font-medium text-muted no-underline border border-border bg-bg-elevated/60 hover:text-text hover:border-accent"
           title={chipTitle(link)}>
-          {link.provider === 'github' ? <GithubLogo size={10} className="shrink-0" /> : link.provider === 'jira' ? <JiraLogo size={10} className="shrink-0" /> : <GitlabLogo size={10} className="shrink-0" />}
+          <SourceLinkIcon provider={link.provider} />
           {link.provider !== 'jira' && <CircleDot className="lucide-inline shrink-0" aria-hidden="true" />}
-          {link.provider === 'jira' ? `${link.repo}-${link.number}` : `#${link.number}`}
+          {chipLabel(link)}
         </a>
       ))}
       {hidden > 0 && (
