@@ -2175,3 +2175,98 @@ class TestHandleSlashRespondBlocks:
         finally:
             ev.SLASH_REGISTRY.pop("zzcovnourl", None)
         assert posted == []
+
+
+# ---------------------------------------------------------------------------
+# The trusted-bot gate: ``slack.trusted_bot_ids`` and ``_is_trusted_bot``
+# ---------------------------------------------------------------------------
+
+
+def _bot_msg(bot_id: str) -> dict:
+    """An ``events_api`` payload carrying a bot-authored channel message."""
+    return {
+        "team_id": "T1",
+        "event": {
+            "type": "message",
+            "bot_id": bot_id,
+            "channel": "C1",
+            "text": "hello from a peer",
+            "ts": "1700.000100",
+        },
+    }
+
+
+class TestIsTrustedBot:
+    def test_empty_allow_list_trusts_nobody(self):
+        assert ev._is_trusted_bot("B_PEER", set()) is False
+
+    def test_listed_bot_is_trusted(self):
+        assert ev._is_trusted_bot("B_PEER", {"B_PEER"}) is True
+
+    def test_unlisted_bot_is_not_trusted(self):
+        assert ev._is_trusted_bot("B_OTHER", {"B_PEER"}) is False
+
+    def test_blank_bot_id_is_never_trusted(self):
+        # Defensive: a falsy id must not match even a set that somehow holds "".
+        assert ev._is_trusted_bot("", {""}) is False
+
+
+class TestTrustedBotGate:
+    @pytest.mark.asyncio
+    async def test_bot_dropped_when_allow_list_empty(self, _mock_sel):
+        """Default configuration keeps dropping every bot-authored event."""
+        orch = _socket_orch()
+        orch._cfg.slack.trusted_bot_ids = set()
+        on_event = _install_on_event(orch, ev.SeenCache())
+        with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            await on_event(_client(), _req("events_api", _bot_msg("B_PEER")))
+            await _drain(orch)
+        route.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bot_dropped_when_not_listed(self, _mock_sel):
+        orch = _socket_orch()
+        orch._cfg.slack.trusted_bot_ids = {"B_PEER"}
+        on_event = _install_on_event(orch, ev.SeenCache())
+        with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            await on_event(_client(), _req("events_api", _bot_msg("B_STRANGER")))
+            await _drain(orch)
+        route.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_listed_bot_is_routed_as_trusted(self, _mock_sel):
+        """The allow-listed peer reaches the agent flagged as a trusted bot.
+
+        ``from_trusted_bot`` is what lets ``bot_id`` stand in as the sender
+        identity and what suppresses error-reply echo loops, so the flag
+        mattering here is the whole point of the allow-list.
+        """
+        orch = _socket_orch()
+        orch._cfg.slack.trusted_bot_ids = {"B_PEER"}
+        on_event = _install_on_event(orch, ev.SeenCache())
+        with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            await on_event(_client(), _req("events_api", _bot_msg("B_PEER")))
+            await _drain(orch)
+        route.assert_awaited_once()
+        assert route.await_args.kwargs["from_trusted_bot"] is True
+
+    @pytest.mark.asyncio
+    async def test_human_message_is_never_flagged_as_a_bot(self, _mock_sel):
+        orch = _socket_orch()
+        orch._cfg.slack.trusted_bot_ids = {"B_PEER"}
+        on_event = _install_on_event(orch, ev.SeenCache())
+        payload = {
+            "team_id": "T1",
+            "event": {
+                "type": "message",
+                "user": "U_OWNER",
+                "channel": "C1",
+                "text": "hi",
+                "ts": "1700.000200",
+            },
+        }
+        with patch("kiro_crew.slack.events._route_message", new_callable=AsyncMock) as route:
+            await on_event(_client(), _req("events_api", payload))
+            await _drain(orch)
+        route.assert_awaited_once()
+        assert route.await_args.kwargs["from_trusted_bot"] is False

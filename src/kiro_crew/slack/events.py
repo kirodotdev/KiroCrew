@@ -201,6 +201,21 @@ def _home_tab_collect_gate() -> asyncio.Semaphore:
     return _home_tab_collect_sem
 
 
+def _is_trusted_bot(bot_id: str, trusted_bot_ids: set[str]) -> bool:
+    """Whether a bot-authored event may reach the agent.
+
+    Deny-by-default: an empty allow-list trusts no bot, so a deployment that
+    never sets ``slack.trusted_bot_ids`` drops every bot-authored event.
+
+    The grant is identity-level, not resource-level. A listed bot can drive an
+    unattended agent turn with the agent's full tool surface, so membership is
+    an explicit operator decision and never inferred. An operator must not list
+    the gateway's own bot id: the gateway does not know its own identity here,
+    so a self-listed id would let a node act on the messages it just posted.
+    """
+    return bool(bot_id) and bot_id in trusted_bot_ids
+
+
 class SeenCache:
     """Bounded set that remembers the last *maxlen* event IDs."""
 
@@ -910,15 +925,24 @@ def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             return
         if _subtype and _subtype != "file_share":
             return
+        _trusted_bot = False
         if _bot_id:  # pragma: no cover — socket mode callback, tested via integration
+            _trusted_bot = _is_trusted_bot(_bot_id, orch._cfg.slack.trusted_bot_ids)
+            if not _trusted_bot:
+                sel().log_api_access(
+                    caller=_bot_id,
+                    operation="slack.message",
+                    outcome="denied",
+                    source="slack",
+                    error="untrusted_bot",
+                )
+                return
             sel().log_api_access(
                 caller=_bot_id,
                 operation="slack.message",
-                outcome="denied",
+                outcome="allowed",
                 source="slack",
-                error="untrusted_bot",
             )
-            return
 
         # Enterprise Grid: envelope team_id is the *bot's* workspace;
         # event["team"] may be the *sender's* workspace in shared channels.
@@ -945,7 +969,7 @@ def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             event,
             seen,
             is_mention=(event_type == "app_mention"),
-            from_trusted_bot=False,
+            from_trusted_bot=_trusted_bot,
         )
 
     orch._socket_client.socket_mode_request_listeners.append(_on_event)  # type: ignore[arg-type]
