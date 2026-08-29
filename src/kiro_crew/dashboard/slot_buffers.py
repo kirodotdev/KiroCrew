@@ -667,9 +667,9 @@ class SlotBufferCoordinator:
         logger: logging.Logger,
     ) -> int:
         # Local import avoids a module cycle: chat_utils imports the state facade.
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.chat_utils import note_authorization_session_key
 
-        live_session = effective_session_key(slot)
+        live_session = note_authorization_session_key(slot)
         kept_context = [
             entry
             for entry in slot._pending_context
@@ -725,11 +725,11 @@ class SlotBufferCoordinator:
         """
         if not slot._deferred_notes:
             return 0
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.chat_utils import note_authorization_session_key
 
         held = slot._deferred_notes[:]
         slot._deferred_notes.clear()
-        live_session = effective_session_key(slot)
+        live_session = note_authorization_session_key(slot)
         written = 0
         for index, note in enumerate(held):
             authorized_session = note.get("session")
