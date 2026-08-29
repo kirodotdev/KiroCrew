@@ -1624,6 +1624,17 @@ file-tree-container{
 .scroll-fade:hover::-webkit-scrollbar-thumb{background:var(--border)}
 .scroll-fade{scrollbar-width:thin;scrollbar-color:transparent transparent}
 .scroll-fade:hover{scrollbar-color:var(--border) transparent}
+/* Same defect, same remedy as the overlay utility below: a finger never produces
+   the :hover that reveals the thumb, so a code block wide enough to scroll shows
+   no cue that it does. Predicate and token deliberately match that block rather
+   than making a second decision — one rung, so the two cannot drift. Separate
+   block because it sits with the utility it covers, and because it must follow
+   this utility's own transparent base rules: a media query adds no specificity,
+   so it ties them and wins on source order alone. */
+@media (pointer: coarse) {
+  .scroll-fade{scrollbar-color:var(--border) transparent}
+  .scroll-fade::-webkit-scrollbar-thumb{background:var(--border)}
+}
 
 /* ── Overlay auto-hiding vertical scrollbar ──
  * Reveals the thumb only on hover and overlays the content so it never
