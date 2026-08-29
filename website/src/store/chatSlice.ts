@@ -2467,6 +2467,28 @@ const anchorMidOk = (a: ThinkingAnchor, row: { meta?: Record<string, unknown> })
  *  Both absent on a record parked by a build before they existed. */
 type ParkedThinking<M> = { msg: M; anchor: ThinkingAnchor; occ?: number; occTotal?: number }
 
+/** Re-attach a `streaming` row a fetched page cannot legitimately contain.
+ *
+ *  `streaming` is client-only: the backend's persistence filter rejects the role
+ *  outright and no emitter produces it, so a page NEVER carries the in-flight
+ *  text and its absence can only mean the page predates it. That makes the
+ *  re-attach duplicate-free with no content matching at all.
+ *
+ *  Gated on the page's OWN `running`: once the turn is over the page is
+ *  authoritative, because the backend flushes the final segment into the
+ *  in-memory window the detail endpoint serves BEFORE broadcasting `chat_done`.
+ *  So a partial stranded by a missed `chat_done` is dropped, not printed again
+ *  beneath the finished answer.
+ *
+ *  Narrower than `switchSlot.fulfilled`, which must also re-attach a FINALIZED
+ *  `assistant` tail: only a BACKGROUND slot can finalize against a stale page. */
+function preserveInFlightReply(existing: ChatMessage[], next: ChatMessage[], running: boolean): ChatMessage[] {
+  if (!running) return next
+  const lastLocal = existing[existing.length - 1]
+  if (lastLocal?.role !== 'streaming' || !lastLocal.content) return next
+  return [...next.filter(m => m.role !== 'streaming'), lastLocal]
+}
+
 /** Re-insert client-only reasoning (`thinking`) messages into a server-refreshed
  *  message list. The backend never persists reasoning, so a refresh (e.g. the
  *  one fired on chat_done) would otherwise drop the thinking block the instant a
@@ -6541,6 +6563,9 @@ const chatSlice = createSlice({
         const sorted = statePerms.size > 0
           ? mergedWithPastes.sort((a, b) => tsNum(a.ts) - tsNum(b.ts))
           : mergedWithPastes
+        // Before the thinking merges, matching switchSlot: an in-flight reasoning
+        // block anchors to the reply, so the reply has to be in the list already.
+        const withReply = preserveInFlightReply(state.messages, sorted, running)
         // Reasoning is client-only (never persisted server-side); re-insert it so
         // a finished turn's thinking block survives this refresh.
         // Coverage from the PURE fetched page (`messages`): `sorted` carries
@@ -6553,7 +6578,7 @@ const chatSlice = createSlice({
          * Same value as the `reinsertThinkingOrphans` call below and as
          * `switchSlot.fulfilled` -- the retained head is part of the loaded window,
          * so raw `hasMore` would park reasoning whose anchor is already on screen. */
-        state.messages = deduplicateByMid(mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted), messages, !keptCursor.hasMore))
+        state.messages = deduplicateByMid(mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, withReply), messages, !keptCursor.hasMore))
         // A refresh rebuilds `messages` wholesale, so parked reasoning has to be re-seated
         // here too — otherwise it stays invisible until the next slot switch.
         // (Re-seating only ADDS client-only thinking rows, which by contract
