@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import chatReducer, { deleteSlot } from '../store/chatSlice'
+import chatReducer, { deleteSlot, slotsSnapshotApplied } from '../store/chatSlice'
 import notifReducer, { addNotification, fetchNotifications, NOTIFICATIONS_RING_CAP } from '../store/notificationsSlice'
-import { sseSlots, sseConnected, fetchSlots } from '../store/dashboardSlice'
+import { sseSlots, sseConnected } from '../store/dashboardSlice'
 import type { StructuredMonitor } from '../monitoring/automation'
 import type { ChatMessage, ChatSlot, Notification } from '../types'
 import './mockApiClient'
@@ -126,7 +126,7 @@ describe('chatSlice sseSlots reconciliation', () => {
     state = chatReducer(state, sseSlots([]))
     expect(Object.keys(state.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
 
-    const next = chatReducer(state, { type: fetchSlots.fulfilled.type, payload: [] })
+    const next = chatReducer(state, slotsSnapshotApplied([]))
 
     expect(Object.keys(next.slotMessages)).toEqual([])
     expect(next.slotHistory).toEqual([])
@@ -137,7 +137,7 @@ describe('chatSlice sseSlots reconciliation', () => {
     let state = seeded(['chat-1', 'chat-2'])
     state = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-2')]))
 
-    const next = chatReducer(state, { type: fetchSlots.fulfilled.type, payload: [slot('chat-1')] })
+    const next = chatReducer(state, slotsSnapshotApplied([slot('chat-1')]))
 
     expect(Object.keys(next.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
   })
@@ -278,5 +278,88 @@ describe('notificationsSlice ring cap', () => {
     const state = notifReducer(undefined, { type: fetchNotifications.fulfilled.type, payload })
     expect(state.items).toHaveLength(NOTIFICATIONS_RING_CAP)
     expect(state.items[0].ts).toBe('50')
+  })
+})
+
+/** The residue prune evicts by ABSENCE, so it IS ordering-sensitive: a frame the dashboard
+ *  refused must not prune, or transcripts, MCP payloads and question cards are deleted for a
+ *  slot that is still real. What changed is WHERE the verdict comes from -- the dispatch
+ *  boundary decides it against the one baseline that owns it, and it travels on the action --
+ *  so these assert the slice HONOURS that verdict rather than recomputing one. */
+describe('the carried staleness verdict decides whether chat residue is pruned', () => {
+  const frame = (rows: ChatSlot[], stale: boolean) =>
+    sseSlots({ slots: rows, generation: 5, epoch: 'boot-1', stale })
+
+  it('refuses a frame marked stale, leaving an omitted slot untouched', () => {
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, frame([slot('chat-1'), slot('chat-2')], false))
+    expect(state.slotMessages['chat-2']).toBeDefined()
+
+    const next = chatReducer(state, frame([slot('chat-1')], true))
+
+    expect(next.slotMessages['chat-2']).toBeDefined()
+    expect(next.slotMessages['chat-2'][0].content).toBe('hi from chat-2')
+    expect(next.slotActivity['chat-2']).toBeDefined()
+    expect(next.slotHistory).toContain('chat-2')
+  })
+
+  it('still evicts on an ACCEPTED frame, so the gate is not simply always-refuse', () => {
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, frame([slot('chat-1'), slot('chat-2')], false))
+    const next = chatReducer(state, frame([slot('chat-1')], false))
+    expect(next.slotMessages['chat-2']).toBeUndefined()
+    expect(next.slotHistory).toEqual(['chat-1'])
+  })
+
+  it('still prunes an UNSTAMPED frame, so a legacy payload is not silently ignored', () => {
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, frame([slot('chat-1'), slot('chat-2')], false))
+    const next = chatReducer(state, sseSlots([slot('chat-1')]))
+    expect(next.slotMessages['chat-2']).toBeUndefined()
+  })
+
+  it('keeps NO baseline of its own, so it cannot drift from the one that owns it', () => {
+    const state = seeded(['chat-1'])
+    expect('lastSlotsGeneration' in state).toBe(false)
+    expect('lastSlotsEpoch' in state).toBe(false)
+  })
+})
+
+/** the unknown notice needs an outcome. "Couldn't confirm whether
+ *  this session closed" is only true until an authoritative list arrives without that session
+ *  in it; leaving it up past that point states something the client already knows to be false,
+ *  and the copy now promises it disappears once the list updates. */
+describe('the unknown close notice retires when a dated snapshot settles the question', () => {
+  const accepted = (rows: ChatSlot[]) =>
+    sseSlots({ slots: rows, generation: 7, epoch: 'boot-1', stale: false })
+
+  const withNotice = (keys: string[], noticeKey: string, kind: 'unknown' | 'refused') => ({
+    ...seeded(keys, 'chat-1'),
+    sessionCloseFailure: { kind, key: noticeKey },
+  })
+
+  it('confirms once an accepted list no longer carries the session it names', () => {
+    const state = withNotice(['chat-1', 'chat-2'], 'chat-2', 'unknown')
+    const next = chatReducer(state, accepted([slot('chat-1')]))
+    expect(next.sessionCloseFailure?.kind).toBe('confirmed')
+    expect(next.sessionCloseFailure?.key).toBe('chat-2')
+  })
+
+  it('keeps the notice while the session is STILL listed, which is the unresolved case', () => {
+    const state = withNotice(['chat-1', 'chat-2'], 'chat-2', 'unknown')
+    const next = chatReducer(state, accepted([slot('chat-1'), slot('chat-2')]))
+    expect(next.sessionCloseFailure).toEqual({ kind: 'unknown', key: 'chat-2' })
+  })
+
+  it('leaves the REFUSED notice alone, whose claim a list cannot settle', () => {
+    const state = withNotice(['chat-1', 'chat-2'], 'chat-2', 'refused')
+    const next = chatReducer(state, accepted([slot('chat-1')]))
+    expect(next.sessionCloseFailure).toEqual({ kind: 'refused', key: 'chat-2' })
+  })
+
+  it('does not clear on a REFUSED snapshot, which settles nothing', () => {
+    const state = withNotice(['chat-1', 'chat-2'], 'chat-2', 'unknown')
+    const next = chatReducer(state, sseSlots({ slots: [slot('chat-1')], generation: 2, epoch: 'boot-1', stale: true }))
+    expect(next.sessionCloseFailure).toEqual({ kind: 'unknown', key: 'chat-2' })
   })
 })

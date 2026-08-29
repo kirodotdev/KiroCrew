@@ -15,8 +15,7 @@ import { configureStore } from '@reduxjs/toolkit'
 
 vi.mock('../api/client', () => ({ api: { chatSlotDetail: vi.fn() } }))
 
-import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache } from './chatSlice'
-import { fetchSlots } from './dashboardSlice'
+import chatReducer, { switchSlot, warmSlotCache, setActiveSlot, setSlotState, setSlotRunning, startLocalTurn, sseChatMessage, clearMessages, clearSlotCache, slotsSnapshotApplied } from './chatSlice'
 import { api } from '../api/client'
 import { isMissingSlotError } from '../utils/thunkError'
 
@@ -475,7 +474,7 @@ describe('switchSlot.rejected — a gone target restores the pre-switch selectio
     const inflight = store.dispatch(switchSlot('gone'))
     // The authoritative list drops A while the switch is in flight (activeSlot
     // 'gone' is protected by the reconcile, A is not).
-    store.dispatch(fetchSlots.fulfilled([], 'req-evict', undefined) as never)
+    store.dispatch(slotsSnapshotApplied([]) as never)
     rejectGone(apiError(404, 'slot unavailable'))
     await inflight
     const s = store.getState().chat

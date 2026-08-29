@@ -222,6 +222,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'settings.secrets.delete_managed_confirm',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
+  'hooks.useSessionActions.close_failed_confirmed_title', // close-confirmation, {{title}} glyph-quoted per locale
 ]
 
 /**

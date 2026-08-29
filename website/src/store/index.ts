@@ -4,6 +4,7 @@ import dashboardReducer from './dashboardSlice'
 import notificationsReducer from './notificationsSlice'
 import chatReducer from './chatSlice'
 import instancesReducer from './instancesSlice'
+import { slotsResidueListener } from './slotsResidueListener'
 
 export const store = configureStore({
   reducer: {
@@ -12,6 +13,7 @@ export const store = configureStore({
     chat: chatReducer,
     instances: instancesReducer,
   },
+  middleware: getDefault => getDefault().prepend(slotsResidueListener.middleware),
 })
 
 export type RootState = ReturnType<typeof store.getState>

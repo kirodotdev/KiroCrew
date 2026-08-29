@@ -99,7 +99,7 @@ describe('ChatPage handleResumeSession surface gate (#5925)', () => {
 
     await makeHandleResumeSession(store, 'chat-1', drafts)('chat-9', 'Older chat')
 
-    expect(deleteChatSlotMock).toHaveBeenCalledWith('chat-1')
+    expect(deleteChatSlotMock).toHaveBeenCalledWith('chat-1', undefined)
     expect(drafts['chat-1']).toBeUndefined()
     expect(store.getState().chat.activeSlot).toBe('chat-9')
   })

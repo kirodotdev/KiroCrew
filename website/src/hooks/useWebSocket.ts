@@ -4,7 +4,7 @@ import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
 import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
-import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
+import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, slotsSnapshotIsStale, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
 import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
@@ -1190,7 +1190,15 @@ export function useWebSocket() {
             if (raw === lastSlotsRawRef.current
                 && store.getState().dashboard.slots === lastSlotsArrayRef.current) break
             lastSlotsRawRef.current = raw
-            dispatch(sseSlots(data as ChatSlot[]))
+            // Stamped so the reducer can date this frame: a pre-pop push delayed past the
+            // close's own read is older than what is applied, and is dropped.
+            const stamp = msg as { slotsGeneration?: unknown; slotsEpoch?: unknown }
+            const generation = typeof stamp.slotsGeneration === 'number' ? stamp.slotsGeneration : undefined
+            const epoch = typeof stamp.slotsEpoch === 'string' ? stamp.slotsEpoch : undefined
+            // Decided ONCE here against the one baseline that owns it, and carried on the
+            // action, so no second slice needs its own baseline to reach the same answer.
+            const stale = slotsSnapshotIsStale(store.getState().dashboard, generation, epoch)
+            dispatch(sseSlots({ slots: data as ChatSlot[], generation, epoch, stale }))
             lastSlotsArrayRef.current = store.getState().dashboard.slots
             if (msg.yolo !== undefined) {
               dispatch(sseYolo(msg.yolo))

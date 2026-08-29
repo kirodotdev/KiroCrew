@@ -118,7 +118,10 @@
     "focus_mode": "フォーカスモード",
     "focus_mode_title": "フォーカスモード · Alt+Shift+M",
     "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
-    "connect_your_phone": "スマホを接続"
+    "connect_your_phone": "スマホを接続",
+    "boot_slots_failed_title": "セッションを読み込めませんでした",
+    "boot_slots_failed": "失敗が続く場合はページを再読み込みしてください。",
+    "boot_slots_retry": "セッションを再読み込み"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8351,11 +8354,19 @@
       "working": "作業中"
     },
     "useSessionActions": {
+      "close_failed_refused": "セッション一覧からもう一度終了してください。開いたままの場合は、ページを再読み込みして現在の状態を確認してください。",
+      "close_failed_unknown": "まだ閉じ直さないでください。セッションが動作中なら、状態が確認され次第、自動的に戻ります。",
       "close_this_session": "このセッションを閉じますか？",
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
-      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
+      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。",
+      "close_failed_refused_title": "「{{title}}」を終了できませんでした。まだ開いています",
+      "close_failed_unknown_title": "「{{title}}」が終了したか確認できませんでした",
+      "close_failed_replaced": "閉じたセッションはもうありません。表示されている行は新しいセッションです。",
+      "close_failed_replaced_title": "「{{title}}」はすでに閉じられていました",
+      "close_failed_confirmed": "セッションはご要望どおり閉じられました。",
+      "close_failed_confirmed_title": "「{{title}}」を閉じました"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "オーディオワークレットが利用できません",
@@ -8905,7 +8916,11 @@
       "comments_failed_to_load": "コメントの読み込みに失敗しました",
       "comment_action_failed": "コメント操作に失敗しました",
       "activity_failed_to_load": "アクティビティの読み込みに失敗しました",
-      "sync_status_unavailable": "同期状態を取得できません"
+      "sync_status_unavailable": "同期状態を取得できません",
+      "close_failed_refused": "「新しいチャット」をもう一度試すか、ページを再読み込みして現在の状態を確認してください。",
+      "close_failed_unknown": "まだ別のチャットを開始しないでください。セッションが動作中であれば、自然に戻ります。",
+      "close_failed_replaced": "その名前は新しいセッションが使用しているため、閉じるものは残っていません。 「新しいチャット」をもう一度クリックすると新しく始められます。",
+      "close_failed_confirmed": "セッションはご要望どおり閉じられました。"
     },
     "artifactPopoutFrame": {
       "artifact": "アーティファクト",

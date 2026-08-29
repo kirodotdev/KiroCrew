@@ -1112,6 +1112,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         {
             "ok": True,
             "key": new_slot.key,
+            "incarnation": new_slot.incarnation,
             "title": new_slot.title,
             "messages": len(visible),
             "prompt": prompt,

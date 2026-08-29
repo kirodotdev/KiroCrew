@@ -667,6 +667,7 @@ export default function PapyrusPage() {
         title: created.title || project,
         messages: 0,
         running: false,
+          incarnation: created.incarnation as string | undefined,
       } as ChatSlot))
       api.chatSlotContext(key, companionContext(), {
         source: 'papyrus-co-author', ephemeral: true,

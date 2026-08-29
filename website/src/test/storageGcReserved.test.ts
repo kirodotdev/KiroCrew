@@ -10,8 +10,46 @@
  * every single visit) looks like the cache not working rather than like a sweep.
  */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { gcOrphanedStorage, gcSessionStorage } from '../utils/storageGc'
+import { gcOrphanedStorage } from '../utils/storageGc'
 import { ANCHOR_KEY_PREFIX } from '../hooks/virtualizer/ScrollAnchorCache'
+
+const OWNER_ENTRY_PREFIX = 'mc-storage-gc-owner:'
+
+/** A slot list, dated so instances are distinguishable. */
+const live = (...keys: string[]): { key: string; created?: string }[] =>
+  keys.map(key => ({ key, created: '2026-06-06T00:00:00Z' }))
+
+/** Seed a prior-instance stamp for every EXISTING key of each id, so supersession is
+ *  proven PER KEY. A per-id stamp would let one family vouch for its siblings. */
+const seedOwners = (ids: string[], stamp = '2026-01-01T00:00:00Z'): void => {
+  const matched: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (!k || k.startsWith(OWNER_ENTRY_PREFIX)) continue
+    if (ids.some(id => k.endsWith(id) || k.includes(`${id}:`))) matched.push(k)
+  }
+  for (const k of matched) {
+    localStorage.setItem(OWNER_ENTRY_PREFIX + k, JSON.stringify({ stamp, seenAt: 0 }))
+  }
+}
+
+const sweepSuperseded = (supersededIds: string[], alsoLive: string[] = []): number => {
+  seedOwners(supersededIds)
+  return gcOrphanedStorage(live(...supersededIds, ...alsoLive))
+}
+
+/** Every surviving key except the sweep's own instance ledger, which is bookkeeping
+ *  rather than session state and is meant to outlive the keys it dates. Enumerated
+ *  through the Storage API, since `Object.keys` on it exposes jsdom internals. */
+const sessionKeys = (): string[] => {
+  const out: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (k && !k.startsWith(OWNER_ENTRY_PREFIX)) out.push(k)
+  }
+  return out
+}
+
 
 const HEIGHTS = 'vc_heights_'
 /** Imported, not restated: the anchor key shape carries a format version, and a
@@ -29,7 +67,7 @@ describe('gcOrphanedStorage', () => {
     localStorage.setItem(HEIGHTS + 'dead-session', '[["x",100]]')
     localStorage.setItem(HEIGHTS + 'live-session', '[["y",100]]')
 
-    const removed = gcOrphanedStorage(new Set(['live-session']))
+    const removed = sweepSuperseded(['dead-session'], ['live-session'])
 
     expect(localStorage.getItem(HEIGHTS + GALLERY)).toBeTruthy()
     expect(localStorage.getItem(HEIGHTS + 'live-session')).toBeTruthy()
@@ -45,10 +83,10 @@ describe('gcOrphanedStorage', () => {
     localStorage.setItem(ANCHOR + 'gone', '{}')
     localStorage.setItem('mc-panel-tabs:gone', '[]')
 
-    const removed = gcOrphanedStorage(new Set(['alive']))
+    const removed = sweepSuperseded(['gone'], ['alive'])
 
     expect(removed).toBe(3)
-    expect(localStorage.length).toBe(0)
+    expect(sessionKeys()).toEqual([])
   })
 
   it('collects a dead session under the PRE-BUMP anchor prefix too', async () => {
@@ -60,15 +98,7 @@ describe('gcOrphanedStorage', () => {
     localStorage.setItem('vc_anchor_gone', '{}')
     localStorage.setItem(ANCHOR + 'gone', '{}')
 
-    expect(gcOrphanedStorage(new Set(['alive']))).toBe(2)
-    expect(localStorage.length).toBe(0)
-  })
-
-  it('does not exempt the gallery name from an explicit per-session delete', () => {
-    // `gcSessionStorage` is called with a name the caller chose to delete, so it
-    // is deliberate rather than a sweep guess — the exemption does not apply.
-    localStorage.setItem(HEIGHTS + GALLERY, '[]')
-    gcSessionStorage(GALLERY)
-    expect(localStorage.getItem(HEIGHTS + GALLERY)).toBeNull()
+    expect(sweepSuperseded(['gone'], ['alive'])).toBe(2)
+    expect(sessionKeys()).toEqual([])
   })
 })

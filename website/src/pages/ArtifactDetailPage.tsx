@@ -9,9 +9,17 @@ import { ArrowLeft, ArrowUp, Camera, Check, Copy, ExternalLink, Download, GitFor
 import { copyToClipboard } from '../utils/clipboard'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
-import { useAppDispatch, useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { switchSlot } from '../store/chatSlice'
-import { fetchSlots, addSlotOptimistic, removeSlotOptimistic } from '../store/dashboardSlice'
+import { fetchSlots, addSlotOptimistic, fetchSlotsIfApplied } from '../store/dashboardSlice'
+import { withSlotClose } from '../store/chatSlice'
+import { isCloseOutcomeUnknown } from '../utils/closeOutcome'
+import {
+  ARTIFACT_CLOSE_FAILURE_COPY_KEY,
+  RESOLVED_CLOSE_KINDS,
+  CLOSE_FAILURE_TITLE_KEY,
+  closeFailureKind,
+} from '../utils/sessionCloseFailure'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
@@ -349,6 +357,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // under its own lock.
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
+  const store = useAppStore()
   const { theme, colorTheme, themeVersion } = useTheme()
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
@@ -361,6 +370,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const [editedContent, setEditedContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [closeFailure, setCloseFailure] = useState<
+    { kind: 'refused' | 'unknown' | 'replaced' | 'confirmed'; title: string; key: string; atGeneration: number } | null
+  >(null)
   const [showPublish, setShowPublish] = useState(false)
   // Tag editing: tags shown in the header are editable inline. Adding a tag
   // posts metadata-only (no version bump). Removing a tag works the same way.
@@ -1173,6 +1185,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         title: res.title || i18nT('pages.artifactDetailPage.session_title', { name: artifact.name }),
         messages: 0,
         running: false,
+        incarnation: res.incarnation,
         artifact: artifact.slug,
       } as ChatSlot))
       // Activate the bound slot NOW — back-to-back with writePrefill, mirroring
@@ -1224,7 +1237,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       setPanel('chat')
       sessionOpBusyRef.current = true
       try {
-        bound = pickBoundSlot(await dispatch(fetchSlots()).unwrap(), slug)
+        // A REFUSED read is not authoritative, and binding from it can create a SECOND
+        // session for this slug — so fall back to the list the store did apply.
+        const listed = await fetchSlotsIfApplied(dispatch, () => store.getState())
+        bound = pickBoundSlot(listed ?? store.getState().dashboard.slots, slug)
       } catch {
         bound = null   // fetch failed — fall through and create
       } finally {
@@ -1259,7 +1275,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         source: 'artifact-companion', ephemeral: true,
       }).catch(() => undefined)
     }
-  }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch,
+  }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch, store,
       createBoundSession, buildCompanionContext])
 
   /** "New chat": archive the current bound session FIRST (the existing red-X
@@ -1273,35 +1289,52 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     // ("give me a fresh session") is already satisfied by the first.
     if (sessionOpBusyRef.current) return
     sessionOpBusyRef.current = true
+    setCloseFailure(null)
+    setSaveError(null)
     try {
       // Archive every slot bound to this slug, not just the resolved winner.
       for (const slot of boundSlots) {
         try {
-          await api.deleteChatSlot(slot.key)
+          // Armed AROUND the DELETE, never after it: a GET in flight since before the
+          // DELETE still lists the slot, and a hold taken later cannot withhold that reply.
+          await withSlotClose(dispatch, () => store.getState(), slot.key, async () => {
+            try {
+              await api.deleteChatSlot(slot.key, slot.incarnation)
+            } catch (err) {
+              // ONLY a 404 means "already archived", which is this close SUCCEEDING, so it
+              // retires the hold rather than releasing it and letting the row return.
+              const status = (err as { status?: unknown } | null | undefined)?.status
+              if (status === 404) return
+              throw err
+            }
+          })
         } catch (err) {
-          // ONLY a 404 means "already archived, nothing to do". Any other
-          // failure means the old session is still live server-side, so creating
-          // anyway would leave TWO bound sessions for this slug — and since the
-          // resolver breaks ties on last_activity_ts, the OLD one keeps winning
-          // and "New chat" silently appears to do nothing. Abort and say why.
-          //
-          // Read `status` structurally rather than via `instanceof ApiError`:
-          // this fails closed on anything not provably a 404 (including an error
-          // re-thrown or wrapped across a module boundary, where instanceof
-          // silently stops matching), and it is verifiable in a test.
-          const status = (err as { status?: unknown } | null | undefined)?.status
-          if (status !== 404) {
-            setSaveError(err instanceof Error ? err.message : String(err))
-            return
-          }
+          // Only a DEFINITIVE refusal proves the session is still there. Restoring on an UNKNOWN
+          // outcome revives a row whose reusable key a replacement may already have been minted on.
+          if (!isCloseOutcomeUnknown(err)) dispatch(addSlotOptimistic({ ...slot }))
+          setCloseFailure({
+            kind: closeFailureKind(err),
+            title: slot.title || slot.key,
+            key: slot.key,
+            atGeneration: store.getState().dashboard.lastSlotsGeneration,
+          })
+          return
         }
-        dispatch(removeSlotOptimistic(slot.key))
       }
       await createBoundSession()
     } finally {
       sessionOpBusyRef.current = false
     }
-  }, [boundSlots, createBoundSession, dispatch])
+  }, [boundSlots, createBoundSession, dispatch, store])
+  const appliedSlots = useAppSelector(s => s.dashboard.slots)
+  const appliedGeneration = useAppSelector(s => s.dashboard.lastSlotsGeneration)
+  useEffect(() => {
+    if (!closeFailure || closeFailure.kind !== 'unknown') return
+    if (appliedGeneration <= closeFailure.atGeneration) return
+    if (!appliedSlots.some(s => s.key === closeFailure.key)) {
+      setCloseFailure({ ...closeFailure, kind: 'confirmed' })
+    }
+  }, [appliedGeneration, appliedSlots, closeFailure])
 
   /** Full-page escape hatch — routes through sendNav so a popout forwards the
    *  intent to a main window instead of remounting the dashboard in-frame. */
@@ -1908,9 +1941,22 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             can copy their work out. A one-click navigation off this surface would
             destroy it, and would bypass the beforeunload guard too. */}
         <ErrorNotice
-          message={saveError}
-          title={i18nT('pages.artifactDetailPage.save_failed')}
+          message={
+            saveError
+              ?? (closeFailure ? i18nT(ARTIFACT_CLOSE_FAILURE_COPY_KEY[closeFailure.kind]) : null)
+          }
+          title={
+            closeFailure && !saveError
+              ? i18nT(CLOSE_FAILURE_TITLE_KEY[closeFailure.kind], { title: closeFailure.title })
+              : i18nT('pages.artifactDetailPage.save_failed')
+          }
           className="mb-3"
+          tone={
+            closeFailure && !saveError && RESOLVED_CLOSE_KINDS.has(closeFailure.kind)
+              ? 'success'
+              : 'danger'
+          }
+          onDismiss={closeFailure && !saveError ? () => setCloseFailure(null) : undefined}
         />
 
         {/* Read-only publication sync-error surface: keeps a persisted sync

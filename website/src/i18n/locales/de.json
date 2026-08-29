@@ -121,7 +121,10 @@
     "focus_mode": "Fokusmodus",
     "focus_mode_title": "Fokusmodus · Alt+Umschalt+M",
     "focus_mode_title_mac": "Fokusmodus · ⌥⇧M",
-    "connect_your_phone": "Telefon verbinden"
+    "connect_your_phone": "Telefon verbinden",
+    "boot_slots_failed_title": "Sitzungen konnten nicht geladen werden",
+    "boot_slots_failed": "Laden Sie die Seite neu, wenn es weiterhin fehlschlägt.",
+    "boot_slots_retry": "Sitzungen erneut laden"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8466,11 +8469,19 @@
       "working": "Arbeitet"
     },
     "useSessionActions": {
+      "close_failed_refused": "Schließen Sie sie erneut über die Sitzungsliste. Bleibt sie offen, laden Sie die Seite neu, um ihren aktuellen Zustand zu sehen.",
+      "close_failed_unknown": "Schließen Sie sie noch nicht erneut. Läuft die Sitzung weiter, kehrt sie von selbst zurück, sobald ihr Zustand bestätigt ist.",
       "close_this_session": "Diese Sitzung schließen?",
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
-      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
+      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten.",
+      "close_failed_refused_title": "„{{title}}“ konnte nicht geschlossen werden – die Sitzung ist noch offen",
+      "close_failed_unknown_title": "Es konnte nicht bestätigt werden, ob „{{title}}“ geschlossen wurde",
+      "close_failed_replaced": "Die geschlossene Sitzung ist weg; die noch aufgeführte Zeile ist eine neue Sitzung.",
+      "close_failed_replaced_title": "„{{title}}“ war bereits geschlossen",
+      "close_failed_confirmed": "Die Sitzung wurde wie gewünscht geschlossen.",
+      "close_failed_confirmed_title": "„{{title}}“ geschlossen"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "Audio-Worklet nicht verfügbar",
@@ -9031,7 +9042,11 @@
       "comments_failed_to_load": "Kommentare konnten nicht geladen werden",
       "comment_action_failed": "Kommentaraktion fehlgeschlagen",
       "activity_failed_to_load": "Aktivität konnte nicht geladen werden",
-      "sync_status_unavailable": "Synchronisierungsstatus nicht verfügbar"
+      "sync_status_unavailable": "Synchronisierungsstatus nicht verfügbar",
+      "close_failed_refused": "Versuchen Sie „Neuer Chat“ erneut oder laden Sie die Seite neu, um den aktuellen Stand zu sehen.",
+      "close_failed_unknown": "Starten Sie noch keinen weiteren Chat. Läuft die Sitzung noch, kommt sie von selbst zurück.",
+      "close_failed_replaced": "Eine neue Sitzung verwendet diesen Namen, es ist also nichts mehr zu schließen. Klicken Sie erneut auf „Neuer Chat“, um neu zu beginnen.",
+      "close_failed_confirmed": "Die Sitzung wurde wie gewünscht geschlossen."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefakt",

@@ -121,7 +121,10 @@
     "focus_mode": "फ़ोकस मोड",
     "focus_mode_title": "फ़ोकस मोड · Alt+Shift+M",
     "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M",
-    "connect_your_phone": "फ़ोन कनेक्ट करें"
+    "connect_your_phone": "फ़ोन कनेक्ट करें",
+    "boot_slots_failed_title": "सत्र लोड नहीं हो पाए",
+    "boot_slots_failed": "यदि यह विफल होता रहे, तो पेज रीलोड करें।",
+    "boot_slots_retry": "सत्र फिर लोड करें"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8466,11 +8469,19 @@
       "working": "काम कर रहा है"
     },
     "useSessionActions": {
+      "close_failed_refused": "सत्र सूची से इसे दोबारा बंद करें। अगर यह खुला रहे, तो वर्तमान स्थिति देखने के लिए पेज रीलोड करें।",
+      "close_failed_unknown": "इसे अभी दोबारा बंद न करें। यदि सत्र चल रहा है, तो स्थिति की पुष्टि होते ही वह स्वयं वापस आ जाएगा।",
       "close_this_session": "यह सेशन बंद करें?",
       "reload_failed": "सत्र फिर से लोड नहीं हो सका। एजेंट व्यस्त हो सकता है या गेटवे उपलब्ध नहीं है; सत्र निष्क्रिय होने पर पुनः प्रयास करें।",
       "reload_failed_subagents": "इस सत्र पर उप-एजेंट अभी भी काम कर रहे हैं। उनके समाप्त होने पर पुनः प्रयास करें।",
       "switch_to_autopilot_mode_future_messages_will_us": "ऑटोपायलट मोड पर स्विच करें? आगे के संदेश ऑटोपायलट व्यवहार (योजना → अनुमोदन → निष्पादन) का उपयोग करेंगे।",
-      "switch_to_normal_chat_mode_future_messages_will": "सामान्य चैट मोड पर स्विच करें? आगे के संदेश मानक चैट व्यवहार का उपयोग करेंगे।"
+      "switch_to_normal_chat_mode_future_messages_will": "सामान्य चैट मोड पर स्विच करें? आगे के संदेश मानक चैट व्यवहार का उपयोग करेंगे।",
+      "close_failed_refused_title": "“{{title}}” बंद नहीं हो पाया — यह अभी भी खुला है",
+      "close_failed_unknown_title": "“{{title}}” बंद हुआ या नहीं, इसकी पुष्टि नहीं हो सकी",
+      "close_failed_replaced": "बंद किया गया सत्र जा चुका है; सूची में दिख रही पंक्ति एक नया सत्र है।",
+      "close_failed_replaced_title": "«{{title}}» पहले ही बंद हो चुका था",
+      "close_failed_confirmed": "सत्र अनुरोध के अनुसार बंद हो गया।",
+      "close_failed_confirmed_title": "“{{title}}” बंद हो गया"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "ऑडियो वर्कलेट अनुपलब्ध",
@@ -9031,7 +9042,11 @@
       "comments_failed_to_load": "टिप्पणियाँ लोड करने में विफल",
       "comment_action_failed": "टिप्पणी कार्रवाई विफल",
       "activity_failed_to_load": "गतिविधि लोड करने में विफल",
-      "sync_status_unavailable": "सिंक स्थिति उपलब्ध नहीं"
+      "sync_status_unavailable": "सिंक स्थिति उपलब्ध नहीं",
+      "close_failed_refused": "«नई चैट» फिर आज़माएँ, या इसकी वर्तमान स्थिति देखने के लिए पेज रीलोड करें।",
+      "close_failed_unknown": "अभी दूसरी चैट शुरू न करें। यदि सत्र अभी चल रहा है, तो वह स्वयं वापस आ जाएगा।",
+      "close_failed_replaced": "अब एक नया सत्र उस नाम का उपयोग करता है, इसलिए बंद करने के लिए कुछ नहीं बचा। नए सिरे से शुरू करने के लिए «नई चैट» पर फिर क्लिक करें।",
+      "close_failed_confirmed": "सत्र अनुरोध के अनुसार बंद हो गया।"
     },
     "artifactPopoutFrame": {
       "artifact": "आर्टिफ़ैक्ट",

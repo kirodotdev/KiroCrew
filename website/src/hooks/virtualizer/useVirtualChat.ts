@@ -97,6 +97,7 @@ import {
   anchorWriteChangesState,
   type ScrollAnchor,
 } from './ScrollAnchorCache'
+import { sessionOwnerStamp } from '../../utils/storageGc'
 import { attachUserScrollIntent } from '../../utils/searchScroll'
 import {
   computeWindow,
@@ -1575,7 +1576,7 @@ export function useVirtualChat<T>(
             const leadFn = getAltIdRef.current
             const leadIt = ctx.items[a.index]
             const alt = leadFn && leadIt ? leadFn(leadIt, a.index) : null
-            saveScrollAnchor(prevSession, alt ? { key: a.key, top: a.top, alt } : { key: a.key, top: a.top })
+            saveScrollAnchor(prevSession, alt ? { key: a.key, top: a.top, alt } : { key: a.key, top: a.top }, sessionOwnerStamp(prevSession))
           }
         }
       }
@@ -1909,6 +1910,7 @@ export function useVirtualChat<T>(
   const scheduleAnchorSave = useCallback(() => {
     if (anchorSaveTimerRef.current !== null) return
     const scheduledSession = sessionIdRef.current
+    const scheduledOwner = sessionOwnerStamp(scheduledSession)
     anchorSaveTimerRef.current = setTimeout(() => {
       anchorSaveTimerRef.current = null
       if (sessionIdRef.current !== scheduledSession) return
@@ -1949,7 +1951,7 @@ export function useVirtualChat<T>(
       ) {
         return
       }
-      saveScrollAnchor(scheduledSession, a)
+      saveScrollAnchor(scheduledSession, a, scheduledOwner)
       anchorSavedStateRef.current = { session: scheduledSession, anchor: a }
     }, ANCHOR_SAVE_DEBOUNCE_MS)
   }, [bottomThreshold, scrollerRef, captureTopAnchor, restoreOwnsPosition])

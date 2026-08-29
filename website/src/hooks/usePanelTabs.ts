@@ -2,6 +2,7 @@ import { useCallback, useMemo, useSyncExternalStore } from 'react'
 import type { Artifact } from '../types'
 import { i18nT } from '../i18n/t'
 import { safeSetItem } from '../utils/safeStorage'
+import { sessionOwnerStamp } from '../utils/storageGc'
 import { secureRandomId } from '../utils/secureId'
 import {
   isPanelTabKind,
@@ -507,20 +508,20 @@ function loadPersisted(): BySlot {
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | undefined
-const dirtySlots = new Set<string>()
+const dirtySlots = new Map<string, string | undefined>()
 /** Persist only the slots that actually changed (one key each), debounced.
  *  Per-slot writes mean a GC'd slot key is never resurrected by an unrelated
  *  slot's mutation */
 function schedulePersist(slot: string): void {
   if (typeof window === 'undefined') return
-  dirtySlots.add(slot)
+  dirtySlots.set(slot, sessionOwnerStamp(slot))
   clearTimeout(persistTimer)
   persistTimer = setTimeout(flushPersist, PERSIST_DEBOUNCE_MS)
 }
 function flushPersist(): void {
-  for (const slot of dirtySlots) {
+  for (const [slot, owner] of dirtySlots) {
     const b = store[slot]
-    if (b) safeSetItem(KEY_PREFIX + slot, serializeBucket(b))
+    if (b) safeSetItem(KEY_PREFIX + slot, serializeBucket(b), owner)
     else if (typeof localStorage !== 'undefined') {
       try { localStorage.removeItem(KEY_PREFIX + slot) } catch { /* ignore */ }
     }

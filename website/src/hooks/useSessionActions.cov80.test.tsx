@@ -31,12 +31,21 @@ vi.mock('./useMoveSlotToFolder', () => ({ useMoveSlotToFolder: () => moveSlotToF
 const chatConfig = vi.hoisted(() => ({ confirmCloseSession: true }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => chatConfig }))
 
-const deleteSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/deleteSlot', payload: key })))
+/** `close` reads the close's outcome, so the stub must be thunk-shaped: a plain
+ *  action has no `.unwrap()`. A factory, so a rejection is built on consumption
+ *  rather than at setup, where it would land as an unhandled rejection. */
+const deleteSlotOutcome = vi.hoisted(() => ({ current: (): Promise<unknown> => Promise.resolve('ok') }))
+const deleteSlot = vi.hoisted(() => vi.fn((key: string) => () => Object.assign(
+  Promise.resolve({ type: 'zzq/deleteSlot', payload: key }),
+  { unwrap: () => deleteSlotOutcome.current() },
+)))
 const switchSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/switchSlot', payload: key })))
+const closeSlotWithNotice = vi.hoisted(() => vi.fn())
 vi.mock('../store/chatSlice', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSlot,
   switchSlot,
+  closeSlotWithNotice,
 }))
 
 import { store } from '../store'
@@ -78,6 +87,8 @@ beforeEach(() => {
   copySessionLink.mockClear()
   moveSlotToFolder.mockClear()
   deleteSlot.mockClear()
+  closeSlotWithNotice.mockClear()
+  deleteSlotOutcome.current = () => Promise.resolve('ok')
   switchSlot.mockClear()
   chatConfig.confirmCloseSession = true
   store.dispatch(sseSlots([]))
@@ -784,20 +795,29 @@ describe('close', () => {
     const { result } = harness()
     act(() => result.current.close(KEY))
     expect(confirmSpy).not.toHaveBeenCalled()
-    expect(deleteSlot).toHaveBeenCalledWith(KEY)
+    expect(closeSlotWithNotice).toHaveBeenCalledWith(expect.anything(), KEY, undefined)
   })
 
   it('closes after an accepted confirm', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { result } = harness()
     act(() => result.current.close(KEY))
-    expect(deleteSlot).toHaveBeenCalledWith(KEY)
+    expect(closeSlotWithNotice).toHaveBeenCalledWith(expect.anything(), KEY, undefined)
   })
 
   it('keeps the session on a declined confirm', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { result } = harness()
     act(() => result.current.close(KEY))
-    expect(deleteSlot).not.toHaveBeenCalled()
+    expect(closeSlotWithNotice).not.toHaveBeenCalled()
+  })
+
+  /** The gesture's whole obligation is now REACHING the shared helper: the helper
+   *  owns the notice, so this asserts the wiring and not a duplicate of it. */
+  it('routes the gesture through the helper that owns the notice', () => {
+    chatConfig.confirmCloseSession = false
+    const { result } = harness()
+    act(() => result.current.close(KEY))
+    expect(closeSlotWithNotice).toHaveBeenCalledTimes(1)
   })
 })

@@ -41,6 +41,8 @@ NAME = "chat-1-1785"
 
 
 class _Req:
+    query: dict[str, str] = {}
+
     """Minimal stand-in for the aiohttp request the delete handler reads.
 
     The race tests drive the handler directly rather than through a client: the
@@ -696,3 +698,131 @@ async def test_a_banner_loop_whose_cycles_are_spent_is_still_not_restored(
     assert resp.status == 500
     assert svc.get_by_slot(NAME) is None, "a spent loop was revived to preserve its banner"
     svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_history_save_reports_a_definitive_refusal(tmp_path, monkeypatch) -> None:
+    """The LAST rollback site is the one that pops the slot before it raises.
+
+    It restores `state._slots[name]` on the way out, so the close provably did not
+    happen and "try again" is right -- and the response must SAY so on the wire,
+    because the client keeps no copy of this module's code list.
+    """
+    state = _state_with_slot(tmp_path)
+    await _service(tmp_path, monkeypatch)
+
+    async def _persist(*_a, **_kw) -> None:
+        raise RuntimeError("disk wedged")
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert resp.status == 500
+    body = json.loads(resp.body)
+    assert body["code"] == "history_save_failed"
+    assert body["definitive"] is True, "a rolled-back close reported an unknown outcome"
+    assert NAME in state._slots, "the slot was left popped after a refused close"
+
+
+@pytest.mark.asyncio
+async def test_a_handover_history_save_failure_reports_an_unknown_outcome(
+    tmp_path, monkeypatch
+) -> None:
+    """The same save failure, but a concurrent recreate took the key: NOT definitive.
+
+    The restore is conditional -- it refuses to clobber a live replacement -- so here
+    the original stays popped while another object owns the key, and nothing rolls back.
+    Reporting a refusal would tell the user the session is provably still open and let
+    the notice invite a retry, which would close the REPLACEMENT and discard its turn.
+    So the flag must follow the restore rather than the code.
+    """
+    state = _state_with_slot(tmp_path)
+    await _service(tmp_path, monkeypatch)
+    original = state.get_slot(NAME)
+
+    async def _persist(*_a, **_kw) -> None:
+        state.get_or_create_slot(NAME)
+        raise RuntimeError("disk wedged")
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+
+    assert resp.status == 500
+    body = json.loads(resp.body)
+    assert body["code"] == "history_save_failed"
+    assert body["definitive"] is False, "a handover was reported as a safe refusal"
+    assert state.get_slot(NAME) is not original, "the replacement lost the key"
+
+
+@pytest.mark.asyncio
+async def test_an_overlapping_close_makes_a_pre_pop_failure_unknown(tmp_path, monkeypatch) -> None:
+    """A PRE-POP failure is not definitive once another object owns the key.
+
+    Two closes can overlap: the first pops the key and a same-key resume takes it over
+    while the second is still pre-pop. Being pre-pop says the SECOND close popped nothing,
+    not that the session is still there. Reporting a refusal tells the user it is provably
+    still open and the notice invites a retry, which would close the REPLACEMENT and
+    discard its live turn -- so the flag follows live ownership, not the pop ordering.
+    """
+    state = _state_with_slot(tmp_path)
+    state._slots[NAME]._app = "issue-radar"
+    await _service(tmp_path, monkeypatch)
+
+    async def _persist(*_a, **_kw) -> None:
+        return None
+
+    async def _hook_fails_after_takeover(_app: str, _slot_key: str) -> bool:
+        state._slots.pop(NAME, None)
+        state.get_or_create_slot(NAME)
+        return False
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+    monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", _hook_fails_after_takeover)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+    body = json.loads(resp.body)
+
+    assert resp.status == 500
+    assert body["code"] == "app_close_hook_failed"
+    assert body["definitive"] is False, (
+        "a pre-pop failure claimed the close was provably refused while a REPLACEMENT held "
+        "the key, so the notice would invite a retry that closes the replacement"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_popped_key_with_no_replacement_yet_is_also_unknown(tmp_path, monkeypatch) -> None:
+    """The absent key is the case a "no OTHER owner" test gets backwards.
+
+    ``_slot_still_ours`` counts ``None`` as still ours on purpose -- an absent key is the
+    ordinary POST-pop state, and reading it the other way would skip every close's teardown.
+    But for a PRE-POP refusal the question is whether the slot is provably still listed, and
+    an overlapping close may have popped it a moment ago with its replacement not yet minted.
+    Claiming a definitive refusal there points the retry at whatever takes the key next.
+    """
+    state = _state_with_slot(tmp_path)
+    state._slots[NAME]._app = "issue-radar"
+    await _service(tmp_path, monkeypatch)
+
+    async def _persist(*_a, **_kw) -> None:
+        return None
+
+    async def _hook_fails_after_pop(_app: str, _slot_key: str) -> bool:
+        # An overlapping close popped the key; no replacement exists YET.
+        state._slots.pop(NAME, None)
+        return False
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+    monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", _hook_fails_after_pop)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+    body = json.loads(resp.body)
+
+    assert resp.status == 500
+    assert body["code"] == "app_close_hook_failed"
+    assert body["definitive"] is False, (
+        "an ABSENT key was reported as a definitive refusal, so the notice invites a retry "
+        "against whichever slot next holds the key"
+    )

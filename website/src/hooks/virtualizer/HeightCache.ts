@@ -23,6 +23,7 @@
 // localStorage key prefix — a storage identifier, never rendered. Not UI copy.
 // Kept in sync with SESSION_PREFIXES in `utils/storageGc.ts`, which garbage-
 // collects these keys; changing it orphans every persisted height map.
+import { sessionOwnerStamp, setSessionScopedItem } from '../../utils/storageGc'
 const LS_KEY_PREFIX = 'vc_heights_'
 // Baseline floor for the eviction cap. The effective cap grows with the
 // session's row count up to HARD_CEILING (see effectiveCap()).
@@ -87,10 +88,13 @@ export class HeightCache {
   // never "this session is empty" — see setRowCount() and load().
   private rowCount = 0
 
+  private readonly owner: string | undefined
+
   constructor(sessionId: string, options?: { rowCount?: number }) {
     this.sessionId = sessionId
     this.storage = getStorage()
     this.storageKey = `${LS_KEY_PREFIX}${sessionId}`
+    this.owner = sessionOwnerStamp(sessionId)
     // Only a positive count is information. A caller that constructs the cache
     // before its transcript has loaded passes 0, which must not be mistaken for
     // a genuinely tiny session (load() seeds the cap from the blob instead).
@@ -352,7 +356,7 @@ export class HeightCache {
         if (this.retired.has(k)) continue
         obj[k] = v
       }
-      this.storage.setItem(this.storageKey, JSON.stringify(obj))
+      setSessionScopedItem(this.storage, this.storageKey, JSON.stringify(obj), this.owner)
     } catch {
       // Quota exceeded or transient failure — drop this flush. A future set()
       // will dirty the cache again and we'll retry on the next debounce window.

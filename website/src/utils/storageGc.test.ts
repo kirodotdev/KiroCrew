@@ -1,6 +1,32 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { gcOrphanedStorage, gcSessionStorage } from './storageGc'
+import { gcOrphanedStorage } from './storageGc'
+
+const OWNER_ENTRY_PREFIX = 'mc-storage-gc-owner:'
+
+/** A slot list, dated so instances are distinguishable. */
+const live = (...keys: string[]): { key: string; incarnation?: string }[] =>
+  keys.map(key => ({ key, created: '2026-06-06T00:00:00Z' }))
+
+/** Seed a prior-instance stamp for every EXISTING key of each id, so supersession is
+ *  proven PER KEY. A per-id stamp would let one family vouch for its siblings. */
+const seedOwners = (ids: string[], stamp = '2026-01-01T00:00:00Z'): void => {
+  const matched: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (!k || k.startsWith(OWNER_ENTRY_PREFIX)) continue
+    if (ids.some(id => k.endsWith(id) || k.includes(`${id}:`))) matched.push(k)
+  }
+  for (const k of matched) {
+    localStorage.setItem(OWNER_ENTRY_PREFIX + k, JSON.stringify({ stamp, seenAt: 0 }))
+  }
+}
+
+const sweepSuperseded = (supersededIds: string[], alsoLive: string[] = []): number => {
+  seedOwners(supersededIds)
+  return gcOrphanedStorage(live(...supersededIds, ...alsoLive))
+}
+
 
 /**
  * `storageGc` runs on every app boot and DELETES localStorage keys. Its
@@ -41,7 +67,7 @@ describe('gcOrphanedStorage', () => {
     localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
     localStorage.setItem(`${PANEL_TABS}chat-1-1`, '[]')
 
-    expect(gcOrphanedStorage(new Set(['chat-2-2']))).toBe(2)
+    expect(sweepSuperseded(['chat-1-1'], ['chat-2-2'])).toBe(2)
     expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBeNull()
     expect(localStorage.getItem(`${PANEL_TABS}chat-1-1`)).toBeNull()
   })
@@ -50,7 +76,7 @@ describe('gcOrphanedStorage', () => {
     localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
     localStorage.setItem(`${ACTIVITY}chat-1-1`, 'true')
 
-    expect(gcOrphanedStorage(new Set(['chat-1-1']))).toBe(0)
+    expect(gcOrphanedStorage(live('chat-1-1'))).toBe(0)
     expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBe('{}')
     expect(localStorage.getItem(`${ACTIVITY}chat-1-1`)).toBe('true')
   })
@@ -59,7 +85,7 @@ describe('gcOrphanedStorage', () => {
     localStorage.setItem('mc-chat-config', '{"simplifiedToolNames":false}')
     localStorage.setItem('theme', 'dark')
 
-    expect(gcOrphanedStorage(new Set())).toBe(0)
+    expect(gcOrphanedStorage([])).toBe(0)
     expect(localStorage.getItem('mc-chat-config')).toBe('{"simplifiedToolNames":false}')
     expect(localStorage.getItem('theme')).toBe('dark')
   })
@@ -69,11 +95,11 @@ describe('gcOrphanedStorage', () => {
     localStorage.setItem(`${TOUCHED}chat-1-100`, '[]')
     localStorage.setItem(`${TOUCHED}chat-1-100:toolClearedAt`, '1700000000000')
 
-    expect(gcOrphanedStorage(new Set(['chat-1-100']))).toBe(0)
+    expect(gcOrphanedStorage(live('chat-1-100'))).toBe(0)
     expect(localStorage.getItem(`${TOUCHED}chat-1-100:toolClearedAt`)).toBe('1700000000000')
 
     // ...and both go together when the session is gone.
-    expect(gcOrphanedStorage(new Set(['chat-9-9']))).toBe(2)
+    expect(sweepSuperseded(['chat-1-100'], ['chat-9-9'])).toBe(2)
     expect(localStorage.getItem(`${TOUCHED}chat-1-100`)).toBeNull()
     expect(localStorage.getItem(`${TOUCHED}chat-1-100:toolClearedAt`)).toBeNull()
   })
@@ -88,7 +114,7 @@ describe('gcOrphanedStorage', () => {
       localStorage.setItem(`${TOUCHED}${slot}`, '[{"path":"/x.ts"}]')
       localStorage.setItem(`${TOUCHED}${slot}:toolClearedAt`, '1700000000000')
 
-      expect(gcOrphanedStorage(new Set([slot, 'chat-1-1']))).toBe(0)
+      expect(gcOrphanedStorage(live(slot, 'chat-1-1'))).toBe(0)
       expect(localStorage.getItem(`${HEIGHTS}${slot}`)).toBe('{"0":42}')
       expect(localStorage.getItem(`${PANEL_TABS}${slot}`)).toBe('[{"kind":"files"}]')
       expect(localStorage.getItem(`${ACTIVITY}${slot}`)).toBe('true')
@@ -101,7 +127,7 @@ describe('gcOrphanedStorage', () => {
       localStorage.setItem(`${HEIGHTS}${slot}`, '{}')
       localStorage.setItem(`${PANEL_TABS}${slot}`, '[]')
 
-      expect(gcOrphanedStorage(new Set(['chat-1-1']))).toBe(2)
+      expect(sweepSuperseded([slot], ['chat-1-1'])).toBe(2)
       expect(localStorage.getItem(`${HEIGHTS}${slot}`)).toBeNull()
     })
 
@@ -119,7 +145,7 @@ describe('gcOrphanedStorage', () => {
       const raw = 'slack:1785370133.085469'
       localStorage.setItem(`${HEIGHTS}${raw}`, '{"0":42}')
 
-      expect(gcOrphanedStorage(new Set([raw]))).toBe(1)
+      expect(sweepSuperseded(['slack'], [raw])).toBe(1)
       expect(localStorage.getItem(`${HEIGHTS}${raw}`)).toBeNull()
     })
 
@@ -131,7 +157,7 @@ describe('gcOrphanedStorage', () => {
       localStorage.setItem(`${HEIGHTS}${dotted}`, '{}')
       localStorage.setItem(`${HEIGHTS}${dashed}`, '{}')
 
-      expect(gcOrphanedStorage(new Set([dotted, dashed]))).toBe(0)
+      expect(gcOrphanedStorage(live(dotted, dashed))).toBe(0)
       expect(localStorage.getItem(`${HEIGHTS}${dotted}`)).toBe('{}')
       expect(localStorage.getItem(`${HEIGHTS}${dashed}`)).toBe('{}')
     })
@@ -141,78 +167,11 @@ describe('gcOrphanedStorage', () => {
     // `vc_heights_` with nothing after it yields '' — falsy, so it is skipped
     // rather than deleted as an orphan of the empty session.
     localStorage.setItem(HEIGHTS, '{}')
-    expect(gcOrphanedStorage(new Set())).toBe(0)
+    expect(gcOrphanedStorage([])).toBe(0)
     expect(localStorage.getItem(HEIGHTS)).toBe('{}')
   })
 
   it('handles an empty store and an empty live set', () => {
-    expect(gcOrphanedStorage(new Set())).toBe(0)
-  })
-})
-
-describe('gcSessionStorage', () => {
-  beforeEach(() => {
-    localStorage.clear()
-  })
-
-  it('removes every prefix family for the named session', () => {
-    const slot = 'slack_1785370133.085469'
-    localStorage.setItem(`${HEIGHTS}${slot}`, '{}')
-    localStorage.setItem(`${PANEL_TABS}${slot}`, '[]')
-    localStorage.setItem(`${TOUCHED}${slot}:toolClearedAt`, '1')
-    localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
-
-    gcSessionStorage(slot)
-
-    expect(localStorage.getItem(`${HEIGHTS}${slot}`)).toBeNull()
-    expect(localStorage.getItem(`${PANEL_TABS}${slot}`)).toBeNull()
-    expect(localStorage.getItem(`${TOUCHED}${slot}:toolClearedAt`)).toBeNull()
-    // A different session is untouched.
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBe('{}')
-  })
-
-  it('is a no-op for an empty session key', () => {
-    localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
-    gcSessionStorage('')
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBe('{}')
-  })
-
-  it('stops at a boundary, so a longer sibling key survives', () => {
-    // The session id has to end where the key ends or at a ':' delimiter.
-    // Without that boundary, deleting a slot whose id prefixes a live
-    // sibling's id takes the sibling's state with it.
-    localStorage.setItem(`${HEIGHTS}chat-1-1`, '{}')
-    localStorage.setItem(`${HEIGHTS}chat-1-10`, '{}')
-
-    gcSessionStorage('chat-1-1')
-
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-1`)).toBeNull()
-    expect(localStorage.getItem(`${HEIGHTS}chat-1-10`)).toBe('{}')
-  })
-
-  it('spares the parked slot-less preference but not a same-named slot\u2019s other state', () => {
-    localStorage.setItem('mc-busy-send-mode:no-slot', 'steer')
-    localStorage.setItem(`${HEIGHTS}no-slot`, '{}')
-
-    gcSessionStorage('no-slot')
-
-    // Belongs to no slot, so no slot's teardown owns it.
-    expect(localStorage.getItem('mc-busy-send-mode:no-slot')).toBe('steer')
-    // A real slot sharing the sentinel's name still loses what it does own,
-    // or deleting and recreating it would restore stale caches.
-    expect(localStorage.getItem(`${HEIGHTS}no-slot`)).toBeNull()
-  })
-
-  it('removes a per-slot send-mode preference without touching a sibling', () => {
-    localStorage.setItem('mc-busy-send-mode:foo', 'queue')
-    localStorage.setItem('mc-busy-send-mode:foobar', 'steer')
-    localStorage.setItem('mc-busy-send-mode:no-slot', 'steer')
-
-    gcSessionStorage('foo')
-
-    expect(localStorage.getItem('mc-busy-send-mode:foo')).toBeNull()
-    expect(localStorage.getItem('mc-busy-send-mode:foobar')).toBe('steer')
-    // The slot-less sentinel belongs to no session.
-    expect(localStorage.getItem('mc-busy-send-mode:no-slot')).toBe('steer')
+    expect(gcOrphanedStorage([])).toBe(0)
   })
 })

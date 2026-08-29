@@ -293,7 +293,7 @@ export default function ItemSessionsTable({
   // renders a link, but it is no longer reported as a retirement either.
   const liveQuery = useQuery({
     queryKey: ['atp', 'live-slots'],
-    queryFn: () => api.chatSlots(),
+    queryFn: () => api.chatSlots().then(r => (Array.isArray(r) ? r : r.slots)),
     staleTime: 15_000,
   })
   const liveness = useMemo(

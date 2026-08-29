@@ -19524,6 +19524,9 @@ class TestSlotsGetWarmsGitLabAllowlist:
             return [slot.to_dict()]
 
         state.serialize_slots.side_effect = serialize
+        # The connect path draws its stamp through the seam, so the double must too.
+        state.stamped_slots.side_effect = lambda **kw: (1, state.serialize_slots(**kw))
+        state.stamped_slot_rows.side_effect = lambda: (1, ())
 
         @web.middleware
         async def dashboard_auth_marker(request, handler):

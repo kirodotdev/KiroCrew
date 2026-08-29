@@ -68,7 +68,10 @@
     "focus_mode": "Focus mode",
     "focus_mode_title": "Focus mode · Alt+Shift+M",
     "focus_mode_title_mac": "Focus mode · ⌥⇧M",
-    "connect_your_phone": "Connect your phone"
+    "connect_your_phone": "Connect your phone",
+    "boot_slots_failed_title": "Couldn’t load your sessions",
+    "boot_slots_failed": "Reload the page if it keeps failing.",
+    "boot_slots_retry": "Retry loading sessions"
   },
   "appSdk": {
     "chatEmbed": {
@@ -3125,11 +3128,19 @@
       "working": "Working"
     },
     "useSessionActions": {
+      "close_failed_refused": "Try closing it again from the session list. If it stays open, reload the page to see its current state.",
+      "close_failed_unknown": "Don’t close it again yet. If the session is still running, it will come back on its own once its state is confirmed.",
       "close_this_session": "Close this session?",
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
-      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
+      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior.",
+      "close_failed_refused_title": "Couldn’t close “{{title}}” — it’s still open",
+      "close_failed_unknown_title": "Couldn’t confirm “{{title}}” closed",
+      "close_failed_replaced": "The session you closed is gone; the row still listed is a new session.",
+      "close_failed_replaced_title": "“{{title}}” was already closed",
+      "close_failed_confirmed": "The session closed as requested.",
+      "close_failed_confirmed_title": "“{{title}}” closed"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet unavailable",
@@ -3356,7 +3367,11 @@
       "comments_failed_to_load": "Comments failed to load",
       "comment_action_failed": "Comment action failed",
       "activity_failed_to_load": "Activity failed to load",
-      "sync_status_unavailable": "Sync status unavailable"
+      "sync_status_unavailable": "Sync status unavailable",
+      "close_failed_refused": "Try “New chat” again, or reload the page to see its current state.",
+      "close_failed_unknown": "Don’t start another chat yet. If the session is still running, it will come back on its own.",
+      "close_failed_replaced": "A new session now uses that name, so there is nothing left to close. Click “New chat” again to start fresh.",
+      "close_failed_confirmed": "The session closed as requested."
     },
     "artifactPopoutFrame": {
       "artifact": "Artifact",

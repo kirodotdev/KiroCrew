@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from 'react'
-import { AlertTriangle, Sparkles, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
 import type { ErrorReport } from '../utils/errorReport'
 
@@ -74,11 +74,13 @@ export default function ErrorNotice({
   title,
   onDismiss,
   variant = 'block',
+  tone = 'danger',
   askAgent = false,
   onHandoff,
   className = '',
   messageClassName = '',
   testId,
+  action,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
   id?: string
@@ -96,6 +98,9 @@ export default function ErrorNotice({
   onDismiss?: () => void
   /** `block` = boxed banner; `inline` = compact text for an existing flex row. */
   variant?: 'block' | 'inline'
+  /** Colour, icon and ARIA role. `success` is for a resolved outcome: danger pixels on an
+   *  all-clear read as a fresh problem, and `role="alert"` interrupts to say nothing is wrong. */
+  tone?: 'danger' | 'success'
   /**
    * Opt IN to the agent hand-off. **Defaults to `false`, and the direction of that
    * default is the safety property.**
@@ -112,6 +117,7 @@ export default function ErrorNotice({
    * failures on pages that hold no draft input. Leave it off next to any editable
    * field whose contents are not yet saved somewhere durable.
    */
+  action?: React.ReactNode
   askAgent?: boolean
   /**
    * Forwarded to the hand-off button: runs only once the hand-off has actually
@@ -173,17 +179,24 @@ export default function ErrorNotice({
 
   return (
     <div
-      role="alert"
-      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex items-start gap-2 text-[13px] text-danger ${className}`}
+      role={tone === 'success' ? 'status' : 'alert'}
+      className={`rounded-lg border px-3 py-2 flex items-start gap-2 text-[13px] ${
+        tone === 'success'
+          ? 'border-ok/40 bg-ok/10 text-ok'
+          : 'border-danger/40 bg-danger/10 text-danger'
+      } ${className}`}
       id={id}
       data-testid={testId}
     >
-      <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
+      {tone === 'success'
+        ? <CheckCircle2 size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
+        : <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />}
       <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
         {messageClassName ? <span className={messageClassName}>{message}</span> : message}
+        {action && <div className="mt-1">{action}</div>}
       </div>
       {askAgent && (
         <AskAgentButton

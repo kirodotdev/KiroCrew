@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
+import { switchSlot, closeSlotWithNotice, openActivityToTab, selectSidebarSubagentCounts, selectSidebarApprovalCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
 import { inferLane } from '../pages/chat/sessionLane'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
@@ -997,7 +997,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         'new-chat': () => onNewChat(),
         // ⌘W / Ctrl+W (alias Option/Alt+Shift+W): close the current session —
         // same semantics as the header-menu close (gated by confirmCloseSession,
-        // dispatches deleteSlot). One addition for the NEW chord surface: a
+        // dispatches the shared close helper). One addition for the NEW chord surface: a
         // session that is not IDLE always confirms. ⌘W/Ctrl+W is the most
         // habitual chord there is (it closed the WINDOW in the previous desktop
         // release on Windows/Linux), and `confirmCloseSession` defaults off — a
@@ -1009,7 +1009,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // "Not idle" is the sidebar's own lane inference, not `slot.running`: that
         // flag covers only the slot's own turn and reads FALSE between the cycles
         // of an armed goal loop, during a dynamic workflow, and while background
-        // sub-agents run — all of which `deleteSlot` retires. Reusing `inferLane`
+        // sub-agents run — all of which closing the slot retires. Reusing `inferLane`
         // with the same extras the sidebar computes keeps this gate and the
         // Working/Waiting/Needs-approval lanes from ever disagreeing.
         'close-chat': () => {
@@ -1026,7 +1026,9 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
           const modChord = e.metaKey || e.ctrlKey
           const mustConfirm = loadChatConfig().confirmCloseSession || (modChord && lane !== 'idle')
           if (!mustConfirm || confirm(i18nT('hooks.useKeyboardShortcuts.close_this_session'))) {
-            dispatch(deleteSlot(activeSlot))
+            // The title is read before the close because the failure notice names the session
+            // and the row leaves the list before that notice renders.
+            closeSlotWithNotice(dispatch, activeSlot, slot?.title)
           }
         },
       }

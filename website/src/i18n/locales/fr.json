@@ -124,7 +124,10 @@
     "focus_mode": "Mode concentration",
     "focus_mode_title": "Mode concentration · Alt+Maj+M",
     "focus_mode_title_mac": "Mode concentration · ⌥⇧M",
-    "connect_your_phone": "Connecter votre téléphone"
+    "connect_your_phone": "Connecter votre téléphone",
+    "boot_slots_failed_title": "Impossible de charger vos sessions",
+    "boot_slots_failed": "Rechargez la page si l’échec persiste.",
+    "boot_slots_retry": "Recharger les sessions"
   },
   "appSdk": {
     "chatEmbed": {
@@ -8581,11 +8584,19 @@
       "working": "En cours"
     },
     "useSessionActions": {
+      "close_failed_refused": "Fermez-la à nouveau depuis la liste des sessions. Si elle reste ouverte, rechargez la page pour voir son état actuel.",
+      "close_failed_unknown": "Ne la fermez pas encore une fois. Si la session tourne toujours, elle reviendra d’elle-même dès que son état est confirmé.",
       "close_this_session": "Fermer cette session ?",
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passer en mode autopilote ? Les prochains messages utiliseront le comportement autopilote (planifier → approuver → exécuter).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard."
+      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard.",
+      "close_failed_refused_title": "Impossible de fermer « {{title}} » : elle est toujours ouverte",
+      "close_failed_unknown_title": "Impossible de confirmer la fermeture de « {{title}} »",
+      "close_failed_replaced": "La session que vous avez fermée n’existe plus ; la ligne encore affichée est une nouvelle session.",
+      "close_failed_replaced_title": "« {{title}} » était déjà fermée",
+      "close_failed_confirmed": "La session a été fermée comme demandé.",
+      "close_failed_confirmed_title": "« {{title}} » fermée"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponible",
@@ -9157,7 +9168,11 @@
       "comments_failed_to_load": "Échec du chargement des commentaires",
       "comment_action_failed": "Échec de l'action sur le commentaire",
       "activity_failed_to_load": "Échec du chargement de l'activité",
-      "sync_status_unavailable": "État de synchronisation indisponible"
+      "sync_status_unavailable": "État de synchronisation indisponible",
+      "close_failed_refused": "Réessayez « Nouvelle discussion » ou rechargez la page pour voir son état actuel.",
+      "close_failed_unknown": "Ne lancez pas encore une autre discussion. Si la session tourne toujours, elle reviendra d’elle-même.",
+      "close_failed_replaced": "Une nouvelle session porte ce nom, il n’y a donc plus rien à fermer. Cliquez à nouveau sur « Nouvelle discussion » pour repartir de zéro.",
+      "close_failed_confirmed": "La session a été fermée comme demandé."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefact",

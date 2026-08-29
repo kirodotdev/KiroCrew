@@ -1589,14 +1589,16 @@ describe('onCycleAgent keyboard shortcut', () => {
     const noticeText = await screen.findByText(
       REAL_FAILURE,
     )
-    expect(noticeText.closest('[role="status"]')).not.toBeNull()
+    // Routed through `ErrorNotice`, so the failure announces
+    // ASSERTIVELY: a rejected switch is an error, not a polite status update.
+    expect(noticeText.closest('[role="alert"]')).not.toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByText(
       REAL_FAILURE,
     )).not.toBeInTheDocument()
   })
 
-  it('restarts the six-second expiry after a repeated failure', async () => {
+  it('keeps the hand-off notice up past the old expiry window', async () => {
     const { api } = await import('../api/client')
     const { store } = await import('../store')
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
@@ -1623,7 +1625,7 @@ describe('onCycleAgent keyboard shortcut', () => {
       expect(screen.getByText(copy)).toBeInTheDocument()
 
       await act(async () => { await vi.advanceTimersByTimeAsync(4500) })
-      expect(screen.queryByText(copy)).not.toBeInTheDocument()
+      expect(screen.getByText(copy)).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
       ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockResolvedValue({})

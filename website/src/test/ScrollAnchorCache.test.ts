@@ -13,7 +13,33 @@ import {
   loadScrollAnchor,
   clearScrollAnchor,
 } from '../hooks/virtualizer/ScrollAnchorCache'
-import { gcSessionStorage } from '../utils/storageGc'
+import { gcOrphanedStorage } from '../utils/storageGc'
+
+const OWNER_ENTRY_PREFIX = 'mc-storage-gc-owner:'
+
+/** A slot list, dated so instances are distinguishable. */
+const live = (...keys: string[]): { key: string; incarnation?: string }[] =>
+  keys.map(key => ({ key, created: '2026-06-06T00:00:00Z' }))
+
+/** Seed a prior-instance stamp for every EXISTING key of each id, so supersession is
+ *  proven PER KEY. A per-id stamp would let one family vouch for its siblings. */
+const seedOwners = (ids: string[], stamp = '2026-01-01T00:00:00Z'): void => {
+  const matched: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)
+    if (!k || k.startsWith(OWNER_ENTRY_PREFIX)) continue
+    if (ids.some(id => k.endsWith(id) || k.includes(`${id}:`))) matched.push(k)
+  }
+  for (const k of matched) {
+    localStorage.setItem(OWNER_ENTRY_PREFIX + k, JSON.stringify({ stamp, seenAt: 0 }))
+  }
+}
+
+const sweepSuperseded = (supersededIds: string[], alsoLive: string[] = []): number => {
+  seedOwners(supersededIds)
+  return gcOrphanedStorage(live(...supersededIds, ...alsoLive))
+}
+
 
 describe('ScrollAnchorCache', () => {
   beforeEach(() => localStorage.clear())
@@ -66,12 +92,12 @@ describe('ScrollAnchorCache', () => {
     expect(loadScrollAnchor('')).toBeNull()
   })
 
-  it('is collected by gcSessionStorage when a session is deleted', () => {
+  it('is collected by the orphan sweep once a session is gone', () => {
     // The SESSION_PREFIXES entry in utils/storageGc.ts must stay byte-
     // identical to ANCHOR_KEY_PREFIX — this is the coupling test.
     saveScrollAnchor('doomed', { key: 'k', top: 5 })
     saveScrollAnchor('alive', { key: 'k', top: 5 })
-    gcSessionStorage('doomed')
+    sweepSuperseded(['doomed'], ['alive'])
     expect(loadScrollAnchor('doomed')).toBeNull()
     expect(loadScrollAnchor('alive')).toEqual({ key: 'k', top: 5 })
   })

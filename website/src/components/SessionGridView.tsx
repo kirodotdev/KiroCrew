@@ -96,7 +96,7 @@ export default function SessionGridView({
 
   const { data: slots = [] } = useQuery<Slot[]>({
     queryKey: ['session-grid-slots'],
-    queryFn: () => api.chatSlots(),
+    queryFn: () => api.chatSlots().then(r => (Array.isArray(r) ? r : r.slots) as Slot[]),
     refetchInterval: 3000,
   })
 
