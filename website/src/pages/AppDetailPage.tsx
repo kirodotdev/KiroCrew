@@ -39,6 +39,10 @@ type AppInfo = {
   icon?: string
   iconUrl?: string
   iconUrlDark?: string
+  // Second-chance icon art: an INSTALLED app's own local route, consulted by
+  // AppIcon only when the primary (usually registry) URL fails to load.
+  iconUrlFallback?: string
+  iconUrlFallbackDark?: string
   tags?: string[]
   highlights?: string[]
   useCases?: string[]
@@ -335,6 +339,16 @@ export default function AppDetailPage() {
               || installedIcon(m.iconPath, m.iconUrl, installed.name) || pageIconUrl || '',
             iconUrlDark: registryEntry?.iconUrlDark
               || installedIcon(m.iconPathDark, m.iconUrlDark, installed.name) || '',
+            // The app IS installed on this branch, so its icon bytes are on
+            // local disk: carry that route as a LOAD-failure fallback for
+            // AppIcon. Deliberately not a precedence change — the registry's
+            // immutable content-addressed asset above stays the primary `src`
+            // and keeps its cache-forever win (#6804 rejects a flip); the local
+            // candidate is consulted only when that src errors (offline,
+            // captive portal, blocked host). When the local candidate itself
+            // won the precedence above, AppIcon skips the identical URL.
+            iconUrlFallback: installedIcon(m.iconPath, m.iconUrl, installed.name) || '',
+            iconUrlFallbackDark: installedIcon(m.iconPathDark, m.iconUrlDark, installed.name) || '',
             tags: m.tags || registryEntry?.tags || [],
             highlights: m.highlights || registryEntry?.highlights || [],
             useCases: m.useCases || registryEntry?.useCases || [],
@@ -812,7 +826,7 @@ export default function AppDetailPage() {
         {/* Hero */}
         <div className="flex items-start gap-5 mb-6">
           <div className="w-24 h-24 rounded-2xl bg-accent/10 flex items-center justify-center shrink-0 overflow-hidden">
-            <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} size={64} />
+            <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} iconUrlFallback={app.iconUrlFallback} iconUrlFallbackDark={app.iconUrlFallbackDark} size={64} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-1 flex-wrap">
