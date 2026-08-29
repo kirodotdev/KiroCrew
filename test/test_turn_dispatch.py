@@ -141,6 +141,65 @@ class TestCeilingResolution:
         assert td.chat_turn_timeout_secs() == CHAT_TURN_TIMEOUT
 
 
+class TestBoundedTurnSetup:
+    @pytest.mark.asyncio
+    async def test_task_creation_failure_restores_deadline_and_closes_turn(
+        self, monkeypatch
+    ) -> None:
+        previous_deadline = 12345.0
+        token = td._TURN_DEADLINE.set(previous_deadline)
+
+        async def _turn() -> None:
+            raise AssertionError("failed setup must not start the turn")
+
+        turn = _turn()
+        monkeypatch.setattr(
+            td.asyncio,
+            "ensure_future",
+            MagicMock(side_effect=RuntimeError("task factory rejected turn")),
+        )
+        try:
+            with pytest.raises(RuntimeError, match="task factory rejected turn"):
+                await td._bounded_turn(turn, 60)
+            assert td._TURN_DEADLINE.get() == previous_deadline
+            assert turn.cr_frame is None
+        finally:
+            td._TURN_DEADLINE.reset(token)
+
+    @pytest.mark.asyncio
+    async def test_timer_creation_failure_cancels_and_joins_owned_turn(self, monkeypatch) -> None:
+        previous_deadline = 67890.0
+        token = td._TURN_DEADLINE.set(previous_deadline)
+        created_tasks: list[asyncio.Task[None]] = []
+        real_ensure_future = asyncio.ensure_future
+
+        async def _turn() -> None:
+            raise AssertionError("failed setup must not start the turn")
+
+        def _record_task(coro):
+            task = real_ensure_future(coro)
+            created_tasks.append(task)
+            return task
+
+        loop = asyncio.get_running_loop()
+        turn = _turn()
+        monkeypatch.setattr(td.asyncio, "ensure_future", _record_task)
+        monkeypatch.setattr(
+            loop,
+            "call_later",
+            MagicMock(side_effect=RuntimeError("timer rejected deadline")),
+        )
+        try:
+            with pytest.raises(RuntimeError, match="timer rejected deadline"):
+                await td._bounded_turn(turn, 60)
+            assert td._TURN_DEADLINE.get() == previous_deadline
+            assert len(created_tasks) == 1
+            assert created_tasks[0].cancelled()
+            assert turn.cr_frame is None
+        finally:
+            td._TURN_DEADLINE.reset(token)
+
+
 class TestTimeoutCard:
     def test_names_the_limit_in_hours(self) -> None:
         assert "2-hour" in td.format_turn_timeout_card(7200.0)
@@ -154,6 +213,29 @@ class TestTimeoutCard:
 
 
 class TestFinishTurnTask:
+    @pytest.mark.asyncio
+    async def test_cancel_before_first_loop_step_closes_the_unclaimed_turn(self) -> None:
+        """Immediate cancellation must not leak the input coroutine.
+
+        The bounded wrapper has not started yet, so its ``finally`` cannot own
+        cleanup.  This is the exact dispatch race exercised when a completed
+        chat turn starts a queued successor and its test/teardown immediately
+        cancels ``slot.task``.
+        """
+        state, slot = _state(), _slot()
+
+        async def _turn() -> None:
+            raise AssertionError("the turn should never start")
+
+        turn = _turn()
+        task = td.spawn_guarded_turn(state, slot, turn, timeout_secs=60)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert turn.cr_frame is None
+
     @pytest.mark.asyncio
     async def test_timeout_renders_a_visible_card(self) -> None:
         """The headline regression: a ceiling hit must not be silent."""
