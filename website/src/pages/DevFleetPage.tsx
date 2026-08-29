@@ -197,6 +197,10 @@ export function mergeLogWindow(buffer: string[], window: string[]): string[] {
 export function pruneVerdictLabel(code?: string): string {
   switch (code) {
     case 'merged': return i18nT('pages.devFleetPage.pr_merged')
+    case 'closed': return i18nT('pages.devFleetPage.pr_closed_not_on_main')
+    case 'closed_dirty': return i18nT('pages.devFleetPage.pr_closed_uncommitted_changes')
+    case 'closed_new_commits': return i18nT('pages.devFleetPage.pr_closed_but_branch_has_newer_commits')
+    case 'closed_unverified': return i18nT('pages.devFleetPage.pr_closed_but_verification_unavailable_retry')
     case 'empty': return i18nT('pages.devFleetPage.no_commits_stale')
     case 'merged_dirty': return i18nT('pages.devFleetPage.pr_merged_uncommitted_changes')
     case 'fresh': return i18nT('pages.devFleetPage.created_recently')
@@ -833,7 +837,7 @@ export default function DevFleetPage() {
   // checkout, so the restart confirm must say so — that hazard does not
   // depend on whether the pointer-only cancel is available.
   const pendingStage = (fleet?.worktrees || []).find((x) => x.is_staged && !x.is_live) || null
-  const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string }[]; kept: { name: string; code?: string; dirty?: boolean; dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[] }[]; scanned: number } | null>(null)
+  const [pruneDialog, setPruneDialog] = useState<{ candidates: { name: string; code?: string; unmerged_commits?: boolean }[]; kept: { name: string; code?: string; dirty?: boolean; dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[] }[]; scanned: number } | null>(null)
   const [pruneSelected, setPruneSelected] = useState<Set<string>>(new Set())
   const [pruneForceSelected, setPruneForceSelected] = useState<Set<string>>(new Set())
   const [pruneProgress, setPruneProgress] = useState<{ names: string[]; items: Record<string, { status: string; error?: string | null }>; done: number; total: number; running: boolean } | null>(null)
@@ -1296,7 +1300,7 @@ export default function DevFleetPage() {
   async function pruneShipped() {
     setFlag('__prune', true)
     try {
-      const r = await api.get<{ ok?: boolean; candidates?: { name: string; code?: string }[]; kept?: { name: string; code?: string; dirty?: boolean; dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[] }[]; scanned?: number; error?: string }>('/prune-candidates')
+      const r = await api.get<{ ok?: boolean; candidates?: { name: string; code?: string; unmerged_commits?: boolean }[]; kept?: { name: string; code?: string; dirty?: boolean; dirty_tracked?: boolean | null; dirty_untracked?: number; dirty_untracked_paths?: string[] }[]; scanned?: number; error?: string }>('/prune-candidates')
       if (!r || r.ok === false) { notify(r?.error || i18nT('pages.devFleetPage.prune_preview_failed'), { type: 'error' }); return }
       const cands = r.candidates || []
       const kept = r.kept || []
@@ -1964,14 +1968,40 @@ export default function DevFleetPage() {
     return (
       <Modal open={true} onClose={() => setPruneDialog(null)} title={i18nT('pages.devFleetPage.prune_worktrees')} maxWidth={480} footer={<><Btn onClick={() => setPruneDialog(null)}>{i18nT('pages.devFleetPage.cancel')}</Btn><Btn danger onClick={handleRemove}>{i18nT('pages.devFleetPage.remove_selected')}</Btn></>}>
         <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-          {pruneDialog.candidates.length > 0 && (
+          {pruneDialog.candidates.filter((c) => c.code !== 'closed').length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--muted)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.remove')}</div>
-              {pruneDialog.candidates.map((c) => (
+              {pruneDialog.candidates.filter((c) => c.code !== 'closed').map((c) => (
+                // eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule; the control is nested in the label and carries an aria-label, so it is properly associated.
                 <label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
                   <Checkbox checked={pruneSelected.has(c.name)} onChange={(e) => setPruneSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(c.name); else next.delete(c.name); return next })} aria-label={i18nT('pages.devFleetPage.select', { name: c.name })} />
-                  <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{c.name}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{pruneVerdictLabel(c.code)}</span>
+                  <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto', minWidth: 0 }}>{c.name}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', flex: '0 1 auto', minWidth: 0, maxWidth: 'min(200px, 55%)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pruneVerdictLabel(c.code)}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          {/* Closed-PR worktrees are a DISTINCT group with its own header and
+              warning copy, never folded into the merged "Remove" list — a
+              merged tree's content is on main by definition, a closed one's is
+              not, so the operator must never mistake one for the other. Rows
+              whose branch is ahead of main carry an extra per-row alarm. */}
+          {pruneDialog.candidates.filter((c) => c.code === 'closed').length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--warn)', textTransform: 'uppercase', borderBottom: '1px solid var(--border)', paddingBottom: 3, marginBottom: 4 }}>{i18nT('pages.devFleetPage.remove_closed_pr')}</div>
+              <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 6px' }}>{i18nT('pages.devFleetPage.closed_pr_not_on_main_hint')}</p>
+              {pruneDialog.candidates.filter((c) => c.code === 'closed').map((c) => (
+                // eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule; the control is nested in the label and carries an aria-label, so it is properly associated.
+                <label key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: 'pointer' }}>
+                  <Checkbox checked={pruneSelected.has(c.name)} onChange={(e) => setPruneSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(c.name); else next.delete(c.name); return next })} aria-label={i18nT('pages.devFleetPage.select', { name: c.name })} />
+                  <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto', minWidth: 0 }}>{c.name}</span>
+                  {/* The status must never starve the NAME: this row selects a
+                      worktree for permanent deletion, so the operator has to be
+                      able to read which one. A nowrap status with no shrink
+                      basis takes its full intrinsic width -- and a long
+                      localized string in a 320px modal then collapses the
+                      flexible name to an ellipsis. */}
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: c.unmerged_commits ? 'var(--danger)' : 'var(--muted)', whiteSpace: 'nowrap', flex: '0 1 auto', minWidth: 0, maxWidth: 'min(200px, 55%)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.unmerged_commits ? i18nT('pages.devFleetPage.closed_has_unmerged_commits') : pruneVerdictLabel(c.code)}</span>
                 </label>
               ))}
             </div>
@@ -1995,13 +2025,19 @@ export default function DevFleetPage() {
                 const disabled = guarded || cannotForce
                 const checked = pruneForceSelected.has(k.name)
                 return (
+                  // eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule; the control is nested in the label and carries an aria-label, so it is properly associated.
                   <label key={k.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.6 : 1 }}>
                     {guarded
                       ? <span style={{ width: 13, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><ShieldAlert size={13} style={{ color: 'var(--muted)' }} /></span>
                       : <Checkbox checked={checked} disabled={cannotForce} onChange={(e) => setPruneForceSelected((prev) => { const next = new Set(prev); if (e.target.checked) next.add(k.name); else next.delete(k.name); return next })} aria-label={i18nT('pages.devFleetPage.force_remove', { name: k.name })} />
                     }
-                    <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, color: checked ? 'var(--danger)' : guarded ? 'var(--muted)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{k.name}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }} title={scratchOnly ? (k.dirty_untracked_paths ?? []).join(', ') : pruneVerdictLabel(k.code)}>
+                    <span style={{ fontFamily: 'ui-monospace, SF Mono, Menlo, monospace', fontSize: 12, color: checked ? 'var(--danger)' : guarded ? 'var(--muted)' : 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto', minWidth: 0 }}>{k.name}</span>
+                    {/* `min(200px, 55%)` rather than a flat 200px: a fixed cap
+                        does not scale down, so in a 320px modal the status took
+                        200px of it and the flexible name collapsed to nothing --
+                        leaving a consequence with no visible subject. The px arm
+                        keeps the roomier desktop reading. */}
+                    <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', flex: '0 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 'min(200px, 55%)' }} title={scratchOnly ? (k.dirty_untracked_paths ?? []).join(', ') : pruneVerdictLabel(k.code)}>
                       {guarded && i18nT('pages.devFleetPage.protected_worktree')}
                       {/* A scratch-only row shows the FILENAMES it would
                           discard, not the verdict label. Two rows can carry the

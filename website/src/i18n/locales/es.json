@@ -9772,7 +9772,14 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "Cambio preparado: este worktree se activará la próxima vez que arranque el gateway. Ejecuta `{{cmd}}` para completarlo, o usa el menú de esta fila → Cancelar el cambio preparado para deshacerlo. Hasta entonces el gateway sigue ejecutando el checkout anterior.",
       "keeps_the_live_checkout_the_live_target_and_disc": "Mantiene el checkout activo como destino activo y descarta el cambio preparado hacia {{staged}} (no se reinicia nada)",
       "restarting_completes_the_pending_cutover_boots": "Reiniciar completa el cambio pendiente: el gateway volverá con \"{{staged}}\", no con el checkout actual. El panel se desconectará brevemente y se reconectará automáticamente. Para deshacerlo, usa Cancelar el cambio preparado.",
-      "no_checkout_found_action": "Define la variable de entorno de abajo, o añade dev_fleet.repo_path al config.json de tu directorio de datos de {{productName}} (~/.kiro/crew por defecto) para que persista, y reinicia la puerta de enlace."
+      "no_checkout_found_action": "Define la variable de entorno de abajo, o añade dev_fleet.repo_path al config.json de tu directorio de datos de {{productName}} (~/.kiro/crew por defecto) para que persista, y reinicia la puerta de enlace.",
+      "pr_closed_not_on_main": "PR cerrado — no está en main",
+      "pr_closed_uncommitted_changes": "PR cerrado — cambios sin confirmar",
+      "remove_closed_pr": "Eliminar — PR cerrado (no está en main)",
+      "closed_pr_not_on_main_hint": "PR cerrado y sin fusionar — su contenido no está en main, así que eliminarlo lo borra de forma permanente. Revisa antes de seleccionar.",
+      "closed_has_unmerged_commits": "PR cerrado — tiene commits que no están en main",
+      "pr_closed_but_branch_has_newer_commits": "PR cerrado — la rama tiene commits más recientes",
+      "pr_closed_but_verification_unavailable_retry": "PR cerrado, pero la verificación no está disponible — vuelve a intentarlo"
     },
     "developer": {
       "agentBackendTab": {

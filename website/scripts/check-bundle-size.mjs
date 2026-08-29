@@ -42,8 +42,10 @@ export const CHUNK_BUDGETS = {
   // little with every translated string, which is expected and fine; what this
   // ceiling catches is a NEW library or surface landing in the catalog chunk.
   // The built-in App Store guidance adds one use-case and one configuration
-  // string for each of 23 apps across all 12 shipped catalogs.
-  all: 9750 * KB, // measured 9278 KB after built-in App Store guidance
+  // string for each of 23 apps across all 12 shipped catalogs. The Dev Fleet
+  // closed-PR prune group adds five user-visible strings across the same 12
+  // catalogs, which is the last increment that pushed this past 9750 KB.
+  all: 9800 * KB, // measured 9758 KB after Dev Fleet closed-PR prune catalog keys
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because

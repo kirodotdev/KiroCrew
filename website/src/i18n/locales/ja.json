@@ -9472,7 +9472,14 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "切り替え準備完了：ゲートウェイの次回起動時にこのワークツリーがライブになります。完了するには `{{cmd}}` を実行するか、この行のメニュー → 準備済みの切り替えをキャンセル で取り消せます。それまでゲートウェイは以前のチェックアウトで動作し続けます。",
       "keeps_the_live_checkout_the_live_target_and_disc": "ライブ中のチェックアウトがライブ対象のままとなり、{{staged}} への準備済みの切り替えは破棄されます（何も再起動されません）",
       "restarting_completes_the_pending_cutover_boots": "再起動すると保留中の切り替えが完了します：ゲートウェイは現在のチェックアウトではなく「{{staged}}」で起動します。ダッシュボードは一時的に切断され、自動的に再接続されます。取り消す場合は、準備済みの切り替えをキャンセル を使用してください。",
-      "no_checkout_found_action": "下記の環境変数を設定するか、設定を永続化するには {{productName}} データディレクトリ（既定では ~/.kiro/crew）の config.json に dev_fleet.repo_path を追加し、ゲートウェイを再起動してください。"
+      "no_checkout_found_action": "下記の環境変数を設定するか、設定を永続化するには {{productName}} データディレクトリ（既定では ~/.kiro/crew）の config.json に dev_fleet.repo_path を追加し、ゲートウェイを再起動してください。",
+      "pr_closed_not_on_main": "PR はクローズ済み — main に存在しません",
+      "pr_closed_uncommitted_changes": "PR はクローズ済み — 未コミットの変更あり",
+      "remove_closed_pr": "削除 — クローズ済み PR（main に存在しません）",
+      "closed_pr_not_on_main_hint": "クローズ済みで未マージの PR — 内容は main に存在しないため、削除すると完全に失われます。選択する前に確認してください。",
+      "closed_has_unmerged_commits": "クローズ済み PR — main に存在しないコミットがあります",
+      "pr_closed_but_branch_has_newer_commits": "PR はクローズ済み — ブランチに新しいコミットがあります",
+      "pr_closed_but_verification_unavailable_retry": "PR はクローズ済みですが検証利用不可 — 再試行"
     },
     "developer": {
       "agentBackendTab": {

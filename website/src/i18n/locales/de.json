@@ -9622,7 +9622,14 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "Umschaltung vorgemerkt: dieser Worktree wird beim nächsten Start des Gateways live. Führen Sie `{{cmd}}` aus, um sie abzuschließen, oder nutzen Sie das Menü dieser Zeile → Vorgemerkte Umschaltung abbrechen, um sie zurückzunehmen. Bis dahin führt das Gateway weiterhin den vorherigen Checkout aus.",
       "keeps_the_live_checkout_the_live_target_and_disc": "Der laufende Checkout bleibt das Live-Ziel, die vorgemerkte Umschaltung auf {{staged}} wird verworfen (nichts wird neu gestartet)",
       "restarting_completes_the_pending_cutover_boots": "Ein Neustart schließt die ausstehende Umschaltung ab: das Gateway startet mit „{{staged}}“, nicht mit dem aktuellen Checkout. Das Dashboard trennt kurz die Verbindung und verbindet sich automatisch neu. Zum Zurücknehmen stattdessen Vorgemerkte Umschaltung abbrechen verwenden.",
-      "no_checkout_found_action": "Setzen Sie die untenstehende Umgebungsvariable oder tragen Sie dev_fleet.repo_path dauerhaft in die config.json in Ihrem {{productName}}-Datenverzeichnis (standardmäßig ~/.kiro/crew) ein und starten Sie dann das Gateway neu."
+      "no_checkout_found_action": "Setzen Sie die untenstehende Umgebungsvariable oder tragen Sie dev_fleet.repo_path dauerhaft in die config.json in Ihrem {{productName}}-Datenverzeichnis (standardmäßig ~/.kiro/crew) ein und starten Sie dann das Gateway neu.",
+      "pr_closed_not_on_main": "PR geschlossen — nicht in main",
+      "pr_closed_uncommitted_changes": "PR geschlossen — nicht committete Änderungen",
+      "remove_closed_pr": "Entfernen — geschlossener PR (nicht in main)",
+      "closed_pr_not_on_main_hint": "Geschlossener, nicht gemergter PR — sein Inhalt ist nicht in main, das Entfernen löscht ihn dauerhaft. Vor dem Auswählen prüfen.",
+      "closed_has_unmerged_commits": "Geschlossener PR — enthält Commits, die nicht in main sind",
+      "pr_closed_but_branch_has_newer_commits": "PR geschlossen — Branch hat neuere Commits",
+      "pr_closed_but_verification_unavailable_retry": "PR geschlossen, aber Überprüfung nicht verfügbar — erneut versuchen"
     },
     "developer": {
       "agentBackendTab": {

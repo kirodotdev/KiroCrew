@@ -9622,7 +9622,14 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "कटओवर स्टेज किया गया: गेटवे के अगली बार शुरू होने पर यह वर्कट्री लाइव हो जाएगी। इसे पूरा करने के लिए `{{cmd}}` चलाएँ, या वापस लेने के लिए इस पंक्ति के मेनू → स्टेज किया गया कटओवर रद्द करें का उपयोग करें। तब तक गेटवे पिछले चेकआउट पर ही चलता रहेगा।",
       "keeps_the_live_checkout_the_live_target_and_disc": "लाइव चेकआउट लाइव लक्ष्य बना रहता है और {{staged}} पर स्टेज किया गया स्विच हटा दिया जाता है (कुछ भी पुनरारंभ नहीं होता)",
       "restarting_completes_the_pending_cutover_boots": "पुनरारंभ करने से लंबित कटओवर पूरा हो जाता है: गेटवे \"{{staged}}\" पर वापस आएगा, वर्तमान चेकआउट पर नहीं। डैशबोर्ड कुछ देर के लिए डिस्कनेक्ट होकर अपने आप फिर से जुड़ जाएगा। वापस लेने के लिए इसके बजाय स्टेज किया गया कटओवर रद्द करें का उपयोग करें।",
-      "no_checkout_found_action": "नीचे दिया एनवायरनमेंट वेरिएबल सेट करो, या इसे स्थायी बनाने के लिए {{productName}} डेटा डायरेक्टरी (डिफ़ॉल्ट रूप से ~/.kiro/crew) की config.json में dev_fleet.repo_path जोड़ो, फिर गेटवे को पुनः आरंभ करो।"
+      "no_checkout_found_action": "नीचे दिया एनवायरनमेंट वेरिएबल सेट करो, या इसे स्थायी बनाने के लिए {{productName}} डेटा डायरेक्टरी (डिफ़ॉल्ट रूप से ~/.kiro/crew) की config.json में dev_fleet.repo_path जोड़ो, फिर गेटवे को पुनः आरंभ करो।",
+      "pr_closed_not_on_main": "PR बंद — main पर नहीं",
+      "pr_closed_uncommitted_changes": "PR बंद — बिना कमिट किए बदलाव",
+      "remove_closed_pr": "हटाएँ — बंद PR (main पर नहीं)",
+      "closed_pr_not_on_main_hint": "बंद, बिना मर्ज की गई PR — इसकी सामग्री main पर नहीं है, इसलिए हटाने पर वह स्थायी रूप से मिट जाएगी। चुनने से पहले जाँच करें।",
+      "closed_has_unmerged_commits": "बंद PR — main पर न होने वाले कमिट हैं",
+      "pr_closed_but_branch_has_newer_commits": "PR बंद — ब्रांच में नए कमिट हैं",
+      "pr_closed_but_verification_unavailable_retry": "PR बंद पर पुष्टि उपलब्ध नहीं — फिर कोशिश करें"
     },
     "developer": {
       "agentBackendTab": {

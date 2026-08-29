@@ -9472,7 +9472,14 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "전환 준비 완료: 게이트웨이가 다음에 시작될 때 이 워크트리가 라이브로 전환됩니다. 마무리하려면 `{{cmd}}`을(를) 실행하고, 되돌리려면 이 행의 메뉴 → 준비된 전환 취소를 사용하세요. 그전까지 게이트웨이는 이전 체크아웃으로 계속 실행됩니다.",
       "keeps_the_live_checkout_the_live_target_and_disc": "라이브 체크아웃이 라이브 대상으로 유지되고 {{staged}}(으)로 준비된 전환은 취소됩니다(아무것도 재시작되지 않음)",
       "restarting_completes_the_pending_cutover_boots": "재시작하면 대기 중인 전환이 완료됩니다: 게이트웨이는 현재 체크아웃이 아닌 '{{staged}}'(으)로 다시 시작됩니다. 대시보드가 잠시 연결이 끊겼다가 자동으로 다시 연결됩니다. 되돌리려면 준비된 전환 취소를 사용하세요.",
-      "no_checkout_found_action": "아래 환경 변수를 설정하거나, 설정을 유지하려면 {{productName}} 데이터 디렉터리(기본값 ~/.kiro/crew)의 config.json에 dev_fleet.repo_path를 추가한 후 게이트웨이를 다시 시작하세요."
+      "no_checkout_found_action": "아래 환경 변수를 설정하거나, 설정을 유지하려면 {{productName}} 데이터 디렉터리(기본값 ~/.kiro/crew)의 config.json에 dev_fleet.repo_path를 추가한 후 게이트웨이를 다시 시작하세요.",
+      "pr_closed_not_on_main": "PR 닫힘 — main에 없음",
+      "pr_closed_uncommitted_changes": "PR 닫힘 — 커밋되지 않은 변경 사항",
+      "remove_closed_pr": "제거 — 닫힌 PR (main에 없음)",
+      "closed_pr_not_on_main_hint": "닫혔고 병합되지 않은 PR — 내용이 main에 없으므로 제거하면 영구적으로 삭제됩니다. 선택하기 전에 확인하세요.",
+      "closed_has_unmerged_commits": "닫힌 PR — main에 없는 커밋이 있음",
+      "pr_closed_but_branch_has_newer_commits": "PR 닫힘 — 브랜치에 더 새로운 커밋이 있음",
+      "pr_closed_but_verification_unavailable_retry": "PR 닫힘, 검증 불가 — 다시 시도하세요"
     },
     "developer": {
       "agentBackendTab": {

@@ -9622,7 +9622,14 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "কাটওভার স্টেজ করা হয়েছে: গেটওয়ে পরের বার চালু হলে এই ওয়ার্কট্রি লাইভ হবে। শেষ করতে `{{cmd}}` চালাও, বা ফিরিয়ে নিতে এই সারির মেনু → স্টেজ করা কাটওভার বাতিল করো ব্যবহার করো। তার আগ পর্যন্ত গেটওয়ে আগের চেকআউটেই চলবে।",
       "keeps_the_live_checkout_the_live_target_and_disc": "লাইভ চেকআউট লাইভ লক্ষ্য হিসেবে থেকে যায় এবং {{staged}}-এ স্টেজ করা পরিবর্তন বাতিল হয় (কিছুই রিস্টার্ট হয় না)",
       "restarting_completes_the_pending_cutover_boots": "রিস্টার্ট করলে মুলতুবি কাটওভার সম্পূর্ণ হবে: গেটওয়ে \"{{staged}}\"-এ ফিরে আসবে, বর্তমান চেকআউটে নয়। ড্যাশবোর্ড অল্প সময়ের জন্য বিচ্ছিন্ন হয়ে নিজে থেকে আবার সংযুক্ত হবে। ফিরিয়ে নিতে চাইলে স্টেজ করা কাটওভার বাতিল করো ব্যবহার করো।",
-      "no_checkout_found_action": "নিচের এনভায়রনমেন্ট ভেরিয়েবলটি সেট করুন, অথবা স্থায়ী করতে {{productName}} ডেটা ডিরেক্টরির (ডিফল্ট ~/.kiro/crew) config.json-এ dev_fleet.repo_path যোগ করুন, তারপর গেটওয়ে পুনরায় চালু করুন।"
+      "no_checkout_found_action": "নিচের এনভায়রনমেন্ট ভেরিয়েবলটি সেট করুন, অথবা স্থায়ী করতে {{productName}} ডেটা ডিরেক্টরির (ডিফল্ট ~/.kiro/crew) config.json-এ dev_fleet.repo_path যোগ করুন, তারপর গেটওয়ে পুনরায় চালু করুন।",
+      "pr_closed_not_on_main": "PR বন্ধ — main-এ নেই",
+      "pr_closed_uncommitted_changes": "PR বন্ধ — কমিট না করা পরিবর্তন",
+      "remove_closed_pr": "সরান — বন্ধ PR (main-এ নেই)",
+      "closed_pr_not_on_main_hint": "বন্ধ, মার্জ না-করা PR — এর বিষয়বস্তু main-এ নেই, তাই সরালে তা স্থায়ীভাবে মুছে যাবে। নির্বাচনের আগে যাচাই করুন।",
+      "closed_has_unmerged_commits": "বন্ধ PR — main-এ নেই এমন কমিট রয়েছে",
+      "pr_closed_but_branch_has_newer_commits": "PR বন্ধ — ব্রাঞ্চে নতুন কমিট আছে",
+      "pr_closed_but_verification_unavailable_retry": "PR বন্ধ কিন্তু যাচাই করা যাচ্ছে না — আবার চেষ্টা করো"
     },
     "developer": {
       "agentBackendTab": {

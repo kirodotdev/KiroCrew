@@ -9472,7 +9472,14 @@
       "cutover_staged_run_cmd_to_finish_or_cancel": "切换已暂存：网关下次启动时此工作树将成为运行版本。运行 `{{cmd}}` 完成切换，或使用此行菜单 → 取消已暂存的切换来撤销。在此之前网关仍运行之前的检出。",
       "keeps_the_live_checkout_the_live_target_and_disc": "运行中的检出仍为运行版本，切换到 {{staged}} 的暂存操作将被丢弃（不会重启）",
       "restarting_completes_the_pending_cutover_boots": "重启将完成待定的切换：网关将在“{{staged}}”上启动，而不是当前检出。仪表板会短暂断开并自动重连。如需撤销，请使用“取消已暂存的切换”。",
-      "no_checkout_found_action": "请设置下方环境变量，或在 {{productName}} 数据目录（默认为 ~/.kiro/crew）的 config.json 中添加 dev_fleet.repo_path 以长期生效，然后重启网关。"
+      "no_checkout_found_action": "请设置下方环境变量，或在 {{productName}} 数据目录（默认为 ~/.kiro/crew）的 config.json 中添加 dev_fleet.repo_path 以长期生效，然后重启网关。",
+      "pr_closed_not_on_main": "PR 已关闭 — 不在 main 上",
+      "pr_closed_uncommitted_changes": "PR 已关闭 — 存在未提交的更改",
+      "remove_closed_pr": "移除 — 已关闭的 PR（不在 main 上）",
+      "closed_pr_not_on_main_hint": "PR 已关闭且未合并 — 其内容不在 main 上，删除后将永久丢失。请在选择前逐一确认。",
+      "closed_has_unmerged_commits": "已关闭的 PR — 有不在 main 上的提交",
+      "pr_closed_but_branch_has_newer_commits": "PR 已关闭 — 分支上有更新的提交",
+      "pr_closed_but_verification_unavailable_retry": "PR 已关闭，但无法验证 — 重试"
     },
     "developer": {
       "agentBackendTab": {
