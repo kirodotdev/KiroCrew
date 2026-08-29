@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 import kiro_crew.sel as sel_mod
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew import sel as kiro_crew_sel
 from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel, sel_hmac_key_path
@@ -902,6 +903,7 @@ log.flush()
         log.log(_make_event(event_id="after-release-1"))
         assert "after-release-1" in log._path.read_text(encoding="utf-8")
 
+    @requires_symlinks
     def test_symlinked_sidecar_is_refused(self, tmp_path):
         """A planted link is not a lock — following it defeats serialization.
 
@@ -1026,12 +1028,14 @@ log.flush()
     async def test_on_loop_contention_makes_exactly_one_nonblocking_attempt(
         self, tmp_path, monkeypatch
     ):
-        """The loop-side acquire must try ONCE and refuse — never poll.
+        """The loop-side acquire must try ONCE and refuse — never block or poll.
 
         A retry spin, however short each nap, sleeps the gateway event loop, so
         the stall is paid by every session it serves. This pins the contract:
         one ``try_acquire_lock`` call, an immediate fail-closed raise, and no
-        sleep anywhere on the path.
+        call to either blocking lock primitive. Wall time cannot prove that
+        contract: runner scheduling and the surrounding file work are outside
+        the lock algorithm but inside any elapsed-time measurement.
         """
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         log.log(_make_event(event_id="single-shot-preheat"))
@@ -1041,27 +1045,30 @@ log.flush()
         holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         assert platform_compat.try_acquire_lock(holder, exclusive=True)
 
-        attempts = []
+        attempts: list[tuple[int, bool]] = []
         real_try = platform_compat.try_acquire_lock
 
         def _counting_try(fd: int, *, exclusive: bool = False) -> bool:
-            attempts.append(fd)
+            attempts.append((fd, exclusive))
             return real_try(fd, exclusive=exclusive)
 
+        def _blocking_acquire_is_a_bug(*_args, **_kwargs):
+            pytest.fail("on-loop chain-lock acquire used a blocking primitive")
+
+        monkeypatch.setattr(kiro_crew_sel.platform_compat, "try_acquire_lock", _counting_try)
         monkeypatch.setattr(
-            kiro_crew_sel.platform_compat, "try_acquire_lock", _counting_try
+            kiro_crew_sel.platform_compat, "acquire_lock", _blocking_acquire_is_a_bug
         )
+        monkeypatch.setattr(kiro_crew_sel.platform_compat, "file_lock", _blocking_acquire_is_a_bug)
         try:
-            started = time.monotonic()
             with pytest.raises(OSError):
                 log.log(_make_event(event_id="single-shot-critical"), critical=True)
-            elapsed = time.monotonic() - started
         finally:
             platform_compat.release_lock(holder)
             os.close(holder)
 
         assert len(attempts) == 1, f"on-loop acquire polled {len(attempts)} times"
-        assert elapsed < 0.05, f"on-loop acquire took {elapsed:.3f}s"
+        assert attempts[0][1] is True, "the single lock attempt was not exclusive"
         assert "single-shot-critical" not in log._path.read_text(encoding="utf-8")
 
     def test_on_loop_acquire_helper_never_sleeps(self):
