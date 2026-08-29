@@ -2,13 +2,21 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
-import { deleteSlot, switchSlot } from '../store/chatSlice'
+import { appendSlotMessage, deleteSlot, switchSlot } from '../store/chatSlice'
 import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
+import { beginSlotQuiesce, slotHasUnsentWorkHere, slotUnsentWorkSource, type UnsentWorkSource } from '../utils/slotComposerRegistry'
+import {
+  anotherWindowHoldsComposer,
+  awaitClosingAcks,
+  clearClosingIntent,
+  closingIntentVetoed,
+  publishClosingIntent,
+} from '../utils/slotClosingIntent'
 import { i18nT } from '../i18n/t'
 import type { ChatSlot } from '../types'
 import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
@@ -81,7 +89,46 @@ export interface SessionActions {
   /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
   reload: (slotKey: string) => void
   /** Close (delete) a session, honouring the confirm-close preference. */
-  close: (slotKey: string) => void
+  /**
+   * Close a session behind the confirm-on-close preference.
+   *
+   * `beforeDelete` runs AFTER the confirm and BEFORE the delete; returning
+   * `false` aborts — which is how a caller sequences work on the close without
+   * giving up the right to abort it.
+   *
+   * Resolves to NOTHING. It used to answer whether the slot was deleted, and
+   * every counted caller threw that away: the menu `void`s it, the shared option
+   * dispatcher discards the await, and `ChatSidebar`'s prop is declared
+   * `(key: string) => void`. A caller that needs to know already learns it from
+   * its own `beforeDelete`.
+   */
+  close: (
+    slotKey: string,
+    opts?: {
+      beforeDelete?: () => boolean | Promise<boolean>
+      /**
+       * Confirm even when the user's `confirmCloseSession` preference is off.
+       *
+       * For a close whose affordance was authored by a MODEL rather than by the
+       * product: an `[OPTION-ACTIONS: close=That's all]` chip is one click, its
+       * label is arbitrary model prose, and `confirmCloseSession` defaults to
+       * `false` — so without this the tab goes away with neither a stated
+       * consequence nor a confirm. A caller that put the affordance on screen
+       * itself (the session menu, a keyboard shortcut) has no such problem and
+       * leaves this unset.
+       */
+      forceConfirm?: boolean
+      // Replaces the generic prompt, so a forced confirm can name the label the
+      // user just clicked and say where the transcript goes.
+      confirmMessage?: string
+      /**
+       * Where a failed DELETE is reported. A caller owning an `ErrorNotice`
+       * passes its own setter; without one the failure lands as an error row in
+       * the session that survived, because the alternative was discarding it.
+       */
+      onError?: (message: string) => void
+    },
+  ) => Promise<void>
 }
 
 export function useSessionActions(mode?: string): SessionActions {
@@ -328,9 +375,177 @@ export function useSessionActions(mode?: string): SessionActions {
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
-  const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+  /**
+   * Close a session, honouring the confirm-on-close preference.
+   *
+   * `beforeDelete` runs AFTER the confirm and BEFORE the delete, and a `false`
+   * return aborts the close. That ordering exists for one caller and one reason:
+   * the option-action dispatch writes a PERMANENT `inject` breadcrumb row, and
+   * writing it before the confirm left the transcript asserting a close that the
+   * user then cancelled. Moving the write into this window keeps both properties
+   * at once — nothing is written when the user declines, and the close is still
+   * refused if the write does not land.
+   *
+   * Resolves to NOTHING regardless of outcome, matching the contract on the
+   * interface above: the signature is `Promise<void>` and every `return` here is
+   * bare. A caller needing the outcome learns a REFUSAL from its own
+   * `beforeDelete` and a FAILED delete from `onError`.
+   */
+  const close = useCallback(async (
+    slotKey: string,
+    opts?: {
+      beforeDelete?: () => boolean | Promise<boolean>
+      forceConfirm?: boolean
+      /** Replaces the generic prompt. For a MODEL-authored affordance, whose own
+       *  label is the only thing the user recognises at the moment of clicking. */
+      confirmMessage?: string
+      /** Reports a failed DELETE; unset routes it to the surviving session. */
+      onError?: (message: string) => void
+    },
+  ): Promise<void> => {
+    // `confirmCloseSession` governs the HABITUAL "are you sure"; silencing it is not consent
+    // to lose the only copy of a draft, so unsent work summons its own confirm on every route.
+    const prefConfirm = loadChatConfig().confirmCloseSession || opts?.forceConfirm === true
+    // The SOURCE, not just the boolean: discarding it sent the user hunting through windows
+    // that may not exist, over a draft in front of them.
+    const unsentAt = slotUnsentWorkSource(slotKey)
+    const unsent = unsentAt !== null
+    const mustConfirm = prefConfirm || unsent
+    const base = opts?.confirmMessage ?? i18nT('hooks.useSessionActions.close_this_session')
+    const prompt = unsentAt
+      ? i18nT(unsentConfirmKey(unsentAt), { base })
+      : base
+    if (mustConfirm && !confirm(prompt)) return
+    if (opts?.beforeDelete && !(await opts.beforeDelete())) return
+    // `unsent` above is a SNAPSHOT, and both gates just passed are windows another window
+    // can write in: `confirm` blocks only this thread, `beforeDelete` awaits the network.
+
+    // Re-asked on EVERY route, not only where a dialog was already due: work that appeared
+    // during the await is exactly the case a preference about routine confirms cannot speak to.
+    const lateAt = unsent ? null : slotUnsentWorkSource(slotKey)
+    if (lateAt) {
+      if (!confirm(i18nT(unsentConfirmKey(lateAt), { base }))) return
+    }
+    // ASK before deleting: the registry publishes a claim in a layout effect, so a keystroke
+    // inside the DELETE round trip lands after this thread already read the tier.
+    const holderElsewhere = anotherWindowHoldsComposer()
+    const intent = holderElsewhere ? publishClosingIntent(slotKey) : null // nobody to answer -> no wait
+    try {
+      // A FAILED publish while another window HOLDS a composer is a refusal: that window
+      // cannot be asked, and every read below is LOCAL and cannot see its draft.
+      if (holderElsewhere && intent === null) {
+        const notice = i18nT('hooks.useSessionActions.close_vetoed_unsent')
+        if (opts?.onError) opts.onError(notice)
+        else {
+          try {
+            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'error', content: notice, cls: '' } }))
+          } catch {
+            /* the refusal already stopped the delete; the notice is best effort */
+          }
+        }
+        return
+      }
+      // Consent covers the draft the user was WARNED about, so it gates only the LOCAL
+      // re-read. A veto is another window: `storage` never fires in the writing one.
+      const consentedAt = unsentAt ?? lateAt
+      if (intent) {
+        await awaitClosingAcks()
+        if (closingIntentVetoed(intent) || (consentedAt === null && slotUnsentWorkSource(slotKey) !== null)) {
+          const notice = i18nT('hooks.useSessionActions.close_vetoed_unsent')
+          if (opts?.onError) opts.onError(notice)
+          else {
+            try {
+              dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'error', content: notice, cls: '' } }))
+            } catch {
+              /* the refusal already stopped the delete; the notice is best effort */
+            }
+          }
+          return
+        }
+      }
+      // COMMIT BOUNDARY, and NOT gated on `intent`: a null intent means no OTHER window holds
+      // a composer, so the single-window close had no pre-commit re-read at all.
+      if ((intent && closingIntentVetoed(intent))
+        || (consentedAt === null && slotHasUnsentWorkHere(slotKey))) {
+        const notice = i18nT('hooks.useSessionActions.close_vetoed_unsent')
+        if (opts?.onError) opts.onError(notice)
+        return
+      }
+      // QUIESCED for the whole round-trip and released on SETTLE: a composer taking a
+      // keystroke now can see a close is committing and leave a durable trace for it.
+      const workBefore = slotHasUnsentWorkHere(slotKey)
+      const releaseQuiesce = beginSlotQuiesce(slotKey)
+      try {
+        await dispatch(deleteSlot(slotKey)).unwrap()
+      } finally {
+        releaseQuiesce()
+      }
+      // APPEARED, not merely present, and storage-free so it reaches the single-window path.
+      // Its OWN copy, never the pre-commit veto text: the delete has already succeeded, so
+      // "not closed" beside a vanishing tab asserts the one thing the code knows is false.
+      const appeared = !workBefore && slotHasUnsentWorkHere(slotKey)
+      if (appeared || (intent && closingIntentVetoed(intent))) {
+        const late = i18nT('hooks.useSessionActions.close_committed_late_draft')
+        if (opts?.onError) opts.onError(late)
+      }
+    } catch (err) {
+      // A rejected DELETE leaves the session alive, so silence here reads as a
+      // close that worked until the tab comes back or shows up twice.
+      // `instanceof Error` alone: `ApiError` extends it, so naming both added nothing and
+      // made this line depend on that export existing on every mock of the api module.
+      const message = err instanceof Error
+        ? err.message || i18nT('hooks.useSessionActions.close_failed')
+        : i18nT('hooks.useSessionActions.close_failed')
+      if (opts?.onError) opts.onError(message)
+      // The surviving slot is the one place guaranteed still on screen; a caller
+      // owning an ErrorNotice passes `onError` and renders there instead.
+      else {
+        try {
+          dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'error', content: message, cls: '' } }))
+        } catch (rowErr) {
+          // Third tier, below the sink and the row, reached only by a store that cannot
+          // hold one -- the real store always can. DEV-only, like `safeStorage`.
+          if (import.meta.env.DEV) {
+            // eslint-disable-next-line no-console
+            console.warn('useSessionActions: close failed and its notice could not be shown', message, rowErr)
+          }
+        }
+      }
+    } finally {
+      // Every exit: a stranded intent would make the next close in another window read a
+      // veto that no live composer stands behind.
+      clearClosingIntent(slotKey, intent)
+    }
   }, [dispatch])
 
   return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
+}
+
+/**
+ * The confirm rider for each place the unsent work can be, so the user is sent to ONE place.
+ *
+ * Mirrors `useOptionActionDispatch`'s abort notices, for the same reason: the registry and
+ * the claim already distinguish this window from another, and hedging across both made the
+ * reader check two places when the code knew which. `elsewhere` keeps the hedge because
+ * there the surface genuinely is not identifiable.
+ *
+ * The route picks the SUBJECT. A close dialog is about the session named in its own base
+ * string, but resume names the session being OPENED, so there "this session" would point at
+ * the wrong tab — the one whose draft is safe.
+ */
+export type ConfirmRoute = 'close' | 'resume'
+
+export function unsentConfirmKey(at: UnsentWorkSource, route: ConfirmRoute = 'close'): string {
+  if (route === 'resume') {
+    if (at === 'here') return 'hooks.useSessionActions.resume_unsent_confirm_here'
+    if (at === 'other-window') return 'hooks.useSessionActions.resume_unsent_confirm_window'
+    if (at === 'unverifiable') return 'hooks.useSessionActions.resume_unsent_confirm_unverifiable'
+    return 'hooks.useSessionActions.resume_unsent_confirm'
+  }
+  if (at === 'here') return 'hooks.useSessionActions.close_unsent_confirm_here'
+  if (at === 'other-window') return 'hooks.useSessionActions.close_unsent_confirm_window'
+  // Unreadable storage cannot support "it will be lost": the confirm still fires,
+  // but it must not assert a draft nobody could read.
+  if (at === 'unverifiable') return 'hooks.useSessionActions.close_unsent_confirm_unverifiable'
+  return 'hooks.useSessionActions.close_unsent_confirm'
 }

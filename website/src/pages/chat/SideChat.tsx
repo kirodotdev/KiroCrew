@@ -9,6 +9,8 @@ import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
+import { useSlotComposerRegistration } from '../../hooks/useSlotComposerRegistration'
+import { useSlotDraftPersistence } from '../../hooks/useSlotDraftPersistence'
 import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SlotProvider } from '../../providers/SlotContext'
@@ -20,6 +22,7 @@ import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
 import { fmtNumber } from '../../i18n/format'
+import { WORK_IS_RECOVERABLE } from '../../utils/composerWork'
 const MAX_QUESTION_BYTES = 32_768
 // Max auto-grow height (px) for the side-question input before it scrolls.
 const MAX_INPUT_H = 240
@@ -152,9 +155,11 @@ export default function SideChat({ slot }: { slot: string }) {
    *  - An unconditional dispatch (no mode gate) would let any plan-shaped side
    *    answer cancel or advance the parent's real plan.
    *  Pinned by src/test/SideChat.planExclusion.test.tsx. */
+  // Same as the plan case: `followUpAction` is dropped, because a chip whose click
+  // only sends its own label promises a close this host cannot perform.
   const { followUpOptions } = useMemo(
     () => deriveFollowUpOptions(transcript, isStreaming),
-    [transcript, isStreaming]
+    [transcript, isStreaming],
   )
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file: what a
@@ -205,11 +210,26 @@ export default function SideChat({ slot }: { slot: string }) {
    *    (`editQueued.onError`) → `restoreDraftTo(vars.slot, …)`: the slot
    *    captured at request time, because the panel may have been re-bound
    *    (split view's Ask, a member switch) while the request was in flight.
+   *  - the durable-draft RESTORE below → `setDraft`, which is safe here and only
+   *    here: it fires at most ONCE per slot (ref-guarded in
+   *    `useSlotDraftPersistence`), so it has no second write to build a stale
+   *    base against.
    *  A `mergeIntoDraft` inside a mutation callback would be the wrong-slot bug
    *  again — reach for this instead. */
   const restoreDraftTo = useCallback((target: string, text: string) => {
     writeSideChatDraft(target, appendToDraft(readSideChatDraft(target), text))
   }, [])
+
+  // The registration alone is not enough: its cross-window claim expires while this
+  // window is frozen in the background, and the text lives only in React state.
+  // The setter is the RESTORE path: a close that persisted this draft is the same close
+  // that unmounts the composer holding the only other copy.
+  const draftPersisted = useSlotDraftPersistence(slot, draft, setDraft)
+  // Registered because a close fired from the MAIN chat deletes this draft's slot, and
+  // recoverable only once the write lands -- the short TTL has no copy to lean on before.
+  // Through the TIER TABLE, not a bare boolean: this composer's only work is TEXT, so its
+  // recoverability is that category's declared tier AND whether the write actually landed.
+  useSlotComposerRegistration(() => slot, draft.trim().length > 0, WORK_IS_RECOVERABLE.text && draftPersisted)
 
   /** Wrapper around the native composer; the Select-to-Ask seed resolves the
    *  textarea through it (`textarea[data-composer-input]`) instead of a

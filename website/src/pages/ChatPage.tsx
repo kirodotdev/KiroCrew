@@ -17,6 +17,7 @@ import { isBrowseCommand } from '../utils/browseCommand'
 import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 import { mergeRenderers, resolveRenderer, type MessageRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from './chat/transcriptRenderers'
+import { useOptionActionDispatch } from '../hooks/useOptionActionDispatch'
 // Re-exported so the symbol `ChatPage` exported before this extraction stays
 // importable from here; the implementation lives in `utils/browseCommand` so a
 // pure test need not pull ChatPage's module graph.
@@ -317,6 +318,7 @@ import { createTurnGrouper, applyRunningState, REASONING_ROLES } from './chat/gr
 const RUNNING_LATCH_MS = 2500
 import { setSessionPreviewPending, normalizeUrl, PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
 import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl'
+import { forgetSlotSuccession, recordSlotSuccession, resolveSlotSuccession } from '../utils/slotSuccession'
 import ChatSidebar from './ChatSidebar'
 import { SIDEBAR_MIN, SIDEBAR_MAX, clampSidebarWidth } from './chat/sidebarWidth'
 import { resolveMsgIndex } from '../utils/shareUrl'
@@ -327,6 +329,7 @@ import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, 
 import { addSessionRef, removeSessionRef, mergeSessionRefs, appendSessionRefLinks, type SessionRef } from '../utils/sessionRefs'
 import { commitRevealedSource, parseSourceLinkUrl, type SourceLinkKind } from '../utils/pullRequestLinks'
 import { deriveFollowUpOptions, parseOptions } from '../app-sdk/protocol'
+import { optionsExcludingAction } from '../app-sdk/protocol/options'
 import { isNoteRow } from '../lib/noteContract'
 import OverlayDrawer from '../components/OverlayDrawer'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
@@ -362,6 +365,7 @@ import { errMessage } from '../utils/thunkError'
 
 
 import { i18nT } from '../i18n/t'
+import { copySlotEntry } from '../utils/draftMigration'
 import { fmtDateFields } from '../i18n/format'
 import { fmtMessageTime, fmtMessageTimeFull } from './chat/messageTime'
 /**
@@ -775,6 +779,61 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   if (sessionRefDrafts.current === null) sessionRefDrafts.current = loadSessionRefDrafts()
   const saveDraftsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current) }, [])
+
+  /**
+   * Carry every draft bucket from a retired slot onto the slot REPLACING it.
+   *
+   * A mode toggle is a replacement, not a close: the same conversation continues under a
+   * new key, so the text the user has not sent yet is still about it. Deleting the buckets
+   * instead erased the only copy — the composer's own state is remounted with the new slot,
+   * and no store answers for the old key once its entries are gone.
+   *
+   * Every bucket moves together, because they are one composition: text, staged files,
+   * pasted blocks and session references are all parts of the same unsent message.
+   */
+  /**
+   * COPY a retired slot's unsent work onto the slot replacing it, keeping the original.
+   *
+   * Must run BEFORE the delete is awaited. The replacement activates as soon as `createSlot`
+   * resolves, and the slot-change effect restores the composer from `drafts.current[slot]` —
+   * so a copy made after the await arrived to find the composer already emptied, hiding the
+   * draft and letting the next keystroke write the empty value back over it.
+   *
+   * The original entries stay until the delete SUCCEEDS: a failed delete leaves the old slot
+   * alive and still holding its own work.
+   */
+  const copyDraftsToSlot = useCallback((from: string, to: string) => {
+    if (!from || !to || from === to) return
+    copySlotEntry(drafts.current, from, to)
+    copySlotEntry(fileDrafts.current, from, to)
+    copySlotEntry(pasteDrafts.current, from, to)
+    copySlotEntry(sessionRefDrafts.current, from, to)
+    // Knowledge is not a draft bucket -- it lives in its own per-slot map -- but it is
+    // counted as unsent work, so leaving it behind discards work the guard promised to keep.
+    knowledgeFetchRef.current.carryPendingKnowledge(from, to)
+    saveDrafts()
+    // Seeded directly as well, because the restore effect may already have run against the
+    // empty replacement. Both paths write the same values, so the order cannot matter.
+    if (activeSlotRef.current === to) {
+      setInput(drafts.current[to] ?? '')
+      setPendingFiles((fileDrafts.current[to] ?? []).slice())
+      setPasteBlocks((pasteDrafts.current[to] ?? []).slice())
+      setPendingSessions((sessionRefDrafts.current[to] ?? []).slice())
+    }
+  }, [saveDrafts])
+
+  /** Drop a retired slot's entries, once its deletion has actually succeeded. */
+  const dropSlotDrafts = useCallback((slot: string) => {
+    if (!slot) return
+    delete drafts.current[slot]
+    delete fileDrafts.current[slot]
+    delete pasteDrafts.current[slot]
+    delete sessionRefDrafts.current[slot]
+    // The knowledge map is copied pre-delete for the same reason the buckets are, so it is
+    // released here for the same reason: a rejected delete leaves the slot owning its work.
+    knowledgeFetchRef.current.dropCarriedKnowledge(slot)
+    saveDrafts()
+  }, [saveDrafts])
   const saveDraftsDebounced = useCallback(() => {
     if (saveDraftsTimer.current) clearTimeout(saveDraftsTimer.current)
     saveDraftsTimer.current = setTimeout(() => { saveDraftsTimer.current = null; saveDrafts() }, DRAFT_SAVE_DEBOUNCE_MS)
@@ -1837,6 +1896,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // earlier (or back into the slot-change effect) would let a file/paste change
   // batched with the switch smear onto the new slot.
   useEffect(() => { composerSlotRef.current = activeSlot }, [activeSlot])
+  // A slot you are ACTIVE on is alive, so a succession recorded FROM it is stale — and
+  // an upload or dictation can only start there, so this closes every re-liveness route.
+  useEffect(() => { if (activeSlot) forgetSlotSuccession(activeSlot) }, [activeSlot])
   // Two states, not one: `uploadError` is a FAILED request (the server's error
   // body, a thrown upload, a capture that could not complete) and renders
   // through ErrorNotice; `uploadHint` is the pre-flight validation the page
@@ -1876,19 +1938,33 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // draft-restore + composerSlotRef advance run in LATER effects — splicing in
   // that unsettled window would let the pending draft restore overwrite the
   // transcript.
-  const voiceIsComposerFor = useCallback((target: string | null) => target === activeSlotRef.current && composerSlotRef.current === target, [])
+  //
+  // The atom hands us the RECORDING's own slot, and a mode switch REPLACES a slot
+  // rather than renaming it, so that key can name a retired session. Ask the
+  // succession for the live one before comparing. An unresolvable chain answers
+  // null, which fails this predicate and routes the transcript off-screen — the
+  // safe direction, since the active slot is then a different session and
+  // splicing there would put the utterance in the wrong thread.
+  const voiceIsComposerFor = useCallback((target: string | null) => {
+    const live = resolveSlotSuccession(target) ?? null
+    return live === activeSlotRef.current && composerSlotRef.current === live
+  }, [])
   // Off-screen batch transcript: append to the target slot's persisted draft
   // (recoverable, shown on return). Mirrors handleOptimizeResult's cross-slot
-  // routing.
+  // routing. Retargeted for the same reason an upload completion is: a mode switch
+  // deletes the originating slot, so its own key names a draft bucket nothing will
+  // ever read. An unresolvable chain keeps the origin, which at worst parks the
+  // text where it was spoken rather than dropping it.
   const voiceDeliverOffScreen = useCallback((target: string, append: (base: string) => string) => {
-    const next = append(drafts.current[target] ?? '')
-    setDraft(drafts.current, target, next)
-    // Mid-switch guard: if the composer still belongs to `target` (activeSlot
-    // has advanced in render but the outgoing-slot persist effect hasn't run
-    // yet), that effect will flush inputRef.current into drafts[target] and
-    // would overwrite this transcript with the pre-transcript input. Carry the
-    // appended value into inputRef too so the flush preserves the transcript.
-    if (composerSlotRef.current === target) inputRef.current = next
+    const live = resolveSlotSuccession(target) ?? target
+    const next = append(drafts.current[live] ?? '')
+    setDraft(drafts.current, live, next)
+    // Mid-switch guard: if the composer still belongs to `live` (activeSlot has
+    // advanced in render but the outgoing-slot persist effect hasn't run yet),
+    // that effect will flush inputRef.current into drafts[live] and would
+    // overwrite this transcript with the pre-transcript input. Carry the appended
+    // value into inputRef too so the flush preserves the transcript.
+    if (composerSlotRef.current === live) inputRef.current = next
     saveDrafts()
   }, [saveDrafts])
   const voiceAutoSubmit = useCallback(() => { sendRef.current?.() }, [])
@@ -2092,6 +2168,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     prevSlot,
     saveDrafts,
     searchParams,
+    showActionError,
     slots,
     tokenConsumingRef,
   })
@@ -2122,9 +2199,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Swapping chats (activeSlot change) → messages change → memo recomputes fresh.
   // A pending question card suppresses them: both would offer the same choices in
   // the same band, and only the card can answer the blocked tool call.
-  const { followUpOptions, followUpIsPlan, followUpSourceKey } = useMemo(
+  const { followUpOptions: rawFollowUpOptions, followUpIsPlan, followUpSourceKey, followUpAction } = useMemo(
     () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion),
     [messages, isStreaming, pendingQuestion],
+  )
+  // This host RENDERS the action, so the action owns its label. Applied before
+  // `followUpOptionsKey`, so the pick reset keys off what is actually on screen.
+  const followUpOptions = useMemo(
+    () => optionsExcludingAction(rawFollowUpOptions, followUpAction),
+    [rawFollowUpOptions, followUpAction],
   )
   // Orchestrator plan dispatch — the hook owns the latch acknowledgement,
   // keyed on the derived options-row identity passed here.
@@ -2138,6 +2221,47 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const followUpPickedRef = useRef(followUpPicked); followUpPickedRef.current = followUpPicked
   const followUpOptionsKey = followUpOptions.join('\x00')
   useEffect(() => { setFollowUpPicked(new Set()) }, [followUpOptionsKey, activeSlot])
+  // The row identity the chips on screen were derived from, read at DISPATCH time
+  // rather than captured in the callback's closure. Same device and the same
+  // reason as `usePlanActionMutation`'s `sourceKeyRef`: an action awaits a network
+  // write, and the transcript can advance across that await.
+  // The destructive close dispatch lives in ONE place (`useOptionActionDispatch`),
+  // shaped after `usePlanActionMutation`. It used to be hand-mirrored in ChatPane,
+  // and the copies had already drifted — that host's settle-time composer recheck
+  // counted 2 categories of staged work where this one counted 5 — which is the
+  // exact failure class the dispatch exists to prevent, reintroduced by the copy.
+  // This page is wiring only now.
+  const { dispatchFollowUpAction, slotBlocksAction } = useOptionActionDispatch({
+    // Fresh every render (see `activeSlotRef`): the closure's `activeSlot` can be a
+    // slot the user has already left under lag.
+    resolveSlot: () => activeSlotRef.current || null,
+    // Every category stated. `dirs` is `[]` deliberately: here they are DERIVED from
+    // `input` (parseDirTokens), so they cannot be non-empty while the text is empty,
+    // and counting them would imply an independence they do not have. `knowledge` is
+    // the one with no textual trace at all, which is why it was missed twice.
+    composerWork: {
+      text: input,
+      files: pendingFiles,
+      dirs: [],
+      sessionRefs: pendingSessions,
+      pasteBlocks,
+      knowledge: !!knowledgeFetch.pendingKnowledge,
+      // Covers the screenshot/snip path too — `takeScreenshot` sets the same
+      // flag, and it stages its result exactly the way an upload does.
+      uploading,
+      // Capture is no longer observable from here: the Voice atom publishes
+      // `voiceCaptureActive` into the composer's slice, which only a subscriber
+      // inside that subtree can read (ChatInput is that subscriber, and folds the
+      // real term into its own composer-work shape). The page-level copy passes
+      // false rather than reading a stale imperative snapshot off composerRef —
+      // the same choice ChatPane makes, for the same reason.
+      voiceCapture: false,
+    },
+    sourceKey: followUpSourceKey,
+    // The pane-level ErrorNotice, not a transcript row: the close's own recovery
+    // re-fetch replaces this slot's messages and would carry the row away with it.
+    onCloseError: showActionError,
+  })
   const { data: dashCfg } = useQuery<{ quick_send?: boolean; session_grid?: boolean; link_previews?: boolean; social_share_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
   // Session grid (split view) is an opt-in feature flag (Settings › Chat › Split View). Gates ⌘D, the Columns2 button, and the grid render.
   const splitFeatureEnabled = dashCfg?.session_grid === true
@@ -6725,8 +6849,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                       project: old?.project ?? null,
                       instanceId: old?.instance_id || undefined,
                     }
-                    try { await dispatch(createSlot(opts)).unwrap() } catch { return }
-                    try { await dispatch(deleteSlot(activeSlot)).unwrap() } catch { /* new slot already active */ }
+                    let replacement: string
+                    try { replacement = (await dispatch(createSlot(opts)).unwrap()).key } catch { return }
+                    // SEEDED FIRST: the replacement is already active and the slot-change effect
+                    // restores from its draft, so a later copy found the composer already emptied.
+                    copyDraftsToSlot(activeSlot, replacement)
+                    // Before the await: an upload completing during it captured the OLD slot,
+                    // and its bucket is about to be deleted underneath the completion.
+                    recordSlotSuccession(activeSlot, replacement)
+                    try {
+                      await dispatch(deleteSlot(activeSlot)).unwrap()
+                      // Dropped only now: a FAILED delete leaves the old slot alive and holding its own copy.
+                      dropSlotDrafts(activeSlot)
+                    } catch (err: unknown) {
+                      // The slot survives, so the replacement must stop standing in for it.
+                      forgetSlotSuccession(activeSlot)
+                      // And the user now has BOTH, which is not something to infer
+                      // from a tab list: the replacement looked like a move.
+                      showActionError(err instanceof Error && err.message ? err.message : i18nT('pages.chatPage.close_old_session_failed'), i18nT('pages.chatPage.close_old_session_failed_title'))
+                    }
                   }}
                 />
               </motion.div>
@@ -7416,6 +7557,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               quickSend={dashCfg?.quick_send}
               followUpLayout={chatConfig.followUpLayout}
               followUpSourceKey={followUpSourceKey}
+              followUpAction={followUpAction}
+              // Passed DIRECTLY, not wrapped. A `(a) => { void dispatch(a) }`
+              // wrapper returns undefined, and the chip's duplicate-click guard
+              // releases as soon as it sees a non-thenable — so the guard was
+              // live in the chip and defeated at the wiring, and a double-click
+              // still produced two breadcrumbs and two close requests. The prop
+              // is typed `=> void | Promise<unknown>` precisely so the promise
+              // survives this hop, and the second argument (`sourceKeyAtClick`)
+              // rides along for the staleness check.
+              onFollowUpAction={dispatchFollowUpAction}
+              // Same question the click asks, so a refusal is VISIBLE before the click.
+              actionBlockedBySlot={slotBlocksAction()}
               onFollowUpSelect={(o: string, e: React.MouseEvent, sourceKeyAtClick?: string | null) => {
                 // Plan options (Go / Go All / Cancel) dispatch directly — no input fill.
                 // Non-protocol labels on a plan-shaped message keep the composer path:

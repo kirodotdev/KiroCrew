@@ -11903,6 +11903,92 @@ class TestBulkCleanup:
         assert "pinned1" in state._slots
 
     @pytest.mark.asyncio
+    async def test_cleanup_archives_only_the_keys_the_caller_guarded(self, tmp_path, monkeypatch):
+        """A slot that turned stale AFTER the caller's preview is not archived.
+
+        Without the explicit set the handler recomputed the batch, so a session
+        crossing the inactivity cutoff between preview and commit was archived with
+        its unsent draft never checked by anything.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        from datetime import datetime, timedelta, timezone
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        for name in ("guarded1", "appeared1"):
+            slot = state.get_or_create_slot(name)
+            slot.append("user", "old msg", ts=old_ts)
+            slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cleanup",
+                json={
+                    "max_inactive_days": 3,
+                    "active_slot": "",
+                    "only_keys": ["guarded1"],
+                },
+            )
+            data = await resp.json()
+        assert data["ok"] is True
+        assert data["keys"] == ["guarded1"], data
+        assert data["archived"] == 1
+        assert "guarded1" not in state._slots
+        # Stale by the same cutoff, but never guarded -- so never archived.
+        assert "appeared1" in state._slots
+
+    @pytest.mark.asyncio
+    async def test_cleanup_only_keys_intersects_and_never_substitutes(self, tmp_path, monkeypatch):
+        """A key the caller names but this pass does not judge stale stays put."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        from datetime import datetime, timezone
+
+        fresh = state.get_or_create_slot("fresh_named")
+        fresh.append("user", "new msg", ts=datetime.now(timezone.utc).isoformat())
+        fresh.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cleanup",
+                json={
+                    "max_inactive_days": 3,
+                    "active_slot": "",
+                    "only_keys": ["fresh_named", "does_not_exist"],
+                },
+            )
+            data = await resp.json()
+        assert data["keys"] == [], data
+        assert "fresh_named" in state._slots
+
+    @pytest.mark.asyncio
+    async def test_cleanup_dry_run_still_previews_everything(self, tmp_path, monkeypatch):
+        """The preview is what the caller guards FROM, so the set must not be bounded."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        from datetime import datetime, timedelta, timezone
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+        for name in ("previewA", "previewB"):
+            slot = state.get_or_create_slot(name)
+            slot.append("user", "old msg", ts=old_ts)
+            slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/cleanup",
+                json={
+                    "max_inactive_days": 3,
+                    "active_slot": "",
+                    "dry_run": True,
+                    "only_keys": ["previewA"],
+                },
+            )
+            data = await resp.json()
+        assert sorted(data["keys"]) == ["previewA", "previewB"], data
+        assert "previewA" in state._slots and "previewB" in state._slots
+
+    @pytest.mark.asyncio
     async def test_cleanup_skips_active_slot(self, tmp_path, monkeypatch):
         """The active slot is never archived even if stale."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

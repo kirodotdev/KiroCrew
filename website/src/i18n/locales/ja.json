@@ -6190,7 +6190,20 @@
       "scroll_suggestions_left": "提案を左にスクロール",
       "scroll_suggestions_right": "提案を右にスクロール",
       "send_now": "今すぐ送信",
-      "send_now_2": "今すぐ送信：{{option}}"
+      "send_now_2": "今すぐ送信：{{option}}",
+      "action_unavailable_while_options_are_selected": "オプションが選択されている間は使用できません。選択内容は入力欄にテキストとして準備されており、破棄されてしまいます",
+      "action_unavailable_while_the_composer_has_unsent": "入力欄に未送信のテキストまたは添付ファイルがある間は使用できません。閉じると破棄されてしまいます",
+      "action_unavailable_short_options_selected": "利用できません — 選択肢を解除してください",
+      "action_unavailable_short_unsent_draft": "利用できません — 先に下書きを送信/消去",
+      "action_closes_this_session": "このセッションを終了します — {{label}}",
+      "action_unavailable_while_capture_in_flight": "録音またはアップロードが進行中は利用できません — 閉じると破棄されます",
+      "action_unavailable_short_capture_in_flight": "利用できません — 先に録音を完了または中止してください",
+      "action_unavailable_short_unsent_draft_elsewhere": "利用できません — 別のペインに下書き",
+      "action_unavailable_short_unsent_draft_window": "別のウィンドウに下書きがあります",
+      "action_unavailable_short_unsent_draft_unverifiable": "未送信の下書きがある可能性",
+      "action_unavailable_while_unsent_draft_elsewhere": "このセッションの別のペイン（サイドパネルまたは分割ビュー）に未送信の下書きがある間、この操作は利用できません。先にそちらで送信するか消去してください。",
+      "action_unavailable_while_unsent_draft_window": "このセッションの別のブラウザーウィンドウに未送信の下書きがあるため、この操作は実行できません。先にそのウィンドウで送信または削除してください。",
+      "action_unavailable_while_unsent_draft_unverifiable": "別のウィンドウの未送信の下書きを確認できなかったため、この操作は実行できません。この表示はやがて消えます。そのウィンドウがまだ開いていれば送信してください。"
     },
     "followUpCard": {
       "add_to_this_session": "このセッションに追加",
@@ -8267,7 +8280,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "チャットパネル",
-      "close_this_session": "このセッションを閉じますか？",
       "cycle_agent": "エージェントをサイクル",
       "cycle_approval_mode": "承認モードをサイクル",
       "cycle_model": "モデルをサイクル",
@@ -8358,7 +8370,19 @@
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
-      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
+      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。",
+      "close_unsent_confirm": "{{base}}\n\nこのセッションには未送信の内容があります。下書き、添付ファイル、または処理中の録音で、サイドパネルや別のウィンドウかもしれません。失われます。",
+      "close_unsent_confirm_here": "{{base}}\n\nこのセッションの入力欄に未送信の内容があります。下書き、添付ファイル、または処理中の録音です。失われます。",
+      "close_unsent_confirm_window": "{{base}}\n\n別のウィンドウがこのセッションの未送信の作業（下書き、添付ファイル、処理中の録音）を報告しました。閉じると失われる可能性があります。",
+      "resume_replaces_this_tab": "このセッションを開くと、現在のタブが閉じます。",
+      "resume_unsent_confirm_here": "{{base}}\n\n現在のタブの入力欄に未送信の内容があります（下書き、添付ファイル、処理中の録音）。失われます。",
+      "resume_unsent_confirm_window": "{{base}}\n\n別のウィンドウが現在のタブの未送信の作業（下書き、添付ファイル、処理中の録音）を報告しました。続行すると失われる可能性があります。",
+      "resume_unsent_confirm_unverifiable": "{{base}}\n\n他のウィンドウの未送信の下書きを確認できませんでした。続行すると失われる場合があります。",
+      "resume_unsent_confirm": "{{base}}\n\n現在のタブに未送信の内容があります（下書き、添付ファイル、処理中の録音）。サイドパネルか別のウィンドウにある可能性があります。失われます。",
+      "close_unsent_confirm_unverifiable": "{{base}}\n\n他のウィンドウの未送信の下書きを確認できませんでした。閉じると失われる可能性があります。",
+      "close_failed": "このセッションを閉じられなかったため、まだ開いています。",
+      "close_vetoed_unsent": "閉じませんでした。別のウィンドウが未送信の下書きを保持しています。",
+      "close_committed_late_draft": "閉じました — 閉じる途中で届いた下書きは保存しました。"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "オーディオワークレットが利用できません",
@@ -8376,6 +8400,17 @@
       "approval_required": "承認が必要です",
       "tool_approval": "ツールの承認：{{name}}",
       "unknown": "不明"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "ターンが実行中のため、セッションは開いたままです — ターンが終わったらもう一度閉じてください。",
+      "close_not_recorded": "クローズを記録できなかったため、セッションは開いたままです — もう一度お試しください。",
+      "close_confirm": "このセッションを閉じますか？「{{label}}」を選びました。履歴は{{section}}に残ります。",
+      "close_requested": "終了をリクエストしました — {{label}}",
+      "close_aborted_unsent": "クローズを取り消しました。このセッションには未送信の下書きがあります。サイドパネルや別のウィンドウかもしれません。送信するか消去してから、もう一度お試しください。",
+      "close_aborted_unsent_here": "クローズを取り消しました。このセッションには、このウィンドウに未送信の下書きがあります。送信するか消去してから、もう一度お試しください。",
+      "close_aborted_unsent_window": "閉じる操作を取り消しました — 別のウィンドウがこのセッションの未送信の下書きを報告しました。そちらで送信するか消去してから、もう一度お試しください。",
+      "close_unbound_session": "閉じる操作を取り消しました。クリックを文字起こしに追加できなかったため、セッションは閉じていません。もう一度お試しか、セッションメニューの「{{action}}」をご利用ください。",
+      "close_stale_row": "会話が先に進んだため、このセッションは開いたままです。セッションメニューの「{{action}}」を使ってください。"
     }
   },
   "lib": {
@@ -9864,7 +9899,9 @@
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
-      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした"
+      "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
+      "close_old_session_failed": "古いセッションを閉じられなかったため、現在二つあります。",
+      "close_old_session_failed_title": "以前のセッションが開いたままです"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",
@@ -10090,7 +10127,9 @@
       "board_update_failed": "ボードの更新に失敗しました",
       "open_crew_members": "クルーメンバー",
       "open_crew_members_desc": "クルーメンバーのページを開きます。各メンバーは常駐エージェントで、自分のスレッドを持ちます。",
-      "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。"
+      "open_crew_members_gated_desc": "まず設定を開いてこのプレビューをオンにします。オンにするまでページは使えません。",
+      "cleanup_unsent_confirm": "{{base}}？\n\n未送信の内容が失われます: 「{{names}}」",
+      "cleanup_vetoed_unsent": "アーカイブしませんでした: 「{{names}}」に未送信の入力があります"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

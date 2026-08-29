@@ -6388,7 +6388,20 @@
       "scroll_suggestions_left": "Desplazar las sugerencias a la izquierda",
       "scroll_suggestions_right": "Desplazar las sugerencias a la derecha",
       "send_now": "Enviar ahora",
-      "send_now_2": "Enviar ahora: {{option}}"
+      "send_now_2": "Enviar ahora: {{option}}",
+      "action_unavailable_while_options_are_selected": "No disponible mientras haya opciones seleccionadas: están preparadas como texto en el redactor y esto las descartaría",
+      "action_unavailable_while_the_composer_has_unsent": "No disponible mientras el redactor tenga texto o archivos adjuntos sin enviar: al cerrar se descartarían",
+      "action_unavailable_short_options_selected": "No disponible — deselecciona tus opciones",
+      "action_unavailable_short_unsent_draft": "No disponible: envía o borra tu borrador",
+      "action_closes_this_session": "Cierra esta sesión — {{label}}",
+      "action_unavailable_while_capture_in_flight": "No disponible mientras una grabación o subida sigue en curso — cerrar la descartaría",
+      "action_unavailable_short_capture_in_flight": "No disponible — termina o cancela la grabación primero",
+      "action_unavailable_short_unsent_draft_elsewhere": "No disponible: otro panel tiene un borrador",
+      "action_unavailable_short_unsent_draft_window": "No disponible — borrador en otra ventana",
+      "action_unavailable_short_unsent_draft_unverifiable": "No disponible — puede haber borrador",
+      "action_unavailable_while_unsent_draft_elsewhere": "Esta acción no está disponible mientras otro panel de esta sesión —lateral o en vista dividida— tenga un borrador sin enviar. Envíalo o descártalo allí primero.",
+      "action_unavailable_while_unsent_draft_window": "Esta acción no está disponible mientras otra ventana del navegador de esta sesión tiene un borrador sin enviar. Envíalo o descártalo primero en esa ventana.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Esta acción no está disponible porque no se pudo comprobar el borrador sin enviar de otra ventana. El aviso desaparece solo, o envía el borrador si esa ventana sigue abierta."
     },
     "followUpCard": {
       "add_to_this_session": "Añadir a esta sesión",
@@ -8497,7 +8510,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Panel de chats",
-      "close_this_session": "¿Cerrar esta sesión?",
       "cycle_agent": "Alternar agente",
       "cycle_approval_mode": "Alternar modo de aprobación",
       "cycle_model": "Alternar modelo",
@@ -8588,7 +8600,19 @@
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",
       "switch_to_autopilot_mode_future_messages_will_us": "¿Cambiar al modo piloto automático? Los mensajes siguientes usarán el comportamiento de piloto automático (planificar → aprobar → ejecutar).",
-      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar."
+      "switch_to_normal_chat_mode_future_messages_will": "¿Cambiar al modo de chat normal? Los mensajes siguientes usarán el comportamiento de chat estándar.",
+      "close_unsent_confirm": "{{base}}\n\nEsta sesión tiene contenido sin enviar: un borrador, un archivo adjunto o una grabación en curso, quizá en un panel lateral o en otra ventana. Se perderá.",
+      "close_unsent_confirm_here": "{{base}}\n\nEsta sesión tiene contenido sin enviar en el cuadro de texto: un borrador, un archivo adjunto o una grabación en curso. Se perderá.",
+      "close_unsent_confirm_window": "{{base}}\n\nOtra ventana informó recientemente de trabajo sin enviar en esta sesión: un borrador, un archivo adjunto o una grabación en curso. Al cerrar podrías perderlo.",
+      "resume_replaces_this_tab": "Abrir esta sesión cierra la pestaña actual.",
+      "resume_unsent_confirm_here": "{{base}}\n\nLa pestaña actual tiene contenido sin enviar en el campo de texto: un borrador, un archivo adjunto o una grabación en curso. Se perderá.",
+      "resume_unsent_confirm_window": "{{base}}\n\nOtra ventana informó recientemente de trabajo sin enviar en la pestaña actual: un borrador, un archivo adjunto o una grabación en curso. Al continuar podrías perderlo.",
+      "resume_unsent_confirm_unverifiable": "{{base}}\n\nNo se pudo comprobar si hay borradores sin enviar en otras ventanas. Continuar puede perder uno.",
+      "resume_unsent_confirm": "{{base}}\n\nLa pestaña actual tiene contenido sin enviar: un borrador, un archivo adjunto o una grabación en curso, posiblemente en un panel lateral o en otra ventana. Se perderá.",
+      "close_unsent_confirm_unverifiable": "{{base}}\n\nNo se pudo comprobar si otras ventanas tienen borradores sin enviar. Al cerrar podrías perder uno.",
+      "close_failed": "No se pudo cerrar esta sesión, así que sigue abierta.",
+      "close_vetoed_unsent": "No se cerró: otra ventana todavía tiene un borrador sin enviar.",
+      "close_committed_late_draft": "Cerrada — un borrador llegó durante el cierre y se guardó."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet no disponible",
@@ -8606,6 +8630,17 @@
       "approval_required": "Se requiere aprobación",
       "tool_approval": "Aprobación de herramienta: {{name}}",
       "unknown": "Desconocido"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "Hay un turno en curso, así que la sesión sigue abierta: ciérrala de nuevo cuando termine el turno.",
+      "close_not_recorded": "No se registró el cierre, por lo que la sesión siguió abierta: inténtalo de nuevo.",
+      "close_confirm": "¿Cerrar esta sesión? Elegiste “{{label}}”. La transcripción queda en {{section}}.",
+      "close_requested": "Cierre solicitado — {{label}}",
+      "close_aborted_unsent": "Cierre cancelado: esta sesión tiene un borrador sin enviar, quizá en un panel lateral o en otra ventana. Envíalo o descártalo y vuelve a intentarlo.",
+      "close_aborted_unsent_here": "Cierre cancelado: esta sesión tiene un borrador sin enviar en esta ventana. Envíalo o descártalo y vuelve a intentarlo.",
+      "close_aborted_unsent_window": "Cierre cancelado: otra ventana informó de un borrador sin enviar en esta sesión. Envíalo o descártalo allí y vuelve a intentarlo.",
+      "close_unbound_session": "Cierre cancelado: el clic no se pudo añadir a la transcripción, así que la sesión no se cerró. Inténtalo de nuevo o usa “{{action}}” en el menú de sesión.",
+      "close_stale_row": "La conversación avanzó, así que esta sesión siguió abierta: usa “{{action}}” en el menú de la sesión."
     }
   },
   "lib": {
@@ -10150,7 +10185,9 @@
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
-      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral"
+      "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
+      "close_old_session_failed": "No se pudo cerrar la sesión anterior, así que ahora tienes dos.",
+      "close_old_session_failed_title": "La sesión anterior sigue abierta"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
@@ -10398,7 +10435,9 @@
       "board_update_failed": "Fallo al actualizar el tablero",
       "open_crew_members": "Miembros del equipo",
       "open_crew_members_desc": "Abre la página Miembros del equipo: cada miembro es un agente permanente con su propio hilo.",
-      "open_crew_members_gated_desc": "Abre primero Ajustes para activar esta vista previa: la página no está disponible hasta que lo hagas."
+      "open_crew_members_gated_desc": "Abre primero Ajustes para activar esta vista previa: la página no está disponible hasta que lo hagas.",
+      "cleanup_unsent_confirm": "{{base}}?\n\nSe perderá el contenido sin enviar en: “{{names}}”",
+      "cleanup_vetoed_unsent": "No archivado: apareció trabajo sin enviar en «{{names}}»"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",

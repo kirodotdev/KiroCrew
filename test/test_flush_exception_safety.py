@@ -1,6 +1,6 @@
 """Exception safety of the deferred-note flush, at every seam that calls it.
 
-``slot.flush_deferred_notes()`` is called at four seams. Every one of them is a
+``slot.flush_deferred_notes()`` is called at five seams. Every one of them is a
 bare statement whose *following* code is what frees the slot, so a raise inside
 the flush does not merely delay a held note -- it skips that cleanup:
 
@@ -12,6 +12,10 @@ the flush does not merely delay a held note -- it skips that cleanup:
 * the bulk-cleanup close path -- the slot has already been ``pop``ed from
   ``state._slots`` and the archive save below is skipped, so the transcript is
   lost outright.
+* ``close_slot`` -- the tab close and session control's ``close_target``. This one
+  did not flush AT ALL until it was added: the slot is popped above the save, so
+  archiving without flushing wrote the transcript without the held note and still
+  reported success.
 
 Separately, ``flush_deferred_notes`` clears its backing list before writing, so
 a raise part-way through the write loop loses every not-yet-written note.
@@ -320,3 +324,140 @@ class TestSeam4BulkCleanup:
             "stale-c",
         ], "every stale slot must be reached and reported, not abandoned at the first raise"
         assert sorted(state._slots) == ["stale-a", "stale-b", "stale-c"]
+
+
+class TestSeam5CloseSlot:
+    """``close_slot`` — the tab ✕ and session control's ``close_target``.
+
+    This seam did NOT flush at all until it was added, while the bulk-cleanup path
+    above did, with a documented rationale that applies verbatim here: the slot is
+    popped before the archive save, ``_deferred_notes`` is in-memory only, so
+    saving without flushing writes the transcript WITHOUT the held note and still
+    reports success. The frontend's ``appended === true`` gate does not cover it —
+    a note the backend ACCEPTED and deferred is exactly what that gate lets
+    through — and neither of the two production callers had any other guard.
+    """
+
+    @staticmethod
+    async def _close(state, key: str) -> None:
+        from kiro_crew.dashboard.chat_handlers import close_slot
+
+        await close_slot(state, state._slots[key], key)
+
+    @pytest.mark.asyncio
+    async def test_a_held_note_is_flushed_before_the_archive_save(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("close-flush-1")
+        slot._titled = True
+        _hold(slot, "held note")
+
+        order: list[str] = []
+        real_flush = _ChatSlot.flush_deferred_notes
+
+        def tracking_flush(self):
+            order.append("flush")
+            return real_flush(self)
+
+        async def tracking_save(*_a, **_kw):
+            order.append("save")
+
+        with (
+            patch.object(_ChatSlot, "flush_deferred_notes", tracking_flush),
+            patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop", tracking_save),
+        ):
+            await self._close(state, "close-flush-1")
+
+        assert order == ["flush", "save"], (
+            "the held note must be flushed BEFORE the archive save, or the transcript "
+            f"is written without it (saw {order})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_flush_raise_restores_the_slot_and_keeps_the_note(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The flush must share the save's ``except`` arm, not sit above the try.
+
+        Placed above it, a raise would leave the slot popped with its note still in
+        an object nothing else references — the close reported as done, the note
+        gone, and no way to retry. Sharing the arm puts the slot back instead.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("close-flush-2")
+        slot._titled = True
+        _hold(slot, "held note")
+
+        with patch.object(_ChatSlot, "flush_deferred_notes", _raising_flush()):
+            with pytest.raises(Exception):
+                await self._close(state, "close-flush-2")
+
+        assert "close-flush-2" in state._slots, "the popped slot must be put back"
+        held = [n["content"] for n in state._slots["close-flush-2"]._deferred_notes]
+        assert held == ["held note"], "the held note must survive for a later flush"
+
+
+class TestHandoverDrainReportsALostNote:
+    """A hand-over close reports a held note ONLY through the drain's return value.
+
+    ``_persist_handover_tail`` is the whole of what both hand-over exits do with a held
+    note: the slot is popped, a replacement owns the key, and the periodic flush only
+    visits ``_slots``, so nothing retries. Each caller branches on that bool alone --
+    ``close_slot`` raises ``SlotCloseError``, the bulk sweep files the key under
+    ``failed`` -- so True after a failed flush is a close reported clean over a note
+    that is already unreachable.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_failed_flush_makes_the_drain_report_failure(self, tmp_path: Path):
+        from kiro_crew.dashboard.chat_handlers import _persist_handover_tail
+
+        slot = _slot()
+        _hold(slot, "held note")
+        state = _make_state(tmp_path)
+        # Pin the no-rows-owed exit, which is where the swallowed failure was masked:
+        # with rows owed the save's own answer could decide the result either way.
+        assert len(slot.messages) - slot._disk_window_len == 0
+        assert not slot._dirty
+
+        with patch.object(_ChatSlot, "flush_deferred_notes", _raising_flush()):
+            drained = await _persist_handover_tail(state, slot.key, slot)
+
+        assert drained is False, "a note that could not be flushed is owed and undelivered"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_flush_is_not_masked_by_a_committed_row_write(self, tmp_path: Path):
+        """The second exit: rows reach disk, so only the flush decides the answer."""
+        from kiro_crew.dashboard.chat_handlers import _persist_handover_tail
+
+        slot = _slot()
+        _hold(slot, "held note")
+        slot.append(role="user", content="a row that never reached disk")
+        state = _make_state(tmp_path)
+        assert len(slot.messages) - slot._disk_window_len > 0
+
+        with (
+            patch.object(_ChatSlot, "flush_deferred_notes", _raising_flush()),
+            patch(
+                "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
+                AsyncMock(return_value=True),
+            ),
+        ):
+            drained = await _persist_handover_tail(state, slot.key, slot)
+
+        assert drained is False
+
+    @pytest.mark.asyncio
+    async def test_control_a_clean_drain_still_reports_success(self, tmp_path: Path):
+        """Without this the assertions above would pass for a drain that never returns True."""
+        from kiro_crew.dashboard.chat_handlers import _persist_handover_tail
+
+        slot = _slot()
+        state = _make_state(tmp_path)
+
+        drained = await _persist_handover_tail(state, slot.key, slot)
+
+        assert drained is True

@@ -41,7 +41,11 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
+from kiro_crew.constants import (
+    OPTIONS_RE_TRAILER,
+    split_trailing_protocol_suffix,
+    strip_action_markers,
+)
 from kiro_crew.messaging.approval import (
     TIMEOUT_NOTICE,
     abandon_approval,
@@ -86,8 +90,27 @@ _ERROR_TEXT = "Something went wrong on my side. Please try again."
 
 
 def _strip_options(text: str) -> str:
-    """Drop the dashboard-only [OPTIONS: ...] trailer (no buttons here)."""
-    return OPTIONS_RE_TRAILER.sub("", text).strip()
+    """Drop the dashboard-only marker trailers (no buttons on this transport).
+
+    BOTH heads, because "inert on a channel that cannot render it" has to mean
+    stripped, not passed through: WhatsApp emits the buffered turn as plain text, so
+    an unstripped ``[OPTION-ACTIONS: …]`` is posted to the user as raw protocol.
+
+    Actions go first, and via the LINE form, matching the sibling site in
+    ``messaging.renderer``. Both choices are load-bearing. ``OPTIONS_RE_TRAILER`` is
+    ``\\Z``-anchored, so while a trailing action marker is still present the content
+    marker cannot reach that anchor and would survive; removing actions first clears
+    the way. The LINE form is the sibling's choice and keeps all three strip sites on
+    one rule — it requires the marker to END its line, so a marker sitting
+    mid-sentence is left alone as prose. That is deliberate (see
+    ``_MARKER_TAIL_LINE``): it is what stops a sentence discussing the syntax from
+    being mangled, and it is shared with the sibling rather than particular to here.
+
+    Actions go through ``strip_action_markers`` rather than the raw pattern, so a
+    span nested in an UNCLOSED marker stays visible: it is not a marker, and the
+    broken syntax is the reader's only cue one was intended.
+    """
+    return OPTIONS_RE_TRAILER.sub("", strip_action_markers(text)).strip()
 
 
 class WhatsAppRenderer(Renderer):

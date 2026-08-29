@@ -6289,7 +6289,20 @@
       "scroll_suggestions_left": "Vorschläge nach links scrollen",
       "scroll_suggestions_right": "Vorschläge nach rechts scrollen",
       "send_now": "Jetzt senden",
-      "send_now_2": "Jetzt senden: {{option}}"
+      "send_now_2": "Jetzt senden: {{option}}",
+      "action_unavailable_while_options_are_selected": "Nicht verfügbar, solange Optionen ausgewählt sind – sie liegen als Text im Eingabefeld und würden dabei verworfen",
+      "action_unavailable_while_the_composer_has_unsent": "Nicht verfügbar, solange das Eingabefeld nicht gesendeten Text oder Anhänge enthält – beim Schließen würden sie verworfen",
+      "action_unavailable_short_options_selected": "Nicht verfügbar — Optionen erst abwählen",
+      "action_unavailable_short_unsent_draft": "Nicht verfügbar — Entwurf zuerst klären",
+      "action_closes_this_session": "Schließt diese Sitzung — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Nicht verfügbar, während eine Aufnahme oder ein Upload noch läuft — beim Schließen würde sie verworfen",
+      "action_unavailable_short_capture_in_flight": "Nicht verfügbar — Aufnahme zuerst beenden oder abbrechen",
+      "action_unavailable_short_unsent_draft_elsewhere": "Nicht verfügbar — Entwurf in anderem Bereich",
+      "action_unavailable_short_unsent_draft_window": "Nicht möglich — Entwurf in anderem Fenster",
+      "action_unavailable_short_unsent_draft_unverifiable": "Nicht möglich — Entwurf evtl. offen",
+      "action_unavailable_while_unsent_draft_elsewhere": "Diese Aktion ist nicht verfügbar, solange ein anderer Bereich dieser Sitzung — ein Seitenbereich oder eine geteilte Ansicht — einen nicht gesendeten Entwurf enthält. Senden oder verwerfen Sie ihn zuerst dort.",
+      "action_unavailable_while_unsent_draft_window": "Diese Aktion ist nicht verfügbar, solange ein anderes Browserfenster dieser Sitzung einen nicht gesendeten Entwurf hält. Sende oder verwirf ihn zuerst in diesem Fenster.",
+      "action_unavailable_while_unsent_draft_unverifiable": "Diese Aktion ist nicht verfügbar, weil der nicht gesendete Entwurf eines anderen Fensters nicht geprüft werden konnte. Der Hinweis verschwindet von selbst, oder sende den Entwurf, falls dieses Fenster noch offen ist."
     },
     "followUpCard": {
       "add_to_this_session": "Zu dieser Sitzung hinzufügen",
@@ -8382,7 +8395,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Chats-Panel",
-      "close_this_session": "Diese Sitzung schließen?",
       "cycle_agent": "Agenten durchschalten",
       "cycle_approval_mode": "Genehmigungsmodus durchschalten",
       "cycle_model": "Modell durchschalten",
@@ -8473,7 +8485,19 @@
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
-      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
+      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten.",
+      "close_unsent_confirm": "{{base}}\n\nDiese Sitzung hat nicht gesendete Inhalte — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme — möglicherweise in einem Seitenbereich oder einem anderen Fenster. Sie gehen verloren.",
+      "close_unsent_confirm_here": "{{base}}\n\nDiese Sitzung hat nicht gesendete Inhalte im Eingabefeld — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme. Sie gehen verloren.",
+      "close_unsent_confirm_window": "{{base}}\n\nEin anderes Fenster hat kürzlich nicht gesendete Inhalte in dieser Sitzung gemeldet — einen Entwurf, einen Anhang oder eine laufende Aufnahme. Beim Schließen kann das verloren gehen.",
+      "resume_replaces_this_tab": "Das Öffnen dieser Sitzung schließt den aktuellen Tab.",
+      "resume_unsent_confirm_here": "{{base}}\n\nDer aktuelle Tab enthält nicht gesendete Inhalte im Eingabefeld — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme. Sie gehen verloren.",
+      "resume_unsent_confirm_window": "{{base}}\n\nEin anderes Fenster hat kürzlich nicht gesendete Inhalte im aktuellen Tab gemeldet — einen Entwurf, einen Anhang oder eine laufende Aufnahme. Beim Fortfahren kann das verloren gehen.",
+      "resume_unsent_confirm_unverifiable": "{{base}}\n\nAndere Fenster konnten nicht auf nicht gesendete Entwürfe geprüft werden. Fortfahren kann einen verlieren.",
+      "resume_unsent_confirm": "{{base}}\n\nDer aktuelle Tab enthält nicht gesendete Inhalte — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme — möglicherweise in einem Seitenbereich oder einem anderen Fenster. Sie gehen verloren.",
+      "close_unsent_confirm_unverifiable": "{{base}}\n\nAndere Fenster konnten nicht auf nicht gesendete Entwürfe geprüft werden. Beim Schließen kann einer verloren gehen.",
+      "close_failed": "Diese Sitzung konnte nicht geschlossen werden, sie ist also noch offen.",
+      "close_vetoed_unsent": "Nicht geschlossen — ein anderes Fenster hält noch einen nicht gesendeten Entwurf.",
+      "close_committed_late_draft": "Geschlossen — ein währenddessen eingegangener Entwurf wurde gespeichert."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "Audio-Worklet nicht verfügbar",
@@ -8491,6 +8515,17 @@
       "approval_required": "Genehmigung erforderlich",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
       "unknown": "Unbekannt"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "Ein Turn läuft, daher blieb die Sitzung offen — schließe sie erneut, wenn der Turn fertig ist.",
+      "close_not_recorded": "Schließen konnte nicht erfasst werden, die Sitzung blieb also offen — bitte erneut versuchen.",
+      "close_confirm": "Diese Sitzung schließen? Du hast „{{label}}“ gewählt. Das Transkript bleibt in {{section}}.",
+      "close_requested": "Schließen angefordert — {{label}}",
+      "close_aborted_unsent": "Schließen abgebrochen — diese Sitzung hat einen nicht gesendeten Entwurf, möglicherweise in einem Seitenbereich oder einem anderen Fenster. Senden oder verwerfen, dann erneut versuchen.",
+      "close_aborted_unsent_here": "Schließen abgebrochen — diese Sitzung hat einen nicht gesendeten Entwurf in diesem Fenster. Senden oder verwerfen, dann erneut versuchen.",
+      "close_aborted_unsent_window": "Schließen abgebrochen — ein anderes Fenster hat einen nicht gesendeten Entwurf in dieser Sitzung gemeldet. Senden oder verwerfen Sie ihn dort und versuchen Sie es erneut.",
+      "close_unbound_session": "Schließen abgebrochen — der Klick konnte dem Transkript nicht hinzugefügt werden, daher wurde die Sitzung nicht geschlossen. Versuchen Sie es erneut oder nutzen Sie „{{action}}“ im Sitzungsmenü.",
+      "close_stale_row": "Das Gespräch ist weitergegangen, daher blieb diese Sitzung offen — nutze „{{action}}“ im Sitzungsmenü."
     }
   },
   "lib": {
@@ -10007,7 +10042,9 @@
       "could_not_generate_title": "Es konnte kein Titel erzeugt werden",
       "could_not_open_side_chat": "Seitenchat konnte nicht geöffnet werden",
       "side_command_not_run": "Der Befehl /side wurde nicht ausgeführt. Deine Nachricht ist noch im Eingabefeld.",
-      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen"
+      "could_not_send_to_side_chat": "Senden an den Seitenchat fehlgeschlagen",
+      "close_old_session_failed": "Die alte Sitzung konnte nicht geschlossen werden, Sie haben jetzt also zwei.",
+      "close_old_session_failed_title": "Alte Sitzung noch offen"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",
@@ -10244,7 +10281,9 @@
       "board_update_failed": "Board-Aktualisierung fehlgeschlagen",
       "open_crew_members": "Crew-Mitglieder",
       "open_crew_members_desc": "Öffnet die Seite Crew-Mitglieder – jedes Mitglied ist ein dauerhafter Agent mit eigenem Thread.",
-      "open_crew_members_gated_desc": "Öffnet zuerst die Einstellungen, um diese Vorschau einzuschalten – vorher ist die Seite nicht verfügbar."
+      "open_crew_members_gated_desc": "Öffnet zuerst die Einstellungen, um diese Vorschau einzuschalten – vorher ist die Seite nicht verfügbar.",
+      "cleanup_unsent_confirm": "{{base}}?\n\nNicht gesendete Inhalte gehen verloren in: „{{names}}“",
+      "cleanup_vetoed_unsent": "Nicht archiviert: In „{{names}}“ sind nicht gesendete Inhalte aufgetreten"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

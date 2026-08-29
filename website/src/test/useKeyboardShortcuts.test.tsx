@@ -6,6 +6,7 @@ import { Provider } from 'react-redux'
 import { DEFAULT_SHORTCUTS, formatShortcut, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, useKeyboardShortcuts, sessionCycleStep, wrapIndex, isAgentMonitorChord, RESERVED_PANEL_CODES, orderSlotsBySidebar, useDigitModifierHeld, jumpLetters, jumpLabelFor, jumpIndexForCode } from '../hooks/useKeyboardShortcuts'
 import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
 import { matchShortcutEvent, resolveShortcuts } from '../lib/shortcutRegistry'
+import { useSessionActions } from '../hooks/useSessionActions'
 import { renderHookWithProviders, createTestStore, renderWithProviders } from './helpers'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
 import chatReducer from '../store/chatSlice'
@@ -1515,7 +1516,12 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
       dashboard: { slots: [{ key: 'slot-1', title: 'Chat 1', messages: 1, running: true }] } as unknown as RootState['dashboard'],
       chat: { activeSlot: 'slot-1', slotHistory: [] } as unknown as RootState['chat'],
     })
-    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    renderHookWithProviders(() => {
+      // The funnel owns the confirm, and the hook now takes it as a prop rather than
+      // calling it — so the wiring under test is supplied here the way App does it.
+      const { close } = useSessionActions()
+      useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCloseSession: close })
+    }, { store })
     press({ code: 'KeyW', ctrlKey: true })
     expect(confirmSpy).toHaveBeenCalledTimes(1)
     press({ code: 'KeyW', altKey: true, shiftKey: true })
@@ -1541,7 +1547,10 @@ describe('useKeyboardShortcuts — registry chords (conventional defaults + alia
         },
       } as unknown as RootState['chat'],
     })
-    renderHookWithProviders(() => useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat }), { store })
+    renderHookWithProviders(() => {
+      const { close } = useSessionActions()
+      useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCloseSession: close })
+    }, { store })
     press({ code: 'KeyW', ctrlKey: true })
     expect(confirmSpy).toHaveBeenCalledTimes(1)
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-1')).toBeDefined() // declined → kept

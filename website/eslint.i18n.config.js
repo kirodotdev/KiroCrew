@@ -228,6 +228,28 @@ export default [
       // Key glyphs / key-cap names only (⌘ ⇧ ⌥ / Ctrl Win Alt) — a machine
       // grammar the OS parses, not translatable copy. Same rationale as above.
       'src/apps/mochi/src/shared/shortcut.ts',
+      // The `[OPTIONS:]` / `[OPTION-ACTIONS:]` WIRE GRAMMAR. Every literal in the
+      // module is regex source assembled into the two marker patterns — character
+      // classes (`[^[\]\u3011\uFF3D\u3015\n]`), a tempered opener, the
+      // separator-or-closer continuation test — plus the protocol heads themselves.
+      // Translating any of them would not change a word anyone reads; it would stop
+      // the marker matching, and a marker that does not match leaks into the message
+      // as literal text and the turn loses its buttons.
+      //
+      // Verified copy-free MECHANICALLY rather than by reading: the module imports
+      // no `i18nT` / `useTranslation`, contains no JSX, and never touches the DOM —
+      // every export is a `RegExp` or a `string`-in / `string`-out function, and the
+      // one `window` identifier in it is a LOCAL variable holding a slice of text,
+      // not the global. The labels the grammar captures are model-authored content
+      // travelling through it, never copy this repo ships, so there is nothing here
+      // for a catalog to hold.
+      //
+      // Needed because `i18n-strict` looks INSIDE ALL-CAPS module constants, which
+      // is exactly how these fragments are named. Two of them fall outside every
+      // content shape already exempted: one nests a second `[` inside its negated
+      // class and one holds two bracketed tokens joined by `|`, so neither reads as
+      // "entirely one bracketed token".
+      'src/app-sdk/protocol/optionMarker.ts',
       // CSS text injected through <style>; a stylesheet is not translatable copy.
       'src/apps/spec-builder/inlineStyles.ts',
       // The theme stylesheet builders, extracted out of `hooks/useTheme.tsx` so

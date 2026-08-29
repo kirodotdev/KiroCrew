@@ -3106,6 +3106,7 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
     that succeeded while the rows became unreachable. The log line names the exact
     count for the same reason.
     """
+    notes_lost = False
     try:
         slot.flush_deferred_notes()
     except Exception:
@@ -3123,13 +3124,16 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
             len(slot._deferred_notes),
             exc_info=True,
         )
+        # A held note IS a row owed that did not reach disk, which the contract above
+        # answers False. Logging alone let both callers report the close as clean.
+        notes_lost = True
     # ``_disk_window_len`` is how much of the current window the last committed save
     # covered, so the difference is exactly what has never reached disk. ``_dirty``
     # covers the other shape of unsaved state: an in-place edit to a row already
     # persisted leaves the length unchanged.
     unsaved = max(0, len(slot.messages) - slot._disk_window_len)
     if not unsaved and not slot._dirty:
-        return True
+        return not notes_lost
     history_key = slot_history_key(slot)
     try:
         committed = await save_slot_off_loop(
@@ -3163,7 +3167,7 @@ async def _persist_handover_tail(state: DashboardState, name: str, slot: _ChatSl
             history_key,
         )
         return False
-    return True
+    return not notes_lost
 
 
 def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:
@@ -5294,6 +5298,15 @@ async def _close_slot(
         # handler and session-control's close_target — must read this as success.
         return
     try:
+        # Held notes are flushed INSIDE this try so a flush failure shares the restore
+        # arm below, exactly as the bulk-cleanup path does. `_deferred_notes` is
+        # in-memory only -- a `__slots__` attribute the persistence layer never reads --
+        # so once the slot is popped the sole copy of a held note is this slot object:
+        # saving without flushing writes the transcript WITHOUT the note and still
+        # reports success, which is data loss reported as success. Both callers need
+        # it, and no frontend gate substitutes -- session control's `close_target`
+        # has no frontend at all, so the flush must happen here.
+        slot.flush_deferred_notes()
         await save_slot_off_loop(state, slot, closed=True, closed_at=closed_at, best_effort=False)
     except Exception:
         # Save failed — restore slot so data isn't lost
@@ -5468,6 +5481,9 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         pass
     active_slot = body.get("active_slot", "")
     dry_run = body.get("dry_run", False)
+    # The caller's guarded set. Without it this pass recomputed the batch, so a session
+    # crossing the cutoff after the preview was archived with its draft never checked.
+    only_keys = body.get("only_keys")
     request_app = request.get("app", "")
     cutoff = time.time() - max_days * 86400
     # Slots owning an ARMED auto-nudge loop are exempt from idle archival.
@@ -5502,6 +5518,11 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         )
     stale_keys: list[str] = []
     active_is_stale = False
+    allowed_keys: set[str] | None = None
+    if isinstance(only_keys, list):
+        # An INTERSECTION, never a substitute: a key the caller names but this pass
+        # does not consider stale is still not archived.
+        allowed_keys = {k for k in only_keys if isinstance(k, str) and k}
     for name in list(state._slots):
         slot = state._slots.get(name)
         if slot is None or slot.pinned:
@@ -5544,6 +5565,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             active_is_stale = True
             continue
         stale_keys.append(name)
+    # Applied AFTER the dry run, which is the preview the caller guards FROM and so
+    # must still report everything this pass would consider.
+    if allowed_keys is not None and not dry_run:
+        stale_keys = [k for k in stale_keys if k in allowed_keys]
     # Dry-run: return the exact list without archiving
     if dry_run:
         sel().log_api_access(
@@ -10372,6 +10397,30 @@ def _validate_max_age(max_age: object) -> web.Response | None:
     return None
 
 
+def _validate_visible_only(visible_only: object) -> web.Response | None:
+    """Shared visibleOnly validation. Returns a 400 response on a bad value, else None.
+
+    ``visibleOnly`` decides whether an entire write happens, so a truthy
+    non-boolean must not be coerced: a caller sending the STRING ``"false"``
+    means the opposite of what ``bool()`` would make of it, and the cost of
+    guessing is a context entry that silently never exists. Rejecting the type at
+    the boundary is the discipline ``_validate_max_age`` applies for the same
+    reason -- fail on the request that introduced the bad value.
+
+    ``isinstance(True, int)`` is True, so the test must be ``isinstance(x, bool)``
+    and never ``isinstance(x, (bool, int))``: the latter would admit ``1`` and
+    ``0``, the mirror of the bug ``_validate_max_age`` guards against from the
+    other side. ``None`` is accepted and means omitted -- the same treatment
+    ``maxAge`` gives an explicit null -- and the handler resolves it to False.
+    """
+    if visible_only is None or isinstance(visible_only, bool):
+        return None
+    return web.json_response(
+        {"error": "visibleOnly must be a boolean or omitted", "code": "invalid_visible_only"},
+        status=400,
+    )
+
+
 def _check_slot_app_ownership(
     slot: _ChatSlot, name: str, request_app: str, operation: str
 ) -> web.Response | None:
@@ -10909,8 +10958,28 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
        ``/context`` uses) drained onto the user's next manual message exactly
        once, then cleared.
 
-    Both writes always happen. A context-only write is ``POST /context``, which
-    already exists; there is no visible-only mode, because no caller wanted one.
+    Both writes happen by DEFAULT. A context-only write is ``POST /context``,
+    which already exists; the reverse -- the visible row alone, with no context
+    entry built at all -- is ``visibleOnly: true``.
+
+    ``visibleOnly`` exists because the context half CANNOT work for a slot that
+    is about to close, which is the breadcrumb case. ``_pending_context`` is a
+    plain in-memory list the persistence layer never serializes, and the close
+    pops the slot, so the queue dies with the frame; a resumed session rebuilds
+    from the TRANSCRIPT with an empty queue. The two halves also have different
+    lifetimes -- the queued copy self-expires on the 24h default below while the
+    visible row is permanent -- so for a note whose whole purpose is the durable
+    row, the context entry is a copy that can never be drained. Everything else
+    is unchanged under ``visibleOnly``: validation, redaction, the ownership
+    re-check after the body read, the deferred/hold path
+    and the audit log all behave identically, and ``contextSkipped`` is true.
+    ``deliveryConditional`` is the one exception: with no context half built at
+    all, the transcript row is the only exposure, so an immediate note is pinned
+    to the transcript it was authorized against and reported unconditional once
+    that write commits. The pin keys on ``visibleOnly`` ITSELF, not on the absence
+    of a queued entry: the per-source cap also leaves no entry, and a caller whose
+    context was capped away asked for two halves and must not have its answer or
+    its disk-write behaviour changed by a different caller's feature.
 
     A session reset in between can replay the transcript row into the new
     session, so the model may see the note twice in one prompt. The queued copy
@@ -10930,22 +10999,34 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
                                       //   <=64 chars, no control chars; empty -> "note"
             "maxAge": 86400,          // optional seconds; omitted -> 24h default.
                                       //   Explicit null -> no expiry, as on /context.
-            "ephemeral": true         // optional, default true (passed to the context entry)
+            "ephemeral": true,        // optional, default true (passed to the context entry)
+            "visibleOnly": false      // optional, default false; true -> write the visible
+                                      //   row ONLY and build no context entry. An explicit
+                                      //   null means omitted; any non-boolean is a 400.
         }
 
     Returns ``{"ok", "appended", "visibleDeferred", "contextSkipped", "pending"}``.
     If the source's per-source context cap is already full the visible line is
     still written and ``contextSkipped`` is true: the cap protects the context
-    queue, not the transcript, so the call is NOT 429'd.
+    queue, not the transcript, so the call is NOT 429'd. ``visibleOnly: true``
+    reports the same flag for the same reason -- no context entry exists -- and
+    it leaves ``pending`` untouched, since ``pending`` counts held CONTEXT
+    entries and this note carries none. Its VISIBLE half can still be held
+    (below), so ``visibleDeferred`` may be true while ``pending`` never moves.
 
     When a turn is already running BOTH halves are held and written at that
-    turn's end, so ``appended`` is false and ``visibleDeferred`` is true. Its
-    order is preserved, and the hold is DURABLE: it is persisted
-    into the slot's own metadata line before the 200 is returned, replayed by
-    both slot-restore paths after a gateway restart, and retired by the save
-    that commits the delivered rows. A caller therefore never needs to re-post
-    after a restart; the one retry signal is a 503 ``deferred_note_persist_failed``,
-    which means the hold could not be made durable and was not accepted.
+    turn's end, so ``appended`` is false and ``visibleDeferred`` is true. A
+    ``visibleOnly`` note holds its visible half alone, carrying ``context: None``,
+    and defers on exactly the same condition. Order is preserved, and the hold is
+    DURABLE: it is persisted into the slot's own metadata line before
+    the 200 is returned, replayed by both slot-restore paths after a gateway restart,
+    and retired by the save that commits the delivered rows. A caller therefore never
+    needs to re-post after a restart; the one retry signal is a 503
+    ``deferred_note_persist_failed``, which means the hold could not be made durable
+    and was not accepted. Delivery stays CONDITIONAL on the slot even so: a held note
+    whose authorizing session does not match the slot's live one is dropped at the
+    rebind seam and its id recorded, rather than written into another session's
+    transcript.
     Appending mid-turn would take the row the replay path skips and cause the
     user's own request to be replayed; queueing the context mid-turn would let
     the turn already in flight drain it, so the note would shape the request it
@@ -10983,9 +11064,14 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         _validate_content(content)
         or _validate_source(body.get("source"))
         or _validate_max_age(body.get("maxAge"))
+        or _validate_visible_only(body.get("visibleOnly"))
     )
     if bad is not None:
         return bad
+
+    # Validated above, so the value is a bool or None here. Compared by identity
+    # rather than truthiness so the resolution stays readable next to the 400.
+    visible_only = body.get("visibleOnly") is True
 
     # Default an empty, absent, or whitespace-only source to "note" so the drain
     # frame reads [Background context from "note"] rather than empty quotes.
@@ -11041,7 +11127,15 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # null means no expiry, the same as it does on /context.
     context_skipped = False
     context_entry: dict[str, object] | None = None
-    if _source_cap_reached(slot, source):
+    if visible_only:
+        # The caller asked for the transcript row alone, so NO entry is built --
+        # nothing to queue immediately and nothing for the flush to promote, and
+        # `pending` is therefore unchanged by this call. The cap check below is
+        # skipped with it: an unbuilt entry cannot occupy a bucket, so consulting
+        # the cap here would only be able to report a status about a write that
+        # is not happening.
+        context_skipped = True
+    elif _source_cap_reached(slot, source):
         context_skipped = True
     else:
         max_age = body.get("maxAge", _UNSET)
@@ -11145,7 +11239,24 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # destination late and every binding site claims an EMPTY binding
     # (``if not slot.linked_session_key``) -- so an already-bound slot cannot be
     # re-claimed and its immediate note is genuinely unconditional.
-    delivery_conditional = deferred or not slot.linked_session_key
+    # Only a channel-, cron- or workflow-born slot carries a binding, so the
+    # binding test alone answered conditional for every ordinary dashboard tab.
+    pinned = False
+    if not deferred and visible_only:
+        try:
+            pinned = await save_slot_off_loop(
+                state,
+                slot,
+                closed=False,
+                best_effort=False,
+                expected_history_key=slot_history_key(slot),
+            )
+        except Exception:
+            # Not lost: the row sits in the live window and the flush retries it,
+            # but its destination is unsettled, which is what stays reported.
+            slot._dirty = True
+            logger.warning("Slot %s: immediate note not pinned durably", name, exc_info=True)
+    delivery_conditional = deferred or not (slot.linked_session_key or pinned)
     return web.json_response(
         {
             "ok": True,

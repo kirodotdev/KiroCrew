@@ -52,6 +52,7 @@ import type { ResizeInfo } from '../../utils/resizeImage'
 import { errMessage } from '../../utils/thunkError'
 import { fileLandingSlot } from '../../utils/uploadRouting'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
+import { pinSlotSuccession, releaseSlotSuccession, resolveSlotSuccession } from '../../utils/slotSuccession'
 
 type MutableRef<T> = { current: T }
 
@@ -573,17 +574,22 @@ export function useChatPageResourcesController({
     // screenshot promise resolves, we must land the file in the slot the user
     // was looking at when they clicked — not whatever slot is now active.
     const requestSlot = activeSlotRef.current
+    // Held until the capture settles, so a burst of mode switches cannot evict the row
+    // that tells this completion which slot is still alive.
+    pinSlotSuccession(requestSlot)
     setUploading(true)
     try {
       const { path } = await api.screenshot()
       if (path) {
-        if (activeSlotRef.current === requestSlot) {
+        // A mode switch may have replaced the originating slot while the capture ran.
+        const landingSlot = resolveSlotSuccession(requestSlot)
+        if (activeSlotRef.current === landingSlot) {
           setPendingFiles(prev => [...prev, path])
-        } else if (requestSlot) {
+        } else if (landingSlot) {
           // Slot changed during the await — divert the file into the request
           // slot's persisted draft so it's waiting when the user goes back.
-          const cur = fileDrafts.current[requestSlot] ?? []
-          setFileDraft(fileDrafts.current, requestSlot, [...cur, path])
+          const cur = fileDrafts.current[landingSlot] ?? []
+          setFileDraft(fileDrafts.current, landingSlot, [...cur, path])
           saveDrafts()
         }
       }
@@ -596,6 +602,8 @@ export function useChatPageResourcesController({
       // user clicking Screenshot with no attachment and no notice. The server
       // states the cause, so pass it through rather than paraphrasing it.
       showActionError(i18nT('pages.chatPage.screenshot_failed_reason', { reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+    } finally {
+      releaseSlotSuccession(requestSlot)
     }
     setUploading(false)
   }, [activeSlotRef, setUploading, setPendingFiles, fileDrafts, saveDrafts, showActionError])
@@ -641,13 +649,16 @@ export function useChatPageResourcesController({
     // the same route every other server-side rejection already takes.
     const big = files.find(f => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
     if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
+    // Pinned AFTER the early returns above: a pin taken before one of them would never
+    // be released, and a leaked pin is permanent.
+    pinSlotSuccession(requestSlot)
     setUploading(true)
     try {
       const res = await api.uploadFiles(files)
       if (res.error) {
         setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
       } else if (res.paths?.length) {
-        const landing = fileLandingSlot(requestSlot, activeSlotRef.current)
+        const landing = fileLandingSlot(resolveSlotSuccession(requestSlot), activeSlotRef.current)
         if (landing.target === 'pending') {
           setPendingFiles(prev => [...prev, ...res.paths])
         } else if (landing.target === 'draft') {
@@ -659,7 +670,11 @@ export function useChatPageResourcesController({
       if (!res.error && res.resizedByPath && Object.keys(res.resizedByPath).length) {
         setResizedInfo(prev => ({ ...prev, ...res.resizedByPath }))
       }
-    } catch { setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')) }
+    } catch {
+      setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb'))
+    } finally {
+      releaseSlotSuccession(requestSlot)
+    }
     setUploading(false)
   }, [activeSlotRef, setUploadError, setUploadHint, setUploading, setPendingFiles, fileDrafts, saveDrafts, setResizedInfo])
 

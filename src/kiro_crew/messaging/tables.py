@@ -50,6 +50,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from kiro_crew.constants import starts_with_marker_head
+
 #: No conversion.
 TABLE_POLICY_OFF = "off"
 #: One card per row (first column = heading, later headers = labels).
@@ -87,12 +89,6 @@ _GRID_SEP_WIDTH = 3
 
 #: Characters a GFM separator row may contain (``| --- |``, ``|:--|--:|``).
 _SEPARATOR_CHARS = frozenset("-:| \t")
-
-#: Protocol trailers that carry pipes but are NOT table rows. Both are emitted
-#: on their own line directly after an answer, so a table ending one line above
-#: would otherwise swallow ``[OPTIONS: a | b]`` as a body row and render the
-#: user's choices as a card.
-_PROTOCOL_PREFIXES = ("[OPTIONS", "[STEERING")
 
 #: Zero-width characters that occupy no column. Combining marks are handled
 #: separately via ``unicodedata.combining``.
@@ -677,7 +673,7 @@ def _is_row_candidate(line: str) -> bool:
         return False
     if _is_markdown_block_starter(stripped):
         return False
-    if stripped.startswith(_PROTOCOL_PREFIXES):
+    if starts_with_marker_head(stripped) or stripped.startswith("[STEERING"):
         return False
     if _html_block_opener(line) is not None:
         return False
