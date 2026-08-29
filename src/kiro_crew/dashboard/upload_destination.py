@@ -148,9 +148,11 @@ def _slack_egress_permitted(session_key: str) -> bool:
     ladder, which would leave the broadest-audience leg -- the only one whose
     destination a REQUEST can name -- as the one unvetted, unaudited file egress.
     Same shape as the other Slack egress that cannot reach the ladder
-    (``chat_compaction_notice._channel_egress_permitted``): a direct call to the
-    audited seam rather than a registry change, so the registry keeps meaning
-    "transports the shared ladder can drive".
+    (``slack_egress.channel_egress_permitted``, the shared gate): a direct call to
+    the audited seam rather than a registry change, so the registry keeps meaning
+    "transports the shared ladder can drive". This copy is a known sibling of that
+    shared gate and has not adopted it yet; the consolidation is owned by
+    ``docs/request-for-change/rfc-proactive-slack-egress-consolidation.md``.
 
     An empty key is a caller with no session of its own -- a cron, the heartbeat,
     an out-of-band host action -- reaching this leg through the owner-DM

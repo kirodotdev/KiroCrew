@@ -2238,6 +2238,8 @@ async def _dm_owner(state: DashboardState, text: str) -> None:
     if slack_client and owner_id:
         try:
             dm_channel = await slack_client.open_dm(owner_id)
+            # PLAIN-CLIENT Slack egress: no governance gate, no per-chunk re-ask. The
+            # hardened chain is `dashboard.slack_egress`; adopting it widens refusals.
             await slack_client.post_message(dm_channel, safe_text)
             return
         except Exception:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import sys
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from aiohttp import web
@@ -1067,6 +1067,51 @@ class TestChannelTypeDelivery:
         assert "TAIL-MARKER" in "".join(sent)
 
     @pytest.mark.asyncio
+    async def test_inline_send_stops_remaining_parts_when_destination_is_unlinked(self, mock_sel):
+        """An INLINE caller's later parts stop when the destination is revoked.
+
+        The pre-send check cannot cover this. It runs once, before part 1, and a
+        multi-part send then spans one await per part -- so a session unlinked
+        after part 1 leaves parts 2..N addressed to a conversation the user has
+        already disconnected. Being inline bounds the window between the REQUEST
+        and the first part; it says nothing about the window between parts, which
+        is the same window a dispatched caller has.
+
+        The revocation is driven from inside the first send so it lands exactly in
+        that gap, and the assertion is the TAIL: counting parts would also pass if
+        chunking silently collapsed to one message.
+        """
+        transport = _channel_transport()
+        state = _channel_state(transport=transport, slack_client=MagicMock())
+
+        def _unlink_after_first_part(*_args, **_kwargs):
+            # The revocation a user performs mid-send: the session no longer owns
+            # a channel, so the next re-walk finds nothing to deliver to.
+            state.sessions.get_origin_link.return_value = None
+            return "tg-1"
+
+        transport.send_message = AsyncMock(side_effect=_unlink_after_first_part)
+        app = _make_app(state)
+        body = "x" * TELEGRAM_MAX_TEXT + "TAIL-AFTER-REVOKE"
+
+        with _governance(True):
+            async with TestClient(TestServer(app)) as client:
+                await client.post(
+                    "/api/send-message",
+                    json={"text": body, "channel_type": "telegram"},
+                    headers={"X-Session-Key": _TG_KEY},
+                )
+
+        sent = [c.args[1] for c in transport.send_message.await_args_list]
+        assert len(sent) == 1, (
+            "the send must stop after the part that was already in flight when the "
+            f"destination was unlinked; got {len(sent)} parts"
+        )
+        assert "TAIL-AFTER-REVOKE" not in "".join(
+            sent
+        ), "the tail reached a conversation that was unlinked before it was sent"
+
+    @pytest.mark.asyncio
     async def test_a_later_chunk_failing_is_reported_not_swallowed(self, mock_sel):
         # The head landed and the tail did not, which is a partial delivery. It must
         # not read as success: on the cron path a True stands the Slack fallback down
@@ -1444,6 +1489,80 @@ class TestChannelTextIsNotTheNotificationText:
                 assert "session closed" in notified
 
     @pytest.mark.asyncio
+    async def test_revalidation_covers_both_callers_and_authored_link_gates_comparison(
+        self, mock_sel
+    ):
+        """Mid-send revalidation is unconditional; `authored_link` gates only the
+        authored-link COMPARISON.
+
+        An earlier revision keyed the re-walk on `authored_link` too, reasoning that
+        an inline caller had already been checked against a binding that could not
+        have moved. That held for the PRE-SEND check and not for the send: each part
+        is an await, so an inline multi-part send has the same inter-part window, and
+        its later parts reached a destination unlinked after part 1.
+
+        So this pins two things that must not collapse into each other:
+          * BOTH callers re-walk after the governance await -- more than one consult.
+          * `authored_link` still decides whether the live binding is compared
+            against what the WORK WAS AUTHORED FOR, which only a dispatched caller
+            can ask. A stale snapshot must refuse where an inline caller delivers.
+
+        Pinned by consult counts and by a refusal, not by source shape, so a
+        behaviour-preserving refactor stays green.
+        """
+        from kiro_crew.dashboard.handlers.messaging import deliver_to_channel
+
+        link = ChannelLink("telegram", channel_id="C1", thread_id=None)
+        moved = ChannelLink("telegram", channel_id="C_MOVED", thread_id=None)
+
+        def _fresh_state():
+            tp = _channel_transport()
+            st = _channel_state(transport=tp)
+            st.sessions.get_origin_link = MagicMock(return_value=link)
+            st.sessions.get_mirror_link = MagicMock(return_value=None)
+            return st, tp
+
+        inline_state, inline_tp = _fresh_state()
+        assert await deliver_to_channel(
+            inline_state, "dashboard:chat-1", "hi", tool_name="send_message"
+        )
+        inline_walks = inline_state.sessions.get_origin_link.call_count
+
+        snap_state, snap_tp = _fresh_state()
+        assert await deliver_to_channel(
+            snap_state,
+            "dashboard:chat-1",
+            "hi",
+            tool_name="chat.note",
+            authored_link=(link, True),
+        )
+        snapshot_walks = snap_state.sessions.get_origin_link.call_count
+
+        assert inline_tp.send_message.await_count == 1, "the inline send must still deliver"
+        assert snap_tp.send_message.await_count == 1, "the snapshot send must still deliver"
+        assert inline_walks > 1, (
+            "the inline caller must re-walk after the governance await; measured "
+            f"{inline_walks} consult(s). One means the revocation window between "
+            "parts is open again for the endpoint every LLM send goes through."
+        )
+        assert (
+            snapshot_walks > 1
+        ), f"the dispatched caller must re-walk too; measured {snapshot_walks}"
+
+        # The part `authored_link` DOES still gate: a snapshot that no longer matches
+        # the live binding is a refusal, where the inline caller above delivered
+        # against that same live binding.
+        stale_state, stale_tp = _fresh_state()
+        assert not await deliver_to_channel(
+            stale_state,
+            "dashboard:chat-1",
+            "hi",
+            tool_name="chat.note",
+            authored_link=(moved, True),
+        ), "a snapshot naming a different destination must refuse, never retarget"
+        assert stale_tp.send_message.await_count == 0, "a refused send must not deliver"
+
+    @pytest.mark.asyncio
     async def test_cron_job_session_key_is_used_verbatim(self, mock_sel):
         """A dashboard-born cron's job.session_key must reach the link lookup
         whole. `_resolve_session_target` strips "dashboard:" to get a SLOT name;
@@ -1469,9 +1588,19 @@ class TestChannelTextIsNotTheNotificationText:
                     headers={"X-Session-Key": "cron:job9"},
                 )
                 assert resp.status == 200
-                state.sessions.get_origin_link.assert_called_once_with(
-                    "dashboard:chat-3-1712793600"
-                )
+                # EVERY lookup must carry the WHOLE key. `deliver_to_channel` walks
+                # the ladder to choose a destination and re-walks after the
+                # governance await to catch a binding revoked in between, so the
+                # number of consults is an implementation detail of that discipline.
+                # What this test is about is the KEY: a truncated or prefix-stripped
+                # variant reaching the lookup silently loses the mirror. Asserting
+                # every call's argument rather than the call COUNT keeps it pinning
+                # that, and keeps it green when the revalidation shape changes.
+                consults = state.sessions.get_origin_link.call_args_list
+                assert consults, "the ladder must be consulted at least once"
+                assert all(
+                    c == call("dashboard:chat-3-1712793600") for c in consults
+                ), f"every consult must use the whole key; got {consults}"
 
 
 # ── the MCP tool half: which transport the governance gate names ──

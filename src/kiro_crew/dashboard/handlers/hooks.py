@@ -1167,6 +1167,8 @@ async def _run_hook_agent(
                 try:
                     channel = await state.slack_client.open_dm(state.owner_id)
                     if channel:
+                        # PLAIN-CLIENT Slack egress: no governance gate, no per-chunk
+                        # re-ask. Hardened chain: `dashboard.slack_egress`.
                         await state.slack_client.post_message(
                             channel, f"*{title}*\n{result_text[:3000]}"
                         )

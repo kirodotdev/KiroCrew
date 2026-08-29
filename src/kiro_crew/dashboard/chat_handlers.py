@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import math
@@ -49,6 +50,10 @@ from kiro_crew.dashboard.chat_delivery import (
 from kiro_crew.dashboard.chat_folders import (
     _resolve_folder_project_dir,
     _unhide_folder,
+)
+from kiro_crew.dashboard.chat_note_mirror import (
+    dispatch_note_mirror,
+    snapshot_note_destinations,
 )
 from kiro_crew.dashboard.chat_orchestrator import _stage_loop
 from kiro_crew.dashboard.chat_persistence import (
@@ -9231,6 +9236,30 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     still written and ``contextSkipped`` is true: the cap protects the context
     queue, not the transcript, so the call is NOT 429'd.
 
+    The visible line is ALSO mirrored to whatever channel this session is bound to
+    -- see ``chat_note_mirror``. Without that the context half, which is
+    surface-agnostic, would reach the model while the visible half reached only
+    the dashboard, leaving a channel-driven user with an agent that knew something
+    they were never shown. It is dispatched in the BACKGROUND and deliberately not
+    reported: the note's contract is the transcript line and the context entry,
+    and waiting on a channel here would put a wedged transport on this POST's
+    critical path, where a client that gave up and retried would write both halves
+    a second time. A HELD visible line is mirrored too, but not from here: while
+    held neither half is committed, so publishing at this point would announce
+    content the transcript may never receive. The dispatch rides on the held
+    record instead and fires once the flush has committed both halves.
+
+    THE HELD RECORD'S SHAPE IS A CONTRACT, and ``mirror`` is its load-bearing
+    part. Each entry appended to ``_deferred_notes`` carries exactly ``content``,
+    ``cls``, ``context``, ``session`` and ``mirror``, the last being a
+    zero-argument callable that already holds the destinations snapshotted at
+    WRITE time. ``flush_deferred_notes`` calls it after ``written`` is counted, in
+    a ``try`` of its own so a delivery fault cannot restore the unwritten suffix,
+    and its rebind-drop branch continues before reaching it so a dropped note
+    never dispatches. A flush refactor that stops calling it reopens the
+    provenance gap this endpoint closes, and does so silently: the channel would
+    go quiet for held notes only, which is the case no dashboard reader sees.
+
     When a turn is already running BOTH halves are held and written at that
     turn's end, so ``appended`` is false and ``visibleDeferred`` is true. Its
     order is preserved and it is not dropped while this gateway stays up -- the
@@ -9339,6 +9368,9 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     visible_content, _ = redact_exfiltration_urls(content)
     visible_content, _ = redact_credentials(visible_content)
     if deferred:
+        # SNAPSHOTTED NOW, dispatched at flush. The destinations a held note is
+        # authorized for are the ones live when it was WRITTEN, not when it lands.
+        _held_destinations = snapshot_note_destinations(state, slot, effective_session_key(slot))
         slot._deferred_notes.append(
             {
                 "content": visible_content,
@@ -9349,6 +9381,17 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
                 # an unbound slot can acquire a foreign binding while the note
                 # is held, and the flush resolves its target late.
                 "session": effective_session_key(slot),
+                # Called by the flush once BOTH halves land, so a held note reaches
+                # the channel too. The dispatch skips a failed snapshot itself.
+                "mirror": functools.partial(
+                    dispatch_note_mirror,
+                    state,
+                    slot,
+                    effective_session_key(slot),
+                    visible_content,
+                    source,
+                    _held_destinations,
+                ),
             }
         )
     else:
@@ -9367,6 +9410,54 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         source="app_kit",
         resources=f"slot={name}",
     )
+
+    # Deliver the visible line to whatever CHANNEL this session belongs to. The
+    # dashboard broadcast above reaches only the dashboard, so without this a
+    # session driven from Slack or Telegram gained the note's context — the half
+    # that IS surface-agnostic — with no visible provenance anywhere its user was
+    # looking.
+    #
+    # NOT mirrored when the visible line is HELD -- the dispatch below is guarded
+    # by ``if not deferred``. While held, neither half is committed: the visible
+    # write is skipped and the context sits in ``_deferred_notes``, so a foreign
+    # binding acquired before the flush drops BOTH halves. Mirroring at POST would
+    # therefore publish a channel note asserting content the session never
+    # received, which is a worse failure than losing a best-effort delivery.
+    # Mirroring held notes happens at FLUSH, once their halves land: the record
+    # carries its authored destinations and the flush dispatches them.
+    #
+    # BACKGROUNDED, not awaited, and THE DISPATCH ITSELF MUST NOT BE ABLE TO FAIL
+    # THIS POST. Both halves of the note are committed above, so any raise from here
+    # 500s a request whose work is done -- and the caller's retry then writes both
+    # halves a SECOND time. Nothing needs the mirror's result either: the note's
+    # contract is the transcript line and the context entry, and waiting on a wedged
+    # transport would put it on this POST's critical path. Each leg is already
+    # bounded and absorbs its own failure (`chat_note_mirror._run_leg`), so the
+    # delivery half is safe; the guarantee has to cover REGISTRATION too, because a
+    # partially-constructed state (`DashboardState.__new__`, which fixtures use)
+    # carries no `_background_tasks` and reaching for it unguarded turns a
+    # best-effort leg into a load-bearing one. The task is held by a strong
+    # reference for the same reason auto-title and auto-tag hold theirs: without it
+    # the loop can garbage-collect a running task mid-flight.
+    #
+    # BOTH SNAPSHOTS ARE TAKEN HERE, synchronously, before the task is created.
+    # Nothing between them and `create_task` awaits, so no rebind can interleave: the
+    # destinations handed to the mirror are the ones the note was AUTHORED for.
+    # Resolving them inside the task instead would read the binding LATER than the
+    # note was written, and a rebind landing in that gap would deliver a note
+    # authored for one conversation into its replacement -- a recipient it was never
+    # authorized for. The task revalidates against these snapshots and REFUSES on
+    # mismatch rather than retargeting. They sit inside the guard because they read
+    # `state.sessions` and the slot, which that same partial state lacks.
+    if not deferred:
+        dispatch_note_mirror(
+            state,
+            slot,
+            effective_session_key(slot),
+            visible_content,
+            source,
+            snapshot_note_destinations(state, slot, effective_session_key(slot)),
+        )
 
     # A hold is delivered only if the slot still routes to the same session at
     # flush; a rebind during the hold drops it. An IMMEDIATE note is equally

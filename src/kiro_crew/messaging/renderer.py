@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,6 +94,35 @@ class OutputEvent:
             "context_usage_pct": self.context_usage_pct,
             "stop_reason": self.stop_reason,
         }
+
+
+async def send_parts_revalidating(
+    parts: Sequence[str],
+    *,
+    still_permitted: Callable[[int], Awaitable[bool]],
+    send_part: Callable[[int, str], Awaitable[bool]],
+) -> bool:
+    """Send *parts* in order, re-asking permission immediately before each one.
+
+    The ordering is the point, and it lives in one place so the proactive Slack send
+    and the shared channel ladder cannot diverge on it. Permission is re-asked per
+    part rather than once up front, because every send is an await and a check made
+    only before part 1 leaves parts 2..N going to a destination whose permission may
+    since have been withdrawn. A refusal ABORTS and reports failure: parts already
+    sent cannot be recalled, so a partial message may remain, which is accepted
+    because the alternative is pushing more parts at a revoked destination.
+
+    Each callback owns what the two paths do not have in common: the predicate,
+    whether part 1 is re-asked at all, the audit vocabulary, the reason strings, and
+    the send. Both return False to abort, having already filed their own row, so this
+    files none and names no outcome. True means every part was permitted and sent.
+    """
+    for index, part in enumerate(parts):
+        if not await still_permitted(index):
+            return False
+        if not await send_part(index, part):
+            return False
+    return True
 
 
 def chunk_text(text: str, max_chars: int) -> list[str]:
