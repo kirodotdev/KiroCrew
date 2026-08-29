@@ -705,6 +705,70 @@ def test_symlinked_config_is_refused(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# TreeReader interface parity
+# --------------------------------------------------------------------------
+def test_tree_reader_worktree_and_pinned_parity(tmp_path):
+    """#6236: WorktreeReader and PinnedTreeReader share the TreeReader contract."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'parity'\n")
+    (tmp_path / "package.json").write_text('{"scripts": {"build": "npm run build"}}')
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "test-review.yml").write_text("name: test\n")
+    (wf / "other.yaml").write_text("name: other\n")
+
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=tmp_path, check=True)
+
+    wt_reader = resolve_profile.WorktreeReader(str(tmp_path))
+    pinned_reader = resolve_profile.PinnedTreeReader(str(tmp_path), "HEAD")
+
+    # has()
+    assert wt_reader.has("pyproject.toml") is True
+    assert pinned_reader.has("pyproject.toml") is True
+    assert wt_reader.has("missing.txt") is False
+    assert pinned_reader.has("missing.txt") is False
+
+    # read()
+    assert wt_reader.read("package.json") == '{"scripts": {"build": "npm run build"}}'
+    assert pinned_reader.read("package.json") == '{"scripts": {"build": "npm run build"}}'
+    assert wt_reader.read("missing.txt") is None
+    assert pinned_reader.read("missing.txt") is None
+
+    # ls()
+    assert wt_reader.ls(".github/workflows") == [
+        ".github/workflows/other.yaml",
+        ".github/workflows/test-review.yml",
+    ]
+    assert pinned_reader.ls(".github/workflows") == [
+        ".github/workflows/other.yaml",
+        ".github/workflows/test-review.yml",
+    ]
+    assert wt_reader.ls(".nonexistent") == []
+    assert pinned_reader.ls(".nonexistent") == []
+
+    # Detection functions take reader directly
+    assert resolve_profile.detect_gates(wt_reader) == ["python -m pytest -q", "npm run build"]
+    assert resolve_profile.detect_gates(pinned_reader) == ["python -m pytest -q", "npm run build"]
+    assert resolve_profile.detect_kirocrew(wt_reader) is False
+    assert resolve_profile.detect_kirocrew(pinned_reader) is False
+
+    reviewers = resolve_profile.detect_reviewers(wt_reader)
+    assert len(reviewers) == 1
+    assert reviewers[0]["name"] == "test-review"
+
+
+def test_unreadable_prepare_pr_toml_raises(tmp_path):
+    """A present but unreadable/malformed .prepare-pr.toml raises, never silently ignored."""
+    (tmp_path / ".prepare-pr.toml").write_bytes(b"\xff\xfe\x00\x00malformed")
+    with pytest.raises(Exception):
+        resolve_profile.resolve(str(tmp_path))
+
+
+# --------------------------------------------------------------------------
 # pr_status.py readiness-context override
 # --------------------------------------------------------------------------
 def test_readiness_context_default():
