@@ -579,6 +579,24 @@ second form hits the dedup guard). When normalization changes the name, the
 original pretty form is preserved as the slot's initial title
 (redaction-scrubbed, non-pinned so auto-title can still override).
 
+**App-owned slot binding isolation:** `linked_session_key` is session authority,
+not display metadata: chat routes authorize an app against the slot owner and
+then run the turn on the slot's effective session. An app-owned slot therefore
+never carries a linked channel or cron session. The slot attribute refuses the
+binding at the shared mutation boundary (factory arguments, channel-name
+inference, restore, and background injectors all pass through it), emits a
+best-effort SEL denial, and leaves the slot on its own `dashboard:` session. The
+refused key remains as an authorization-only claim, separate from the live route:
+app gates therefore keep refusing the quarantined slot instead of treating the
+failed mutation as an ordinary unbound slot, and note content stamped before the
+attempt is dropped at its late drain/save seams. The claim never selects a
+provider or transcript and is not serialized as a live binding; assigning an
+explicit empty binding clears it.
+Restore also refuses to infer `channel_origin` from a legacy linked key when the
+same persisted row is app-owned, so an upgrade disarms both the live binding and
+the transcript provenance written by an older vulnerable build. Unscoped
+dashboard/channel slots keep the historical auto-bind and restore behavior.
+
 ## Slack Thread Linking
 
 Sessions can be linked to Slack threads via `SessionMap` fields

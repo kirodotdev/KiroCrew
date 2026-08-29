@@ -2548,6 +2548,13 @@ def _app_cancel_denied(
         reason = (
             "app cannot access unscoped slots" if not slot._app else "app does not own this slot"
         )
+    elif getattr(slot, "linked_session_claim", ""):
+        # A refused binding is deliberately absent from ``target_key`` so no
+        # operation can route to it. It still quarantines the slot for app
+        # authorization; otherwise rejection would be indistinguishable from a
+        # genuinely unbound app slot and this destructive action would return
+        # success against a different session than the attempted binding named.
+        reason = "app does not own the session this slot is linked to"
     elif target_key != _history_key_for(slot.key):
         reason = "app does not own the session this slot is linked to"
     else:
@@ -6669,7 +6676,7 @@ def _check_slot_app_ownership(
             error="app does not own this slot",
         )
         return _slot_not_found()
-    if effective_session_key(slot) != _history_key_for(slot.key):
+    if getattr(slot, "linked_session_claim", ""):
         sel().log_api_access(
             caller=request_app,
             operation=operation,

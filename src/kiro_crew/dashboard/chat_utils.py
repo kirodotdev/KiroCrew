@@ -667,6 +667,22 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return getattr(slot, "linked_session_key", "") or _history_key_for(slot.key)
 
 
+def note_authorization_session_key(slot: _ChatSlot) -> str:
+    """The session identity stamped note content must still match at delivery.
+
+    A refused binding on an app-owned slot never becomes routing authority, so
+    :func:`effective_session_key` correctly keeps returning the slot's own
+    dashboard session. The refusal is still a routing-identity change for
+    authorization: treating it as an ordinary empty binding would let note
+    content accepted before the attempt survive and reach a later prompt.
+
+    This helper is for authorization comparisons only. It must never select a
+    provider, transcript, approval policy, or any other session-owned resource.
+    """
+    claim = getattr(slot, "linked_session_claim", "")
+    return claim or _history_key_for(slot.key)
+
+
 def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | None:
     """The slot holding *session_key*'s Slack OPTIONS state, if one exists.
 
