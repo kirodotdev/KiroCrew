@@ -17,6 +17,7 @@ from itertools import islice
 
 from kiro_crew import model_registry
 from kiro_crew.agent import kiro_agents_dir_path
+from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.dashboard.channel_slots import slot_closed_since
@@ -251,14 +252,16 @@ def _build_kiro_model_map() -> dict[str, str]:
     out: dict[str, str] = {}
     try:
         for f in kiro_agents_dir_path().glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                model = data.get("model", "")
-                if data.get("name"):
-                    out[data["name"]] = model
-                out[f.stem] = model
-            except (json.JSONDecodeError, OSError):
+            # Hardened reader: a refused spec (oversized, sensitive symlink,
+            # non-object JSON, ...) is skipped like an absent one instead of
+            # aborting the whole scan through the outer except.
+            data = _read_agent_spec(f)
+            if data is None:
                 continue
+            model = data.get("model", "")
+            if data.get("name"):
+                out[data["name"]] = model
+            out[f.stem] = model
     except Exception:
         logger.debug("Failed to build kiro model map", exc_info=True)
     return out

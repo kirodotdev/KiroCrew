@@ -26,6 +26,7 @@ from kiro_crew.agent import (
     kiro_agents_dir_path,
 )
 from kiro_crew.agent_discovery import (
+    _read_agent_spec,
     clear_list_agents_cache,
     list_agents,
     project_agent_names,
@@ -95,11 +96,10 @@ def _namespaced_agent_file_exists(agent_name: str) -> bool:
     # glob the real ~/.kiro from an isolated run.
     try:
         for path in kiro_agents_dir_path().glob(f"*--{agent_name}.json"):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            data = _read_agent_spec(path)
+            if data is None:
                 continue
-            if isinstance(data, dict) and data.get("name") == agent_name:
+            if data.get("name") == agent_name:
                 return True
     except OSError:
         return False
@@ -1565,8 +1565,17 @@ async def api_agent_detail(request: web.Request) -> web.Response:
 
     state: DashboardState = request.app["state"]
     for f in kiro_agents_dir_path().glob("*.json"):
+        spec = _read_agent_spec(f)
+        if spec is None:
+            continue
+        # Two-step so ``data`` stays typed ``dict`` for the PATCH branch's
+        # re-read below, which reassigns it from a raw ``json.loads``.
+        data = spec
+        # The try stays even though the parse moved out: the DELETE/PATCH
+        # bodies still raise the caught pair mid-flight (the PATCH re-read
+        # under the config lock, unlink), and those were -- and remain --
+        # skip-to-next-file.
         try:
-            data = json.loads(f.read_text(encoding="utf-8"))
             if data.get("name") == name or f.stem == name:
                 if request.method == "DELETE":
                     if f.name in (

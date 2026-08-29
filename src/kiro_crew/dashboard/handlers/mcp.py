@@ -21,6 +21,7 @@ from kiro_crew.agent import (
     kiro_agents_dir_path,
     rebuild_agent_config,
 )
+from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     FORWARD_DECLARED_ENV_DEFAULT,
@@ -779,15 +780,14 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     # Non-kirocrew agent: read from agent config
     if agent and agent != "kirocrew":
         for f in kiro_agents_dir_path().glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                if data.get("name") == agent:
-                    agent_mcps = data.get("mcpServers", {})
-                    return web.json_response(
-                        [{"name": n, "enabled": True} for n in sorted(agent_mcps)]
-                    )
-            except (json.JSONDecodeError, OSError):
+            spec = _read_agent_spec(f)
+            if spec is None:
                 continue
+            if spec.get("name") == agent:
+                agent_mcps = spec.get("mcpServers", {})
+                return web.json_response(
+                    [{"name": n, "enabled": True} for n in sorted(agent_mcps)]
+                )
         return web.json_response([])
 
     # Kirocrew / default: read from global mcp.json
@@ -2690,11 +2690,8 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     if not agents_dir.is_dir():
         return rows
     for path in sorted(agents_dir.glob("*.json")):
-        try:
-            spec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(spec, dict):
+        spec = _read_agent_spec(path)
+        if spec is None:
             continue
         agent_name = spec.get("name") or path.stem
         mcp_servers = spec.get("mcpServers")
@@ -2756,11 +2753,8 @@ def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
     if not agents_dir.is_dir():
         return specs
     for path in sorted(agents_dir.glob("*.json")):
-        try:
-            spec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(spec, dict):
+        spec = _read_agent_spec(path)
+        if spec is None:
             continue
         mcp_servers = spec.get("mcpServers")
         if not isinstance(mcp_servers, dict):

@@ -2653,11 +2653,12 @@ def migrate_agent_specs() -> int:
         return 0
     cleaned = 0
     for spec_path in sorted(kiro_agents_dir_path().glob("*.json")):
-        try:
-            data = json.loads(spec_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
+        # The hardened reader (size cap, AppleDouble/sensitive-symlink and
+        # non-object refusal). This site also WRITES below: a spec the reader
+        # refuses is now never rewritten at all, whereas the old read_text
+        # path read -- and then rewrote -- whatever the file or link named.
+        data = _read_agent_spec(spec_path)
+        if data is None:
             continue
         if "model_managed" not in data and "cc_model" not in data:
             continue
