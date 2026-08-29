@@ -26,6 +26,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_KNOWN,
@@ -34,6 +35,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_OPENCODE,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
@@ -103,7 +105,9 @@ def _write_cli_overlay(work_dir: Path, model: str, effort: str) -> None:
             model_cfg.pop(other_key, None)
     model_defaults[model] = model_cfg
     existing["chat.modelDefaults"] = model_defaults
-    atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
+    atomic_write(
+        cli_json, json.dumps(existing, indent=2)
+    )  # atomic: readers never see a partial file (#426)
 
 
 #: kiro-cli's own Tool Search activation thresholds. Mirrored as the defaults of
@@ -187,7 +191,9 @@ def _write_tool_search_overlay(
         # would take effect if a later build flips the global default on.
         existing.pop("toolSearch.minPct", None)
         existing.pop("toolSearch.minTokens", None)
-    atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
+    atomic_write(
+        cli_json, json.dumps(existing, indent=2)
+    )  # atomic: readers never see a partial file (#426)
 
 
 def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
@@ -273,7 +279,7 @@ _RESUME_BACKOFF_BASE_S = 1.0  # backoff = base * 2**attempt → 1s, 2s, 4s betwe
 
 
 class AcpProvider(LLMProvider):
-    """LLMProvider backed by ACP JSON-RPC over stdio (kiro-cli or claude-agent-acp)."""
+    """LLMProvider backed by ACP JSON-RPC over stdio."""
 
     def __init__(
         self,
@@ -433,6 +439,11 @@ class AcpProvider(LLMProvider):
         return "" if model == DEFAULT_MODEL else model
 
     @property
+    def acp_backend(self) -> str:
+        """The positively identified ACP harness serving this provider."""
+        return self._client.backend
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 
@@ -451,6 +462,11 @@ class AcpProvider(LLMProvider):
     def is_kas_backend(self) -> bool:
         """True when this ACP provider talks to KAS (kiro-agent)."""
         return self._client.backend == ACP_BACKEND_KAS
+
+    @property
+    def is_opencode_backend(self) -> bool:
+        """True when this ACP provider talks to the OpenCode ACP adapter."""
+        return self._client.backend == ACP_BACKEND_OPENCODE
 
     @property
     def is_kiro_backend(self) -> bool:
@@ -934,10 +950,13 @@ class AcpProvider(LLMProvider):
     def supports_effort(self) -> bool:
         """True when the current model accepts a reasoning-effort level.
 
-        Drives the dashboard effort dropdown: shown only when the active
-        model is effort-capable (Opus/Sonnet), for both ACP backends.
+        OpenCode exposes its own dynamic effort config, but Kiro Crew does not
+        map that adapter-specific selector yet. It therefore fails closed here
+        instead of receiving Kiro's ``/effort`` command or cli.json overlay.
         """
-        return model_supports_effort(self._client._model)
+        return (self.is_acp_runtime_backend or self.is_claude_backend) and model_supports_effort(
+            self._client._model
+        )
 
     def _resolve_effort(self) -> str | None:
         """Resolve effort for the current model via the shared priority chain."""
@@ -950,11 +969,10 @@ class AcpProvider(LLMProvider):
     def _apply_effort_overlay(self) -> None:
         """Write the kiro workspace cli.json overlay for (current model, effort).
 
-        No-op for the claude backend (it uses live set_config_option) and when
-        the model is not effort-capable or no level resolves. Called before
-        every (re)spawn so resume/restart keeps the same level.
+        Only AcpRuntime backends consume this Kiro workspace format. Adapted
+        per-session clients must not receive a file they do not own.
         """
-        if self.is_claude_backend:
+        if not self.is_acp_runtime_backend:
             return
         model = self._client._model
         level = self._resolve_effort()
@@ -969,11 +987,11 @@ class AcpProvider(LLMProvider):
     def _apply_tool_search_overlay(self) -> None:
         """Write the kiro Tool Search setting into the workspace cli.json overlay.
 
-        No-op for the claude backend (Tool Search is a kiro-cli feature) and
+        Only AcpRuntime backends consume Kiro's Tool Search settings. No-op
         when no toggle value was supplied (``self._tool_search is None``).
         Called before every (re)spawn so resume/restart keeps the same setting.
         """
-        if self.is_claude_backend or self._tool_search is None:
+        if not self.is_acp_runtime_backend or self._tool_search is None:
             return
         try:
             _write_tool_search_overlay(
@@ -1062,6 +1080,9 @@ class AcpProvider(LLMProvider):
         ``session/set_config_option``. Returns False when the current model
         does not support effort.
         """
+        if not (self.is_acp_runtime_backend or self.is_claude_backend):
+            logger.info("change_effort skipped — backend exposes no mapped effort control")
+            return False
         model = self._client._model
         if not model_supports_effort(model):
             logger.info("change_effort skipped — model %s does not support effort", model)
@@ -1132,6 +1153,8 @@ class AcpProvider(LLMProvider):
         Without this, the running session would silently keep its prior effort
         while the UI shows "default".
         """
+        if not (self.is_acp_runtime_backend or self.is_claude_backend):
+            return False
         model = self._client._model
         if not model_supports_effort(model):
             return False
@@ -1166,7 +1189,7 @@ class AcpProvider(LLMProvider):
             # sessions (session sharing).
             await self._start_kiro_runtime()
         else:
-            # ── CC path: legacy AcpClient (unchanged) ──
+            # Adapted backends use one AcpClient process per session.
             await self._client.ensure_ready()
 
         await self._apply_initial_effort()
@@ -1182,7 +1205,7 @@ class AcpProvider(LLMProvider):
         must not break session start. The kiro backend already gets effort
         from the cli.json overlay at spawn, so this is a no-op there.
         """
-        if self.is_acp_runtime_backend:
+        if not self.is_claude_backend:
             return
         level = self._resolve_effort()
         if not level:
@@ -1260,7 +1283,7 @@ class AcpProvider(LLMProvider):
         # /experiment, /hooks) flow through as conversational prompt text;
         # this is a softer failure mode than the previous -32601
         # "Method not found" hard error.
-        if self.is_claude_backend:
+        if self.is_claude_backend or self.is_opencode_backend:
             async for e in self._client.stream_events(command):
                 yield self._to_llm_event(e)
             return
@@ -1449,7 +1472,7 @@ class AcpProvider(LLMProvider):
 
     @property
     def session_id(self) -> str:
-        """Return the kiro-cli session UUID."""
+        """Return the active backend session id."""
         return self._client._session_id if self._client and self._client._session_id else ""
 
     async def cleanup_session(self, session_id: str) -> None:
@@ -1458,7 +1481,7 @@ class AcpProvider(LLMProvider):
         (The claude seam's SDK transcript cleanup, ~/.claude/projects/, is
         re-added by the internal companion alongside its Claude backend.)
         """
-        if not session_id:
+        if not session_id or not self.is_kiro_backend:
             return
         sessions_dir = kiro_sessions_dir()
         for suffix in (".json", ".jsonl"):
@@ -1511,4 +1534,6 @@ def provider_label(provider: Any) -> str:
         return PROVIDER_LABEL_CLAUDE
     if backend == ACP_BACKEND_KAS:
         return PROVIDER_LABEL_KAS
+    if backend == ACP_BACKEND_OPENCODE:
+        return PROVIDER_LABEL_OPENCODE
     return PROVIDER_LABEL_DEFAULT

@@ -330,7 +330,6 @@ src/kiro_crew/mcp_gateway/manager.py
 src/kiro_crew/mcp_gateway/prewarm.py
 src/kiro_crew/mcp_gateway/rewriter.py
 src/kiro_crew/mcp_gateway/seed.py
-src/kiro_crew/mcp_gateway/session_servers.py
 src/kiro_crew/mcp_gateway/shareability.py
 src/kiro_crew/mcp_gateway/socketsec.py
 src/kiro_crew/mcp_gateway/spill.py
@@ -361,7 +360,6 @@ src/kiro_crew/pod/config.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
 src/kiro_crew/pod/unit.py
-src/kiro_crew/providers/acp.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
@@ -412,7 +410,6 @@ test/metrics/test_startup_channel_attrs.py
 test/metrics/test_telemetry_titles.py
 test/metrics/test_turn_metric.py
 test/metrics/test_watchdog_metrics.py
-test/test_acp_backend_kas.py
 test/test_acp_dynamic_config.py
 test/test_acp_error_surface.py
 test/test_acp_liveness.py

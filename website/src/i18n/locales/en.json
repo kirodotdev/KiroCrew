@@ -4349,7 +4349,12 @@
       "then_the_dashboard_will_open_automatically": ", then\n              the dashboard will open automatically.",
       "try_again": "Try again",
       "we_could_not_check_kiro_cli": "We could not check Kiro CLI.",
-      "your_crew_is_almost_ready": "Your crew is almost ready."
+      "your_crew_is_almost_ready": "Your crew is almost ready.",
+  "or_use_opencode": "Or use OpenCode",
+  "opencode_does_not_need_kiro_login": "OpenCode uses its own provider credentials and does not need Kiro login. Switch the agent backend to OpenCode to continue without signing in to Kiro.",
+  "continue_with_opencode": "Continue with OpenCode",
+  "switching": "Switching…",
+  "switch_failed": "Could not switch backend. Try again."
     },
     "logEntry": {
       "cancelled": "Cancelled",
@@ -6346,6 +6351,7 @@
         "default_all_features_supported": "Default. All features supported.",
         "experimental": "Experimental",
         "kas_kiro_agent": "KAS (kiro-agent)",
+    "opencode": "OpenCode",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Loading configuration…",
         "new_sessions_use_this_agent_a_session_that_is_al": "New sessions use this agent. A session that is already open keeps the one it started with — switching here does not change it mid-session.",

@@ -194,6 +194,17 @@ class LLMProvider(ABC):
         """
         return ""
 
+    @property
+    def acp_backend(self) -> str | None:
+        """ACP harness id for this provider, or ``None`` when it is not ACP.
+
+        The empty string is the positive Kiro backend id, so ``None`` is the
+        only safe default for providers that do not run an ACP harness.  This
+        lets backend-specific consumers select a live provider without probing
+        private attributes or inferring identity from model-id spelling.
+        """
+        return None
+
     def touch_activity(self) -> None:
         """Refresh provider activity timestamp without I/O. Default no-op."""
         return None

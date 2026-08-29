@@ -15,9 +15,13 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state, model_registry
+from kiro_crew import agent_state, model_registry, platform_compat
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
-from kiro_crew.acp_backends import selectable_backend_values
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    selectable_backend_values,
+)
 from kiro_crew.agent import (
     AGENT_FILENAME,
     clear_model_pin,
@@ -78,6 +82,9 @@ from kiro_crew.sandbox import (
 from kiro_crew.validation import _AGENT_NAME_RE
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
+_MODEL_LIST_TIMEOUT_SECS = 10.0
+_OPENCODE_MODEL_LIST_MAX_BYTES = 1_000_000
+_OPENCODE_MODEL_ID_RE = re.compile(r"^[^\s/]+/[^\s]+$")
 
 logger = logging.getLogger(__name__)
 
@@ -1055,6 +1062,167 @@ def _normalize_model_key(name: str) -> str:
     return string_fold
 
 
+def _advertised_opencode_models(request: web.Request) -> list[dict]:
+    """Return OpenCode-advertised models from any active session.
+
+    OpenCode exposes its model set through ACP ``configOptions`` (id ``model``)
+    rather than the kiro-cli catalog. :meth:`AcpClient.available_models`
+    normalizes those options to ``{modelId, name, description}``. This helper
+    maps that list to the ``/api/models`` wire shape ``{model_name, ...}`` so
+    the picker does not fall through to the Kiro CLI path. Returns ``[]`` when
+    no OpenCode session has advertised yet."""
+    try:
+        state: DashboardState = request.app["state"]
+        providers = state.sessions.active_providers()
+    except (KeyError, AttributeError):
+        return []
+    for provider in providers:
+        try:
+            if provider.acp_backend != ACP_BACKEND_OPENCODE:
+                continue
+            advertised = provider.available_models()
+        except Exception:
+            # Defensive compatibility for lightweight tests and extension
+            # providers that do not subclass LLMProvider yet. Real providers
+            # inherit the safe ``acp_backend=None`` default from that ABC.
+            continue
+        if not advertised:
+            continue
+        return [
+            {
+                "model_name": m.get("modelId", ""),
+                "display_name": m.get("name", "") or m.get("modelId", ""),
+                "description": m.get("description", ""),
+            }
+            for m in advertised
+            if m.get("modelId")
+        ]
+    return []
+
+
+def _opencode_model_rows(stdout: bytes) -> list[dict[str, str]]:
+    """Parse ``opencode models`` output into the dashboard model wire shape.
+
+    The command's stable non-verbose form is one provider-qualified model id per
+    line. Reject malformed or oversized output as degraded instead of rendering
+    a diagnostic line as a selectable model.
+    """
+    if len(stdout) > _OPENCODE_MODEL_LIST_MAX_BYTES:
+        raise ValueError("opencode model list exceeded the output limit")
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_line in stdout.decode(errors="replace").splitlines():
+        model_id = raw_line.strip()
+        if not model_id:
+            continue
+        if not _OPENCODE_MODEL_ID_RE.fullmatch(model_id):
+            raise ValueError("opencode model list contained an invalid model id")
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        rows.append(
+            {
+                "model_name": model_id,
+                "display_name": model_id,
+                "description": "",
+            }
+        )
+    if not rows:
+        raise ValueError("opencode model list was empty")
+    return rows
+
+
+def _with_backend_default(models: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Prepend the backend-default sentinel when it was not advertised."""
+    if any(model.get("model_name") == "auto" for model in models):
+        return models
+    return [{"model_name": "auto", "display_name": "Auto", "description": ""}, *models]
+
+
+def _wrap_opencode_models_argv(argv: list[str]) -> tuple[list[str], Any]:
+    """Sandbox-wrap the fixed OpenCode model-list command at the chat tier."""
+    return wrap_argv(
+        argv,
+        mode=configured_sandbox_mode(),
+        strip_python_env=True,
+        is_kiro_cli=False,
+    )
+
+
+def _discard_model_list_sandbox(path: str | None) -> None:
+    """Remove a one-shot model command's sandbox launcher/profile."""
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        logger.debug("Could not remove model-list sandbox file %s", path, exc_info=True)
+
+
+async def _cold_opencode_models(request: web.Request) -> list[dict[str, str]]:
+    """Read OpenCode's configured model catalog without creating a session."""
+    from kiro_crew.acp.client import _resolve_opencode_bin, _resolve_ssh_auth_sock
+    from kiro_crew.env import augmented_path
+
+    opencode_bin = await asyncio.to_thread(_resolve_opencode_bin)
+    if not opencode_bin:
+        raise FileNotFoundError("opencode executable not resolved")
+
+    argv, cleanup = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), _wrap_opencode_models_argv, [opencode_bin, "models"]
+    )
+    try:
+        argv = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), cgroup_scope_argv, argv
+        )
+        env = {**os.environ}
+        env["PATH"] = augmented_path(env.get("PATH", ""))
+        _resolve_ssh_auth_sock(env)
+        env = scrub_agent_subprocess_env(env)
+
+        state: DashboardState | None = request.app.get("state")
+        project_dir = active_project_dir(state, _read_session_key(request)) if state else None
+        proc = await create_subprocess_limited(
+            *argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(project_dir) if project_dir else None,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=(
+                platform_compat.CREATE_NEW_PROCESS_GROUP | platform_compat._SUBPROCESS_NO_WINDOW
+            ),
+            env=env,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_MODEL_LIST_TIMEOUT_SECS
+            )
+        except asyncio.TimeoutError:
+            await platform_compat.kill_and_reap(proc)
+            raise
+        except asyncio.CancelledError:
+            await platform_compat.kill_and_reap(proc)
+            raise
+    finally:
+        await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _discard_model_list_sandbox, cleanup
+        )
+
+    if proc.returncode != 0:
+        from kiro_crew.platform import redact_via_context
+
+        stderr_tail = stderr.decode(errors="replace").strip()
+        stderr_tail = redact_via_context(stderr_tail)[-_MODEL_LIST_STDERR_TAIL_CHARS:]
+        logger.warning(
+            "api_models: opencode models exited %s: %s",
+            proc.returncode,
+            stderr_tail or "<no stderr>",
+        )
+        raise RuntimeError("opencode model list command failed")
+    return _opencode_model_rows(stdout)
+
+
 def _advertised_cc_models(request: web.Request) -> list[dict]:
     """Map the first active CC provider's advertised models to the API shape.
 
@@ -1300,7 +1468,43 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
 
 
 async def api_models(request: web.Request) -> web.Response:
-    """GET /api/models — list available models from the live kiro-cli ACP session."""
+    """GET /api/models — list available models from the active ACP backend.
+
+    The backend is determined from ``agent.acp_backend``. Kiro and KAS use the
+    ``kiro chat --list-models`` catalog (entitlement-narrowed); OpenCode
+    advertises its model set via ACP ``configOptions`` and never falls through
+    to the Kiro CLI path.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+    except Exception:
+        logger.warning("api_models: could not read the selected ACP backend", exc_info=True)
+        return web.json_response(
+            {"error": "model backend unavailable", "code": "model_backend_unavailable"},
+            status=503,
+        )
+
+    # OpenCode path — never resolve or spawn kiro-cli. Prefer an initialized
+    # session's richer ACP names, then use the fixed read-only CLI command so a
+    # fresh dashboard can populate its picker before the first chat session.
+    if getattr(cfg.agent, "acp_backend", ACP_BACKEND_KIRO) == ACP_BACKEND_OPENCODE:
+        try:
+            models = _advertised_opencode_models(request)
+            if not models:
+                models = await _cold_opencode_models(request)
+            return web.json_response(_with_backend_default(models))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("api_models: OpenCode model list unavailable", exc_info=True)
+            return web.json_response(
+                {
+                    "error": "opencode model list unavailable",
+                    "code": "opencode_model_list_unavailable",
+                },
+                status=503,
+            )
+
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
@@ -1367,7 +1571,9 @@ async def api_models(request: web.Request) -> web.Response:
                 env=env,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=_MODEL_LIST_TIMEOUT_SECS
+                )
             except asyncio.TimeoutError:
                 try:
                     proc.kill()
@@ -1383,8 +1589,9 @@ async def api_models(request: web.Request) -> web.Response:
                 logger.warning("api_models: --list-models timed out; returning 503")
                 return web.json_response({"error": "model list timed out"}, status=503)
         finally:
-            if cleanup and callable(cleanup):
-                cleanup()
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), _discard_model_list_sandbox, cleanup
+            )
 
         if proc.returncode != 0:
             from kiro_crew.platform import redact_via_context  # noqa: F811

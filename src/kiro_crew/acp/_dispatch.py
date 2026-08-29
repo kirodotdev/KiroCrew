@@ -729,7 +729,7 @@ def build_permission_event(
             else True
         )
     if not tool_input:
-        raw_input = tool_call.get("input") or tool_call.get("params")
+        raw_input = tool_call.get("rawInput") or tool_call.get("input") or tool_call.get("params")
         if raw_input:
             tool_input = (
                 json.dumps(raw_input, indent=2)
@@ -782,7 +782,7 @@ def build_permission_event(
         _resolved_raw_params = raw_params_cache.get(_ck)
         _raw_params_trusted = _resolved_raw_params is not None
     if _resolved_raw_params is None:
-        _inline = tool_call.get("input") or tool_call.get("params")
+        _inline = tool_call.get("rawInput") or tool_call.get("input") or tool_call.get("params")
         if isinstance(_inline, dict):
             _resolved_raw_params = _inline
 

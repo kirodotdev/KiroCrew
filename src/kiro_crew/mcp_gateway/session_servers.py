@@ -9,11 +9,11 @@ project, to their ``~/.kiro/agents/``, or through a bind mount — so pooling
 works with ``agent.sandbox`` set to ``off`` (the default) and on macOS and
 Windows, neither of which can bind-mount.
 
-Only stub entries are injected. A non-poolable server is left entirely to the
-agent spec, so its ``env`` — which routinely holds tokens and API keys — never
-leaves the file it was declared in. Stub entries carry ``env: {}`` by
-construction (``rewriter._build_stub_entry``): the pooled backend is spawned by
-gatewayd, not by kiro-cli, so no credential is transmitted here either.
+The first-class Kiro path injects only broker stubs. Adapted harnesses that do
+not read Kiro agent specs may additionally request a portable projection of
+Kiro Crew's managed servers. That projection is intentionally narrower than the
+whole spec: only a server with a full ``@server`` exposure and no disabled-tool
+filter is representable without widening its tool set.
 
 Precedence caveat: same-name override is verified against the shipped binary
 (``test_mcp_gateway_session_inject.py`` pins it, including a live check when
@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # Keys that are positional in the ACP element shape (``name``) or that we
 # always re-derive (``env``), so they must not be copied verbatim.
 _ACP_RESERVED = frozenset({"name", "env", _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY})
+_PORTABLE_ACP_KEYS = ("name", "command", "args", "env")
 
 
 def _acp_env(raw: Any) -> list[dict[str, str]]:
@@ -76,20 +77,111 @@ def _acp_server_entry(
         # shadow the agent's working entry with a broken one. Skip instead,
         # leaving the spec's own server in place.
         return None
-    args = [a if isinstance(a, str) else json.dumps(a, sort_keys=True, default=str)
-            for a in (entry.get("args") or [])]
+    args = [
+        a if isinstance(a, str) else json.dumps(a, sort_keys=True, default=str)
+        for a in (entry.get("args") or [])
+    ]
     if channel_id and "--channel-id" not in args:
         args.extend(["--channel-id", channel_id])
     shaped: dict[str, Any] = {
         k: v for k, v in entry.items() if k not in _ACP_RESERVED and k != "command"
     }
-    shaped.update({
-        "name": name,
-        "command": command,
-        "args": args,
-        "env": _acp_env(entry.get("env")),
-    })
+    shaped.update(
+        {
+            "name": name,
+            "command": command,
+            "args": args,
+            "env": _acp_env(entry.get("env")),
+        }
+    )
     return shaped
+
+
+def _portable_acp_server_entry(
+    name: str, entry: dict[str, Any], channel_id: str | None = None
+) -> dict[str, Any] | None:
+    """Return only fields defined by the portable ACP local-server shape.
+
+    Kiro tolerates extensions such as ``autoApprove`` and ``disabledTools`` in a
+    session entry. Adapted harnesses may validate the SDK schema strictly, so
+    those Kiro-only controls must not cross this boundary.
+    """
+    shaped = _acp_server_entry(name, entry, channel_id)
+    if shaped is None:
+        return None
+    return {key: shaped[key] for key in _PORTABLE_ACP_KEYS}
+
+
+def _managed_servers_from_spec(
+    spec: dict[str, Any], managed_names: frozenset[str]
+) -> list[dict[str, Any]]:
+    """Project safely representable managed servers from one rendered spec.
+
+    A whole ACP server exposes every tool it reports. Therefore an exact
+    ``@server`` reference is required; a hand-narrowed ``@server/tool`` grant
+    cannot be translated without widening it. Likewise, any disabled-tool
+    filter causes the whole server to be withheld. Losing tools is preferable
+    to silently restoring a tool the operator or governance layer removed.
+    """
+    servers = spec.get("mcpServers")
+    tools = spec.get("tools")
+    if not isinstance(servers, dict) or not isinstance(tools, list):
+        return []
+    exposed = {item for item in tools if isinstance(item, str)}
+    out: list[dict[str, Any]] = []
+    for name in sorted(managed_names):
+        entry = servers.get(name)
+        if not isinstance(entry, dict) or f"@{name}" not in exposed:
+            continue
+        if entry.get("disabled") is True or entry.get("enabled") is False:
+            continue
+        if entry.get("disabledTools"):
+            continue
+        shaped = _portable_acp_server_entry(name, entry)
+        if shaped is not None:
+            out.append(shaped)
+    return out
+
+
+def managed_session_servers(
+    overlay_dir: str | Path | None,
+    agent: str | None,
+    channel_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return portable managed MCP entries for an adapted ACP harness.
+
+    The rendered agent spec remains the authority for whether a managed server
+    exists and is fully exposed. When pooling rewrote an eligible server, its
+    broker stub replaces the direct entry by name. User-installed servers are
+    deliberately excluded: their per-tool narrowing, credentials, and remote
+    transport extensions cannot all be represented by the portable local-server
+    shape without broadening access.
+
+    Fail-soft to an empty list, preserving a usable chat session when a spec is
+    missing or malformed.
+    """
+    if not agent:
+        return []
+    # Lazy import avoids the agent -> MCP rewriter -> session-server cycle at
+    # module import time. The agent module owns both the immutable name set and
+    # the hardened materialized-spec reader.
+    from kiro_crew.agent import MANAGED_MCP_SERVER_NAMES, materialized_agent_spec
+
+    spec = materialized_agent_spec(agent)
+    if not isinstance(spec, dict):
+        return []
+    direct = _managed_servers_from_spec(spec, MANAGED_MCP_SERVER_NAMES)
+    by_name = {entry["name"]: entry for entry in direct}
+    if not by_name:
+        return []
+    for pooled in pooled_session_servers(overlay_dir, agent, channel_id):
+        name = pooled.get("name")
+        if not isinstance(name, str) or name not in by_name:
+            continue
+        portable = _portable_acp_server_entry(name, pooled)
+        if portable is not None:
+            by_name[name] = portable
+    return [by_name[name] for name in sorted(by_name)]
 
 
 def _load_overlay_for_agent(overlay_dir: Path, agent: str) -> dict[str, Any] | None:
@@ -141,7 +233,9 @@ def _load_overlay_for_agent(overlay_dir: Path, agent: str) -> dict[str, Any] | N
         logger.debug(
             "MCP-gateway: no overlay with name %r among %d filename-qualified "
             "candidate(s) in %s; session runs unpooled",
-            agent, len(candidates), overlay_dir,
+            agent,
+            len(candidates),
+            overlay_dir,
         )
     return None
 
@@ -214,8 +308,8 @@ def injection_server_names(
     if not isinstance(servers, dict):
         return frozenset()
     return frozenset(
-        name for name, entry in servers.items()
-        if isinstance(entry, dict) and (
-            entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
-        )
+        name
+        for name, entry in servers.items()
+        if isinstance(entry, dict)
+        and (entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY))
     )

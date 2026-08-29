@@ -48,6 +48,22 @@ def _not_ready_snapshot(initial_setup_complete: bool = False) -> dict[str, Any]:
     return result
 
 
+def _opencode_ready_snapshot(*, setup_allowed: bool) -> dict[str, Any]:
+    """Kiro-gate-compatible ready state for the independent OpenCode harness."""
+    result: dict[str, Any] = asdict(
+        PrerequisiteStatus(
+            platform="gateway",
+            installed=setup_allowed,
+            authenticated=setup_allowed,
+            ready=True,
+            initial_setup_complete=True,
+        )
+    )
+    result["setup_allowed"] = setup_allowed
+    result["operation"] = legacy_idle_operation()
+    return result
+
+
 def _service(request: web.Request) -> KiroPrerequisiteService:
     service = request.app.get("kiro_prerequisite_service")
     if not isinstance(service, KiroPrerequisiteService):
@@ -124,6 +140,20 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     is_owner = _is_dashboard_owner(request)
     explicit = refresh in ("1", "true", "explicit") and is_owner
     auto = refresh == "auto" and is_owner
+
+    # OpenCode does not read Kiro's identity store. Bypass the Kiro probe
+    # entirely so refresh polling cannot spawn kiro-cli for that harness.
+    try:
+        from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        if cfg.agent.acp_backend == ACP_BACKEND_OPENCODE:
+            return web.json_response(
+                _opencode_ready_snapshot(setup_allowed=_is_dashboard_owner(request))
+            )
+    except Exception:
+        logger.debug("OpenCode bypass check failed; falling through to Kiro probe", exc_info=True)
 
     # Resolve the service OUTSIDE the guard: a genuinely unwired service is a
     # real misconfiguration that must stay a 503, not be masked as a 200

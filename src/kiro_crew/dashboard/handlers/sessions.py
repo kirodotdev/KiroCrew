@@ -28,7 +28,10 @@ from kiro_crew import session_ledger
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers import kiro_usage_api
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    reject_if_kiro_unverified,
+    selected_backend_uses_kiro_identity,
+)
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
@@ -935,11 +938,19 @@ async def _fetch_usage_bg() -> None:
 
 async def api_sessions_usage(request: web.Request) -> web.Response:
     """GET /api/sessions/usage — cached kiro credit usage (background refresh)."""
+    # The pill is specifically Kiro account credit usage. A foreign ACP harness
+    # must neither inherit a stale Kiro account reading nor spawn kiro-cli on its
+    # polling interval.
+    uses_kiro_identity = await selected_backend_uses_kiro_identity()
+    if not uses_kiro_identity:
+        return web.json_response({"usage": {"available": False}})
     # Same browser-storm guard as api_models: the /usage scrape shells out to
     # `kiro-cli chat --no-interactive ... /usage`, which auto-opens a browser
     # login while signed out. This endpoint is polled every 30s by the top-bar
     # credit pill, so an unauthenticated gateway spawned a browser every 30s.
-    blocked = await reject_if_kiro_unverified(request)
+    blocked = await reject_if_kiro_unverified(
+        request, backend_uses_kiro_identity=uses_kiro_identity
+    )
     if blocked is not None:
         return blocked
     now = time.time()

@@ -3,10 +3,10 @@
 Config location: ~/.kiro/crew/config.json (overridden by KIROCREW_HOME)
 Credentials:    ~/.kiro/crew/.env (overridden by KIROCREW_HOME)
 
-KiroCrew is KiroACP-only: the sole provider is the ACP adapter driving the
-kiro-cli backend. This module handles session timeouts, hook rules, and the
-dashboard URL via the config file. (The dashboard *port* is set with the
-``KIROCREW_PORT`` env var, not a config key.)
+Kiro Crew exposes one ACP provider with selectable harness backends. This
+module handles session timeouts, hook rules, and the dashboard URL via the
+config file. (The dashboard *port* is set with the ``KIROCREW_PORT`` env var,
+not a config key.)
 """
 
 from __future__ import annotations
@@ -1645,8 +1645,9 @@ class AgentConfig:
         default="",
         metadata=_meta(
             "ACP Backend",
-            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. "
-            "KAS runs chat but has no native subagent progress reporting yet.",
+            "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent, "
+            "'opencode' = OpenCode. KAS runs chat but has no native subagent "
+            "progress reporting yet.",
             # Deliberately NO ``enum``. A literal here was frozen at import and fed
             # two import-time structures (``JSON_SCHEMA`` and ``SCHEMA_REGISTRY``),
             # both strictly earlier than an edition registering a backend at boot.

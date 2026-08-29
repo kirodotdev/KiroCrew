@@ -1,9 +1,9 @@
-"""ACP backend selection: the ``kas`` (kiro-agent) backend identifier.
+"""ACP backend selection and identity boundaries.
 
-KAS is a third ACP backend alongside kiro-cli and claude-agent-acp. It is
-selected by ``agent.acp_backend`` and is inert until explicitly configured, so
-these tests pin two things: that the selector reaches the client, and that the
-DEFAULT configuration still resolves to kiro-cli.
+KAS is an adapted ACP backend alongside kiro-cli, OpenCode, and
+claude-agent-acp. It is selected by ``agent.acp_backend`` and is inert until
+explicitly configured, so these tests pin two things: that the selector reaches
+the client, and that the DEFAULT configuration still resolves to kiro-cli.
 
 The validation test matters because an unrecognized backend string would pass
 every ``_is_<backend>`` check and spawn kiro-cli — a typo'd config would drive
@@ -27,10 +27,12 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_OPENCODE,
 )
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.providers import acp as providers_acp
@@ -48,13 +50,14 @@ def _build_provider(backend: str) -> AcpProvider:
 
 
 class TestBackendPredicates:
-    """The three predicates are mutually exclusive and total over the known set."""
+    """Backend predicates are mutually exclusive and total over the known set."""
 
     def test_empty_backend_is_kiro(self):
         provider = _build_provider(ACP_BACKEND_KIRO)
         assert provider.is_kiro_backend is True
         assert provider.is_kas_backend is False
         assert provider.is_claude_backend is False
+        assert provider.is_opencode_backend is False
         assert provider.is_acp_runtime_backend is True
 
     def test_kas_backend(self):
@@ -62,6 +65,7 @@ class TestBackendPredicates:
         assert provider.is_kas_backend is True
         assert provider.is_kiro_backend is False
         assert provider.is_claude_backend is False
+        assert provider.is_opencode_backend is False
         assert provider.is_acp_runtime_backend is True
 
     def test_claude_backend_unchanged(self):
@@ -69,6 +73,15 @@ class TestBackendPredicates:
         assert provider.is_claude_backend is True
         assert provider.is_kiro_backend is False
         assert provider.is_kas_backend is False
+        assert provider.is_opencode_backend is False
+        assert provider.is_acp_runtime_backend is False
+
+    def test_opencode_backend(self):
+        provider = _build_provider(ACP_BACKEND_OPENCODE)
+        assert provider.is_opencode_backend is True
+        assert provider.is_kiro_backend is False
+        assert provider.is_kas_backend is False
+        assert provider.is_claude_backend is False
         assert provider.is_acp_runtime_backend is False
 
     @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
@@ -78,16 +91,14 @@ class TestBackendPredicates:
             provider.is_kiro_backend,
             provider.is_claude_backend,
             provider.is_kas_backend,
+            provider.is_opencode_backend,
         ]
         assert sum(held) == 1
 
     @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
-    def test_acp_runtime_backend_is_the_positive_form_of_not_claude(self, backend):
-        # The four provider sites that used to read ``not is_claude_backend``
-        # now read ``is_acp_runtime_backend``; the two must stay equivalent for
-        # every known backend so the conversion is behavior-preserving.
+    def test_acp_runtime_backend_is_an_explicit_membership(self, backend):
         provider = _build_provider(backend)
-        assert provider.is_acp_runtime_backend is (not provider.is_claude_backend)
+        assert provider.is_acp_runtime_backend is (backend in {ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 
 class TestUnknownBackendRejected:
@@ -106,6 +117,7 @@ class TestUnknownBackendRejected:
         message = str(exc.value)
         assert ACP_BACKEND_KAS in message
         assert ACP_BACKEND_CLAUDE in message
+        assert ACP_BACKEND_OPENCODE in message
 
 
 class TestProviderLabel:
@@ -115,6 +127,7 @@ class TestProviderLabel:
         assert provider_label(_build_provider(ACP_BACKEND_KIRO)) == PROVIDER_LABEL_DEFAULT
         assert provider_label(_build_provider(ACP_BACKEND_CLAUDE)) == PROVIDER_LABEL_CLAUDE
         assert provider_label(_build_provider(ACP_BACKEND_KAS)) == PROVIDER_LABEL_KAS
+        assert provider_label(_build_provider(ACP_BACKEND_OPENCODE)) == PROVIDER_LABEL_OPENCODE
 
     def test_non_acp_provider_falls_back_to_the_default(self):
         assert provider_label(object()) == PROVIDER_LABEL_DEFAULT
@@ -185,6 +198,13 @@ class TestConfigThreading:
         assert provider.is_kas_backend is True
         assert provider.client.backend == ACP_BACKEND_KAS
 
+    def test_configured_opencode_reaches_the_provider(self):
+        cfg = KiroCrewConfig()
+        cfg.agent.acp_backend = ACP_BACKEND_OPENCODE
+        provider = cfg.create_provider_factory()(session_key="test:opencode", agent="")
+        assert provider.is_opencode_backend is True
+        assert provider.client.backend == ACP_BACKEND_OPENCODE
+
 
 def _load_agent_config(agent_data: dict, tmp_path: Path) -> KiroCrewConfig:
     """Load a real config file, so the load constructor itself is exercised.
@@ -214,9 +234,7 @@ class TestConfigRoundTrip:
         Asserted through a selectable value, since an unselectable one degrades
         and so cannot distinguish 'consumed' from 'dropped'.
         """
-        cfg = _load_agent_config(
-            {"acp_backend": ACP_BACKEND_KIRO, "streaming": False}, tmp_path
-        )
+        cfg = _load_agent_config({"acp_backend": ACP_BACKEND_KIRO, "streaming": False}, tmp_path)
         assert cfg.agent.acp_backend == ACP_BACKEND_KIRO
         assert cfg.agent.streaming is False
 
@@ -235,6 +253,13 @@ class TestConfigRoundTrip:
         assert cfg.to_dict()["agent"]["acp_backend"] == ACP_BACKEND_KAS
         provider = cfg.create_provider_factory()(session_key="test:rt", agent="")
         assert provider.is_kas_backend is True
+
+    def test_opencode_survives_a_load_from_disk(self, tmp_path):
+        cfg = _load_agent_config({"acp_backend": ACP_BACKEND_OPENCODE}, tmp_path)
+        assert cfg.agent.acp_backend == ACP_BACKEND_OPENCODE
+        assert cfg.to_dict()["agent"]["acp_backend"] == ACP_BACKEND_OPENCODE
+        provider = cfg.create_provider_factory()(session_key="test:opencode-rt", agent="")
+        assert provider.is_opencode_backend is True
 
     @pytest.mark.parametrize("bad", ["kiro-cli", "KAS", "claude_code", 7, None, []])
     def test_unselectable_values_degrade_to_the_default(self, bad, tmp_path):

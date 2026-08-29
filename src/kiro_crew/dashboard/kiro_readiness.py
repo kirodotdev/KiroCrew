@@ -21,11 +21,15 @@ latched value can be arbitrarily stale. That splits the callers in two:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
 from aiohttp import web
 
+from kiro_crew.acp.types import ACP_BACKENDS_KIRO_IDENTITY_STORE
+from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 logger = logging.getLogger(__name__)
@@ -215,7 +219,31 @@ def _service(request: web.Request) -> object:
     return service
 
 
-async def reject_if_kiro_unverified(request: web.Request) -> web.Response | None:
+async def selected_backend_uses_kiro_identity() -> bool:
+    """Whether the configured ACP harness depends on Kiro CLI readiness.
+
+    The config read is off-loop because every caller is an aiohttp handler and
+    loading the merged config touches disk. An unreadable config fails closed to
+    Kiro: loader normalization uses the same default, and bypassing a destructive
+    guard without a confirmed foreign backend would widen authority.
+    """
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    except Exception:
+        logger.warning(
+            "Could not resolve the ACP backend for the Kiro readiness gate; " "failing closed",
+            exc_info=True,
+        )
+        return True
+    backend = getattr(cfg.agent, "acp_backend", ACP_BACKEND_KIRO)
+    return backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+
+
+async def reject_if_kiro_unverified(
+    request: web.Request,
+    *,
+    backend_uses_kiro_identity: bool | None = None,
+) -> web.Response | None:
     """Return 503 for the endpoints that must fail closed on a stale latch.
 
     Two classes qualify, both because the ACP attempt cannot be their authority:
@@ -247,6 +275,14 @@ async def reject_if_kiro_unverified(request: web.Request) -> web.Response | None
     browser-opening spawn), and only these paths pay for the re-probe.
     """
 
+    uses_kiro_identity = (
+        await selected_backend_uses_kiro_identity()
+        if backend_uses_kiro_identity is None
+        else backend_uses_kiro_identity
+    )
+    if not uses_kiro_identity:
+        _clear_refusal_warning()
+        return None
     if await kiro_verified_ready(_service(request)):
         _clear_refusal_warning()
         return None

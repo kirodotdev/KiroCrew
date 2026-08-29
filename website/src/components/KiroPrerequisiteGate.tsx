@@ -717,6 +717,15 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     mutationFn: api.repairKiroPrerequisiteSpecs,
     onSuccess: updateStatus,
   })
+  const switchBackendMutation = useMutation({
+    mutationFn: () => api.patchConfig('agent.acp_backend', 'opencode'),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['kiro-prerequisite'] }),
+        queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+      ])
+    },
+  })
 
   // Remember that this gateway has completed first-run setup, so a later COLD
   // load can classify the user before (or without) a successful status
@@ -989,6 +998,42 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
               <RefreshCw className={`lucide-inline ${statusQuery.isFetching ? 'animate-spin' : ''}`} />
               {i18nT('components.kiroPrerequisiteGate.check_again')}
             </SendBtn>
+          </div>
+
+          <div className="mt-6 rounded-xl border border-border bg-bg-subtle p-4">
+            <p className="text-[13px] font-medium text-text">
+              {i18nT('components.kiroPrerequisiteGate.or_use_opencode')}
+            </p>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted">
+              {i18nT('components.kiroPrerequisiteGate.opencode_does_not_need_kiro_login')}
+            </p>
+            <a
+              href="https://opencode.ai/docs/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 inline-flex items-center gap-1 text-[13px] text-accent hover:underline"
+            >
+              {i18nT('components.kiroPrerequisiteGate.open_opencode_setup')}
+              <ExternalLink size={12} aria-hidden />
+            </a>
+            <CopyCommand>
+              <code>opencode auth login</code>
+            </CopyCommand>
+            <Btn
+              type="button"
+              className="mt-3"
+              disabled={switchBackendMutation.isPending}
+              onClick={() => switchBackendMutation.mutate()}
+            >
+              {switchBackendMutation.isPending
+                ? i18nT('components.kiroPrerequisiteGate.switching')
+                : i18nT('components.kiroPrerequisiteGate.continue_with_opencode')}
+            </Btn>
+            {switchBackendMutation.isError && (
+              <p className="mt-2 text-[12px] text-danger" role="alert">
+                {i18nT('components.kiroPrerequisiteGate.switch_failed')}
+              </p>
+            )}
           </div>
         </>
     </SetupShell>

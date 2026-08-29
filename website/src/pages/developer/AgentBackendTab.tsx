@@ -19,6 +19,7 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ''
 const CLAUDE = 'claude'
 const KAS = 'kas'
+const OPENCODE = 'opencode'
 
 /**
  * DOM id of the row that states a backend's status.
@@ -147,6 +148,7 @@ export function AgentBackendTab() {
     [KIRO]: i18nT('pages.developer.agentBackendTab.kiro_cli'),
     [CLAUDE]: i18nT('pages.developer.agentBackendTab.claude_code'),
     [KAS]: i18nT('pages.developer.agentBackendTab.kas_kiro_agent'),
+    [OPENCODE]: i18nT('pages.developer.agentBackendTab.opencode'),
   }
 
   /**
@@ -195,14 +197,21 @@ export function AgentBackendTab() {
               disabled: unavailable(KAS),
               describedById: statusId(KAS),
             },
+            {
+              value: OPENCODE,
+              label: NAME[OPENCODE],
+              icon: <Terminal size={14} />,
+              disabled: unavailable(OPENCODE),
+              describedById: statusId(OPENCODE),
+            },
           ]}
           onChange={v => patchMut.mutate(v)}
         />
-        {/* One line per agent, always all three — the reader is choosing BETWEEN
+        {/* One line per agent, always all four — the reader is choosing BETWEEN
             them, so showing only the selected one's status would hide the very
             comparison the control is for. */}
         <dl className="mt-2 space-y-1.5">
-          {[KIRO, CLAUDE, KAS].map(value => (
+          {[KIRO, CLAUDE, KAS, OPENCODE].map(value => (
             <div key={value} className="flex gap-2 text-[11px] leading-relaxed">
               <dt className={`shrink-0 font-semibold ${value === current ? 'text-text-strong' : 'text-muted'}`}>
                 {NAME[value]}
