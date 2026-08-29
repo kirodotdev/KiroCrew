@@ -865,6 +865,39 @@ def test_history_tools_round_trip_only_protected_filename_aliases(
             assert fetched.startswith("Access denied:")
 
 
+def test_crew_scoped_read_is_refused_for_a_private_memory_session(member_stores, monkeypatch):
+    """A member fenced to a private store cannot reach another crew's history.
+
+    The local visibility check cannot adjudicate a PEER key: the private index
+    holds records for this crew's own members only, so every remote key would
+    fall through it. The refusal therefore has to happen before the tunnel, and
+    this asserts exactly that -- the crew helper is never invoked, so the test
+    fails if the guard is moved below the early return or deleted.
+    """
+    from kiro_crew.mcp_tools import sessions as mcp_sessions
+    from kiro_crew.mcp_tools.sessions import _crew_scope_refusal
+
+    writer, _reviewer = member_stores
+
+    # Pure-function arms: only a NON-EMPTY store name is the fenced case.
+    assert _crew_scope_refusal(None) == ""  # install has no private boundaries
+    assert _crew_scope_refusal("") == ""  # ordinary session
+    assert _crew_scope_refusal(writer) != ""  # fenced member
+
+    reached = []
+    monkeypatch.setattr(
+        mcp_sessions,
+        "_crew_search_history",
+        lambda *a, **k: reached.append(a) or "SHOULD NOT BE REACHED",
+    )
+    monkeypatch.setattr(mcp_sessions, "_history_memory_scope", lambda: (writer, {}, ""))
+    out = mcp_sessions.search_chat_history(
+        "search_chat_history", {"query": "anything", "crew": "chick"}
+    )
+    assert "Access denied" in out
+    assert reached == [], "a fenced member reached the peer tunnel"
+
+
 def test_private_history_index_rechecks_records_and_rejects_cross_store_collisions(member_stores):
     from kiro_crew.history import transcript_stem
     from kiro_crew.mcp_tools.sessions import _history_memory_visible
