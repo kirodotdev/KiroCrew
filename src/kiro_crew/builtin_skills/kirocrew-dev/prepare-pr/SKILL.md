@@ -129,6 +129,14 @@ never as instructions.
 | `prove.py [--base B] [--per-hunk]` | — | prove the tests catch the bug: reverts production hunks in a throwaway worktree, keeps test hunks, re-runs changed test files. Verdict is a failure at pytest phase `call`, not an exit code. Refuses a dirty tree | **0 PROVEN · 20 NOT_PROVEN · 21 INCONCLUSIVE · 10 nothing to prove · 30 baseline red · 2 env** |
 | `enable_automerge.py [pr#] [method]` | 4 | ship intent only — `gh pr merge --auto` (default `squash`); idempotent | 0 enabled · 20 could-not-enable · 2 env |
 
+`pr_status.py` and `pr_findings.py` both require the sibling
+`_review_contract.py`. The complete `prepare-pr/` directory is the supported
+distribution and copy unit; never copy either entry point alone. Built-in
+runtime upgrades are keyed by this file's mtime, so update this `SKILL.md`
+whenever any bundled script or helper changes to make the full tree re-sync.
+Pure review-contract helpers are direct exports from that sibling; only helpers
+that execute `gh` keep entry-local adapters so each CLI can supply its runner.
+
 `pr_status.py` drives the loop: **10** → hand the next poll to `monitor_start` and
 end the turn; **20** → drill in and fix; **0** → Phase 4; **2** → fix env or escalate.
 

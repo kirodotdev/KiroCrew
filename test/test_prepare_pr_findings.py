@@ -15,14 +15,27 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
+import py_compile
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 from skill_script_helpers import load_skill_script
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (
-    ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "prepare-pr" / "scripts" / "pr_findings.py"
+    ROOT
+    / "src"
+    / "kiro_crew"
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "prepare-pr"
+    / "scripts"
+    / "pr_findings.py"
 )
 
 # Same token shape the backend tests pin (`test_security.py`), so all three
@@ -123,6 +136,7 @@ class TestCredentialRedaction:
 # ---------------------------------------------------------------------------
 
 STATUS_SCRIPT = SCRIPT.with_name("pr_status.py")
+REVIEW_CONTRACT_SCRIPT = SCRIPT.with_name("_review_contract.py")
 
 _HEAD = "f" * 40
 _OLD = "a" * 40
@@ -132,47 +146,155 @@ def _load_status() -> ModuleType:
     return load_skill_script("prepare_pr_status_parity", STATUS_SCRIPT)
 
 
-class TestMarkerRegexParity:
-    """Both scripts carry a copy of the reviewer-marker contract; neither can
-    import the other (each is standalone-copyable by design), so parity is
-    pinned here -- drift would make pr_status.py gate on markers that
-    pr_findings.py cannot see, or vice versa."""
+@pytest.mark.parametrize("entry_script", (SCRIPT, STATUS_SCRIPT), ids=("pr_findings", "pr_status"))
+def test_entrypoint_runs_from_an_arbitrary_cwd_without_pythonpath(
+    entry_script: Path, tmp_path: Path
+) -> None:
+    """The installed skill bundle resolves its sibling without cwd or PYTHONPATH help."""
+    scripts_dir = tmp_path / "installed-skill" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    for source in (SCRIPT, STATUS_SCRIPT, REVIEW_CONTRACT_SCRIPT):
+        shutil.copy2(source, scripts_dir / source.name)
 
-    def test_stamp_and_block_patterns_are_byte_identical(self) -> None:
+    target_repo = tmp_path / "target-repo"
+    target_repo.mkdir()
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    environ = os.environ.copy()
+    environ.pop("PYTHONPATH", None)
+    environ["PATH"] = str(empty_path)
+    environ.pop("PYTHONDONTWRITEBYTECODE", None)
+    environ.pop("PYTHONPYCACHEPREFIX", None)
+
+    proc = subprocess.run(
+        [sys.executable, str(scripts_dir / entry_script.name), "42"],
+        cwd=target_repo,
+        env=environ,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        check=False,
+    )
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "ERROR: gh not found or not authenticated. Run: gh auth login" in proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert not list(scripts_dir.rglob("*.pyc"))
+
+
+@pytest.mark.parametrize("entry_script", (SCRIPT, STATUS_SCRIPT), ids=("pr_findings", "pr_status"))
+def test_entrypoint_ignores_stale_review_contract_bytecode(
+    entry_script: Path, tmp_path: Path
+) -> None:
+    """Existing bytecode beside the installed skill must not override source."""
+    scripts_dir = tmp_path / "installed-skill" / "scripts"
+    scripts_dir.mkdir(parents=True)
+    for source in (SCRIPT, STATUS_SCRIPT):
+        shutil.copy2(source, scripts_dir / source.name)
+    contract_path = scripts_dir / "_review_contract.py"
+    contract_path.write_text(
+        'raise RuntimeError("stale review-contract bytecode was imported")\n',
+        encoding="utf-8",
+    )
+    py_compile.compile(
+        str(contract_path),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+    shutil.copy2(REVIEW_CONTRACT_SCRIPT, contract_path)
+
+    target_repo = tmp_path / "target-repo"
+    target_repo.mkdir()
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    environ = os.environ.copy()
+    environ.pop("PYTHONPATH", None)
+    environ["PATH"] = str(empty_path)
+    environ.pop("PYTHONDONTWRITEBYTECODE", None)
+    environ.pop("PYTHONPYCACHEPREFIX", None)
+
+    proc = subprocess.run(
+        [sys.executable, str(scripts_dir / entry_script.name), "42"],
+        cwd=target_repo,
+        env=environ,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        check=False,
+    )
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "stale review-contract bytecode was imported" not in proc.stderr
+    assert "ERROR: gh not found or not authenticated. Run: gh auth login" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+
+class TestReviewContractExports:
+    """Both entrypoints expose one sibling-owned review contract."""
+
+    def test_shared_constants_and_pure_helpers_are_compatibility_exports(self) -> None:
         findings = _load_script()
         status = _load_status()
-        assert findings.REVIEWED_STAMP_RE.pattern == status.REVIEWED_STAMP_RE.pattern
-        assert findings.BLOCK_MERGE_RE.pattern == status.BLOCK_MERGE_RE.pattern
-        assert findings._CTRL_RE.pattern == status._CTRL_RE.pattern
-        assert findings.DEFAULT_MARKER_AUTHORS == status.DEFAULT_MARKER_AUTHORS
-        assert findings.DEFAULT_MARKER_BINDINGS == status.DEFAULT_MARKER_BINDINGS
-        assert findings._COMMENT_KEY_RE.pattern == status._COMMENT_KEY_RE.pattern
-        assert findings.FINDING_RE.pattern == status.FINDING_RE.pattern
-        assert findings.DISPOSITION_PREFIX == status.DISPOSITION_PREFIX
-        assert findings.DISPOSITION_MARKER_RE.pattern == status.DISPOSITION_MARKER_RE.pattern
-        assert findings.SPAN_CLAIM_RE.pattern == status.SPAN_CLAIM_RE.pattern
-
-    def test_disposition_and_finding_helpers_are_byte_identical(self) -> None:
-        """The disposition-rule computation is defined once and copied: a
-        drift would make pr_findings.py report violations the pr_status.py
-        gate does not enforce, or vice versa -- the same failure mode the
-        marker-regex parity above exists to stop."""
-        findings = _load_script()
-        status = _load_status()
-        for helper in (
+        exports = (
+            "REVIEWED_STAMP_RE",
+            "BLOCK_MERGE_RE",
+            "DEFAULT_MARKER_AUTHORS",
+            "DEFAULT_MARKER_BINDINGS",
+            "_COMMENT_KEY_RE",
+            "FINDING_RE",
+            "DISPOSITION_PREFIX",
+            "DISPOSITION_MARKER_RE",
+            "SPAN_CLAIM_RE",
+            "DISPOSITION_BULLET_RE",
             "span_hash",
             "sha_matches",
+            "comment_key",
             "extract_findings",
             "parse_disposition_record",
-            "fetch_disposition_comments",
-            "author_write_verdict",
-            "author_is_repo_writer",
-            "writer_disposition_records",
+            "disposition_violations",
+        )
+        for entrypoint in (findings, status):
+            assert Path(entrypoint._review_contract.__file__).resolve() == (
+                REVIEW_CONTRACT_SCRIPT.resolve()
+            )
+            for name in exports:
+                assert getattr(entrypoint, name) is getattr(entrypoint._review_contract, name), name
+
+        for helper in (
+            "span_hash",
+            "comment_key",
+            "extract_findings",
+            "parse_disposition_record",
             "disposition_violations",
         ):
-            assert inspect.getsource(getattr(findings, helper)) == inspect.getsource(
-                getattr(status, helper)
-            ), helper
+            for entrypoint in (findings, status):
+                source_file = inspect.getsourcefile(getattr(entrypoint, helper))
+                assert source_file is not None
+                assert Path(source_file).resolve() == REVIEW_CONTRACT_SCRIPT.resolve(), helper
+
+    def test_io_helpers_keep_the_entrypoint_signatures_and_delegate(self) -> None:
+        findings = _load_script()
+        status = _load_status()
+        signatures = {
+            "fetch_disposition_comments": ("repo", "number"),
+            "author_write_verdict": ("repo", "login"),
+            "author_is_repo_writer": ("repo", "login"),
+            "writer_disposition_records": ("repo", "comments"),
+        }
+        for helper, parameters in signatures.items():
+            for entrypoint in (findings, status):
+                exported = getattr(entrypoint, helper)
+                assert tuple(inspect.signature(exported).parameters) == parameters, helper
+                assert "_review_contract.{}(".format(helper) in inspect.getsource(exported), helper
+
+    def test_terminal_control_patterns_remain_in_sync(self) -> None:
+        findings = _load_script()
+        status = _load_status()
+        assert findings._CTRL_RE.pattern == status._CTRL_RE.pattern
 
     def test_c1_controls_are_stripped(self) -> None:
         """U+009B is the single-byte CSI (equivalent to ESC-[): a bot finding
@@ -186,8 +308,8 @@ class TestMarkerRegexParity:
         assert "safe" in cleaned and "also" in cleaned
 
     def test_emitting_workflows_still_carry_the_marker_grammar(self) -> None:
-        """Pin the EMITTERS to the consumers, not just the two consumer copies
-        to each other: a review-workflow prompt tweak that drops or renames a
+        """Pin the EMITTERS to the shared consumer: a workflow prompt tweak
+        that drops or renames a
         stamp would silently orphan the parsers -- the freshness gate would see
         no stamps and stop gating. This drift is exactly what the marker-
         grammar spec (docs/ci/prepare-pr-portability.md §5.9) exists to stop."""
@@ -215,8 +337,8 @@ class TestMarkerRegexParity:
             text = (ROOT / rel).read_text(encoding="utf-8")
             for marker in markers:
                 assert marker in text, (
-                    f"{rel} no longer emits {marker}; update the parsers in "
-                    "pr_status.py/pr_findings.py and §5.9 of "
+                    f"{rel} no longer emits {marker}; update _review_contract.py "
+                    "and §5.9 of "
                     "docs/ci/prepare-pr-portability.md together"
                 )
 
@@ -234,9 +356,7 @@ class TestSpanHash:
 
     def test_different_rule_class_separates_findings_in_one_path(self) -> None:
         module = _load_script()
-        assert module.span_hash("a.py", "gpt/BLOCKING") != module.span_hash(
-            "a.py", "opus/BLOCKING"
-        )
+        assert module.span_hash("a.py", "gpt/BLOCKING") != module.span_hash("a.py", "opus/BLOCKING")
 
     def test_no_file_is_ever_opened_for_untrusted_paths(self) -> None:
         """Finding paths come from UNTRUSTED bot-comment text. Reading any
@@ -245,11 +365,12 @@ class TestSpanHash:
         LLM-influenced input that this standalone script cannot route through
         the repo's sensitive-path gate. Ratchet: the module must contain no
         open() call at all outside the redaction-safe stdlib imports."""
-        source = SCRIPT.read_text(encoding="utf-8")
-        assert "open(" not in source.replace("subprocess.run", ""), (
-            "pr_findings.py must never open() a file: finding paths are "
-            "untrusted comment text and cannot be routed through hooks.py"
-        )
+        for path in (SCRIPT, REVIEW_CONTRACT_SCRIPT):
+            source = path.read_text(encoding="utf-8")
+            assert "open(" not in source.replace("subprocess.run", ""), (
+                f"{path.name} must never open() a file: finding paths are "
+                "untrusted comment text and cannot be routed through hooks.py"
+            )
 
 
 class TestExtractFindings:
@@ -292,6 +413,40 @@ class TestExtractFindings:
         assert all(f["block_merge"] for f in found)
         assert all(len(f["span"]) == 12 for f in found)
 
+    def test_elided_current_head_stamp_still_yields_findings(self) -> None:
+        """An elided stamp of THIS head stays fresh and blocking here.
+
+        ``sha_matches`` tolerates the emitter transcription artifact of PR 4107
+        (a stamp that keeps the head's start and tail but drops its middle).
+        ``pr_status.py``'s marker gate reports such a reviewer as fresh, so
+        extraction must agree: a strict prefix match here would empty the
+        disposition lane maps and fail the exit-20 gate open on that head.
+        """
+        module = _load_script()
+        bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+        head = "0123456789abcdef0123456789abcdef01234567"
+        elided = head[:12] + head[-8:]
+        assert not head.startswith(elided), "fixture must defeat a strict prefix match"
+        assert module.sha_matches(elided, head)
+
+        comments = [
+            {
+                "user": {"type": "Bot"},
+                "body": (
+                    "<!-- codex-ai-review -->\n"
+                    "BLOCKING -- src/x.py:10 -- broken guard\n"
+                    f"[GPT-REVIEWED] {elided}\n[BLOCK-MERGE] {elided}"
+                ),
+            },
+        ]
+
+        found = list(module.extract_findings(comments, head, bindings))
+
+        assert [(f["kind"], f["path"], f["line"]) for f in found] == [
+            ("BLOCKING", "src/x.py", 10),
+        ]
+        assert all(f["block_merge"] for f in found)
+
 
 class TestFindingLineFormats:
     def test_bold_opus_format_is_parsed(self) -> None:
@@ -313,9 +468,7 @@ class TestFindingLineFormats:
 
         found = list(module.extract_findings(comments, _HEAD, bindings))
 
-        assert [(f["kind"], f["path"], f["line"]) for f in found] == [
-            ("BLOCKING", "src/a.py", 12)
-        ]
+        assert [(f["kind"], f["path"], f["line"]) for f in found] == [("BLOCKING", "src/a.py", 12)]
 
     def test_plain_gpt_format_still_parses(self) -> None:
         module = _load_script()
@@ -330,16 +483,15 @@ class TestFindingLineFormats:
             },
         ]
         found = list(module.extract_findings(comments, _HEAD, bindings))
-        assert [(f["kind"], f["path"], f["line"]) for f in found] == [
-            ("FINDING", "src/b.py", 3)
-        ]
+        assert [(f["kind"], f["path"], f["line"]) for f in found] == [("FINDING", "src/b.py", 3)]
 
 
 class TestRollupHelperParity:
-    """Both scripts carry a copy of fetch_check_rollup and its notice; neither
-    can import the other (standalone-copyable by design), so parity is pinned
-    here -- drift would make the two reports describe the same degraded token
-    state in different words, or degrade under different conditions."""
+    """Rollup handling remains entrypoint-local and parity-pinned.
+
+    Drift would make the two reports describe the same degraded token state in
+    different words, or degrade under different conditions.
+    """
 
     def test_rollup_fetch_helpers_are_byte_identical(self) -> None:
         findings = _load_script()
@@ -440,8 +592,8 @@ class TestDegradedRollup:
 # ---------------------------------------------------------------------------
 # Issue #4187: the one-lane / one-rationale-per-finding disposition rule is
 # mechanical, not prose. A writer's disposition record claims the finding it
-# rules on by span= identity; the computation lives here (non-gating) and the
-# byte-identical copy in pr_status.py gates on it.
+# rules on by span= identity; the shared contract reports it here (non-gating)
+# and pr_status.py gates on the same computation.
 # ---------------------------------------------------------------------------
 
 
@@ -589,9 +741,9 @@ class TestWriterDispositionRecords:
             return 0, json.dumps({"permission": perm}), ""
 
         module.run = fake_run
-        comments = [
-            _disposition_comment("flood{:02d}".format(i), body, i) for i in range(25)
-        ] + [_disposition_comment("writer26", body, 26)]
+        comments = [_disposition_comment("flood{:02d}".format(i), body, i) for i in range(25)] + [
+            _disposition_comment("writer26", body, 26)
+        ]
 
         records = module.writer_disposition_records("o/r", comments)
 
@@ -668,9 +820,7 @@ class TestDispositionViolations:
         span_a = module.span_hash("a.py", "gpt/BLOCKING")
         span_b = module.span_hash("b.py", "gpt/BLOCKING")
         comments = [
-            self._gpt_comment(
-                _HEAD, ["BLOCKING -- a.py:1 -- one", "BLOCKING -- b.py:2 -- two"]
-            )
+            self._gpt_comment(_HEAD, ["BLOCKING -- a.py:1 -- one", "BLOCKING -- b.py:2 -- two"])
         ]
 
         violations = module.disposition_violations(
@@ -687,9 +837,7 @@ class TestDispositionViolations:
         module = _load_script()
         span = module.span_hash("a.py", "gpt/BLOCKING")
         comments = [
-            self._gpt_comment(
-                _HEAD, ["BLOCKING -- a.py:1 -- one", "BLOCKING -- a.py:99 -- two"]
-            )
+            self._gpt_comment(_HEAD, ["BLOCKING -- a.py:1 -- one", "BLOCKING -- a.py:99 -- two"])
         ]
         record = self._record("gpt", [span], bullets=2)
 

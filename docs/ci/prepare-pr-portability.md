@@ -26,7 +26,7 @@ This doc shows the tension is only in the *prose*, not the mechanism, and propos
 
 ## 3. Current state — what is actually coupled
 
-Grounded in a read of the skill's five scripts and `SKILL.md`:
+Grounded in a read of the skill's scripts and `SKILL.md`:
 
 ### 3.1 The scripts are already ~95% generic
 
@@ -34,9 +34,10 @@ Grounded in a read of the skill's five scripts and `SKILL.md`:
 | --- | --- |
 | `preflight.py` | **None.** Base branch is auto-detected: existing PR's base → `origin/HEAD` → `main`. Pure `git`/`gh`. |
 | `diff_signals.py` | **None.** Changed-file + flagged-signal reporting over `git diff`. |
-| `pr_findings.py` | **None.** Failed-step + log-tail + unresolved-thread extraction over `gh`, plus reviewer findings for the current head with a stable `span=` identity (path + reviewer/kind; no file reads -- finding paths are untrusted comment text); the `[<NAME>-REVIEWED]` stamp contract is discovered from the comments, not configured. |
+| `pr_findings.py` | **None.** Failed-step + log-tail + unresolved-thread extraction over `gh`, plus reviewer findings for the current head with a stable `span=` identity (path + reviewer/kind; no file reads -- finding paths are untrusted comment text); the `[<NAME>-REVIEWED]` stamp contract is discovered from the comments, not configured. Its pure compatibility exports come directly from the sibling `_review_contract.py`; only command-running adapters stay local. |
 | `enable_automerge.py` | **None.** Thin idempotent wrapper around `gh pr merge --auto`. |
-| `pr_status.py` | **One line:** `READINESS_CONTEXT = "PR Readiness"`. And it already **degrades gracefully** — when that aggregate status is absent it falls back to the full check rollup ("legacy PRs without it still use the full rollup"). The reviewer-marker gate (#2550) is likewise self-configuring: it evaluates whatever `[<NAME>-REVIEWED]` stamps bot comments carry (none found → no gate), with `--reviewers` / `PREPARE_PR_REVIEWERS` as the optional scoping seam. The pull_request-run-for-head assertion applies only when the rollup is Actions-shaped AND the repo demonstrably dispatches pull_request-event runs at all — a push-trigger-only repo is never held to an event it does not use. |
+| `pr_status.py` | **One line:** `READINESS_CONTEXT = "PR Readiness"`. And it already **degrades gracefully** — when that aggregate status is absent it falls back to the full check rollup ("legacy PRs without it still use the full rollup"). The reviewer-marker gate (#2550) is likewise self-configuring: it evaluates whatever `[<NAME>-REVIEWED]` stamps bot comments carry (none found → no gate), with `--reviewers` / `PREPARE_PR_REVIEWERS` as the optional scoping seam. The pull_request-run-for-head assertion applies only when the rollup is Actions-shaped AND the repo demonstrably dispatches pull_request-event runs at all — a push-trigger-only repo is never held to an event it does not use. Its pure compatibility exports use the same sibling `_review_contract.py` as `pr_findings.py`; command-running adapters remain entry-local. |
+| `_review_contract.py` | **None.** The single stdlib-only implementation of reviewer-marker parsing, finding identity, disposition parsing, and disposition-rule evaluation used by both entry scripts. |
 
 So the executable core already runs anywhere `git` + `gh` are present. Decisions are driven by script **exit codes** (`0 clean / 10 running / 20 blocked / 2 env`), which are project-neutral.
 
@@ -184,6 +185,7 @@ The bundled `profiles/kirocrew.json` encodes exactly this Kiro Crew configuratio
 
 - **`resolve_profile.py`** (NEW): implements the §5.2 resolution order and emits the resolved profile as JSON (`{source, base_branch, single_commit, setup[], gates[], rule_files[], reviewers[], readiness{}}`). Stdlib only, Python 3.9+; parses an external `.prepare-pr.toml` via `tomllib` (3.11+) or `tomli`, and errors loudly (exit 2) rather than silently ignoring a config it cannot parse. The bundled Kiro Crew profile ships as `profiles/kirocrew.json` (stdlib `json`, so the marker path needs no TOML parser and works on the 3.10 CI leg). Missing `setup` is normalized to `[]` for backward compatibility.
 - **`pr_status.py`:** accepts an optional readiness-context name (`--readiness-context` / `PREPARE_PR_READINESS_CONTEXT`) so a profile can name a non-default aggregate status; **keeps today's fallback** to the full rollup when unset or absent.
+- **`_review_contract.py`:** owns the reviewer-marker, finding, and disposition computation once. `pr_status.py` and `pr_findings.py` expose pure helpers as direct aliases; only helpers that execute `gh` retain thin entry-local adapters that pass the command runner.
 - All other scripts: unchanged.
 
 ### 5.7 Degradation ladder
@@ -296,13 +298,14 @@ The three axes (§5.1) map one-to-one onto the loop's green nodes. Anything a pr
 The `[<NAME>-REVIEWED]` / `[BLOCK-MERGE]` markers are a load-bearing contract
 between three parties: the review workflows that EMIT them
 (`codex-review.yml`, `claude-review.yml`, `design-review.yml`,
-`ux-review.yml`), and the two parity-pinned parser copies in `pr_status.py`
-and `pr_findings.py` that CONSUME them. A workflow change that alters the
-emitted shape silently orphans the parsers — the freshness gate then sees no
-stamps and stops gating — so any change to either side must update this
-section and both parser regexes together
-(`test_prepare_pr_findings.py::TestMarkerRegexParity` pins the two copies to
-each other).
+`ux-review.yml`), the single parser in the sibling `_review_contract.py`, and
+the `pr_status.py` / `pr_findings.py` entry points that CONSUME it through
+compatibility exports.
+A workflow change that alters the emitted shape silently orphans that parser —
+the freshness gate then sees no stamps and stops gating — so any change to
+either side must update this section and the shared parser together.
+`test_prepare_pr_findings.py::TestReviewContractExports` pins both entry points to
+that one contract and pins the emitters to its grammar.
 
 The grammar, one marker per line inside the bot's PR comment body:
 
@@ -339,11 +342,11 @@ not require presence; naming reviewers (`--reviewers` /
 `PREPARE_PR_REVIEWERS`) additionally REQUIRES each named reviewer to have a
 fresh stamp, so a pinned fleet cannot be silently un-gated by an emitter
 drift or a bot that fails to post. Two tests hold the contract together:
-`TestMarkerRegexParity` pins the two consumer copies to each other, and
+`TestReviewContractExports` pins both entry points to the shared contract, and
 `test_emitting_workflows_still_carry_the_marker_grammar` pins the emitting
-workflows to the markers the consumers parse.
+workflows to the markers that contract parses.
 
-The same parity pins the **disposition-record grammar**, the writer-side half
+The same shared contract owns the **disposition-record grammar**, the writer-side half
 of the contract. A repository writer records a ruling on a reviewer finding
 as a PR comment whose LEADING bytes are
 `<!-- ai-review-disposition target=<lane> head=<sha> -->` — the byte prefix
@@ -353,16 +356,17 @@ one finding it rules on with a `span=<id>` token, the same 12-hex identity
 lives on the marker line or a `- **…**` title bullet; span ids inside `> `
 quoted lines read as quoted evidence, never as claims. That claim is what
 makes the "one comment covers one lane, one rationale covers one finding"
-rule mechanical rather than prose: `pr_status.py` computes the violations, and
-it does so for BOTH enforcement points — locally it gates the prepare-pr loop
-(exit 20), and `pr-readiness.yml` calls the same script's
+rule mechanical rather than prose: `_review_contract.py` computes the
+violations once, and `pr_status.py` evaluates that one computation for BOTH
+enforcement points — locally it gates the prepare-pr loop (exit 20), and
+`pr-readiness.yml` calls the same script's
 `--disposition-gate` mode so a violation also fails the repository's required
 `PR Readiness` status, which binds a writer who never runs the loop (#6658).
-`pr_findings.py` keeps the parity-pinned copy of the grammar but no longer
-re-lists the violations: one evaluation point is what keeps the rule from
+`pr_findings.py` still exposes the same shared grammar but no longer re-lists
+the violations: one evaluation point is what keeps the rule from
 growing a third and fourth reading of its own bytes. Each record is validated
-against the findings stamped for the
-head its `head=` says it judged — in the ordinary fix-then-push round that
+against the findings stamped for the head its `head=` says it judged — in the
+ordinary fix-then-push round that
 is the PRIOR head, since the writer rules on the listing they just read —
 and against the current head's, because a record is immutable and the ledger
 selects it with no head filter, so it keeps downgrade power on every later
@@ -415,19 +419,20 @@ src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/
     preflight.py
     resolve_profile.py        # NEW — resolves the profile to JSON
     diff_signals.py
+    _review_contract.py       # shared marker/finding/disposition contract
     pr_status.py              # + optional --readiness-context / env override
     pr_findings.py
     enable_automerge.py
 ```
 
-(This is the packaged source that ships via `package_data`; the runtime copy is synced to `~/.kiro/crew/skills/…` at startup. An optional `.prepare-pr.toml` lives at a *consuming* repo's root — not in the skill.)
+(This whole `prepare-pr/` skill directory is the distribution and copy unit: it ships via `package_data`, and the complete runtime tree is synced to `~/.kiro/crew/skills/…` at startup. The two entry scripts resolve `_review_contract.py` relative to their own `__file__`, so either can still be executed directly from an arbitrary current working directory on Windows or POSIX; copying one entry file without its sibling is not a supported distribution shape. An optional `.prepare-pr.toml` lives at a *consuming* repo's root — not in the skill.)
 
 ## 8. Migration & backward compatibility
 
 - Kiro Crew validation behavior is **unchanged**: the `kirocrew` profile preserves the same setup/check commands, reviewers and labels, auto-selected by markers; it now distinguishes provisioning from verdict-producing gates.
 - Existing profiles remain compatible: an omitted `setup` section resolves to `setup = []`.
 - No `.prepare-pr.toml` is added to the Kiro Crew repo (the bundled profile covers it) — but one *may* be added later to make the config explicit/self-documenting.
-- The scripts remain backward-compatible; the readiness override is opt-in with the existing fallback intact.
+- Within the supported complete-skill-directory distribution, the entry CLIs remain backward-compatible: the readiness override is opt-in with the existing fallback intact, helper names and signatures remain available, and direct execution works from any current working directory. A lone copied entry file is not a supported distribution; deployments copy the complete `prepare-pr/` directory so `_review_contract.py` is present.
 
 ## 9. Alternatives considered
 

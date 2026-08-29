@@ -64,9 +64,7 @@ def test_every_disposition_enumeration_offers_the_decision_branch() -> None:
     """
     stale: list[str] = []
     for path in _skill_files():
-        for lineno, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if DEFERRED in line and DECISION not in line:
                 stale.append(f"{path.relative_to(ROOT)}:{lineno}")
     assert not stale, (
@@ -145,17 +143,25 @@ SCRIPTS = SKILLS / "kirocrew-dev" / "prepare-pr" / "scripts"
 
 
 def test_the_disposition_rule_is_mechanically_enforced() -> None:
+    contract = (SCRIPTS / "_review_contract.py").read_text(encoding="utf-8")
     status = (SCRIPTS / "pr_status.py").read_text(encoding="utf-8")
     findings = (SCRIPTS / "pr_findings.py").read_text(encoding="utf-8")
+
+    assert (
+        "ai-review-disposition" in contract
+    ), "_review_contract.py no longer knows the disposition marker; the rule is prose again"
+    assert (
+        "def disposition_violations" in contract
+    ), "_review_contract.py lost the violation computation; `target=` is decorative again"
+    assert (
+        "target=([A-Za-z0-9_-]+)" in contract
+    ), "_review_contract.py no longer parses `target=` out of the disposition marker"
     for name, source in (("pr_status.py", status), ("pr_findings.py", findings)):
-        assert "ai-review-disposition" in source, (
-            f"{name} no longer knows the disposition marker; the rule is prose again"
-        )
-        assert "disposition_violations" in source, (
-            f"{name} lost the violation computation; `target=` is decorative again"
-        )
-        assert "target=([A-Za-z0-9_-]+)" in source, (
-            f"{name} no longer parses `target=` out of the disposition marker"
+        assert (
+            "disposition_violations" in source
+        ), f"{name} no longer consumes the shared disposition computation"
+        assert "disposition_violations = _review_contract.disposition_violations" in source, (
+            f"{name} no longer directly exports disposition enforcement from " "_review_contract.py"
         )
     assert "disposition_eval" in status, (
         "pr_status.py's decide() no longer consumes the disposition evaluation, "

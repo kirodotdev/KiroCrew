@@ -173,8 +173,6 @@ src/kiro_crew/beacon.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/local_review.py
-src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/pr_findings.py
-src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/pr_status.py
 src/kiro_crew/changelog.py
 src/kiro_crew/channel.py
 src/kiro_crew/channel_history.py
@@ -645,7 +643,6 @@ test/test_dashboard_worktree_coverage.py
 test/test_dashboard_ws_offloop_fanout.py
 test/test_dashboard_ws_task_tracking.py
 test/test_dashboard_yolo_startup.py
-test/test_deferred_disposition_ratchet.py
 test/test_delete_message.py
 test/test_denied_commands_api.py
 test/test_denied_commands_authority.py
@@ -986,7 +983,6 @@ test/test_pptx_maker_routes.py
 test/test_pr_readiness_evaluate.py
 test/test_pr_readiness_publish.py
 test/test_pr_readiness_sweep.py
-test/test_prepare_pr_findings.py
 test/test_prepare_pr_local_review.py
 test/test_prepare_pr_profiles.py
 test/test_prepare_pr_status.py
