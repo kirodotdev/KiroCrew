@@ -16,6 +16,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
     selectable_backends,
 )
@@ -209,6 +210,7 @@ ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
 PROVIDER_LABEL_DEFAULT = "acp"
 PROVIDER_LABEL_CLAUDE = "claude_code"
 PROVIDER_LABEL_KAS = "kas"
+PROVIDER_LABEL_OPENCODE = "opencode"
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under

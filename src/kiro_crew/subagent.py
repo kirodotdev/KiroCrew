@@ -6471,7 +6471,7 @@ class SubagentManager:
                 # executed; model_source reports what actually ran.
                 ("" if provider_fallback_active(client) else (info.model or "")),
                 _complete_event,
-                provider="claude_code" if is_cc else "acp",
+                provider=self._provider_label_of(client),
                 surface="subagent",
                 # Ownership stamp (see _build_token_record): an app-dispatched
                 # subagent's spend must be readable by that app's audit — the

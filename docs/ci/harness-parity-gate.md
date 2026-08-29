@@ -29,17 +29,17 @@ none of them needs to resolve an import, which is why the job needs no
 
 | Rule | Invariant | Fails on |
 |---|---|---|
-| `negative-identity` | H5 | `not is_claude_backend`, `not self._is_kas` — harness identity as the absence of another harness |
+| `negative-identity` | H5 | `not is_claude_backend`, `not self._is_kas`, `not is_opencode_backend` — harness identity as the absence of another harness |
 | `negative-constant` | H5 | `!= ACP_BACKEND_KAS` and its mirror — an inequality captures every harness added later |
-| `bare-literal` | H8 | `backend == "kas"` — `ACP_BACKEND_KIRO` is the empty string, so only the named constant is legible |
+| `bare-literal` | H8 | `backend == "kas"` or `backend == "opencode"` — `ACP_BACKEND_KIRO` is the empty string, so only named constants are legible |
 | `sandbox-delegation` | H7 | `is_kiro_cli=` derived from a negation. This flag makes `wrap_argv` SKIP Kiro Crew's seatbelt, so it fails OPEN |
-| `vocabulary-home` | H8 | an `ACP_BACKEND_*` identifier or `ACP_BACKENDS_*` set defined outside `acp/types.py` |
+| `vocabulary-home` | H8 | an `ACP_BACKEND_*` identifier or `ACP_BACKENDS_*` set defined outside `acp_backends.py` |
 | `non-kiro-default` | H1 | `default=ACP_BACKEND_KAS` and equivalents — an operator who configures nothing gets Kiro |
 
 ## Why diff-scoped rather than whole-tree
 
-The tree carries nine pre-existing negative identity tests, nearly all in the
-dormant `ACP_BACKEND_CLAUDE` seam. A whole-tree gate would fail every PR until a
+The tree carries pre-existing negative identity tests, nearly all in the dormant
+`ACP_BACKEND_CLAUDE` seam. A whole-tree gate would fail every PR until a
 separate conversion change lands, and would charge that break to whoever pushed
 next. Added lines are complete for regression — a line only reaches `main`
 through a diff that added it — and running the script with no `HARNESS_BASE_REF`
@@ -62,7 +62,7 @@ checks out was computed against that exact commit, so the diff cannot pick up
   contain one and truncating there would hide the real call site behind it.
 - **`scripts/check_harness_parity.py` and `test/test_harness_parity.py`**, which
   spell every forbidden form out literally.
-- **`src/kiro_crew/acp/types.py`**, for the two vocabulary rules only. It is the
+- **`src/kiro_crew/acp_backends.py`**, for the two vocabulary rules only. It is the
   module those definitions are supposed to live in.
 
 ## Escape hatch

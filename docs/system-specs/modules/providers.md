@@ -1,8 +1,8 @@
 ## LLM Provider Abstraction
 
-KiroCrew drives a single LLM backend: `kiro-cli` over ACP. The `LLMProvider`
-interface is retained as a thin seam (consumers depend only on the ABC), but
-there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
+Kiro Crew drives one concrete LLM provider over ACP. `agent.provider` remains
+fixed to `acp`; `agent.acp_backend` selects the harness: kiro-cli by default,
+KAS, or OpenCode. The `LLMProvider` interface remains the consumer boundary.
 
 ### Architecture
 
@@ -20,17 +20,16 @@ there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
             ┌──────┴──────┐
             │ AcpProvider │
             │ acp.py      │
-            │ kiro-cli    │
+            │ ACP harness │
             └─────────────┘
 ```
 
 **Note:** the removed Bedrock provider and the removed standalone provider were
 **deleted** during de-Amazoning, along with their config fields and the
-multi-provider dispatch factory. `acp/client.py` keeps a dormant
-`ACP_BACKEND_CLAUDE` seam (`AcpProvider` can in principle drive
-`claude-agent-acp`) so an internal companion can re-register a Claude backend,
-but the public provider factory never selects it — `kiro-cli` is the only
-backend.
+multi-provider dispatch factory. The public provider factory selects kiro-cli,
+KAS, or OpenCode through the `acp_backend` seam. `ACP_BACKEND_CLAUDE` remains a
+dormant seam that an internal companion can re-register; it is not selectable
+in the public build.
 See [`../features/claude-code-provider.md`](../features/claude-code-provider.md).
 
 ### LLMProvider ABC (`providers/base.py`)
@@ -73,16 +72,14 @@ Provider-agnostic event dataclass (aliased from `AcpEvent`):
 
 ### AcpProvider (`providers/acp.py`)
 
-The sole provider. Spawns a long-lived `kiro-cli acp --agent <name>` subprocess
-and speaks JSON-RPC 2.0 over stdio.
+The sole provider. It speaks JSON-RPC 2.0 over stdio to a selected ACP harness.
+Kiro and KAS use the multiplexed `AcpRuntime`; OpenCode and the dormant Claude
+adapter use one `AcpClient` process per session.
 
-**Dormant backend seam:** `AcpProvider`/`AcpClient` retain an `acp_backend`
-parameter (`"" ` → kiro-cli; `"claude"` / `ACP_BACKEND_CLAUDE` → `claude-agent-acp`)
-so an internal companion can re-register a Claude backend over the same
-client. **The public provider factory only ever selects kiro-cli** — the claude
-branch is unreachable in this build. Its binary-resolution + config-isolation
-details live in [`acp-client.md`](acp-client.md); do not re-add the registration
-glue or a provider selector (see the repo-root `CLAUDE.md`).
+`AcpProvider`/`AcpClient` accept `acp_backend`: `""` selects kiro-cli, `"kas"`
+selects KAS, `"opencode"` selects OpenCode, and the dormant `"claude"` seam is
+reserved for a companion build. Binary resolution, protocol differences, and
+session semantics live in [`acp-client.md`](acp-client.md).
 
 **Key APIs:**
 - `start()` → `AcpClient.ensure_ready()` (spawns process, handshake, session/new)
@@ -99,13 +96,17 @@ glue or a provider selector (see the repo-root `CLAUDE.md`).
 
 **Reasoning effort** (Opus/Sonnet/Fable **and GPT-5.x** — shared vocabulary in `effort.py`: levels `low|medium|high|xhigh|max`, capability via `model_supports_effort`, resolution via `resolve_effort_for_model` with priority slot-override > workspace default > None). Capability is a conservative allowlist of known-capable families (`opus`/`sonnet`/`fable`/`gpt`, minus a hard `haiku` exclusion), verified against kiro-cli 2.12/2.13 over ACP — kiro rejects `/effort` on the other third-party models (deepseek/minimax/glm/qwen/auto) with "Effort configuration is currently not available on <model>". A new model family lands as unsupported until confirmed (safe default: the slider hides). Applied via a workspace `cli.json` overlay at `<work_dir>/.kiro/settings/cli.json` → `chat.modelDefaults.<model>.<key>.effort`, written before every spawn (`_write_cli_overlay`) and recovered on init (`_read_cli_overlay`) for server-restart resilience. The `<key>` sub-object is **family-specific** (`effort_settings_key`): `output_config` for Claude models, `reasoning` for GPT models — kiro silently ignores the wrong key, so a mismatched shape would survive a live push but drop on respawn. `_write_cli_overlay` removes stale effort from the other family key while preserving unrelated settings; `_clear_cli_overlay_effort`/`_read_cli_overlay` sweep both keys. Live change pushes `/effort` with the TuiCommand args form (`send_command(args={"level": …})`). The factory threads `reasoning_effort_override` → `effort_per_model[current_model]`; when a valid requested effort cannot be threaded (the resolved model is empty or not effort-capable) the factory's gate logs one warning naming the level, the session, and the resolved model (or `auto` when unresolved, matching the spawn-side `effort_dropped` verdict) — the single drop authority reporting its own decision, covering every surface (spawn, dashboard slot, cron) that funnels through it, an explicit `reasoning_effort_override` always warns (a caller's own dropped request is the event the gate exists to surface), while a drop sourced only from the config default (`agent.reasoning_effort`) is deduped once per (model, level) for the factory's lifetime so one static configuration fact does not repeat on every construction. A `reasoning_effort_override` also bypasses the warm pool (`bypass_effort`): a pre-warmed provider was built without the override and post-claim fixups never touch effort, so the override must reach a fresh factory call to be delivered at all. The dashboard handler routes through `change_effort`/`clear_effort` and only resets the session when there is no live provider. Non-effort-capable models persist the slot value without a live apply or reset.
 
+OpenCode's ACP config advertises its own effort selector, but Kiro Crew does not
+map it yet. `supports_effort`, workspace-overlay writes, and live `/effort`
+calls fail closed for OpenCode rather than applying Kiro semantics to it.
+
 **MCP Tool Search** (kiro backend only — see https://kiro.dev/docs/cli/mcp/tool-search/): loads MCP tool specs on demand ("search-and-call") instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. Gated by the `agent.tool_search` config toggle (default **on**; auto-surfaces as a Settings toggle since the schema is generated from the dataclass).
 - Applied via the **same** workspace `cli.json` overlay used for effort (`<work_dir>/.kiro/settings/cli.json`), written deterministically before every spawn and on each restart by `_write_tool_search_overlay` (called from `AcpProvider.__init__` and `start()`). When enabled it writes the flat keys `toolSearch.enabled=true` plus `toolSearch.minPct`/`toolSearch.minTokens`, taken from `agent.tool_search_min_pct` / `agent.tool_search_min_tokens` (defaults `5` / `50000`, mirroring kiro-cli's own thresholds; clamped to 0-100 and >= 0, non-numeric falls back to the default); when disabled it writes `toolSearch.enabled=false` and drops both thresholds.
 - **Why the thresholds are not forced to 0:** deferral costs a round-trip — a deferred tool's spec is absent from the model's tool list, so the first direct call fails with `A tool with the name '<name>' does not exist` and has to be recovered with `tool_search`. That only pays once the specs are genuinely large, which is what the thresholds express (kiro-cli defers when EITHER is exceeded). An earlier build hard-coded both to `0`, imposing the round-trip on every install including ones far below the threshold. Setting both to `0` still restores unconditional deferral for operators who want it. The thresholds are written **explicitly** rather than omitted, so a machine carrying the old forced zeros is actually migrated instead of silently keeping them.
 - Writing both `true` and `false` makes the KiroCrew toggle authoritative over any value in the user's global `~/.kiro/settings/cli.json`. The write is merge-safe with the effort `chat.modelDefaults` keys in the same file.
-- **claude backend** — no-op. Tool Search is a kiro-cli feature; `_apply_tool_search_overlay` returns early for the claude backend and when no toggle value was threaded in (`tool_search is None`).
+- **Adapted per-session backends** — no-op. Tool Search is a kiro-cli/KAS setting; `_apply_tool_search_overlay` only runs for explicit `ACP_BACKENDS_ACP_RUNTIME` members.
 
-- **Resume guard:** `session/load` (resume) is only attempted when the prior session transcript exists on disk (`~/.kiro/sessions/cli/<sid>.json`). A stale persisted sid with no transcript falls back to `session/new`, preventing a fresh conversation from replaying old turns (which inflated base context).
+- **Resume guard:** Kiro `session/load` is attempted only when its transcript exists at `~/.kiro/sessions/cli/<sid>.json`. OpenCode owns a different store, so its resume id is sent directly and no Kiro file or private metadata is consulted.
 - **Working dir:** `AcpProvider.cwd` overrides the `LLMProvider` ABC default so `session_map` persists the real workspace path. AcpProvider's work_dir lives on the inner client (`_client._work_dir`), so the prior `getattr(provider, "_work_dir", "")` persisted `""` for all ACP sessions — `provider.cwd` fixes resume-cwd-override.
 
 ### Config (`config/loader.py`)
@@ -114,13 +115,15 @@ glue or a provider selector (see the repo-root `CLAUDE.md`).
 {
   "agent": {
     "provider": "acp",
+    "acp_backend": "opencode",
     "model": "auto"
   }
 }
 ```
 
-- `agent.provider` is fixed to `"acp"` (enum `["acp"]`); there is no provider to choose.
-- `create_provider_factory()` returns a `Callable` that creates the kiro-cli `AcpProvider`.
+- `agent.provider` is fixed to `"acp"` (enum `["acp"]`); the harness is selected at `agent.acp_backend`.
+- `agent.acp_backend` accepts the registered public values `""`, `"kas"`, and `"opencode"`; an unusable persisted value degrades to Kiro with a logged reason.
+- `create_provider_factory()` returns a `Callable` that creates the selected `AcpProvider`.
 
 An agent spec's model is consumed by kiro-cli before Kiro Crew reaches
 `session/new`, so the live-session entitlement guard cannot diagnose a wrong
@@ -140,7 +143,7 @@ are always present; user-configured servers from the agent config are merged in.
 
 ### SessionManager (`session.py`)
 
-- Provider-agnostic via factory (one provider: kiro-cli `AcpProvider`)
+- Provider-agnostic via factory (one `AcpProvider`, selected ACP harness)
 - Calls `repair_agent_configs()` on gateway startup and periodically
 - context_info() reports model/agent
 - Resume: calls `set_resume_session_id()` before `start()`
@@ -167,8 +170,9 @@ A transient 5xx that arrives *after* the turn already emitted output (the `_turn
 
 ### Installation
 
-KiroCrew drives `kiro-cli` over ACP — install it per its own docs, ensure it is
-on `PATH`, and run `kiro-cli login`. `kirocrew doctor` reports its status.
+The default backend requires `kiro-cli` and `kiro-cli login`. OpenCode requires
+the `opencode` executable plus an authenticated provider (`opencode auth login`);
+the resolver accepts `OPENCODE_BIN` when it is not on the daemon's `PATH`.
 
 
 ## AcpProvider: shared-runtime startup
@@ -178,7 +182,7 @@ enters the same `AcpRuntime.spawn()` cold-start coordinator (default 2 concurren
 spawn+initialize handshakes per gateway loop); admission is backend-neutral, so an
 adapted runtime harness neither bypasses the bound nor changes the Kiro path.
 
-- **kiro (`is_claude_backend` False)** → `_start_kiro_runtime()`. This spawns an
+- **AcpRuntime members (`is_acp_runtime_backend` True)** → `_start_kiro_runtime()`. This spawns an
   `AcpRuntime` (carrying the provider's sandbox mode, extra env, and MCP-gateway
   overlay/socket), resumes via `runtime.load_session()` when a prior transcript
   exists or otherwise `runtime.create_session()`, applies the configured model,
@@ -186,7 +190,7 @@ adapted runtime harness neither bypasses the bound nor changes the Kiro path.
   same interface as `AcpClient`, so downstream callers are unchanged). Any
   failure after `spawn()` kills the runtime so a half-initialised session never
   leaks an orphaned `kiro-cli`.
-- **Alternate ACP backend (`is_claude_backend` True)** → legacy `AcpClient.ensure_ready()`.
+- **Adapted per-session backend (Claude or OpenCode)** → `AcpClient.ensure_ready()`.
 
 `AcpProvider.is_session_sharing_eligible` is membership in
 `ACP_BACKENDS_SESSION_SHARING` (harness-parity H6), not `not is_claude_backend`:

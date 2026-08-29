@@ -3,7 +3,7 @@
 
 Kiro Crew drives one first-class agent harness, ``kiro-cli``
 (``ACP_BACKEND_KIRO``, spelled ``""``), plus adapted ones: the dormant
-``ACP_BACKEND_CLAUDE`` seam, KAS, and whatever a bring-your-own adapter
+``ACP_BACKEND_CLAUDE`` seam, KAS, OpenCode, and whatever a bring-your-own adapter
 registers next. An added harness may only adapt itself to the seams the Kiro
 harness already runs through; it may not move, widen, or generalize them.
 
@@ -93,7 +93,7 @@ SUPPRESSION = re.compile(r"harness-ok")
 # Harness identifiers as string literals. A bare literal is forbidden even where
 # the comparison is positive, because the value of ACP_BACKEND_KIRO is the empty
 # string and only the named constant makes that legible.
-_HARNESS_LITERAL = r"(?:kiro|claude|kas|claude_code|kiro-cli)"
+_HARNESS_LITERAL = r"(?:kiro|claude|kas|opencode|claude_code|kiro-cli)"
 
 
 @dataclass(frozen=True)
@@ -118,8 +118,8 @@ RULES: tuple[Rule, ...] = (
         rule_id="negative-identity",
         invariant="H5",
         pattern=re.compile(
-            r"not\s+(?:[A-Za-z_][\w.]*\.)?(?:is_(?:kiro|claude|kas)_backend"
-            r"|_is_(?:kiro|claude|kas))\b"
+            r"not\s+(?:[A-Za-z_][\w.]*\.)?(?:is_(?:kiro|claude|kas|opencode)_backend"
+            r"|_is_(?:kiro|claude|kas|opencode))\b"
         ),
         message="harness identity expressed as the absence of another harness",
         fix="test the harness positively (`is_kiro_backend`, "
@@ -376,6 +376,12 @@ PROBES: tuple[tuple[str, str, str, str | None], ...] = (
         "negative-identity",
     ),
     (
+        "negative-opencode-property",
+        "src/kiro_crew/providers/acp.py",
+        "        return not self.is_opencode_backend",
+        "negative-identity",
+    ),
+    (
         "negative-constant",
         "src/kiro_crew/acp/runtime.py",
         "        if self._acp_backend != ACP_BACKEND_KAS:",
@@ -391,6 +397,12 @@ PROBES: tuple[tuple[str, str, str, str | None], ...] = (
         "bare-literal",
         "src/kiro_crew/session.py",
         '    return backend == "claude"',
+        "bare-literal",
+    ),
+    (
+        "bare-opencode-literal",
+        "src/kiro_crew/session.py",
+        '    return backend == "opencode"',
         "bare-literal",
     ),
     (

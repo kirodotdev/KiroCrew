@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KNOWN,
@@ -40,6 +41,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_OPENCODE,
 )
 from kiro_crew.acp_backends import (
     BASELINE_SELECTABLE_BACKENDS,
@@ -101,7 +103,7 @@ def test_provider_enum_is_acp_only() -> None:
     assert _field_default("provider") == "acp"
 
 
-@pytest.mark.parametrize("persisted", ["", "kas", "byo-harness", "claude", None, 7])
+@pytest.mark.parametrize("persisted", ["", "kas", "opencode", "byo-harness", "claude", None, 7])
 def test_unselectable_backend_degrades_to_kiro(persisted: object) -> None:
     """H3: an unusable persisted value degrades to Kiro and never raises.
 
@@ -208,6 +210,7 @@ def test_session_sharing_is_opt_in() -> None:
     # claude-agent-acp runs one process per session (AcpClient), so it cannot
     # host a multiplexed subagent session however the call site is written.
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_SESSION_SHARING
+    assert ACP_BACKEND_OPENCODE not in ACP_BACKENDS_SESSION_SHARING
 
 
 def test_steer_is_opt_in() -> None:
@@ -216,6 +219,7 @@ def test_steer_is_opt_in() -> None:
     assert "ACP_BACKENDS_STEER" in source
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_STEER
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_OPENCODE not in ACP_BACKENDS_STEER
 
 
 def test_steer_capability_declares_its_stamp() -> None:
@@ -363,6 +367,7 @@ def test_every_known_backend_has_a_label() -> None:
         ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
         ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
         ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
+        ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
     }
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no PROVIDER_LABEL_* of its own, so it would persist "

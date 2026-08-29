@@ -1,8 +1,8 @@
 """Which ACP backends this build can serve — the one place that decides.
 
 The question this module owns is **capability**: can this build drive the harness
-at all? The public edition registers kiro-cli and KAS; an edition plugin adds its
-own from ``ProviderRegistry.register_acp_backends`` by calling
+at all? The public edition registers kiro-cli, KAS, and OpenCode; an edition
+plugin adds its own from ``ProviderRegistry.register_acp_backends`` by calling
 :func:`register_selectable_backend`, the structural twin of
 ``publish_provider.register_provider``.
 
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 ACP_BACKEND_CLAUDE = "claude"
 ACP_BACKEND_KAS = "kas"
+ACP_BACKEND_OPENCODE = "opencode"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -51,6 +52,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
+        ACP_BACKEND_OPENCODE,
     }
 )
 
@@ -59,7 +61,9 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 #: What the public edition ships. ``ACP_BACKEND_CLAUDE`` is deliberately absent:
 #: it is a dormant seam reached by its own provider, not something a public build
 #: can serve a session with.
-BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_OPENCODE}
+)
 
 _selectable: Set[str] = set(BASELINE_SELECTABLE_BACKENDS)
 
