@@ -26,6 +26,8 @@ import { resolve } from 'node:path'
  */
 const CHAT_PAGE = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
 const SUBAGENT_BAR = readFileSync(resolve(__dirname, '../pages/chat/SubagentProgressBar.tsx'), 'utf8')
+const QUEUE_STACK = readFileSync(resolve(__dirname, '../components/QueueStack.tsx'), 'utf8')
+const INDEX_CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')
 const INDEX_HTML = readFileSync(resolve(__dirname, '../../index.html'), 'utf8')
 
 /** The title-row overlay: `absolute top-0 … ${editingTitle ? 'z-[47]' : 'z-[45]'}`. */
@@ -36,6 +38,8 @@ const SCRIM = /key="sessions-backdrop"[\s\S]{0,240}?z-\[(\d+)\]/.exec(CHAT_PAGE)
 const CHIP = /className="px-4 mx-auto w-full relative z-\[(\d+)\]"/.exec(SUBAGENT_BAR)
 /** The wrapper introduced around the bar stack. */
 const STACK = /<div className="([^"]*)" data-testid="composer-status-stack">/.exec(CHAT_PAGE)
+/** QueueStack's fuse overhang — the seam that pulls its card into the composer. */
+const OVERLAP = /const OVERLAP = (\d+)/.exec(QUEUE_STACK)
 
 describe('composer status chrome cannot occlude the header rename editor', () => {
   it('anchors the invariant: every value it compares was actually found', () => {
@@ -46,6 +50,33 @@ describe('composer status chrome cannot occlude the header rename editor', () =>
     expect(SCRIM, 'sessions-backdrop scrim not found in ChatPage.tsx').not.toBeNull()
     expect(CHIP, 'wave-chip wrapper not found in SubagentProgressBar.tsx').not.toBeNull()
     expect(STACK, 'composer-status-stack wrapper not found in ChatPage.tsx').not.toBeNull()
+    expect(OVERLAP, 'OVERLAP constant not found in QueueStack.tsx').not.toBeNull()
+  })
+
+  it('cancels QueueStack\'s fuse overhang instead of scrolling it', () => {
+    // A scroll container turns the -OVERLAP margin into permanent internal
+    // overflow: measured scrollHeight-clientHeight == 11 with a collapsed queue
+    // at any height, so a thumb showed and the card's bottom 11px clipped.
+    const n = Number(OVERLAP![1])
+    expect(STACK![1]).toContain(`pb-[${n}px]`)
+    expect(STACK![1]).toContain(`mb-[-${n}px]`)
+  })
+
+  it('keeps the padding and the negative margin equal, so the column is unchanged', () => {
+    // Unequal values would silently move the composer up or down by the
+    // difference — layout drift that no other case here would catch.
+    const pb = Number(/pb-\[(\d+)px\]/.exec(STACK![1])![1])
+    const mb = Number(/mb-\[-(\d+)px\]/.exec(STACK![1])![1])
+    expect(pb).toBe(mb)
+  })
+
+  it('keeps the thumb out of the way instead of carrying the global always-on bar', () => {
+    // Asserted across BOTH files: the wrapper opts in, AND the utility it opts
+    // into is still the hover-revealed kind. Redefining the utility to paint a
+    // permanent thumb would leave the class assertion passing and this failing.
+    expect(STACK![1]).toContain('scrollbar-overlay')
+    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay::-webkit-scrollbar-thumb\{background:transparent/)
+    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay:hover::-webkit-scrollbar-thumb\{background:var\(--border\)/)
   })
 
   it('caps the bar stack and scrolls it internally, so it never climbs into the band', () => {
