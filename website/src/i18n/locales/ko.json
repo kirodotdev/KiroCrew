@@ -8609,7 +8609,10 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "고정한 턴 접기",
         "expand_pinned_prompt": "고정한 턴 펼치기",
-        "jump_to_this_turn": "이 턴으로 이동"
+        "jump_to_this_turn": "이 턴으로 이동",
+        "minimize_pinned_prompt": "고정한 턴 최소화",
+        "pinned_turn": "고정한 턴",
+        "restore_pinned_prompt": "고정한 턴 복원"
       },
       "noticeCard": {
         "blocked": "차단됨",

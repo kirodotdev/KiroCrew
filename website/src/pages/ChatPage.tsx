@@ -198,7 +198,7 @@ import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../hooks/useVoiceInput'
 import { usePushToTalk } from '../hooks/usePushToTalk'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
-import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
+import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt, PinnedPromptPill } from './chat'
 import { useStreamIdle } from './chat/ChatFooter'
 import type { TurnStats } from './chat/AssistantMessage'
 import { turnHadPolicyBlock } from '../app-sdk/turnPolicyBlock'
@@ -224,7 +224,7 @@ import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } fro
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
 import { addSessionRef, removeSessionRef, mergeSessionRefs, appendSessionRefLinks, type SessionRef } from '../utils/sessionRefs'
-import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, nextPinnedPromptState, type PinnedPromptState, pinHandoffY, pinPushTravel, jumpAnchorIdx, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, nextPinnedPromptState, type PinnedPromptState, pinHandoffY, pinPushTravel, pinHidesRow, jumpAnchorIdx, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   adoptSourceSelections,
   commitRevealedSource,
@@ -246,7 +246,7 @@ import {
 import { deriveFollowUpOptions, parseOptions } from '../app-sdk/protocol'
 import { isNoteRow } from '../lib/noteContract'
 import OverlayDrawer from '../components/OverlayDrawer'
-import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
+import { loadChatConfig, saveChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import SessionFlyout, { TOGGLE_RECT } from './chat/SessionFlyout'
 import { focusComposer, focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
@@ -3363,8 +3363,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
+  // Read by updatePinnedPrompt, which keeps stable deps and so reaches config
+  // through refs rather than closing over it.
+  const pinMinimizedRef = useRef(false)
+  // Which control to focus after the next minimize/restore. Set only by the click
+  // handler, so a chip that mounts from SCROLLING never steals focus.
+  const pinFocusWantRef = useRef<'chip' | 'minimize' | null>(null)
   const [pinned, setPinned] = useState<PinnedPromptState | null>(null)
   const [pinExpanded, setPinExpanded] = useState(false)
+  /**
+   * Minimized-to-chip state, held in the shared chat config rather than local
+   * state so it survives a slot switch and a reload — the point of the control is
+   * that a narrow screen stays uncluttered without being re-told every session.
+   * `saveChatConfig` dispatches `mc-config-changed`, which this page's own listener
+   * and every other open pane already consume, so one write settles it everywhere.
+   */
+  const pinMinimized = chatConfig.pinPromptMinimized
+  const setPinMinimized = useCallback((next: boolean) => {
+    // The click unmounts the focused button, dropping focus to <body>. Name the
+    // successor; the effect below lands on it once the swap commits.
+    pinFocusWantRef.current = next ? 'chip' : 'minimize'
+    // Re-read, so a field another pane wrote since this render is not reverted by
+    // spreading a stale snapshot.
+    saveChatConfig({ ...loadChatConfig(), pinPromptMinimized: next })
+  }, [])
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
   // the computed default and then reported by PinnedPrompt itself, which is the
@@ -3422,15 +3444,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // below has to be decidable even while nothing is mounted, or dropping the
     // banner would zero the height, zero the push, re-mount it, and oscillate at
     // frame rate.
-    const measured = pinCardRef.current?.getBoundingClientRect().height ?? 0
+    // Neither push nor drop describes a chip, whose band is a fraction of the
+    // height this math uses. A no-op while not minimized, so the card is unchanged.
+    const minimized = pinMinimizedRef.current
+    const measured = minimized ? 0 : (pinCardRef.current?.getBoundingClientRect().height ?? 0)
     const bannerH = measured > 0 ? measured : pinCollapsedHRef.current
-    const push = computePinPush(bannerH, foldY, nextTop)
+    const push = minimized ? 0 : computePinPush(bannerH, foldY, nextTop)
     // Fully pushed out: DROP the banner instead of rendering it clipped to
     // nothing. A tall incoming prompt holds this state for its whole length (it
     // takes the pin only once its own bottom clears the band), and a card clipped
     // to zero still shows a hairline of its bottom edge under sub-pixel rounding
     // and browser zoom — a bubble fragment parked over the prompt being read.
-    if (push >= pinPushTravel(bannerH)) { setPinned(null); return }
+    if (!minimized && push >= pinPushTravel(bannerH)) { setPinned(null); return }
     const full = pinItem.msg.content
     // A nudge's content is a machine-facing instruction payload behind an
     // `[auto-nudge cycle N]` tag, and a subagent completion's is a header block
@@ -5771,6 +5796,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     pinEnabledRef.current = chatConfig.pinLastPrompt
     if (!chatConfig.pinLastPrompt) setPinned(null)
   }, [chatConfig.pinLastPrompt])
+  // Recompute on the flip too: the band's height changes with it, so the push and
+  // drop verdicts computed against the old one are stale the moment it toggles.
+  useEffect(() => {
+    pinMinimizedRef.current = chatConfig.pinPromptMinimized
+    // Keyed on the SHARED state, not the toggle that wrote it: the toggle runs only
+    // in the clicked pane, so a second pane came back expanded on restore.
+    if (chatConfig.pinPromptMinimized) setPinExpanded(false)
+    updatePinnedPrompt()
+  }, [chatConfig.pinPromptMinimized, updatePinnedPrompt])
+  // Runs after commit so the successor exists; the ref gate means only a user
+  // toggle focuses, never a scroll-driven mount.
+  useEffect(() => {
+    const want = pinFocusWantRef.current
+    if (!want) return
+    pinFocusWantRef.current = null
+    const sel = want === 'chip'
+      ? '[data-testid="pinned-prompt-pill"]'
+      : '[data-testid="pinned-prompt-minimize"]'
+    ;(document.querySelector(sel) as HTMLElement | null)?.focus()
+  }, [chatConfig.pinPromptMinimized])
   useEffect(() => { updatePinnedPrompt() }, [displayItems, updatePinnedPrompt])
   // Expanded state PERSISTS as the pinned prompt is replaced by the next one
   // while scrolling — the user asked for a sticky "keep it open" behaviour, so we
@@ -7511,7 +7556,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {/* Fold sentinel — zero-height, always mounted. Its top edge is the
                   line the pinned prompt sticks to (see updatePinnedPrompt). */}
               <div ref={pinFoldRef} aria-hidden className="h-0" />
-              {pinned && (
+              {pinned && (pinMinimized ? (
+                <PinnedPromptPill onRestore={() => setPinMinimized(false)} />
+              ) : (
                 <PinnedPrompt
                   text={pinned.text}
                   fullText={pinned.full}
@@ -7522,10 +7569,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   expanded={pinExpanded}
                   onToggleExpanded={() => setPinExpanded(p => !p)}
                   onJump={() => scrollToPinnedPrompt(pinned.idx)}
+                  onMinimize={() => setPinMinimized(true)}
                   cardRef={pinCardRef}
                   onCollapsedHeight={onPinCollapsedHeight}
                 />
-              )}
+              ))}
             </div>
             <ChatDropOverlay active={dragOver} />
             {slotLoading && (
@@ -7686,9 +7734,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   // alongside the banner — the "two stacked boxes" bug. The ts is
                   // stable across any index shift, so it hides the right row every
                   // frame; fall back to the index only for a message with no ts.
-                  visibility: (pinned && (pinned.ts != null
-                    ? (item.kind === 'single' && item.msg.ts === pinned.ts)
-                    : pinned.idx === displayIdx)) ? 'hidden' : undefined,
+                  // Hiding is safe only while the banner stands in for the row, so
+                  // the minimized chip must not hide it — see pinHidesRow.
+                  visibility: pinHidesRow(pinned, pinMinimized, {
+                    ts: item.kind === 'single' ? item.msg.ts : undefined,
+                    idx: displayIdx,
+                  }) ? 'hidden' : undefined,
                 }}>{item.kind === 'group' ? (() => {
                 const unresolvedGroupPerms = item.msgs.filter(m => m.role === 'permission' && !m.meta?.resolved)
                 if (item.msgs.every(m => m.role === 'permission')) return null

@@ -8981,7 +8981,10 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Свернуть закреплённый ход",
         "expand_pinned_prompt": "Развернуть закреплённый ход",
-        "jump_to_this_turn": "Перейти к этому ходу"
+        "jump_to_this_turn": "Перейти к этому ходу",
+        "minimize_pinned_prompt": "Минимизировать закреплённый ход",
+        "pinned_turn": "Закреплённый ход",
+        "restore_pinned_prompt": "Восстановить закреплённый ход"
       },
       "noticeCard": {
         "blocked": "Заблокировано",

@@ -3272,6 +3272,11 @@
       },
       "deepLink": {
         "message_unavailable": "This message is no longer in this conversation."
+      },
+      "pinnedPrompt": {
+        "minimize_pinned_prompt": "Minimize pinned turn",
+        "pinned_turn": "Pinned turn",
+        "restore_pinned_prompt": "Restore pinned turn"
       }
     },
     "chatPage": {

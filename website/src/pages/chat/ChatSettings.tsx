@@ -40,6 +40,18 @@ export interface ChatConfig {
   defaultAutopilot: boolean
   /** Pin the most recent prompt above the fold as a sticky banner. */
   pinLastPrompt: boolean
+  /**
+   * Show the pinned banner as a corner chip rather than the full card.
+   *
+   * Deliberately NOT the same thing as `pinLastPrompt: false`. That disarms the
+   * feature; this keeps it armed and merely out of the way, which is what a short
+   * viewport needs — the card costs ~55px of a phone's transcript before the
+   * header fade, and the chip costs a line. Global rather than per-session because
+   * it is a preference about screen space, not about a conversation: every pane on
+   * a narrow screen wants the same answer, and `saveChatConfig` already syncs it
+   * live to all of them.
+   */
+  pinPromptMinimized: boolean
 }
 
 export type FileChipStyle = 'expanded' | 'minimal'
@@ -58,7 +70,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true, pinPromptMinimized: false }
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])
@@ -92,6 +104,7 @@ export function loadChatConfig(): ChatConfig {
     if (typeof cfg.showContextTokens !== 'boolean') cfg.showContextTokens = false
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
     if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
+    if (typeof cfg.pinPromptMinimized !== 'boolean') cfg.pinPromptMinimized = false
     return cfg
   }
   catch { return { ...DEFAULTS } }

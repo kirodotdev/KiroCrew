@@ -8609,7 +8609,10 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "固定したターンを折りたたむ",
         "expand_pinned_prompt": "固定したターンを展開",
-        "jump_to_this_turn": "このターンへ移動"
+        "jump_to_this_turn": "このターンへ移動",
+        "minimize_pinned_prompt": "固定したターンを最小化",
+        "pinned_turn": "固定したターン",
+        "restore_pinned_prompt": "固定したターンを復元"
       },
       "noticeCard": {
         "blocked": "ブロック済み",

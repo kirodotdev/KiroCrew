@@ -8857,7 +8857,10 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Réduire le tour épinglé",
         "expand_pinned_prompt": "Développer le tour épinglé",
-        "jump_to_this_turn": "Aller à ce tour"
+        "jump_to_this_turn": "Aller à ce tour",
+        "minimize_pinned_prompt": "Minimiser le tour épinglé",
+        "pinned_turn": "Tour épinglé",
+        "restore_pinned_prompt": "Restaurer le tour épinglé"
       },
       "noticeCard": {
         "blocked": "Bloqué",

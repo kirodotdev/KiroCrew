@@ -8609,7 +8609,10 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "收起置顶轮次",
         "expand_pinned_prompt": "展开置顶轮次",
-        "jump_to_this_turn": "跳转到此轮次"
+        "jump_to_this_turn": "跳转到此轮次",
+        "minimize_pinned_prompt": "最小化置顶轮次",
+        "pinned_turn": "已置顶轮次",
+        "restore_pinned_prompt": "还原置顶轮次"
       },
       "noticeCard": {
         "blocked": "已拦截",

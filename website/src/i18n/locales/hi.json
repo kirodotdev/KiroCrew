@@ -8733,7 +8733,10 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "पिन किया गया टर्न संक्षिप्त करें",
         "expand_pinned_prompt": "पिन किया गया टर्न विस्तृत करें",
-        "jump_to_this_turn": "इस टर्न पर जाएँ"
+        "jump_to_this_turn": "इस टर्न पर जाएँ",
+        "minimize_pinned_prompt": "पिन किया गया टर्न छोटा करें",
+        "pinned_turn": "पिन किया गया टर्न",
+        "restore_pinned_prompt": "पिन किया गया टर्न पुनर्स्थापित करें"
       },
       "noticeCard": {
         "blocked": "अवरुद्ध",

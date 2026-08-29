@@ -8857,7 +8857,10 @@
       "pinnedPrompt": {
         "collapse_pinned_prompt": "Comprimi turno fissato",
         "expand_pinned_prompt": "Espandi turno fissato",
-        "jump_to_this_turn": "Vai a questo turno"
+        "jump_to_this_turn": "Vai a questo turno",
+        "minimize_pinned_prompt": "Riduci turno fissato",
+        "pinned_turn": "Turno fissato",
+        "restore_pinned_prompt": "Ripristina turno fissato"
       },
       "noticeCard": {
         "blocked": "Bloccato",
