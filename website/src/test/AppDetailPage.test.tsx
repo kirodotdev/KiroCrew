@@ -295,3 +295,51 @@ describe('AppDetailPage — malformed registry guidance', () => {
     expect(screen.queryByText('Configuration')).toBeNull()
   })
 })
+
+describe('AppDetailPage — version reported for an installed app', () => {
+  beforeEach(() => {
+    getApp.mockReset()
+    listRegistry.mockReset()
+    system.mockReset()
+    system.mockResolvedValue({ hostname: '' })
+  })
+
+  // The registry row is fetched from the network and cached, so it can name an
+  // OLDER version than the one on this machine — a repo still publishing 1.0.0
+  // while the user installed a 1.2.0 clone from a local directory. The header
+  // must report what is installed; letting the row win makes the page state a
+  // version the user does not have.
+  it('reports the installed version, not the version the registry row publishes', async () => {
+    getApp.mockResolvedValue(EXTERNAL)
+    listRegistry.mockResolvedValue({
+      apps: [{ ...ART_LESS_ROW, version: '1.0.0' }],
+      serverPlatform: { os: 'linux', arch: 'x86_64' },
+    })
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    // Rendered as `<author> v<version>` in the detail header.
+    expect(screen.getByText(/v1\.2\.0/)).toBeTruthy()
+    expect(screen.queryByText(/v1\.0\.0/)).toBeNull()
+  })
+
+  // The '0.0.0' floor is what `normalizeRegistryApp` substitutes for a row that
+  // carries no version — the shape a private or unreachable app repo produces,
+  // since the backend sources a row's `version` only from the fetched `app.json`
+  // and the registry index cannot supply it. This page reads an unnormalized row
+  // today, so it is the other two call sites that see the floor; pinning it here
+  // keeps the floor from displacing the installed version if this page is ever
+  // switched onto the normalized shape.
+  it('reports the installed version over a registry row pinned at the 0.0.0 floor', async () => {
+    getApp.mockResolvedValue(EXTERNAL)
+    listRegistry.mockResolvedValue({
+      apps: [{ ...ART_LESS_ROW, version: '0.0.0' }],
+      serverPlatform: { os: 'linux', arch: 'x86_64' },
+    })
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    expect(screen.getByText(/v1\.2\.0/)).toBeTruthy()
+    expect(screen.queryByText(/v0\.0\.0/)).toBeNull()
+  })
+})

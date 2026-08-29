@@ -315,7 +315,17 @@ export default function AppDetailPage() {
             name: installed.name,
             displayName: installed.displayName || m.displayName || installed.name,
             description: m.description || '',
-            version: registryEntry?.version || m.version || installed.version || '0.0.0',
+            // The installed record wins, and the registry row is the LAST
+            // resort. Version is the one field where the catalog does not get
+            // to speak for the machine: the row is fetched from the network and
+            // cached, so it can name an older version than the clone installed
+            // here — a repo publishing 0.1.0 while this machine runs 0.2.0. The
+            // built-in branch above resolves it the same way
+            // (`mergeBuiltinRow(registryEntry, { ...m, version: installed.version })`,
+            // whose contract names version as its one reversed field), so both
+            // branches agree rather than disagreeing the way the comment there
+            // records for `author`.
+            version: installed.version || m.version || registryEntry?.version || '0.0.0',
             author: m.author || registryEntry?.author || '',
             icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
             // `iconPath` is preferred over a manifest-declared `iconUrl` for the
