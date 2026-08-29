@@ -20,6 +20,11 @@ def register(app: web.Application) -> None:
     """Register the realtime routes on *app*."""
     app.router.add_get("/", handlers.index)
     app.router.add_get("/logo.png", handlers.logo)
+    # A long tail of clients (bookmark managers, in-app browsers, uptime
+    # monitors) never parse <link rel="icon"> and fetch /favicon.ico directly.
+    # Without this route the request falls through to the SPA fallback and
+    # returns 200 text/html, which fails image decoding downstream.
+    app.router.add_get("/favicon.ico", handlers.logo)
     app.router.add_get(
         "/{name:manifest\\.json|sw\\.js|icon-\\d+\\.png|pcm-worklet\\.js}", handlers.pwa_file
     )

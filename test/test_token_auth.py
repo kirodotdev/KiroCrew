@@ -603,6 +603,7 @@ async def test_cookie_server_port_name_denied_when_host_differs() -> None:
         "/fonts/AWSDiatype-Regular.woff2",
         "/vendor/tailwindcss-browser.js",
         "/logo.png",
+        "/favicon.ico",
         "/manifest.json",
         "/sw.js",
         "/icon-192.png",

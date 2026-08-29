@@ -439,6 +439,9 @@ _BYPASS_PREFIXES = (
 )
 _BYPASS_EXACT = {
     "/logo.png",
+    # Alias of /logo.png for clients that hardcode the favicon path instead of
+    # parsing <link rel="icon"> — same handler, same static-asset exposure.
+    "/favicon.ico",
     "/manifest.json",
     "/sw.js",
     "/pcm-worklet.js",

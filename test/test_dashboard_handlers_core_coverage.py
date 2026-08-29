@@ -238,6 +238,21 @@ class TestPageAndAssets:
         assert resp.status == 404
 
     @pytest.mark.asyncio
+    async def test_favicon_route_resolves_to_logo_handler(self) -> None:
+        """/favicon.ico must serve the logo, not fall through to the SPA
+        fallback: clients that hardcode the path and never parse
+        <link rel="icon"> otherwise receive text/html and show no icon."""
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.routes import realtime
+
+        app = web.Application()
+        realtime.register(app)
+        for path in ("/logo.png", "/favicon.ico"):
+            match = await app.router.resolve(make_mocked_request("GET", path))
+            assert match.handler is core_mod.logo, path
+
+    @pytest.mark.asyncio
     async def test_pwa_file_serves_dist_child(self, monkeypatch, tmp_path) -> None:
         dist = tmp_path / "dist"
         dist.mkdir()
