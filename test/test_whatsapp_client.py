@@ -462,9 +462,21 @@ def _install_fake_jid(monkeypatch):
     proto = ModuleType("neonize.proto.Neonize_pb2")
 
     class JID:
-        def __init__(self, User="", Server=""):
+        # Mirrors the real proto's contract: RawAgent/Device/Integrator are
+        # REQUIRED fields, so SerializeToString() on the real class raises
+        # EncodeError when they are unset. The fake records what was passed so
+        # tests can pin that _parse_jid supplies all five (issue #6756), and
+        # rejects unknown names because the real proto does too — a permissive
+        # fake would let a field typo pass while production regresses.
+        def __init__(self, User="", Server="", **required):
+            unknown = set(required) - {"RawAgent", "Device", "Integrator"}
+            if unknown:
+                raise ValueError(f"unknown JID field(s): {sorted(unknown)}")
             self.User = User
             self.Server = Server
+            self.RawAgent = required.get("RawAgent")
+            self.Device = required.get("Device")
+            self.Integrator = required.get("Integrator")
 
     proto.JID = JID
 
@@ -617,19 +629,34 @@ def test_list_groups_swallows_errors():
 
 
 # ── _parse_jid ──────────────────────────────────────────────────────────────
-def test_parse_jid_builds_proto(monkeypatch):
+@pytest.mark.parametrize(
+    ("jid_str", "expected_user", "expected_server"),
+    [
+        ("447700900000", "447700900000", "s.whatsapp.net"),  # bare number
+        ("447700900000@s.whatsapp.net", "447700900000", "s.whatsapp.net"),
+        ("120363021033254949@g.us", "120363021033254949", "g.us"),  # group
+        ("123456789@lid", "123456789", "lid"),  # linked-identity alias
+    ],
+)
+def test_parse_jid_sets_required_proto_fields(monkeypatch, jid_str, expected_user, expected_server):
+    """Regression for issue #6756: the neonize JID proto marks RawAgent,
+    Device and Integrator as REQUIRED, so a JID built without them raises
+    ``EncodeError`` from ``SerializeToString()`` at the FFI boundary and every
+    outbound WhatsApp operation fails. neonize is an optional dependency not
+    installed in CI, so this pins the constructor kwargs (all five fields
+    passed, the required trio zeroed — mirroring ``neonize.utils.jid.build_jid``)
+    rather than calling the real ``SerializeToString()``.
+    """
     _install_fake_jid(monkeypatch)
     c = WhatsAppClient("/tmp/none.db")
-    jid = c._parse_jid("447700900000@s.whatsapp.net")
-    assert jid.User == "447700900000"
-    assert jid.Server == "s.whatsapp.net"
-
-
-def test_parse_jid_defaults_server(monkeypatch):
-    _install_fake_jid(monkeypatch)
-    c = WhatsAppClient("/tmp/none.db")
-    jid = c._parse_jid("447700900000")
-    assert jid.Server == "s.whatsapp.net"
+    jid = c._parse_jid(jid_str)
+    assert jid.User == expected_user
+    assert jid.Server == expected_server
+    # Explicit zeros, not merely absent: None means the kwarg was NOT passed
+    # and the real proto would fail to serialize.
+    assert jid.RawAgent == 0
+    assert jid.Device == 0
+    assert jid.Integrator == 0
 
 
 def test_send_text_never_hands_neonize_a_bare_string(monkeypatch):

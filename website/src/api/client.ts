@@ -2622,6 +2622,19 @@ export const api = {
   // config entry — the card owns that. `token` fences a sibling tab's row.
   connectionsCancel: (slug: string, token?: string) =>
     post('/api/connections/cancel', token ? { slug, token } : { slug }).then(j) as Promise<{ ok: boolean; slug: string; dropped: boolean }>,
+  // Undo a connection on THIS machine: disposes any in-flight mint, deletes the
+  // runtime's stored grant artifacts when they are ours alone, and removes the MCP
+  // entry. `grantRemoved` and `grantSurviving` are separate answers because the
+  // artifacts are a pair and either half can fail alone; `entryRemoved` is false
+  // when the entry configured under this slug points at a different endpoint (so it
+  // is not ours to delete); `grantSharedWith` names the other entries using the same
+  // endpoint, which is why the grant was deliberately kept. `grantCensusUnreadable`
+  // names the sources the census could not read, so the card can say WHICH file to
+  // repair -- optional because the other half of `grantCensusIncomplete` (an entry
+  // whose URL could not be compared) names no file, and a gateway predating the
+  // field sends none.
+  connectionsDisconnect: (slug: string) =>
+    post('/api/connections/disconnect', { slug }).then(j) as Promise<{ ok: boolean; disconnected: string; grantRemoved: boolean; grantSurviving: string[]; entryRemoved: boolean; grantSharedWith: string[]; grantCensusIncomplete: boolean; grantCensusUnreadable?: string[] }>,
   // MCP Gateway (shared pool)
   mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean }>,
   mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,

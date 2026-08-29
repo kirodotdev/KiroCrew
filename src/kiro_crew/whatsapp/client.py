@@ -799,4 +799,13 @@ class WhatsAppClient:
 
         norm = normalize_jid(jid_str)
         user, _, server = norm.partition("@")
-        return JID(User=user, Server=server or USER_SERVER)
+        # The JID proto marks RawAgent/Device/Integrator as required, so a
+        # two-field JID raises EncodeError at neonize's FFI boundary and every
+        # outbound call fails. Mirror neonize.utils.jid.build_jid: zero them.
+        return JID(
+            User=user,
+            RawAgent=0,
+            Device=0,
+            Integrator=0,
+            Server=server or USER_SERVER,
+        )

@@ -198,9 +198,15 @@ async def test_load_fallback_repos_collects_ancestor_remotes(monkeypatch):
         if "--is-ancestor" in cmd:
             return (0 if "fork/main" in cmd else 1), "", ""
         if "get-url" in cmd:
+            remote = cmd[-1]
+            # Upstream is a genuinely different repository from the fork, so the
+            # fork's ancestor main still qualifies as a pre-rename fallback repo.
+            if remote == "origin":
+                return 0, "git@github.com:kirodotdev/KiroCrew.git\n", ""
             return 0, "git@github.com:someone/kirocrew.git\n", ""
         return 1, "", "unexpected"
 
+    monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
     monkeypatch.setattr(mod, "_run_cmd", fake_run)
     await mod._load_fallback_repos()
     assert mod._FALLBACK_REPOS == ["someone/kirocrew"]
@@ -211,6 +217,97 @@ async def test_load_fallback_repos_empty_when_remote_listing_fails(monkeypatch):
     monkeypatch.setattr(mod, "_run_cmd", AsyncMock(return_value=(1, "", "boom")))
     await mod._load_fallback_repos()
     assert mod._FALLBACK_REPOS == []
+
+
+@pytest.mark.asyncio
+async def test_load_fallback_repos_skips_duplicate_upstream_alias(monkeypatch):
+    """A remote that merely aliases the upstream repo is NOT a fallback repo.
+
+    This is the fleet-misflag defect: an ``origin`` left in place after the
+    tracking remote was renamed points at the SAME repo as upstream, so
+    ``merge-base --is-ancestor`` is trivially true. Upstream's own name must
+    not enter the fallback list (which would flag every worktree as legacy).
+    """
+    async def fake_run(cmd, **kw):
+        if cmd[-1] == "remote":
+            return 0, "kirocrew\norigin\n", ""
+        if "--is-ancestor" in cmd:
+            return 0, "", ""  # identical refs -> trivially an ancestor
+        if "get-url" in cmd:
+            # Both remotes point at the SAME upstream repository.
+            return 0, "https://github.com/kirodotdev/KiroCrew.git\n", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
+    monkeypatch.setattr(mod, "_UPSTREAM_REMOTE", "kirocrew")
+    monkeypatch.setattr(mod, "_run_cmd", fake_run)
+    await mod._load_fallback_repos()
+    assert mod._FALLBACK_REPOS == []
+
+
+@pytest.mark.asyncio
+async def test_load_fallback_repos_recognizes_scp_and_git_suffix_as_same(monkeypatch):
+    """scp-style and .git-suffixed spellings of the upstream URL are one repo.
+
+    The alias uses ``git@github.com:...`` while upstream uses the https,
+    ``.git``-suffixed spelling; both normalize to the same identity, so the
+    alias is skipped rather than treated as a distinct fork.
+    """
+    async def fake_run(cmd, **kw):
+        if cmd[-1] == "remote":
+            return 0, "kirocrew\norigin\n", ""
+        if "--is-ancestor" in cmd:
+            return 0, "", ""
+        if "get-url" in cmd:
+            remote = cmd[-1]
+            if remote == "kirocrew":
+                return 0, "https://github.com/kirodotdev/KiroCrew.git\n", ""
+            return 0, "git@github.com:KiroDotDev/kirocrew\n", ""
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
+    monkeypatch.setattr(mod, "_UPSTREAM_REMOTE", "kirocrew")
+    monkeypatch.setattr(mod, "_run_cmd", fake_run)
+    await mod._load_fallback_repos()
+    assert mod._FALLBACK_REPOS == []
+
+
+@pytest.mark.asyncio
+async def test_load_fallback_repos_dedupes_multiple_aliases_of_one_repo(monkeypatch):
+    """Two aliases of one genuine fork collapse to a single fallback entry."""
+    async def fake_run(cmd, **kw):
+        if cmd[-1] == "remote":
+            return 0, "kirocrew\nfork-a\nfork-b\n", ""
+        if "--is-ancestor" in cmd:
+            # Both forks' mains are ancestors of upstream's.
+            return 0, "", ""
+        if "get-url" in cmd:
+            remote = cmd[-1]
+            if remote == "kirocrew":
+                return 0, "https://github.com/kirodotdev/KiroCrew.git\n", ""
+            if remote == "fork-a":
+                return 0, "git@github.com:someone/kirocrew.git\n", ""
+            return 0, "https://github.com/someone/KiroCrew\n", ""  # same repo, other spelling
+        return 1, "", "unexpected"
+
+    monkeypatch.setattr(mod, "_repo", lambda: "/fake/repo")
+    monkeypatch.setattr(mod, "_UPSTREAM_REMOTE", "kirocrew")
+    monkeypatch.setattr(mod, "_run_cmd", fake_run)
+    await mod._load_fallback_repos()
+    assert mod._FALLBACK_REPOS == ["someone/kirocrew"]
+
+
+def test_normalize_repo_identity_spellings_and_host():
+    """Same repo across https/scp/.git spellings is one identity; host matters."""
+    https = mod._normalize_repo_identity("https://github.com/kirodotdev/KiroCrew.git")
+    scp = mod._normalize_repo_identity("git@github.com:KiroDotDev/kirocrew")
+    assert https == scp == ("github.com", "kirodotdev/kirocrew")
+    # Same owner/repo on a different forge is a DISTINCT identity.
+    other = mod._normalize_repo_identity("https://gitlab.com/kirodotdev/kirocrew.git")
+    assert other == ("gitlab.com", "kirodotdev/kirocrew")
+    assert other != https
+    # Unparseable URL yields None.
+    assert mod._normalize_repo_identity("not-a-url") is None
 
 
 # --------------------------------------------------------------------------
