@@ -22,9 +22,9 @@ const OUT = process.argv[3] || '../temp-screenshots/crew-members'
 mkdirSync(OUT, { recursive: true })
 
 const MEMBERS = [
-  { name: 'radar', slug: 'radar', bound: true, slot_key: 'member-radar', running: true, kiro_agent: 'kirocrew-autofix', workspace: 'autofix', memory_store: 'default', model: '' },
+  { name: 'radar', slug: 'radar', bound: true, slot_key: 'member-radar', running: true, kiro_agent: 'kirocrew-autofix', workspace: 'autofix', memory_store: 'default', model: '', last_active_ts: 1000, last_message: 'Six new issues: four covered by open PRs.' },
   { name: 'scout', slug: 'scout', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-research', workspace: 'default', memory_store: 'default', model: 'claude-opus-5' },
-  { name: 'fixer', slug: 'fixer', bound: true, slot_key: 'member-fixer', running: false, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', model: '' },
+  { name: 'fixer', slug: 'fixer', bound: true, slot_key: 'member-fixer', running: false, kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default', model: '', last_active_ts: 900, last_message: 'Two PRs opened for the queue.' },
   { name: 'scribe', slug: 'scribe', bound: false, slot_key: '', running: false, kiro_agent: 'kirocrew-lite', workspace: 'docs', memory_store: 'default', model: '' },
 ]
 
@@ -75,8 +75,12 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   const page = await newPage('dark')
   const rows = await page.getByRole('listitem').count()
   check('01-roster rows', rows >= 4, `listitems=${rows}`)
-  const working = await page.getByText('Working').count()
-  check('01-roster live presence', working >= 1, `working-labels=${working} (store-driven dot for member-radar)`)
+  const statusLabels = await page.getByText(/^(Working|Idle)$/).count()
+  check('01-roster no status labels', statusLabels === 0, `status-labels=${statusLabels} (presence rides the avatar dot)`)
+  const preview = await page.getByText('Six new issues: four covered by open PRs.').count()
+  check('01-roster last-message preview', preview >= 1, `preview-rows=${preview}`)
+  const search = await page.getByTestId('member-search').count()
+  check('01-roster search box', search === 1, `search-inputs=${search}`)
   await page.screenshot({ path: `${OUT}/01-roster-dark.png` })
   await page.close()
 }

@@ -2001,6 +2001,7 @@ export interface MemberRosterRow {
   running: boolean
   /** Epoch seconds of the DM transcript's last write; 0 = never talked. */
   last_active_ts?: number
+  last_message?: string
   kiro_agent?: string
   workspace?: string
   memory_store?: string

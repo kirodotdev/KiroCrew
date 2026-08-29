@@ -5295,7 +5295,7 @@ class ConversationLog:
     #: Max characters returned in a last-message preview.
     _PREVIEW_MAX_CHARS = 120
 
-    def last_message_preview(self, key: str) -> str:
+    def last_message_preview(self, key: str, sanitize=None) -> str:
         """Return a short preview of the session's last message ('' if none).
 
         Reads only the tail of the JSONL file (bounded), scanning backwards
@@ -5305,6 +5305,14 @@ class ConversationLog:
         If the initial tail window yields nothing parseable (a single trailing
         line larger than the window), retries once with a 16× window before
         giving up.
+
+        ``sanitize`` (a ``str -> str`` callable) runs on the FULL extracted
+        text BEFORE the length cap. Order is load-bearing: a credential that
+        straddles the truncation boundary leaves a partial token the caller's
+        pattern-based redactors can no longer match, so redaction after
+        truncation lets a raw credential prefix through. Callers inject the
+        redaction chain here (a callable, so this module never imports the
+        security layer).
         """
         path = self._path(key)
         try:
@@ -5336,6 +5344,9 @@ class ConversationLog:
                 preview = strip_markdown_preview(text)
                 if not preview:
                     continue
+                if sanitize is not None:
+                    # Full text first, cap second — see the docstring.
+                    preview = sanitize(preview)
                 if len(preview) > self._PREVIEW_MAX_CHARS:
                     preview = preview[: self._PREVIEW_MAX_CHARS].rstrip() + "…"
                 return preview

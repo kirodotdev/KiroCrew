@@ -13430,11 +13430,10 @@
       "pick_a_member": "Scegli un membro per aprire la conversazione.",
       "roster_load_failed": "Impossibile caricare l'elenco dei membri.",
       "slug_collision": "Questo membro condivide il proprio identificatore con {{name}}, la cui conversazione lo possiede già. Rinomina una delle crew perché ognuna abbia la propria conversazione.",
-      "status_idle": "Inattivo",
-      "status_working": "Al lavoro",
       "thread_open_failed": "Impossibile aprire la conversazione di questo membro.",
       "title": "Membri della crew",
-      "workspace": "Spazio di lavoro"
+      "workspace": "Spazio di lavoro",
+      "search_members": "Cerca membri…"
     }
   },
   "privacyDisclosure": {

@@ -23,6 +23,7 @@ import logging
 
 from aiohttp import web
 
+import kiro_crew.dashboard.handlers as _h
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
@@ -142,21 +143,35 @@ async def api_members(request: web.Request) -> web.Response:
     # transcript's mtime is the one durable signal that survives restarts and
     # covers live and dormant threads alike. File stats are IO — one thread
     # hop for the whole roster, mirroring the binding reads above.
-    def _read_last_active() -> dict[str, float]:
+    def _read_transcript_tails() -> dict[str, tuple[float, str]]:
         if state is None or state.conversation_log is None:
             return {}
-        out: dict[str, float] = {}
+
+        def _sanitize(text: str) -> str:
+            # Same redaction chain the sessions list uses, injected so it
+            # runs BEFORE the preview's length cap — a credential split by
+            # truncation leaves a partial token the patterns cannot match.
+            text, _ = _h.redact_exfiltration_urls(text)
+            text, _ = _h.redact_credentials(text)
+            return text
+
+        out: dict[str, tuple[float, str]] = {}
         for row in rows:
             if not row["slot_key"]:
                 continue
-            mt = state.conversation_log.session_mtime(f"dashboard:{row['slot_key']}")
-            if mt:
-                out[row["slot_key"]] = mt
+            log_key = f"dashboard:{row['slot_key']}"
+            mt = state.conversation_log.session_mtime(log_key)
+            if not mt:
+                continue
+            preview = state.conversation_log.last_message_preview(log_key, sanitize=_sanitize)
+            out[row["slot_key"]] = (mt, preview)
         return out
 
-    last_active = await asyncio.to_thread(_read_last_active)
+    tails = await asyncio.to_thread(_read_transcript_tails)
     for row in rows:
-        row["last_active_ts"] = last_active.get(row["slot_key"], 0.0)
+        mt, preview = tails.get(row["slot_key"], (0.0, ""))
+        row["last_active_ts"] = mt
+        row["last_message"] = preview
 
     return web.json_response({"members": rows})
 

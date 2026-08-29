@@ -1054,11 +1054,17 @@ async def api_sessions(request: web.Request) -> web.Response:
         log = state.conversation_log
 
         def _attach_previews(sessions: list[dict]) -> None:
+            def _sanitize(text: str) -> str:
+                # Injected so redaction runs BEFORE the preview's length cap:
+                # a credential split by truncation leaves a partial token the
+                # patterns cannot match, letting its raw prefix through.
+                text, _ = _h.redact_exfiltration_urls(text)
+                text, _ = _h.redact_credentials(text)
+                return text
+
             for s in sessions:
-                preview = log.last_message_preview(s.get("key", ""))
+                preview = log.last_message_preview(s.get("key", ""), sanitize=_sanitize)
                 if preview:
-                    preview, _ = _h.redact_exfiltration_urls(preview)
-                    preview, _ = _h.redact_credentials(preview)
                     s["preview"] = preview
 
         # Tail reads are sync file IO — keep them off the event loop.

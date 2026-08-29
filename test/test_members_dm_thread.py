@@ -196,8 +196,35 @@ class TestMemberRoutes:
                 data = await resp.json()
         rows = {r["name"]: r for r in data["members"]}
         assert rows[CREW]["last_active_ts"] > 0
+        # The row also carries the transcript's last-message preview — the
+        # roster sub-line, same data a session row shows.
+        assert rows[CREW]["last_message"] == "hello"
         # A member with no transcript stays at 0 — sorted last, never an error.
         assert rows["Docs_Writer"]["last_active_ts"] == 0.0
+        assert rows["Docs_Writer"]["last_message"] == ""
+
+    @pytest.mark.asyncio
+    async def test_roster_preview_redacts_before_truncation(self, tmp_path):
+        """A credential straddling the preview's length cap never leaks.
+
+        Redaction runs on the FULL text before the 120-char cap: truncating
+        first splits the token, and the pattern-based redactors cannot match
+        a partial credential — its raw prefix would reach /api/members.
+        """
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        key = f"dashboard:{member_slot_key(CREW)}"
+        # Padding places the AKIA token across the 120-char boundary.
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        state.conversation_log.append(key, "assistant", "x" * 110 + " " + secret)
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members")
+                assert resp.status == 200
+                data = await resp.json()
+        preview = {r["name"]: r for r in data["members"]}[CREW]["last_message"]
+        # Neither the full token nor any partial prefix of it survives.
+        assert "AKIA" not in preview
 
     @pytest.mark.asyncio
     async def test_thread_create_then_roster_reports_bound(self, tmp_path):

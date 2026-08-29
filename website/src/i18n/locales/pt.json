@@ -13430,11 +13430,10 @@
       "pick_a_member": "Escolha um membro para abrir a conversa.",
       "roster_load_failed": "Não foi possível carregar a lista de membros.",
       "slug_collision": "Este membro compartilha seu identificador com {{name}}, cuja conversa já o possui. Renomeie uma das equipes para que cada uma tenha sua própria conversa.",
-      "status_idle": "Ocioso",
-      "status_working": "Trabalhando",
       "thread_open_failed": "Não foi possível abrir a conversa deste membro.",
       "title": "Membros da equipe",
-      "workspace": "Espaço de trabalho"
+      "workspace": "Espaço de trabalho",
+      "search_members": "Pesquisar membros…"
     }
   },
   "privacyDisclosure": {

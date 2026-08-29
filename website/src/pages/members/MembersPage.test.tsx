@@ -226,4 +226,31 @@ describe('MembersPage drawer and edit jump', () => {
       navigateSpy.mockClear()
     }
   })
+
+  it('roster rows show the last message preview, not an Idle/Working label', async () => {
+    await renderPage([
+      row({ last_message: 'Six new issues triaged.' }),
+      row({ name: 'quiet', slug: 'quiet' }),
+    ])
+    await screen.findByText('oncall')
+    // The preview is the row's sub-line, like a session row. Presence rides
+    // the avatar dot, so a textual status label must not come back.
+    expect(screen.getByText('Six new issues triaged.')).toBeTruthy()
+    expect(screen.queryByText(/^(idle|working)$/i)).toBeNull()
+  })
+
+  it('the search box filters the roster by name', async () => {
+    await renderPage([
+      row({ name: 'radar', slug: 'radar' }),
+      row({ name: 'scribe', slug: 'scribe' }),
+    ])
+    await screen.findByText('radar')
+    // SearchInput spreads props onto its inner <input>, so the testid IS the input.
+    const box = screen.getByTestId('member-search') as HTMLInputElement
+    fireEvent.change(box, { target: { value: 'scr' } })
+    expect(screen.queryByText('radar')).toBeNull()
+    expect(screen.getByText('scribe')).toBeTruthy()
+    fireEvent.change(box, { target: { value: '' } })
+    expect(screen.getByText('radar')).toBeTruthy()
+  })
 })

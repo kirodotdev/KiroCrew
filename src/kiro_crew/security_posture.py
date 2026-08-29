@@ -1335,6 +1335,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/ws.py",
         "dashboard/server.py",
         "dashboard/handlers/sessions.py",
+        # Roster last-message previews: same preview + redaction chain as
+        # handlers/sessions.py, feeding the same dashboard HTTP surface the
+        # registered sink already covers.
+        "dashboard/handlers/members.py",
         "dashboard/handlers/artifacts.py",
         "dashboard/handlers/core.py",
         "dashboard/handlers/cron.py",

@@ -13252,11 +13252,10 @@
       "pick_a_member": "Wähle ein Mitglied, um die Unterhaltung zu öffnen.",
       "roster_load_failed": "Die Mitgliederliste konnte nicht geladen werden.",
       "slug_collision": "Dieses Mitglied teilt seinen Bezeichner mit {{name}}, dessen Unterhaltung ihn bereits belegt. Benenne eine der Crews um, damit jede ihre eigene Unterhaltung erhält.",
-      "status_idle": "Inaktiv",
-      "status_working": "Arbeitet",
       "thread_open_failed": "Die Unterhaltung dieses Mitglieds konnte nicht geöffnet werden.",
       "title": "Crew-Mitglieder",
-      "workspace": "Arbeitsbereich"
+      "workspace": "Arbeitsbereich",
+      "search_members": "Mitglieder suchen…"
     }
   },
   "privacyDisclosure": {

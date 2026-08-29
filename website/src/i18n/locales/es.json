@@ -13431,11 +13431,10 @@
       "pick_a_member": "Elige un miembro para abrir su conversación.",
       "roster_load_failed": "No se pudo cargar la lista de miembros.",
       "slug_collision": "Este miembro comparte su identificador con {{name}}, cuya conversación ya lo posee. Cambia el nombre de uno de los equipos para que cada uno tenga su propia conversación.",
-      "status_idle": "Inactivo",
-      "status_working": "Trabajando",
       "thread_open_failed": "No se pudo abrir la conversación de este miembro.",
       "title": "Miembros del equipo",
-      "workspace": "Espacio de trabajo"
+      "workspace": "Espacio de trabajo",
+      "search_members": "Buscar miembros…"
     }
   },
   "privacyDisclosure": {

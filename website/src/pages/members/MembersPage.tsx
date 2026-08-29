@@ -29,6 +29,7 @@ import { useAppSelector } from '../../store'
 import CrewAvatar from '../../components/CrewAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { SearchInput } from '../../components/ui'
 import ResizeHandle from '../../components/ResizeHandle'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
@@ -119,14 +120,15 @@ export default function MembersPage() {
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted once from the roster
   // snapshot — live re-sorting mid-session would move rows under the cursor.
-  const sortedMembers = useMemo(
-    () =>
-      [...members].sort(
-        (a, b) =>
-          (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
-      ),
-    [members],
-  )
+  const [filter, setFilter] = useState('')
+  const sortedMembers = useMemo(() => {
+    const ordered = [...members].sort(
+      (a, b) =>
+        (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
+    )
+    const q = filter.trim().toLowerCase()
+    return q ? ordered.filter((m) => m.name.toLowerCase().includes(q)) : ordered
+  }, [members, filter])
   const activeSlot = active ? slots[active.name] ?? '' : ''
   const activeError = active ? errors[active.name] ?? '' : ''
 
@@ -200,6 +202,16 @@ export default function MembersPage() {
         <div className="px-4 pb-2 text-[11px] text-muted">
           {t('pages.membersPage.member_count', { count: members.length })}
         </div>
+        {/* Same search idiom as the Sessions sidebar. */}
+        <div className="px-2 pb-1">
+          <SearchInput
+            className="w-full"
+            placeholder={t('pages.membersPage.search_members')}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            data-testid="member-search"
+          />
+        </div>
         <ul
           className="flex-1 overflow-y-auto scrollbar-none list-none m-0 px-2 pb-2"
           style={{ scrollbarWidth: 'none' }}
@@ -248,10 +260,11 @@ export default function MembersPage() {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-[13px] font-medium truncate">{m.name}</span>
+                  {/* Last-message preview, like a session row — presence
+                      already rides the avatar dot, so a textual Idle/Working
+                      label said nothing the dot did not. */}
                   <span className="block text-[11px] text-muted truncate">
-                    {isRunning(m)
-                      ? t('pages.membersPage.status_working')
-                      : t('pages.membersPage.status_idle')}
+                    {m.last_message || '\u00a0'}
                   </span>
                 </span>
               </button>
@@ -296,11 +309,6 @@ export default function MembersPage() {
               <CrewAvatar seed={active.name} size={30} />
               <div className="min-w-0 flex-1">
                 <div className="text-[13.5px] font-semibold truncate">{active.name}</div>
-                <div className="text-[11px] text-muted truncate">
-                  {isRunning(active)
-                    ? t('pages.membersPage.status_working')
-                    : t('pages.membersPage.status_idle')}
-                </div>
               </div>
               {/* One action in the header: toggle the detail drawer — same
                   icon and hit-target as the chat page's side-panel toggle, so
@@ -358,11 +366,13 @@ export default function MembersPage() {
             <div className="text-[11px] font-semibold tracking-wide text-muted flex-1">
               {t('pages.membersPage.configuration')}
             </div>
-            {/* Drawer-local close: below md the overlay covers the header's
-                Details toggle, so without this the drawer cannot be closed. */}
+            {/* Drawer-local close, MOBILE ONLY: below md the overlay covers
+                the header's toggle, so without this the drawer cannot be
+                closed there. On md+ the header toggle is the one close
+                gesture, same as the chat page's side panel. */}
             <button
               onClick={() => setDrawerOpen(false)}
-              className="inline-flex items-center p-1 -mr-1 rounded hover:bg-accent/40"
+              className="md:hidden inline-flex items-center p-1 -mr-1 rounded hover:bg-accent/40"
               aria-label={t('app.close')}
               data-testid="member-drawer-close"
             >
