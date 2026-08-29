@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import inspect as pyinspect
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import kiro_crew
 from kiro_crew.dashboard.handlers import agentcore_inspect as handler
 from kiro_crew.platform import agentcore_inspect as inspect
 
@@ -120,6 +126,51 @@ def test_snapshot_unusable_url(monkeypatch: pytest.MonkeyPatch) -> None:
     _isolate(monkeypatch, url="https://example.test/mcp")
     snap = inspect.inspect_snapshot()
     assert snap["code"] == inspect.SNAPSHOT_UNUSABLE_URL
+
+
+def test_snapshot_classifies_control_client_init_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate(monkeypatch)
+
+    def _boom(_region: str) -> None:
+        raise inspect._ControlClientError(inspect.SNAPSHOT_AWS_ERROR)
+
+    monkeypatch.setattr(inspect, "_control_client", _boom)
+    snap = inspect.inspect_snapshot()
+    assert snap["code"] == inspect.SNAPSHOT_AWS_ERROR
+
+
+def test_synchronize_classifies_control_client_init_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate(monkeypatch)
+
+    def _boom(_region: str) -> None:
+        raise inspect._ControlClientError(inspect.SNAPSHOT_AWS_ERROR)
+
+    monkeypatch.setattr(inspect, "_control_client", _boom)
+    result = inspect.synchronize_target("t1")
+    assert result["code"] == inspect.SNAPSHOT_AWS_ERROR
+
+
+def test_control_client_wraps_construction_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Boom(Exception):
+        pass
+
+    fake = type(
+        "Boto",
+        (),
+        {
+            "client": staticmethod(
+                lambda *_a, **_k: (_ for _ in ()).throw(Boom("profile not found"))
+            )
+        },
+    )
+    monkeypatch.setitem(sys.modules, "boto3", fake)
+    with pytest.raises(inspect._ControlClientError) as caught:
+        inspect._control_client("us-east-1")
+    assert caught.value.code == inspect.SNAPSHOT_AWS_ERROR
 
 
 def test_snapshot_ok_lists_targets_and_tools(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -344,6 +395,101 @@ def test_mcp_post_refuses_unsigned_remote_host() -> None:
         )
 
 
+def test_mcp_post_rejects_oversized_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Resp:
+        headers = {"Content-Type": "application/json"}
+
+        def read(self, n: int = -1) -> bytes:
+            assert n == inspect.TOOLS_LIST_MAX_BYTES + 1
+            return b"x" * n
+
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(inspect, "loopback_urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_sigv4.proxy_auth_headers",
+        lambda _key: {"Authorization": "Bearer test"},
+    )
+    with pytest.raises(ValueError, match="exceeds size limit"):
+        inspect._mcp_post(
+            "http://127.0.0.1:18765/mcp",
+            "us-west-2",
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
+
+
+def test_mcp_post_accepts_body_at_byte_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = b'{"ok":true}'
+
+    class _Resp:
+        headers = {"Content-Type": "application/json"}
+
+        def read(self, n: int = -1) -> bytes:
+            assert n == inspect.TOOLS_LIST_MAX_BYTES + 1
+            return payload
+
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(inspect, "loopback_urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_sigv4.proxy_auth_headers",
+        lambda _key: {"Authorization": "Bearer test"},
+    )
+    headers, body = inspect._mcp_post(
+        "http://127.0.0.1:18765/mcp",
+        "us-west-2",
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    )
+    assert body == payload
+    assert headers["Content-Type"] == "application/json"
+
+
+def test_mcp_post_uses_loopback_urlopen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ambient HTTP_PROXY must not see X-Kirocrew-Proxy-* credentials."""
+    seen: list[object] = []
+
+    class _Resp:
+        headers = {"Content-Type": "application/json"}
+
+        def read(self, n: int = -1) -> bytes:
+            return b'{"ok":true}'
+
+        def __enter__(self) -> "_Resp":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def _open(req: object, timeout: float = 0) -> _Resp:
+        del timeout
+        seen.append(req)
+        return _Resp()
+
+    def _forbid_urlopen(*args: object, **kwargs: object) -> None:
+        raise AssertionError("default urlopen")
+
+    monkeypatch.setattr(inspect, "loopback_urlopen", _open)
+    monkeypatch.setattr(inspect.urllib.request, "urlopen", _forbid_urlopen)
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_sigv4.proxy_auth_headers",
+        lambda _key: {"X-Kirocrew-Proxy-Token": "secret"},
+    )
+    inspect._mcp_post(
+        "http://127.0.0.1:18765/mcp",
+        "us-west-2",
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    )
+    assert seen
+
+
 def test_snapshot_access_denied(monkeypatch: pytest.MonkeyPatch) -> None:
     class Denied(Exception):
         response = {"Error": {"Code": "AccessDeniedException"}}
@@ -473,6 +619,15 @@ def test_snapshot_scrubs_token_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "token" not in inspect.inspect_snapshot()["gateway"]
 
 
+def test_scrub_redacts_credential_strings() -> None:
+    from kiro_crew.platform.agentcore_inspect import _scrub
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    out = _scrub({"description": f"tool {secret} docs"})
+    dumped = json.dumps(out)
+    assert secret not in dumped
+
+
 class _Req:
     def __init__(self, body: Any = None, *, app: str | None = None, owner: bool = True) -> None:
         self._body = body
@@ -497,14 +652,18 @@ def _handler_isolate(monkeypatch: pytest.MonkeyPatch) -> None:
         "_refuse_non_owner",
         lambda request, operation: None,
     )
+    monkeypatch.setattr(
+        handler,
+        "_refuse_disabled_capability",
+        lambda request, operation: None,
+    )
 
 
 @pytest.mark.asyncio
 async def test_handler_get_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     _handler_isolate(monkeypatch)
     monkeypatch.setattr(
-        handler,
-        "inspect_snapshot",
+        "kiro_crew.platform.agentcore_inspect.inspect_snapshot",
         lambda include_tools=True: {"code": "ok", "targets": [], "tools": {"items": []}},
     )
     resp = await handler.api_agentcore_gateway_get(_Req())
@@ -521,8 +680,241 @@ async def test_handler_app_token_refused(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_handler_refuses_when_capability_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handler, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(handler, "_refuse_non_owner", lambda request, operation: None)
+
+    class _Denied:
+        permitted = False
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        lambda *a, **k: _Denied(),
+    )
+    resp = await handler.api_agentcore_gateway_get(_Req())
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "agentcore_disabled"
+
+
+@pytest.mark.asyncio
 async def test_handler_sync_requires_target_id(monkeypatch: pytest.MonkeyPatch) -> None:
     _handler_isolate(monkeypatch)
     resp = await handler.api_agentcore_gateway_sync(_Req({}))
     assert resp.status == 400
     assert json.loads(resp.text)["code"] == "invalid_target"
+
+
+def test_dashboard_handlers_import_does_not_load_inspect(tmp_path: Path) -> None:
+    """Gateway boot imports ``dashboard.handlers``; the catalog stays lazy."""
+    src = str(Path(kiro_crew.__file__).resolve().parents[1])
+    env = dict(os.environ)
+    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    env.pop("COV_CORE_SOURCE", None)
+    env.pop("COVERAGE_PROCESS_START", None)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys\n"
+            "import kiro_crew.dashboard.handlers  # noqa: F401\n"
+            "print(json.dumps({\n"
+            "  'inspect': 'kiro_crew.dashboard.handlers.agentcore_inspect' in sys.modules,\n"
+            "  'platform': 'kiro_crew.platform.agentcore_inspect' in sys.modules,\n"
+            "}))\n",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload["inspect"] is False
+    assert payload["platform"] is False
+
+
+def test_system_routes_lazy_load_inspect() -> None:
+    from kiro_crew.dashboard.routes import system as routes
+
+    src = pyinspect.getsource(routes.register)
+    assert "handlers.api_agentcore_gateway_get" not in src
+    assert "_lazy_agentcore" in src
+
+
+def test_inspect_handlers_offload_owner_gate_and_audit() -> None:
+    """SEL first-use mkdirs; owner + audit must not run on the loop."""
+    gate = pyinspect.getsource(handler._owner_gate)
+    audit = pyinspect.getsource(handler._audit_async)
+    assert "asyncio.to_thread(_refuse_non_owner" in gate
+    assert "asyncio.to_thread(_refuse_disabled_capability" in gate
+    assert "asyncio.to_thread(" in audit
+    for fn in (
+        handler.api_agentcore_gateway_get,
+        handler.api_agentcore_gateway_verify,
+        handler.api_agentcore_gateway_sync,
+    ):
+        src = pyinspect.getsource(fn)
+        assert "await _owner_gate(" in src
+        assert "await _audit_async(" in src
+        assert "_refuse_non_owner(" not in src
+        assert "_audit(" not in src.replace("_audit_async(", "")
+
+
+def test_parse_gateway_ref_rejects_unusable_hosts() -> None:
+    assert inspect.parse_gateway_ref("") is None
+    assert inspect.parse_gateway_ref("http://gw.example/mcp") is None
+    assert inspect.parse_gateway_ref("https://example.com/mcp") is None
+    parsed = inspect.parse_gateway_ref(GW_URL)
+    assert parsed is not None
+    assert parsed["id"] == "demo-gw"
+    assert parsed["region"] == "us-west-2"
+
+
+def test_inspect_snapshot_unusable_and_missing_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        inspect, "resolved_gateway_url", lambda: "https://not-a-gateway.example/mcp"
+    )
+    monkeypatch.setattr(inspect, "resolved_posture", lambda: "workload")
+    monkeypatch.setattr(inspect, "resolved_workload_name", lambda: "crew")
+    monkeypatch.setattr(inspect, "extra_available", lambda: True)
+    snap = inspect.inspect_snapshot()
+    assert snap["code"] == inspect.SNAPSHOT_UNUSABLE_URL
+
+    monkeypatch.setattr(inspect, "resolved_gateway_url", lambda: GW_URL)
+    monkeypatch.setattr(inspect, "_control_client", lambda region: None)
+    snap = inspect.inspect_snapshot()
+    assert snap["code"] == inspect.SNAPSHOT_EXTRA_MISSING
+
+
+def test_handler_audit_logs_and_swallows_sel_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged: list[str] = []
+
+    class _Sel:
+        def log_api_access(self, **kwargs: object) -> None:
+            logged.append(str(kwargs.get("operation")))
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: _Sel())
+    handler._audit(_Req(), operation=handler.OP_GET, outcome="success", resources="ok")
+    assert logged == [handler.OP_GET]
+
+    def _boom() -> None:
+        raise RuntimeError("sel down")
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", _boom)
+    handler._audit(_Req(), operation=handler.OP_GET, outcome="denied", error="non_owner")
+
+
+@pytest.mark.asyncio
+async def test_handler_verify_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    _handler_isolate(monkeypatch)
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_inspect.inspect_snapshot",
+        lambda include_tools=True: {"code": "ok", "targets": []},
+    )
+    resp = await handler.api_agentcore_gateway_verify(_Req())
+    assert resp.status == 200
+    assert json.loads(resp.text)["code"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_handler_non_owner_and_stale_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    from aiohttp import web
+
+    monkeypatch.setattr(handler, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+        lambda _req: False,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.source_providers.stale_owner_session_response",
+        lambda _req: None,
+    )
+    resp = await handler.api_agentcore_gateway_get(_Req())
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "dashboard_owner_required"
+
+    stale = web.json_response({"code": "stale_session_reauth"}, status=401)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.source_providers.stale_owner_session_response",
+        lambda _req: stale,
+    )
+    resp = await handler.api_agentcore_gateway_get(_Req())
+    assert resp.status == 401
+    assert json.loads(resp.text)["code"] == "stale_session_reauth"
+
+
+@pytest.mark.asyncio
+async def test_handler_refuses_when_governance_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(handler, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(handler, "_refuse_non_owner", lambda request, operation: None)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("governance down")
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.governance_profiles.governance_permits",
+        _boom,
+    )
+    resp = await handler.api_agentcore_gateway_get(_Req())
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "agentcore_disabled"
+
+
+@pytest.mark.asyncio
+async def test_handler_sync_rejects_bad_json_and_non_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _handler_isolate(monkeypatch)
+    resp = await handler.api_agentcore_gateway_sync(_Req(ValueError("bad json")))
+    assert resp.status == 400
+    assert json.loads(resp.text)["code"] == "invalid_json"
+
+    resp = await handler.api_agentcore_gateway_sync(_Req(["not", "an", "object"]))
+    assert resp.status == 400
+    assert json.loads(resp.text)["code"] == "invalid_json"
+
+
+@pytest.mark.asyncio
+async def test_handler_sync_maps_synchronize_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _handler_isolate(monkeypatch)
+    codes = [
+        ("accepted", 200),
+        ("aws_denied", 403),
+        ("not_found", 404),
+        ("aws_error", 502),
+        ("invalid_target", 400),
+    ]
+    for code, status in codes:
+        monkeypatch.setattr(
+            "kiro_crew.platform.agentcore_inspect.synchronize_target",
+            lambda _tid, _code=code: {"code": _code},
+        )
+        resp = await handler.api_agentcore_gateway_sync(_Req({"target_id": " t1 "}))
+        assert resp.status == status
+        assert json.loads(resp.text)["code"] == code
+
+
+def test_synchronize_target_maps_preconditions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(inspect, "resolved_gateway_url", lambda: "")
+    assert inspect.synchronize_target("t1")["code"] == inspect.SNAPSHOT_NO_URL
+
+    monkeypatch.setattr(inspect, "resolved_gateway_url", lambda: GW_URL)
+    monkeypatch.setattr(inspect, "extra_available", lambda: False)
+    assert inspect.synchronize_target("t1")["code"] == inspect.SNAPSHOT_EXTRA_MISSING
+
+    monkeypatch.setattr(inspect, "extra_available", lambda: True)
+    monkeypatch.setattr(inspect, "resolved_gateway_url", lambda: "https://example.com/mcp")
+    assert inspect.synchronize_target("t1")["code"] == inspect.SNAPSHOT_UNUSABLE_URL
+
+    monkeypatch.setattr(inspect, "resolved_gateway_url", lambda: GW_URL)
+    monkeypatch.setattr(inspect, "_control_client", lambda region: None)
+    assert inspect.synchronize_target("t1")["code"] == inspect.SNAPSHOT_EXTRA_MISSING

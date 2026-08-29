@@ -759,6 +759,7 @@ class AcpProvider(LLMProvider):
                     cwd=work_dir,
                     agent=agent or None,
                     member_session_key=member_session_key,
+                    session_key=getattr(self._client, "_session_key", "") or "",
                 )
                 if attempt:
                     logger.info(
@@ -976,6 +977,7 @@ class AcpProvider(LLMProvider):
                         cwd=work_dir,
                         agent=agent or None,
                         member_session_key=self._member_session_key(),
+                        session_key=getattr(self._client, "_session_key", "") or "",
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():

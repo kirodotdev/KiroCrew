@@ -85,6 +85,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_AGENTCORE_GATEWAY,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
@@ -3971,10 +3972,13 @@ class AcpClient:
         if self.backend in MIRRORS:
             return []
         servers = self._pooled_broker_stubs()
-        if self._session_key:
+        if self._session_key and self.backend in ACP_BACKENDS_AGENTCORE_GATEWAY:
             from kiro_crew.platform.agentcore_gateway import session_gateway_servers
 
-            servers = [*servers, *session_gateway_servers(self._session_key)]
+            servers = [
+                *servers,
+                *session_gateway_servers(self._session_key, agent=self._agent or ""),
+            ]
         return servers
 
     def _resolve_session_mcp_servers(self) -> list[dict[str, Any]]:
