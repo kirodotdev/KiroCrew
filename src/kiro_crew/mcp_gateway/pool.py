@@ -494,33 +494,14 @@ class BackendPool:
             "exclusive": len(self._exclusive),
         }
 
-    def _metrics_snapshot(self) -> dict[str, Any]:
-        """Sync per-backend snapshot. PRIVATE: it does a blocking /proc RSS
-        walk, so it must never run on the event loop — callers use
-        :meth:`metrics_snapshot_async`, which offloads the walk via to_thread."""
-        now = time.monotonic()
-        backends = [
-            {
-                "server": b.pool_key.server_name,
-                "agent": b.pool_key.agent_name,
-                "pid": b.pid,
-                "sessions": b.refcount,
-                "idle_s": round(max(0.0, now - b.last_used_at), 1),
-                "rss_kb": _proc_rss_kb(b.pid),
-            }
-            for b in self._backends.values()
-            if b.is_alive
-        ]
-        return {**self.stats(), "backends": backends}
-
     async def metrics_snapshot_async(self) -> dict[str, Any]:
-        """Race-free, off-loop variant of :meth:`_metrics_snapshot`.
+        """Per-backend snapshot, taken off the event loop.
 
         Snapshots per-backend identity under the pool lock (fast, on-loop),
         then performs the blocking ``/proc`` RSS walk off the event loop via
-        ``asyncio.to_thread``. A plain ``to_thread(_metrics_snapshot)`` would
-        iterate ``_backends`` in the worker thread and can race a concurrent
-        add/evict ("dict changed size during iteration").
+        ``asyncio.to_thread``. Snapshotting first is load-bearing: iterating
+        ``_backends`` in the worker thread can race a concurrent add/evict
+        ("dict changed size during iteration").
         """
         now = time.monotonic()
         async with self._lock:

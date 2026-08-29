@@ -1835,11 +1835,6 @@ def overlay_ready(overlay_dir: Path) -> bool:
         return False
 
 
-def is_wrapped_entry(entry: Any) -> bool:
-    """Diagnostic helper: ``True`` iff ``entry`` was produced by the rewriter."""
-    return isinstance(entry, dict) and entry.get(_WRAPPER_MARKER) is True
-
-
 def default_overlay_dir() -> Path:
     """Return ``$KIROCREW_HOME/mcp-gateway/agents`` (follows ``config_dir``)."""
     home = os.environ.get("KIROCREW_HOME")

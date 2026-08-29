@@ -20,7 +20,6 @@ import re
 import stat as stat_mod
 import time
 from pathlib import Path
-from typing import Any, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
@@ -36,10 +35,6 @@ _SPILL_DIR_NAME = "mcp_spill"
 
 # Max age (seconds) for spill files — older ones are cleaned on startup.
 _SPILL_MAX_AGE_SECS = 24 * 60 * 60  # 24 hours
-
-# Regex to extract a JSON-RPC id from the first ~4 KiB of a drained oversize
-# chunk. Handles both string ids ("id":"some-string") and integer ids (id:42).
-_ID_REGEX = re.compile(rb'"id"\s*:\s*("(?:[^"\\]|\\.)*?"|\d+)')
 
 
 def _spill_dir() -> Path:
@@ -83,28 +78,6 @@ def cleanup_old_spill_files() -> int:
     if deleted:
         logger.info("spill cleanup: removed %d files older than 24h", deleted)
     return deleted
-
-
-def extract_id_from_bytes(data: bytes) -> Optional[Any]:
-    """Parse the JSON-RPC 'id' field from the first ~4 KiB of raw bytes.
-
-    Returns the id value (str or int) or None if unparseable.
-    """
-    prefix = data[:4096]
-    m = _ID_REGEX.search(prefix)
-    if m is None:
-        return None
-    raw = m.group(1)
-    if raw.startswith(b'"'):
-        try:
-            return json.loads(raw.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-    else:
-        try:
-            return int(raw)
-        except ValueError:
-            return None
 
 
 def maybe_spill_response(
