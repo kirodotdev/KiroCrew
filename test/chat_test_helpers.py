@@ -222,6 +222,20 @@ def _make_state(tmp_path, **kwargs):
     return state
 
 
+def _slot_delete_path(state: DashboardState, key: str) -> str:
+    """The path a dashboard close sends: the key AND the instance it means.
+
+    Identity alone cannot tell the row the user clicked from a replacement that
+    took the key first, so the handler refuses a dashboard close that does not
+    name one. Reading the live incarnation here is what the client does when it
+    sends the row it is currently showing. A key absent from the registry keeps
+    the bare path, because that request is answered 404 before the naming is read.
+    """
+    live = getattr(state, "_slots", {}).get(key)
+    inc = getattr(live, "incarnation", "")
+    return f"/api/chat/slots/{key}?incarnation={inc}" if inc else f"/api/chat/slots/{key}"
+
+
 def _make_app(state: DashboardState) -> web.Application:
     """Minimal aiohttp app with chat endpoints."""
     from kiro_crew.dashboard.chat import (

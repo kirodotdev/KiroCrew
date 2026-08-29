@@ -141,7 +141,8 @@ class TestSlotCreation:
         assert "dashboard:reuse" in state._restricted_keys
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/reuse")
+            inc = state._slots["reuse"].incarnation
+            resp = await client.delete(f"/api/chat/slots/reuse?incarnation={inc}")
             assert resp.status == 200
 
         assert "dashboard:reuse" not in state._restricted_keys

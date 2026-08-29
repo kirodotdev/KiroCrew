@@ -217,7 +217,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     const store = makeStore()
     await renderPage(store)
     fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2'))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2', undefined))
     // The failed session was never published, so no unscoped slot is left behind.
     expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('chat-2')
     // No prefill into the wrong composer, and the suggestion survives for a retry.

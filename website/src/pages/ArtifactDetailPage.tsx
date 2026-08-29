@@ -1278,7 +1278,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       // Archive every slot bound to this slug, not just the resolved winner.
       for (const slot of boundSlots) {
         try {
-          await api.deleteChatSlot(slot.key)
+          await api.deleteChatSlot(slot.key, slot.incarnation)
         } catch (err) {
           // ONLY a 404 means "already archived, nothing to do". Any other
           // failure means the old session is still live server-side, so creating

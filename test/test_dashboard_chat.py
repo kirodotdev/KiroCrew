@@ -22,6 +22,7 @@ from chat_test_helpers import (
     _make_folder_app,
     _make_ready_kiro_prerequisite,
     _make_state,
+    _slot_delete_path,
 )
 from dashboard_owner_helpers import as_owner
 
@@ -3834,7 +3835,7 @@ class TestHistorySaveOnClose:
         slot.drain()
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/s1")
+            resp = await client.delete(_slot_delete_path(state, "s1"))
             data = await resp.json()
             assert data["ok"] is True
 
@@ -3860,7 +3861,7 @@ class TestHistorySaveOnClose:
         slot.drain()
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            await client.delete("/api/chat/slots/s1")
+            await client.delete(_slot_delete_path(state, "s1"))
 
         msgs = state.conversation_log.read_messages("dashboard:s1")
         roles = [m["role"] for m in msgs]
@@ -3913,7 +3914,7 @@ class TestHistorySaveOnClose:
                 json={"key": "dashboard:hist1", "title": "Old Chat"},
             )
             # Close without chatting
-            await client.delete("/api/chat/slots/hist1")
+            await client.delete(_slot_delete_path(state, "hist1"))
 
         # Original history should be unchanged
         msgs = log.read_messages("dashboard:hist1")
@@ -4079,11 +4080,11 @@ class TestResumeDedupe:
             state._slots["s1"].append("user", "new question")
             state._slots["s1"].append("assistant", "new answer")
             state._slots["s1"].drain()
-            await client.delete("/api/chat/slots/s1")
+            await client.delete(_slot_delete_path(state, "s1"))
 
             # Resume again and close without changes
             await client.post("/api/chat/slots/s1/resume", json={"key": "dashboard:s1"})
-            await client.delete("/api/chat/slots/s1")
+            await client.delete(_slot_delete_path(state, "s1"))
 
         # Should have 4 messages (original 2 + new 2), not duplicated
         msgs = log.read_messages("dashboard:s1")
@@ -4117,7 +4118,7 @@ class TestHistoryKeyPrefix:
             assert slot_key == "chat-1"  # canonical: prefix stripped, no fold needed
             state._slots[slot_key].append("user", "new msg")
             state._slots[slot_key].drain()
-            await client.delete(f"/api/chat/slots/{slot_key}")
+            await client.delete(_slot_delete_path(state, slot_key))
 
         # Should be saved under dashboard:chat-1, not dashboard:dashboard:chat-1
         msgs = log.read_messages("dashboard:chat-1")
@@ -13864,7 +13865,7 @@ class TestSlotTaskNoneGuard:
         state.get_or_create_slot("s1")
         # task is None → running is False → delete skips cancel
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/s1")
+            resp = await client.delete(_slot_delete_path(state, "s1"))
             assert resp.status == 200
 
     @pytest.mark.asyncio
@@ -13887,7 +13888,7 @@ class TestSlotTaskNoneGuard:
 
         async with TestClient(TestServer(_make_app(state))) as client:
             with patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop"):
-                resp = await client.delete("/api/chat/slots/s1")
+                resp = await client.delete(_slot_delete_path(state, "s1"))
             assert resp.status == 200
             assert slot.task.cancelled()
 
@@ -23486,7 +23487,7 @@ class TestCloseBroadcastDurability:
         monkeypatch.setattr(chat_handlers, "save_slot_off_loop", _boom)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/s1")
+            resp = await client.delete(_slot_delete_path(state, "s1"))
             assert resp.status == 500
 
         assert frames, "no frame was broadcast at all, so this proves nothing"
@@ -23508,7 +23509,7 @@ class TestCloseBroadcastDurability:
         calls = self._instrument(state, slot, monkeypatch)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/s1")
+            resp = await client.delete(_slot_delete_path(state, "s1"))
             assert resp.status == 200
 
         for step in ("save", "remove", "broadcast"):
@@ -23541,7 +23542,9 @@ class TestCloseBroadcastDurability:
         state.sessions.remove = AsyncMock(side_effect=_hang)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            close = asyncio.get_running_loop().create_task(client.delete("/api/chat/slots/s1"))
+            close = asyncio.get_running_loop().create_task(
+                client.delete(_slot_delete_path(state, "s1"))
+            )
             await asyncio.wait_for(seen.wait(), timeout=5.0)
             assert "save" in calls and calls.index("save") < calls.index("broadcast")
             assert "s1" not in state._slots
@@ -23570,7 +23573,7 @@ class TestCloseBroadcastDurability:
         calls = self._instrument(state, slot, monkeypatch)
 
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.delete("/api/chat/slots/s1")
+            resp = await client.delete(_slot_delete_path(state, "s1"))
             assert resp.status == 200
 
         assert "sync" in calls, f"the trailing sync never ran: {calls}"

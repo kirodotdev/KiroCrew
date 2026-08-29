@@ -400,7 +400,7 @@ describe('Welcome recreation preserves remote execution', () => {
 
     await waitFor(() => expect(apiMocks.createChatSlot).toHaveBeenCalled())
     expect(apiMocks.createChatSlot.mock.calls.at(-1)?.[8]).toBe('crew-remote-1')
-    expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1')
+    expect(apiMocks.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined)
   })
 })
 
