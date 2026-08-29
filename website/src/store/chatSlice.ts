@@ -2,13 +2,14 @@ import { createSlice, createAsyncThunk, createSelector, type PayloadAction } fro
 import { whenScrollQuiet } from '../lib/scrollQuiet'
 import { api } from '../api/client'
 import { devLog, inspectorOn } from '../dev/scrollInspector'
-import { addSlotOptimistic, updateSlot, removeSlotOptimistic, markSlotRead, fetchSlots, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
+import { addSlotOptimistic, updateSlot, removeSlotOptimistic, slotCloseStarted, slotCloseSettled, slotCloseRetireRead, markSlotRead, fetchSlots, fetchSlotsIfApplied, slotSurfaceKey, sseSlots, sseConnected } from './dashboardSlice'
 import { resolveDefaultColor } from '../utils/sessionColors'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { isStopEvent } from '../lib/stopEvent'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
-import { gcSessionStorage } from '../utils/storageGc'
+import { isCloseOutcomeUnknown, closeDefinitive } from '../utils/closeOutcome'
+import { alertSessionCloseFailed } from '../utils/sessionCloseFailure'
 import type { RootState } from './index'
 import type { ChatMessage, ChatSlot, SessionInfo, SubagentActivity, ToolActivity, WorkflowRunSummary } from '../types'
 import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
@@ -2869,9 +2870,140 @@ export const createSlot = createAsyncThunk<
   },
 )
 
-export const deleteSlot = createAsyncThunk(
+/** Ask the server to drop the slot, ONCE.
+ *
+ *  There is deliberately no retry and no verification probe. Slot keys are reusable
+ *  — `api_chat_slot_resume` revives a session under its own key — and nothing on the
+ *  wire distinguishes the instance a close targeted from a replacement, so a second
+ *  DELETE risks closing a stranger.
+ *
+ *  A failure needs no probe either, because the row is already governed by the list
+ *  that follows it: `api_chat_slot_delete` pops `_slots` at ONE point, and every
+ *  error it returns is either raised before that pop (both `nudge_retire_failed`
+ *  arms, and the app-teardown arm) or restores the slot after it (the save arm
+ *  re-inserts before answering). So a failure the server itself reports leaves the
+ *  key present and the refetch brings the row back, while a close whose success was
+ *  merely lost in transit leaves it popped and the refetch omits it. Both land
+ *  correctly, and the user is told the outcome could not be confirmed.
+ *
+ *  A 404 is SUCCESS: the slot is absent, which is the state being asked for (the
+ *  app-isolation 404s are unreachable without an app token). */
+async function closeSlotOnServer(key: string): Promise<void> {
+  try {
+    await api.deleteChatSlot(key)
+  } catch (e) {
+    if ((e as { status?: unknown } | null)?.status === 404) return
+    throw e
+  }
+}
+
+/** BEGIN a close: withhold the key AND drop the row — one obligation. Arming alone
+ *  leaves a visible row whose own reads are refused; removing alone lets a list race it back. */
+const beginSlotClose = (dispatch: (a: never) => unknown, key: string): void => {
+  dispatch(slotCloseStarted(key) as never)
+  dispatch(removeSlotOptimistic(key) as never)
+}
+
+const SLOT_RECONCILE_DELAY_MS = 250
+const SLOT_RECONCILE_MAX_DELAY_MS = 30_000
+
+/** Who can answer "did the reducer apply that read". Derived from the helper that owns the
+ *  verdict, so this cannot drift from it and the state shape needs no second declaration. */
+type SlotsStateReader = Parameters<typeof fetchSlotsIfApplied>[1]
+
+/** Re-read the list until one read APPLIES, and never give up. The withheld resume frame
+ *  carried no date, so it can never be replayed — until an authoritative list lands, a live
+ *  session stays hidden, and a bounded give-up makes that permanent. Backoff is capped, so
+ *  an offline tab settles into a slow poll instead of spinning. */
+const reconcileSlots = (
+  dispatch: (a: never) => { unwrap: () => Promise<unknown> },
+  getState: SlotsStateReader,
+  attempt = 0,
+): void => {
+  const again = (): void => {
+    const delay = Math.min(SLOT_RECONCILE_DELAY_MS * 2 ** attempt, SLOT_RECONCILE_MAX_DELAY_MS)
+    setTimeout(() => reconcileSlots(dispatch, getState, attempt + 1), delay)
+  }
+  // A REFUSED reply RESOLVES like any other, so keying recovery on rejection alone misses it.
+  // The helper returns null for refused AND failed, which is the reducer's own final verdict.
+  void fetchSlotsIfApplied(dispatch, getState)
+    .then(slots => { if (slots === null) again() })
+    .catch(again)
+}
+
+/** Issue the read that retires a close tombstone, and never strand it.
+ *
+ *  The tombstone is retired by a reply DATED after the close, so a read that never
+ *  arrives would withhold the key for the tab's lifetime — a session another client
+ *  resumes under it would stay invisible, since a server push carries no date and
+ *  can never retire. If the read fails, release the tombstone instead.
+ *
+ *  Releasing is safe because ordering no longer depends on the tombstone: a reply
+ *  issued before this close is refused by `applySlots` whether or not the key is
+ *  still withheld. */
+const retireCloseTombstone = (
+  dispatch: (a: never) => { unwrap: () => Promise<unknown> },
+  getState: SlotsStateReader,
+  key: string,
+): void => {
+  const read = dispatch(fetchSlots() as never) as { unwrap: () => Promise<unknown>; requestId?: string }
+  // Bind the tombstone to THIS read. Only it was issued after the DELETE resolved,
+  // so only its reply proves the server popped the slot.
+  if (read.requestId) dispatch(slotCloseRetireRead({ key, readId: read.requestId }) as never)
+  // Leave nothing withheld and ask for one more list: the withheld resume frame carried
+  // no date, so it cannot be replayed, only re-read.
+  const recover = (): void => {
+    dispatch(slotCloseSettled(key) as never)
+    reconcileSlots(dispatch, getState)
+  }
+  void (read.unwrap() as Promise<unknown>)
+    // Confirm AFTER retiring: only a read issued then postdates both the pop and a
+    // resume that raced the close, whose own push was withheld and dropped.
+    .then(() => fetchSlotsIfApplied(dispatch, getState))
+    // A REFUSED confirm RESOLVES, so resolution is NOT confirmation: null means the reducer
+    // discarded the list, and treating that as done leaves a resumed row hidden for good.
+    .then(slots => { if (slots === null) recover() })
+    .catch(recover)
+}
+
+/** Own a close END TO END: arm it, run the server op, then retire or release.
+ *
+ *  The arm/finish pairing is STRUCTURAL here rather than a convention a reviewer has
+ *  to check: `beginSlotClose` is called from this one place, so a new close path
+ *  cannot arm a tombstone and omit the sweep. The server op is injected because the
+ *  callers differ — one issues the DELETE, one has already archived the slot. */
+export const withSlotClose = async (
+  dispatch: (a: never) => { unwrap: () => Promise<unknown> },
+  getState: SlotsStateReader,
+  key: string,
+  closeOnServer: () => Promise<void>,
+): Promise<void> => {
+  beginSlotClose(dispatch, key)
+  try {
+    await closeOnServer()
+    retireCloseTombstone(dispatch, getState, key)
+  } catch (e) {
+    // An unknowable outcome is treated exactly as a SUCCESS: keep the row hidden and
+    // let the post-close read decide whether it comes back.
+    if (isCloseOutcomeUnknown(e)) {
+      retireCloseTombstone(dispatch, getState, key)
+    } else {
+      // A refusal is the server's considered answer, so the slot is provably still
+      // there. Release BEFORE the refetch, or that very reply is withheld too.
+      dispatch(slotCloseSettled(key) as never)
+      reconcileSlots(dispatch, getState)
+    }
+    throw e
+  }
+}
+
+export const deleteSlot = createAsyncThunk<
+  string,
+  string,
+  { rejectValue: StatusRejection }
+>(
   'chat/deleteSlot',
-  async (key: string, { dispatch, getState }) => {
+  async (key: string, { dispatch, getState, rejectWithValue }) => {
     const root = getState() as RootState
     const deletedSlot = root.dashboard.slots.find(s => s.key === key)
     // Use the surface key (forward-compat alias for `mode`) so a future
@@ -2904,13 +3036,21 @@ export const deleteSlot = createAsyncThunk(
         dispatch({ type: 'chat/clearSlotState' })
       }
     }
-    dispatch(removeSlotOptimistic(key))
     try {
-      await api.deleteChatSlot(key)
-      gcSessionStorage(key)
-    } catch {
-      dispatch(fetchSlots())
-      throw new Error('save failed')
+      // No per-key storage GC here: the key can be recreated during teardown, so even a
+      // 2xx does not prove the storage is still ours. The boot orphan sweep owns it.
+      await withSlotClose(dispatch, () => getState() as RootState, key, async () => {
+        await closeSlotOnServer(key)
+      })
+    } catch (e) {
+      // `miniSerializeError` keeps string fields only, so a thrown numeric status
+      // never reaches the notice — reject with it, as `switchSlot` does (#6199).
+      const status = (e as { status?: unknown } | null)?.status
+      // Carry the server's DEFINITIVE flag too: every close failure is a literal
+      // 500, so the status cannot tell the notice a refusal from an unknown outcome.
+      const definitive = closeDefinitive(e)
+      if (typeof status === 'number') return rejectWithValue({ status, message: errMessage(e), ...(definitive !== undefined ? { definitive } : {}) })
+      throw e
     } finally {
       // Settle the peer navigation before this thunk reports back, on the
       // failure path too. Callers that await it treat resolution as "the
@@ -2924,6 +3064,12 @@ export const deleteSlot = createAsyncThunk(
     return key
   },
 )
+
+/** Close a slot from a USER GESTURE, notice included. Owning the rejection here is
+ *  what stops a new gesture from dropping it and restoring the row with no word. */
+export const closeSlotWithNotice = (dispatch: (a: never) => { unwrap: () => Promise<unknown> }, key: string): void => {
+  void dispatch(deleteSlot(key) as never).unwrap().catch(alertSessionCloseFailed)
+}
 
 export const resumeFromHistory = createAsyncThunk(
   'chat/resumeFromHistory',
@@ -5309,6 +5455,11 @@ const chatSlice = createSlice({
        *  no fresher state to destroy; after it the live frame owns teardown. */
       .addCase(fetchSlots.fulfilled, (state, action) => {
         if (state.slotsSnapshotSeen === true) return
+        // A REFUSED reply predates a membership move, so the dashboard discarded its
+        // list; evicting from it would destroy a slot created while it travelled.
+        // This slice cannot reach dashboard state, so it reads the PROVISIONAL flag: a
+        // false positive can still evict here. Residual, recorded in the PR, not fixed.
+        if ((action.meta as { appliedProvisional?: boolean } | undefined)?.appliedProvisional !== true) return
         reconcileSlotResidue(state, action.payload)
       })
       .addCase(fetchHistory.fulfilled, (state, action) => {

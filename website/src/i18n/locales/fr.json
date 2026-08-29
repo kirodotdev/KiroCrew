@@ -8032,6 +8032,8 @@
       "working": "En cours"
     },
     "useSessionActions": {
+      "close_failed_refused": "La passerelle a refusé de fermer cette session. Elle est toujours ouverte. Vous pouvez la refermer.",
+      "close_failed_unknown": "Impossible de confirmer si cette session a été fermée. La liste se met à jour d'elle-même — évitez de la fermer à nouveau jusqu'à ce que la liste se stabilise : la ligne restera absente ou réapparaîtra.",
       "close_this_session": "Fermer cette session ?",
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",

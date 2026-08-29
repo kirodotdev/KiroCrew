@@ -7820,6 +7820,8 @@
       "working": "工作中"
     },
     "useSessionActions": {
+      "close_failed_refused": "网关拒绝关闭该会话。会话仍处于打开状态。你可以再次关闭它。",
+      "close_failed_unknown": "无法确认该会话是否已关闭。列表会自行更新；在列表稳定之前，请勿再次关闭。该行会保持消失，或再次出现。",
       "close_this_session": "关闭此会话？",
       "reload_failed": "会话重新加载失败。代理可能正在处理消息或网关不可达；请等会话空闲后重试。",
       "reload_failed_subagents": "该会话的子代理仍在工作中。等它们完成后再试。",

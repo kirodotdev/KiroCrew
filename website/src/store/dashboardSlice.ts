@@ -10,6 +10,19 @@ export interface SubagentDetail {
   id: string; task: string; agent: string; turns: number; last_tool: string; startedAt: number
 }
 
+/** One in-flight close, stamped with the close GENERATION it opened.
+ *
+ *  A generation rather than a timestamp: "stale" means a reply was ISSUED before
+ *  this close, which is a fact the client knows exactly, where elapsed time only
+ *  guesses at it. Nothing on the wire distinguishes slot instances, but every read
+ *  the client issues can be dated against the closes it has performed.
+ *
+ *  This type, `closeSeq`, `pendingSlotReads` and `retireReadId` below reconstruct an
+ *  ordering the wire does not carry. A server-stamped slots generation would delete
+ *  all four; that alternative and its scope are in
+ *  docs/architecture/design-notes/slots-ordering-token.md. */
+type CloseTombstone = { seen?: boolean; retireReadId?: string }
+
 interface DashboardState {
   status: StatusData | null
   connected: boolean
@@ -26,6 +39,17 @@ interface DashboardState {
   refreshTrigger: number
   unreadSlots: string[]
   slotsLoaded: boolean
+  // Slots whose close is in flight: key -> the close generation. Withheld from
+  // `slots` by `applySlots`, so no stale frame can reinstate the row.
+  closingSlots: Record<string, CloseTombstone>
+  // Monotonic count of closes begun. Stamped onto each tombstone, and captured by
+  // every in-flight read. Alternative wire design: design-notes/slots-ordering-token.md
+  closeSeq: number
+  // requestId -> the closeSeq current when that slots read was ISSUED. Kept until its
+  // own reply arrives: dropping it would look like a reply whose `pending` never ran.
+  pendingSlotReads: Record<string, number>
+  /** The reducer's OWN verdict on the last resolved read, recorded after it decides. */
+  lastSlotsRead: { readId?: string; applied: boolean } | null
   updateProgress: { step: string; detail: string } | null
   // Desktop updater: an update is discoverable/staged (found|downloading|
   // downloaded). Drives the Settings nav dot + the About tab dot. Mirrored
@@ -71,6 +95,10 @@ const initialState: DashboardState = {
   refreshTrigger: 0,
   unreadSlots: (() => { try { return JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]') as string[] } catch { return [] } })(),
   slotsLoaded: false,
+  closingSlots: {},
+  closeSeq: 0,
+  pendingSlotReads: {},
+  lastSlotsRead: null,
   updateProgress: null,
   desktopUpdateAvailable: false,
   subagentRunning: {},
@@ -83,7 +111,25 @@ const initialState: DashboardState = {
   enabledAppIds: [],
 }
 
-export const fetchSlots = createAsyncThunk('dashboard/fetchSlots', () => api.chatSlots())
+/** Carries the APPLIED verdict on the action. `chatSlice` evicts residue from this same
+ *  list and cannot reach dashboard state to ask, so the answer travels with the reply.
+ *  `fulfilledMeta` is what makes the two-argument `fulfillWithValue` legal. */
+export const fetchSlots = createAsyncThunk<
+  ChatSlot[],
+  void,
+  { fulfilledMeta: { appliedProvisional: boolean } }
+>(
+  'dashboard/fetchSlots',
+  async (_, { getState, requestId, fulfillWithValue }) => {
+    const slots = await api.chatSlots()
+    const d = (getState() as { dashboard: DashboardState }).dashboard
+    const issuedSeq = d.pendingSlotReads?.[requestId]
+    // PROVISIONAL: computed BEFORE the reducer, which sees a later `closeSeq` and so refuses
+    // more readily. Destructive callers must use `fetchSlotsIfApplied` instead.
+    const appliedProvisional = !(issuedSeq !== undefined && issuedSeq < (d.closeSeq ?? 0))
+    return fulfillWithValue(slots, { appliedProvisional })
+  },
+)
 
 export const changeApprovalMode = createAsyncThunk(
   'dashboard/changeApprovalMode',
@@ -137,6 +183,43 @@ const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
   delete state.subagentText[slotKey]
 }
 
+/** Close-in-flight keys to withhold, retiring any the incoming reply supersedes.
+ *
+ *  `readId` identifies this reply; a server PUSH has none. Retirement needs proof
+ *  the server POPPED the slot, and the close generation is not it:
+ *
+ *   1. sharing the close's generation is NOT proof. `close_slot` pops `_slots` only
+ *      after its nudge-lock and app-hook awaits, so a read dispatched after the
+ *      close — a 5s poll, an agent switch, a WS refetch — can outrun the DELETE
+ *      and reply STILL LISTING the slot, and retiring on that flickers it back.
+ *   2. only the close's OWN post-DELETE read, whose id it recorded here, was
+ *      issued after the pop. Retirement matches on that id.
+ *
+ *  A push withholds but never retires: it carries no id, and a coalesced frame can
+ *  be serialized before the pop, so it proves nothing about ordering. */
+const liveCloseTombstones = (state: DashboardState, readId?: string): Set<string> => {
+  const closing = state.closingSlots ?? {}
+  const keys = Object.keys(closing)
+  if (keys.length === 0) return new Set()
+  const live = new Set<string>()
+  let retired = false
+  for (const key of keys) {
+    // `seen` is STICKY: the retiring reply may have its membership refused by the
+    // ordering rule for a LATER close, and must still retire its own tombstone.
+    if (readId !== undefined && closing[key].retireReadId === readId) closing[key].seen = true
+    if (closing[key].seen) {
+      delete state.closingSlots[key]
+      retired = true
+    } else {
+      live.add(key)
+    }
+  }
+  // Retiring is itself an ordering event: the tombstone was the ONLY thing withholding a
+  // pre-pop list, so a reply of THIS generation must not be left free to apply one.
+  if (retired) state.closeSeq = (state.closeSeq ?? 0) + 1
+  return live
+}
+
 /** Apply an authoritative slot list, reusing the object identity of every row
  *  whose content is unchanged, and touching `state.slots` only when the list
  *  actually moved.
@@ -165,11 +248,33 @@ const evictSlotSubagents = (state: DashboardState, slotKey: string): void => {
  *  that matters most: it leaves the array reference alone, which lets a
  *  downstream `useMemo` skip its filter and sort entirely instead of recomputing
  *  an equal result. */
-const applySlots = (state: DashboardState, next: ChatSlot[]): void => {
+/** Does `next` add or drop a row against the live list? Either direction must
+ *  date the list, so an older in-flight read cannot undo the change. */
+const membershipMoved = (state: DashboardState, next: ChatSlot[]): boolean => {
+  const present = new Set((state.slots ?? []).map(s => s.key))
+  const incoming = new Set(next.map(s => s.key))
+  // OWN-property test: bracket access on a key naming an Object.prototype member
+  // (`__proto__`, `toString`, `hasOwnProperty`) reads a truthy inherited value.
+  const closing = (key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(state.closingSlots ?? {}, key)
+  // A closing slot is excluded BOTH ways — still listed pre-pop is no restore,
+  // withheld-so-absent is no removal — else it refuses its own retirement read.
+  return next.some(s => !present.has(s.key) && !closing(s.key))
+    || [...present].some(k => !incoming.has(k) && !closing(k))
+}
+
+const applySlots = (state: DashboardState, next: ChatSlot[], readId?: string): void => {
+  // Dated here rather than per caller, so an authoritative-list writer cannot omit
+  // it. Runs before the sweep below, which retires the tombstones this reads.
+  if (membershipMoved(state, next)) state.closeSeq = (state.closeSeq ?? 0) + 1
   const prev = state.slots ?? []
+  const withheld = liveCloseTombstones(state, readId)
+  // Membership is the server's EXCEPT for a close in flight: it still lists the
+  // slot mid-DELETE, and reinstating the row is the flicker this removes.
+  const visible = withheld.size === 0 ? next : next.filter(s => !withheld.has(s.key))
   const byKey = new Map(prev.map(s => [s.key, s]))
-  let changed = prev.length !== next.length
-  const merged = next.map((incoming, i) => {
+  let changed = prev.length !== visible.length
+  const merged = visible.map((incoming, i) => {
     const existing = byKey.get(incoming.key)
     // Reusing a draft row inside a freshly assigned array is fine: Immer
     // finalizes drafts found in the assigned value within the same scope, so an
@@ -275,14 +380,61 @@ const dashboardSlice = createSlice({
       if (slot) slot.title = action.payload.title
     },
     addSlotOptimistic(state, action: PayloadAction<ChatSlot>) {
-      if (!state.slots.find(s => s.key === action.payload.key)) {
-        state.slots.push(action.payload)
-      }
+      const key = action.payload.key
+      if (!state.slots.find(s => s.key === key)) state.slots.push(action.payload)
+      // Bump UNCONDITIONALLY, not just when WE inserted: a read issued before this
+      // create omits the key whoever added the row, so its membership is refused.
+      state.closeSeq = (state.closeSeq ?? 0) + 1
+      // Clear only THIS key's tombstone, so a replacement under a reused key is
+      // no longer withheld while other closes in flight keep theirs.
+      if (state.closingSlots?.[key]) delete state.closingSlots[key]
     },
+    /** Drop a slot from the sidebar ahead of the server agreeing. Deliberately
+     *  does NOT tombstone: a caller removing an ALREADY-confirmed close would
+     *  withhold a key the resume path can legitimately bring back. Only
+     *  `slotCloseStarted` tombstones, and only for a close in flight. */
     removeSlotOptimistic(state, action: PayloadAction<string>) {
       state.slots = state.slots.filter(s => s.key !== action.payload)
       state.unreadSlots = state.unreadSlots.filter(k => k !== action.payload)
       safeSet('mc-unread-slots', JSON.stringify(state.unreadSlots))
+    },
+    /** A close is in flight — withhold this key from every authoritative list,
+     *  since the server still reports the slot until its DELETE finishes.
+     *
+     *  Written as a NEW object with a COMPUTED key, which DEFINES an own property.
+     *  Indexing (`map[key] = …`) would instead hit a prototype SETTER for a key
+     *  naming a prototype member, leaving the entry invisible to the `Object.keys`
+     *  sweep — so the tombstone would withhold nothing and the closed row would come
+     *  back. Slot keys are not a safe alphabet: `api_chat_slot_resume` folds
+     *  caller-supplied path text and falls through to a create path. */
+    slotCloseStarted(state, action: PayloadAction<string>) {
+      // The `?? {}` covers a hand-rolled preloaded state (many tests cast a
+      // partial `dashboard`) that carries no `closingSlots` to spread.
+      state.closeSeq = (state.closeSeq ?? 0) + 1
+      state.closingSlots = { ...(state.closingSlots ?? {}), [action.payload]: {} }
+    },
+    /** Release a tombstone because the close FAILED, so the row can come back.
+     *
+     *  A successful close releases here only on a failed confirm; `liveCloseTombstones`
+     *  deliberately does NOT drain on a list that omits the key: an omission proves
+     *  the server popped the slot, but not that a reply issued BEFORE the close has
+     *  landed — and that reply still carries the key. A successful close therefore
+     *  retires when a reply ISSUED after the close arrives and no older read is
+     *  still outstanding. The close issues that read itself. */
+    /** Record WHICH read may retire this tombstone: the close's own, issued after
+     *  its DELETE resolved. Any other read can outrun the server's pop. */
+    slotCloseRetireRead(state, action: PayloadAction<{ key: string; readId: string }>) {
+      // OWN-property test: a bare bracket read on a prototype-named key returns a
+      // truthy INHERITED member, and writing through it pollutes that shared object.
+      if (!Object.prototype.hasOwnProperty.call(state.closingSlots ?? {}, action.payload.key)) return
+      state.closingSlots[action.payload.key].retireReadId = action.payload.readId
+    },
+    slotCloseSettled(state, action: PayloadAction<string>) {
+      // Releasing removes the only thing withholding a pre-pop list, so it dates the
+      // list exactly as retiring does — and only when a tombstone was really there.
+      if (!Object.prototype.hasOwnProperty.call(state.closingSlots ?? {}, action.payload)) return
+      delete state.closingSlots[action.payload]
+      state.closeSeq = (state.closeSeq ?? 0) + 1
     },
     updateSlot(state, action: PayloadAction<Partial<ChatSlot> & { key: string }>) {
       const slot = state.slots.find(s => s.key === action.payload.key)
@@ -441,21 +593,58 @@ const dashboardSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      // Date every read at ISSUE time, so its reply can be compared against the
+      // closes performed since. This is what replaces the wall-clock window.
+      .addCase(fetchSlots.pending, (state, action) => {
+        // EVERY read: one issued before any close must still be recognised as
+        // predating a close that starts while it travels, or it undoes it.
+        const id = action.meta?.requestId
+        if (id) (state.pendingSlotReads ??= {})[id] = state.closeSeq ?? 0
+      })
+      .addCase(fetchSlots.rejected, (state, action) => {
+        // Drop the record, or a failed read counts as outstanding for ever and no
+        // tombstone can retire.
+        const id = action.meta?.requestId
+        if (id && state.pendingSlotReads) delete state.pendingSlotReads[id]
+      })
       .addCase(fetchSlots.fulfilled, (state, action) => {
         // A reply in flight can be older than the live frames that arrived while
         // it travelled, so it may omit a slot the stream has since created. The
         // unread drain still runs — that is this path's documented job, and a
         // badge self-heals — but eviction is withheld once the stream is live.
         const fresh = !state.slotsLoaded
-        applySlots(state, action.payload)
-        state.slotsLoaded = true
-        reconcileSlots(state, new Set(action.payload.map((s: { key: string }) => s.key)), fresh)
+        // Read its issue generation and clear it BEFORE applying, so this reply is
+        // not counted as an outstanding older read against its own tombstones.
+        const readId = action.meta?.requestId
+        const issuedSeq = readId ? state.pendingSlotReads?.[readId] : undefined
+        if (readId && state.pendingSlotReads) delete state.pendingSlotReads[readId]
+        // ORDERING RULE: ANY membership move bumps the generation, creates included, so
+        // a predating reply is refused WHOLE — membership, content, unread and loaded.
+        const predatesAMove = issuedSeq !== undefined && issuedSeq < (state.closeSeq ?? 0)
+        // ONE refusal, about ORDERING rather than age: a read that aged out with no
+        // close to protect against must not have its list discarded for free.
+        // Recorded HERE because this is where the decision is final; the thunk's provisional
+        // guess ran before `closeSeq` could advance and can disagree with it.
+        state.lastSlotsRead = { readId, applied: !predatesAMove }
+        if (predatesAMove) {
+          // Refusing the list must still SWEEP: this may be the close's OWN
+          // retirement read, refused only because a LATER close has since begun.
+          liveCloseTombstones(state, readId)
+        } else {
+          applySlots(state, action.payload, readId)
+          // Reconcile consumes the SAME membership, and its unread drain is
+          // ungated, so a refused list would clear a live slot's badge for good.
+          reconcileSlots(state, new Set(action.payload.map((s: { key: string }) => s.key)), fresh)
+          // Only an APPLIED reply proves a snapshot arrived. Marking loaded on a
+          // refused one lets a later empty frame past its guard and clear every row.
+          state.slotsLoaded = true
+        }
       })
       .addCase(changeApprovalMode.fulfilled, (state, action) => { state.approvalMode = action.payload })
   },
 })
 
-export const { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, addSlotOptimistic, removeSlotOptimistic, slotCloseStarted, slotCloseSettled, slotCloseRetireRead, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink } = dashboardSlice.actions
 
 /**
@@ -513,6 +702,28 @@ export function selectUnreadByMode(mode: string): UnreadByModeSelector {
     _unreadByModeCache.set(mode, sel)
   }
   return sel
+}
+
+/** Read the slots list, returning it ONLY if the store actually applied it.
+ *
+ *  `fetchSlots.fulfilled` fires for a REFUSED read too — the reducer drops a reply issued
+ *  before a membership move — so a caller that awaits the read and acts on its payload can
+ *  act on a list the store rejected. This is the one entry point that asks: the verdict
+ *  rides on the action itself, and a caller cannot dispatch and forget to check it.
+ *  Returns null for a refused read AND for a failed one, so neither is mistaken for a list. */
+export const fetchSlotsIfApplied = async (
+  dispatch: (a: never) => unknown,
+  getState: () => { dashboard: DashboardState },
+): Promise<ChatSlot[] | null> => {
+  const action = await (dispatch(fetchSlots() as never) as unknown as Promise<{
+    payload?: unknown
+    meta?: { requestId?: string }
+  }>)
+  // Read AFTER the dispatch resolves, so this is the reducer's final decision rather than
+  // the thunk's pre-reduction guess, and keyed to THIS read so a sibling cannot answer for it.
+  const last = getState().dashboard.lastSlotsRead
+  const applied = last !== null && last.readId === action?.meta?.requestId && last.applied
+  return applied ? (action.payload as ChatSlot[]) : null
 }
 
 export default dashboardSlice.reducer

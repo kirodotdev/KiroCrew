@@ -2790,6 +2790,8 @@
       "working": "Working"
     },
     "useSessionActions": {
+      "close_failed_refused": "The gateway refused to close this session. It is still open. You can close it again.",
+      "close_failed_unknown": "Couldn't confirm whether this session closed. The list refreshes on its own — avoid closing it again until the list settles: the row will either stay gone or return.",
       "close_this_session": "Close this session?",
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",

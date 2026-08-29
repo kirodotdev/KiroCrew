@@ -7926,6 +7926,8 @@
       "working": "Arbeitet"
     },
     "useSessionActions": {
+      "close_failed_refused": "Das Gateway hat das Schließen dieser Sitzung abgelehnt. Sie ist weiterhin geöffnet. Sie können sie erneut schließen.",
+      "close_failed_unknown": "Es konnte nicht bestätigt werden, ob diese Sitzung geschlossen wurde. Die Liste aktualisiert sich selbst – schließen Sie sie nicht erneut, bis die Liste zur Ruhe gekommen ist: Die Zeile bleibt entweder verschwunden oder erscheint wieder.",
       "close_this_session": "Diese Sitzung schließen?",
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",

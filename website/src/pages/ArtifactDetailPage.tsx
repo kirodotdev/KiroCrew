@@ -9,9 +9,10 @@ import { ArrowLeft, AlertTriangle, ArrowUp, Camera, Check, Copy, ExternalLink, D
 import { copyToClipboard } from '../utils/clipboard'
 import { useTheme } from '../hooks/useTheme'
 import { type IframeSelection } from '../hooks/useCommentBridge'
-import { useAppDispatch, useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { switchSlot } from '../store/chatSlice'
-import { fetchSlots, addSlotOptimistic, removeSlotOptimistic } from '../store/dashboardSlice'
+import { fetchSlots, addSlotOptimistic, fetchSlotsIfApplied } from '../store/dashboardSlice'
+import { withSlotClose } from '../store/chatSlice'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
 import { THEME_VAR_NAMES, buildSrcdoc } from '../lib/widgetSrcdoc'
@@ -345,6 +346,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   // under its own lock.
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
+  const store = useAppStore()
   const { theme, colorTheme, themeVersion } = useTheme()
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null)
   const [editing, setEditing] = useState(false)
@@ -1180,7 +1182,10 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       setPanel('chat')
       sessionOpBusyRef.current = true
       try {
-        bound = pickBoundSlot(await dispatch(fetchSlots()).unwrap(), slug)
+        // A REFUSED read is not authoritative, and binding from it can create a SECOND
+        // session for this slug — so fall back to the list the store did apply.
+        const listed = await fetchSlotsIfApplied(dispatch, () => store.getState())
+        bound = pickBoundSlot(listed ?? store.getState().dashboard.slots, slug)
       } catch {
         bound = null   // fetch failed — fall through and create
       } finally {
@@ -1215,7 +1220,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
         source: 'artifact-companion', ephemeral: true,
       }).catch(() => undefined)
     }
-  }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch,
+  }, [artifact, panel, commentCount, boundSlot, slotsLoaded, slug, dispatch, store,
       createBoundSession, buildCompanionContext])
 
   /** "New chat": archive the current bound session FIRST (the existing red-X
@@ -1251,13 +1256,17 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
             return
           }
         }
-        dispatch(removeSlotOptimistic(slot.key))
+        // Withhold the key too, not just the row: a GET in flight since before
+        // this DELETE still lists the slot and would resurrect the archived row.
+        // The op is empty because the DELETE above already landed — the helper is
+        // here for the pairing, which it owns so no site can arm without sweeping.
+        await withSlotClose(dispatch, () => store.getState(), slot.key, async () => {})
       }
       await createBoundSession()
     } finally {
       sessionOpBusyRef.current = false
     }
-  }, [boundSlots, createBoundSession, dispatch])
+  }, [boundSlots, createBoundSession, dispatch, store])
 
   /** Full-page escape hatch — routes through sendNav so a popout forwards the
    *  intent to a main window instead of remounting the dashboard in-frame. */

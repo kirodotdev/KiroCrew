@@ -8032,6 +8032,8 @@
       "working": "Trabajando"
     },
     "useSessionActions": {
+      "close_failed_refused": "El gateway rechazó cerrar esta sesión. Sigue abierta. Puedes cerrarla de nuevo.",
+      "close_failed_unknown": "No se pudo confirmar si esta sesión se cerró. La lista se actualiza por sí sola: no vuelvas a cerrarla hasta que la lista se estabilice; la fila seguirá ausente o volverá a aparecer.",
       "close_this_session": "¿Cerrar esta sesión?",
       "reload_failed": "No se pudo recargar la sesión. Puede que el agente esté respondiendo o que el gateway no esté accesible; inténtalo de nuevo cuando la sesión esté inactiva.",
       "reload_failed_subagents": "Los subagentes siguen trabajando en esta sesión. Inténtalo de nuevo cuando terminen.",

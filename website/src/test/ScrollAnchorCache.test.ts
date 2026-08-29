@@ -13,7 +13,7 @@ import {
   loadScrollAnchor,
   clearScrollAnchor,
 } from '../hooks/virtualizer/ScrollAnchorCache'
-import { gcSessionStorage } from '../utils/storageGc'
+import { gcOrphanedStorage } from '../utils/storageGc'
 
 describe('ScrollAnchorCache', () => {
   beforeEach(() => localStorage.clear())
@@ -66,12 +66,12 @@ describe('ScrollAnchorCache', () => {
     expect(loadScrollAnchor('')).toBeNull()
   })
 
-  it('is collected by gcSessionStorage when a session is deleted', () => {
+  it('is collected by the orphan sweep once a session is gone', () => {
     // The SESSION_PREFIXES entry in utils/storageGc.ts must stay byte-
     // identical to ANCHOR_KEY_PREFIX — this is the coupling test.
     saveScrollAnchor('doomed', { key: 'k', top: 5 })
     saveScrollAnchor('alive', { key: 'k', top: 5 })
-    gcSessionStorage('doomed')
+    gcOrphanedStorage(new Set(['alive']))
     expect(loadScrollAnchor('doomed')).toBeNull()
     expect(loadScrollAnchor('alive')).toEqual({ key: 'k', top: 5 })
   })

@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
+import { switchSlot, closeSlotWithNotice, openActivityToTab } from '../store/chatSlice'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { queryComposer, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
@@ -914,11 +914,11 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     }
 
     // Alt+Shift+W: Close current session (same semantics as the header-menu
-    // close — gated by confirmCloseSession, dispatches deleteSlot)
+    // close — gated by confirmCloseSession, shares the one close helper)
     if (e.shiftKey && code === 'KeyW') {
       e.preventDefault()
       if (activeSlot && (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useKeyboardShortcuts.close_this_session')))) {
-        dispatch(deleteSlot(activeSlot))
+        closeSlotWithNotice(dispatch, activeSlot)
       }
       return
     }

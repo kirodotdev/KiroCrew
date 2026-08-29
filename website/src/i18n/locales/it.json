@@ -8032,6 +8032,8 @@
       "working": "Al lavoro"
     },
     "useSessionActions": {
+      "close_failed_refused": "Il gateway ha rifiutato di chiudere questa sessione. È ancora aperta. Puoi chiuderla di nuovo.",
+      "close_failed_unknown": "Non è stato possibile confermare se questa sessione è stata chiusa. L'elenco si aggiorna da sé: evita di chiuderla di nuovo finché l'elenco non si stabilizza; la riga resterà assente o ricomparirà.",
       "close_this_session": "Chiudere questa sessione?",
       "reload_failed": "Ricarica della sessione non riuscita. L'agente potrebbe essere impegnato in un turno o il gateway non raggiungibile; riprova quando la sessione è inattiva.",
       "reload_failed_subagents": "I sub-agenti stanno ancora lavorando su questa sessione. Riprova quando avranno finito.",

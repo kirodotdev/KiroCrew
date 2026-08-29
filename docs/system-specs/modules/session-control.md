@@ -484,6 +484,19 @@ teardown. Its three failure modes surface as their own codes at HTTP 500
 (`nudge_retire_failed`, `app_close_hook_failed`, `history_save_failed`), which is
 why the routes now forward a 500 rather than degrading it to 400.
 
+Each of those three response bodies carries `definitive: true` beside `error` and
+`code`. All three roll the close back before raising, so the tab is provably still
+open and a retry is safe to advise — and that flag is what says so on the wire, so
+a client needs no copy of the code list above to tell the two outcomes apart:
+
+- **refused** (`definitive: true`) — the gateway considered the close and did not
+  take it, every partial step unwound. The session is still open, and closing it
+  again is a well-defined retry.
+- **unknown** (the flag absent, e.g. a transport failure that never reached this
+  handler) — the close may yet have taken. The honest reading is that the outcome
+  is not knowable from the client, so the list must be allowed to settle rather
+  than the close being reissued.
+
 **Authorization is re-asserted at the point of no return.** `authorize_target`
 runs before `close_slot`, but `close_slot` then awaits — auto-nudge retirement
 takes the AutoNudge lock, and the app hook awaits external work — and a target

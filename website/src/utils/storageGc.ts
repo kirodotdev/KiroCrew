@@ -6,9 +6,12 @@
  *
  * Two entry points:
  *   - `gcOrphanedStorage(liveIds)` — startup pass, removes keys for sessions
- *     that no longer exist.
- *   - `gcSessionStorage(sessionKey)` — called when a session is deleted,
- *     removes that session's associated keys immediately.
+ *     that no longer exist. This is the authoritative collector.
+ *
+ * There is deliberately NO per-key collector. A client cannot prove a key is dead:
+ * localStorage is shared across tabs, so another tab may hold or resume that session
+ * while this one deletes it. Only the startup pass, which works from an authoritative
+ * live list, may collect.
  */
 
 /** Prefixes that are scoped per-session and should be cleaned up.
@@ -64,19 +67,17 @@ const RESERVED_NAMES: ReadonlyMap<string, {
   /** Prefixes the name is reserved under; `null` means every prefix. */
   prefixes: ReadonlySet<string> | null
   /** Whether an explicit per-session delete must spare it too. */
-  spareOnExplicitDelete: boolean
 }> = new Map([
-  ['artifacts-gallery', { prefixes: null, spareOnExplicitDelete: false }],
-  ['no-slot', { prefixes: new Set(['mc-busy-send-mode:']), spareOnExplicitDelete: true }],
+  ['artifacts-gallery', { prefixes: null }],
+  ['no-slot', { prefixes: new Set(['mc-busy-send-mode:']) }],
 ])
 
 /** Whether `sessionId` under `prefix` is a reserved name the given sweep must
  *  leave alone. One predicate, so a name registered for one sweep cannot be
  *  silently missing from the other. */
-const isReservedName = (sessionId: string, prefix: string, sweep: 'orphan' | 'delete'): boolean => {
+const isReservedName = (sessionId: string, prefix: string): boolean => {
   const reserved = RESERVED_NAMES.get(sessionId)
   if (!reserved) return false
-  if (sweep === 'delete' && !reserved.spareOnExplicitDelete) return false
   return reserved.prefixes === null || reserved.prefixes.has(prefix)
 }
 
@@ -98,7 +99,7 @@ export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
       if (key.startsWith(prefix)) {
         // Extract the session ID: everything after the prefix, before any further ':'
         const sessionId = key.slice(prefix.length).split(':')[0]
-        if (sessionId && !isReservedName(sessionId, prefix, 'orphan') && !liveSessionIds.has(sessionId)) {
+        if (sessionId && !isReservedName(sessionId, prefix) && !liveSessionIds.has(sessionId)) {
           doomed.push(key)
         }
         break
@@ -115,33 +116,3 @@ export function gcOrphanedStorage(liveSessionIds: Set<string>): number {
   return removed
 }
 
-/**
- * Remove all localStorage keys associated with a specific session.
- * Call when a session/slot is deleted.
- */
-export function gcSessionStorage(sessionKey: string): void {
-  if (typeof localStorage === 'undefined' || !sessionKey) return
-  const doomed: string[] = []
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)
-    if (!key) continue
-    for (const prefix of SESSION_PREFIXES) {
-      // A reserved name is not a session, so no slot's teardown owns its key.
-      if (isReservedName(sessionKey, prefix, 'delete')) continue
-      // The session id must end where the key ends or at a ':' delimiter.
-      // A bare prefix test would let deleting `foo` also remove `foobar`'s
-      // keys, so a departing slot would take a live sibling's state with it.
-      // Residual: a slot id that itself contains ':' stays ambiguous against a
-      // sibling extending it at a delimiter — the same limitation the colon
-      // convention already carries on the orphan sweep.
-      const scoped = prefix + sessionKey
-      if (key === scoped || key.startsWith(`${scoped}:`)) {
-        doomed.push(key)
-        break
-      }
-    }
-  }
-  for (const key of doomed) {
-    try { localStorage.removeItem(key) } catch { /* best-effort */ }
-  }
-}
