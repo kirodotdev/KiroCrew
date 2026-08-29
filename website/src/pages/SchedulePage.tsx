@@ -21,7 +21,7 @@ import { useAgents } from '../hooks/useAgents'
 import { useCronActions } from '../hooks/useCronActions'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useAppSelector } from '../store'
-import { SaveCreateLabel } from '../utils/cronUtils'
+import { SaveCreateLabel, scheduleLabel, scheduleMinutes } from '../utils/cronUtils'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { SortableTableHead } from '../components/SortableHeader'
 import ExecutionsView from '../components/ExecutionsView'
@@ -47,7 +47,7 @@ import ScheduleTemplateGallery from '../components/ScheduleTemplateGallery'
 import { i18nT } from '../i18n/t'
 import { defaultAgentQuery } from '../api/defaultAgentQuery'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
-import { fmtDateTimeNumeric } from '../i18n/format'
+import { compareText, fmtDateTimeNumeric } from '../i18n/format'
 import { formatCadence } from '../utils/scheduleCadence'
 const RENDER_TZ_STORAGE_KEY = 'kirocrew.schedule.renderTz'
 
@@ -406,7 +406,16 @@ export default function SchedulePage() {
   const filteredJobs = useMemo(() => sanitizedJobs.filter(j => !cronFilter || (j.name+' '+j.safeMessage+' '+(j.agent||'')+' '+(j.model||'')+' '+(j.session_key||'')).toLowerCase().includes(cronFilter.toLowerCase())), [sanitizedJobs, cronFilter])
   const scheduleComparators = useMemo(() => ({
     name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
-    schedule: (a: CronJob, b: CronJob) => (a.schedule || '').localeCompare(b.schedule || ''),
+    // Clock time first, so `9:00 AM` precedes `1:00 PM` -- the label sorts wrongly
+    // as text. Rows with no clock (raw fallback, intervals) go last, then by label.
+    schedule: (a: CronJob, b: CronJob) => {
+      const ka = scheduleMinutes(a), kb = scheduleMinutes(b)
+      if (ka === null || kb === null) {
+        if (ka !== kb) return ka === null ? 1 : -1
+        return compareText(scheduleLabel(a), scheduleLabel(b))
+      }
+      return ka - kb || compareText(scheduleLabel(a), scheduleLabel(b))
+    },
     status: (a: CronJob, b: CronJob) => {
       const rank = (j: CronJob) =>
         j.is_running ? 4 : !j.enabled ? 0 : j.last_status === 'error' ? 1 : j.last_status === 'ok' ? 2 : 3;
@@ -691,11 +700,13 @@ export default function SchedulePage() {
                   it overlaps the next cell. That is what put the Message chevron
                   and preview on top of the Status badge at phone widths, and on a
                   1280px desktop with the nav rail open (measured 0px there too).
-                - `min-w` covers the nine px columns (940px, border-box, so the
+                - `min-w` covers the nine px columns (996px, border-box, so the
                   `p-2`/`px-2` is inside each) PLUS a 180px floor for Message —
                   enough for the 14px chevron and a one-line preview. A narrower
                   container scrolls the table, which is honest; voiding a column
-                  silently is not. */}
+                  silently is not. Widening any px column means moving `min-w` by
+                  the same amount: the two numbers are one statement, and editing
+                  only the column takes the difference out of Message. */}
             <div className="relative">
             {/* The scroller is the shadcn Table's own wrapper (the table's
                 parentElement — `relative w-full overflow-x-auto` in
@@ -703,7 +714,7 @@ export default function SchedulePage() {
                 against it, so the overflow measurement must read the same box.
                 `className` stays the FIRST attribute: the columnContract test
                 anchors on the literal `<Table className="table-fixed` opener. */}
-            <Table className="table-fixed min-w-[1120px]" ref={attachJobsTable}>
+            <Table className="table-fixed min-w-[1176px]" ref={attachJobsTable}>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-[36px] px-2 text-center">
@@ -720,7 +731,13 @@ export default function SchedulePage() {
                   <TableHead className="w-[68px]">{i18nT('pages.schedulePage.id')}</TableHead>
                   <SortableTableHead label={i18nT('pages.schedulePage.name')} sortKey="name" sort={schedSort} onToggle={toggleSchedSort} className="w-[160px]" />
                   <TableHead className="w-[116px]">{i18nT('pages.schedulePage.type')}</TableHead>
-                  <SortableTableHead label={i18nT('pages.schedulePage.schedule')} sortKey="schedule" sort={schedSort} onToggle={toggleSchedSort} className="w-[124px]" />
+                  {/* 180px, not the original 124: the value here is a clock time
+                      plus a qualifier (`12:00 AM · Mon,Wed`), and 124px fitted
+                      the time alone -- so every midnight job rendered the same
+                      truncated string and the column stopped distinguishing
+                      rows. Widening is paid for in the table's min-width below,
+                      NOT out of Message, which keeps its floor. */}
+                  <SortableTableHead label={i18nT('pages.schedulePage.schedule')} sortKey="schedule" sort={schedSort} onToggle={toggleSchedSort} className="w-[180px]" />
                   <TableHead>{i18nT('pages.schedulePage.message')}</TableHead>
                   <SortableTableHead label={i18nT('pages.schedulePage.status')} sortKey="status" sort={schedSort} onToggle={toggleSchedSort} className="w-[86px]" />
                   <SortableTableHead label={i18nT('pages.schedulePage.last_run')} sortKey="lastRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[82px]" />
@@ -832,7 +849,26 @@ export default function SchedulePage() {
                         <span className="block truncate text-[11px] text-muted">{agentOrDefaultLabel(j.agent, defaultAgent)}</span>
                       </>}
                 </TableCell>
-                <TableCell className="truncate" title={j.schedule}><code>{j.schedule}</code>{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
+                {/* The compact label in the cell, the verbose one in the
+                    tooltip. `schedule` is cron_descriptor prose -- 53 chars for
+                    `0 0 30 2 *` -- so at any width this column can afford, it
+                    renders as "At 12:00 AM ...", which is the SAME string for
+                    every midnight job: the part identifying the schedule is
+                    exactly the part that gets clipped.
+
+                    Derived HERE from the already-shipped `cron_expr` rather than
+                    minted server-side, so the day and month names translate with
+                    the dashboard through `fmtWeekday` / `Intl` instead of pinning
+                    English into the API. A non-cron schedule (interval, one-shot)
+                    has no `cron_expr` and already reads compactly, so it keeps
+                    the backend string.
+
+                    No `<code>`: the short form is prose, and monospace is the
+                    WIDEST rendering available for the least code-like value on
+                    the page -- it was spending the column's pixels to fit fewer
+                    characters. `fmtCron`'s raw-expression fallback stays legible
+                    without it. */}
+                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
                 <TableCell title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</TableCell>
                 <TableCell className="text-muted">{fmtAgo(j.last_run_ts)}</TableCell>

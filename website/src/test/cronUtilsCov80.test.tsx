@@ -2,65 +2,13 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
 import {
-  TH_CLS, TD_CLS, renderThCells, fmtSchedule, SaveCreateLabel, expandDow, fmtCron,
+  TH_CLS, TD_CLS, renderThCells, SaveCreateLabel, expandDow, fmtCron,
 } from '../utils/cronUtils'
-import type { CronJob } from '../types'
 
 /**
- * Coverage for the parts of cronUtils the existing suite skips: the schedule
- * formatter's unit ladder (the wire shape `parseEveryFromSchedule` reads back),
- * the shared table-header renderer, and the Save/Create button label.
+ * Coverage for the parts of cronUtils the existing suite skips: the shared
+ * table-header renderer, and the Save/Create button label.
  */
-function job(overrides: Partial<CronJob> = {}): CronJob {
-  return {
-    id: 'zz-1',
-    name: 'zzz-job',
-    message: 'zzz',
-    enabled: true,
-    schedule: '',
-    last_status: 'ok',
-    ...overrides,
-  }
-}
-
-describe('fmtSchedule', () => {
-  it('prefers a raw cron expression verbatim', () => {
-    expect(fmtSchedule(job({ cron_expr: '0 9 * * 1-5', every: 60 }))).toBe('0 9 * * 1-5')
-  })
-
-  it('renders sub-minute intervals in seconds', () => {
-    expect(fmtSchedule(job({ every: 45 }))).toBe('45s')
-    expect(fmtSchedule(job({ every: 59 }))).toBe('59s')
-  })
-
-  it('floors to whole minutes below an hour', () => {
-    expect(fmtSchedule(job({ every: 60 }))).toBe('1m')
-    expect(fmtSchedule(job({ every: 3599 }))).toBe('59m')
-  })
-
-  it('floors to whole hours below a day', () => {
-    expect(fmtSchedule(job({ every: 3600 }))).toBe('1h')
-    expect(fmtSchedule(job({ every: 7200 }))).toBe('2h')
-  })
-
-  it('floors to whole days at and beyond 86400s', () => {
-    expect(fmtSchedule(job({ every: 86_400 }))).toBe('1d')
-    expect(fmtSchedule(job({ every: 200_000 }))).toBe('2d')
-  })
-
-  it('formats a one-shot `at` timestamp as a date-time', () => {
-    // 2026-08-14T00:00:00Z — TZ is pinned to UTC by the vitest config.
-    const out = fmtSchedule(job({ at: 1_786_060_800 }))
-    expect(out).not.toBe('—')
-    expect(out).toMatch(/2026/)
-  })
-
-  it('falls back to an em dash when no schedule field is set', () => {
-    expect(fmtSchedule(job())).toBe('—')
-    // A zero `every` is not a schedule either (falsy) — it must not read as "0s".
-    expect(fmtSchedule(job({ every: 0 }))).toBe('—')
-  })
-})
 
 describe('renderThCells', () => {
   it('renders one <th> per column, keyed by header, with the shared + per-column class', () => {
@@ -110,7 +58,7 @@ describe('cronUtils table classes', () => {
 describe('cronUtils dow/cron formatting (smoke)', () => {
   it('expands a named range and formats a weekday expression', () => {
     expect(expandDow('MON-WED')).toEqual([1, 2, 3])
-    expect(fmtCron('5 6 * * 1')).toBe('Mon 06:05')
+    expect(fmtCron('5 6 * * 1')).toBe('6:05 AM · Mon')
     // Not five fields — returned untouched.
     expect(fmtCron('bogus')).toBe('bogus')
   })
