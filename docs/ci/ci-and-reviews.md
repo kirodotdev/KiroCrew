@@ -86,6 +86,19 @@ Out-of-band lanes that never gate a PR:
   that preservation is what makes one shared list workable instead of a second
   table.
 
+  Note that opening that rolling PR is best-effort. This repository leaves
+  "Allow GitHub Actions to create and approve pull requests" off — one switch
+  covers creating AND approving, and `main`'s merge gate is a required review — so
+  `gh pr create` with `GITHUB_TOKEN` is refused with `GitHub Actions is not
+  permitted to create or approve pull requests`. It only bites after the previous
+  rolling PR merged and its branch was deleted; while the PR is open, pushing to
+  the branch is enough. The push happens first either way, so a refusal is a
+  handoff, not a loss: the job stays green and files/updates one issue titled
+  "Add Contributor needs a human to open the contributors PR" carrying the compare
+  link. The same limitation applies to every workflow here that opens a PR
+  (`test-durations.yml`, `cleanup-temp-screenshots.yml`, `memory-benchmark.yml`),
+  which have not been converted to this pattern yet.
+
 ## `ci.yml`: correctness
 
 Every job here is blocking.
