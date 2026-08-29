@@ -6536,6 +6536,28 @@ _RELATIVE_SENSITIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Child processes must inherit these path aliases so non-Python TLS stacks can
+# use the configured trust bundle. On Windows the first and third names point at
+# the generated ``trust/ca-bundle.pem``; ``REQUESTS_CA_BUNDLE`` points there too
+# unless an operator supplied a higher-precedence value. An agent command must
+# not be allowed to resolve any of them: the inherited value can name a trust
+# input that the direct-path gate blocks, and ``Add-Content
+# $env:SSL_CERT_FILE`` must not turn indirection into a bypass. Match the exact
+# identifier independent of shell syntax so POSIX/cmd/PowerShell expansion and
+# embedded interpreter lookups share one fail-closed rule. Ambient inheritance
+# remains unaffected -- ordinary HTTPS clients need not mention the variable.
+_TLS_TRUST_PATH_ENV_KEYS: tuple[str, ...] = (
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "KIROCREW_MANAGED_CA_BUNDLE",
+)
+_TLS_TRUST_PATH_ENV_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:"
+    + "|".join(re.escape(key) for key in _TLS_TRUST_PATH_ENV_KEYS)
+    + r")(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+
 
 # ── Read verbs for normalizer second-pass ──
 # Programs that can read file contents. Used to detect path-based credential
@@ -6621,6 +6643,12 @@ def is_sensitive_bash_command(command: str) -> str | None:
 
     Returns denial reason string, or None if clean.
     """
+    # An inherited trust-path alias is another spelling of the protected path.
+    # Check the raw command before normalization, which intentionally cannot
+    # resolve cmd.exe / PowerShell environment references.
+    if _TLS_TRUST_PATH_ENV_RE.search(command):
+        return "Blocked: command references a protected TLS trust path environment variable"
+
     # ── Pass 1: regex fast-path ──
     if _get_sensitive_re().search(command):
         return "Blocked: command accesses sensitive credential path"

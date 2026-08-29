@@ -3536,7 +3536,7 @@ class TestConfigEditToolBlocked:
             raw_params={"path": "~/.kirocrew/config.json"},
         )
         assert result.action == "deny"
-        assert "write-protected config" in (result.reason or "")
+        assert "write-protected path" in (result.reason or "")
 
     def test_read_config_json_not_denied_by_edit_gate(self) -> None:
         result = self._hooks().on_tool_call(

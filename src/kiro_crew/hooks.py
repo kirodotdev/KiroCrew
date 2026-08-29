@@ -610,16 +610,14 @@ class HookManager:
             for real_path in real_paths:
                 if is_sensitive_path(real_path):
                     return ToolHookResult.deny(f"Blocked: access to sensitive path: {real_path}")
-        # Config files are WRITE-protected (reads stay allowed): block the agent's
-        # file-EDIT tool from modifying config.json / config.local.json so a
-        # prompt-injected agent cannot rewrite its own resource ceilings
-        # (concurrent subagents, turn budget, warm-pool size) to drive host
-        # resource exhaustion. Gated
-        # on the ACP ``edit`` kind (the fs_write/code tool) so a plain read of
-        # config is unaffected — the dashboard file viewer, ``cat``, and knowledge
-        # indexing legitimately read config.json. Bash writes (``tee``/``>``/
-        # ``cp``-dest) are blocked separately by ``is_sensitive_bash_command``
-        # above; this branch covers the file-EDIT tool.
+        # Runtime security inputs on the WRITE-protected tier stay readable but
+        # cannot be modified by the agent's file-EDIT tool. They include config
+        # resource ceilings and generated trust inputs such as the Windows CA
+        # bundle. Gated on the ACP ``edit`` kind (the fs_write/code tool), so the
+        # dashboard viewer, knowledge indexing and other legitimate readers are
+        # unaffected. Entries whose threat also warrants shell fencing are paired
+        # in ``_WRITE_PROTECTED_BASH_LEAVES``; this branch covers the file-EDIT
+        # surface for the entire tier.
         #
         # Empty/unknown ``tool_kind`` (the ACP kind field is spec-optional; some
         # backends omit it) is DELIBERATELY not mirrored here.
@@ -634,12 +632,12 @@ class HookManager:
         # into a read regression, and the bash gate covers the shell surface.
         if tool_kind == _EDIT_TOOL_KIND and raw_params:
             # Same spelling coverage as the sensitive-path keystone above, for the
-            # same reason: the write-protected tier is worthless if a config edit
+            # same reason: the write-protected tier is worthless if a file edit
             # can name its target under a key the check never reads.
             for wpath in target_paths(raw_params):
                 if is_sensitive_write_path(wpath):
                     return ToolHookResult.deny(
-                        f"Blocked: modification of write-protected config path: {wpath}"
+                        f"Blocked: modification of write-protected path: {wpath}"
                     )
         # Built-in security deny list (always enforced).  Route through the
         # active PlatformContext's PolicyAuthority so the Amazon companion's
