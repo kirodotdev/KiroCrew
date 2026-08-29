@@ -2,11 +2,11 @@
 
 ## Overview
 
-Token authentication for the Kiro Crew dashboard. The owner mints a time-limited, HMAC-SHA256 signed URL from the CLI (`kirocrew token`) or via the `!dashboard` Slack command (currently the only chat channel that mints links). An aiohttp middleware validates the token on every request (query param or cookie fallback), sets a session cookie on first use, and pins the token to the client's IP. Static assets bypass checks. Loopback access (127.0.0.1) is always trusted regardless of mode — this ensures local processes (mcp-core, doctor, SSH tunnels) work without tokens. All generation and validation events are logged to SEL.
+Token authentication for the Kiro Crew dashboard. The owner mints a time-limited, HMAC-SHA256 signed URL from the CLI (`kirocrew token`) or via the `!dashboard` Slack command (currently the only chat channel that mints links). An aiohttp middleware validates the token on every GATED request (query param or cookie fallback) and sets a session cookie on first use. A bypass route returns before validation, and that set is wider than static assets — see the bypass inventory below. The token is pinned to a peer key: the client address by default, or a `ts:node:` / `ts:login:` identity on a Tailscale path (`token_auth.TokenStateManager.bind_peer()`), so the pin is not always an IP. Ordinary loopback requests require token authentication (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`). Internal routes have separate loopback-plus-`X-Internal-Secret` and mixed-route cookie-authentication branches. SEL coverage of token GENERATION is per caller, not intrinsic to minting: `generate_token()` itself logs only `nonce_evicted`, an eviction side effect, so a caller that does not log leaves its mint unaudited. The gateway's `--json-ready` startup path is that case — it calls `generate_token()` directly with no accompanying generation event.
 
-Up to `MAX_CONCURRENT_NONCES` (50) link nonces can be valid concurrently (FIFO eviction via `OrderedDict` when the limit is exceeded), allowing multiple browser tabs and CLI sessions without invalidating each other. All in-memory link-session state is managed by a thread-safe `TokenStateManager`. Auth is **not** purely in-memory: the HMAC signing key is the **persistent** `token_signing.key` (mode `0600`) and revoked access-cookie nonces persist to `token_revoked_nonces.json` (mode `0600`), so signed cookies and per-session logouts both survive a gateway restart. Users can revoke a single session — access cookie **and** its refresh chain — via `POST /api/auth/logout`, or **all** sessions via `kirocrew logout`: the persisted revocation generation (`revocation_gen.py`) is embedded in both access and refresh tokens, and validation of either kind rejects a stale generation, so `kirocrew logout` ends established browser sessions and their refresh chains alike.
+`TokenStateManager` bounds concurrently valid link nonces with FIFO eviction, allowing multiple browser tabs and CLI sessions without unbounded link-state growth (`token_auth.TokenStateManager`). All in-memory link-session state is managed by that thread-safe component. Auth is **not** purely in memory: the persistent HMAC signing key `token_signing.key` and persisted revoked access-cookie nonces in `token_revoked_nonces.json` let signed cookies and per-session logouts survive a gateway restart. `POST /api/auth/logout` revokes one access cookie and its refresh chain; `kirocrew logout` advances the persisted revocation generation embedded in both token kinds, ending all established browser sessions and refresh chains (`token_secret`, `RevokedNonceStore`, `revocation_gen.py`).
 
-The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, HttpOnly, path-restricted to `/api/auth`, up to 30-day TTL) alongside the access cookie on initial token-URL use. The SPA calls `POST /api/auth/refresh` shortly before the access cookie expires to silently rotate both cookies (rotation-on-use), so users only re-run `!dashboard` / `kirocrew token` roughly once per 30 idle days instead of every ~20h. Refresh tokens are HMAC-signed with the same persistent `token_signing.key` and enforce RFC 6819 §5.2.2.3 reuse detection: a consumed `jti` replayed outside a 60s same-IP multi-tab grace window auto-revokes the entire chain.
+The dashboard also issues a paired **refresh cookie** (`mc_refresh_{port}`, HttpOnly, path-restricted to `/api/auth`) alongside the access cookie on initial token-URL use. The SPA calls `POST /api/auth/refresh` before the access cookie expires to rotate both cookies, so an active browser can continue without another `!dashboard` / `kirocrew token` link. Refresh tokens are HMAC-signed with the persistent `token_signing.key`; `RefreshStateManager` permits only the chain-head replay under its source-IP grace conditions, and any other consumed-`jti` replay revokes the chain (`test_tr_u_22a_grace_accepts_only_chain_head`).
 
 An existing dashboard session can recover another browser with `POST /api/auth/mobile-link`. The endpoint requires the normal access-cookie session and an allowed same-origin request; it refuses unauthenticated and app-scoped callers. It returns a normal signed URL token plus `Cache-Control: no-store`; the browser uses that token through the ordinary link-to-cookie exchange, which establishes a separate access cookie and a refresh chain. The dashboard presents this as **Settings → Security → Sign in on mobile**, so a mobile browser whose storage was cleared can be restored without exposing a raw token prompt. The returned link has the normal five-minute click window, is built only from the configured external dashboard origin, and must be transferred only to the intended device.
 
@@ -28,11 +28,11 @@ the app manifest declares this API prefix. The browser's
 
 Rotation-on-use races when a refresh POST is duplicated (network retry / double-fire) or two tabs sharing one cookie jar fire near-simultaneously: tab A refreshes `jti1→jti2`, and the just-consumed `jti1` is presented again. To avoid falsely revoking the whole session on this benign single-refresh race, `RefreshStateManager` retains **exactly one** recently-consumed jti per chain — the single most-recently-rotated one (the **chain head**) — together with its freshly-minted replacement pair. `grace_replacement()` accepts a replay **only when the presented jti equals that chain head**, subject to same-source-IP and the 60s window, and re-serves the head's replacement pair (which carries the current live, not-yet-consumed refresh token) instead of minting another rotation. Each consumption overwrites the entry, so the retained pair is always the live head and a slow response can never roll the shared jar back to an already-consumed jti.
 
-**Reuse-detection posture (reviewed, stronger option chosen):** an earlier revision widened this to a bounded history of the last 4 consumed jtis so multiple lagging tabs could each authenticate a same-IP in-window replay. The Design Review and Long-Term Impact reviewers flagged that as a deliberate weakening of the RFC 6819 §5.2.2.3 theft signal (any of the last 4 consumed jtis, replayed same-IP within 60s, resolved to the live head instead of revoking the chain) requiring security sign-off. That widening was **withdrawn**: grace is now chain-head-only, so any **older** rotated jti replayed within the window is treated as token reuse and revokes the chain — an undiluted theft signal. The consciously accepted trade is some multi-tab UX: a *second* stale tab that races a refresh (presenting a jti the active tab already rotated past) may be logged out. Same-IP remains the discriminator and `_client_ip` is `request.remote` (following `X-Forwarded-For` only where the deployment trusts it). The grace entry is in-memory only (never persisted): a gateway restart inside a grace window drops it (a lagging tab then re-mints via the token URL), keeping short-lived live-token material off disk. Any change to the chain-head-only rule, to `_client_ip`/XFF-trust, or to the head-serving behavior changes this security contract and must update this section in the same commit.
+**Reuse-detection posture:** Grace is chain-head-only: only the most recently consumed `jti` can receive the live replacement pair under the source-IP grace conditions; replay of an older rotated `jti` is token reuse and revokes the chain (`test_tr_u_22a_grace_accepts_only_chain_head`). The accepted trade is multi-tab UX: a second stale tab can be logged out after another tab rotates the chain. `_client_ip` is `request.remote`, following `X-Forwarded-For` only where the deployment trusts it. The grace entry is in-memory only, so a gateway restart drops the entry and a lagging tab re-mints via the token URL. Any change to the chain-head-only rule, to `_client_ip`/XFF trust, or to head-serving behavior changes this security contract and must update this section in the same commit.
 
 ### Refresh rate-limit bucket bounding (fail-closed cap)
 
-`POST /api/auth/refresh` is rate-limited per source IP (`_REFRESH_RATE_MAX_CALLS` per `_REFRESH_RATE_WINDOW_SECS`). The per-IP bucket map is bounded two ways: a periodic sweep reclaims stale/empty buckets (the only path by which a live bucket leaves the map — a still-in-window bucket is never evicted), and a hard cap (`_REFRESH_RATE_MAX_BUCKETS`, 4096) that **fails closed** — at capacity a previously-unseen source IP is denied outright rather than admitted by evicting a live bucket. Fail-closed is deliberate: eviction-to-admit was abusable (a saturated attacker's bucket freezes at exhaustion, so it became the eviction victim under an XFF/botnet pump, letting the attacker drop its own exhausted bucket and re-mint a fresh allowance). **Availability consequence:** under a sustained flood — a trusted-`X-Forwarded-For` deployment pumped with distinct spoofed IPs, or heavy organic IP churn — the map can stay pinned at capacity, and while pinned a legitimate previously-unseen source IP is denied refresh, surfacing as an unexplained forced logout. This is an accepted, bounded trade of the fail-closed posture; to keep the window as small as possible the sweep is invoked **unconditionally** (bypassing its interval throttle) whenever an insertion is refused at the cap, reclaiming any dead buckets exactly when it matters — without dropping a still-in-window bucket (a saturated attacker still cannot flood the map to reset its own bucket). Any change to the fail-closed cap, to the eviction/sweep behavior, or to this availability trade changes this security contract and must update this section in the same commit.
+`POST /api/auth/refresh` is rate-limited per source IP. The per-IP bucket map is bounded two ways: a periodic sweep reclaims stale or empty buckets without evicting a live bucket, and a hard cap fails closed so a previously unseen source IP is denied rather than admitted by evicting a live bucket (`test_tr_u_15g_rate_buckets_hard_capped`). Under a sustained flood or heavy IP churn, a legitimate previously unseen source can be denied refresh; an unconditional sweep runs when insertion is refused to reclaim dead buckets without dropping a live one. Any change to the cap, eviction or sweep behavior, or this availability trade changes this security contract and must update this section in the same commit.
 
 ## Architecture
 
@@ -103,8 +103,8 @@ Location: `src/kiro_crew/dashboard/token_auth.py`
 ```
 
 Two expiry times:
-- `exp`: link click window — 5 minutes (`LINK_WINDOW_SECS = 300`). The URL must be opened within this time.
-- `session_exp`: cookie session TTL — capped at 20 hours (`MAX_SESSION_TTL_SECS = 20 * 3600`). Once the cookie is set, the access session lasts this long; the refresh cookie (see Cookies) lets the SPA rotate it silently before expiry.
+- `exp`: link click expiry; query-param validation uses this claim (`token_auth.validate_token`).
+- `session_exp`: cookie-session expiry; cookie validation uses this claim and refresh rotates the cookies before expiry (`token_auth.validate_token`; `test_tr_u_04_session_exp_within_max`).
 
 Three optional claims scope a session more tightly than its `session_exp`, and
 are mutually exclusive in practice because they answer the same question
@@ -119,7 +119,7 @@ differently:
   Validation rejects a mismatch on both the link and the cookie path, and the
   refresh chain carries and checks the same claim, so rotation cannot outlive the
   process. Idling does not end the session; a restart does, and so does letting
-  the refresh credential lapse (30 days, renewed on each rotation). The rotated
+  the refresh credential lapse (its bounded refresh-session lifetime is renewed on each rotation; `test_tr_u_04_session_exp_within_max`). The rotated
   access token also keeps its address pin when tailnet identity trust is off,
   which a `no_refresh` session got for free by never rotating. This is the
   DEFAULT for the phone-access QR (`dashboard.qr_session_until_restart`, on by
@@ -223,11 +223,11 @@ def parse_duration(s: str) -> int | None: ...
 def token_auth_middleware(local_only: bool = True) -> Callable[..., Any]:
 ```
 
-The `local_only` parameter is accepted for backward compatibility but no longer controls loopback trust. Loopback requests (127.0.0.1, ::1, localhost) are **always** trusted — this ensures local processes like `mcp-core`, `kirocrew doctor`, and SSH tunnels work without tokens regardless of bind mode.
+The `local_only` parameter is accepted for backward compatibility but does not control whether ordinary loopback requests authenticate. `token_auth_middleware()` requires a token on ordinary loopback routes (`test_loopback_requires_token`). An internal route can grant a loopback caller with a valid `X-Internal-Secret`; a mixed internal route without that secret follows its cookie-authentication branch.
 
 Request flow:
-1. If request is from loopback → pass through (always trusted)
-2. Bypass static assets (`/assets/`, `/static/`, `/logo.png`, `/manifest.json`, `/sw.js`, `/icon-*.png`, `/api/token/local`, `/api/shutdown`, `/api/theme/boot` — a GET-only, secret-free theme-boot endpoint the SPA reads before the token flow completes) plus the liveness/readiness probes (`/api/health`, `/api/live`, `/api/ready` — orchestrators and load balancers carry no auth cookie, so probes must be reachable without a token; remote callers receive only liveness/readiness booleans)
+1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`).
+2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, and `/sandbox-doc/`; exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, and `POST /api/auth/logout` (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`).
 3. Extract token from `?token=` query param or `mc_token_{port}` cookie
 4. Validate signature + expiry (link window for query param, session_exp for cookie)
 5. Check IP binding
@@ -237,11 +237,7 @@ Request flow:
 
 #### Link re-exchange is deliberately allowed (the link is not single-use)
 
-Presenting the same `?token=` link more than once inside its 5-minute window
-**succeeds**, and each presentation re-exchanges for a fresh session cookie bound
-to the presenting peer. This is a deliberate design choice, not a missing control:
-remote-instance iframes re-derive `/?token=` on navigation, and self-nudge polling
-re-opens the same URL, so refusing the second presentation would break both.
+Presenting the same `?token=` link again within its link click window succeeds, and each presentation re-exchanges it for a fresh session cookie bound to the presenting peer (`test_link_token_still_reusable_via_query_param_after_exchange`; `test_url_token_exchanged_for_distinct_session_cookie`). This is deliberate: remote-instance iframes re-derive `/?token=` on navigation, and self-nudge polling re-opens the same URL, so refusing the second presentation would break both.
 
 What the exchange *does* guarantee is that the link never becomes the long-lived
 credential. The cookie is a separate token with its own nonce, and the link's
@@ -357,7 +353,7 @@ class TokenStateManager:
     _consumed: dict[str, float]            # token -> exp
 ```
 
-Up to `MAX_CONCURRENT_NONCES` (**50**) link nonces are valid simultaneously. When the limit is exceeded, the oldest nonce is evicted via `OrderedDict.popitem(last=False)` (O(1)); a successful nonce check also refreshes a nonce's eviction position so an actively-used session isn't evicted by newer grants. The limit was **raised from 5 to 50** specifically so pending Slack link nonces aren't evicted by other token-minting activity (crons, dashboard links, etc.). This allows multiple browser tabs and `kirocrew token` invocations without invalidating prior sessions.
+`TokenStateManager` bounds concurrent link nonces and evicts the oldest through `OrderedDict.popitem(last=False)`; a successful nonce check refreshes that nonce's eviction position. This allows multiple browser tabs and `kirocrew token` invocations without unbounded link-state growth (`token_auth.TokenStateManager`).
 
 The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist — it never consults the in-memory link-nonce set. Identity-persistent `require_peer` cookies additionally prove the original device with their signed `peer_key` before the hot pin is reconstructed; the deliberately fail-closed exception is a legacy claimless `require_peer` cookie, which must re-scan once because its original device cannot be recovered safely. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions()`, which bumps the generation both token kinds embed and check).
 
@@ -389,7 +385,7 @@ def parse_dashboard_url(url: str) -> tuple[str, int]: ...
     # KIROCREW_PORT env var always overrides port
 
 def is_local_only(dashboard_host: str, slack_connected: bool) -> bool: ...
-    # Determines bind address and CSRF origins (NOT token auth — loopback always trusted)
+    # Determines bind address and CSRF origins (not token auth; ordinary loopback requests remain token-gated by token_auth_middleware, as test_loopback_requires_token verifies)
     # True when: no Slack, loopback host, or localhost machine → bind 127.0.0.1
     # False when: non-loopback host configured with Slack → bind 0.0.0.0
 
@@ -596,7 +592,7 @@ Single `dashboard.url` field on `KiroCrewConfig` (default: `""`), loaded from `c
 - No URL + remote machine + Slack → all interfaces
 - No URL + localhost machine → local-only
 
-Note: Loopback access (127.0.0.1) is always trusted for both token auth and CSRF, regardless of `is_local_only`. This ensures `mcp-core`, `kirocrew doctor`, and SSH tunnels always work.
+Note: Loopback is accepted by `origin.check_origin()`'s no-Origin CSRF branch, supporting local POST clients. Ordinary loopback requests remain token-gated (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`); internal routes use their separate secret or mixed cookie-authentication branches.
 
 `KIROCREW_PORT` env var overrides the port (dev mode).
 
@@ -607,14 +603,14 @@ Note: Loopback access (127.0.0.1) is always trusted for both token auth and CSRF
 - Value: the full access token string
 - Attributes: `HttpOnly`, `SameSite=Lax`, `Path=/`
 - `Secure`: set when `is_https_request(request)` is true — i.e. `request.scheme == "https"` **OR** an `X-Forwarded-Proto: https` header from a **loopback** peer (a TLS-terminating tunnel/reverse proxy that forwards plain HTTP to the loopback-bound gateway). Restricting the header to a loopback peer means a remote attacker can't forge it. Localhost plain HTTP must NOT set `Secure` or the browser refuses to send the cookie back (and the `wss://` dashboard WebSocket would flap online/offline)
-- `max_age`: remaining seconds from `session_exp` (capped at `MAX_SESSION_TTL_SECS`, 20 hours)
+- `max_age`: remaining seconds from `session_exp`, bounded by the access-session limit enforced by `token_auth_middleware()`.
 
 ### Refresh cookie
 - Name: `mc_refresh_{port}` (e.g. `mc_refresh_5476`)
 - Value: the refresh token string
 - Attributes: `HttpOnly`, `SameSite=Lax`, `Path=/api/auth` (sent to both `/api/auth/refresh` and `/api/auth/logout`)
 - `Secure`: conditional on `is_https_request(request)`, same rule as the access cookie
-- `max_age`: remaining seconds from the refresh `session_exp` (capped at `MAX_REFRESH_TTL_SECS`, 30 days)
+- `max_age`: remaining seconds from the refresh `session_exp`, bounded by refresh-token validation (`test_tr_u_04_session_exp_within_max`).
 
 ## Error Handling
 
@@ -624,7 +620,7 @@ Note: Loopback access (127.0.0.1) is always trusted for both token auth and CSRF
 | Expired token (link window or session) | 403 | JSON for `/api/*`, HTML for pages |
 | Invalid HMAC signature | 403 | JSON for `/api/*`, HTML for pages |
 | IP mismatch | 403 | JSON for `/api/*`, HTML + SEL log |
-| Link re-presented inside its 5-minute window | 200 | Allowed by design — re-exchanges for a fresh session cookie bound to the presenting peer (see *Link re-exchange is deliberately allowed*) |
+| Link re-presented inside its link click window | 200 | Allowed by design — re-exchanges for a fresh session cookie bound to the presenting peer (`test_link_token_still_reusable_via_query_param_after_exchange`; see *Link re-exchange is deliberately allowed*) |
 | Link string presented as the `mc_token_{port}` cookie | 403 | Rejected: its nonce is on the persisted denylist from the moment of exchange |
 | Consumed token from different client | 403 | JSON for `/api/*`, HTML for pages |
 | Malformed token (can't decode) | 403 | JSON for `/api/*`, HTML for pages |
@@ -647,15 +643,15 @@ dashboard session; if no other device is signed in, it restores the
 
 ## Security Properties
 
-1. Persistent HMAC secret (`token_signing.key`, mode `0600`) — signed access and refresh cookies survive a process restart; `os.urandom(32)` is only the fail-safe fallback when the key cannot be persisted
-2. Dual expiry: 5-minute link click window + configurable session TTL (max 20h)
-3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for NEW ordinary sessions: they degrade to the address pin. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied ("tailnet identity unverified") while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures (spawn error, timeout) are cached only ~2s so a startup blip clears quickly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture)
-4. Single-use URL consumption — re-click from different client rejected; same client redirected to strip token
+1. Persistent HMAC secret (`token_signing.key`, owner-restricted) — signed access and refresh cookies survive a process restart; `token_secret` supplies an ephemeral fallback only when the key cannot be persisted
+2. Dual expiry: link click expiry plus configured cookie-session expiry, enforced by `validate_token()`
+3. Peer-keyed session pinning on first use — prevents token theft across networks. The pin binds to the client address (`ip:<addr>`), or — when the operator opted into `dashboard.tailscale.trust_identity` and the local daemon verified the forwarded peer — to the tailnet identity (`ts:node:<login>|<node>` or `ts:login:<login>` per `pin_scope`, ACL-tagged nodes always node-scoped). A verified login outside `allowed_logins` is denied outright. Resolution failure is fail-closed on identity and fail-open on availability for new ordinary sessions: they degrade to the address pin. A `require_peer` QR link instead fails closed, enrolls one verified allowed peer on its main exchange path, and carries that HMAC-signed original `peer_key` through access cookies, refresh rotation/grace replay, and child mints. A session pinned to a tailnet identity is denied (`tailnet identity unverified`) while the daemon cannot answer and denied on signed-key mismatch after restart — never satisfiable by an unverified proxied request or whichever allowed node presents a stolen cookie first. Transient daemon failures are cached briefly. Behind a non-Tailscale tunnel the pin binds to the tunnel's loopback address and is therefore shared (reported by Security Posture).
+4. Link re-exchange is allowed during the signed link window; each query-param use mints a distinct session cookie (`test_link_token_still_reusable_via_query_param_after_exchange`; `test_url_token_exchanged_for_distinct_session_cookie`)
 5. Dashboard link sent via DM only — never posted in channels
-6. Loopback always trusted — local processes (mcp-core, doctor, SSH tunnels) never need tokens
+6. Ordinary loopback routes require token authentication (`token_auth.token_auth_middleware()`; `test_loopback_requires_token`); internal routes have separate secret and mixed-cookie branches
 7. CSRF middleware also trusts loopback — local POST requests (mcp-core API calls) bypass origin checks
 8. Static assets bypass auth — error pages render correctly
-9. Bounded concurrent nonces (max 50; raised from 5 so pending Slack link nonces aren't evicted by other token-minting activity) — prevents unbounded memory growth, limits exposure window; an active session refreshes its eviction position on each check
+9. Bounded concurrent nonces (`TokenStateManager`) — prevents unbounded memory growth while allowing active link nonces to refresh their eviction position
 10. Explicit revocation via `kirocrew logout` — clears all nonces, IP bindings, and consumed tokens, and bumps the persisted revocation generation, ending every outstanding access cookie and refresh chain
 11. App-token scope confinement (CWE-269) — an `app`-claim token is confined deny-by-default to its own namespace (`/apps/<name>`, `/api/apps/<name>`) + its manifest `permissions.api` allowlist, enforced at every grant point; no-op for dashboard-user tokens
 12. Headless (`--slack-only`) auth parity — `start_api_server()` serves the same MCP route surface as the dashboard and mounts the same `host_validation → csrf → token_auth → sel_audit` chain against the shared `_STRICT_INTERNAL_API_PATHS`/`_MIXED_INTERNAL_API_PATHS` sets. Internal MCP routes require loopback **plus** `X-Internal-Secret` (loopback alone is not sufficient for these paths — port forwarders can spoof `127.0.0.1`); `sel_audit_middleware` alone only logs and is never a substitute for the token-auth chain

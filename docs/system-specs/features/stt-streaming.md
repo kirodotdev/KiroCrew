@@ -2,12 +2,9 @@
 
 ## Overview
 
-Live speech-to-text for the dashboard composer. The browser streams 16 kHz mono
-Int16 PCM over a WebSocket and the server relays partial hypotheses, one final
-transcript, and (when enabled) an auto-submit signal.
+Live speech-to-text for the dashboard composer. The browser streams 16 kHz mono Int16 PCM over a WebSocket and the server relays partial hypotheses, one or more final transcripts, and (when enabled) an auto-submit signal.
 
-All three providers stream, so streaming is a property of the endpoint rather
-than of a provider:
+All selectable providers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, and `transcribe` sends it to AWS Transcribe Streaming.
 
 | `stt.provider` | Where recognition runs | Cost | Precondition |
 |---|---|---|---|
@@ -25,13 +22,12 @@ emptied transcript is reported as nothing heard rather than written into an agen
 notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 `transcribe`.
 
-Retired providers, and what happens to a config that still names one, are in
-[Retired providers](#retired-providers).
+Legacy provider values and the loader behavior for persisted values are in [Legacy provider values](#legacy-provider-values).
 
 ## Architecture
 
 ```
-mic -> AudioWorklet (16 kHz Int16 PCM) -> WebSocket /api/ws/stt
+mic -> AudioWorklet (16 kHz mono Int16 PCM) -> WebSocket /api/ws/stt
     -> provider session (local | apple | transcribe)
     -> status / partial / final / endpoint frames
     -> composer (partial tail replaced in place)
@@ -48,7 +44,7 @@ mic -> AudioWorklet (16 kHz Int16 PCM) -> WebSocket /api/ws/stt
 | Model catalog | `src/kiro_crew/stt/models.py` | The offered models, their sizes, and the sha256-pinned download |
 | Apple helper | `src/kiro_crew/apple_speech/` | Swift `AppleTranscribe.swift` plus its Python driver |
 | Config fields | `src/kiro_crew/config/loader.py` | `SttConfig`, and the degradation rules for a stored provider or model |
-| Worklet | `website/public/pcm-worklet.js` | Float32 to Int16 downsampler onto 16 kHz |
+| Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Chooses streaming or batch, owns mic and device selection |
 | Composer wiring | `website/src/pages/ChatPage.tsx` | Splices the live region into the input box |
@@ -59,27 +55,16 @@ mic -> AudioWorklet (16 kHz Int16 PCM) -> WebSocket /api/ws/stt
 
 Client to server:
 
-- Binary frames: raw 16 kHz mono Int16 PCM, little-endian.
+- Binary frames: raw 16 kHz mono, little-endian Int16 PCM; `test/test_stt_stream.py` pins the transport format and frame limits.
 - Text frame `{"type":"stop"}`: the user released the mic. The server finishes
   the utterance and closes, so trailing finals still arrive.
 
-Server to client, JSON. The frame set is a rename of
-`stt.session.SttEvent`, whose `kind` values are the frame `type` values, so a new
-event shape cannot reach the browser without a matching field on that dataclass:
+Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider's `partial` and `final` frame types; `dashboard.stt_stream` owns the complete wire contract:
 
-- `{"type":"ready"}`: the session is live, the client may send audio. Capture starts
-  before this arrives, so the client buffers PCM locally until it lands and then
-  flushes in order. That buffer is capped and drops **oldest-first**, so the cap is
-  sized against the slowest readiness rather than one provider's connect time: a cold
-  resident load compiles a GPU pipeline (measured 7.4 s) after verifying the weights'
-  digest (up to ~4 s for the largest model), and a cap calibrated for Transcribe's
-  ~2-3 s spin-up silently discarded the words the user opened with while the UI still
-  showed a live mic. It is not sized against the transport's own 1800 s prepare
-  ceiling, because that covers a model *download*, which the `downloading` status
-  announces and which nobody expects to talk through.
+- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. The buffer is capped and drops **oldest-first** so an unavailable server cannot grow browser memory without bound.
 - `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...}`
   where `stage` is `downloading` or `ready`. A first-ever local session has to
-  fetch weights before it can recognise anything, and a silent 148 MB transfer is
+  fetch weights before it can recognise anything, and a silent transfer is
   indistinguishable from a hang, so the transport emits the notice itself *before*
   starting the fetch and `LocalSession.prepare()`'s own copy of it is dropped on
   return: re-sending it with a zero byte count would walk a progress reading
@@ -122,8 +107,7 @@ matching some other provider. `handlers/core.py` serves the same tuple to the
 settings page as `streaming_providers`, so the UI gates its streaming controls on
 that capability instead of on a hardcoded name.
 
-Past the three gates, each provider has its own precondition and its own failure
-frame:
+After the three gates, each provider has its own precondition and failure frame:
 
 - **local**: the recogniser must import (`stt.engine.probe`) and the configured
   model must be on disk. Neither is checked as an activation gate, because both
@@ -158,27 +142,14 @@ whisper.cpp is not a streaming recogniser: it decodes a buffer. Live text is
 therefore produced by decoding repeatedly as audio arrives, and the interesting
 question is *what* to re-decode.
 
-**Endpointing.** `stt.vad.Endpointer` consumes the same PCM the recogniser will,
-in 20 ms frames, and tracks the noise floor rather than comparing against a fixed
-dBFS threshold: no constant survives a built-in laptop microphone, a headset and
-a noisy room at once. A frame counts as speech when it clears the floor by
-`SPEECH_MARGIN_DB`, the utterance starts only after `MIN_SPEECH_FRAMES`
-consecutive such frames (one loud frame is a key click, not a word), and it ends
-after `stt.silence_ms` of quiet. `DEFAULT_MAX_UTTERANCE_MS` is the backstop that
-makes a session terminate on its own when the room never goes quiet. The floor
-falls quickly and rises very slowly, because a fast-rising floor is dragged up by
-sustained speech until the speaker's own voice stops clearing the margin and the
-utterance ends mid-sentence.
+**Endpointing.** `stt.vad.Endpointer` consumes the same PCM as the recogniser and tracks an adaptive noise floor rather than a fixed dBFS threshold. A frame must clear `SPEECH_MARGIN_DB`, speech must persist for `MIN_SPEECH_FRAMES`, and quiet for `stt.silence_ms` ends an utterance; `DEFAULT_MAX_UTTERANCE_MS` bounds a session that never becomes quiet. `test/test_stt_vad.py` pins the frame, threshold, and endpointing behavior. The floor falls quickly and rises slowly so sustained speech does not raise it enough to terminate the speaker mid-sentence.
 
 **Partials.** The detector that decides when the utterance ended also decides
 where to cut it. On a pause too short to end the utterance, the audio so far is
 decoded once and its text is *committed*, and the phrase buffer resets. A partial
 is then the committed text plus a decode of the current phrase, so its cost
 tracks the current phrase rather than the whole recording. Decoding the entire
-utterance on every partial is the obvious design and the wrong one: at the
-measured real-time factor of about 0.01 a 60 s dictation would spend hundreds of
-milliseconds per partial and fall behind the speaker. Committed text also never
-regresses under the speaker. Cadence is `stt.partial_interval_ms`.
+utterance on every partial makes each update grow with the recording and can fall behind the speaker. Committed text never regresses under the speaker. Cadence is `stt.partial_interval_ms`, pinned by `test/test_stt_session.py`.
 
 **The final.** One decode of the entire buffer, so the text that reaches the
 message box has the full context the model would have had if it had never been
@@ -189,10 +160,7 @@ The detector, not the client, normally ends an UTTERANCE: `feed()` returns the
 final, drops that utterance's audio and committed text, and installs a fresh
 `Endpointer` for the next one.
 
-**The chunk that ends an utterance is split, not filed whole.** A client's chunk is
-much longer than a detector frame — a browser sends about 100 ms against a 20 ms
-frame — so the chunk that trips the endpoint can also carry the start of the next
-utterance. `Endpointer.push` stops at the frame that closed the utterance and returns
+**The chunk that ends an utterance is split, not filed whole.** A client chunk can contain both the silence that ends one utterance and speech that starts the next. `Endpointer.push` stops at the frame that closed the utterance and returns
 everything after it as `VadUpdate.pending`; `feed()` buffers only the head, finalises,
 and then seeds the re-armed buffer and detector with that tail. Filing the chunk whole
 attributed resumed speech to the utterance that just closed, where it sits behind a
@@ -202,13 +170,7 @@ be the sub-frame carry `push` retains internally and a caller re-feeding it woul
 duplicate audio. It does **not** end the session, and
 `LocalSession.ended` is not set — only a client `stop`, a close, or the session
 audio ceiling does that. A session spans many utterances here exactly as it does on
-`apple` and `transcribe`, and both clients accumulate finals rather than treating
-the first as the end. Ending the session on the detector broke the continuous
-consumer outright: the socket closed on the speaker's first pause,
-`useMeetingTranscription`'s `onclose` reported `disconnected` and ran its cleanup,
-and because its session binding keys only on `status` nothing restarted it, so
-transcription stayed dead for the rest of the meeting while the UI still showed
-Live.
+`apple` and `transcribe`, and `useStreamingStt` accumulates finals rather than treating the first as the end. Ending the socket on a recognizer utterance would make continuous transcription stop after the first pause.
 
 An utterance finishing is also a different event from the `endpoint` frame (a
 judgment about whether the finished text is a complete request). The transport
@@ -238,12 +200,7 @@ and it writes nothing to stdout with `print_progress=False` and
 module and their stdout *is* their protocol. Neither argument may be removed.
 stderr is not quiet, so no test may assert it empty.
 
-`redirect_whispercpp_logs_to` must be left at its `False` default. Despite the
-name it governs stderr rather than the log callback, and `None` makes the binding
-`os.dup2` `/dev/null` over **fd 2** for the whole model load — process-wide, so
-every other thread is silenced with it. Measured across one load: 693 of 862
-concurrent stderr writes destroyed, against zero at the default, with stdout clean
-either way.
+`redirect_whispercpp_logs_to` stays at its `False` default. Its binding governs stderr rather than the log callback, and `None` redirects process-wide fd 2 during model loading, silencing unrelated threads while leaving stdout behavior unchanged.
 
 ## Model download
 
@@ -256,12 +213,8 @@ transcription surfaces are deliberately open to an app token):
 - `GET /api/stt/status`: the availability code and prose, the resolved model with
   `model_present` and its size, whether a model is resident right now, and the
   live transfer state. Separate from `GET /api/config/stt`, which serves settings.
-- `POST /api/stt/prepare`: starts or JOINS the transfer, 202 with the current
-  state. Concurrent callers share one transfer behind the store's own lock.
-- `POST /api/stt/prewarm`: 202, fire-and-forget, called when the user reaches for
-  the mic rather than when they release it. A first-ever load compiles a GPU
-  pipeline (measured at 7.4 s) and the first decode after any load allocates its
-  graph (154-528 ms), so both are paid while the user is still speaking.
+- `POST /api/stt/prepare`: starts or joins the transfer and returns its current state. Concurrent callers share one transfer behind the store's lock.
+- `POST /api/stt/prewarm`: starts local-provider preparation without waiting for completion. `useVoiceInput` calls it while the user reaches for the microphone so local initialization can overlap capture.
 
 The first use of voice input fetches one model and every later session loads it
 from disk. The digest is the trust anchor for that fetch: bytes are streamed to a
@@ -280,9 +233,7 @@ unpredictable and the create is exclusive, so a symlink pre-planted at a guessab
 staging path cannot redirect the write.
 
 A file already on disk is verified against the pin too, on every model LOAD. Not once
-per session, because `WhisperEngine.ensure_loaded` settles residency before asking the
-store, so the hash costs 0.5 s (default) to ~5 s (largest) once per load rather than on
-the path this feature exists to make fast. Not memoised against size and mtime either:
+per session, because `WhisperEngine.ensure_loaded` settles residency before asking the store. It is not memoised against size and mtime because
 `os.utime` is available to anything that can write the file.
 
 The digest is the second line of defence, not the first. Verifying and then handing a
@@ -329,13 +280,9 @@ for an unbounded cost in every case. On `transcribe` an abandoned socket bills p
 audio-second and counts against the account's concurrent-stream quota; on `apple`
 it holds a helper process and an OS recognition session; on `local` it accumulates
 buffered audio and keeps queueing decodes onto the one shared model. The
-concurrency cap is deliberately NOT widened for the free providers: the number
-that would justify a higher one is a measured number, and nothing has measured it.
+concurrency cap is shared by the free providers because all still consume bounded local capacity.
 
-The model fetch gets its own ceiling rather than borrowing the session's, because
-it is a transfer of the catalog entry's whole size rather than a dictation, and
-the fetch applies no read timeout, so a stalled mirror would otherwise hold a concurrency slot for the
-life of the gateway. On that timeout the transfer is SHIELDED and left running:
+The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` uses a request timeout, while `_prepare_local_with_progress` also bounds how long a WebSocket waits. On the WebSocket timeout the transfer is shielded and left running:
 cancelling it would release the model store's transfer lock while its worker thread
 is still writing the staging file, and the next session would start a second write
 to the same path. Only the socket gives up; the bytes land for the next attempt.
@@ -378,34 +325,16 @@ snapshot, so anything the user typed before speaking survives, and the caret doe
 not jump. The snapshot clears on the final, so the next utterance starts from the
 newly committed text.
 
-## Retired providers
+## Legacy provider values
 
-`whisper`, `mlx`, `parakeet` and `faster` are gone. Each of them needed an
-out-of-band install the user had to perform themselves (a whisper CLI on `PATH`,
-or an `mlx-whisper` / `parakeet-mlx` / `faster-whisper` wheel), which is exactly
-the cost the resident local engine removes while recognising the same speech.
-Nothing needs installing by hand any more, and the Metal acceleration that was
-`mlx`'s reason to exist is already in the whisper.cpp wheel on Apple silicon.
+`_validated_stt_provider` in `config/loader.py` accepts only `local`, `apple`, and `transcribe`. Persisted `whisper`, `mlx`, `parakeet`, or `faster` values degrade to `local` and log the replacement rather than preventing the gateway from loading a voice setting. `stt.models` resolves legacy model aliases to a catalog entry; unknown models fall back through the loader's validation path.
 
-A `config.json` that still names one keeps working: `_validated_stt_provider`
-degrades it to `local` and logs which value it replaced and why. It never raises,
-because the value arrives from a file on disk and failing the load that read it
-would take the whole gateway down over a voice setting. `stt.model` degrades the
-same way, except that the catalog's alias table maps a superseded name onto the
-entry that best honours what was asked for, so a stored `turbo` keeps the accuracy
-ceiling instead of silently dropping to the default.
-
-The deleted config fields (`whisper_path`, `mlx_model`, `parakeet_model`,
-`device`) are ignored when present. `config/superseded_defaults.py` records the
-two defaults that moved, so an install that materialized the old value is told
-about the drift rather than left on it.
+Legacy config fields such as `whisper_path`, `mlx_model`, `parakeet_model`, and `device` are ignored by `KiroCrewConfig.load` because `SttConfig` does not consume them. `config/superseded_defaults.py` records migrated defaults for the config surface.
 
 ## Deliberately not built
 
 - **Speaker diarisation and word-level timestamps.** Neither has a consumer in
   the composer, and both change the frame shape every client conforms to.
-- **A neural VAD.** It would work, and it costs a second model download plus
-  another native dependency for a decision the measured 36 dB separation between
-  speech and noise floor already makes unambiguous.
+- **A neural VAD.** It would add a second model download and native dependency; `stt.vad.Endpointer` supplies the current adaptive-RMS decision.
 - **Fan-out of one utterance to several agents.** One session drives one
   composer.
