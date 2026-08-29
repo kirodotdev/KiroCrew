@@ -125,6 +125,61 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     explicit = refresh in ("1", "true", "explicit") and is_owner
     auto = refresh == "auto" and is_owner
 
+    # OpenCode does not require Kiro CLI. When the selected harness is
+    # opencode, bypass the Kiro probe entirely and report ready so the
+    # dashboard gate (and any CLI caller) does not block on kiro-cli login.
+    try:
+        from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        if cfg.agent.acp_backend == ACP_BACKEND_OPENCODE:
+            snapshot: dict[str, object] = {
+                "platform": "gateway",
+                "installed": True,
+                "authenticated": True,
+                "ready": True,
+                "initial_setup_complete": True,
+                "repair_required": False,
+                "docs_url": OFFICIAL_INSTALL_DOCS_URL,
+                "login_command": KIRO_CLI_LOGIN_COMMAND,
+                "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
+                "sandbox_unavailable": False,
+                "sandbox_failure_kind": "",
+                "sandbox_detail": "",
+                "sandbox_remedy": "",
+                "probe_timed_out": False,
+                "missing_agent_specs": [],
+                "agent_spec_repair_error": "",
+                "operation": legacy_idle_operation(),
+            }
+            if _is_dashboard_owner(request):
+                return web.json_response({**snapshot, "setup_allowed": True})
+            return web.json_response(
+                {
+                    "platform": "gateway",
+                    "installed": False,
+                    "authenticated": False,
+                    "ready": True,
+                    "initial_setup_complete": True,
+                    "repair_required": False,
+                    "docs_url": OFFICIAL_INSTALL_DOCS_URL,
+                    "login_command": KIRO_CLI_LOGIN_COMMAND,
+                    "sso_login_command": KIRO_CLI_SSO_LOGIN_COMMAND,
+                    "setup_allowed": False,
+                    "sandbox_unavailable": False,
+                    "sandbox_failure_kind": "",
+                    "sandbox_detail": "",
+                    "sandbox_remedy": "",
+                    "probe_timed_out": False,
+                    "missing_agent_specs": [],
+                    "agent_spec_repair_error": "",
+                    "operation": legacy_idle_operation(),
+                }
+            )
+    except Exception:
+        logger.debug("OpenCode bypass check failed; falling through to Kiro probe", exc_info=True)
+
     # Resolve the service OUTSIDE the guard: a genuinely unwired service is a
     # real misconfiguration that must stay a 503, not be masked as a 200
     # not-ready. Only the probe itself is guarded.
