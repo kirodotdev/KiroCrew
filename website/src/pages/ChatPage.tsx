@@ -7028,7 +7028,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 Inset on the right by the 6px scrollbar width (see ::-webkit-scrollbar
                 in index.css) so the overlay never paints over the scroller's scrollbar
                 track — otherwise the thumb is hidden/un-grabbable when scrolled to top. */}
-            <div className="absolute top-0 left-0 right-1.5 z-[45] pointer-events-none" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            {/* z-[45] at rest keeps this row BELOW the mobile drawer scrim
+                (z-[46]) so an open sessions drawer dims it. While it hosts the
+                rename editor it lifts to z-[47], above the composer status bars
+                (z-[46]): those are flex-flow chrome, not overlays, and they rise
+                into this band once the transcript scroller collapses to zero —
+                what a phone keyboard does — where they painted over the caret.
+                Scoping the lift to the edit is safe because opening the drawer
+                blurs the input, which commits and closes the editor. */}
+            <div className={`absolute top-0 left-0 right-1.5 ${editingTitle ? 'z-[47]' : 'z-[45]'} pointer-events-none`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               {/* The row's left padding GLIDES between its open (20px) and
                   collapsed (60px, clearing the stationary toggle + divider)
                   values on the same 320ms curve as the panel — an instant
@@ -7476,6 +7484,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   ><ArrowDown size={14} strokeWidth={2.5} /></button>
                 </div>
               )}
+              {/* Status chrome never claims more than half the pane. These bars
+                  are flex-flow siblings of the transcript scroller, which has an
+                  automatic minimum size of 0 and collapses under pressure — an
+                  opening keyboard shrinks the layout viewport, so an uncapped
+                  stack rises into the title band at the top of the pane and
+                  covers the rename editor. Capping makes the stack yield first.
+                  `svh` not `%` (a percentage resolves against this wrapper's own
+                  content-derived height, so it computes to none) and not `vh`
+                  (which over-measures a phone showing its URL bar). Scoped to
+                  the bars: FlyingQuote, the composer and the `absolute -top-10`
+                  scroll-to-bottom button must all stay outside the scroll box. */}
+              <div className="max-h-[50svh] overflow-y-auto overscroll-contain" data-testid="composer-status-stack">
               {/* Not gated on activityOpen (unlike the two bars below): the
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
@@ -7494,6 +7514,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
+              </div>
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
               <div ref={inputAreaRef} className="relative z-10">
               {/* The refused-press answer sits directly above the composer,
