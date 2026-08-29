@@ -1,7 +1,8 @@
 import { memo, useRef, useState, useEffect, useCallback } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
-import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowUp, X } from 'lucide-react'
 
+import type { OptionAction } from '../app-sdk/protocol/options'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export type FollowUpLayout = 'multiline' | 'scroll'
@@ -37,6 +38,48 @@ interface FollowUpBarProps {
    * mismatch — see `usePlanActionMutation`.
    */
   sourceKey?: string | null
+  /**
+   * The local UI action offered alongside the content options (`[OPTION-ACTIONS:]`).
+   * Rendered AFTER every content chip, and NOT part of `picked` — an action chip
+   * never puts text in the composer, so it has no picked state to carry.
+   *
+   * Optional so every existing caller keeps typechecking and behaves as before.
+   */
+  action?: OptionAction | null
+  /**
+   * The ONLY callback an action chip can reach. Deliberately separate from
+   * `onSelect`/`onSend`: an action's click runs a local effect, and routing it
+   * through the text-sending callbacks is exactly the leak the plan-action
+   * precedent has — a plan chip is interceptable on single click, but its
+   * double-click and its `▲` segment still send the label as chat text.
+   *
+   * Second argument is `sourceKey` as it was at click time, on the same contract
+   * as `onSelect`'s third argument: a caller whose dispatch is asynchronous (the
+   * close dispatch awaits a breadcrumb write before it tears the tab down)
+   * compares it against the current key and refuses a mismatch.
+   */
+  onAction?: (action: OptionAction, sourceKeyAtClick?: string | null) => void | Promise<unknown>
+  /**
+   * True when the composer still holds work the user has not sent: typed text,
+   * a staged file or directory, a pending session reference.
+   *
+   * An action chip is BLOCKED while it is true, for the same reason `picked`
+   * blocks it — `close` tears the composer down, and the composer's local state
+   * is the only copy. `picked` alone was not enough: picks are just one route to
+   * a non-empty composer, and typing, pasting or dropping a file reaches none of
+   * them, so the chip stayed live over a draft it would discard.
+   *
+   * Supplied by the host that OWNS the composer state (`ChatInput`); optional so
+   * every existing caller keeps typechecking, and absent means "nothing staged",
+   * which is the correct reading for the callers that render no action chips.
+   */
+  composerHasUnsentWork?: boolean
+  /** The SLOT-wide answer, so paint and click ask the same question. */
+  actionBlockedBySlot?: boolean
+  /** An in-flight recording or upload. `composerHasUnsentWork` is already true for
+   *  it, but the composer looks EMPTY mid-dictation, so the unsent-draft copy would
+   *  name a draft the user can neither see nor clear. Optional for the same reason. */
+  composerCaptureInFlight?: boolean
 }
 
 /**
@@ -383,11 +426,340 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
   )
 }
 
+/**
+ * Chrome for an action chip. Same `CHIP_BASE` box and the same colour tokens as a
+ * content chip — no new palette — but the accent border is SOLID and present at
+ * REST, where a content chip only earns it on hover or once picked. Paired with the
+ * leading glyph in `ActionChip`, that is what separates "this does something" from
+ * "this sends text".
+ *
+ * `CHIP_BASE` carries `cursor-pointer`, so the disabled state adds the `disabled:`
+ * variant rather than a bare `cursor-not-allowed`: Tailwind emits variants after the
+ * plain utility in the same layer, so the variant wins by source order. A bare
+ * utility would tie on specificity and resolve on whichever Tailwind happened to
+ * emit last.
+ */
+function actionChipClassName(disabled: boolean, { shrink0 = false }: { shrink0?: boolean } = {}) {
+  // DANGER, not accent. The only action is a destructive one, and the accent palette
+  // was byte-identical to `chipColors(true)` — a SELECTED content chip — apart from
+  // the background tint, so the chip that deletes the session wore the paint that
+  // elsewhere means "you already picked this". The same product already paints the
+  // same operation `text-danger` in `SessionActionsMenu`, so this is the existing
+  // convention rather than a new one. Tokens resolve in every theme
+  // (`--danger` / `--danger-subtle` in `index.css`, mapped in `tailwind.config.js`).
+  const palette = disabled
+    ? 'border-solid border-border text-muted'
+    : 'border-solid border-danger/50 text-danger hover:border-danger/70 hover:bg-danger-subtle'
+  // Keyed on `aria-disabled`, not `disabled:`. The button never sets the native attribute --
+  // a disabled button takes no focus -- so a `disabled:` variant matched nothing.
+
+  // The selector tests the VALUE, since `aria-disabled` is present-and-"false" while merely
+  // busy; a bare attribute selector would paint the live chip as blocked.
+  const state = 'aria-disabled:opacity-50 aria-disabled:cursor-not-allowed'
+  return `${shrink0 ? 'shrink-0 ' : ''}${CHIP_MAX_WIDTH} ${CHIP_BASE} rounded-lg bg-bg-elevated ${state} ${palette}`
+}
+
+/**
+ * Why an action chip is blocked, or `null` when it is live.
+ *
+ * ONE value carries both the disabled state and its explanation, deliberately:
+ * they were a boolean and a message chosen from it, and that pairing is exactly
+ * what let a second block reason arrive wearing the first one's copy. Adding a
+ * reason now forces a message for it at the type level.
+ */
+type ActionBlockReason = 'picks' | 'captureInFlight' | 'unsentWork' | null
+
+/** The reason copy for a blocked chip. ONE source for both the visible helper
+ *  text and the hover title, so the two can never say different things. */
+function actionBlockReasonText(reason: Exclude<ActionBlockReason, null>): string {
+  if (reason === 'picks') return i18nT('components.followUpBar.action_unavailable_while_options_are_selected')
+  if (reason === 'captureInFlight') return i18nT('components.followUpBar.action_unavailable_while_capture_in_flight')
+  return i18nT('components.followUpBar.action_unavailable_while_the_composer_has_unsent')
+}
+
+/**
+ * The SHORT visible form of the same reason.
+ *
+ * The full copy is ~90 chars, and at `text-[11px]` in a narrow column that is 4-6
+ * wrapped lines sitting beside single-line chips. `composerHasUnsentWork` flips true
+ * on the FIRST typed character, so on any row offering a close chip the bar directly
+ * above the caret grew by several lines the moment the user started a reply and
+ * collapsed again on send — layout churn on every draft, every time, and worse in
+ * the locales whose translation of this string is longer.
+ *
+ * So the visible text is one line and the CONSEQUENCE is not truncated away: the
+ * full sentence is still the `title`, and still rendered in an `sr-only` node that
+ * is what `aria-describedby` actually resolves to. A sighted user reads the short
+ * form, a screen-reader user hears the whole thing.
+ */
+function actionBlockReasonShortText(reason: Exclude<ActionBlockReason, null>): string {
+  if (reason === 'picks') return i18nT('components.followUpBar.action_unavailable_short_options_selected')
+  if (reason === 'captureInFlight') return i18nT('components.followUpBar.action_unavailable_short_capture_in_flight')
+  return i18nT('components.followUpBar.action_unavailable_short_unsent_draft')
+}
+
+/**
+ * Hover text and accessible name for an action chip.
+ *
+ * Enabled: a FIXED string naming the action, with the label inside it. It used to
+ * return the bare `action.label`, and nothing else on screen said what the chip
+ * does: the label is model-authored free text, so `[OPTION-ACTIONS: close=That's
+ * all]` rendered as `✕ That's all` and tore the session down on one click with no
+ * stated consequence — and `confirmCloseSession` defaults to `false`, so there was
+ * no dialog either. A user cannot consent to an effect nobody named.
+ *
+ * The same string is the `aria-label`, so it is the chip's ACCESSIBLE NAME rather
+ * than a hover-only extra: a screen-reader user hears the consequence, not just
+ * whatever prose the model chose. The visible text stays the label alone, since the
+ * glyph plus the danger palette already carry the warning visually.
+ *
+ * Blocked: the REASON. That case is a convenience only — the reason is ALSO rendered
+ * as visible text beside the group and wired via `aria-describedby`, because a
+ * disabled button is unfocusable and gets no hover on touch, so a title alone
+ * reached neither a keyboard nor a touch user.
+ */
+function actionChipTitle(action: OptionAction, reason: ActionBlockReason) {
+  return reason === null
+    ? actionChipAccessibleName(action)
+    : actionBlockReasonText(reason)
+}
+
+/**
+ * The chip's accessible NAME — always the effect plus the label, in every state.
+ *
+ * Deliberately NOT the block reason when the chip is disabled. A button's name has to
+ * identify the button; swapping it for "Unavailable while…" leaves a screen-reader
+ * user with a control whose name never says what it would do, and it changes the
+ * name out from under anything that addresses the button by it. The reason is already
+ * announced as the chip's DESCRIPTION via `aria-describedby`, which is the right
+ * relationship for it — name says what it is, description says why it is unavailable.
+ */
+function actionChipAccessibleName(action: OptionAction) {
+  return i18nT('components.followUpBar.action_closes_this_session', { label: action.label })
+}
+
+interface ActionChipProps {
+  action: OptionAction
+  /**
+   * Why this chip is blocked, or `null` when it is live. Replaces a bare
+   * `disabled` boolean so the state and the explanation come from one value —
+   * see `ActionBlockReason`.
+   */
+  blockReason: ActionBlockReason
+  /** Id of the VISIBLE reason node, so the explanation is announced with the
+   *  button. A disabled button is unfocusable and gets no hover, so `title`
+   *  alone reached neither a keyboard nor a touch user. */
+  describedBy?: string
+  onAction?: (action: OptionAction, sourceKeyAtClick?: string | null) => void | Promise<unknown>
+  className: string
+  /** Position in the row, continuing the content chips' stagger ladder. */
+  index: number
+  animating: boolean
+  sourceKey?: string | null
+}
+
+/**
+ * A chip whose click runs a LOCAL UI action instead of composing or sending text.
+ *
+ * Deliberately a SEPARATE component from `Chip` rather than a flag threaded through
+ * it. `Chip` has THREE routes out to the text path — the undebounced `onSelect`, the
+ * debounced `onSelect` plus its `onDoubleClick` → `onSend`, and the `▲` split segment
+ * → `onSend` — and the plan-action precedent shows what a partial interception costs:
+ * intercepting only the single click leaves a double-click and the `▲` segment sending
+ * the label as chat text. A flag would have to be honoured at all three, and a fourth
+ * route added later would leak by default. This component closes over neither
+ * `onSelect` nor `onSend`, so it CANNOT reach them — the property is structural rather
+ * than maintained.
+ *
+ * Consequently: exactly one `onClick`, no `onDoubleClick`, no debounce timer, and no
+ * send segment. There is nothing for a debounce to protect against here (no
+ * double-click gesture to cancel), and dispatching synchronously means the
+ * `sourceKey` handed to `onAction` is genuinely the one on screen at click time.
+ *
+ * Blocked while the composer holds anything unsent — a content pick, typed text, or a
+ * staged attachment. All three live only in the composer, and an action tears the
+ * composer down (the shipped action is `close`), so dispatching would silently discard
+ * work the user had assembled. Blocking it is recoverable — clear it and click again —
+ * where the discard is not. Picks were the original gate; they turned out to be one
+ * route to a non-empty composer rather than the only one.
+ */
+function ActionChip({ action, blockReason, describedBy, onAction, className, index, animating, sourceKey }: ActionChipProps) {
+  const disabled = blockReason !== null
+  const entrance = chipEntrance(index, animating)
+  // The gate is a REF, not the state below, and that is the whole point: two
+  // clicks of a double-click land in the SAME tick, before React re-renders, so a
+  // state flag would still read false on the second one and `disabled` would not
+  // have been applied yet either. Without this each click ran a full dispatch —
+  // two note POSTs, so two durable breadcrumbs for one user action, and two close
+  // requests. The state mirror exists only so the chip can PAINT as busy.
+  const inFlightRef = useRef(false)
+  const [inFlight, setInFlight] = useState(false)
+  // A dispatched action tears its own tab down, so the settle can land after this
+  // component is gone. Tracked so the release touches no unmounted state.
+  const mountedRef = useRef(true)
+  useEffect(() => () => { mountedRef.current = false }, [])
+
+  const fire = () => {
+    // `aria-disabled` does not stop a click, and that is the point: a natively `disabled`
+    // button takes no focus, so its reason was unreachable by keyboard and by touch.
+    if (disabled) return
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    setInFlight(true)
+    const release = () => {
+      inFlightRef.current = false
+      if (mountedRef.current) setInFlight(false)
+    }
+    // The handler is async in every real host (it awaits a breadcrumb write before
+    // closing), so the guard has to hold until it settles. A synchronous handler
+    // cannot re-enter on one tick anyway, so releasing immediately is correct there
+    // and keeps a non-promise host from latching the chip permanently.
+    const result: unknown = onAction?.(action, sourceKey)
+    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+      void Promise.resolve(result).then(release, release)
+    } else {
+      release()
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      aria-disabled={disabled || inFlight}
+      data-option-action={action.action}
+      // Same reason as the content chip: keep keyboard focus in the textarea so a
+      // following Enter sends the composer rather than re-activating this chip.
+      onMouseDown={(e) => e.preventDefault()}
+      // THE one entry point. `sourceKey` is read from the render closure and passed
+      // synchronously, so it is the row the user actually clicked on — the callee's
+      // own await is where the row can advance, which is what it compares against.
+      onClick={fire}
+      className={`${className} ${entrance.className}`}
+      style={entrance.style}
+      title={actionChipTitle(action, blockReason)}
+      // Names the effect in EVERY state, so it is the chip's accessible NAME
+      // rather than a hover-only extra a screen reader misses. Not the block
+      // reason when disabled: that is the DESCRIPTION, already wired below.
+      aria-label={actionChipAccessibleName(action)}
+      aria-describedby={describedBy}
+    >
+      <span className="flex items-center gap-1.5 min-w-0">
+        {/* Categorical, not decorative: a border weight is a cue a low-contrast or
+            colour-blind user can miss, while a glyph is not. `close` is the whole
+            enum today, so this is an unconditional X rather than a lookup table
+            standing in for a branch that does not exist yet. */}
+        <X size={13} className="shrink-0" />
+        <ChipLabel option={action.label} />
+      </span>
+    </button>
+  )
+}
+
+/**
+ * Action chips, in their OWN group rather than as siblings of the content chips.
+ *
+ * `max-two-buttons-per-row` reads a run of peer buttons as one row, so appending
+ * an action chip beside two content options made a three-button row — and the
+ * rule's stated reason applies exactly here: peer buttons side by side carry no
+ * ranking, and an action chip is not peer to a content option at all. One sends
+ * text, the other tears the tab down. The divider is the visible half of that
+ * distinction; the separate container is the structural half.
+ */
+function ActionGroup({
+  action, picked, onAction, animating, sourceKey, optionCount, shrink0 = false, composerHasUnsentWork = false,
+  actionBlockedBySlot = false,
+  composerCaptureInFlight = false,
+}: {
+  action: OptionAction | null
+  picked: ReadonlySet<string>
+  onAction?: (action: OptionAction, sourceKeyAtClick?: string | null) => void | Promise<unknown>
+  animating: boolean
+  sourceKey?: string | null
+  optionCount: number
+  shrink0?: boolean
+  composerHasUnsentWork?: boolean
+  /** The SLOT-wide answer, so paint and click ask the same question. */
+  actionBlockedBySlot?: boolean
+  /** An in-flight recording or upload. `composerHasUnsentWork` is already true for
+   *  it, but the composer looks EMPTY mid-dictation, so the unsent-draft copy would
+   *  name a draft the user can neither see nor clear. Optional for the same reason. */
+  composerCaptureInFlight?: boolean
+}) {
+  if (!action) return null
+  // PICKS FIRST, and the order is load-bearing rather than arbitrary: picking
+  // stages the label as composer text, so a picked row ALSO has unsent work and
+  // both conditions hold at once. The picks message is the more actionable of the
+  // two — it names a specific thing to undo — so it must win, which also keeps
+  // the pre-existing copy on the pre-existing case.
+  const blockReason: ActionBlockReason =
+    picked.size > 0
+      ? 'picks'
+      : composerCaptureInFlight
+        ? 'captureInFlight'
+        : (composerHasUnsentWork || actionBlockedBySlot) ? 'unsentWork' : null
+  // BOTH scopes, so the paint and the click agree. Painting from this composer alone left a
+  // chip in full danger paint that refused on click and wrote a permanent error row.
+
+  // The slot-wide half is resolved by the HOST each render rather than subscribed to: the
+  // registry is a plain read, so a value captured once would never un-grey.
+  const blocked = blockReason !== null
+  // VISIBLE, not title-only. A disabled button takes no focus and receives no
+  // hover on touch, so `title` reaches neither a keyboard nor a touch user: they
+  // met a greyed `✕` chip with no reason and no route to re-enable it. The same
+  // node is wired as the chip's `aria-describedby`, so the reason is announced
+  // with the button rather than sitting beside it unlinked.
+  const reasonId = blocked ? `action-block-reason-${blockReason}` : undefined
+  const reasonText = blocked ? actionBlockReasonText(blockReason) : ''
+  const reasonShortText = blocked ? actionBlockReasonShortText(blockReason) : ''
+  return (
+    <div
+      className={`${shrink0 ? 'shrink-0 ' : ''}flex items-end ${CHIP_ROW_GAP} ${optionCount > 0 ? 'ml-1 pl-2 border-l border-border' : ''}`}
+    >
+      <ActionChip
+        action={action}
+        blockReason={blockReason}
+        describedBy={reasonId}
+        onAction={onAction}
+        className={actionChipClassName(blocked, { shrink0 })}
+        // Continues the ladder past the content chips rather than restarting
+        // it, so the row enters as one sequence. No offset to add: there is
+        // exactly one action chip, so it is always the next rung.
+        index={optionCount}
+        animating={animating}
+        sourceKey={sourceKey}
+      />
+      {blocked && (
+        // `role="note"` rather than an alert: it explains a control that is
+        // already on screen, so it should be readable on demand and not
+        // interrupt whatever the user is doing.
+        //
+        // Two children, not one string. The visible child is the SHORT form and is
+        // `aria-hidden` so it is not announced twice; the `sr-only` child carries the
+        // full consequence and is what `aria-describedby` resolves to. `line-clamp-2`
+        // bounds the visible height even where a translation runs long, so starting a
+        // draft can never push the composer down by more than one extra line.
+
+        // Shown whenever the chip is blocked. A hover/focus reveal left this unreachable:
+        // the chip was natively `disabled`, so it took no focus for `focus-within` to see.
+
+        // Touch has no hover either, and the reserved width read as a blank gap beside the
+        // chip. Always-visible costs one muted line and reaches every input mode.
+        <span id={reasonId} role="note" className={`${shrink0 ? 'shrink-0 ' : ''}self-center text-[11px] leading-tight text-muted max-w-[30ch]`}>
+          <span aria-hidden="true" className="line-clamp-2">
+            {reasonShortText}
+          </span>
+          <span className="sr-only">{reasonText}</span>
+        </span>
+      )}
+    </div>
+  )
+}
+
 /** Both layouts render the same chips; `animating` is owned by the parent so a
  *  layout switch cannot restart an entrance that already played. */
 type LayoutProps = Omit<FollowUpBarProps, 'layout'> & { animating: boolean }
 
-function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
+function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey, action, onAction, composerHasUnsentWork, actionBlockedBySlot, composerCaptureInFlight }: LayoutProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
@@ -417,8 +789,10 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating,
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
-  // Chips changing keeps the row's own box, so no observer reports it.
-  useEffect(() => { remeasure() }, [options, remeasure])
+  // Chips changing keeps the row's own box, so no observer reports it. Actions are
+  // in the dep list for the same reason options are: they are chips in this row, so
+  // an action-only row would otherwise never measure its own overflow.
+  useEffect(() => { remeasure() }, [options, action, remeasure])
 
   // Scroll by ~80% of the visible width in the given direction, so a click
   // reveals the next set of chips while keeping one in view for continuity.
@@ -486,13 +860,25 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating,
             />
           )
         })}
+        <ActionGroup
+          action={action ?? null}
+          picked={picked}
+          onAction={onAction}
+          animating={animating}
+          sourceKey={sourceKey}
+          optionCount={options.length}
+          composerHasUnsentWork={composerHasUnsentWork}
+          actionBlockedBySlot={actionBlockedBySlot}
+          composerCaptureInFlight={composerCaptureInFlight}
+          shrink0
+        />
       </div>
       </div>
     </div>
   )
 }
 
-function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
+function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey, action, onAction, composerHasUnsentWork, actionBlockedBySlot, composerCaptureInFlight }: LayoutProps) {
   return (
     // Bottom-aligned for the same reason as the scroll layout: with the
     // one-line clamp every chip is already the same height, so this only
@@ -517,20 +903,39 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
           />
         )
       })}
+      <ActionGroup
+        action={action ?? null}
+        picked={picked}
+        onAction={onAction}
+        animating={animating}
+        sourceKey={sourceKey}
+        optionCount={options.length}
+        composerHasUnsentWork={composerHasUnsentWork}
+          actionBlockedBySlot={actionBlockedBySlot}
+        composerCaptureInFlight={composerCaptureInFlight}
+      />
     </div>
   )
 }
 
-function FollowUpBar({ options, picked, onSelect, onSend, quickSend, layout = 'multiline', sourceKey }: FollowUpBarProps) {
+function FollowUpBar({ options, picked, onSelect, onSend, quickSend, layout = 'multiline', sourceKey, action, onAction, composerHasUnsentWork, actionBlockedBySlot, composerCaptureInFlight }: FollowUpBarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Content-keyed, not identity-keyed: the caller rebuilds the array on every
   // render, so an identity comparison would restart the entrance constantly.
   // \u0000 cannot occur inside an option label.
-  const animating = useChipEntrance(options.join('\u0000'))
+  //
+  // Actions are part of the key because they are part of the row's offer: an
+  // action-only row has no options at all, so an options-only key would be the
+  // empty string for every such row and the second one in a session would never
+  // play its entrance. Byte-identical when there is no action, so no existing
+  // row's entrance changes.
+  const animating = useChipEntrance(
+    [...options, ...(action ? [`${action.action}=${action.label}`] : [])].join('\u0000'),
+  )
   if (layout === 'scroll') {
-    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} action={action} onAction={onAction} composerHasUnsentWork={composerHasUnsentWork} actionBlockedBySlot={actionBlockedBySlot} composerCaptureInFlight={composerCaptureInFlight} />
   }
-  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} action={action} onAction={onAction} composerHasUnsentWork={composerHasUnsentWork} actionBlockedBySlot={actionBlockedBySlot} composerCaptureInFlight={composerCaptureInFlight} />
 }
 
 export default memo(FollowUpBar)

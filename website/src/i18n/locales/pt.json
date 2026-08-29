@@ -6100,6 +6100,8 @@
       "yes_move_it": "Mover"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "Indisponível enquanto houver opções selecionadas: elas estão preparadas como texto no compositor e seriam descartadas",
+      "action_unavailable_while_the_composer_has_unsent": "Indisponível enquanto o compositor tiver texto ou anexos não enviados — fechar iria descartá-los",
       "click_to_add_to_input_double_click_to_select_and": "Clique para adicionar ao campo de mensagem (clique duplo para selecionar e enviar)",
       "click_to_add_to_input_editable_before_sending": "Clique para adicionar ao campo de mensagem (editável antes de enviar)",
       "click_to_add_to_selection": "Clique para adicionar à seleção",
@@ -6111,7 +6113,12 @@
       "scroll_suggestions_left": "Rolar sugestões para a esquerda",
       "scroll_suggestions_right": "Rolar sugestões para a direita",
       "send_now": "Enviar agora",
-      "send_now_2": "Enviar agora: {{option}}"
+      "send_now_2": "Enviar agora: {{option}}",
+      "action_unavailable_short_options_selected": "Indisponível — desmarque suas opções",
+      "action_unavailable_short_unsent_draft": "Indisponível — envie ou elimine o rascunho",
+      "action_closes_this_session": "Encerra esta sessão — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Indisponível enquanto uma gravação ou envio ainda está em andamento — fechar descartaria",
+      "action_unavailable_short_capture_in_flight": "Indisponível — uma gravação ou envio ainda está em andamento"
     },
     "followUpCard": {
       "add_to_this_session": "Adicionar a esta sessão",
@@ -7969,7 +7976,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Painel de conversas",
-      "close_this_session": "Fechar esta sessão?",
       "cycle_agent": "Alternar entre agentes",
       "cycle_approval_mode": "Alternar entre modos de aprovação",
       "cycle_model": "Alternar entre modelos",
@@ -8059,7 +8065,14 @@
       "reload_failed": "Falha ao recarregar a sessão. O agente pode estar no meio de um turno ou o gateway inacessível; tente novamente quando a sessão estiver ociosa.",
       "reload_failed_subagents": "Os subagentes ainda estão trabalhando nesta sessão. Tente novamente quando terminarem.",
       "switch_to_autopilot_mode_future_messages_will_us": "Mudar para o modo Autopilot? As próximas mensagens usarão o comportamento do autopilot (planejar → aprovar → executar).",
-      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat."
+      "switch_to_normal_chat_mode_future_messages_will": "Mudar para o modo Chat normal? As próximas mensagens usarão o comportamento padrão de chat.",
+      "close_unsent_confirm": "{{base}}\n\nEsta sessão tem conteúdo não enviado: um rascunho, um anexo ou uma gravação ainda em curso, talvez num painel lateral ou noutra janela. Será perdido.",
+      "close_unsent_confirm_here": "{{base}}\n\nEsta sessão tem conteúdo não enviado na caixa de texto: um rascunho, um anexo ou uma gravação ainda em curso. Será perdido.",
+      "close_unsent_confirm_window": "{{base}}\n\nEsta sessão tem conteúdo não enviado noutra janela: um rascunho, um anexo ou uma gravação ainda em curso. Será perdido.",
+      "resume_replaces_this_tab": "Abrir esta sessão fecha o separador atual.",
+      "resume_unsent_confirm_here": "{{base}}\n\nA aba atual tem conteúdo não enviado no campo de texto: um rascunho, um anexo ou uma gravação ainda em andamento. Será perdido.",
+      "resume_unsent_confirm_window": "{{base}}\n\nA aba atual tem conteúdo não enviado em outra janela: um rascunho, um anexo ou uma gravação ainda em andamento. Será perdido.",
+      "resume_unsent_confirm": "{{base}}\n\nA aba atual tem conteúdo não enviado: um rascunho, um anexo ou uma gravação ainda em andamento, possivelmente em um painel lateral ou em outra janela. Será perdido."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponível",
@@ -8076,6 +8089,17 @@
       "approval_required": "Aprovação necessária",
       "tool_approval": "Aprovação de ferramenta: {{name}}",
       "unknown": "Desconhecido"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "Um turno está em execução, então a sessão continuou aberta — feche-a novamente quando o turno terminar.",
+      "close_not_recorded": "Não foi possível fechar a sessão — ela continua aberta. Tente de novo.",
+      "close_confirm": "Fechar esta sessão? Você escolheu “{{label}}”. A transcrição fica em {{section}}.",
+      "close_requested": "Encerramento solicitado — {{label}}",
+      "close_aborted_unsent": "Fecho cancelado: esta sessão tem um rascunho não enviado, talvez num painel lateral ou noutra janela. Envie-o ou elimine-o e tente novamente.",
+      "close_aborted_unsent_here": "Fecho cancelado: esta sessão tem um rascunho não enviado num painel lateral aqui. Envie-o ou elimine-o e tente novamente.",
+      "close_aborted_unsent_window": "Fecho cancelado: esta sessão tem um rascunho não enviado noutra janela. Envie-o ou elimine-o aí e tente novamente.",
+      "close_unbound_session": "Fechamento cancelado: não foi possível registrar esta sessão, portanto ela não foi fechada. Tente novamente ou use “{{action}}” no menu da sessão.",
+      "close_stale_row": "A conversa avançou, então esta sessão continuou aberta: use “{{action}}” no menu da sessão."
     }
   },
   "lib": {
@@ -9851,7 +9875,8 @@
       "workflow_running_other": "{{count}} fluxos de trabalho em execução",
       "flat_view_hide_folders_in_board_columns": "Visão plana — ocultar pastas nas colunas do quadro",
       "show_folders_in_board_columns": "Mostrar pastas nas colunas do quadro",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Mudar para visão plana (ocultar pastas nas colunas do quadro)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Mudar para visão plana (ocultar pastas nas colunas do quadro)",
+      "cleanup_unsent_confirm": "{{base}}?\n\nO conteúdo não enviado será perdido em: “{{names}}”"
     },
     "connectionsPage": {
       "action_failed": "Falha na ação: {{error}}",

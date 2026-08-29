@@ -5,7 +5,7 @@ import { parseOptions } from '../app-sdk/protocol'
 // Imported from the defining module, not the `protocol` barrel, which deliberately
 // does not re-export a g-flagged regex. Only `.source` is read below — a string
 // copy — so the shared `lastIndex` this const's own docs warn about is untouched.
-import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
+import { OPTION_MARKER_RE, OPTION_ACTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
 
 // Mock MarkdownRenderer to avoid complex markdown parsing in tests
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -789,18 +789,43 @@ describe('parseOptions', () => {
   // reaching for, deterministically and in microseconds. The behavioural half — an
   // adversarial input still parses to no options — is asserted directly below.
   it('does not catastrophically backtrack on adversarial `[OPTIONS:` input', () => {
-    const src = OPTION_MARKER_RE.source
-    // The label body: tempered alternation, NOT a nested quantifier.
-    expect(src).toContain('(?:[^[\\n]|\\[(?!OPTIONS?:))*')
-    // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
-    // exponentially, and it is what the tempered body above replaced.
-    expect(src).not.toMatch(/\([^)]*[+*]\)[+*]/)
+    // BOTH markers are pinned, because they share one tempered-body grammar. The
+    // body used to exclude only `[OPTIONS?:` — its own head. It was generalised to
+    // exclude EVERY head when the action marker was added, because a body that
+    // tempers against only its own head still matches ACROSS the other one:
+    // MEASURED on the backend TRAILER form, `[OPTIONS: a | b]` followed by
+    // `[OPTION-ACTIONS: close=X]` captured the action marker into the content
+    // marker's label list and shipped it as a channel button label.
+    //
+    // So this asserts the PROPERTY (tempered against every head) rather than one
+    // literal substring. The previous spelling pinned the exact body text, and
+    // generalising the temper broke it while leaving the pattern strictly safer —
+    // a ratchet that fails on an improvement is one a future author is tempted to
+    // simply delete.
+    const heads = ['OPTION-ACTIONS:', 'OPTIONS?:']
+    const patterns: [string, RegExp][] = [
+      ['OPTION_MARKER_RE', OPTION_MARKER_RE],
+      ['OPTION_ACTION_MARKER_RE', OPTION_ACTION_MARKER_RE],
+    ]
+    for (const [name, re] of patterns) {
+      const src = re.source
+      // Tempered alternation, NOT a nested quantifier: the `[^[\n]` arm consumes
+      // ordinary text and the `\[(?!…)` arm admits a bracket only when it does not
+      // open a marker, so a failed match cannot re-partition the same run.
+      expect(src, name).toContain('(?:[^[\\n]|\\[(?!')
+      // Every head excluded, not just this pattern's own.
+      for (const head of heads) expect(src, `${name} tempers ${head}`).toContain(head)
+      // No `(x+)+` / `(x*)*` anywhere: that is the shape that backtracks
+      // exponentially, and it is what the tempered body replaced.
+      expect(src, name).not.toMatch(/\([^)]*[+*]\)[+*]/)
+    }
     // And the parse itself still terminates and yields nothing for 20k
-    // unterminated prefixes. Under the tempered body this returns in ~2ms; under
-    // a backtracking one it would never return, which is a wedge the reviewer
-    // reads in the log rather than an assertion failure — hence the shape checks
-    // above, which fail first and cheaply.
+    // unterminated prefixes of EITHER head. Under the tempered body this returns
+    // in ~2ms; under a backtracking one it would never return, which is a wedge
+    // the reviewer reads in the log rather than an assertion failure — hence the
+    // shape checks above, which fail first and cheaply.
     expect(parseOptions('[OPTIONS:'.repeat(20000)).options).toEqual([])
+    expect(parseOptions('[OPTION-ACTIONS:'.repeat(20000)).action).toBeNull()
   })
 
   it('shows "Copy link to message" button when messageTs and slotKey are provided', () => {

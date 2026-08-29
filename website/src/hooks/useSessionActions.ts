@@ -7,6 +7,7 @@ import { updateSlotPin, updateSlot, markSlotRead, markSlotUnread } from '../stor
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { slotUnsentWorkSource, type UnsentWorkSource } from '../utils/slotComposerRegistry'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -40,7 +41,40 @@ export interface SessionActions {
   /** Relaunch the slot's agent process in place (fresh MCP servers/env, conversation preserved). */
   reload: (slotKey: string) => void
   /** Close (delete) a session, honouring the confirm-close preference. */
-  close: (slotKey: string) => void
+  /**
+   * Close a session behind the confirm-on-close preference.
+   *
+   * `beforeDelete` runs AFTER the confirm and BEFORE the delete; returning
+   * `false` aborts — which is how a caller sequences work on the close without
+   * giving up the right to abort it.
+   *
+   * Resolves to NOTHING. It used to answer whether the slot was deleted, and
+   * every counted caller threw that away: the menu `void`s it, the shared option
+   * dispatcher discards the await, and `ChatSidebar`'s prop is declared
+   * `(key: string) => void`. A caller that needs to know already learns it from
+   * its own `beforeDelete`.
+   */
+  close: (
+    slotKey: string,
+    opts?: {
+      beforeDelete?: () => boolean | Promise<boolean>
+      /**
+       * Confirm even when the user's `confirmCloseSession` preference is off.
+       *
+       * For a close whose affordance was authored by a MODEL rather than by the
+       * product: an `[OPTION-ACTIONS: close=That's all]` chip is one click, its
+       * label is arbitrary model prose, and `confirmCloseSession` defaults to
+       * `false` — so without this the tab goes away with neither a stated
+       * consequence nor a confirm. A caller that put the affordance on screen
+       * itself (the session menu, a keyboard shortcut) has no such problem and
+       * leaves this unset.
+       */
+      forceConfirm?: boolean
+      // Replaces the generic prompt, so a forced confirm can name the label the
+      // user just clicked and say where the transcript goes.
+      confirmMessage?: string
+    },
+  ) => Promise<void>
 }
 
 export function useSessionActions(mode?: string): SessionActions {
@@ -146,9 +180,82 @@ export function useSessionActions(mode?: string): SessionActions {
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
-  const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+  /**
+   * Close a session, honouring the confirm-on-close preference.
+   *
+   * `beforeDelete` runs AFTER the confirm and BEFORE the delete, and a `false`
+   * return aborts the close. That ordering exists for one caller and one reason:
+   * the option-action dispatch writes a PERMANENT `inject` breadcrumb row, and
+   * writing it before the confirm left the transcript asserting a close that the
+   * user then cancelled. Moving the write into this window keeps both properties
+   * at once — nothing is written when the user declines, and the close is still
+   * refused if the write does not land.
+   *
+   * Resolves to NOTHING, matching the contract on the interface above: the
+   * signature is `Promise<void>` and every `return` here is bare, so no caller
+   * can learn the outcome from the promise. One that needs to know learns it
+   * from its own `beforeDelete` — the seam this ordering exists to give it.
+   */
+  const close = useCallback(async (
+    slotKey: string,
+    opts?: {
+      beforeDelete?: () => boolean | Promise<boolean>
+      forceConfirm?: boolean
+      /** Replaces the generic prompt. For a MODEL-authored affordance, whose own
+       *  label is the only thing the user recognises at the moment of clicking. */
+      confirmMessage?: string
+    },
+  ): Promise<void> => {
+    // `confirmCloseSession` governs the HABITUAL "are you sure"; silencing it is not consent
+    // to lose the only copy of a draft, so unsent work summons its own confirm on every route.
+    const prefConfirm = loadChatConfig().confirmCloseSession || opts?.forceConfirm === true
+    // The SOURCE, not just the boolean: discarding it sent the user hunting through windows
+    // that may not exist, over a draft in front of them.
+    const unsentAt = slotUnsentWorkSource(slotKey)
+    const unsent = unsentAt !== null
+    const mustConfirm = prefConfirm || unsent
+    const base = opts?.confirmMessage ?? i18nT('hooks.useSessionActions.close_this_session')
+    const prompt = unsentAt
+      ? i18nT(unsentConfirmKey(unsentAt), { base })
+      : base
+    if (mustConfirm && !confirm(prompt)) return
+    if (opts?.beforeDelete && !(await opts.beforeDelete())) return
+    // `unsent` above is a SNAPSHOT, and both gates just passed are windows another window
+    // can write in: `confirm` blocks only this thread, `beforeDelete` awaits the network.
+
+    // Re-asked on EVERY route, not only where a dialog was already due: work that appeared
+    // during the await is exactly the case a preference about routine confirms cannot speak to.
+    const lateAt = unsent ? null : slotUnsentWorkSource(slotKey)
+    if (lateAt) {
+      if (!confirm(i18nT(unsentConfirmKey(lateAt), { base }))) return
+    }
+    dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
   return { duplicate, toggleRead, togglePin, toggleMode, copyLink, move, reload, close }
+}
+
+/**
+ * The confirm rider for each place the unsent work can be, so the user is sent to ONE place.
+ *
+ * Mirrors `useOptionActionDispatch`'s abort notices, for the same reason: the registry and
+ * the claim already distinguish this window from another, and hedging across both made the
+ * reader check two places when the code knew which. `elsewhere` keeps the hedge because
+ * there the surface genuinely is not identifiable.
+ *
+ * The route picks the SUBJECT. A close dialog is about the session named in its own base
+ * string, but resume names the session being OPENED, so there "this session" would point at
+ * the wrong tab — the one whose draft is safe.
+ */
+export type ConfirmRoute = 'close' | 'resume'
+
+export function unsentConfirmKey(at: UnsentWorkSource, route: ConfirmRoute = 'close'): string {
+  if (route === 'resume') {
+    if (at === 'here') return 'hooks.useSessionActions.resume_unsent_confirm_here'
+    if (at === 'other-window') return 'hooks.useSessionActions.resume_unsent_confirm_window'
+    return 'hooks.useSessionActions.resume_unsent_confirm'
+  }
+  if (at === 'here') return 'hooks.useSessionActions.close_unsent_confirm_here'
+  if (at === 'other-window') return 'hooks.useSessionActions.close_unsent_confirm_window'
+  return 'hooks.useSessionActions.close_unsent_confirm'
 }

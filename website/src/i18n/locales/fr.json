@@ -6100,6 +6100,8 @@
       "yes_move_it": "Déplacer"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "Indisponible tant que des options sont sélectionnées : elles sont préparées sous forme de texte dans le champ de saisie et seraient supprimées",
+      "action_unavailable_while_the_composer_has_unsent": "Indisponible tant que le champ de saisie contient du texte ou des pièces jointes non envoyés — la fermeture les supprimerait",
       "click_to_add_to_input_double_click_to_select_and": "Clique pour ajouter à la saisie (double-clic pour sélectionner et envoyer)",
       "click_to_add_to_input_editable_before_sending": "Clique pour ajouter à la saisie (modifiable avant l’envoi)",
       "click_to_add_to_selection": "Clique pour ajouter à la sélection",
@@ -6111,7 +6113,12 @@
       "scroll_suggestions_left": "Faire défiler les suggestions vers la gauche",
       "scroll_suggestions_right": "Faire défiler les suggestions vers la droite",
       "send_now": "Envoyer maintenant",
-      "send_now_2": "Envoyer maintenant : {{option}}"
+      "send_now_2": "Envoyer maintenant : {{option}}",
+      "action_unavailable_short_options_selected": "Indisponible — désélectionne tes options",
+      "action_unavailable_short_unsent_draft": "Indisponible — envoie ou efface ton brouillon",
+      "action_closes_this_session": "Ferme cette session — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Indisponible pendant qu'un enregistrement ou un envoi est en cours — fermer l'annulerait",
+      "action_unavailable_short_capture_in_flight": "Indisponible — un enregistrement ou un envoi est en cours"
     },
     "followUpCard": {
       "add_to_this_session": "Ajouter à cette session",
@@ -7969,7 +7976,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Panneau des chats",
-      "close_this_session": "Fermer cette session ?",
       "cycle_agent": "Faire défiler les agents",
       "cycle_approval_mode": "Faire défiler les modes d’approbation",
       "cycle_model": "Faire défiler les modèles",
@@ -8059,7 +8065,14 @@
       "reload_failed": "Échec du rechargement de la session. L'agent est peut-être en train de répondre ou la passerelle est injoignable ; réessayez quand la session est inactive.",
       "reload_failed_subagents": "Des sous-agents travaillent encore sur cette session. Réessayez quand ils auront terminé.",
       "switch_to_autopilot_mode_future_messages_will_us": "Passer en mode autopilote ? Les prochains messages utiliseront le comportement autopilote (planifier → approuver → exécuter).",
-      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard."
+      "switch_to_normal_chat_mode_future_messages_will": "Passer en mode Chat normal ? Les prochains messages utiliseront le comportement de chat standard.",
+      "close_unsent_confirm": "{{base}}\n\nCette session a du contenu non envoyé — un brouillon, une pièce jointe ou un enregistrement en cours — peut-être dans un panneau latéral ou une autre fenêtre. Il sera perdu.",
+      "close_unsent_confirm_here": "{{base}}\n\nCette session a du contenu non envoyé dans la zone de saisie — un brouillon, une pièce jointe ou un enregistrement en cours. Il sera perdu.",
+      "close_unsent_confirm_window": "{{base}}\n\nCette session a du contenu non envoyé dans une autre fenêtre — un brouillon, une pièce jointe ou un enregistrement en cours. Il sera perdu.",
+      "resume_replaces_this_tab": "Ouvrir cette session ferme l'onglet actuel.",
+      "resume_unsent_confirm_here": "{{base}}\n\nL'onglet actuel contient du contenu non envoyé dans le champ de saisie : un brouillon, une pièce jointe ou un enregistrement en cours. Il sera perdu.",
+      "resume_unsent_confirm_window": "{{base}}\n\nL'onglet actuel contient du contenu non envoyé dans une autre fenêtre : un brouillon, une pièce jointe ou un enregistrement en cours. Il sera perdu.",
+      "resume_unsent_confirm": "{{base}}\n\nL'onglet actuel contient du contenu non envoyé : un brouillon, une pièce jointe ou un enregistrement en cours, peut-être dans un panneau latéral ou une autre fenêtre. Il sera perdu."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet indisponible",
@@ -8076,6 +8089,17 @@
       "approval_required": "Approbation requise",
       "tool_approval": "Approbation d’outil : {{name}}",
       "unknown": "Inconnu"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "Un tour est en cours, la session est donc restée ouverte — referme-la une fois le tour terminé.",
+      "close_not_recorded": "Impossible de fermer la session — elle est toujours ouverte. Réessaie.",
+      "close_confirm": "Fermer cette session ? Tu as choisi « {{label}} ». La transcription reste dans {{section}}.",
+      "close_requested": "Fermeture demandée — {{label}}",
+      "close_aborted_unsent": "Fermeture annulée — cette session a un brouillon non envoyé, peut-être dans un panneau latéral ou une autre fenêtre. Envoyez-le ou effacez-le, puis réessayez.",
+      "close_aborted_unsent_here": "Fermeture annulée — cette session a un brouillon non envoyé dans un panneau latéral ici. Envoyez-le ou effacez-le, puis réessayez.",
+      "close_aborted_unsent_window": "Fermeture annulée — cette session a un brouillon non envoyé dans une autre fenêtre. Envoyez-le ou effacez-le là-bas, puis réessayez.",
+      "close_unbound_session": "Fermeture annulée : cette session n'a pas pu être enregistrée, elle n'a donc pas été fermée. Réessayez ou utilisez « {{action}} » dans le menu de session.",
+      "close_stale_row": "La conversation a avancé, donc cette session est restée ouverte : utilise « {{action}} » dans le menu de session."
     }
   },
   "lib": {
@@ -9851,7 +9875,8 @@
       "workflow_running_other": "{{count}} flux de travail en cours",
       "flat_view_hide_folders_in_board_columns": "Vue à plat — masquer les dossiers dans les colonnes du tableau",
       "show_folders_in_board_columns": "Afficher les dossiers dans les colonnes du tableau",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Passer à la vue à plat (masquer les dossiers dans les colonnes du tableau)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Passer à la vue à plat (masquer les dossiers dans les colonnes du tableau)",
+      "cleanup_unsent_confirm": "{{base}} ?\n\nDu contenu non envoyé sera perdu dans : « {{names}} »"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

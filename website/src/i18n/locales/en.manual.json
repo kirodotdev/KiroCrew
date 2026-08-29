@@ -1784,13 +1784,20 @@
       "violet": "Violet"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "Unavailable while options are selected — they are staged as text in the composer and this would discard them",
+      "action_unavailable_while_the_composer_has_unsent": "Unavailable while the composer has unsent text or attachments — closing would discard them",
       "click_to_add_to_input_double_click_to_select_and": "Click to add to input (double-click to select and send)",
       "click_to_add_to_input_editable_before_sending": "Click to add to input (editable before sending)",
       "click_to_add_to_selection": "Click to add to selection",
       "click_to_remove_from_input": "Click to remove from input",
       "click_to_remove_from_input_double_click_to_send": "Click to remove from input (double-click to send)",
       "click_to_send_instantly_shift_click_to_select_mu": "Click to send instantly, Shift+Click to select multiple",
-      "send_now_2": "Send now: {{option}}"
+      "send_now_2": "Send now: {{option}}",
+      "action_unavailable_short_options_selected": "Unavailable — deselect your options first",
+      "action_unavailable_short_unsent_draft": "Unavailable — send or clear your draft first",
+      "action_unavailable_while_capture_in_flight": "Unavailable while a recording or upload is still in progress — closing would discard it",
+      "action_unavailable_short_capture_in_flight": "Unavailable — a recording or upload is still in progress",
+      "action_closes_this_session": "Closes this session — {{label}}"
     },
     "followUpCard": {
       "create_worktree_and_open_session": "Create a git worktree from {{path}} and open a new session there",
@@ -2737,7 +2744,6 @@
       "failed_to_run_job": "Failed to run job"
     },
     "useKeyboardShortcuts": {
-      "close_this_session": "Close this session?",
       "chats_panel": "Chats panel",
       "cycle_agent": "Cycle agent",
       "cycle_approval_mode": "Cycle approval mode",
@@ -2796,10 +2802,17 @@
     },
     "useSessionActions": {
       "close_this_session": "Close this session?",
+      "close_unsent_confirm": "{{base}}\n\nThis session has unsent work — a draft, an attachment, or a recording still resolving — possibly in a side panel or another window. It will be lost.",
+      "close_unsent_confirm_here": "{{base}}\n\nThis session has unsent work in the composer — a draft, an attachment, or a recording still resolving. It will be lost.",
+      "close_unsent_confirm_window": "{{base}}\n\nThis session has unsent work in another window — a draft, an attachment, or a recording still resolving. It will be lost.",
+      "resume_replaces_this_tab": "Opening this session closes the current tab.",
       "reload_failed": "Session reload failed. The agent may be mid-turn or the gateway unreachable; try again when the session is idle.",
       "reload_failed_subagents": "Sub-agents are still working on this session. Try again when they finish.",
       "switch_to_autopilot_mode_future_messages_will_us": "Switch to Autopilot mode? Future messages will use autopilot behavior (plan → approve → execute).",
-      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior."
+      "switch_to_normal_chat_mode_future_messages_will": "Switch to normal Chat mode? Future messages will use standard chat behavior.",
+      "resume_unsent_confirm_here": "{{base}}\n\nThe current tab has unsent work in its composer — a draft, an attachment, or a recording still resolving. It will be lost.",
+      "resume_unsent_confirm_window": "{{base}}\n\nThe current tab has unsent work in another window — a draft, an attachment, or a recording still resolving. It will be lost.",
+      "resume_unsent_confirm": "{{base}}\n\nThe current tab has unsent work — a draft, an attachment, or a recording still resolving — possibly in a side panel or another window. It will be lost."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "audio worklet unavailable",
@@ -2835,6 +2848,17 @@
       "subagents": "Subagents",
       "summary": "Summary",
       "workflows": "Workflows"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "A turn is running, so the session stayed open — close it again when the turn finishes.",
+      "close_not_recorded": "Couldn't close the session — it's still open. Try again.",
+      "close_confirm": "Close this session? You chose “{{label}}”. The transcript stays in {{section}}.",
+      "close_stale_row": "The conversation moved on, so this session stayed open — use “{{action}}” in the session menu.",
+      "close_requested": "Close requested — {{label}}",
+      "close_aborted_unsent": "Close cancelled — this session has an unsent draft, possibly in a side panel or another window. Send or clear it, then try again.",
+      "close_aborted_unsent_here": "Close cancelled — this session has an unsent draft in a side panel here. Send or clear it, then try again.",
+      "close_aborted_unsent_window": "Close cancelled — this session has an unsent draft in another window. Send or clear it there, then try again.",
+      "close_unbound_session": "Close cancelled — this session could not be recorded, so it was not closed. Try again, or use “{{action}}” in the session menu."
     }
   },
   "nav": {
@@ -3630,7 +3654,8 @@
       "workflow_running_other": "{{count}} workflows running",
       "flat_view_hide_folders_in_board_columns": "Flat view — hide folders in the board columns",
       "show_folders_in_board_columns": "Show folders in the board columns",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Switch to flat view (hide folders in the board columns)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Switch to flat view (hide folders in the board columns)",
+      "cleanup_unsent_confirm": "{{base}}?\n\nUnsent work will be lost in: “{{names}}”"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

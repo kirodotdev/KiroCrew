@@ -50,6 +50,13 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.constants import (
+    MARKER_PREFIXES,
+    OPTIONS_RE_LINE,
+    excise_marker_spans,
+    marker_prefix_is_case_insensitive,
+    strip_action_markers,
+)
 from kiro_crew.context import (
     ContextBuilder,
     build_cancelled_turn_preamble,
@@ -2098,20 +2105,131 @@ async def _handle_slash_command(
     return ""
 
 
+def _marker_head_needle(prefix: str, text: str) -> tuple[str, str]:
+    """The ``(needle, haystack)`` pair for one head, cased to THAT head's own rule.
+
+    Per-head, not blanket: ``OPTION_ACTIONS_RE_LINE`` carries ``re.IGNORECASE`` and
+    ``OPTIONS_RE_LINE`` deliberately does not, so a single casing rule for both is
+    wrong whichever one it picks. Folding everything to lower held a lowercase
+    ``[options: a]`` that the parser then declined to strip, which is what produced
+    the raw pop-in when the final message replaced the stream.
+
+    The haystack is TRUNCATED to the head's own length, which is what keeps the stream
+    filter linear. A candidate run is held past ``]`` to the newline, so every closing
+    bracket in between re-tests the whole accumulated hold; case-folding that hold each
+    time made one bracket-heavy line quadratic. Only the leading characters can decide a
+    ``startswith``, and a hold shorter than the head fails it either way.
+    """
+    head = prefix + ":"
+    if marker_prefix_is_case_insensitive(prefix):
+        return head.lower(), text[: len(head)].lower()
+    return head, text[: len(head)]
+
+
+def _is_marker_candidate(bracket_hold: str) -> bool:
+    """Could this held run still turn out to be a protocol marker?
+
+    Cased PER HEAD, so the stream holds exactly the heads the batch parser strips —
+    no more. See :func:`_marker_head_needle` for why holding more is a visible defect
+    rather than harmless caution.
+    """
+    return any(
+        haystack.startswith(needle)
+        for needle, haystack in (_marker_head_needle(p, bracket_hold) for p in MARKER_PREFIXES)
+    )
+
+
+def _strip_line_markers(run: str) -> str:
+    """Remove complete LINE-form markers, leaving everything else untouched.
+
+    The compiled patterns are the authority here rather than a local bracket rule,
+    so the streaming path and the batch path cannot disagree about what a marker is.
+
+    Actions go through ``strip_action_markers``, not the raw pattern: a span nested
+    in an UNCLOSED marker is not a marker, so excising it would delete text the
+    reader is meant to see. Order is unchanged from the raw form -- measured
+    immaterial, because the content strip cannot create or destroy an unclosed head.
+    """
+    return strip_action_markers(OPTIONS_RE_LINE.sub("", run))
+
+
+def settle_marker_hold(bracket_hold: str) -> str:
+    """What of a held run may still be shown, once no more text is coming.
+
+    Called at the two points where a hold is final: the newline that ends a marker
+    line, and the end-of-stream flush. ONE definition for both, because the two
+    disagreeing is how a marker leaks on exactly one of them.
+
+    A complete marker strips to nothing and so shows nothing. Ordinary text that
+    merely shared the line survives — dropping the whole run would silently eat a
+    sentence, and this shape is reachable: a marker followed by prose is not a
+    marker to the PARSER, but this surface still suppresses the tag, so the words
+    after it are the part worth keeping.
+
+    When a head SURVIVES the strip, its bracket decides. A head whose bracket
+    CLOSED is excised span-wise and the rest released, which is the long-standing
+    behaviour for `[OPTIONS: a | b] bye`. An UNTERMINATED head — the stream stopped
+    mid-marker, or the closer never came — drops everything from the head onward,
+    also pre-existing, because releasing it would paint a half-written protocol tag
+    into the bubble.
+
+    The excision itself is :func:`~kiro_crew.constants.excise_marker_spans`, which
+    builds the result in ONE pass. The shape here before re-derived the whole string
+    per span, which is quadratic on a hold whose length the model controls.
+    """
+    return excise_marker_spans(_strip_line_markers(bracket_hold))
+
+
 def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -> tuple[str, str]:
-    """Filter ``[OPTIONS: ...]`` tags from streaming text character-by-character.
+    """Filter ``[OPTIONS: ...]`` / ``[OPTION-ACTIONS: ...]`` tags from streaming text.
 
     Returns the updated *(bracket_hold, stream_buffer)* tuple.
+
+    Character-at-a-time on purpose: this runs on the LIVE Slack bubble while the
+    answer is still arriving, so there is no complete marker for a regex to
+    anchor against yet. Text from ``[`` is held back until the matching ``]``
+    decides whether it was a marker (suppress) or ordinary prose (release).
+
+    The head test iterates :data:`MARKER_PREFIXES` instead of naming a literal.
+    A ``startswith("[OPTIONS:")`` written against the single original head does
+    NOT cover the action marker — the strings diverge at ``S`` vs ``-``, so
+    ``"[OPTION-ACTIONS: …".startswith("[OPTIONS:")`` is False and the entire held
+    run is released into the bubble verbatim, marker and all. The prefixes are
+    matched WITHOUT the trailing colon, then the colon is required separately,
+    so the guard survives a head gaining a suffix without silently reverting to
+    passing that head through.
+
+    A MARKER CANDIDATE is held past ``]`` and settled at the newline by the real
+    parsing regexes, not by the first bracket. A label may legitimately contain
+    ``]`` — ``[OPTION-ACTIONS: close=Done (see [1])]`` is one marker, and the body
+    grammar admits it — but deciding at the first ``]`` ended suppression inside
+    the label and streamed the tail (``)]``) into the live bubble. Since a marker
+    is a LINE form, the newline is the earliest point at which its closer is
+    known, and by then the compiled pattern can answer exactly. Stripping with
+    those patterns rather than dropping the run also keeps ordinary prose that
+    merely shares the line, so ``[OPTIONS: A] and then some words`` releases its
+    TRAILING PROSE — ``" and then some words"`` — while the marker span itself is
+    excised. Only the words survive, which is the point: dropping the whole run
+    would eat a sentence, and releasing it whole would paint a protocol tag into
+    the bubble.
+
+    Ordinary bracketed prose is unaffected and still releases promptly at its
+    ``]``: holding every ``[foo]`` to end-of-line would visibly stall the stream.
+    That is the shape that really does release in FULL — ``[foo]`` carries no
+    marker head, so nothing is excised from it.
     """
     for ch in text:
         if bracket_hold or ch == "[":
             bracket_hold += ch
-            if ch == "]":
-                if bracket_hold.startswith("[OPTIONS:"):
-                    bracket_hold = ""
-                else:
-                    stream_buffer += bracket_hold
-                    bracket_hold = ""
+            if ch == "\n":
+                # The line ended, so any candidate is now complete or was never a
+                # marker. Either way the authoritative patterns decide, and
+                # whatever is not a marker is released.
+                stream_buffer += settle_marker_hold(bracket_hold)
+                bracket_hold = ""
+            elif ch == "]" and not _is_marker_candidate(bracket_hold):
+                stream_buffer += bracket_hold
+                bracket_hold = ""
         else:
             stream_buffer += ch
     return bracket_hold, stream_buffer
@@ -3970,8 +4088,13 @@ async def handle_message(
             _cancel_tool_timer()
             _ct = f"{_active_task_title}  {_elapsed}" if _elapsed else _active_task_title
             await _append_task(_active_task_id, _ct, "complete")
-        # Flush remaining buffer (bracket_hold excluded — it's either
-        # a suppressed OPTIONS tag or an unclosed bracket we drop)
+        # Settle whatever is still held. A marker on the LAST line has no newline
+        # to settle it, so this is where it is suppressed — and where prose that
+        # shared that line is recovered rather than dropped with it. An
+        # unterminated marker still drops, as it always did.
+        if bracket_hold:
+            stream_buffer += settle_marker_hold(bracket_hold)
+            bracket_hold = ""
         if stream_buffer:
             stream_buffer, _ = strip_thinking_tags(stream_buffer, strip_whitespace=False)
             await _append_stream(stream_buffer)

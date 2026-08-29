@@ -1,8 +1,7 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
-import { loadChatConfig } from '../pages/chat/ChatSettings'
+import { switchSlot, openActivityToTab } from '../store/chatSlice'
 import { queryComposer, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
 import {
@@ -15,6 +14,7 @@ import {
   type PanelToggleOverrides,
 } from '../lib/panelToggleShortcuts'
 import { i18nT } from '../i18n/t'
+import { useSessionActions } from './useSessionActions'
 
 export const SHORTCUTS_ENABLED_KEY = 'mc-keyboard-shortcuts'
 export const SHORTCUTS_ENABLED_EVENT = 'mc-keyboard-shortcuts-changed'
@@ -633,6 +633,9 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const appStore = useAppStore()
+  // Shared close funnel -- owns the confirm preference, the unsent-draft force-confirm
+  // and the prompt text, so Shift+W cannot drift from the menu and tab routes.
+  const { close: closeSession } = useSessionActions()
   const mruIndexRef = useRef(-1)
   // Set true right after a char-producing Alt shortcut (Alt+`) fires inside a
   // text field. On macOS those combos are dead keys (Option+` = grave accent),
@@ -914,12 +917,12 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
     }
 
     // Alt+Shift+W: Close current session (same semantics as the header-menu
-    // close — gated by confirmCloseSession, dispatches deleteSlot)
+    // close — gated by confirmCloseSession, which also governs the draft warning)
     if (e.shiftKey && code === 'KeyW') {
       e.preventDefault()
-      if (activeSlot && (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useKeyboardShortcuts.close_this_session')))) {
-        dispatch(deleteSlot(activeSlot))
-      }
+      // ONE gate, ONE prompt spelling -- `close` owns the preference check, the unsent-work
+      // check and the prompt text, which this used to hand-roll.
+      if (activeSlot) void closeSession(activeSlot)
       return
     }
 
@@ -999,7 +1002,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
       navigate(panelMap[code])
       return
     }
-  }, [dispatch, navigate, appStore, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings])
+  }, [dispatch, navigate, appStore, closeSession, onToggleShortcutsModal, onNewChat, onCycleAgent, onCyclePrevAgent, onCycleReasoningEffort, onCyclePrevReasoningEffort, onCycleApprovalMode, onCyclePrevApprovalMode, onCycleModel, onCyclePrevModel, onToggleFocusMode, panelToggleActions, disabled, enabled, ctrlDigits, panelBindings])
 
   // Escape stops in-progress voice read-back. CAPTURE phase so it runs before the command palette's bubble-phase Escape
   // handler, which stopPropagation()s and would otherwise close the palette while

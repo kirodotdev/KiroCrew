@@ -2145,6 +2145,40 @@ export interface MemberActivityEntry {
   project?: string
 }
 
+/** Optional body fields of `POST /api/chat/slots/{slot}/note`. `content` is the
+ *  one required field and is a positional argument, so it is not repeated here. */
+export interface ChatSlotNoteOptions {
+  /** Frame label + per-source context cap bucket. Empty/absent → `"note"`. */
+  source?: string
+  /** Write the visible transcript row ONLY and build no context entry. Required
+   *  for a note on a slot that is about to close: `_pending_context` is never
+   *  serialized, so the queued half dies with the frame. */
+  visibleOnly?: boolean
+}
+
+/** Response of `POST /api/chat/slots/{slot}/note`.
+ *
+ *  Every boolean is kept separate because callers SEQUENCE on them. In
+ *  particular `appended === false` (with `visibleDeferred === true`) means the
+ *  visible row is only HELD in memory until the running turn ends — it is not
+ *  durable, so a caller that is about to destroy the slot must refuse to
+ *  proceed rather than treat the 200 as a successful write. */
+export interface ChatSlotNoteResult {
+  ok: true
+  /** The visible transcript row was written NOW. */
+  appended: boolean
+  /** A turn was in flight, so the visible row is held until that turn ends. */
+  visibleDeferred: boolean
+  /** Delivery still depends on the slot resolving to the same session later
+   *  (a hold, or an unbound slot that another binding could claim). */
+  deliveryConditional: boolean
+  /** No context entry was built or queued — `visibleOnly`, or the per-source
+   *  context cap was already full. The visible row is written either way. */
+  contextSkipped: boolean
+  /** Queued + held context entries the model will receive. */
+  pending: number
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -3003,6 +3037,14 @@ export const api = {
    * message. Used by the artifact companion chat to name the bound artifact so
    * the user's first message needs no slug boilerplate. */
   chatSlotContext: (slot: string, content: string, opts?: { source?: string; ephemeral?: boolean; maxAge?: number }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/context', { content, ...(opts?.source ? { source: opts.source } : {}), ...(opts?.ephemeral !== undefined ? { ephemeral: opts.ephemeral } : {}), ...(opts?.maxAge !== undefined ? { maxAge: opts.maxAge } : {}) }).then(j),
+  /** Drop a declarative note into a slot: a visible transcript row now, plus the
+   *  same silent next-turn context `chatSlotContext` queues — no LLM turn either
+   *  way. `visibleOnly: true` writes the row alone, which is the only correct
+   *  form for a slot about to be torn down.
+   *
+   *  Callers that sequence a destructive action on the note MUST check
+   *  `appended === true`; a `visibleDeferred` note is held in memory only. */
+  chatSlotNote: (slot: string, content: string, opts?: ChatSlotNoteOptions) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/note', { content, ...(opts?.source ? { source: opts.source } : {}), ...(opts?.visibleOnly !== undefined ? { visibleOnly: opts.visibleOnly } : {}) }).then(j) as Promise<ChatSlotNoteResult>,
   deleteChatSlot: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot)).then(j),
   cleanupSessions: (maxInactiveDays: number, activeSlot?: string, dryRun?: boolean) => post('/api/chat/slots/cleanup', { max_inactive_days: maxInactiveDays, active_slot: activeSlot || '', dry_run: !!dryRun }).then(j) as Promise<{ ok: boolean; archived: number; keys: string[]; failed: string[]; dry_run?: boolean; count?: number; active_is_stale?: boolean }>,
   stopChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/stop').then(j),

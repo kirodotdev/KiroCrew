@@ -28,6 +28,7 @@ import { findReport, type ErrorReport } from '../utils/errorReport'
 import { computeReorderedFolders } from '../utils/reorderFolders'
 import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/recencyTint'
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
+import { slotHasUnsentWork } from '../utils/slotComposerRegistry'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
 import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
@@ -6002,6 +6003,14 @@ function ChatSidebar({
               {cleanupError && <span className="text-[11px] text-danger flex-1">{cleanupError}</span>}
               <Btn className="text-[12px] px-3 py-1" onClick={() => setCleanupOpen(false)}>{i18nT('pages.chatSidebar.cancel')}</Btn>
               <Btn className="text-[12px] px-3 py-1 bg-accent text-accent-fg hover:bg-accent-hover" disabled={archivable.length === 0 || cleanupMutation.isPending || cleanupPreviewLoading} onClick={() => {
+                // Asked BEFORE the request, not in onSuccess: by then the server has archived
+                // and the drafts are already gone, so a guard there could only apologise.
+                const dirty = archivable.filter(s => slotHasUnsentWork(s.key))
+                if (dirty.length > 0) {
+                  const names = dirty.map(s => (s.title && s.title !== s.key ? s.title : s.key)).join(', ')
+                  const base = i18nT('pages.chatSidebar.archive_session', { count: archivable.length })
+                  if (!confirm(i18nT('pages.chatSidebar.cleanup_unsent_confirm', { base, names }))) return
+                }
                 setCleanupError('')
                 cleanupMutation.mutate()
               }}>{cleanupMutation.isPending ? i18nT('pages.chatSidebar.archiving') : i18nT('pages.chatSidebar.archive_session', { count: archivable.length })}</Btn>

@@ -628,6 +628,38 @@ describe('ChatEmbed follow-up options', () => {
     expect(mockPost).not.toHaveBeenCalled()
     expect(planActionSpy).not.toHaveBeenCalled()
   })
+
+  // Pins the action DROP at ChatEmbed's deriveFollowUpOptions destructure: this host
+  // wires no `onAction`, so a chip carrying that label would only SEND the sentence.
+  it('offers no chip for the action label, while ordinary options still render', async () => {
+    const actionMessages = [
+      { role: 'user', content: 'anything else?' },
+      {
+        role: 'assistant',
+        content:
+          'All done.\n\n[OPTIONS: Alpha | Beta]\n[OPTION-ACTIONS: close=Nothing else, close this session]',
+      },
+    ]
+    // Premise pin: the fixture MUST derive an action, or the absence asserted below
+    // is about a label that was never offered and the test can never fail.
+    const derived = deriveFollowUpOptions(actionMessages as ChatMessage[], false)
+    expect(derived.followUpAction).not.toBeNull()
+    const actionLabel = derived.followUpAction!.label
+    expect(actionLabel.length).toBeGreaterThan(0)
+
+    mockGet.mockResolvedValue({ messages: actionMessages, running: false, title: '' })
+    await act(async () => {
+      renderWithProviders(<ChatEmbed slotKey="slot-action-1" />)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(100)
+    })
+
+    // Positive control: the bar DID render, so the absence below is a fact about the
+    // action rather than about a fixture that produced no chips at all.
+    expect(screen.getByText('Alpha')).toBeInTheDocument()
+    expect(screen.queryByText(actionLabel)).toBeNull()
+  })
 })
 
 describe('ChatEmbed approvals', () => {

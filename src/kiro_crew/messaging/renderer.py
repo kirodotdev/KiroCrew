@@ -35,7 +35,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER, strip_control_comments
+from kiro_crew.constants import (
+    OPTIONS_RE_TRAILER,
+    rfind_marker_head,
+    strip_action_markers,
+    strip_control_comments,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
@@ -453,13 +458,53 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
 
     Stripping a genuine steering frame is ``TurnDriver``'s job and happens before
     a renderer sees the text.
+
+    An ``[OPTION-ACTIONS:]`` marker is STRIPPED AND DROPPED: removed from the
+    body, never contributing to *choices*. Those entries name a LOCAL DASHBOARD
+    UI action, and none of the channels reaching this function can perform one —
+    a Discord or Telegram button that claims to close a dashboard tab is a button
+    that lies. Removing it is not optional though: every parser here keys on
+    the literal ``[OPTIONS:``, so the action head is inert, and an inert marker is
+    passed through VERBATIM rather than mangled. Skip the strip and the raw
+    marker is what the channel posts.
     """
+    # Strip actions before the content parse, with the LINE form — matched on any
+    # line, not anchored to the end of the buffer.
+    #
+    # The TRAILER form was wrong for one of the two orderings and it failed in the
+    # worst direction. It is ``\Z``-anchored, so it only ever saw an action marker
+    # that ended the text: `[OPTIONS: …]` then `[OPTION-ACTIONS: …]` stripped, but
+    # `[OPTION-ACTIONS: …]` then `[OPTIONS: …]` did not — and the content branch
+    # below returns ``text[:match.start()]``, which still CONTAINS that unstripped
+    # action marker, so the raw protocol text was posted into the channel body.
+    # Every sibling strip site already keys on the LINE form for this reason.
+    #
+    # Consuming a trailing RUN of both marker types would fix the two orderings
+    # above and still miss an action marker followed by ordinary prose; matching
+    # per line covers all three. Stripping first also lets the content marker reach
+    # its own ``\Z`` anchor once a trailing action marker is out of the way, which
+    # is what makes both-markers text yield the content choices instead of none.
+    #
+    # Via ``strip_action_markers`` rather than the raw pattern: a span nested in an
+    # UNCLOSED marker is not a marker, and excising it would delete the malformed
+    # text that is the reader's only cue a marker was intended. The helper keys on
+    # the same LINE form, so the sibling agreement above is unchanged.
+    without_actions = strip_action_markers(text)
+    if without_actions != text:
+        text = without_actions.rstrip()
     match = OPTIONS_RE_TRAILER.search(text)
     if match:
         choices = [c.strip() for c in match.group(1).split("|") if c.strip()]
         return text[: match.start()].rstrip(), choices
     if hide_partial:
-        idx = text.rfind("[OPTIONS")
+        # Scan for EVERY marker head. This keyed on the single literal
+        # ``"[OPTIONS"``, which is NOT a prefix of ``"[OPTION-ACTIONS"`` — they
+        # diverge at ``S`` vs ``-`` — so a half-arrived action marker was never
+        # recognised as partial and the fragment was rendered as raw text in the
+        # live frame, which is the exact failure this branch exists to prevent.
+        # Cased per head, so a half-arrived MIXED-CASE action marker reads as
+        # partial by the same rule that will later strip it.
+        idx = rfind_marker_head(text)
         if idx != -1 and "]" not in text[idx:]:
             return text[:idx].rstrip(), []
     return text, []

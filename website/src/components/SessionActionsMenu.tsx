@@ -245,7 +245,7 @@ export default function SessionActionsMenu({
     ],
     // Close session — terminal, destructive
     [
-      <Item key="close" className="text-danger focus:text-danger" onSelect={() => close(slotKey)}>
+      <Item key="close" className="text-danger focus:text-danger" onSelect={() => { void close(slotKey) }}>
         <X size={13} /> {i18nT('components.sessionActionsMenu.close_session')}
       </Item>,
     ],

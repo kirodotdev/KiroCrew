@@ -1,0 +1,253 @@
+{
+  "An array literal [1, 2, 3] and a link [text](url).": {
+    "preview_text.strip_markdown_preview": "An array literal [1, 2, 3] and a link text.",
+    "renderer.split_options_trailer": [
+      "An array literal [1, 2, 3] and a link [text](url).",
+      []
+    ],
+    "slack.extract_options.choices": [],
+    "slack.extract_options.cleaned": "An array literal [1, 2, 3] and a link [text](url).",
+    "slack.streaming.visible": "An array literal [1, 2, 3] and a link [text](url).",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "An array literal [1, 2, 3] and a link text.",
+    "whatsapp._strip_options": "An array literal [1, 2, 3] and a link [text](url)."
+  },
+  "Body\n[OPTIONS: A]\n[OPTIONS: B]": {
+    "preview_text.strip_markdown_preview": "Body",
+    "renderer.split_options_trailer": [
+      "Body\n[OPTIONS: A]",
+      [
+        "B"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "A"
+    ],
+    "slack.extract_options.cleaned": "Body",
+    "slack.streaming.visible": "Body\n\n",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "Body",
+    "whatsapp._strip_options": "Body\n[OPTIONS: A]"
+  },
+  "Done.\n[OPTIONS: Alpha | Bravo] [OPTION-ACTIONS: close=Yes]": {
+    "preview_text.strip_markdown_preview": "Done.",
+    "renderer.split_options_trailer": [
+      "Done.",
+      [
+        "Alpha",
+        "Bravo] [OPTION-ACTIONS: close=Yes"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "Alpha",
+      "Bravo] [OPTION-ACTIONS: close=Yes"
+    ],
+    "slack.extract_options.cleaned": "Done.",
+    "slack.streaming.visible": "Done.\n [OPTION-ACTIONS: close=Yes]",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "Done.\n [OPTION-ACTIONS: close=Yes]",
+    "whatsapp._strip_options": "Done."
+  },
+  "Markdown tic [OPTIONS: A | B](OPTIONS)": {
+    "preview_text.strip_markdown_preview": "Markdown tic OPTIONS: A | B",
+    "renderer.split_options_trailer": [
+      "Markdown tic",
+      [
+        "A",
+        "B"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "A",
+      "B"
+    ],
+    "slack.extract_options.cleaned": "Markdown tic",
+    "slack.streaming.visible": "Markdown tic (OPTIONS)",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "Markdown tic OPTIONS: A | B",
+    "whatsapp._strip_options": "Markdown tic"
+  },
+  "Pick one.\n[OPTIONS: Alpha | Beta]": {
+    "preview_text.strip_markdown_preview": "Pick one.",
+    "renderer.split_options_trailer": [
+      "Pick one.",
+      [
+        "Alpha",
+        "Beta"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "Alpha",
+      "Beta"
+    ],
+    "slack.extract_options.cleaned": "Pick one.",
+    "slack.streaming.visible": "Pick one.\n",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "Pick one.",
+    "whatsapp._strip_options": "Pick one."
+  },
+  "Pick one. [OPTIONS: Alpha | Beta]": {
+    "preview_text.strip_markdown_preview": "Pick one.",
+    "renderer.split_options_trailer": [
+      "Pick one.",
+      [
+        "Alpha",
+        "Beta"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "Alpha",
+      "Beta"
+    ],
+    "slack.extract_options.cleaned": "Pick one.",
+    "slack.streaming.visible": "Pick one. ",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "Pick one.",
+    "whatsapp._strip_options": "Pick one."
+  },
+  "See [1] for context.\nPick one.\n[OPTIONS: Alpha | Bravo]": {
+    "preview_text.strip_markdown_preview": "See [1] for context. Pick one.",
+    "renderer.split_options_trailer": [
+      "See [1] for context.\nPick one.",
+      [
+        "Alpha",
+        "Bravo"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "Alpha",
+      "Bravo"
+    ],
+    "slack.extract_options.cleaned": "See [1] for context.\nPick one.",
+    "slack.streaming.visible": "See [1] for context.\nPick one.\n",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "See [1] for context.\nPick one.",
+    "whatsapp._strip_options": "See [1] for context.\nPick one."
+  },
+  "See [OPTIONS: A | B] for details": {
+    "preview_text.strip_markdown_preview": "See [OPTIONS: A | B] for details",
+    "renderer.split_options_trailer": [
+      "See [OPTIONS: A | B] for details",
+      []
+    ],
+    "slack.extract_options.choices": [],
+    "slack.extract_options.cleaned": "See [OPTIONS: A | B] for details",
+    "slack.streaming.visible": "See  for details",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "See for details",
+    "whatsapp._strip_options": "See [OPTIONS: A | B] for details"
+  },
+  "Trailing prose after.\n[OPTIONS: Yes (recommended) | No]": {
+    "preview_text.strip_markdown_preview": "Trailing prose after.",
+    "renderer.split_options_trailer": [
+      "Trailing prose after.",
+      [
+        "Yes (recommended)",
+        "No"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "Yes (recommended)",
+      "No"
+    ],
+    "slack.extract_options.cleaned": "Trailing prose after.",
+    "slack.streaming.visible": "Trailing prose after.\n",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "Trailing prose after.",
+    "whatsapp._strip_options": "Trailing prose after."
+  },
+  "Unclosed [OPTIONS: A | B": {
+    "preview_text.strip_markdown_preview": "Unclosed [OPTIONS: A | B",
+    "renderer.split_options_trailer": [
+      "Unclosed [OPTIONS: A | B",
+      []
+    ],
+    "slack.extract_options.choices": [],
+    "slack.extract_options.cleaned": "Unclosed [OPTIONS: A | B",
+    "slack.streaming.visible": "Unclosed [OPTIONS: A | B",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "Unclosed [OPTIONS: A | B",
+    "whatsapp._strip_options": "Unclosed [OPTIONS: A | B"
+  },
+  "[OPTION: Single]": {
+    "preview_text.strip_markdown_preview": "[OPTION: Single]",
+    "renderer.split_options_trailer": [
+      "[OPTION: Single]",
+      []
+    ],
+    "slack.extract_options.choices": [],
+    "slack.extract_options.cleaned": "[OPTION: Single]",
+    "slack.streaming.visible": "[OPTION: Single]",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "[OPTION: Single]",
+    "whatsapp._strip_options": "[OPTION: Single]"
+  },
+  "[OPTIONS: Only]": {
+    "preview_text.strip_markdown_preview": "",
+    "renderer.split_options_trailer": [
+      "",
+      [
+        "Only"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "Only"
+    ],
+    "slack.extract_options.cleaned": "",
+    "slack.streaming.visible": "",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "",
+    "whatsapp._strip_options": ""
+  },
+  "[OPTIONS: Set x=1 | Keep, as is]": {
+    "preview_text.strip_markdown_preview": "",
+    "renderer.split_options_trailer": [
+      "",
+      [
+        "Set x=1",
+        "Keep, as is"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "Set x=1",
+      "Keep, as is"
+    ],
+    "slack.extract_options.cleaned": "",
+    "slack.streaming.visible": "",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "",
+    "whatsapp._strip_options": ""
+  },
+  "prose\n[options: lower | case]": {
+    "preview_text.strip_markdown_preview": "prose [options: lower | case]",
+    "renderer.split_options_trailer": [
+      "prose\n[options: lower | case]",
+      []
+    ],
+    "slack.extract_options.choices": [],
+    "slack.extract_options.cleaned": "prose\n[options: lower | case]",
+    "slack.streaming.visible": "prose\n[options: lower | case]",
+    "tables._table_run_end": null,
+    "voice_reply.strip_markdown": "prose\n[options: lower | case]",
+    "whatsapp._strip_options": "prose\n[options: lower | case]"
+  },
+  "| a | b |\n| - | - |\n| 1 | 2 |\n[OPTIONS: After | Table]": {
+    "preview_text.strip_markdown_preview": "| a | b | | - | - | | 1 | 2 |",
+    "renderer.split_options_trailer": [
+      "| a | b |\n| - | - |\n| 1 | 2 |",
+      [
+        "After",
+        "Table"
+      ]
+    ],
+    "slack.extract_options.choices": [
+      "After",
+      "Table"
+    ],
+    "slack.extract_options.cleaned": "| a | b |\n| - | - |\n| 1 | 2 |",
+    "slack.streaming.visible": "| a | b |\n| - | - |\n| 1 | 2 |\n",
+    "tables._table_run_end": 3,
+    "voice_reply.strip_markdown": "(table with 2 rows)",
+    "whatsapp._strip_options": "| a | b |\n| - | - |\n| 1 | 2 |"
+  }
+}

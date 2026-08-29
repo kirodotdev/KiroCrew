@@ -182,6 +182,26 @@ Also in `@kirocrew/app-sdk`, for an app that renders agent messages itself. An a
 choices and steer acknowledgements inline in its prose (`[OPTIONS: a | b]`,
 `[STEERING steer-<id>: …]`); these parse them out so your UI can show buttons instead of raw syntax.
 
+A third marker, `[OPTION-ACTIONS: close=<label>]`, offers a LOCAL UI action rather than text to
+send — today only `close`, which closes the session, not just the tab. It is deliberately a separate field rather than
+a magic label, because labels are model-authored prose. Two things follow for a renderer, and both
+matter: the action is dashboard-only, so every other surface must strip-and-DROP it (a Slack button
+cannot close a dashboard tab, so a button built from one would lie); and nothing may auto-dispatch
+it, so a spurious marker yields a button, never an effect. `parseOptions` returns these separately
+from the content choices, and the two markers never parse each other's syntax.
+
+**The evolution rule, because this is a one-way door.** `[OPTION-ACTIONS:]` is a **closed enum with
+exactly one member today**, and a renderer MUST treat an action it does not recognise as absent:
+drop it, render nothing, dispatch nothing. That is the compatibility contract, not merely current
+behaviour — an action added later is defined as invisible to every renderer that predates it, which
+is what makes adding one a non-breaking change. Two consequences you can rely on: a renderer never
+needs a fallback UI for an unknown action, and an app pinned to an older SDK cannot be made to
+render a control it has no code for. Do NOT infer an action from a label, and do NOT pass an
+unrecognised action through to a generic handler — a marker is at most a request for a button, and
+one nobody understands is a request for nothing. The field is singular for the same reason: a list
+would make partial recognition expressible, and a renderer honouring the half it knows is exactly
+the failure this rule forecloses.
+
 | Export | Purpose |
 |--------|---------|
 | `parseOptions(content)` | Split the prose from the choices offered with it |

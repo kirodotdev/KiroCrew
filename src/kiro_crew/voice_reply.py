@@ -29,7 +29,7 @@ import tempfile
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import aws_consent
-from kiro_crew.constants import strip_control_comments
+from kiro_crew.constants import MARKER_STRIP_ANYWHERE_RE, strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -228,8 +228,29 @@ def strip_markdown(text: str) -> str:
     )
     # Bare URLs
     t = re.sub(r"https?://\S+", " (link) ", t)
-    # OPTIONS buttons line
-    t = re.sub(r"\[OPTIONS:.*?\]", "", t)
+    # OPTIONS / OPTION-ACTIONS buttons line.
+    #
+    # These use the SHARED patterns from constants rather than the hand-rolled
+    # ``\[OPTIONS:.*?\]`` this line used to carry. That local copy was a silent
+    # correctness gap on two counts, and TTS is the worst surface to carry it on
+    # because the failure is not a cosmetic artefact — the marker is SPOKEN,
+    # and a synthesised utterance cannot be re-rendered or scrolled past.
+    #
+    #  * It only knew ONE head, and ``[OPTIONS`` is not a prefix of
+    #    ``[OPTION-ACTIONS`` (they diverge at ``S`` vs ``-``), so an action
+    #    marker was read aloud in full, ``close=`` included.
+    #  * Being non-greedy and unanchored, it also stopped at the FIRST ``]``,
+    #    so a label containing a bracket left the remainder to be spoken, and it
+    #    accepted none of the CJK closers the shared class handles.
+    #
+    # The permissive ANYWHERE form, not the anchored LINE forms, and the difference
+    # is a measured regression rather than a preference. The LINE tail requires the
+    # marker to end its line (or abut a sibling), which is right for DISPATCH — a
+    # sentence discussing the syntax must not become a button. Speech has the
+    # opposite duty: MEASURED against the previous implementation,
+    # "See [OPTIONS: A | B] for details" was spoken as "See for details" and the
+    # anchored form began reading the whole marker aloud instead.
+    t = MARKER_STRIP_ANYWHERE_RE.sub("", t)
     # Diff blocks: lines starting with +/- only inside fenced blocks are
     # already removed above; catch stray unified-diff hunks.
     t = re.sub(r"^@@[^@]+@@.*$", "", t, flags=re.MULTILINE)

@@ -6005,6 +6005,8 @@
       "yes_move_it": "Verschieben"
     },
     "followUpBar": {
+      "action_unavailable_while_options_are_selected": "Nicht verfügbar, solange Optionen ausgewählt sind – sie liegen als Text im Eingabefeld und würden dabei verworfen",
+      "action_unavailable_while_the_composer_has_unsent": "Nicht verfügbar, solange das Eingabefeld nicht gesendeten Text oder Anhänge enthält – beim Schließen würden sie verworfen",
       "click_to_add_to_input_double_click_to_select_and": "Klicken, um zur Eingabe hinzuzufügen (Doppelklick zum Auswählen und Senden)",
       "click_to_add_to_input_editable_before_sending": "Klicken, um zur Eingabe hinzuzufügen (vor dem Senden bearbeitbar)",
       "click_to_add_to_selection": "Klicken, um zur Auswahl hinzuzufügen",
@@ -6016,7 +6018,12 @@
       "scroll_suggestions_left": "Vorschläge nach links scrollen",
       "scroll_suggestions_right": "Vorschläge nach rechts scrollen",
       "send_now": "Jetzt senden",
-      "send_now_2": "Jetzt senden: {{option}}"
+      "send_now_2": "Jetzt senden: {{option}}",
+      "action_unavailable_short_options_selected": "Nicht verfügbar — Optionen erst abwählen",
+      "action_unavailable_short_unsent_draft": "Nicht verfügbar — Entwurf erst senden oder verwerfen",
+      "action_closes_this_session": "Schließt diese Sitzung — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Nicht verfügbar, während eine Aufnahme oder ein Upload noch läuft — beim Schließen würde sie verworfen",
+      "action_unavailable_short_capture_in_flight": "Nicht verfügbar — eine Aufnahme oder ein Upload läuft noch"
     },
     "followUpCard": {
       "add_to_this_session": "Zu dieser Sitzung hinzufügen",
@@ -7863,7 +7870,6 @@
     },
     "useKeyboardShortcuts": {
       "chats_panel": "Chats-Panel",
-      "close_this_session": "Diese Sitzung schließen?",
       "cycle_agent": "Agenten durchschalten",
       "cycle_approval_mode": "Genehmigungsmodus durchschalten",
       "cycle_model": "Modell durchschalten",
@@ -7953,7 +7959,14 @@
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
-      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
+      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten.",
+      "close_unsent_confirm": "{{base}}\n\nDiese Sitzung hat nicht gesendete Inhalte — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme — möglicherweise in einem Seitenbereich oder einem anderen Fenster. Sie gehen verloren.",
+      "close_unsent_confirm_here": "{{base}}\n\nDiese Sitzung hat nicht gesendete Inhalte im Eingabefeld — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme. Sie gehen verloren.",
+      "close_unsent_confirm_window": "{{base}}\n\nDiese Sitzung hat nicht gesendete Inhalte in einem anderen Fenster — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme. Sie gehen verloren.",
+      "resume_replaces_this_tab": "Das Öffnen dieser Sitzung schließt den aktuellen Tab.",
+      "resume_unsent_confirm_here": "{{base}}\n\nDer aktuelle Tab enthält nicht gesendete Inhalte im Eingabefeld — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme. Sie gehen verloren.",
+      "resume_unsent_confirm_window": "{{base}}\n\nDer aktuelle Tab enthält nicht gesendete Inhalte in einem anderen Fenster — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme. Sie gehen verloren.",
+      "resume_unsent_confirm": "{{base}}\n\nDer aktuelle Tab enthält nicht gesendete Inhalte — einen Entwurf, einen Anhang oder eine noch laufende Aufnahme — möglicherweise in einem Seitenbereich oder einem anderen Fenster. Sie gehen verloren."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "Audio-Worklet nicht verfügbar",
@@ -7970,6 +7983,17 @@
       "approval_required": "Genehmigung erforderlich",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
       "unknown": "Unbekannt"
+    },
+    "useOptionActionDispatch": {
+      "close_deferred_turn": "Ein Turn läuft, daher blieb die Sitzung offen — schließe sie erneut, wenn der Turn fertig ist.",
+      "close_not_recorded": "Die Sitzung konnte nicht geschlossen werden — sie ist noch offen. Bitte erneut versuchen.",
+      "close_confirm": "Diese Sitzung schließen? Du hast „{{label}}“ gewählt. Das Transkript bleibt in {{section}}.",
+      "close_requested": "Schließen angefordert — {{label}}",
+      "close_aborted_unsent": "Schließen abgebrochen — diese Sitzung hat einen nicht gesendeten Entwurf, möglicherweise in einem Seitenbereich oder einem anderen Fenster. Senden oder verwerfen, dann erneut versuchen.",
+      "close_aborted_unsent_here": "Schließen abgebrochen — diese Sitzung hat einen nicht gesendeten Entwurf in einem Seitenbereich hier. Senden oder verwerfen, dann erneut versuchen.",
+      "close_aborted_unsent_window": "Schließen abgebrochen — diese Sitzung hat einen nicht gesendeten Entwurf in einem anderen Fenster. Dort senden oder verwerfen, dann erneut versuchen.",
+      "close_unbound_session": "Schließen abgebrochen — diese Sitzung konnte nicht gespeichert werden und wurde daher nicht geschlossen. Versuchen Sie es erneut oder nutzen Sie „{{action}}“ im Sitzungsmenü.",
+      "close_stale_row": "Das Gespräch ist weitergegangen, daher blieb diese Sitzung offen — nutze „{{action}}“ im Sitzungsmenü."
     }
   },
   "lib": {
@@ -9706,7 +9730,8 @@
       "workflow_running_other": "{{count}} Workflows laufen",
       "flat_view_hide_folders_in_board_columns": "Flache Ansicht — Ordner in den Board-Spalten ausblenden",
       "show_folders_in_board_columns": "Ordner in den Board-Spalten anzeigen",
-      "switch_to_flat_view_hide_folders_in_board_columns": "Zur flachen Ansicht wechseln (Ordner in den Board-Spalten ausblenden)"
+      "switch_to_flat_view_hide_folders_in_board_columns": "Zur flachen Ansicht wechseln (Ordner in den Board-Spalten ausblenden)",
+      "cleanup_unsent_confirm": "{{base}}?\n\nNicht gesendete Inhalte gehen verloren in: „{{names}}“"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
