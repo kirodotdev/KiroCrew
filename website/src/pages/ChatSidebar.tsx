@@ -112,6 +112,10 @@ const RENAME_MAX_H = 120
  * Which is what buys the meta line its 12px box: the tightest of the three,
  * spent on the least important line.
  */
+/** Above this many rendered rows, per-row layout animation (and its group-wide
+ *  rect measurement) is disabled — the IssueList/PrList ANIM_CAP pattern. */
+const SIDEBAR_ANIM_CAP = 200
+
 const ROW_META_CLS = 'text-[10px] leading-[12px]'
 const ROW_TITLE_CLS = 'text-[13px] leading-[20px]'
 const ROW_STATUS_CLS = 'text-[11px] leading-[16px]'
@@ -2619,6 +2623,26 @@ function ChatSidebar({
   // stale list against new deps, so clearing a ref would invalidate nothing.
   const [dragFrozen, setDragFrozen] = useState(false)
   const frozenSlotsRef = useRef<Slot[]>([])
+  // Layout-animation gate (the IssueList/PrList ANIM_CAP pattern): every
+  // session row is a layout-projection node in one LayoutGroup, and framer
+  // measures getBoundingClientRect for EVERY enrolled node on each commit —
+  // a forced-reflow pass that scales linearly with row count and runs on the
+  // frequent streaming-driven sidebar renders. Above the cap the rows render
+  // as plain (non-layout) motion divs: reorder/entrance animation is a
+  // deliberate casualty at a scale where each animated commit costs frames.
+  // matchMedia rather than framer's useReducedMotion: the sidebar test files
+  // mock framer-motion per-file, and the PipelineView precedent reads the
+  // media query directly.
+  const [reduceMotion, setReduceMotion] = useState(
+    () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches,
+  )
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return
+    const mq = matchMedia('(prefers-reduced-motion: reduce)')
+    const onChange = () => setReduceMotion(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
 
   const filteredSlots = useMemo(() => {
     if (dragFrozen) return frozenSlotsRef.current
@@ -2674,6 +2698,9 @@ function ChatSidebar({
   useEffect(() => {
     if (listNarrowed) staleNarrowBridgeRef.current = filteredSlots
   }, [listNarrowed, filteredSlots])
+  // False above SIDEBAR_ANIM_CAP rows (or under prefers-reduced-motion):
+  // gates layout/layoutId/layoutScroll/entrance on every session row.
+  const rowAnimEnabled = !reduceMotion && filteredSlots.length <= SIDEBAR_ANIM_CAP
   useEffect(() => {
     if (listNarrowed) return
     const shown = staleNarrowBridgeRef.current
@@ -3981,9 +4008,9 @@ function ChatSidebar({
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(s.key) : undefined,
     }
     return (
-      <motion.div key={s.key} layout="position" layoutId={`slot-${layoutScope}-${s.key}`}
+      <motion.div key={s.key} layout={rowAnimEnabled ? 'position' : false} layoutId={rowAnimEnabled ? `slot-${layoutScope}-${s.key}` : undefined}
         data-slot-key={s.key}
-        initial={{ opacity: 0, x: -12 }}
+        initial={rowAnimEnabled ? { opacity: 0, x: -12 } : false}
         animate={{ opacity: 1, x: 0 }}
         transition={{ layout: { type: 'spring', stiffness: 500, damping: 35 }, opacity: { duration: 0.2 }, x: { duration: 0.2 } }}>
         <DndDraggable id={`session:${s.key}`} data={{ type: 'session', key: s.key }} disabled={!dndRow || renamingSlot === s.key}>
@@ -4125,9 +4152,12 @@ function ChatSidebar({
            *  row's `pl-3.5` is the content column's whole left offset. */}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
-              <AnimatePresence mode="wait">
-                <motion.span key={agentName || 'empty'} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentName || '\u00A0'}</motion.span>
-              </AnimatePresence>
+              {/* Plain keyed span, deliberately unanimated: 200+ per-row
+                *  AnimatePresence trees each paid child-diffing bookkeeping on
+                *  every sidebar commit for a crossfade that fires only on the
+                *  rare agent switch, and the repo's animation invariant is
+                *  framer-only (no new CSS @keyframes). */}
+              <span key={agentName || 'empty'} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentName || '\u00A0'}</span>
               {agentDiverged && (
                 // Plain secondary TEXT, deliberately not a badge, a colour or an
                 // icon. It is informational — the session works, it is simply
@@ -4673,7 +4703,7 @@ function ChatSidebar({
   const rootFolders = useMemo(() => folders.filter(f => !f.parent_id).sort((a, b) => a.order - b.order), [folders])
   const visibleRootFolders = useMemo(() => rootFolders.filter(f => !isFolderHidden(f) && !isFolderFilteredOut(f)), [rootFolders, isFolderHidden, isFolderFilteredOut])
   const rootFolderIds = useMemo(() => visibleRootFolders.map(f => f.id), [visibleRootFolders])
-  const ungroupedSlots = filteredSlots.filter(s => !slotFolders[s.key])
+  const ungroupedSlots = useMemo(() => filteredSlots.filter(s => !slotFolders[s.key]), [filteredSlots, slotFolders])
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -5457,7 +5487,7 @@ function ChatSidebar({
                 <ChatPaneDropZone refusal={draggingRefRefusal} />,
                 chatDropTarget,
               )}
-            <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
+            <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }} data-testid="flat-view-lane">
               {(() => {
                 // Date segments (Today / Yesterday / Last 7 Days / …) between
                 // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -5505,7 +5535,7 @@ function ChatSidebar({
           // the sidebar rather than a transient hint. Scrolling itself is
           // untouched — wheel, trackpad, keyboard, and drag-autoscroll all
           // still work, and the list's own overflow is still the affordance.
-          <motion.div layoutScroll className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }}>
+          <motion.div layoutScroll={rowAnimEnabled} className="flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 flex flex-col" style={{ scrollbarWidth: 'none' }}>
             {/* One DndContext owns folder reorder (sortable) + session drag-to-
              *  assign (draggable rows + droppable folder/root targets). */}
             <DndContext sensors={dndSensors} collisionDetection={sidebarCollision}

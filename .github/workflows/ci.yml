@@ -1228,7 +1228,7 @@ jobs:
         # The ceiling must EQUAL the measured count, not sit above it: slack is
         # silent admission, and a warning that lands inside it never surfaces
         # again. Re-measure with `cd website && npx eslint src/` when burning down.
-        run: npx eslint src/ --max-warnings 664
+        run: npx eslint src/ --max-warnings 661
 
       - name: Copy/paste detection
         working-directory: website

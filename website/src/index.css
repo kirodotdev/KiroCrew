@@ -2066,7 +2066,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    Option A: left-edge color bar. The color identifies the session at a glance
    without fighting hover/active background states, which now use the standard
    neutral tokens (hover:bg-bg-hover, bg-accent-subtle when active). */
-.session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted)}
+.session-row{--_sc:var(--session-color,transparent);--session-muted:var(--muted);content-visibility:auto;contain-intrinsic-size:auto 60px}
 /* Browser-tab demo: the side panel's ACTIVE tab chip fuses with the panel body
    below it — same background (--bg), no bottom radius, and Chrome's inverted
    bottom corners painted in the body colour so the elevated strip appears to

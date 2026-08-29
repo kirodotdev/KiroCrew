@@ -37,6 +37,14 @@ export function slotActivityTs(
   return slot.last_turn_ts || slot.last_ts || slot.created
 }
 
+/** ISO-string -> epoch-seconds parse cache. A sidebar sort runs the comparator
+ *  O(n log n) times per slots mutation and the same few hundred ISO strings
+ *  recur across every run, so `new Date(iso)` per comparison is pure re-parse
+ *  cost on a hot path. Bounded: cleared wholesale at a size no realistic
+ *  session count reaches, so a long-lived tab cannot grow it without limit. */
+const _epochCache = new Map<string, number>()
+const _EPOCH_CACHE_MAX = 10000
+
 /** Last-activity instant in epoch SECONDS, with the fallback ladder both
  *  surfaces rely on. Returns 0 for a session with no usable timestamp, which
  *  sorts it last under `date-desc`. */
@@ -44,11 +52,16 @@ export function lastActivityEpoch(item: Sortable): number {
   if (item.modified != null) return item.modified
   const iso = slotActivityTs(item)
   if (!iso) return 0
+  const hit = _epochCache.get(iso)
+  if (hit !== undefined) return hit
   const ms = new Date(iso).getTime()
   // An unparseable timestamp ranks as "no timestamp" rather than poisoning the
   // comparator: NaN makes every comparison false, which leaves the whole list in
   // an arbitrary order rather than just misplacing the one broken row.
-  return Number.isNaN(ms) ? 0 : ms / 1000
+  const epoch = Number.isNaN(ms) ? 0 : ms / 1000
+  if (_epochCache.size >= _EPOCH_CACHE_MAX) _epochCache.clear()
+  _epochCache.set(iso, epoch)
+  return epoch
 }
 
 /** Shared comparator for both active sessions and history items. */
