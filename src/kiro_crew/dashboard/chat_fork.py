@@ -56,7 +56,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     request_app = request.get("app", "")
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     # Rate/resource guard: reject if we're already at the cap. Counts slots still
     # under construction too (``live_slot_count``): the import path retracts a
@@ -72,7 +72,10 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             error="slot cap reached",
         )
         return web.json_response(
-            {"error": f"slot cap reached ({MAX_LIVE_SLOTS})"},
+            {
+                "error": f"slot cap reached ({MAX_LIVE_SLOTS})",
+                "code": "slot_cap_reached",
+            },
             status=429,
         )
 
@@ -87,7 +90,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 resources=f"slot={name}",
                 error="app cannot fork unscoped slots",
             )
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
         if slot._app != request_app:
             sel().log_api_access(
                 caller=request_app,
@@ -101,7 +104,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             # slot is indistinguishable from a non-existent one — prevents an
             # app-scoped caller enumerating slots across the isolation boundary
             # (CWE-204). The true reason is recorded server-side via SEL above.
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     if slot.memory_mode != "persistent":
         sel().log_api_access(
@@ -112,25 +115,45 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             resources=f"slot={name},memory_mode={slot.memory_mode}",
             error="non-persistent slot",
         )
-        return web.json_response({"error": "cannot fork a non-persistent session"}, status=400)
+        return web.json_response(
+            {
+                "error": "cannot fork a non-persistent session",
+                "code": "slot_not_persistent",
+            },
+            status=400,
+        )
     if request.body_exists:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON body"}, status=400)
+            return web.json_response(
+                {"error": "invalid JSON body", "code": "invalid_json"}, status=400
+            )
         if not isinstance(body, dict):
-            return web.json_response({"error": "body must be a JSON object"}, status=400)
+            return web.json_response(
+                {"error": "body must be a JSON object", "code": "body_not_object"},
+                status=400,
+            )
     else:
         body = {}
     at_index = body.get("at_message_index")
     prompt = body.get("prompt")
     mode_override = body.get("mode")
     if mode_override is not None and mode_override not in ("", "orchestrator", "crew"):
-        return web.json_response({"error": "mode must be '', 'orchestrator' or 'crew'"}, status=400)
+        return web.json_response(
+            {
+                "error": "mode must be '', 'orchestrator' or 'crew'",
+                "code": "invalid_mode",
+            },
+            status=400,
+        )
     direction = body.get("direction", _FORK_DIRECTION_HEAD)
     if direction not in _FORK_DIRECTIONS:
         return web.json_response(
-            {"error": f"direction must be one of {list(_FORK_DIRECTIONS)}"},
+            {
+                "error": f"direction must be one of {list(_FORK_DIRECTIONS)}",
+                "code": "invalid_direction",
+            },
             status=400,
         )
     if direction == _FORK_DIRECTION_TAIL and not KiroCrewConfig.load().dashboard.tail_fork_enabled:
@@ -149,11 +172,17 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         )
         direction = _FORK_DIRECTION_HEAD
     if prompt is not None and not isinstance(prompt, str):
-        return web.json_response({"error": "prompt must be a string"}, status=400)
+        return web.json_response(
+            {"error": "prompt must be a string", "code": "invalid_field_type"},
+            status=400,
+        )
     prompt = (prompt or "").strip()
     if len(prompt) > 32_768:
         return web.json_response(
-            {"error": "prompt too long (max 32768 chars)"},
+            {
+                "error": "prompt too long (max 32768 chars)",
+                "code": "prompt_too_long",
+            },
             status=400,
         )
 
@@ -539,7 +568,10 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                     exc_info=True,
                 )
                 return web.json_response(
-                    {"error": "could not persist source session before fork; " "please retry"},
+                    {
+                        "error": "could not persist source session before fork; " "please retry",
+                        "code": "source_save_failed",
+                    },
                     status=503,
                 )
             if not saved:
@@ -589,17 +621,24 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             )
     visible = [m for m in all_messages if m.get("role") in ("user", "assistant")]
     if not visible:
-        return web.json_response({"error": "no messages to fork"}, status=400)
+        return web.json_response(
+            {"error": "no messages to fork", "code": "no_messages_to_fork"},
+            status=400,
+        )
     if at_index is not None:
         if isinstance(at_index, bool) or not isinstance(at_index, int) or at_index < 0:
             return web.json_response(
-                {"error": "at_message_index must be a non-negative integer"},
+                {
+                    "error": "at_message_index must be a non-negative integer",
+                    "code": "invalid_field_type",
+                },
                 status=400,
             )
         if at_index >= len(visible):
             return web.json_response(
                 {
-                    "error": f"at_message_index {at_index} out of range (have {len(visible)} visible messages)"
+                    "error": f"at_message_index {at_index} out of range (have {len(visible)} visible messages)",
+                    "code": "value_out_of_range",
                 },
                 status=400,
             )
@@ -608,14 +647,20 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     if direction == _FORK_DIRECTION_TAIL:
         if at_index is None:
             return web.json_response(
-                {"error": "at_message_index is required for a tail fork"},
+                {
+                    "error": "at_message_index is required for a tail fork",
+                    "code": "at_message_index_required",
+                },
                 status=400,
             )
         head_messages = visible[: at_index + 1]
         visible = visible[at_index + 1 :]
         if not visible:
             return web.json_response(
-                {"error": "no messages after the fork point"},
+                {
+                    "error": "no messages after the fork point",
+                    "code": "no_messages_after_fork_point",
+                },
                 status=400,
             )
     elif at_index is not None:
