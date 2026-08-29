@@ -203,6 +203,7 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.settings.remoteCrewPanel.confirm_delete_of', // was fully bare #4821
   'pages.settings.securityPanel.trustedApps.revoke_confirm_title',
   'pages.settings.securityPanel.trustedApps.revoke_confirm_body',
+  'apps.writingReview.reviewCard.deleteConfirmPrompt', // {{docName}} operand, quoted per locale
 ]
 
 /**

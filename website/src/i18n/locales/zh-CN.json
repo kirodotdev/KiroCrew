@@ -3966,7 +3966,6 @@
         "no_messages": "编译器没有输出任何信息。",
         "typesetting_hints_other": "{{count}} 条排版提示"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "删除 {{file}}",
         "files": "文件",
@@ -4737,6 +4736,184 @@
         "search_none": "没有匹配“{{query}}”的账户。",
         "paid_services_title": "付费服务",
         "orphan_consent": "已为一个未在此注册的 AWS 账号确认。可在下方撤回确认，或重新注册该账号以在它自己的页面上管理。"
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}}（自定义）",
+        "customPlaceholder": "输入自定义值…",
+        "customValueGenericAriaLabel": "自定义值",
+        "noneOption": "选择",
+        "otherOption": "其他（自定义）…"
+      },
+      "emptyState": {
+        "hint": "开始新的评审，或从左侧列表中选择一个。",
+        "title": "未选择任何评审"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "相关位置",
+        "confidence": {
+          "high": "高置信度",
+          "low": "低置信度",
+          "medium": "中置信度"
+        },
+        "location": "{{section}} 第 {{paragraph}} 段",
+        "proposedFix": "建议修改",
+        "relatedLocation": "{{section}}，第 {{paragraph}} 段（{{scanner}}）",
+        "scannerRule": "{{scanner}} - 规则 {{rule}}",
+        "scannersDisagree": "扫描器存在分歧",
+        "scannersDisagreeTitle": "另一个扫描器对同一位置做出了不同的标记；下方备注显示两方观点。",
+        "severity": {
+          "advisory": "参考",
+          "high": "高",
+          "low": "低",
+          "medium": "中"
+        }
+      },
+      "manifest": {
+        "description": "多扫描器文档评审，能发现表述不清、结构缺陷、证据不足以及 AI 撰写的文字，然后把结论以行内评论形式呈现，你可以一条一条处理。粘贴一份文档或浏览文件，设定受众和语气，便能得到一份带有修改建议的详尽评审。",
+        "display_name": "写作评审",
+        "highlight_1": "十个扫描器并行运行，涵盖表述清晰度、结构、证据、自然度等方面",
+        "highlight_2": "结论以锚定到具体文字的行内评论出现，你可以一条一条地处理",
+        "highlight_3": "Watson 的个性：细致、温和、善分析，并解释每条建议背后的思路",
+        "highlight_4": "针对设计文档和邮件的条件扫描器会根据文档类型自动启用",
+        "highlight_5": "交叉验证会捕捉扫描器之间的冲突，并挑出正确的建议",
+        "highlight_6": "之后与评审者聊天，一起过修改建议或请求重写",
+        "page_label": "写作评审"
+      },
+      "newReviewDialog": {
+        "additionalContext": "补充说明（可选，每行一条）",
+        "additionalContextPlaceholder": "例如\n80% 这个数字来自 2025 财年，不是 2024。\n对这个受众有意采用非正式语气。\n上周评审的后续；只处理 P0。",
+        "ask": "问题（可选）",
+        "askPlaceholder": "你希望做出什么决定？是否有需要评审者特别关注的具体问题？",
+        "audience": "受众",
+        "audienceOption": {
+          "crossOrg": "跨组织相关方",
+          "externalCustomer": "外部客户",
+          "internalTeam": "内部团队",
+          "newHire": "新员工 / 入职",
+          "vpLeadership": "VP / 高层"
+        },
+        "browse": "浏览…",
+        "browseHint": "选择本地的 .md、.txt 或 .docx 文件",
+        "browsedHint": "已从 {{fileName}} 加载。内容将被送去评审。",
+        "cancel": "取消",
+        "close": "关闭",
+        "docPath": "文档路径",
+        "docPathPlaceholder": "例如 /home/you/notes.md",
+        "docText": "或粘贴文档文本",
+        "docTextPlaceholder": "在此粘贴 markdown 或纯文本…",
+        "docType": "文档类型",
+        "docTypeOption": {
+          "decisionDoc": "决策文档",
+          "designDocument": "设计文档",
+          "email": "邮件",
+          "investigation": "调查",
+          "programUpdate": "项目进展",
+          "strategy": "策略",
+          "teamUpdate": "团队进展"
+        },
+        "errorFileTooLarge": "此文件过大。最大大小为 {{limit}}。",
+        "errorGeneric": "启动评审时出错。",
+        "errorInput": "请粘贴文本或提供文档路径。",
+        "fileSizeLimitHint": "粘贴或浏览的文件最大 {{limit}}。",
+        "pastedTimestampLabel": "粘贴_{{timestamp}}.md",
+        "scannerToggleHelper": "取消勾选你不想使用的项",
+        "scannersLabel": "扫描器",
+        "start": "开始评审",
+        "starting": "启动中…",
+        "title": "新建评审",
+        "tone": "语气",
+        "toneOption": {
+          "conciseExecutive": "简洁 / 高管",
+          "instructional": "指导",
+          "neutralProfessional": "中性 / 专业",
+          "persuasive": "说服"
+        }
+      },
+      "phases": {
+        "cross_validate": "交叉核对结果",
+        "done": "收尾中",
+        "fetch": "读取文档",
+        "reviewing": "评审中",
+        "scanner": "运行扫描器",
+        "starting": "启动扫描器"
+      },
+      "reviewCard": {
+        "delete": "删除评审",
+        "deleteConfirmPrompt": "删除 “{{docName}}” 的评审？此操作无法撤销。",
+        "deleteError": "删除失败：{{message}}",
+        "deleteFailedFallback": "删除失败",
+        "findingCount": "{{count}} 条结果"
+      },
+      "reviewDetail": {
+        "askLabel": "问题：{{ask}}",
+        "chatAbout": "讨论你的文档评审",
+        "error": "无法加载评审。",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "无效响应",
+          "missing_brief": "未找到扫描器说明",
+          "other": "未知错误",
+          "provider_timeout": "已超时",
+          "rate_limited": "已达速率限制",
+          "truncated_response": "响应被截断（输出过长）",
+          "worker_died": "工作进程已终止"
+        },
+        "loading": "正在加载评审…",
+        "noFindings": "此评审没有结果。",
+        "partialFailure": "部分扫描器失败",
+        "subheader": "{{count}} 条结果，覆盖 {{scanners}} 个扫描器"
+      },
+      "reviewList": {
+        "emptyTitle": "还没有评审",
+        "error": "无法加载评审历史。",
+        "inProgressDefault": "新扫描进行中",
+        "loading": "正在加载评审…"
+      },
+      "scanProgress": {
+        "failed": "扫描失败。请重试或查看 gateway 日志。",
+        "title": "正在评审你的文档"
+      },
+      "scannerNames": {
+        "attribution": "来源引用",
+        "audience": "受众",
+        "clarity": "清晰度",
+        "consistency": "一致性",
+        "design": "设计",
+        "email": "邮件",
+        "evidence": "论据",
+        "naturalness": "自然度",
+        "readability": "可读性",
+        "structure": "结构"
+      },
+      "settingsPanel": {
+        "cancel": "取消",
+        "close": "关闭设置",
+        "defaultAudience": "默认受众",
+        "defaultDocType": "默认文档类型",
+        "defaultTone": "默认语气",
+        "defaultsHeading": "新评审的默认值",
+        "defaultsHint": "会预填 New Review 对话框。在单次扫描中覆盖不会改动默认值。",
+        "errorGeneric": "无法保存设置。请重试。",
+        "loading": "正在加载当前设置…",
+        "maxConcurrentHint": "每次评审并行运行多少个扫描器调用（{{min}}–{{max}}）。数值越大完成越快，但每次扫描消耗更多模型额度。",
+        "maxConcurrentLabel": "最大并行扫描器数",
+        "save": "保存",
+        "saving": "保存中…",
+        "scannersHeading": "扫描器",
+        "scannersHint": "默认关闭部分扫描器。你仍可以在单次扫描中开启它们而不修改此设置。",
+        "title": "Writing Review 设置"
+      },
+      "verdictBadge": {
+        "green": "绿",
+        "red": "红",
+        "yellow": "黄"
+      },
+      "workspace": {
+        "newReview": "新建评审",
+        "openSettings": "应用设置",
+        "scanInProgress": "正在进行扫描 -- 请等待其完成"
       }
     }
   },

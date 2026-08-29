@@ -4010,7 +4010,6 @@
         "no_messages": "컴파일러가 보고한 내용이 없습니다.",
         "typesetting_hints_other": "조판 힌트 {{count}}건"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} 삭제",
         "files": "파일",
@@ -4737,6 +4736,184 @@
         "search_none": "‘{{query}}’과(와) 일치하는 계정이 없습니다.",
         "paid_services_title": "유료 서비스",
         "orphan_consent": "여기에 등록되지 않은 AWS 계정에 대해 확인되었습니다. 아래에서 확인을 철회하거나, 해당 계정을 다시 등록해 전용 페이지에서 관리하세요."
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}} (사용자 지정)",
+        "customPlaceholder": "사용자 지정 값을 입력하세요…",
+        "customValueGenericAriaLabel": "사용자 지정 값",
+        "noneOption": "선택",
+        "otherOption": "기타 (사용자 지정)…"
+      },
+      "emptyState": {
+        "hint": "새 리뷰를 시작하거나 왼쪽 목록에서 하나를 선택하세요.",
+        "title": "선택된 리뷰 없음"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "관련 위치",
+        "confidence": {
+          "high": "높은 신뢰도",
+          "low": "낮은 신뢰도",
+          "medium": "보통 신뢰도"
+        },
+        "location": "{{section}} 단락 {{paragraph}}",
+        "proposedFix": "제안된 수정",
+        "relatedLocation": "{{section}}, {{paragraph}}번째 단락 ({{scanner}})",
+        "scannerRule": "{{scanner}} - 규칙 {{rule}}",
+        "scannersDisagree": "스캐너 간 의견 불일치",
+        "scannersDisagreeTitle": "다른 스캐너가 같은 위치를 다르게 표시했습니다. 아래 메모에서 양쪽 관점을 확인하세요.",
+        "severity": {
+          "advisory": "참고",
+          "high": "높음",
+          "low": "낮음",
+          "medium": "보통"
+        }
+      },
+      "manifest": {
+        "description": "여러 스캐너를 사용하는 문서 리뷰로, 명확성 문제, 구조적 결함, 근거 부족, AI가 작성한 산문을 찾아 발견 사항을 인라인 코멘트로 게시하므로 하나씩 해결할 수 있습니다. 문서를 붙여넣거나 파일을 찾아 대상 독자와 톤을 설정하면 제안된 수정 사항과 함께 철저한 리뷰를 받게 됩니다.",
+        "display_name": "글쓰기 리뷰",
+        "highlight_1": "10개의 스캐너가 병렬로 실행되어 명확성, 구조, 근거, 자연스러움 등을 다룹니다",
+        "highlight_2": "발견 사항은 해당 텍스트에 고정된 인라인 코멘트로 표시되어 하나씩 해결할 수 있습니다",
+        "highlight_3": "Watson 성격: 꼼꼼하고 따뜻하며 분석적이고 모든 제안의 이유를 설명합니다",
+        "highlight_4": "설계 문서와 이메일용 조건부 스캐너가 문서 유형에 따라 활성화됩니다",
+        "highlight_5": "교차 검증이 스캐너 간 충돌을 감지하고 알맞은 조언을 선택합니다",
+        "highlight_6": "이후 리뷰어와 채팅하면서 수정 내용을 살펴보거나 재작성을 요청할 수 있습니다",
+        "page_label": "글쓰기 리뷰"
+      },
+      "newReviewDialog": {
+        "additionalContext": "추가 배경 (선택, 한 줄에 한 항목)",
+        "additionalContextPlaceholder": "예:\n80% 수치는 2024년이 아닌 2025 회계연도 기준입니다.\n이 독자에게 맞춘 의도적으로 편안한 어투.\n지난주 리뷰의 후속 작업; P0만 처리하세요.",
+        "ask": "질문 (선택)",
+        "askPlaceholder": "어떤 결정을 요청하나요? 리뷰어가 특히 고려해야 할 사항이 있나요?",
+        "audience": "독자",
+        "audienceOption": {
+          "crossOrg": "부서 간 이해관계자",
+          "externalCustomer": "외부 고객",
+          "internalTeam": "내부 팀",
+          "newHire": "신규 입사자 / 온보딩",
+          "vpLeadership": "VP / 리더십"
+        },
+        "browse": "찾아보기…",
+        "browseHint": "로컬 .md, .txt 또는 .docx 파일을 선택하세요",
+        "browsedHint": "{{fileName}}에서 불러왔습니다. 내용이 리뷰로 전송됩니다.",
+        "cancel": "취소",
+        "close": "닫기",
+        "docPath": "문서 경로",
+        "docPathPlaceholder": "예: /home/you/notes.md",
+        "docText": "또는 문서 본문을 붙여 넣기",
+        "docTextPlaceholder": "여기에 마크다운 또는 일반 텍스트를 붙여 넣으세요…",
+        "docType": "문서 유형",
+        "docTypeOption": {
+          "decisionDoc": "의사결정 문서",
+          "designDocument": "설계 문서",
+          "email": "이메일",
+          "investigation": "조사",
+          "programUpdate": "프로그램 업데이트",
+          "strategy": "전략",
+          "teamUpdate": "팀 업데이트"
+        },
+        "errorFileTooLarge": "이 파일은 너무 큽니다. 최대 크기는 {{limit}}입니다.",
+        "errorGeneric": "리뷰를 시작하는 중 문제가 발생했습니다.",
+        "errorInput": "텍스트를 붙여 넣거나 문서 경로를 입력하세요.",
+        "fileSizeLimitHint": "붙여넣거나 찾아본 파일의 최대 크기는 {{limit}}입니다.",
+        "pastedTimestampLabel": "붙여넣기_{{timestamp}}.md",
+        "scannerToggleHelper": "사용하지 않을 항목의 선택을 해제하세요",
+        "scannersLabel": "스캐너",
+        "start": "리뷰 시작",
+        "starting": "시작 중…",
+        "title": "새 리뷰",
+        "tone": "어투",
+        "toneOption": {
+          "conciseExecutive": "간결 / 임원",
+          "instructional": "설명적",
+          "neutralProfessional": "중립 / 전문적",
+          "persuasive": "설득적"
+        }
+      },
+      "phases": {
+        "cross_validate": "결과 교차 확인",
+        "done": "마무리 중",
+        "fetch": "문서 읽는 중",
+        "reviewing": "리뷰 중",
+        "scanner": "스캐너 실행 중",
+        "starting": "스캐너 시작 중"
+      },
+      "reviewCard": {
+        "delete": "리뷰 삭제",
+        "deleteConfirmPrompt": "‘{{docName}}’ 리뷰를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+        "deleteError": "삭제 실패: {{message}}",
+        "deleteFailedFallback": "삭제 실패",
+        "findingCount": "{{count}}건"
+      },
+      "reviewDetail": {
+        "askLabel": "질문: {{ask}}",
+        "chatAbout": "문서 리뷰에 대해 이야기하기",
+        "error": "리뷰를 불러올 수 없습니다.",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "잘못된 응답",
+          "missing_brief": "스캐너 지시를 찾을 수 없습니다",
+          "other": "알 수 없는 오류",
+          "provider_timeout": "시간 초과",
+          "rate_limited": "속도 제한 도달",
+          "truncated_response": "응답이 잘렸습니다 (출력이 너무 김)",
+          "worker_died": "워커 프로세스가 종료되었습니다"
+        },
+        "loading": "리뷰를 불러오는 중…",
+        "noFindings": "이 리뷰에는 결과가 없습니다.",
+        "partialFailure": "일부 스캐너가 실패했습니다",
+        "subheader": "{{count}}건, {{scanners}}개 스캐너에 걸쳐"
+      },
+      "reviewList": {
+        "emptyTitle": "아직 리뷰가 없습니다",
+        "error": "리뷰 기록을 불러올 수 없습니다.",
+        "inProgressDefault": "새 스캔 진행 중",
+        "loading": "리뷰를 불러오는 중…"
+      },
+      "scanProgress": {
+        "failed": "스캔에 실패했습니다. 다시 시도하거나 게이트웨이 로그를 확인하세요.",
+        "title": "문서를 리뷰하는 중"
+      },
+      "scannerNames": {
+        "attribution": "출처 표기",
+        "audience": "독자",
+        "clarity": "명확성",
+        "consistency": "일관성",
+        "design": "디자인",
+        "email": "이메일",
+        "evidence": "근거",
+        "naturalness": "자연스러움",
+        "readability": "가독성",
+        "structure": "구조"
+      },
+      "settingsPanel": {
+        "cancel": "취소",
+        "close": "설정 닫기",
+        "defaultAudience": "기본 독자",
+        "defaultDocType": "기본 문서 유형",
+        "defaultTone": "기본 어투",
+        "defaultsHeading": "새 리뷰의 기본값",
+        "defaultsHint": "New Review 대화 상자에 미리 채워집니다. 기본값을 바꾸지 않고 스캔마다 재정의할 수 있습니다.",
+        "errorGeneric": "설정을 저장할 수 없습니다. 다시 시도하세요.",
+        "loading": "현재 설정을 불러오는 중…",
+        "maxConcurrentHint": "리뷰당 병렬로 실행되는 스캐너 호출 수 ({{min}}–{{max}}). 값이 클수록 빨리 끝나지만 스캔마다 더 많은 모델 크레디트를 소비합니다.",
+        "maxConcurrentLabel": "최대 동시 실행 스캐너",
+        "save": "저장",
+        "saving": "저장 중…",
+        "scannersHeading": "스캐너",
+        "scannersHint": "기본적으로 스캐너를 꺼 두세요. 이 설정을 바꾸지 않고 스캔마다 켤 수 있습니다.",
+        "title": "Writing Review 설정"
+      },
+      "verdictBadge": {
+        "green": "그린",
+        "red": "레드",
+        "yellow": "옐로"
+      },
+      "workspace": {
+        "newReview": "새 리뷰",
+        "openSettings": "앱 설정",
+        "scanInProgress": "스캔이 진행 중입니다 -- 완료될 때까지 기다려 주세요"
       }
     }
   },

@@ -4010,7 +4010,6 @@
         "no_messages": "コンパイラーが何も報告していません。",
         "typesetting_hints_other": "{{count}} 件の植字ヒント"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} を削除",
         "files": "ファイル",
@@ -4737,6 +4736,184 @@
         "search_none": "「{{query}}」に一致するアカウントはありません。",
         "paid_services_title": "有料サービス",
         "orphan_consent": "ここに登録されていない AWS アカウントに対して確認済みです。下で確認を取り消すか、そのアカウントを再登録して専用ページから管理してください。"
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}}（カスタム）",
+        "customPlaceholder": "カスタム値を入力…",
+        "customValueGenericAriaLabel": "カスタム値",
+        "noneOption": "選択",
+        "otherOption": "その他（カスタム）…"
+      },
+      "emptyState": {
+        "hint": "新規レビューを開始するか、左のリストから選んでください。",
+        "title": "レビューが選択されていません"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "関連する箇所",
+        "confidence": {
+          "high": "高い確度",
+          "low": "低い確度",
+          "medium": "中程度の確度"
+        },
+        "location": "{{section}} 段落 {{paragraph}}",
+        "proposedFix": "提案される修正",
+        "relatedLocation": "{{section}}、段落 {{paragraph}}（{{scanner}}）",
+        "scannerRule": "{{scanner}} - ルール {{rule}}",
+        "scannersDisagree": "スキャナー間で意見が分かれています",
+        "scannersDisagreeTitle": "別のスキャナーが同じ箇所を異なる形で指摘しました。下のメモに両方の見解を示します。",
+        "severity": {
+          "advisory": "参考",
+          "high": "高",
+          "low": "低",
+          "medium": "中"
+        }
+      },
+      "manifest": {
+        "description": "複数のスキャナーで文書を確認し、明快さの問題、構造の欠陥、根拠不足、AI が書いた文章を見つけて、指摘をインラインコメントとして表示するので、一つずつ解消できます。文書を貼り付けるかファイルを参照し、想定読者とトーンを設定して、修正案付きの徹底したレビューを受け取ってください。",
+        "display_name": "文章レビュー",
+        "highlight_1": "10 個のスキャナーが並列に動き、明快さ、構造、根拠、自然さなどをカバーします",
+        "highlight_2": "指摘は該当箇所に紐づいたインラインコメントとして表示され、一つずつ解消していけます",
+        "highlight_3": "Watson の人柄: 丁寧で温かく分析的、それぞれの提案の理由をきちんと説明します",
+        "highlight_4": "設計ドキュメントとメール向けの条件付きスキャナーが、文書タイプに応じて有効になります",
+        "highlight_5": "クロス検証がスキャナー同士の食い違いを見つけ、適切なアドバイスを選びます",
+        "highlight_6": "その後、レビュアーとチャットして修正内容を確認したり、書き直しを依頼したりできます",
+        "page_label": "文章レビュー"
+      },
+      "newReviewDialog": {
+        "additionalContext": "追加の背景情報（任意、1行につき1件）",
+        "additionalContextPlaceholder": "例：\n80% の数値は 2024 年度ではなく 2025 年度のものです。\nこの読者向けに意図的にカジュアルな語り口。\n先週のレビューのフォローアップ。P0 のみ対応。",
+        "ask": "質問（任意）",
+        "askPlaceholder": "どの判断を求めていますか。レビュアーが重視すべき具体的な観点はありますか。",
+        "audience": "読者",
+        "audienceOption": {
+          "crossOrg": "部門横断のステークホルダー",
+          "externalCustomer": "社外の顧客",
+          "internalTeam": "社内チーム",
+          "newHire": "新入社員 / オンボーディング",
+          "vpLeadership": "VP / 経営層"
+        },
+        "browse": "参照…",
+        "browseHint": "ローカルの .md、.txt、.docx ファイルを選択",
+        "browsedHint": "{{fileName}} から読み込みました。この内容をレビューに送信します。",
+        "cancel": "キャンセル",
+        "close": "閉じる",
+        "docPath": "ドキュメントのパス",
+        "docPathPlaceholder": "例：/home/you/notes.md",
+        "docText": "またはドキュメントの本文を貼り付け",
+        "docTextPlaceholder": "ここに Markdown または平文を貼り付けてください…",
+        "docType": "ドキュメント種別",
+        "docTypeOption": {
+          "decisionDoc": "意思決定ドキュメント",
+          "designDocument": "設計ドキュメント",
+          "email": "メール",
+          "investigation": "調査",
+          "programUpdate": "プログラムの進捗",
+          "strategy": "戦略",
+          "teamUpdate": "チームの進捗"
+        },
+        "errorFileTooLarge": "このファイルは大きすぎます。最大サイズは {{limit}} です。",
+        "errorGeneric": "レビューの開始で問題が発生しました。",
+        "errorInput": "テキストを貼り付けるか、ドキュメントのパスを指定してください。",
+        "fileSizeLimitHint": "貼り付けまたは参照するファイルの最大サイズは {{limit}} です。",
+        "pastedTimestampLabel": "貼付_{{timestamp}}.md",
+        "scannerToggleHelper": "使わないものをオフにしてください",
+        "scannersLabel": "スキャナー",
+        "start": "レビューを開始",
+        "starting": "起動中…",
+        "title": "新規レビュー",
+        "tone": "語り口",
+        "toneOption": {
+          "conciseExecutive": "簡潔 / 経営層向け",
+          "instructional": "説明的",
+          "neutralProfessional": "中立的 / プロフェッショナル",
+          "persuasive": "説得的"
+        }
+      },
+      "phases": {
+        "cross_validate": "結果のクロスチェック",
+        "done": "仕上げ中",
+        "fetch": "ドキュメント読み込み中",
+        "reviewing": "レビュー中",
+        "scanner": "スキャナー実行中",
+        "starting": "スキャナーを起動中"
+      },
+      "reviewCard": {
+        "delete": "レビューを削除",
+        "deleteConfirmPrompt": "「{{docName}}」のレビューを削除しますか。この操作は元に戻せません。",
+        "deleteError": "削除に失敗しました：{{message}}",
+        "deleteFailedFallback": "削除に失敗しました",
+        "findingCount": "{{count}} 件の結果"
+      },
+      "reviewDetail": {
+        "askLabel": "質問：{{ask}}",
+        "chatAbout": "文書レビューについて話す",
+        "error": "レビューを読み込めませんでした。",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "無効な応答",
+          "missing_brief": "スキャナーの指示が見つかりません",
+          "other": "不明なエラー",
+          "provider_timeout": "タイムアウト",
+          "rate_limited": "レート制限に到達",
+          "truncated_response": "応答が途中で切れました（出力が長すぎます）",
+          "worker_died": "ワーカープロセスが終了しました"
+        },
+        "loading": "レビューを読み込み中…",
+        "noFindings": "このレビューには結果がありません。",
+        "partialFailure": "一部のスキャナーが失敗しました",
+        "subheader": "{{count}} 件の結果、{{scanners}} 個のスキャナー全体"
+      },
+      "reviewList": {
+        "emptyTitle": "レビューはまだありません",
+        "error": "レビュー履歴を読み込めませんでした。",
+        "inProgressDefault": "新しいスキャンを実行中",
+        "loading": "レビューを読み込み中…"
+      },
+      "scanProgress": {
+        "failed": "スキャンが失敗しました。もう一度お試しいただくか、ゲートウェイのログをご確認ください。",
+        "title": "ドキュメントをレビュー中"
+      },
+      "scannerNames": {
+        "attribution": "出典表示",
+        "audience": "読者",
+        "clarity": "明快さ",
+        "consistency": "一貫性",
+        "design": "デザイン",
+        "email": "メール",
+        "evidence": "根拠",
+        "naturalness": "自然さ",
+        "readability": "読みやすさ",
+        "structure": "構成"
+      },
+      "settingsPanel": {
+        "cancel": "キャンセル",
+        "close": "設定を閉じる",
+        "defaultAudience": "デフォルトの読者",
+        "defaultDocType": "デフォルトのドキュメント種別",
+        "defaultTone": "デフォルトの語り口",
+        "defaultsHeading": "新規レビューのデフォルト",
+        "defaultsHint": "New Review ダイアログを事前入力します。デフォルトを変えずにスキャン単位で上書きできます。",
+        "errorGeneric": "設定を保存できませんでした。もう一度お試しください。",
+        "loading": "現在の設定を読み込み中…",
+        "maxConcurrentHint": "1回のレビューで並列に実行するスキャナー呼び出し数（{{min}}–{{max}}）。値を大きくすると速く終わりますが、1回のスキャンで消費するモデルクレジットが増えます。",
+        "maxConcurrentLabel": "同時実行スキャナーの上限",
+        "save": "保存",
+        "saving": "保存中…",
+        "scannersHeading": "スキャナー",
+        "scannersHint": "既定でスキャナーを無効にします。この設定を変えずにスキャン単位で有効化することもできます。",
+        "title": "Writing Review 設定"
+      },
+      "verdictBadge": {
+        "green": "グリーン",
+        "red": "レッド",
+        "yellow": "イエロー"
+      },
+      "workspace": {
+        "newReview": "新規レビュー",
+        "openSettings": "アプリ設定",
+        "scanInProgress": "スキャン実行中 -- 終わるまでお待ちください"
       }
     }
   },

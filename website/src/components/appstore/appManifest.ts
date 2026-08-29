@@ -398,6 +398,28 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.workflows.manifest.use_case_1'],
     configuration: ['apps.workflows.manifest.configuration_1'],
   },
+  'writing-review': {
+    displayName: 'apps.writingReview.manifest.display_name',
+    description: 'apps.writingReview.manifest.description',
+    pageLabel: 'apps.writingReview.manifest.page_label',
+    highlights: [
+      'apps.writingReview.manifest.highlight_1',
+      'apps.writingReview.manifest.highlight_2',
+      'apps.writingReview.manifest.highlight_3',
+      'apps.writingReview.manifest.highlight_4',
+      'apps.writingReview.manifest.highlight_5',
+      'apps.writingReview.manifest.highlight_6',
+    ],
+    // The backend ``app.json`` for writing-review carries no ``use_cases``
+    // or ``configuration`` fields (unlike Papyrus / Meetings / PPTX Maker
+    // which have ``configuration`` but no ``use_cases``). The
+    // ``check-app-manifest-sync.mjs`` gate compares by count -- 0 backend
+    // entries requires 0 i18n keys here, satisfied by empty arrays. Adding
+    // content is a follow-up if reviewers want the App Store detail page
+    // to show a configuration hint block for this app.
+    useCases: [],
+    configuration: [],
+  },
 }
 
 /**

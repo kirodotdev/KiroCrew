@@ -14,6 +14,7 @@ BUILTIN_NAMES: list[str] = [
     "personal_shopper",
     "pptx_maker",
     "spec_builder",
+    "writing_review",
 ]
 
 # Deploy-web lives in the core deploy module, not as a separate builtin.

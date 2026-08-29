@@ -4081,7 +4081,6 @@
         "typesetting_hints_one": "{{count}} Satzhinweis",
         "typesetting_hints_other": "{{count}} Satzhinweise"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} löschen",
         "files": "Dateien",
@@ -4821,6 +4820,184 @@
         "search_none": "Keine Konten stimmen mit „{{query}}“ überein.",
         "paid_services_title": "Kostenpflichtige Dienste",
         "orphan_consent": "Bestätigt für ein AWS-Konto, das hier nicht registriert ist. Ziehen Sie die Bestätigung unten zurück, oder registrieren Sie das Konto erneut, um es auf seiner eigenen Seite zu verwalten."
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}} (benutzerdefiniert)",
+        "customPlaceholder": "Gib einen benutzerdefinierten Wert ein…",
+        "customValueGenericAriaLabel": "Benutzerdefinierter Wert",
+        "noneOption": "Auswählen",
+        "otherOption": "Andere (benutzerdefiniert)…"
+      },
+      "emptyState": {
+        "hint": "Starte eine neue Prüfung oder wähle eine aus der linken Leiste aus.",
+        "title": "Keine Prüfung ausgewählt"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "Verwandte Stellen",
+        "confidence": {
+          "high": "Hohe Konfidenz",
+          "low": "Niedrige Konfidenz",
+          "medium": "Mittlere Konfidenz"
+        },
+        "location": "{{section}} Absatz {{paragraph}}",
+        "proposedFix": "Vorgeschlagene Korrektur",
+        "relatedLocation": "{{section}}, Absatz {{paragraph}} ({{scanner}})",
+        "scannerRule": "{{scanner}} - Regel {{rule}}",
+        "scannersDisagree": "Analysen widersprechen sich",
+        "scannersDisagreeTitle": "Eine andere Analyse hat dieselbe Stelle abweichend markiert; die Hinweise unten zeigen beide Seiten.",
+        "severity": {
+          "advisory": "Hinweis",
+          "high": "Hoch",
+          "low": "Niedrig",
+          "medium": "Mittel"
+        }
+      },
+      "manifest": {
+        "description": "Mehrfach-Scanner-Dokumentenprüfung, die Klarheitsprobleme, strukturelle Mängel, fehlende Belege und von KI geschriebene Prosa aufspürt und die Befunde als Inline-Kommentare veröffentlicht, die du einen nach dem anderen bearbeitest. Füge ein Dokument ein oder durchsuche eine Datei, lege Zielgruppe und Ton fest und erhalte eine gründliche Prüfung mit vorgeschlagenen Korrekturen.",
+        "display_name": "Textprüfung",
+        "highlight_1": "Zehn Scanner laufen parallel und decken Klarheit, Struktur, Belege, Natürlichkeit und mehr ab",
+        "highlight_2": "Befunde erscheinen als Inline-Kommentare am genauen Textabschnitt, sodass du sie einen nach dem anderen bearbeitest",
+        "highlight_3": "Watson-Persönlichkeit: gründlich, warmherzig, analytisch — erklärt die Überlegung hinter jedem Vorschlag",
+        "highlight_4": "Bedingte Scanner für Design-Dokumente und E-Mails aktivieren sich je nach Dokumenttyp",
+        "highlight_5": "Kreuzvalidierung erkennt Konflikte zwischen Scannern und wählt den passenden Ratschlag",
+        "highlight_6": "Sprich danach mit dem Reviewer, um Korrekturen durchzugehen oder Umschreibungen anzufordern",
+        "page_label": "Textprüfung"
+      },
+      "newReviewDialog": {
+        "additionalContext": "Zusätzlicher Kontext (optional, eine Notiz pro Zeile)",
+        "additionalContextPlaceholder": "z. B.\nDie 80 %-Zahl stammt aus dem Geschäftsjahr 2025, nicht 2024.\nBewusst informeller Ton für dieses Publikum.\nFolgeprüfung zur letzten Woche; nur P0-Punkte bearbeiten.",
+        "ask": "Frage (optional)",
+        "askPlaceholder": "Welche Entscheidung erfragst du? Gibt es bestimmte Punkte, auf die die Prüfung besonders eingehen soll?",
+        "audience": "Zielgruppe",
+        "audienceOption": {
+          "crossOrg": "Bereichsübergreifende Beteiligte",
+          "externalCustomer": "Externe Kundschaft",
+          "internalTeam": "Internes Team",
+          "newHire": "Neue Mitarbeitende / Einarbeitung",
+          "vpLeadership": "VP / Führung"
+        },
+        "browse": "Durchsuchen…",
+        "browseHint": "Wähle eine lokale .md-, .txt- oder .docx-Datei aus",
+        "browsedHint": "Aus {{fileName}} geladen. Der Inhalt wird zur Prüfung gesendet.",
+        "cancel": "Abbrechen",
+        "close": "Schließen",
+        "docPath": "Dokumentpfad",
+        "docPathPlaceholder": "z. B. /home/you/notizen.md",
+        "docText": "Oder füge den Dokumenttext ein",
+        "docTextPlaceholder": "Füge hier Markdown oder Klartext ein…",
+        "docType": "Dokumenttyp",
+        "docTypeOption": {
+          "decisionDoc": "Entscheidungsdokument",
+          "designDocument": "Designdokument",
+          "email": "E-Mail",
+          "investigation": "Untersuchung",
+          "programUpdate": "Programm-Update",
+          "strategy": "Strategie",
+          "teamUpdate": "Team-Update"
+        },
+        "errorFileTooLarge": "Diese Datei ist zu groß. Die maximale Größe beträgt {{limit}}.",
+        "errorGeneric": "Beim Starten der Prüfung ist etwas schiefgelaufen.",
+        "errorInput": "Füge Text ein oder gib einen Dokumentpfad an.",
+        "fileSizeLimitHint": "Maximal {{limit}} für eingefügte oder ausgewählte Dateien.",
+        "pastedTimestampLabel": "eingefügt_{{timestamp}}.md",
+        "scannerToggleHelper": "Wähle diejenigen ab, die du nicht verwenden möchtest",
+        "scannersLabel": "Analysen",
+        "start": "Prüfung starten",
+        "starting": "Wird gestartet…",
+        "title": "Neue Prüfung",
+        "tone": "Tonlage",
+        "toneOption": {
+          "conciseExecutive": "Prägnant / Führung",
+          "instructional": "Anleitend",
+          "neutralProfessional": "Neutral / professionell",
+          "persuasive": "Überzeugend"
+        }
+      },
+      "phases": {
+        "cross_validate": "Ergebnisse werden gegengeprüft",
+        "done": "Wird abgeschlossen",
+        "fetch": "Dokument wird gelesen",
+        "reviewing": "Wird geprüft",
+        "scanner": "Analysen laufen",
+        "starting": "Analysen werden gestartet"
+      },
+      "reviewCard": {
+        "delete": "Prüfung löschen",
+        "deleteConfirmPrompt": "Die Prüfung von „{{docName}}“ löschen? Das kann nicht rückgängig gemacht werden.",
+        "deleteError": "Löschen fehlgeschlagen: {{message}}",
+        "deleteFailedFallback": "Löschen fehlgeschlagen",
+        "findingCount": "{{count}} Ergebnisse"
+      },
+      "reviewDetail": {
+        "askLabel": "Frage: {{ask}}",
+        "chatAbout": "Über deine Prüfung sprechen",
+        "error": "Prüfung konnte nicht geladen werden.",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "Ungültige Antwort",
+          "missing_brief": "Analyse-Anweisung nicht gefunden",
+          "other": "Unbekannter Fehler",
+          "provider_timeout": "Zeitüberschreitung",
+          "rate_limited": "Ratenbegrenzung erreicht",
+          "truncated_response": "Antwort abgeschnitten (Ausgabe zu lang)",
+          "worker_died": "Der Arbeitsprozess wurde beendet"
+        },
+        "loading": "Prüfung wird geladen…",
+        "noFindings": "Keine Ergebnisse aus dieser Prüfung.",
+        "partialFailure": "Einige Analysen sind fehlgeschlagen",
+        "subheader": "{{count}} Ergebnisse aus {{scanners}} Analysen"
+      },
+      "reviewList": {
+        "emptyTitle": "Noch keine Prüfungen",
+        "error": "Prüfungsverlauf konnte nicht geladen werden.",
+        "inProgressDefault": "Neue Prüfung läuft",
+        "loading": "Prüfungen werden geladen…"
+      },
+      "scanProgress": {
+        "failed": "Analyse fehlgeschlagen. Versuche es erneut oder prüfe die Gateway-Logs.",
+        "title": "Dein Dokument wird geprüft"
+      },
+      "scannerNames": {
+        "attribution": "Belege",
+        "audience": "Zielgruppe",
+        "clarity": "Klarheit",
+        "consistency": "Konsistenz",
+        "design": "Design",
+        "email": "E-Mail",
+        "evidence": "Nachweise",
+        "naturalness": "Natürlichkeit",
+        "readability": "Lesbarkeit",
+        "structure": "Struktur"
+      },
+      "settingsPanel": {
+        "cancel": "Abbrechen",
+        "close": "Einstellungen schließen",
+        "defaultAudience": "Standard-Zielgruppe",
+        "defaultDocType": "Standard-Dokumenttyp",
+        "defaultTone": "Standard-Tonlage",
+        "defaultsHeading": "Standardwerte für neue Prüfungen",
+        "defaultsHint": "Sie füllen den Dialog Neue Prüfung vor. Überschreibe sie pro Analyse, ohne die Standardwerte zu ändern.",
+        "errorGeneric": "Einstellungen konnten nicht gespeichert werden. Versuche es erneut.",
+        "loading": "Aktuelle Einstellungen werden geladen…",
+        "maxConcurrentHint": "Wie viele Analyseaufrufe pro Prüfung parallel laufen ({{min}}–{{max}}). Höhere Werte werden schneller fertig, verbrauchen aber mehr Modell-Credits pro Analyse.",
+        "maxConcurrentLabel": "Maximale gleichzeitige Analysen",
+        "save": "Speichern",
+        "saving": "Wird gespeichert…",
+        "scannersHeading": "Analysen",
+        "scannersHint": "Deaktiviere Analysen standardmäßig. Du kannst sie weiterhin pro Analyse aktivieren, ohne diese Einstellung zu ändern.",
+        "title": "Writing-Review-Einstellungen"
+      },
+      "verdictBadge": {
+        "green": "Grün",
+        "red": "Rot",
+        "yellow": "Gelb"
+      },
+      "workspace": {
+        "newReview": "Neue Prüfung",
+        "openSettings": "App-Einstellungen",
+        "scanInProgress": "Eine Analyse läuft -- bitte warten, bis sie abgeschlossen ist"
       }
     }
   },

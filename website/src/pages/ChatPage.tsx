@@ -3974,6 +3974,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // is still creating + slack-linking its session; otherwise we'd switch to
     // a different slot and orphan the linked one (breaking Slack mirroring).
     if (tokenConsumingRef.current) return
+    // A chat launch intent (from ``useChatLauncher``, e.g. an app clicking
+    // "Discuss your doc review") sets ``newSessionRef.current = true`` in the
+    // launch-intent effect above — source order guarantees that effect runs
+    // BEFORE this one. When primed, ``send()`` creates the correctly-agented
+    // session itself. Auto-selecting or auto-creating here would race that
+    // path: either flashing an existing session before ``send()`` switches
+    // away (visible as a phantom active session), or dispatching a default-
+    // agent ``createSlot`` that then sits alongside the real launched session
+    // (the "duplicate blank session" writing-review saw). The ``newSlotFailed``
+    // guard is the sibling brake for a create-slot that errored — pause auto-
+    // select rather than spin re-provisioning after a failure.
     if (newSessionRef.current || newSlotFailed) return
     if (searchParams.get('slot') || searchParams.get('sid') || initialSidRef.current) return
     if (filteredSlots.length > 0) {

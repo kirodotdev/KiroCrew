@@ -4037,7 +4037,6 @@
         "typesetting_hints_one": "{{count}} टाइपसेटिंग सुझाव",
         "typesetting_hints_other": "{{count}} टाइपसेटिंग सुझाव"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "{{file}} हटाएँ",
         "files": "फ़ाइलें",
@@ -4821,6 +4820,184 @@
         "search_none": "“{{query}}” से मेल खाता कोई खाता नहीं है।",
         "paid_services_title": "सशुल्क सेवाएँ",
         "orphan_consent": "यहाँ पंजीकृत नहीं किए गए AWS खाते के लिए पुष्टि की गई है। नीचे पुष्टि वापस लें, या उस खाते को फिर से पंजीकृत करके उसके पेज से प्रबंधित करें।"
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}} (कस्टम)",
+        "customPlaceholder": "एक कस्टम मान लिखो…",
+        "customValueGenericAriaLabel": "कस्टम मान",
+        "noneOption": "चुनो",
+        "otherOption": "अन्य (कस्टम)…"
+      },
+      "emptyState": {
+        "hint": "एक नई समीक्षा शुरू करो या बाईं ओर की सूची से एक चुनो।",
+        "title": "कोई समीक्षा नहीं चुनी गई"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "संबंधित स्थान",
+        "confidence": {
+          "high": "उच्च विश्वास",
+          "low": "कम विश्वास",
+          "medium": "मध्यम विश्वास"
+        },
+        "location": "{{section}} अनुच्छेद {{paragraph}}",
+        "proposedFix": "प्रस्तावित सुधार",
+        "relatedLocation": "{{section}}, अनुच्छेद {{paragraph}} ({{scanner}})",
+        "scannerRule": "{{scanner}} - नियम {{rule}}",
+        "scannersDisagree": "स्कैनरों में असहमति",
+        "scannersDisagreeTitle": "किसी और स्कैनर ने उसी जगह को अलग तरह से चिह्नित किया है; नीचे के नोट दोनों पक्ष दिखाते हैं।",
+        "severity": {
+          "advisory": "सलाहात्मक",
+          "high": "उच्च",
+          "low": "निम्न",
+          "medium": "मध्यम"
+        }
+      },
+      "manifest": {
+        "description": "मल्टी-स्कैनर डॉक्यूमेंट रिव्यू जो स्पष्टता की समस्याएँ, संरचनात्मक खामियाँ, अनुपस्थित प्रमाण और AI-लिखित गद्य को खोजता है, फिर निष्कर्षों को इनलाइन टिप्पणियों के रूप में पोस्ट करता है जिन्हें तुम एक-एक करके हल कर सको। एक डॉक्यूमेंट पेस्ट करो या फ़ाइल ब्राउज़ करो, दर्शक और स्वर सेट करो और प्रस्तावित सुधारों के साथ एक पूरी समीक्षा पाओ।",
+        "display_name": "लेखन समीक्षा",
+        "highlight_1": "दस स्कैनर समानांतर में चलते हैं, स्पष्टता, संरचना, प्रमाण, स्वाभाविकता और अधिक को कवर करते हैं",
+        "highlight_2": "निष्कर्ष सटीक टेक्स्ट पर एंकर की गई इनलाइन टिप्पणियों के रूप में दिखते हैं, इसलिए तुम उन्हें एक-एक करके हल कर सको",
+        "highlight_3": "Watson का व्यक्तित्व: गहन, गर्मजोशी भरा, विश्लेषणात्मक और हर सुझाव के पीछे का तर्क समझाता है",
+        "highlight_4": "डिज़ाइन दस्तावेज़ों और ईमेल के लिए सशर्त स्कैनर दस्तावेज़ के प्रकार के आधार पर सक्रिय होते हैं",
+        "highlight_5": "क्रॉस-वैलिडेशन तब पकड़ लेता है जब स्कैनरों के बीच टकराव होता है और सही सलाह चुनता है",
+        "highlight_6": "बाद में समीक्षक से चैट करके सुधारों को समझो या पुनर्लेखन का अनुरोध करो",
+        "page_label": "लेखन समीक्षा"
+      },
+      "newReviewDialog": {
+        "additionalContext": "अतिरिक्त संदर्भ (वैकल्पिक, प्रति पंक्ति एक नोट)",
+        "additionalContextPlaceholder": "जैसे\n80% वाला आँकड़ा वित्त वर्ष 2025 का है, 2024 का नहीं।\nइस दर्शक के लिए जान-बूझकर अनौपचारिक टोन।\nपिछले हफ़्ते की समीक्षा का फ़ॉलो-अप; सिर्फ़ P0 पर काम करो।",
+        "ask": "प्रश्न (वैकल्पिक)",
+        "askPlaceholder": "तुम कौन-सा निर्णय माँग रहे हो? क्या समीक्षक को कोई विशेष बात ध्यान में रखनी चाहिए?",
+        "audience": "दर्शक",
+        "audienceOption": {
+          "crossOrg": "क्रॉस-ऑर्ग हितधारक",
+          "externalCustomer": "बाहरी ग्राहक",
+          "internalTeam": "आंतरिक टीम",
+          "newHire": "नई भर्ती / ऑनबोर्डिंग",
+          "vpLeadership": "VP / नेतृत्व"
+        },
+        "browse": "ब्राउज़…",
+        "browseHint": "एक लोकल .md, .txt या .docx फ़ाइल चुनो",
+        "browsedHint": "{{fileName}} से लोड किया गया। सामग्री समीक्षा के लिए भेजी जाएगी।",
+        "cancel": "रद्द करो",
+        "close": "बंद करो",
+        "docPath": "दस्तावेज़ का पथ",
+        "docPathPlaceholder": "जैसे /home/you/notes.md",
+        "docText": "या दस्तावेज़ का पाठ पेस्ट करो",
+        "docTextPlaceholder": "यहाँ मार्कडाउन या सादा पाठ पेस्ट करो…",
+        "docType": "दस्तावेज़ प्रकार",
+        "docTypeOption": {
+          "decisionDoc": "निर्णय दस्तावेज़",
+          "designDocument": "डिज़ाइन दस्तावेज़",
+          "email": "ईमेल",
+          "investigation": "जाँच",
+          "programUpdate": "प्रोग्राम अपडेट",
+          "strategy": "रणनीति",
+          "teamUpdate": "टीम अपडेट"
+        },
+        "errorFileTooLarge": "यह फ़ाइल बहुत बड़ी है। अधिकतम आकार {{limit}} है।",
+        "errorGeneric": "समीक्षा शुरू करने में कुछ गड़बड़ हो गई।",
+        "errorInput": "पाठ पेस्ट करो या दस्तावेज़ का पथ दो।",
+        "fileSizeLimitHint": "पेस्ट की गई या ब्राउज़ की गई फ़ाइलों के लिए अधिकतम {{limit}}।",
+        "pastedTimestampLabel": "पेस्ट_{{timestamp}}.md",
+        "scannerToggleHelper": "जिन्हें उपयोग नहीं करना है, उन्हें अनचेक करो",
+        "scannersLabel": "स्कैनर",
+        "start": "समीक्षा शुरू करो",
+        "starting": "शुरू हो रहा है…",
+        "title": "नई समीक्षा",
+        "tone": "टोन",
+        "toneOption": {
+          "conciseExecutive": "संक्षिप्त / एग्जीक्यूटिव",
+          "instructional": "निर्देशात्मक",
+          "neutralProfessional": "तटस्थ / पेशेवर",
+          "persuasive": "अनुनयकारी"
+        }
+      },
+      "phases": {
+        "cross_validate": "परिणामों की क्रॉस-जाँच",
+        "done": "समाप्त कर रहे हैं",
+        "fetch": "दस्तावेज़ पढ़ रहे हैं",
+        "reviewing": "समीक्षा चल रही है",
+        "scanner": "स्कैनर चला रहे हैं",
+        "starting": "स्कैनर शुरू हो रहे हैं"
+      },
+      "reviewCard": {
+        "delete": "समीक्षा हटाओ",
+        "deleteConfirmPrompt": "“{{docName}}” की समीक्षा हटाना है? इसे वापस नहीं लाया जा सकता।",
+        "deleteError": "हटाना विफल: {{message}}",
+        "deleteFailedFallback": "हटाना विफल",
+        "findingCount": "{{count}} परिणाम"
+      },
+      "reviewDetail": {
+        "askLabel": "प्रश्न: {{ask}}",
+        "chatAbout": "अपनी दस्तावेज़ समीक्षा पर चर्चा करो",
+        "error": "समीक्षा लोड नहीं हो सकी।",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "अमान्य प्रतिक्रिया",
+          "missing_brief": "स्कैनर निर्देश नहीं मिला",
+          "other": "अज्ञात त्रुटि",
+          "provider_timeout": "समय समाप्त",
+          "rate_limited": "गति सीमा तक पहुँच गए",
+          "truncated_response": "प्रतिक्रिया कट गई (आउटपुट बहुत लंबा)",
+          "worker_died": "वर्कर प्रोसेस बंद हो गई"
+        },
+        "loading": "समीक्षा लोड हो रही है…",
+        "noFindings": "इस समीक्षा में कोई परिणाम नहीं।",
+        "partialFailure": "कुछ स्कैनर विफल रहे",
+        "subheader": "{{count}} परिणाम, {{scanners}} स्कैनरों में"
+      },
+      "reviewList": {
+        "emptyTitle": "अभी तक कोई समीक्षा नहीं",
+        "error": "समीक्षा इतिहास लोड नहीं हो सका।",
+        "inProgressDefault": "नया स्कैन चल रहा है",
+        "loading": "समीक्षाएँ लोड हो रही हैं…"
+      },
+      "scanProgress": {
+        "failed": "स्कैन विफल। फिर से कोशिश करो या गेटवे लॉग देखो।",
+        "title": "तुम्हारा दस्तावेज़ जाँचा जा रहा है"
+      },
+      "scannerNames": {
+        "attribution": "स्रोत उल्लेख",
+        "audience": "दर्शक",
+        "clarity": "स्पष्टता",
+        "consistency": "संगति",
+        "design": "डिज़ाइन",
+        "email": "ईमेल",
+        "evidence": "प्रमाण",
+        "naturalness": "स्वाभाविकता",
+        "readability": "पठनीयता",
+        "structure": "संरचना"
+      },
+      "settingsPanel": {
+        "cancel": "रद्द करो",
+        "close": "सेटिंग्स बंद करो",
+        "defaultAudience": "डिफ़ॉल्ट दर्शक",
+        "defaultDocType": "डिफ़ॉल्ट दस्तावेज़ प्रकार",
+        "defaultTone": "डिफ़ॉल्ट टोन",
+        "defaultsHeading": "नई समीक्षा के लिए डिफ़ॉल्ट",
+        "defaultsHint": "ये New Review डायलॉग को पहले से भर देते हैं। डिफ़ॉल्ट बदले बिना प्रति स्कैन ओवरराइड करो।",
+        "errorGeneric": "सेटिंग्स सहेजी नहीं जा सकीं। फिर से कोशिश करो।",
+        "loading": "मौजूदा सेटिंग्स लोड हो रही हैं…",
+        "maxConcurrentHint": "प्रति समीक्षा कितनी स्कैनर कॉल समानांतर चलेंगी ({{min}}–{{max}})। ज़्यादा मान जल्दी ख़त्म होते हैं लेकिन प्रति स्कैन ज़्यादा मॉडल क्रेडिट खर्च करते हैं।",
+        "maxConcurrentLabel": "अधिकतम समानांतर स्कैनर",
+        "save": "सहेजो",
+        "saving": "सहेजा जा रहा है…",
+        "scannersHeading": "स्कैनर",
+        "scannersHint": "कुछ स्कैनर डिफ़ॉल्ट रूप से बंद रखो। इस सेटिंग को बदले बिना प्रति स्कैन भी इन्हें चालू किया जा सकता है।",
+        "title": "Writing Review सेटिंग्स"
+      },
+      "verdictBadge": {
+        "green": "हरा",
+        "red": "लाल",
+        "yellow": "पीला"
+      },
+      "workspace": {
+        "newReview": "नई समीक्षा",
+        "openSettings": "ऐप सेटिंग्स",
+        "scanInProgress": "एक स्कैन चल रहा है -- ख़त्म होने तक इंतज़ार करो"
       }
     }
   },
@@ -11311,7 +11488,6 @@
       "unknown_agent": "सब-एजेंट",
       "unknown_model": "अज्ञात"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_one": "{{days}} दिन से पुराने — {{count}} सत्र · {{size}}",
       "age_option_other": "{{days}} दिन से पुराने — {{count}} सत्र · {{size}}",

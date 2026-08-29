@@ -4108,7 +4108,6 @@
         "typesetting_hints_one": "{{count}} nota di impaginazione",
         "typesetting_hints_other": "{{count}} note di impaginazione"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Elimina {{file}}",
         "files": "File",
@@ -4905,6 +4904,184 @@
         "add_accounts_count_many": "{{count}} su {{max}} registrati",
         "paid_services_title": "Servizi a pagamento",
         "orphan_consent": "Confermato per un account AWS non registrato qui. Ritira la conferma qui sotto, oppure registra di nuovo quell'account per gestirlo dalla sua pagina."
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}} (personalizzato)",
+        "customPlaceholder": "Scrivi un valore personalizzato…",
+        "customValueGenericAriaLabel": "Valore personalizzato",
+        "noneOption": "Seleziona",
+        "otherOption": "Altro (personalizzato)…"
+      },
+      "emptyState": {
+        "hint": "Avvia una nuova revisione o scegline una dalla barra a sinistra.",
+        "title": "Nessuna revisione selezionata"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "Posizioni correlate",
+        "confidence": {
+          "high": "Alta confidenza",
+          "low": "Bassa confidenza",
+          "medium": "Media confidenza"
+        },
+        "location": "{{section}} paragrafo {{paragraph}}",
+        "proposedFix": "Correzione proposta",
+        "relatedLocation": "{{section}}, paragrafo {{paragraph}} ({{scanner}})",
+        "scannerRule": "{{scanner}} - Regola {{rule}}",
+        "scannersDisagree": "Gli analizzatori non concordano",
+        "scannersDisagreeTitle": "Un altro analizzatore ha segnalato lo stesso punto in modo diverso; le note sotto mostrano entrambi i lati.",
+        "severity": {
+          "advisory": "Informativa",
+          "high": "Alta",
+          "low": "Bassa",
+          "medium": "Media"
+        }
+      },
+      "manifest": {
+        "description": "Revisione dei documenti con più scanner che individua problemi di chiarezza, difetti strutturali, evidenze mancanti e prosa scritta da IA, e poi pubblica i riscontri come commenti in linea da risolvere uno alla volta. Incolla un documento o sfoglia un file, imposta il pubblico e il tono e ottieni una revisione approfondita con correzioni proposte.",
+        "display_name": "Revisione del testo",
+        "highlight_1": "Dieci scanner girano in parallelo su chiarezza, struttura, evidenze, naturalezza e altro",
+        "highlight_2": "I riscontri appaiono come commenti in linea ancorati al testo esatto, così puoi risolverli uno alla volta",
+        "highlight_3": "Personalità Watson: accurata, empatica, analitica, spiega il ragionamento dietro ogni suggerimento",
+        "highlight_4": "Gli scanner condizionali per documenti di design ed e-mail si attivano in base al tipo di documento",
+        "highlight_5": "La validazione incrociata rileva quando gli scanner sono in conflitto e sceglie il consiglio giusto",
+        "highlight_6": "Chatta poi con il revisore per esaminare le correzioni o chiedere riscritture",
+        "page_label": "Revisione del testo"
+      },
+      "newReviewDialog": {
+        "additionalContext": "Contesto aggiuntivo (opzionale, una nota per riga)",
+        "additionalContextPlaceholder": "es.\nIl valore dell'80 % è dell'esercizio 2025, non 2024.\nTono informale voluto per questo pubblico.\nSeguito della revisione della settimana scorsa; trattare solo i P0.",
+        "ask": "Richiesta (opzionale)",
+        "askPlaceholder": "Che decisione stai chiedendo? Ci sono aspetti specifici che il revisore deve valutare?",
+        "audience": "Pubblico",
+        "audienceOption": {
+          "crossOrg": "Stakeholder trasversali",
+          "externalCustomer": "Cliente esterno",
+          "internalTeam": "Team interno",
+          "newHire": "Nuova assunzione / onboarding",
+          "vpLeadership": "VP / leadership"
+        },
+        "browse": "Sfoglia…",
+        "browseHint": "Scegli un file locale .md, .txt o .docx",
+        "browsedHint": "Caricato da {{fileName}}. Il contenuto verrà inviato per la revisione.",
+        "cancel": "Annulla",
+        "close": "Chiudi",
+        "docPath": "Percorso del documento",
+        "docPathPlaceholder": "es. /home/you/note.md",
+        "docText": "Oppure incolla il testo del documento",
+        "docTextPlaceholder": "Incolla qui markdown o testo semplice…",
+        "docType": "Tipo di documento",
+        "docTypeOption": {
+          "decisionDoc": "Documento di decisione",
+          "designDocument": "Documento di progettazione",
+          "email": "E-mail",
+          "investigation": "Indagine",
+          "programUpdate": "Aggiornamento di programma",
+          "strategy": "Strategia",
+          "teamUpdate": "Aggiornamento del team"
+        },
+        "errorFileTooLarge": "Questo file è troppo grande. La dimensione massima è {{limit}}.",
+        "errorGeneric": "Qualcosa è andato storto durante l'avvio della revisione.",
+        "errorInput": "Incolla del testo o indica un percorso di documento.",
+        "fileSizeLimitHint": "Massimo {{limit}} per file incollati o sfogliati.",
+        "pastedTimestampLabel": "incollato_{{timestamp}}.md",
+        "scannerToggleHelper": "Deseleziona quelli che non vuoi usare",
+        "scannersLabel": "Analizzatori",
+        "start": "Avvia revisione",
+        "starting": "Avvio…",
+        "title": "Nuova revisione",
+        "tone": "Tono",
+        "toneOption": {
+          "conciseExecutive": "Conciso / direzione",
+          "instructional": "Didattico",
+          "neutralProfessional": "Neutro / professionale",
+          "persuasive": "Persuasivo"
+        }
+      },
+      "phases": {
+        "cross_validate": "Verifica incrociata dei risultati",
+        "done": "Conclusione",
+        "fetch": "Lettura del documento",
+        "reviewing": "Revisione in corso",
+        "scanner": "Esecuzione degli analizzatori",
+        "starting": "Avvio degli analizzatori"
+      },
+      "reviewCard": {
+        "delete": "Elimina revisione",
+        "deleteConfirmPrompt": "Eliminare la revisione di «{{docName}}»? L'operazione non può essere annullata.",
+        "deleteError": "Eliminazione non riuscita: {{message}}",
+        "deleteFailedFallback": "Eliminazione non riuscita",
+        "findingCount": "{{count}} risultati"
+      },
+      "reviewDetail": {
+        "askLabel": "Richiesta: {{ask}}",
+        "chatAbout": "Discuti la tua revisione",
+        "error": "Impossibile caricare la revisione.",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "Risposta non valida",
+          "missing_brief": "Istruzioni dell'analizzatore non trovate",
+          "other": "Errore sconosciuto",
+          "provider_timeout": "Tempo scaduto",
+          "rate_limited": "Limite di velocità raggiunto",
+          "truncated_response": "Risposta troncata (output troppo lungo)",
+          "worker_died": "Il processo di lavoro si è interrotto"
+        },
+        "loading": "Caricamento della revisione…",
+        "noFindings": "Nessun risultato da questa revisione.",
+        "partialFailure": "Alcuni analizzatori non sono riusciti",
+        "subheader": "{{count}} risultati su {{scanners}} analizzatori"
+      },
+      "reviewList": {
+        "emptyTitle": "Nessuna revisione al momento",
+        "error": "Impossibile caricare lo storico delle revisioni.",
+        "inProgressDefault": "Nuova analisi in corso",
+        "loading": "Caricamento delle revisioni…"
+      },
+      "scanProgress": {
+        "failed": "Analisi non riuscita. Riprova o controlla i log del gateway.",
+        "title": "Analisi del tuo documento"
+      },
+      "scannerNames": {
+        "attribution": "Attribuzione",
+        "audience": "Pubblico",
+        "clarity": "Chiarezza",
+        "consistency": "Coerenza",
+        "design": "Design",
+        "email": "E-mail",
+        "evidence": "Evidenze",
+        "naturalness": "Naturalezza",
+        "readability": "Leggibilità",
+        "structure": "Struttura"
+      },
+      "settingsPanel": {
+        "cancel": "Annulla",
+        "close": "Chiudi impostazioni",
+        "defaultAudience": "Pubblico predefinito",
+        "defaultDocType": "Tipo di documento predefinito",
+        "defaultTone": "Tono predefinito",
+        "defaultsHeading": "Valori predefiniti per le nuove revisioni",
+        "defaultsHint": "Preriempiono la finestra Nuova revisione. Sovrascrivili per singola analisi senza cambiare i valori predefiniti.",
+        "errorGeneric": "Impossibile salvare le impostazioni. Riprova.",
+        "loading": "Caricamento delle impostazioni attuali…",
+        "maxConcurrentHint": "Quante chiamate di analizzatori vengono eseguite in parallelo per revisione ({{min}}–{{max}}). Valori più alti finiscono prima ma consumano più crediti del modello per analisi.",
+        "maxConcurrentLabel": "Massimo analizzatori in parallelo",
+        "save": "Salva",
+        "saving": "Salvataggio…",
+        "scannersHeading": "Analizzatori",
+        "scannersHint": "Disattiva alcuni analizzatori per impostazione predefinita. Puoi comunque attivarli per singola analisi senza cambiare questa impostazione.",
+        "title": "Impostazioni di Writing Review"
+      },
+      "verdictBadge": {
+        "green": "Verde",
+        "red": "Rosso",
+        "yellow": "Giallo"
+      },
+      "workspace": {
+        "newReview": "Nuova revisione",
+        "openSettings": "Impostazioni dell'app",
+        "scanInProgress": "È in corso un'analisi -- attendi che termini"
       }
     }
   },

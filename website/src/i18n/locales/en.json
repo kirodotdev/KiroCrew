@@ -2994,7 +2994,6 @@
         "typesetting_hints_one": "{{count}} typesetting hint",
         "typesetting_hints_other": "{{count}} typesetting hints"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Delete {{file}}",
         "files": "Files",
@@ -3716,6 +3715,184 @@
         "search_none": "No accounts match “{{query}}”.",
         "paid_services_title": "Paid services",
         "orphan_consent": "Confirmed for an AWS account that is not registered here. Withdraw it below, or register that account again to manage it from its own page."
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}} (custom)",
+        "customPlaceholder": "Type a custom value...",
+        "customValueGenericAriaLabel": "Custom value",
+        "noneOption": "Select",
+        "otherOption": "Other (custom)..."
+      },
+      "emptyState": {
+        "hint": "Start a new review or pick one from the rail on the left.",
+        "title": "No review selected"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "Related locations",
+        "confidence": {
+          "high": "High confidence",
+          "low": "Low confidence",
+          "medium": "Medium confidence"
+        },
+        "location": "{{section}} paragraph {{paragraph}}",
+        "proposedFix": "Proposed fix",
+        "relatedLocation": "{{section}}, paragraph {{paragraph}} ({{scanner}})",
+        "scannerRule": "{{scanner}} - Rule {{rule}}",
+        "scannersDisagree": "Scanners disagree",
+        "scannersDisagreeTitle": "Another scanner flagged the same location differently; the notes below show both sides.",
+        "severity": {
+          "advisory": "Advisory",
+          "high": "High",
+          "low": "Low",
+          "medium": "Medium"
+        }
+      },
+      "manifest": {
+        "description": "Multi-scanner document review that finds clarity issues, structural problems, missing evidence, and AI-written prose, then posts findings as inline comments you can resolve one by one. Paste a doc or browse a file, set the audience and tone, and get a thorough review with proposed fixes.",
+        "display_name": "Writing Review",
+        "highlight_1": "Ten scanners run in parallel covering clarity, structure, evidence, naturalness, and more",
+        "highlight_2": "Findings appear as inline comments anchored to the exact text so you resolve them one by one",
+        "highlight_3": "Watson personality: thorough, warm, analytical and explains the reasoning behind every suggestion",
+        "highlight_4": "Conditional scanners for design docs and emails activate based on document type",
+        "highlight_5": "Cross-validation catches when scanners conflict and picks the right advice",
+        "highlight_6": "Chat with the reviewer afterwards to walk through fixes or request rewrites",
+        "page_label": "Writing Review"
+      },
+      "newReviewDialog": {
+        "additionalContext": "Additional context (optional, one note per line)",
+        "additionalContextPlaceholder": "e.g.\nThe 80% number is from FY2025, not 2024.\nIntentional informal tone for this audience.\nFollow-up to last week's review; address P0 only.",
+        "ask": "Ask (optional)",
+        "askPlaceholder": "What decision are you asking for? Any specific concerns the reviewer should weight?",
+        "audience": "Audience",
+        "audienceOption": {
+          "crossOrg": "Cross-org stakeholders",
+          "externalCustomer": "External customer",
+          "internalTeam": "Internal team",
+          "newHire": "New hire / onboarding",
+          "vpLeadership": "VP / Leadership"
+        },
+        "browse": "Browse...",
+        "browseHint": "Pick a local .md, .txt, or .docx file",
+        "browsedHint": "Loaded from {{fileName}}. Content will be sent for review.",
+        "cancel": "Cancel",
+        "close": "Close",
+        "docPath": "Document path",
+        "docPathPlaceholder": "e.g. /home/you/notes.md",
+        "docText": "Or paste document text",
+        "docTextPlaceholder": "Paste markdown or plain text here...",
+        "docType": "Document type",
+        "docTypeOption": {
+          "decisionDoc": "Decision doc",
+          "designDocument": "Design document",
+          "email": "Email",
+          "investigation": "Investigation",
+          "programUpdate": "Program update",
+          "strategy": "Strategy",
+          "teamUpdate": "Team update"
+        },
+        "errorFileTooLarge": "This file is too large. Maximum size is {{limit}}.",
+        "errorGeneric": "Something went wrong starting the review.",
+        "errorInput": "Paste text or provide a document path.",
+        "fileSizeLimitHint": "Maximum {{limit}} for pasted or browsed files.",
+        "pastedTimestampLabel": "pasted_{{timestamp}}.md",
+        "scannerToggleHelper": "De-select the ones you don't want to use",
+        "scannersLabel": "Scanners",
+        "start": "Start Review",
+        "starting": "Starting...",
+        "title": "New review",
+        "tone": "Tone",
+        "toneOption": {
+          "conciseExecutive": "Concise / executive",
+          "instructional": "Instructional",
+          "neutralProfessional": "Neutral / professional",
+          "persuasive": "Persuasive"
+        }
+      },
+      "phases": {
+        "cross_validate": "Cross-checking findings",
+        "done": "Wrapping up",
+        "fetch": "Reading document",
+        "reviewing": "Reviewing",
+        "scanner": "Running scanners",
+        "starting": "Starting the scanners"
+      },
+      "reviewCard": {
+        "delete": "Delete review",
+        "deleteConfirmPrompt": "Delete the review of “{{docName}}”? This cannot be undone.",
+        "deleteError": "Delete failed: {{message}}",
+        "deleteFailedFallback": "Delete failed",
+        "findingCount": "{{count}} findings"
+      },
+      "reviewDetail": {
+        "askLabel": "Ask: {{ask}}",
+        "chatAbout": "Discuss your doc review",
+        "error": "Could not load review.",
+        "failedScanner": {
+          "duration": "{{ms}}ms",
+          "invalid_json": "Invalid response",
+          "missing_brief": "Scanner brief not found",
+          "other": "Unknown error",
+          "provider_timeout": "Timed out",
+          "rate_limited": "Rate limited",
+          "truncated_response": "Response cut off (output too long)",
+          "worker_died": "Worker process died"
+        },
+        "loading": "Loading review...",
+        "noFindings": "No findings from this review.",
+        "partialFailure": "Some scanners failed",
+        "subheader": "{{count}} findings across {{scanners}} scanners"
+      },
+      "reviewList": {
+        "emptyTitle": "No reviews yet",
+        "error": "Could not load review history.",
+        "inProgressDefault": "New scan in progress",
+        "loading": "Loading reviews..."
+      },
+      "scanProgress": {
+        "failed": "Scan failed. Try again or check the gateway logs.",
+        "title": "Reviewing your document"
+      },
+      "scannerNames": {
+        "attribution": "Attribution",
+        "audience": "Audience",
+        "clarity": "Clarity",
+        "consistency": "Consistency",
+        "design": "Design",
+        "email": "Email",
+        "evidence": "Evidence",
+        "naturalness": "Naturalness",
+        "readability": "Readability",
+        "structure": "Structure"
+      },
+      "settingsPanel": {
+        "cancel": "Cancel",
+        "close": "Close settings",
+        "defaultAudience": "Default audience",
+        "defaultDocType": "Default document type",
+        "defaultTone": "Default tone",
+        "defaultsHeading": "Defaults for new reviews",
+        "defaultsHint": "These pre-fill the New Review dialog. Override per scan without changing defaults.",
+        "errorGeneric": "Could not save settings. Try again.",
+        "loading": "Loading current settings...",
+        "maxConcurrentHint": "How many scanner calls run in parallel per review ({{min}}–{{max}}). Higher values finish faster but consume more model credits per scan.",
+        "maxConcurrentLabel": "Max concurrent scanners",
+        "save": "Save",
+        "saving": "Saving...",
+        "scannersHeading": "Scanners",
+        "scannersHint": "Turn scanners off by default. You can still toggle them per scan without changing this setting.",
+        "title": "Writing Review settings"
+      },
+      "verdictBadge": {
+        "green": "Green",
+        "red": "Red",
+        "yellow": "Yellow"
+      },
+      "workspace": {
+        "newReview": "New Review",
+        "openSettings": "App settings",
+        "scanInProgress": "A scan is in progress -- please wait for it to finish"
       }
     }
   },
@@ -7346,7 +7523,6 @@
       "unknown_agent": "sub-agent",
       "unknown_model": "unknown"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_one": "Older than {{days}} days — {{count}} session · {{size}}",
       "age_option_other": "Older than {{days}} days — {{count}} sessions · {{size}}",

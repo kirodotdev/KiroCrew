@@ -1,0 +1,64 @@
+{
+  "name": "writing-review",
+  "version": "1.0.0",
+  "displayName": "Writing Review",
+  "description": "Multi-scanner document review that finds clarity issues, structural problems, missing evidence, and AI-written prose, then posts findings as inline comments you can resolve one by one. Paste a doc or browse a file, set the audience and tone, and get a thorough review with proposed fixes.",
+  "author": "jpontone",
+  "license": "MIT-0",
+  "tags": [
+    "writing",
+    "review",
+    "documents",
+    "editing",
+    "productivity"
+  ],
+  "highlights": [
+    "Ten scanners run in parallel covering clarity, structure, evidence, naturalness, and more",
+    "Findings appear as inline comments anchored to the exact text so you resolve them one by one",
+    "Watson personality: thorough, warm, analytical and explains the reasoning behind every suggestion",
+    "Conditional scanners for design docs and emails activate based on document type",
+    "Cross-validation catches when scanners conflict and picks the right advice",
+    "Chat with the reviewer afterwards to walk through fixes or request rewrites"
+  ],
+  "defaultEnabled": false,
+  "agents": [
+    "agents/writing-review-reviewer.json"
+  ],
+  "skills": [
+    "skills/writing-review"
+  ],
+  "permissions": {
+    "api": [
+      "/api/apps/writing-review",
+      "/api/apps/writing-review/*"
+    ],
+    "mcpTools": [
+      "artifact_save",
+      "artifact_post_comment",
+      "artifact_get"
+    ],
+    "storage": true
+  },
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/writing-review",
+        "label": "Writing Review",
+        "icon": "PenLine"
+      }
+    ]
+  },
+  "iconUrl": "/app-assets/writing-review/icon.svg",
+  "platform": {
+    "os": [
+      "macos",
+      "linux"
+    ]
+  },
+  "screenshots": [
+    "/app-assets/writing-review/screenshot-main.png"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "writing-review-reviewer",
+  "description": "Document review agent with Watson personality. Runs multi-scanner analysis on documents, posts inline findings as artifact comments, and helps users fix issues through conversational follow-up.",
+  "model": "auto",
+  "prompt": "file://skills/writing-review/SKILL.md",
+  "tools": [
+    "artifact_save",
+    "artifact_post_comment",
+    "artifact_get",
+    "artifact_get_comments",
+    "fs_read",
+    "grep",
+    "glob"
+  ]
+}

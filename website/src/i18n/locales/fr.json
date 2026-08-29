@@ -4152,7 +4152,6 @@
         "typesetting_hints_one": "{{count}} remarque de composition",
         "typesetting_hints_other": "{{count}} remarques de composition"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Supprimer {{file}}",
         "files": "Fichiers",
@@ -4905,6 +4904,184 @@
         "add_accounts_count_many": "{{count}} sur {{max}} enregistrés",
         "paid_services_title": "Services payants",
         "orphan_consent": "Confirmé pour un compte AWS qui n'est pas enregistré ici. Retirez la confirmation ci-dessous, ou enregistrez à nouveau ce compte pour le gérer depuis sa propre page."
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}} (personnalisé)",
+        "customPlaceholder": "Saisis une valeur personnalisée…",
+        "customValueGenericAriaLabel": "Valeur personnalisée",
+        "noneOption": "Sélectionner",
+        "otherOption": "Autre (personnalisé)…"
+      },
+      "emptyState": {
+        "hint": "Commence une nouvelle relecture ou choisis-en une dans la barre à gauche.",
+        "title": "Aucune relecture sélectionnée"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "Emplacements liés",
+        "confidence": {
+          "high": "Confiance élevée",
+          "low": "Confiance faible",
+          "medium": "Confiance moyenne"
+        },
+        "location": "{{section}} paragraphe {{paragraph}}",
+        "proposedFix": "Correction proposée",
+        "relatedLocation": "{{section}}, paragraphe {{paragraph}} ({{scanner}})",
+        "scannerRule": "{{scanner}} - Règle {{rule}}",
+        "scannersDisagree": "Analyseurs en désaccord",
+        "scannersDisagreeTitle": "Un autre analyseur a signalé le même endroit différemment ; les notes ci-dessous montrent les deux points de vue.",
+        "severity": {
+          "advisory": "Indicatif",
+          "high": "Élevée",
+          "low": "Faible",
+          "medium": "Moyenne"
+        }
+      },
+      "manifest": {
+        "description": "Relecture de documents multi-scanners qui repère les problèmes de clarté, les défauts structurels, les preuves manquantes et la prose écrite par IA, puis affiche les remarques sous forme de commentaires en ligne à résoudre un par un. Colle un document ou parcours un fichier, définis l'audience et le ton, et obtiens une relecture complète avec des corrections proposées.",
+        "display_name": "Relecture d'écriture",
+        "highlight_1": "Dix scanners s'exécutent en parallèle et couvrent clarté, structure, preuves, naturel et plus encore",
+        "highlight_2": "Les remarques apparaissent sous forme de commentaires en ligne, ancrés au texte exact, à résoudre un par un",
+        "highlight_3": "Personnalité de Watson : minutieuse, chaleureuse, analytique, et qui explique le raisonnement derrière chaque suggestion",
+        "highlight_4": "Les scanners conditionnels pour docs de conception et e-mails s'activent selon le type de document",
+        "highlight_5": "La validation croisée détecte les conflits entre scanners et choisit le bon conseil",
+        "highlight_6": "Discute ensuite avec le relecteur pour passer en revue les corrections ou demander des réécritures",
+        "page_label": "Relecture d'écriture"
+      },
+      "newReviewDialog": {
+        "additionalContext": "Contexte supplémentaire (facultatif, une note par ligne)",
+        "additionalContextPlaceholder": "ex.\nLe chiffre de 80 % provient de l'exercice 2025, pas 2024.\nTon informel intentionnel pour ce public.\nSuivi de la relecture de la semaine dernière ; ne traiter que les P0.",
+        "ask": "Question (facultatif)",
+        "askPlaceholder": "Quelle décision demandes-tu ? Des points précis que le relecteur doit peser ?",
+        "audience": "Public",
+        "audienceOption": {
+          "crossOrg": "Parties prenantes inter-équipes",
+          "externalCustomer": "Client externe",
+          "internalTeam": "Équipe interne",
+          "newHire": "Nouvelle recrue / intégration",
+          "vpLeadership": "VP / direction"
+        },
+        "browse": "Parcourir…",
+        "browseHint": "Choisis un fichier local .md, .txt ou .docx",
+        "browsedHint": "Chargé depuis {{fileName}}. Le contenu sera envoyé pour relecture.",
+        "cancel": "Annuler",
+        "close": "Fermer",
+        "docPath": "Chemin du document",
+        "docPathPlaceholder": "ex. /home/you/notes.md",
+        "docText": "Ou colle le texte du document",
+        "docTextPlaceholder": "Colle du markdown ou du texte brut ici…",
+        "docType": "Type de document",
+        "docTypeOption": {
+          "decisionDoc": "Note de décision",
+          "designDocument": "Document de conception",
+          "email": "E-mail",
+          "investigation": "Enquête",
+          "programUpdate": "Point programme",
+          "strategy": "Stratégie",
+          "teamUpdate": "Point équipe"
+        },
+        "errorFileTooLarge": "Ce fichier est trop volumineux. La taille maximale est de {{limit}}.",
+        "errorGeneric": "Une erreur est survenue au démarrage de la relecture.",
+        "errorInput": "Colle du texte ou fournis un chemin de document.",
+        "fileSizeLimitHint": "Maximum {{limit}} pour les fichiers collés ou parcourus.",
+        "pastedTimestampLabel": "collé_{{timestamp}}.md",
+        "scannerToggleHelper": "Décoche ceux que tu ne veux pas utiliser",
+        "scannersLabel": "Analyseurs",
+        "start": "Lancer la relecture",
+        "starting": "Démarrage…",
+        "title": "Nouvelle relecture",
+        "tone": "Ton",
+        "toneOption": {
+          "conciseExecutive": "Concis / direction",
+          "instructional": "Pédagogique",
+          "neutralProfessional": "Neutre / professionnel",
+          "persuasive": "Persuasif"
+        }
+      },
+      "phases": {
+        "cross_validate": "Vérification croisée des résultats",
+        "done": "Finalisation",
+        "fetch": "Lecture du document",
+        "reviewing": "Relecture",
+        "scanner": "Exécution des analyseurs",
+        "starting": "Démarrage des analyseurs"
+      },
+      "reviewCard": {
+        "delete": "Supprimer la relecture",
+        "deleteConfirmPrompt": "Supprimer la relecture de « {{docName}} » ? Cette action est irréversible.",
+        "deleteError": "Échec de la suppression : {{message}}",
+        "deleteFailedFallback": "Échec de la suppression",
+        "findingCount": "{{count}} résultats"
+      },
+      "reviewDetail": {
+        "askLabel": "Question : {{ask}}",
+        "chatAbout": "Discuter de votre relecture",
+        "error": "Impossible de charger la relecture.",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "Réponse invalide",
+          "missing_brief": "Consigne d'analyseur introuvable",
+          "other": "Erreur inconnue",
+          "provider_timeout": "Délai dépassé",
+          "rate_limited": "Débit limité",
+          "truncated_response": "Réponse tronquée (sortie trop longue)",
+          "worker_died": "Le processus travailleur s'est arrêté"
+        },
+        "loading": "Chargement de la relecture…",
+        "noFindings": "Aucun résultat pour cette relecture.",
+        "partialFailure": "Certains analyseurs ont échoué",
+        "subheader": "{{count}} résultats sur {{scanners}} analyseurs"
+      },
+      "reviewList": {
+        "emptyTitle": "Aucune relecture pour l'instant",
+        "error": "Impossible de charger l'historique des relectures.",
+        "inProgressDefault": "Nouvelle analyse en cours",
+        "loading": "Chargement des relectures…"
+      },
+      "scanProgress": {
+        "failed": "Échec de l'analyse. Réessaie ou consulte les journaux du gateway.",
+        "title": "Analyse de ton document"
+      },
+      "scannerNames": {
+        "attribution": "Attribution",
+        "audience": "Public",
+        "clarity": "Clarté",
+        "consistency": "Cohérence",
+        "design": "Conception",
+        "email": "E-mail",
+        "evidence": "Preuves",
+        "naturalness": "Naturel",
+        "readability": "Lisibilité",
+        "structure": "Structure"
+      },
+      "settingsPanel": {
+        "cancel": "Annuler",
+        "close": "Fermer les paramètres",
+        "defaultAudience": "Public par défaut",
+        "defaultDocType": "Type de document par défaut",
+        "defaultTone": "Ton par défaut",
+        "defaultsHeading": "Valeurs par défaut des nouvelles relectures",
+        "defaultsHint": "Elles pré-remplissent la boîte de dialogue Nouvelle relecture. Remplace-les par analyse sans changer les valeurs par défaut.",
+        "errorGeneric": "Impossible d'enregistrer les paramètres. Réessaie.",
+        "loading": "Chargement des paramètres actuels…",
+        "maxConcurrentHint": "Combien d'appels d'analyseurs s'exécutent en parallèle par relecture ({{min}}–{{max}}). Des valeurs plus élevées finissent plus vite mais consomment plus de crédits de modèle par analyse.",
+        "maxConcurrentLabel": "Analyseurs simultanés maximum",
+        "save": "Enregistrer",
+        "saving": "Enregistrement…",
+        "scannersHeading": "Analyseurs",
+        "scannersHint": "Désactive des analyseurs par défaut. Tu peux toujours les activer par analyse sans changer ce paramètre.",
+        "title": "Paramètres de Writing Review"
+      },
+      "verdictBadge": {
+        "green": "Vert",
+        "red": "Rouge",
+        "yellow": "Jaune"
+      },
+      "workspace": {
+        "newReview": "Nouvelle relecture",
+        "openSettings": "Paramètres de l'application",
+        "scanInProgress": "Une analyse est en cours -- attends qu'elle se termine"
       }
     }
   },
@@ -11479,7 +11656,6 @@
       "unknown_agent": "sous-agent",
       "unknown_model": "inconnu"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_many": "Plus de {{days}} jours — {{count}} sessions · {{size}}",
       "age_option_one": "Plus de {{days}} jours — {{count}} session · {{size}}",

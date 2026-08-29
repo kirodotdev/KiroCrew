@@ -46,7 +46,9 @@ export const CHUNK_BUDGETS = {
   // closed-PR prune group and the expanded Disconnect guidance are the largest
   // recent catalog increments included in this measurement; Dev Fleet's
   // per-pod system readout then adds its own strings across the same 12
-  // catalogs on top of that baseline.
+  // catalogs on top of that baseline. The writing-review builtin (PR #6856)
+  // adds 136 translated keys across all 12 catalogs on top of that; its
+  // contribution is well inside the 5% headroom.
   all: 10490 * KB, // measured 9985 KB before the pod-system catalog keys (~5% headroom)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —

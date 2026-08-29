@@ -4108,7 +4108,6 @@
         "typesetting_hints_one": "{{count}} aviso de composición",
         "typesetting_hints_other": "{{count}} avisos de composición"
       },
-      "editor": {},
       "fileTree": {
         "delete_file": "Eliminar {{file}}",
         "files": "Archivos",
@@ -4905,6 +4904,184 @@
         "add_accounts_count_many": "{{count}} de {{max}} registrados",
         "paid_services_title": "Servicios de pago",
         "orphan_consent": "Confirmado para una cuenta de AWS que no está registrada aquí. Retira la confirmación abajo, o vuelve a registrar esa cuenta para gestionarla desde su propia página."
+      }
+    },
+    "writingReview": {
+      "dropdownWithOther": {
+        "customAriaLabel": "{{field}} (personalizado)",
+        "customPlaceholder": "Escribe un valor personalizado…",
+        "customValueGenericAriaLabel": "Valor personalizado",
+        "noneOption": "Seleccionar",
+        "otherOption": "Otro (personalizado)…"
+      },
+      "emptyState": {
+        "hint": "Inicia una nueva revisión o elige una de la barra de la izquierda.",
+        "title": "No hay revisión seleccionada"
+      },
+      "findingCard": {
+        "alsoAppearsIn": "Ubicaciones relacionadas",
+        "confidence": {
+          "high": "Confianza alta",
+          "low": "Confianza baja",
+          "medium": "Confianza media"
+        },
+        "location": "{{section}} párrafo {{paragraph}}",
+        "proposedFix": "Corrección propuesta",
+        "relatedLocation": "{{section}}, párrafo {{paragraph}} ({{scanner}})",
+        "scannerRule": "{{scanner}} - Regla {{rule}}",
+        "scannersDisagree": "Los analizadores no coinciden",
+        "scannersDisagreeTitle": "Otro analizador marcó el mismo lugar de manera distinta; las notas de abajo muestran ambas versiones.",
+        "severity": {
+          "advisory": "Advertencia",
+          "high": "Alta",
+          "low": "Baja",
+          "medium": "Media"
+        }
+      },
+      "manifest": {
+        "description": "Revisión de documentos multiescáner que detecta problemas de claridad, defectos estructurales, evidencias faltantes y prosa escrita por IA, y luego publica los hallazgos como comentarios en línea que puedes resolver uno a uno. Pega un documento o busca un archivo, define la audiencia y el tono, y obtén una revisión completa con correcciones propuestas.",
+        "display_name": "Revisión de escritura",
+        "highlight_1": "Diez escáneres se ejecutan en paralelo cubriendo claridad, estructura, evidencias, naturalidad y más",
+        "highlight_2": "Los hallazgos aparecen como comentarios en línea anclados al texto exacto para resolverlos uno a uno",
+        "highlight_3": "Personalidad Watson: minuciosa, cercana, analítica y explica el razonamiento detrás de cada sugerencia",
+        "highlight_4": "Los escáneres condicionales para documentos de diseño y correos se activan según el tipo de documento",
+        "highlight_5": "La validación cruzada detecta cuando los escáneres entran en conflicto y elige el consejo correcto",
+        "highlight_6": "Chatea con el revisor después para repasar las correcciones o pedir reescrituras",
+        "page_label": "Revisión de escritura"
+      },
+      "newReviewDialog": {
+        "additionalContext": "Contexto adicional (opcional, una nota por línea)",
+        "additionalContextPlaceholder": "ej.\nLa cifra del 80 % es del año fiscal 2025, no de 2024.\nTono informal intencional para este público.\nSeguimiento de la revisión de la semana pasada; solo abordar P0.",
+        "ask": "Consulta (opcional)",
+        "askPlaceholder": "¿Qué decisión estás pidiendo? ¿Alguna preocupación específica que el revisor deba considerar?",
+        "audience": "Público",
+        "audienceOption": {
+          "crossOrg": "Interesados de otras áreas",
+          "externalCustomer": "Cliente externo",
+          "internalTeam": "Equipo interno",
+          "newHire": "Nueva contratación / incorporación",
+          "vpLeadership": "VP / liderazgo"
+        },
+        "browse": "Explorar…",
+        "browseHint": "Elige un archivo local .md, .txt o .docx",
+        "browsedHint": "Cargado desde {{fileName}}. El contenido se enviará para revisión.",
+        "cancel": "Cancelar",
+        "close": "Cerrar",
+        "docPath": "Ruta del documento",
+        "docPathPlaceholder": "ej. /home/you/notas.md",
+        "docText": "O pega el texto del documento",
+        "docTextPlaceholder": "Pega markdown o texto plano aquí…",
+        "docType": "Tipo de documento",
+        "docTypeOption": {
+          "decisionDoc": "Documento de decisión",
+          "designDocument": "Documento de diseño",
+          "email": "Correo electrónico",
+          "investigation": "Investigación",
+          "programUpdate": "Actualización de programa",
+          "strategy": "Estrategia",
+          "teamUpdate": "Actualización de equipo"
+        },
+        "errorFileTooLarge": "Este archivo es demasiado grande. El tamaño máximo es {{limit}}.",
+        "errorGeneric": "Algo salió mal al iniciar la revisión.",
+        "errorInput": "Pega texto o proporciona una ruta de documento.",
+        "fileSizeLimitHint": "Máximo {{limit}} para archivos pegados o cargados.",
+        "pastedTimestampLabel": "pegado_{{timestamp}}.md",
+        "scannerToggleHelper": "Desmarca los que no quieras usar",
+        "scannersLabel": "Analizadores",
+        "start": "Iniciar revisión",
+        "starting": "Iniciando…",
+        "title": "Nueva revisión",
+        "tone": "Tono",
+        "toneOption": {
+          "conciseExecutive": "Conciso / ejecutivo",
+          "instructional": "Instructivo",
+          "neutralProfessional": "Neutral / profesional",
+          "persuasive": "Persuasivo"
+        }
+      },
+      "phases": {
+        "cross_validate": "Verificación cruzada de resultados",
+        "done": "Finalizando",
+        "fetch": "Leyendo el documento",
+        "reviewing": "Revisando",
+        "scanner": "Ejecutando analizadores",
+        "starting": "Iniciando los analizadores"
+      },
+      "reviewCard": {
+        "delete": "Eliminar revisión",
+        "deleteConfirmPrompt": "¿Eliminar la revisión de “{{docName}}”? Esta acción no se puede deshacer.",
+        "deleteError": "Error al eliminar: {{message}}",
+        "deleteFailedFallback": "Error al eliminar",
+        "findingCount": "{{count}} resultados"
+      },
+      "reviewDetail": {
+        "askLabel": "Consulta: {{ask}}",
+        "chatAbout": "Comentar tu revisión",
+        "error": "No se pudo cargar la revisión.",
+        "failedScanner": {
+          "duration": "{{ms}} ms",
+          "invalid_json": "Respuesta no válida",
+          "missing_brief": "Instrucciones del analizador no encontradas",
+          "other": "Error desconocido",
+          "provider_timeout": "Tiempo agotado",
+          "rate_limited": "Límite de velocidad alcanzado",
+          "truncated_response": "Respuesta cortada (salida demasiado larga)",
+          "worker_died": "El proceso de trabajo se detuvo"
+        },
+        "loading": "Cargando revisión…",
+        "noFindings": "Sin resultados para esta revisión.",
+        "partialFailure": "Algunos analizadores fallaron",
+        "subheader": "{{count}} resultados en {{scanners}} analizadores"
+      },
+      "reviewList": {
+        "emptyTitle": "Aún no hay revisiones",
+        "error": "No se pudo cargar el historial de revisiones.",
+        "inProgressDefault": "Nueva revisión en curso",
+        "loading": "Cargando revisiones…"
+      },
+      "scanProgress": {
+        "failed": "El análisis falló. Vuelve a intentarlo o revisa los registros del gateway.",
+        "title": "Analizando tu documento"
+      },
+      "scannerNames": {
+        "attribution": "Atribución",
+        "audience": "Público",
+        "clarity": "Claridad",
+        "consistency": "Consistencia",
+        "design": "Diseño",
+        "email": "Correo electrónico",
+        "evidence": "Pruebas",
+        "naturalness": "Naturalidad",
+        "readability": "Legibilidad",
+        "structure": "Estructura"
+      },
+      "settingsPanel": {
+        "cancel": "Cancelar",
+        "close": "Cerrar configuración",
+        "defaultAudience": "Público por defecto",
+        "defaultDocType": "Tipo de documento por defecto",
+        "defaultTone": "Tono por defecto",
+        "defaultsHeading": "Valores por defecto para revisiones nuevas",
+        "defaultsHint": "Prellenan el cuadro de diálogo Nueva revisión. Sustitúyelos por análisis sin cambiar los valores por defecto.",
+        "errorGeneric": "No se pudo guardar la configuración. Inténtalo de nuevo.",
+        "loading": "Cargando configuración actual…",
+        "maxConcurrentHint": "Cuántas llamadas de analizadores se ejecutan en paralelo por revisión ({{min}}–{{max}}). Valores más altos terminan antes pero consumen más créditos de modelo por análisis.",
+        "maxConcurrentLabel": "Máximo de analizadores simultáneos",
+        "save": "Guardar",
+        "saving": "Guardando…",
+        "scannersHeading": "Analizadores",
+        "scannersHint": "Desactiva analizadores por defecto. Aún puedes activarlos por análisis sin cambiar esta opción.",
+        "title": "Configuración de Writing Review"
+      },
+      "verdictBadge": {
+        "green": "Verde",
+        "red": "Rojo",
+        "yellow": "Amarillo"
+      },
+      "workspace": {
+        "newReview": "Nueva revisión",
+        "openSettings": "Configuración de la aplicación",
+        "scanInProgress": "Hay un análisis en curso -- espera a que termine"
       }
     }
   },
@@ -11479,7 +11656,6 @@
       "unknown_agent": "subagente",
       "unknown_model": "desconocido"
     },
-    "sessionMemoryCard": {},
     "sessionStorage": {
       "age_option_many": "Más de {{days}} días — {{count}} sesiones · {{size}}",
       "age_option_one": "Más de {{days}} días — {{count}} sesión · {{size}}",
