@@ -122,9 +122,11 @@ def _assert_updater_layout(feed: dict) -> None:
     assert feed["version"] == _SUBS["VERSION"], "version must be the raw ${VERSION}, no v-prefix"
     assert isinstance(feed["files"], list) and feed["files"], "files must be a non-empty list"
     for entry in feed["files"]:
-        assert set(entry.keys()) == {"url", "sha512", "size"}, (
-            f"files[] entry keys {sorted(entry)} diverge from url+sha512+size"
-        )
+        assert set(entry.keys()) == {
+            "url",
+            "sha512",
+            "size",
+        }, f"files[] entry keys {sorted(entry)} diverge from url+sha512+size"
         assert isinstance(entry["size"], int), "size must be an unquoted integer"
     # releaseDate must be QUOTED in the heredoc: unquoted ISO timestamps are
     # YAML-typed as datetime by some parsers, and electron-updater expects a
@@ -193,9 +195,9 @@ def test_feed_urls_are_absolute_byte_host_urls() -> None:
         # And the rendered urls point at the byte prefix, not the feed prefix.
         feed = _rendered_feed(_feed_step(path, job)["run"])
         for entry in feed["files"]:
-            assert entry["url"].startswith(f"{_CDN_BASE}/desktop/"), (
-                f"{path.name}: {entry['url']!r} must reference the desktop/ byte prefix"
-            )
+            assert entry["url"].startswith(
+                f"{_CDN_BASE}/desktop/"
+            ), f"{path.name}: {entry['url']!r} must reference the desktop/ byte prefix"
 
 
 def test_feed_destination_is_pointer_prefix_yaml() -> None:
@@ -289,18 +291,16 @@ def test_pr_desktop_matrix_gates_macos_but_never_linux() -> None:
         "build.yml must resolve the desktop matrix via a desktop-matrix job so "
         "macos-15 can be gated"
     )
-    compute = next(
-        (s for s in jobs["desktop-matrix"]["steps"] if s.get("id") == "compute"), None
-    )
+    compute = next((s for s in jobs["desktop-matrix"]["steps"] if s.get("id") == "compute"), None)
     assert compute is not None, "desktop-matrix must have a `compute` step emitting os="
     os_lines = [ln for ln in compute["run"].splitlines() if "os=[" in ln]
     assert os_lines, "the compute step must emit at least one os= matrix list"
 
     # Linux is UNCONDITIONAL: both arches appear in every branch the script emits.
     for ln in os_lines:
-        assert '"ubuntu-22.04"' in ln and '"ubuntu-22.04-arm"' in ln, (
-            f"both Linux arches must be in every PR desktop matrix branch: {ln}"
-        )
+        assert (
+            '"ubuntu-22.04"' in ln and '"ubuntu-22.04-arm"' in ln
+        ), f"both Linux arches must be in every PR desktop matrix branch: {ln}"
     # macOS is GATED: it must be buildable (packaging-relevant PR / push) but must
     # NOT appear in every branch, or the 10x build still runs on every PR.
     with_mac = [ln for ln in os_lines if '"macos-15"' in ln]
@@ -406,10 +406,23 @@ def test_linux_publish_order_bytes_then_feed_then_alias() -> None:
 
 
 def test_feed_chain_steps_share_one_skip_gate() -> None:
-    """Every step in the go-live chain must carry the SAME condition. A feed
-    step gated differently from its byte steps could run while the bytes were
-    skipped -- advertising artifacts that were never uploaded."""
-    for path, job, names in (
+    """The go-live chain is all-or-nothing in the direction that matters: a
+    feed step gated differently from its byte steps could run while the bytes
+    were skipped -- advertising artifacts that were never uploaded.
+
+    The BYTE steps and the "Write update feed" step share one base gate. The
+    downstream POINTER steps (latest aliases, the mac legacy feed) carry the
+    same base gate AND the feed step's monotonicity verdict
+    (``steps.feed.outputs.advance``): when a hotfix on an old release line
+    HOLDS the feed pointer, the aliases must hold with it -- an alias is a
+    channel pointer too, and moving it alone would leave the downgrade
+    reachable through the alias URL. An alias that skips while the bytes
+    published is safe (it keeps pointing at the previous, still-live
+    release); an alias that moves while the feed held is the rollback this
+    guard exists to prevent."""
+    base = "env.HAS_SIGNING_SECRETS"
+    guarded = "env.HAS_SIGNING_SECRETS && steps.feed.outputs.advance == 'true'"
+    for path, job, base_names, guarded_names in (
         (
             MAC_WORKFLOW,
             "publish",
@@ -417,6 +430,9 @@ def test_feed_chain_steps_share_one_skip_gate() -> None:
                 "Publish notarized artifact to distribution bucket",
                 "Publish DMG to distribution bucket",
                 "Write update feed",
+            ),
+            (
+                "Write legacy update feed (pre-electron-updater clients)",
                 "Update latest DMG alias",
             ),
         ),
@@ -426,19 +442,23 @@ def test_feed_chain_steps_share_one_skip_gate() -> None:
             (
                 "Publish artifact to distribution bucket",
                 "Write update feed",
-                "Update latest artifact alias",
             ),
+            ("Update latest artifact alias",),
         ),
     ):
         steps = _steps(path, job)
-        gates = {name: _step(steps, name).get("if") for name in names}
-        assert all(g == "env.HAS_SIGNING_SECRETS" for g in gates.values()), (
-            f"{path.name}: go-live chain must be all-or-nothing on the same gate, got {gates}"
-        )
-        for name in names:
-            assert "continue-on-error" not in _step(steps, name), (
-                f"{path.name}: {name!r} must fail the job, never continue past a failure"
-            )
+        for name in base_names:
+            assert (
+                _step(steps, name).get("if") == base
+            ), f"{path.name}: {name!r} must carry the base go-live gate"
+        for name in guarded_names:
+            assert (
+                _step(steps, name).get("if") == guarded
+            ), f"{path.name}: {name!r} must be gated on the feed guard verdict too"
+        for name in (*base_names, *guarded_names):
+            assert "continue-on-error" not in _step(
+                steps, name
+            ), f"{path.name}: {name!r} must fail the job, never continue past a failure"
 
 
 # ---------------------------------------------------------------------------
@@ -453,9 +473,9 @@ def test_versioned_keys_are_immutable_and_conditionally_written() -> None:
         (LINUX_WORKFLOW, "publish-linux", "Publish artifact to distribution bucket"),
     ):
         run = _step(_steps(path, job), name)["run"]
-        assert "public, max-age=31536000, immutable" in run, (
-            f"{path.name}/{name}: versioned keys are immutable-cached for a year"
-        )
+        assert (
+            "public, max-age=31536000, immutable" in run
+        ), f"{path.name}/{name}: versioned keys are immutable-cached for a year"
         assert "--if-none-match" in run, (
             f"{path.name}/{name}: the conditional write is the never-republish "
             "guarantee -- a republished immutable key diverges across CloudFront edges"
@@ -468,9 +488,9 @@ def test_latest_aliases_use_short_ttl_and_plain_overwrite() -> None:
         (LINUX_WORKFLOW, "publish-linux", "Update latest artifact alias"),
     ):
         run = _step(_steps(path, job), name)["run"]
-        assert "public, max-age=300" in run, (
-            f"{path.name}/{name}: mutable latest aliases roll over within minutes"
-        )
+        assert (
+            "public, max-age=300" in run
+        ), f"{path.name}/{name}: mutable latest aliases roll over within minutes"
         assert "--if-none-match" not in run, (
             f"{path.name}/{name}: aliases are mutable by design; a conditional write "
             "would freeze them at the first publish"
@@ -499,9 +519,9 @@ def test_feeds_carry_an_explicit_cache_control() -> None:
             f"{path.name}: feed written without an explicit Cache-Control -- "
             "heuristic freshness caused the #709 stale-feed incident"
         )
-        assert re.search(r"max-age=(\d+)", run), (
-            f"{path.name}: feed Cache-Control must pin an explicit max-age"
-        )
+        assert re.search(
+            r"max-age=(\d+)", run
+        ), f"{path.name}: feed Cache-Control must pin an explicit max-age"
         ttl = int(re.search(r"max-age=(\d+)", run).group(1))
         assert 0 < ttl <= 600, (
             f"{path.name}: feed TTL is {ttl}s -- the feed is the go-live switch, so a "
@@ -522,9 +542,9 @@ def test_mac_legacy_bridge_matches_the_modern_feed_cache_control() -> None:
     modern_cc = re.search(r'--cache-control "([^"]+)"', steps[modern]["run"]).group(1)
     legacy_cc = re.search(r'--cache-control "([^"]+)"', steps[legacy]["run"]).group(1)
     print(f"feed Cache-Control: modern={modern_cc!r} legacy={legacy_cc!r}")
-    assert modern_cc == legacy_cc, (
-        f"feed and legacy bridge disagree on Cache-Control ({modern_cc!r} vs {legacy_cc!r})"
-    )
+    assert (
+        modern_cc == legacy_cc
+    ), f"feed and legacy bridge disagree on Cache-Control ({modern_cc!r} vs {legacy_cc!r})"
 
 
 def test_mac_feed_verifies_the_header_clients_receive() -> None:
@@ -536,15 +556,13 @@ def test_mac_feed_verifies_the_header_clients_receive() -> None:
     -- a guard that fails on permissions instead of on the condition it guards.
     """
     run = _feed_step(MAC_WORKFLOW, "publish")["run"]
-    assert "curl" in run and "-I" in run, (
-        "feed step must verify the served Cache-Control through the CDN"
-    )
+    assert (
+        "curl" in run and "-I" in run
+    ), "feed step must verify the served Cache-Control through the CDN"
     # Strip comment lines before checking for the forbidden call: the step
     # DOCUMENTS why head-object is wrong, so a naive substring match would
     # trip on its own rationale.
-    code = "\n".join(
-        line for line in run.splitlines() if not line.strip().startswith("#")
-    )
+    code = "\n".join(line for line in run.splitlines() if not line.strip().startswith("#"))
     assert "head-object" not in code, (
         "must not verify via s3api head-object -- the publish role lacks GetObject "
         "on feed/*, so the guard would fail on permissions after publishing"
@@ -585,16 +603,16 @@ def test_linux_missing_artifact_fails_loudly() -> None:
         "a missing artifact must fail the job -- a silent skip would leave a green "
         "run serving a stale feed"
     )
-    assert "Expected exactly one ${LINUX_EXT}" in run, (
-        "ambiguous artifacts must also fail loudly rather than feeding an arbitrary file"
-    )
+    assert (
+        "Expected exactly one ${LINUX_EXT}" in run
+    ), "ambiguous artifacts must also fail loudly rather than feeding an arbitrary file"
 
 
 def test_mac_notarize_attaches_gated_artifact_fail_closed() -> None:
     step = _step(_steps(MAC_WORKFLOW, "notarize"), "Attach notarized artifact to workflow run")
-    assert step["with"]["if-no-files-found"] == "error", (
-        "the gated artifact upload must error when empty -- it is the publish job's sole input"
-    )
+    assert (
+        step["with"]["if-no-files-found"] == "error"
+    ), "the gated artifact upload must error when empty -- it is the publish job's sole input"
 
 
 # ---------------------------------------------------------------------------
@@ -643,9 +661,9 @@ def test_installer_channel_name_is_the_literal_path_segment() -> None:
     feed", with no hint that the channel itself is fine.
     """
     code = _installer_code()
-    assert re.search(r'^CHANNEL_PATH="\$CHANNEL"$', code, re.M), (
-        "cli.sh must use the channel verbatim as the storage prefix"
-    )
+    assert re.search(
+        r'^CHANNEL_PATH="\$CHANNEL"$', code, re.M
+    ), "cli.sh must use the channel verbatim as the storage prefix"
     assert "beta" not in code, (
         "cli.sh has executable code referencing a `beta` prefix; the published "
         "path segment is `insider` (docs/build/release.md)"
@@ -657,12 +675,12 @@ def test_installer_rejects_an_unknown_channel_before_hitting_the_cdn() -> None:
     src = _installer_source()
     guard = re.search(r"^case \"\$CHANNEL\" in\n\s*([a-z|]+)\) ;;", src, re.M)
     assert guard, "cli.sh must validate --channel against a known set"
-    assert tuple(guard.group(1).split("|")) == _PUBLISHED_CHANNELS, (
-        "cli.sh's accepted channels must match what publish-cli.yml publishes"
-    )
+    assert (
+        tuple(guard.group(1).split("|")) == _PUBLISHED_CHANNELS
+    ), "cli.sh's accepted channels must match what publish-cli.yml publishes"
     # The rejection has to name the alternatives; that message is the whole
     # point of validating locally instead of letting the fetch 403.
     for channel in _PUBLISHED_CHANNELS:
-        assert channel in src.split("unknown channel", 1)[1][:200], (
-            f"the unknown-channel error must list '{channel}'"
-        )
+        assert (
+            channel in src.split("unknown channel", 1)[1][:200]
+        ), f"the unknown-channel error must list '{channel}'"

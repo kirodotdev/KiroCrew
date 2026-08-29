@@ -112,6 +112,22 @@ rebuild that hopes for reproducibility. The mechanism:
   `0.4.1`): the release workflow's Derive-Version step rejects a four-segment
   base like `0.4.0.1` outright, and re-using the shipped version is impossible —
   its published keys are immutable.
+- **A hotfix RC never moves the insider channel backward.** The channel feeds
+  are mutable last-writer-wins pointers, and the insider line is usually AHEAD
+  of the line being hotfixed — when `v0.4.1-insider.1` published while insider
+  served `0.5.0-insider.1`, the feed rolled back and every insider client was
+  offered a downgrade (electron-updater accepts one whenever the installed
+  version carries a prerelease suffix). Every publish workflow now runs
+  `scripts/check_feed_advance.py` before its pointer writes: the versioned
+  assets and the GitHub release always publish (that is what the stable gate
+  and promotion consume), but the feed, the legacy mac feed, and the `latest/`
+  aliases are rewritten only when this run's version is the newest the channel
+  has seen — judged against the live feed (via the public CDN; the publish
+  role is Put-only on `feed/*`) AND the repo's tags, which close the CDN's
+  `max-age` staleness window. Equal versions advance, so re-running a
+  half-finished publish stays idempotent. Promotion is unaffected: a stable
+  bare tag is newer than everything the stable feed has served.
+  `test/test_check_feed_advance.py` pins the verdicts and the wiring.
 
 ### Runbook: promoting an RC to stable
 

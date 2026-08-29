@@ -535,8 +535,16 @@ jobs:
       # Pinned published basename -- see the notarize job's env comment.
       ARTIFACT_BASENAME: KiroCrew
     steps:
+      # UNCONDITIONAL, and it has to stay that way. This used to be gated on
+      # `inputs.promote` because only the promotion path read repo files
+      # (scripts/release_promotion.py). The feed monotonicity guard changed
+      # that: the "Write update feed" step runs on EVERY publish and needs
+      # both scripts/check_feed_advance.py and a git repo for
+      # `git ls-remote --tags origin`. Re-gating this checkout would make a
+      # normal nightly/insider publish red-fail in that step -- after the
+      # immutable assets were already uploaded. Pinned by
+      # test_check_feed_advance.py::test_guard_jobs_check_out_the_repository.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: inputs.promote
         with:
           persist-credentials: false
 
@@ -706,6 +714,7 @@ jobs:
       # the human first-install download.
       - name: Write update feed
         if: env.HAS_SIGNING_SECRETS
+        id: feed
         run: |
           set -euo pipefail
           ZIP_SHA512=$(openssl dgst -sha512 -binary work/notarized.zip | base64 -w 0)
@@ -739,6 +748,44 @@ jobs:
           }
           verify_published "${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}" "$ZIP_SHA512" "ZIP"
           verify_published "${{ vars.CLI_CDN_BASE }}/${DMG_KEY}" "$DMG_SHA512" "DMG"
+
+          # Feed monotonicity guard: a hotfix cut on an OLD release line
+          # must publish its versioned assets without dragging the channel
+          # pointer backward into a downgrade offer for every client.
+          # Feed read goes through the public CDN (the publish role is
+          # Put-only on feed/*, see the head-object note below); repo
+          # tags close the CDN's max-age staleness window. The legacy
+          # feed and DMG alias steps are gated on this verdict too.
+          # Fail CLOSED on transport errors: only confirmed absence (404, or
+          # 403 -- S3-backed CloudFront answers 403 for a missing key) reads
+          # as "no feed yet". Treating an outage as absence would advance on
+          # degraded evidence -- the exact rollback this guard prevents.
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/current-feed.yml -w '%{http_code}' \
+            "${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/latest-mac.yml") \
+            || { echo "::error::channel feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
+            200) ;;
+            403|404) : > /tmp/current-feed.yml ;;
+            *) echo "::error::channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+          esac
+          # awk does the ^{} peel-ref filtering (awk always exits 0 on empty
+          # input, unlike grep -v); an ls-remote failure aborts via pipefail.
+          git ls-remote --tags origin 'refs/tags/v*' \
+            | awk -F/ '$NF !~ /\^\{\}$/ {print $NF}' > /tmp/repo-tags.txt
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel "${CHANNEL}" \
+            --current-file /tmp/current-feed.yml \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "advance=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::feed/${CHANNEL}/latest-mac.yml already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          echo "advance=true" >> "$GITHUB_OUTPUT"
           cat > /tmp/latest-mac.yml <<EOF
           version: ${VERSION}
           files:
@@ -801,7 +848,7 @@ jobs:
       # first electron-updater release remain. Pinned by
       # test/test_publish_feed_contract.py so it cannot be dropped silently.
       - name: Write legacy update feed (pre-electron-updater clients)
-        if: env.HAS_SIGNING_SECRETS
+        if: env.HAS_SIGNING_SECRETS && steps.feed.outputs.advance == 'true'
         run: |
           set -euo pipefail
           cat > /tmp/latest-mac.json <<EOF
@@ -855,7 +902,7 @@ jobs:
       # Uploads the local body (not an S3 copy): the publish role's
       # desktop/* grant is Put-only.
       - name: Update latest DMG alias
-        if: env.HAS_SIGNING_SECRETS
+        if: env.HAS_SIGNING_SECRETS && steps.feed.outputs.advance == 'true'
         run: |
           set -euo pipefail
           LATEST_DMG_KEY="desktop/${CHANNEL}/latest/${ARTIFACT_BASENAME}.dmg"
@@ -876,6 +923,10 @@ jobs:
             echo "- Version: ${VERSION}"
             echo "- Public zip: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}"
             echo "- Public DMG: ${{ vars.CLI_CDN_BASE }}/${DMG_KEY}"
-            echo "- Latest DMG alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_DMG_KEY}"
-            echo "- Feed: \`feed/${CHANNEL}/latest-mac.yml\`"
+            if [ "${{ steps.feed.outputs.advance }}" = "true" ]; then
+              echo "- Latest DMG alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_DMG_KEY}"
+              echo "- Feed: \`feed/${CHANNEL}/latest-mac.yml\`"
+            else
+              echo "- Feed: not moved (channel already serves a newer version)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

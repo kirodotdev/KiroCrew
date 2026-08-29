@@ -999,7 +999,6 @@ test/test_project_git.py
 test/test_project_git_status_log.py
 test/test_prompt_timeout_follows_ceiling.py
 test/test_provider_dispatch.py
-test/test_publish_feed_contract.py
 test/test_publish_providers.py
 test/test_publish_sync.py
 test/test_queue_during_subagents.py

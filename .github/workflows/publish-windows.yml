@@ -348,6 +348,7 @@ jobs:
       # pointer-host / byte-host split.
       - name: Write update feed
         if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
+        id: feed
         run: |
           set -euo pipefail
           INSTALLER_SHA512=$(openssl dgst -sha512 -binary "${INSTALLER_PATH}" | base64 -w 0)
@@ -362,6 +363,42 @@ jobs:
             echo "::error::published installer does not match the artifact this feed would advertise."
             exit 1
           fi
+
+          # Feed monotonicity guard: a hotfix cut on an OLD release line
+          # must publish its versioned assets without dragging the channel
+          # pointer backward into a downgrade offer for every client.
+          # Feed read goes through the public CDN (publish role is
+          # Put-only on feed/*); repo tags close the CDN staleness window.
+          # Fail CLOSED on transport errors: only confirmed absence (404, or
+          # 403 -- S3-backed CloudFront answers 403 for a missing key) reads
+          # as "no feed yet". Treating an outage as absence would advance on
+          # degraded evidence -- the exact rollback this guard prevents.
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/current-feed.yml -w '%{http_code}' \
+            "${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/${FEED_FILE}") \
+            || { echo "::error::channel feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
+            200) ;;
+            403|404) : > /tmp/current-feed.yml ;;
+            *) echo "::error::channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+          esac
+          # awk does the ^{} peel-ref filtering (awk always exits 0 on empty
+          # input, unlike grep -v); an ls-remote failure aborts via pipefail.
+          git ls-remote --tags origin 'refs/tags/v*' \
+            | awk -F/ '$NF !~ /\^\{\}$/ {print $NF}' > /tmp/repo-tags.txt
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel "${CHANNEL}" \
+            --current-file /tmp/current-feed.yml \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "advance=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::feed/${CHANNEL}/${FEED_FILE} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          echo "advance=true" >> "$GITHUB_OUTPUT"
 
           cat > /tmp/"${FEED_FILE}" <<EOF
           version: ${VERSION}
@@ -380,8 +417,10 @@ jobs:
 
       # Written LAST: the alias is what a human downloads, so it only ever
       # points at a version whose immutable key and feed are already live.
+      # Gated on the same monotonicity verdict as the feed: the alias is a
+      # channel pointer too.
       - name: Update latest installer alias
-        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged
+        if: env.HAS_SIGNING_SECRETS && steps.locate.outputs.staged && steps.feed.outputs.advance == 'true'
         run: |
           set -euo pipefail
           aws s3api put-object \
@@ -399,6 +438,10 @@ jobs:
             echo ""
             echo "- channel: \`${CHANNEL}\` · arch: \`x64\` · version: \`${VERSION}\`"
             echo "- installer: ${{ vars.CLI_CDN_BASE }}/${INSTALLER_KEY}"
-            echo "- latest alias: ${{ vars.CLI_CDN_BASE }}/desktop/${CHANNEL}/latest/${WINDOWS_BASENAME}.exe"
-            echo "- feed: ${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/${FEED_FILE}"
+            if [ "${{ steps.feed.outputs.advance }}" = "true" ]; then
+              echo "- latest alias: ${{ vars.CLI_CDN_BASE }}/desktop/${CHANNEL}/latest/${WINDOWS_BASENAME}.exe"
+              echo "- feed: ${{ vars.CLI_CDN_BASE }}/feed/${CHANNEL}/${FEED_FILE}"
+            else
+              echo "- feed: not moved (channel already serves a newer version)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

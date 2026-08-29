@@ -389,6 +389,7 @@ jobs:
       # other. FEED_FILE is resolved fail-closed in the first step.
       - name: Write update feed
         if: env.HAS_SIGNING_SECRETS
+        id: feed
         run: |
           set -euo pipefail
           ARTIFACT_SHA512=$(openssl dgst -sha512 -binary "${ARTIFACT_PATH}" | base64 -w 0)
@@ -411,6 +412,42 @@ jobs:
             exit 1
           fi
           echo "Verified published artifact matches the feed digest."
+
+          # Feed monotonicity guard: a hotfix cut on an OLD release line
+          # must publish its versioned assets without dragging the channel
+          # pointer backward into a downgrade offer for every client.
+          # Feed read goes through the public CDN (publish role is
+          # Put-only on feed/*); repo tags close the CDN staleness window.
+          # Fail CLOSED on transport errors: only confirmed absence (404, or
+          # 403 -- S3-backed CloudFront answers 403 for a missing key) reads
+          # as "no feed yet". Treating an outage as absence would advance on
+          # degraded evidence -- the exact rollback this guard prevents.
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/current-feed.yml -w '%{http_code}' \
+            "${{ vars.CLI_CDN_BASE }}/${FEED_PREFIX}/${FEED_FILE}") \
+            || { echo "::error::channel feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
+            200) ;;
+            403|404) : > /tmp/current-feed.yml ;;
+            *) echo "::error::channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+          esac
+          # awk does the ^{} peel-ref filtering (awk always exits 0 on empty
+          # input, unlike grep -v); an ls-remote failure aborts via pipefail.
+          git ls-remote --tags origin 'refs/tags/v*' \
+            | awk -F/ '$NF !~ /\^\{\}$/ {print $NF}' > /tmp/repo-tags.txt
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel "${CHANNEL}" \
+            --current-file /tmp/current-feed.yml \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "advance=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${FEED_PREFIX}/${FEED_FILE} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          echo "advance=true" >> "$GITHUB_OUTPUT"
           cat > /tmp/"${FEED_FILE}" <<EOF
           version: ${VERSION}
           files:
@@ -432,9 +469,10 @@ jobs:
       # Same mutable-alias semantics as the latest-DMG alias: plain
       # overwrite, max-age=300, written AFTER the versioned key and the
       # feed so it never points at bytes that are not yet live nor ahead
-      # of the go-live switch.
+      # of the go-live switch. Gated on the same monotonicity verdict as
+      # the feed: the alias is a channel pointer too.
       - name: Update latest artifact alias
-        if: env.HAS_SIGNING_SECRETS
+        if: env.HAS_SIGNING_SECRETS && steps.feed.outputs.advance == 'true'
         run: |
           set -euo pipefail
           LATEST_ARTIFACT_KEY="desktop/${CHANNEL}/latest/${LINUX_BASENAME}.${LINUX_EXT}"
@@ -454,6 +492,10 @@ jobs:
             echo "## Publish Linux (${CHANNEL} · ${ARCH})"
             echo "- Version: ${VERSION}"
             echo "- Public artifact: ${{ vars.CLI_CDN_BASE }}/${ARTIFACT_KEY}"
-            echo "- Feed: \`${FEED_PREFIX}/${FEED_FILE}\`"
-            echo "- Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_ARTIFACT_KEY}"
+            if [ "${{ steps.feed.outputs.advance }}" = "true" ]; then
+              echo "- Feed: \`${FEED_PREFIX}/${FEED_FILE}\`"
+              echo "- Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_ARTIFACT_KEY}"
+            else
+              echo "- Feed: not moved (channel already serves a newer version)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
