@@ -19,8 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import abort as abort_mod
 from kiro_crew.mcp_gateway import gatewayd as gw
+from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.backend import Backend, _PendingRequest
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
 
@@ -163,6 +165,10 @@ class TestCancelInFlight:
 class TestRecycleIfIdle:
     """Tests for Backend.recycle_if_idle."""
 
+    @pytest.mark.skipif(
+        pc.IS_WINDOWS,
+        reason="asserts POSIX killpg path; Windows uses taskkill /T",
+    )
     @pytest.mark.asyncio
     async def test_recycle_kills_when_refcount_zero(self):
         """refcount 0 → SIGKILL the backend."""
@@ -191,13 +197,20 @@ class TestRecycleIfIdle:
         backend = _make_mock_backend()
         backend.refcount = 2
 
-        with patch("os.killpg") as mock_killpg:
+        with patch(
+            "kiro_crew.platform_compat.kill_process_tree_async",
+            new_callable=AsyncMock,
+        ) as mock_kill_tree:
             result = await backend.recycle_if_idle()
 
         assert result is False
         assert backend.quarantined is True
-        mock_killpg.assert_not_called()
+        mock_kill_tree.assert_not_awaited()
 
+    @pytest.mark.skipif(
+        pc.IS_WINDOWS,
+        reason="asserts POSIX init PID 1 guard; Windows uses taskkill",
+    )
     @pytest.mark.asyncio
     async def test_recycle_guards_against_pid_1(self):
         """Never kill PID 1 (init)."""
@@ -260,13 +273,14 @@ class TestKillPathIsPlatformCorrect:
                 side_effect=self._forbid_sync,
             ),
             # os.killpg/os.getpgid must not be reached directly any more.
-            patch("os.killpg", side_effect=self._forbid_sync),
+            patch("os.getpgid", side_effect=self._forbid_sync, create=True),
+            patch("os.killpg", side_effect=self._forbid_sync, create=True),
         ):
             result = await backend.recycle_if_idle()
 
         assert result is True
         assert mock_async.await_count == 1
-        assert mock_async.await_args.args == (pid, signal.SIGKILL)
+        assert mock_async.await_args.args == (pid, pc.SIGKILL)
 
     @pytest.mark.asyncio
     async def test_shutdown_escalation_awaits_async_tree_kill_not_sync(self):
@@ -283,12 +297,13 @@ class TestKillPathIsPlatformCorrect:
                 "kiro_crew.platform_compat.kill_process_tree",
                 side_effect=self._forbid_sync,
             ),
-            patch("os.killpg", side_effect=self._forbid_sync),
+            patch("os.getpgid", side_effect=self._forbid_sync, create=True),
+            patch("os.killpg", side_effect=self._forbid_sync, create=True),
         ):
             await backend.shutdown(timeout=0.01)
 
         assert mock_async.await_count == 1
-        assert mock_async.await_args.args[1] == signal.SIGKILL
+        assert mock_async.await_args.args[1] == pc.SIGKILL
 
     @pytest.mark.asyncio
     async def test_shutdown_falls_back_to_process_kill_when_tree_kill_fails(self):
@@ -419,7 +434,8 @@ class TestOrphanReapIsPlatformCorrect:
                 "kiro_crew.platform_compat.kill_process_tree",
                 side_effect=_forbid_sync,
             ),
-            patch("os.killpg", side_effect=_forbid_sync),
+            patch("os.getpgid", side_effect=_forbid_sync, create=True),
+            patch("os.killpg", side_effect=_forbid_sync, create=True),
         ):
             await manager._reap_orphaned_backends()
 
@@ -766,7 +782,7 @@ class TestAbortAckLogging:
             await writer.drain()
             writer.close()
 
-        server = await asyncio.start_unix_server(_fake_gatewayd, path=socket_path)
+        server = await transport.serve(socket_path, _fake_gatewayd, limit=1 << 16)
         try:
             with caplog.at_level(logging.INFO, logger=abort_mod.logger.name):
                 resp = await abort_mod.send_abort(socket_path, [100], "test stop")
@@ -791,7 +807,7 @@ class TestAbortAckLogging:
             await writer.drain()
             writer.close()
 
-        server = await asyncio.start_unix_server(_fake_gatewayd, path=socket_path)
+        server = await transport.serve(socket_path, _fake_gatewayd, limit=1 << 16)
         try:
             with caplog.at_level(logging.WARNING, logger=abort_mod.logger.name):
                 resp = await abort_mod.send_abort(socket_path, [100], "test stop")
