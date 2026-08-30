@@ -1,36 +1,23 @@
-# CodeApprovers Tier Routing
+# Code Ownership and AI Review Overrides
 
-## Overview
+## Ownership declaration
 
-Tier-based pull-request reviewer routing via `CODE_APPROVERS.yaml` in both KiroCrew and KiroCrewWebsite packages. Automatically assigns reviewers based on file paths changed, with a drift validator test that fails the build if patterns don't match actual files.
+`.github/CODEOWNERS` assigns every repository path to `@kirodotdev/kirocrew-team` through a single wildcard rule. GitHub uses this file to request reviews; it does not itself establish an approval count or enforce branch protection. Do not infer a tier, a required number of reviewers, or a designated-maintainer requirement from this repository file. The wildcard ownership rule in `.github/CODEOWNERS` enforces the declaration, while GitHub branch protection remains the enforcement point for any required approval policy.
 
-## Tiers
+## AI review override authorization
 
-| Tier | Approval Required | Scope |
-|------|-------------------|-------|
-| T1 | 1 random core-team member | Small fixes, non-critical paths |
-| T2 | 2 random core-team members | Security, harness, config, prompts, overlapping PRs |
-| T3 | Two designated maintainers required | Frozen memory modules |
+`ai-review-human-override.yml` records a human decision for an AI-review lane only when the commenter has `admin`, `maintain`, or `write` collaborator permission. The `Validate and record the decision` step resolves the current PR head and accepts the supplied SHA only when it is a prefix of that head; it also requires a non-empty, bounded reason. `test_handler_requires_write_permission_fresh_sha_and_reason` pins these authorization and freshness checks.
 
-## Drift Validator
+The workflow writes a `github-actions[bot]` marker that names the lane and full PR head before it re-runs a reviewer. This ordering is load-bearing: `Resolve human override` in `claude-review.yml` and `codex-review.yml` consumes only bot-authored markers for the current head, so an untrusted PR comment or a decision for an earlier push cannot make an AI-review gate pass. `test_fable_consumes_only_a_bot_authored_sha_scoped_record` and `test_gpt_has_clear_verdict_banner_and_human_override` enforce that consumer contract.
 
-`test_code_approvers.py` validates that file path patterns in `CODE_APPROVERS.yaml` match actual files in the repo. Build fails if patterns drift from reality (e.g., renamed files not updated in approvers config).
+## Fork review approval state
 
-## Code Reviewer Built-in App
+`pr-readiness.yml` treats a fork review workflow with GitHub's `action_required` conclusion as awaiting maintainer approval and publishes an action-required readiness state. This condition remains distinct from a review failure so contributors cannot clear an approval wait by changing the pull request. The `Evaluate readiness` step maintains that distinction.
 
-The Code Reviewer is now a built-in app (`src/kiro_crew/apps/builtins/code_reviewer/`) with a full Python backend. It is disabled by default (`defaultEnabled: false`) and can be enabled via the App Store or config.
+## Related code
 
-Key capabilities:
-- **Workspace browsing** — `POST /api/browse` with input-validation controls (path containment, sensitive-path blocklist, capped results)
-- **Git revert** — `POST /api/repos/{ws}/{pkg}/revert` with non-destructive multi-commit revert, conflict detection (409), rollback to original HEAD
-- **Git reset** — `POST /api/repos/{ws}/{pkg}/reset` with mode selection (soft/mixed/hard), pushed-boundary warning
-- **AI review SSE** — `POST /api/ai-review/complete` broadcasts `ai-review.completed` event with fail-closed redaction
-- **Fix engine** — `_spawn_fix` supports `target_sha` for amending fixes into specific commits via `git --fixup` + `--autosquash`; broadcasts `commit.amended` SSE event
-
-All endpoints follow audit + input-validation patterns (SHA regex, SEL audit on success and error paths).
-
-## Key Files
-
-- `CODE_APPROVERS.yaml` (both packages)
-- `test/test_code_approvers.py` — drift validator
-- `src/kiro_crew/apps/builtins/code_reviewer/` — built-in app backend
+- `.github/CODEOWNERS` — repository-wide ownership declaration
+- `.github/workflows/ai-review-human-override.yml` — authorization, SHA freshness, and trusted override record
+- `.github/workflows/claude-review.yml` and `.github/workflows/codex-review.yml` — trusted-record consumers
+- `.github/workflows/pr-readiness.yml` — fork approval-wait handling
+- `test/test_ai_review_workflows.py` — regression coverage for override authorization and trusted consumption

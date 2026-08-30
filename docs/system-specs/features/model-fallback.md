@@ -1,131 +1,128 @@
-# Model Fallback (throttle-exhaustion)
+# Model fallback
 
-When the active model stays throttled past the same-model transient-retry budget,
-the turn is retried on a fallback model instead of failing — visibly, never
-silently. kiro-cli has no fallback mechanism; this feature is entirely
-Kiro Crew-side, built on the substitute `set_model` path.
+`agent.fallback_model` controls an optional retry after an active model exhausts
+its transient-error budget before activity begins. The implementation is
+Kiro Crew-side: `llm_helpers.advance_fallback_candidate` changes the model through
+the substitute `set_model` seam, and `test/test_llm_helpers.py` pins that a
+successful swap is observable before it is recorded.
 
-## Config
+## Configuration
 
-`agent.fallback_model` (`AgentConfig`, `config/loader.py`) — a SINGLE value with
-three shapes. Coercion (`coerce_fallback_model`) normalizes registry
-keys/aliases to acp ids and matches `"auto"` case-insensitively:
+`AgentConfig.fallback_model` is normalized by
+`config/loader.py:coerce_fallback_model`. `llm_helpers.configured_fallback_chain`
+is the shared derivation used by the fallback callers:
 
-- **`"auto"` (the default)** — defer to the backend's availability-aware
-  routing when the active model stays throttled. Team-decided default: the
-  backend knows live availability and every account serves *some* model, so
-  auto is the one fallback that works regardless of subscription plan or
-  partition.
-- **a concrete model id** — tried first, with `"auto"` as the final
-  fallthrough (walk order `(id, "auto")`, derived in
-  `configured_fallback_chain` — the one shared derivation).
-- **`""`** — fallback explicitly disabled: every surface behaves byte-for-byte
-  as before the feature existed (regression-pinned; this is the rollback
-  story).
+- The automatic-routing sentinel is the field default; its configured value
+  produces a chain containing that sentinel.
+- A concrete model value produces a chain that tries the configured value before
+  the automatic-routing sentinel.
+- An empty value produces an empty chain, so the fallback branch remains inert
+  and the existing terminal error path handles the failure.
 
-Editable via `kirocrew config set agent.fallback_model <id|auto|''>`, the
-config PATCH API (str type, model-id grammar, `_validate_role_model` — the same
-entitlement validation as the role-model pins, so `""`/`"auto"` always allow),
-and Settings → Chat → Rate-limit fallback (single-select dropdown fed by the
-advertised-model list — no free text, so a typo'd id cannot exist).
+`TestFallbackModelLoad` in `test/test_config_loader.py` and
+`TestCoerceFallbackModel` in `test/test_role_models.py` pin the default,
+normalization, concrete-value ordering, and empty-value opt-out. The dashboard
+PATCH schema in `dashboard/handlers/core.py` applies the model-id grammar and
+`_validate_role_model`; that validator allows the automatic and empty values,
+rejects a known unusable concrete value, and permits a concrete value when no
+advertised-model set is available.
 
-## Trigger and walk
+## Trigger and candidate walk
 
-The trigger is the exhaustion of the SAME transient budget that governs today's
-retries (`TRANSIENT_RETRIES`, classifier `acp_error_is_transient`) with no output
-streamed — exactly where the error used to surface. The chain walk is ONE shared
-body, `llm_helpers.advance_fallback_candidate`, used by all three surfaces so
-skip rules and marker semantics cannot diverge:
+The fallback path is eligible only after the normal transient retry budget is
+spent on a transient error with no qualifying prior activity. Each surface
+tracks that condition in its own stream loop: `llm_helpers.stream_and_collect`
+requires no result text or tool activity, `dashboard/chat_runner.py` requires
+no emitted or thought activity, and `subagent._stream_with_transient_retry`
+requires no activity. Post-activity recovery does not enter the model-fallback
+walk.
 
-- seeds the primary from a surviving sticky marker first (a session already on a
-  fallback whose true primary only the marker remembers), the active model second;
-- walks the derived chain in order, skipping the primary, unadvertised ids
-  (fail-open when the advertised list is unknown, matching `model_is_unusable`),
-  and the currently-active failing candidate. `"auto"` is a legitimate candidate
-  filtered by the same advertised check: a partition that does not serve it
-  skips it rather than sending a no-op swap;
-- applies the first candidate whose substitute `set_model` lands (the path that
-  never puts an unserved model on the wire; its own `resolve_usable_model`
-  sends `"auto"` only when advertised), publishes the sticky marker, and
-  logs `model fallback: X -> Y (reason=throttle-exhaustion, surface=...)`.
+`llm_helpers.advance_fallback_candidate` owns candidate selection for all three
+paths. It preserves the original primary from an existing provider marker when
+available, otherwise from the active model. It then skips the primary, the
+currently active model, and candidates absent from a known advertised-model
+set. An unavailable advertised set does not reject a candidate; this is
+load-bearing because entitlement cannot be determined without that set.
 
-Each candidate gets `FALLBACK_CANDIDATE_ATTEMPTS` (2: initial + one ~2s retry) —
-deliberately not a fresh full budget, because throttle events are frequently
-cell-scoped and model-agnostic. The budget lives in one place: the in-walk
-surfaces consume it via `FallbackState.should_retry_active`, and the dashboard's
-counter rewind derives from the same constant
-(`fallback_rewound_transient_budget()`). A non-transient error mid-chain
-propagates immediately. Chain exhaustion surfaces the original error class with
-the chain's story attached (`FALLBACK_STORY_ATTR`, built by
-`FallbackState.exhaustion_story`); the unattended surfaces append it to their
-terminal error text via `append_fallback_story` — the cron failure alert, the
-sub-agent `info.error`, and the heartbeat failure log — so an unattended failure
-names the whole walk, not just the last candidate's error. The story is
-redacted and capped centrally in `fallback_story_of` (`_FALLBACK_STORY_CAP`):
-walked ids originate in config (LLM-reachable via MCP, advertised check fails
-open), and consumers like the heartbeat log apply no redaction of their own.
+The helper calls the substitute `set_model` path and verifies that the serving
+model changed before it records the candidate, publishes `TURN_FALLBACK_ATTR`,
+or logs the swap. This witness prevents a non-raising no-op model selection from
+being announced as a fallback. `TestSetModelWitness`,
+`TestAdvanceFallbackCandidateAutoPrimary`, and `TestFallbackState` in
+`test/test_llm_helpers.py` cover no-op handling, marker-seeded primary
+selection, advertised-model filtering, and chain progress.
+
+`FallbackState.should_retry_active` owns the per-candidate retry allowance, and
+`fallback_rewound_transient_budget` derives the dashboard counter from the same
+allowance. The pinning tests in `test/test_llm_helpers.py` and
+`TestRunChatModelFallback` in `test/test_dashboard_chat.py` prevent the three
+surfaces from granting different candidate budgets.
+
+When no candidate can advance, `FallbackState.exhaustion_story` describes the
+candidates actually tried. `stream_and_collect` and the sub-agent attach that
+story to the terminal exception for their delivery paths; the dashboard retains
+its slot-local walked candidates to render its terminal error. `fallback_story_of`
+redacts and bounds the attached story centrally, and `append_fallback_story`
+uses it for cron alerts, sub-agent errors, and heartbeat failure logs. Central
+handling is load-bearing because fallback model values are configuration input
+and each error surface must receive the same safe text.
 
 ## Surfaces
 
-- **`stream_and_collect`** (Case 2.75; cron and heartbeat pass the chain via
-  `fallback_models=configured_fallback_chain()`): walks in-place and re-prompts.
-  Delivered results are prefixed with a redacted warning line
-  (`annotate_model_fallback`, one body in `llm_helpers` next to
-  `TURN_FALLBACK_ATTR`, used by the cron/heartbeat delivery and the sub-agent
-  completion path).
-- **Dashboard** (`chat_runner`): the pre-token exhaustion branch swaps, appends a
-  persisted notice card ("⚠️ X is throttled — running on Y until X recovers."),
-  and re-queues the same message on the same live session
-  (`SYNTHETIC_RECOVERY_KIND`). The per-candidate budget rides the existing
-  transient counter, rewound to `fallback_rewound_transient_budget()` (derived
-  from the same `FALLBACK_CANDIDATE_ATTEMPTS` constant = one in-branch retry).
-  Nested turns (`_prompt_depth > 0`) get no fallback. Chain exhaustion falls
-  through to the unchanged terminal branch with the story prepended.
-- **Sub-agents** (`subagent._stream_with_transient_retry`): same walk on the
-  zero-activity arm; the delivered result carries the warning prefix.
+- `llm_helpers.stream_and_collect` accepts a caller-supplied fallback chain.
+  The Slack gateway passes `configured_fallback_chain()` for its cron and
+  heartbeat work, then `annotate_model_fallback` prefixes a delivered result
+  while the provider marker remains active.
+- `dashboard/chat_runner.py` swaps through `_fallback_swap_for_turn` after its
+  pre-activity transient branch, persists a notice, and requeues the same
+  message as a synthetic recovery item. Its fallback condition excludes nested
+  prompts. On exhaustion it renders the slot-local walk in the terminal error.
+- `subagent._stream_with_transient_retry` follows the zero-activity branch,
+  uses the shared candidate helper, and applies `annotate_model_fallback` to
+  the completed result.
 
-## Sticky state and restore
+`annotate_model_fallback` redacts model values before rendering and leaves the
+marker in place. That persistence is load-bearing: subsequent successful turns
+on the fallback remain visibly identified until restoration succeeds.
 
-A swap is sticky for the session. The marker `TURN_FALLBACK_ATTR`
-(`(primary, candidate)` on the provider) drives the unattended restore:
-`probe_fallback_restore` runs at the next `stream_and_collect` entry and tries
-one `set_model(primary)` — quiet on success (log only; recovery is the expected
-state), staying on the fallback on transient failure, and dropping a stale
-marker without touching the model when the session moved on by other means.
+## Sticky restore
 
-The dashboard's slot probe (`_probe_fallback_restore_for_slot_locked`) wraps the
-same `probe_fallback_restore` body with slot-held state (`_active_fallback_model`,
-`_fallback_primary_model`) and one extra rule: **an explicit user pick is never
-overridden.** Picks are detected by a generation counter
-(`slot._model_pick_gen`) bumped ONLY by the explicit set-model surfaces
-(single-slot pick, bulk switch, provider-switch clear) and rolled back when a
-pick is refused (`AcpModelUnavailable`) — never by the automatic provider
-backfill, which writes the served model into an unpinned slot's `slot.model` and
-must not read as a pick. On restore, a backfill-polluted `slot.model` is healed
-back to the activation snapshot (`_fallback_slot_model`), because `slot.model`
-is re-sent as a pin on resume.
+A successful swap is sticky on the provider through `TURN_FALLBACK_ATTR`.
+`probe_fallback_restore` makes one start-of-turn attempt to restore the primary
+for unattended callers. It keeps the fallback on a transient restore failure;
+if the session no longer serves the recorded fallback, it clears stale state
+without selecting a model.
 
-## Visibility (mandatory, not configurable)
+The dashboard adapter,
+`chat_runner._probe_fallback_restore_for_slot_locked`, applies the same probe to
+slot-held state. It snapshots `slot.model` and `_model_pick_gen` when fallback
+activates. Explicit single-slot and bulk model picks, plus a provider switch,
+increment the generation; a rejected single-slot pick restores its prior
+value. A changed generation makes the fallback record stale, so restore cannot
+override an explicit user choice. When automatic provider backfill changes
+`slot.model` without changing the generation, the restore hook reinstates the
+activation snapshot before clearing fallback state. This prevents an automatic
+fallback selection from becoming a persistent user pin.
 
-Every swap is announced: notice card (dashboard), warning-prefixed result
-(cron/heartbeat/sub-agent), and a warning log for swap and restore. Model ids
-originate in config (LLM-reachable via MCP), so every rendered occurrence passes
-`redact_exfiltration_urls` + `redact_credentials`. `meta.turn_stats.model`
-records the model that actually served the turn (both `set_model` paths sync
-`_model`/`_resolved_model_id`, which `read_turn_model` reads).
+`TestRunChatModelFallback` and `TestSlotProbeWrapsSharedRestoreBody` in
+`test/test_dashboard_chat.py`, together with the restore tests in
+`test/test_llm_helpers.py`, pin the stale-record, explicit-pick, and backfill
+invariants.
 
 ## Non-goals
 
-- Post-token / mid-stream model swap (the one-shot CONTINUE recovery is untouched).
-- Per-crew / per-cron / per-role chains (v1 is global).
+- Swapping models after activity has begun; the existing continuation recovery
+  handles that path.
+- Per-crew, per-cron, or per-role fallback chains.
 - A dedicated per-turn model field on the ACP wire.
 - kiro-cli changes.
 
 ## Tests
 
-`test/test_llm_helpers.py` (candidate selection, Case 2.75 matrix, restore
-probe, marker-seeded primary), `test/test_dashboard_chat.py`
-(`TestRunChatModelFallback`), `test/test_subagent_turn_resilience.py`,
-`test/test_cron_gateway_integration.py` (`TestThrottleFallbackCronWiring`),
-`test/test_role_models.py` / `test/test_config_loader.py` (coercion + load),
-`test/test_dashboard_handlers_core_coverage.py` (fallback-model PATCH validation).
+`test/test_llm_helpers.py` covers chain derivation, candidate selection, retry
+state, story handling, and unattended restore. `test/test_dashboard_chat.py`
+covers dashboard fallback and slot restore. `test/test_subagent_turn_resilience.py`
+and `test/test_cron_gateway_integration.py` cover sub-agent and gateway wiring.
+`test/test_config_loader.py`, `test/test_role_models.py`, and
+`test/test_dashboard_handlers_core_coverage.py` cover configuration loading and
+PATCH validation.

@@ -1,186 +1,70 @@
 # Session Work Ledger
 
-Status: implemented (this PR)
-Owners: gateway core (`session_ledger.py`), MCP tools (`mcp_tools/ledger.py`)
+Owners: `kiro_crew.session_ledger`, `kiro_crew.mcp_tools.ledger`, and the dashboard ledger routes
 
-## 1. Problem
+## 1. Purpose
 
-Long-horizon loops — `monitor_start` babysit loops, goal loops, any session that
-wakes dozens of times — carry their working state in the context window. Every
-cycle appends a full turn to the same session, so "what am I doing, what have I
-tried, where are my artifacts" survives only as prior transcript turns. When the
-context fills, compaction summarizes generically and the agent loses exactly the
-state it needs to keep going: approaches already rejected, the branch it was on,
-the reason a phase was entered.
+`kiro_crew.session_ledger` provides durable, per-session work state for long-running work. The state record holds a goal, phase, resumable next step, rejected approaches, artifact pointers, and a bounded event history. This separates resumable state from transcript context; `mcp_tools.ledger.schemas()` describes the record as authoritative over prior-cycle memory.
 
-Compaction itself is out of scope: it is performed by the agent harness (the
-ACP/kiro-cli layer), not by this codebase, so the fix cannot be "compact
-better". The fix is to stop using the context window as the authoritative store
-for loop state.
+## 2. Storage, identity, and lifecycle
 
-The pattern already exists in this repo — three times, hand-rolled per app:
-
-- Issue Radar's crew ledger (`apps/builtins/issue_radar/backend/crew_store.py`):
-  work items with `phase` / `next` / `tried[]`, an append-only content-addressed
-  event log, and the rule that a phase never moves without a logged event.
-- Ops Mission Control's knowledge ledger
-  (`apps/builtins/ops_mission_control/backend/ledger.py`): append-only JSONL,
-  content-addressed ids, locked read-modify-write.
-- The heartbeat/cron surfaces re-derive state per cycle from files.
-
-Each app that needs durable work state re-invents the primitive. Sessions that
-are not one of those apps get nothing.
-
-## 2. Solution overview
-
-A generic, per-session **work ledger** on disk:
-
-- One directory per session under the data home, created lazily on first write,
-  deleted when the session's history is permanently deleted.
-- A mutable **state record** (goal, phase, next intent, tried/rejected
-  approaches, artifact pointers) plus an append-only **event log**.
-- Two core MCP tools, `session_ledger_read` and `session_ledger_record`, with
-  session-resolved identity: a session can only ever touch its own ledger.
-- Auto-nudge integration: when a monitor loop fires on a session that has a
-  ledger, the nudge body carries a compact snapshot of the state record, so each
-  cycle starts from the ledger instead of from transcript memory.
-
-The context window becomes a cache; the ledger is the authority. A loop cycle
-needs the snapshot plus its check instructions — its cost no longer grows with
-the number of cycles that came before it.
-
-## 3. On-disk layout and lifecycle
+Each recorded ledger lives below `<data_home>/ledger/` in a directory containing:
 
 ```
-<data_home>/ledger/<store-name>/
-    slot_key        # breadcrumb: the exact ledger key this dir belongs to
-    state.json      # the whole record, replaced atomically on every write
-    .lock           # cross-process mutex inode (never replaced by writes)
+slot_key   # original ledger key breadcrumb
+state.json # complete state record
+.lock      # dedicated cross-process lock inode
 ```
 
-- **Identity is the exact key.** The ledger key is the session key with only
-  the dashboard prefixes stripped (one dashboard session is legitimately
-  spelled both `dashboard_chat-X` and `chat-X`, and both must reach one
-  ledger); nothing else is rewritten. `<store-name>` is a readable charset
-  fold of that key plus a sha256 prefix over the FULL key — the fold shapes
-  only legibility, the digest carries identity, so two distinct
-  colon-structured channel keys can never share a directory (a lossy charset
-  fold as the identity would let one session read and overwrite another's
-  state). Path safety mirrors `subagent_persistence._agent_dir`: hostile keys
-  refused, resolved path required to stay inside the ledger root.
-- **Not `/tmp`, not the scratch dir.** Scratch (`KIROCREW_SCRATCH`) is keyed to
-  process liveness and swept hourly once the owner process group dies; a ledger
-  must survive gateway restarts for as long as its session exists.
-- **Tab close keeps the ledger.** Closing a dashboard tab
-  (`api_chat_slot_delete`) deliberately preserves resumable session state, and
-  the ledger is part of that state.
-- **History deletion reaps the ledger.** Both permanent-delete endpoints
-  (`DELETE /api/sessions/{key}` and the bulk `DELETE /api/sessions`) funnel
-  through `_remove_slot_for_history_key`; the ledger purge runs at the END of
-  that funnel — after the slot's turn is cancelled and its session destroyed —
-  so an in-flight write from the dying turn cannot land after the purge. A
-  write racing in from another process can at worst recreate an orphan
-  directory that the next delete sweeps; ledger content is disposable
-  intermediate state, so that residue is accepted rather than buying a
-  tombstone protocol for data nothing reconstructs from.
+`session_ledger.record()` creates the directory and writes `state.json` atomically. `session_ledger._locked()` keeps the lock file separate from the replaced state file, so replacing state cannot let concurrent writers lock different inodes.
 
-## 4. Data model
+`session_ledger.ledger_key()` removes only dashboard namespace and prefix spellings before storage. `session_ledger._store_name()` combines a readable fold with a digest of that exact key; `test_distinct_channel_keys_never_share_a_ledger` guards against the lossy-fold collision that would otherwise let one channel session overwrite another. `session_ledger.ledger_dir()` rejects hostile raw keys and requires the resolved directory to remain below the ledger root, preventing traversal through a folded name.
 
-`state.json` is ONE document — the mutable state record carrying a bounded
-event tail — replaced atomically (`atomic_write`: temp file + rename) on every
-write. Schema-versioned; unknown fields preserved, defaults coerced forward on
-read; a malformed or oversized file is treated as absent, never fatal.
+Closing a dashboard tab preserves the ledger. Permanent history deletion calls `_remove_slot_for_history_key()` in `dashboard.handlers.sessions`; it cancels matching turns and destroys their sessions before calling `session_ledger.purge()` and `purge_matching()`. That ordering prevents a dying in-process turn from writing after the normal purge. `session_ledger.purge()` accepts that a cross-process race can recreate disposable orphan state; the next deletion sweep removes it.
 
-| Field | Type | Meaning |
-|---|---|---|
-| `schema` | int | record version, currently 1 |
-| `goal` | str | the binding objective of the workstream |
-| `phase` | str | current phase; free-form but see write discipline |
-| `next` | str | the resumable intent — a concrete next step, not a status word |
-| `tried` | list | `{approach, rejected_because, at}` — appended, never rewritten |
-| `artifacts` | dict | string-to-string pointers: worktree, branch, pr, paths |
-| `events` | list | bounded tail of `{ts, kind, text}` progress lines, oldest aged out |
-| `created_at` / `last_progress_at` / `finished_at` | str | ISO timestamps |
+## 3. State record and bounded writes
 
-### Write discipline (carried over from the crew ledger)
+`session_ledger._empty_state()` defines the state fields:
 
-- A `phase` change **requires** an event (`event` + a recognized `event_kind`)
-  in the same call. Because state and event land in the same atomic write,
-  the invariant is crash-atomic by construction: no failure between "phase
-  moved" and "event logged" can exist.
-- Every field is clamped at write time and the event tail is bounded, so the
-  document cannot grow without limit and every read is O(record), never
-  O(history).
-- `last_progress_at` advances on every accepted record call; `finished_at` is
-  set when `phase` enters a terminal value (`done`, `abandoned`).
-- Fields omitted from a record call keep their stored values: partial updates
-  are the norm and never a way to erase state.
-- Writes hold a per-ledger cross-process file lock with a **bounded** acquire:
-  a wedged holder costs one refused write (surfaced as a retryable error),
-  never a worker thread parked forever. Reads are lock-free — the atomic
-  replace means a reader sees the old or the new document, never a torn one,
-  and state + events always come from one transaction.
+| Field | Meaning |
+|---|---|
+| `schema` | stored schema marker |
+| `goal` | binding objective |
+| `phase` | current free-form work phase |
+| `next` | concrete resumable intent |
+| `tried` | rejected approaches with their reason and timestamp |
+| `artifacts` | string pointers to work artifacts |
+| `events` | recent classified progress entries |
+| timestamps | creation, latest progress, and terminal-completion time |
 
-## 5. MCP tools
+`session_ledger._coerce_state()` supplies defaults for malformed known fields and preserves unknown fields for forward compatibility. `session_ledger._read_state_unlocked()` treats unreadable, malformed, undecodable, or oversized state as empty rather than failing a turn. `test_read_state_malformed_oversized_or_undecodable_reads_empty` pins that behavior.
 
-Registered as a core domain module (`mcp_tools/ledger.py`, listed in
-`DOMAIN_MODULES`), following the `learn.py` template: `schemas()` + `HANDLERS`,
-handlers reach the gateway over the loopback HTTP API with the session-resolved
-identity header. There is no slot-key argument — the backend resolves the
-calling session and refuses requests that carry no session identity, exactly
-like the Issue Radar crew routes (raw HTTP gets 403).
+`session_ledger.record()` applies partial updates. Omitted fields retain their stored value; artifact updates merge with the stored map; a supplied rejected approach appends to `tried`; and a nonblank event appends to `events`. `test_record_roundtrip_and_partial_update`, `test_artifacts_merge_and_clamp`, `test_tried_appends_and_caps`, and `test_events_tail_bounded` pin the retention and aging rules. The bounds keep a resumed session from accumulating unbounded durable context.
 
-- `session_ledger_read` — no arguments. Returns the state record plus the tail
-  of the event log. The tool description tells the agent this is its own
-  session's durable work state.
-- `session_ledger_record` — `goal?`, `phase?`, `next?`, `tried_approach?` +
-  `tried_rejected_because?`, `artifacts?` (string map, merged), `event?` +
-  `event_kind?`. Enforces the phase/event rule server-side.
+Every accepted record advances `last_progress_at`. Changing `phase` requires a nonblank event and a recognized event kind. `session_ledger.record()` writes the phase and its event in one atomic state document, so a crash cannot expose a phase move without its classified reason; `test_phase_and_event_land_in_one_document` enforces this load-bearing audit trail. A phase in `session_ledger.TERMINAL_PHASES` stamps `finished_at`; a later non-terminal phase clears it, as guarded by `test_terminal_phase_sets_finished_at_and_reopening_clears_it`.
 
-Subagent, cron, and channel sessions may call the tools; each writes the ledger
-of its own session key. The primitive is deliberately session-scoped — there is
-no cross-session read, which keeps the authorization story trivial.
+`session_ledger._serialize_bounded()` evicts oldest history before an accepted state file can exceed the reader ceiling. `test_writer_guarantees_the_read_ceiling_for_legitimate_records` ensures a valid record remains readable, and `test_oversized_unknown_fields_are_dropped_not_self_corrupting` ensures oversized forward-compatible fields do not destroy known state.
 
-## 6. Auto-nudge snapshot injection
+Writes use the bounded exclusive lock in `session_ledger._locked()`. Contention raises `OSError` rather than allowing an unserialized write or indefinitely blocking a worker; `test_record_fails_closed_on_held_lock` enforces this. Reads are lock-free because `atomic_write` exposes either the previous or complete replacement document, so the state and event tail come from one transaction.
 
-`compose_nudge_body` (`dashboard/handlers/autonudge.py`) is the single
-composer used by all three fire callbacks (dashboard slot, Slack thread,
-Discord DM). When the loop's session has a ledger with a non-empty,
-non-terminal state record, the rendered body is prefixed with a bounded
-`[work ledger]` block — goal, phase, next, the last few tried entries,
-artifacts — capped in size so a runaway ledger cannot flood the turn. The
-ledger read runs in a worker thread: a slow or wedged filesystem costs one
-loop's snapshot, never the gateway event loop.
+## 4. MCP surface and authorization
 
-No MCP schema or directive plumbing changes: the snapshot is derived
-server-side at fire time from the session key the loop already carries. Loops
-on sessions without a ledger render exactly as before. Cron and heartbeat
-composers are intentionally untouched — heartbeat is stateless-per-cycle by
-design, and cron sessions can call `session_ledger_read` themselves.
+`mcp_tools.__init__.DOMAIN_MODULES` registers `mcp_tools.ledger`. `session_ledger_read` has no arguments and returns the calling session's state and recent event tail. `session_ledger_record` accepts only optional state fields; `validation.SESSION_LEDGER_RECORD_SCHEMA` validates their types and lengths, while `session_ledger.record()` enforces the conditional phase/event rule.
 
-## 7. Non-goals
+`mcp_tools.ledger._strict_session_key()` obtains a gateway-authored session identity before either tool calls the loopback routes. This is load-bearing because the lenient resolver can walk a subagent process tree to its parent; rejecting an unverified identity prevents a subagent from reading or overwriting the parent's ledger. `test_mcp_tools_refuse_without_strict_identity` and `test_mcp_tools_pass_the_verified_key_to_transport` enforce that boundary.
 
-- **Compaction.** Owned by the agent harness (ACP/kiro-cli); this feature
-  reduces what compaction can lose, it does not change how compaction works.
-- **Turn-internal durability / operation log.** Journaling tool calls with
-  stable operation ids so an interrupted turn can resume without re-executing
-  side effects is a separate, finer-grained track. This ledger records state
-  *between* wakes, not execution *within* a turn.
-- **Multi-writer arbitration / fenced leases.** One gateway process owns a
-  session's turns; concurrent cross-process writes to the same ledger are
-  serialized by the file lock. There is no takeover semantic to protect, so
-  version-fenced execution tokens would be complexity without a customer.
-- **UI.** No dashboard surface in this iteration; the ledger is agent-facing.
+`dashboard.handlers.session_ledger._resolve_ledger_key()` derives storage identity from the recognized `X-Session-Key`, never the request body. The routes reject missing or unrecognized identities and restricted session modes, so a request can read or write only its own durable ledger. `api_session_ledger_record()` sends bounded-lock failures back as retryable service errors and validates that artifact maps contain only strings. `test_route_refuses_unrecognized_session`, `test_route_refuses_restricted_session`, and `test_route_rejects_non_string_artifacts` cover those boundaries.
 
-## 8. Failure modes
+## 5. Auto-nudge injection
 
-- Ledger read/parse failure, or a state file past the size ceiling → treated
-  as absent; tools report empty state; nudge injection skips the block. Never
-  blocks the loop or the turn.
-- Lock contention → the acquire is a bounded poll; on expiry the record call
-  fails closed with a retryable error. Nudge-time reads are lock-free and
-  never wait on a writer.
-- Session deleted while a loop still points at it → purge wins; subsequent
-  reads see an empty ledger. A cross-process write racing the purge can
-  recreate an orphan directory, which the next delete sweeps — accepted for
-  disposable state (§3).
+`dashboard.handlers.autonudge.compose_nudge_body()` renders the normal nudge body, then reads `render_snapshot()` in a worker thread. A nonempty, non-terminal ledger snapshot prefixes the nudge; an absent ledger, terminal phase, or snapshot exception leaves the nudge body unchanged. `test_compose_nudge_body_prefixes_snapshot`, `test_compose_nudge_body_unchanged_without_ledger`, and `test_compose_nudge_body_survives_snapshot_failure` enforce those outcomes.
+
+`session_ledger.render_snapshot()` includes current goal, phase, next step, recent rejected approaches, and artifact pointers, and applies its own rendering bounds. It omits terminal records because completed work provides no next-cycle steering; `test_snapshot_empty_without_ledger_or_when_terminal` and `test_snapshot_contains_state_and_is_capped` guard this behavior.
+
+Every `_fire_*_nudge` adapter in `slack.gateway` calls `compose_nudge_body()`, including the messaging and dashboard transports. `test_gateway_fire_callbacks_use_the_composer` enumerates adapters rather than pinning their count, so a new transport cannot silently bypass the ledger snapshot.
+
+## 6. Failure behavior and scope
+
+A read failure yields an empty ledger. A write lock failure is retryable. Permanent deletion removes matching ledger directories, while the documented cross-process race may leave only disposable orphan state for the next sweep. Snapshot failures are best-effort and never prevent the nudge from firing.
+
+The ledger does not journal individual tool operations, arbitrate execution ownership with leases, or add a dashboard UI. It records state between wakes; the MCP tools and nudge composer are its public surfaces.

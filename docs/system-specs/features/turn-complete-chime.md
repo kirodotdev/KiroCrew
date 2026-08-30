@@ -1,28 +1,26 @@
 # Turn-Complete Chime
 
-When the agent finishes a turn, the dashboard plays a notification sound.
+When the dashboard receives an eligible `chat_done` WebSocket event, it dispatches a frontend turn-sound event. `useNotificationSound()` turns that event into audio only when the current sound settings and browser audio state permit playback.
 
 ## Policy
 
-Every real turn completion chimes — active chat or background, focused window or not. A turn completion (`chat_done` WS event) plays a sound when:
+`notificationEvent.ts:shouldChimeOnTurnDone()` accepts a slot-bearing event while `reconnecting` is false. `notificationEvent.test.ts` pins both exclusions: slot-less events and events received while the reconnect catch-up flag is set. These gates are load-bearing because they keep malformed events and reconnect replay from creating extra sound requests.
 
-- the event carries a `slot` (slot-less events have no real turn behind them), and
-- the client is not in reconnect catch-up replay (`reconnectingRef`, same suppression as `markSlotUnread`) — stale completions replayed on reconnect must not chime-storm; the unread badges already cover them.
-
-Users who want silence set the "Agent replies" category to Silent (or use the main enable toggle).
-
-The decision is the pure function `shouldChimeOnTurnDone()` in `website/src/hooks/notificationEvent.ts`, unit-tested in `website/src/test/notificationEvent.test.ts`.
+The policy does not inspect the active slot, document focus, or tab visibility. It also does not inspect a completion outcome: every slot-bearing `chat_done` event that passes the reconnect gate requests the turn sound, including a terminal event emitted by a stop or cancellation path.
 
 ## Wiring
 
-Sound-only path. No Redux notification, no toast, no badge, no feed entry:
+- The backend emits `chat_done` with a `slot` from terminal chat paths, including `chat_runner.py`, `chat_orchestrator.py`, and `chat_handlers.py`.
+- `useWebSocket.ts` passes the event slot and `reconnectingRef.current` to `shouldChimeOnTurnDone()`. When it returns true, the handler calls `notificationEvent.ts:dispatchMcNotification(TURN_DONE_KIND)`.
+- `dispatchMcNotification()` emits `MC_NOTIFICATION_EVENT` with the frontend-only `turn` kind and contains listener failures so a sound listener cannot interrupt WebSocket handling.
+- `App.tsx` mounts `useNotificationSound()` application-wide. Its listener resolves the `turn` category through `useNotificationSound.ts:presetForKind()`: an explicit `turn` preset wins, otherwise the `all` preset supplies the fallback. `notificationEvent.test.ts` and `useNotificationSound.test.ts` pin the category and fallback behavior.
+- `useNotificationSound()` suppresses playback when sounds are disabled, volume is silent, or the selected preset is Silent. It also coalesces closely spaced audible notification events; `useNotificationSound.test.ts` pins that cooldown behavior. This prevents completion bursts from stacking audio.
+- `ThemeExperienceLayer.tsx` also observes `MC_NOTIFICATION_EVENT`. An enabled, consented theme with a `notification` audio trigger can play its manifest sound for the same turn event.
+- `NotificationsPanel.tsx` exposes the localized **Agent replies** row for the `turn` category, including preset overrides and Silent. Its main sound toggle and volume control apply to this category.
 
-- `useWebSocket.ts` `chat_done` handler dispatches the window event `MC_NOTIFICATION_EVENT` with `kind: TURN_DONE_KIND` (`'turn'`) when the policy passes.
-- `useNotificationSound.ts` (already mounted app-wide) resolves the preset via the `turn` category. `'turn'` is a member of `SOUND_CATEGORIES`; with no per-category override it falls back to the `all` default (chime). Its existing 300 ms rate-limit dedupes bursts (e.g. several sessions finishing together).
-- Settings: Notifications panel row "Agent replies" — per-category preset override incl. Silent, same chrome as other categories. The main enable toggle and volume slider apply.
+The chime branch does not add a notification-feed record or create a native OS notification. The surrounding `chat_done` handler still performs ordinary completion work, including marking a background slot unread; that badge behavior is separate from the sound event.
 
 ## Non-goals
 
-- Native OS banner for turn completion (feed/banner behavior is owned by the notification bus; this feature is a sound cue only).
-- Backend involvement: the `turn` kind is synthesized in the frontend and never appears in the notifications feed or `~/.kiro/crew` state.
-- Attention gating (hidden tab / unfocused window / background-slot heuristics): the chime is an unconditional audible cue for any finished session; per-user silence lives in the sound settings, not in focus heuristics.
+- A dedicated backend notification kind or persisted turn-notification record. The backend supplies `chat_done`; `notificationEvent.ts` synthesizes `TURN_DONE_KIND` in the frontend, and `useNotificationSound.ts` documents it as sound-only rather than a feed kind.
+- Focus or visibility gating. The policy intentionally requests the sound event for active and background slots alike; users control audible playback through sound settings, while the listener's cooldown limits bursts.

@@ -1,83 +1,34 @@
 # Workflow Chat Cards
 
-## Problem
+## Behavior
 
-A dynamic workflow launched from chat (`workflow_run`) surfaces poorly at both
-ends of its lifecycle:
+Workflow launches and completions render as durable inline cards in chat. `ChatPage.tsx` renders them for the primary chat surface, and `transcriptRenderers.tsx::createTranscriptRenderers` registers the same cards for SDK transcript hosts. `TurnBlock.tsx` keeps those items outside collapsed tool and reasoning groups so a launch or completion remains available in either collapse mode.
 
-- **Launch:** the `workflow_run` tool call renders as a generic tool pill and is
-  folded into the collapsed "N tool calls" group — no persistent, scannable,
-  clickable anchor to the run's live state.
-- **Completion:** the injected completion event (see
-  `dashboard/workflow_inject.py`) dumps the entire result JSON inline as a wall
-  of text.
+### Launch card
 
-## Goal
+`website/src/pages/chat/WorkflowRunCard.tsx` renders a launch card only for a `tool` message whose persisted `meta.output` yields a run ID through `extractWorkflowRunId`; `isWorkflowRunTool` enforces the role check. The output contract originates in `src/kiro_crew/mcp_tools/workflows.py::workflow_run`, which returns a successful-launch message for definition, intent, and source launches.
 
-Give both lifecycle ends a persistent, clickable inline card in the chat flow
-that shows run state and opens the Workflows side panel — **render-only**, with
-no backend or persistence changes and no change to the agent-facing message
-content.
+The card reads the live entry from `chat.workflowRuns`. `website/src/hooks/useWebSocket.ts` folds workflow event frames into that slice and reconciles it with the workflow-runs API; `WorkflowRunCard` also uses `useRunSnapshot` when its live entry is not running. This makes the card useful both while a run is active and after an event frame was missed or the live entry has gone away.
 
-## Design
+The card sanitizes display text, switches to its own slot before opening the Workflows panel when rendered from a background pane, and dispatches `openActivityToTab('workflows')`. A finished run exposes the save-workflow flow; `WorkflowRunCard` requires a snapshot source before the library-promotion action is enabled.
 
-Frontend-only. Both cards are special-cased in `ChatPage.tsx` `renderMessage`
-and exempted from folding in `TurnBlock.tsx`; neither adds Redux/backend state.
+### Completion card
 
-### Components
+`src/kiro_crew/dashboard/workflow_inject.py::_summarize` creates the completion header, and `inject_workflow_result` appends it as an `assistant` message to the originating slot, broadcasts it to the live chat, and persists the same message for replay. The broadcast includes a workflow-result kind, while the durable message is an assistant row; the renderer therefore detects the persisted content rather than relying on an event kind.
 
-| Component | Renders for | Live source |
-|---|---|---|
-| `website/src/pages/chat/WorkflowRunCard.tsx` | a `workflow_run` tool message | `chat.workflowRuns[run_id]` (folded from `workflow_run_event` WS frames) — status / phase / last-log |
-| `website/src/pages/chat/WorkflowCompletionCard.tsx` | the injected `[Workflow completion event]` assistant message | header parsed from content; full result folded behind a "Show result" toggle |
+`website/src/pages/chat/WorkflowCompletionCard.tsx::parseWorkflowCompletion` parses the backend header and separates the display body. It removes the trailing agent-facing workflow-tool hint only from the rendered body; it does not mutate the message. The card sanitizes the workflow title, renders the body with `MarkdownRenderer`, starts with the completion body collapsed, and opens the Workflows panel through `openActivityToTab('workflows')`.
 
-Both open the Workflows side panel on click via
-`dispatch(openActivityToTab('workflows'))` (the same Redux path `/side` and
-approvals use, bridged into the `usePanelTabs` tab model by ChatPage). Header
-fields pass through `sanitizeLlmOutput`; the completion body renders through
-`MarkdownRenderer` (sanitized rehype pipeline).
+### Rendering invariants
 
-### Detection contract (content-based)
+**Parse-gated completion detection prevents data loss.** `isWorkflowCompletionMessage` accepts only an assistant message that `parseWorkflowCompletion` successfully parses. `ChatPage.tsx` and `transcriptRenderers.tsx` use that predicate before selecting `WorkflowCompletionCard`; an unparseable header therefore falls through to ordinary markdown instead of selecting a card that returns no content. `WorkflowCompletionCard.test.tsx` pins this fallback.
 
-Detection keys off message **content**, not the WS `kind` — the injected
-completion is persisted as a plain `assistant` message and the `kind` is dropped
-on persist, so content-matching is what survives a history reload. This creates
-a cross-layer contract with two backend strings:
+**Launch detection has the same fallback.** `WorkflowRunCard.tsx::extractWorkflowRunId` returns no ID when persisted tool output does not match the launch contract. `ChatPage.tsx` then renders the generic `ToolCallLine`, and `transcriptRenderers.tsx` does the same inside its launch renderer. This preserves the normal tool row while output is absent, malformed, or from another tool.
 
-| Frontend matcher | Backend source | Pinned by |
-|---|---|---|
-| `WF_RUN_ID_RE` = `` /Started workflow run `(wf_[A-Za-z0-9_]+)`/ `` | `mcp_core.py` `workflow_run` handler (both `source` and `intent` paths) | frontend unit test |
-| `WF_COMPLETION_RE` = ``/^\[Workflow completion event\]\nWorkflow `([^`]+)` \((wf_…)\) → \*\*([a-z]+)\*\*/`` | `workflow_inject.py` `_summarize` header | `test/test_workflows_inject.py::test_summary_header_format_is_pinned_for_frontend` |
-
-**Invariant — graceful degradation, never data loss.** Detection must be gated
-on a *successful parse*, not a loose prefix. `isWorkflowCompletionMessage`
-returns true only when `parseWorkflowCompletion` succeeds; otherwise the message
-falls through to normal markdown rendering (the pre-feature behavior). This
-prevents a card that renders `null` from swallowing a completion whose header
-doesn't parse (e.g. an unusual workflow name). The launch card likewise falls
-through to the generic `ToolCallLine` on a regex miss.
-
-Known follow-ups (tracked, not in this feature): (1) persist a structured
-marker (`meta.workflow_run_id` / a completion `kind`) so the frontend keys off
-data instead of prose, removing both regexes; (2) carry the `run_id` through
-panel-open so the panel focuses that specific run (mirroring
-`openActivityToTool`'s `focusToolCallId`).
-
-### TurnBlock fold exemption
-
-`TurnBlock.tsx` treats both cards as always-visible inline items (via
-`isWorkflowRunItem` / `isWorkflowCompletionItem`, added to `isVisibleInline`),
-so they are never folded into the collapsible tool-call / reasoning panes in
-either collapse mode, and the launch card does not inflate the "N tool calls"
-count.
+**Cards remain visible independently of turn folding.** `TurnBlock.tsx::isWorkflowRunItem` removes launch cards from the collapsed tool set, and `isWorkflowCompletionItem` includes completion cards in `isVisibleInline`. Without those classifications, the only chat anchor for a workflow lifecycle event can be hidden behind a turn disclosure.
 
 ## Tests
 
-- `website/src/test/WorkflowRunCard.test.tsx` — detection helpers, live status
-  render, intent fallback, click-opens-panel.
-- `website/src/test/WorkflowCompletionCard.test.tsx` — parse/detection incl. the
-  parse-gated fallback (prefix-but-unparseable is not detected) and newline-in-
-  name tolerance, compact render, collapsed-by-default, expand toggle,
-  click-opens-panel.
-- `test/test_workflows_inject.py::test_summary_header_format_is_pinned_for_frontend`
-  — pins the completion-header format the frontend depends on.
+- `website/src/test/WorkflowRunCard.test.tsx` covers launch detection, live-state and intent fallback rendering, panel opening, slot retargeting, and saving a finished workflow.
+- `website/src/test/WorkflowCompletionCard.test.tsx` covers parsing, parse-gated fallback, rendering disclosure, panel opening, and completion-body containment.
+- `website/src/test/transcriptRenderersRenderCov80.test.tsx` verifies that the shared transcript registry selects both cards and wraps their rows.
+- `test/test_workflows_inject.py::test_summary_header_format_is_pinned_for_frontend` pins the header emitted by `_summarize` for the completion parser.

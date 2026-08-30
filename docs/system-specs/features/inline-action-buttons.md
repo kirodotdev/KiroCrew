@@ -1,254 +1,40 @@
 # Inline Action Buttons
 
-## Problem
+## Scope
 
-Agents can send Block Kit messages with arbitrary buttons via `send_message`, but every button click currently goes through the OPTIONS handler which:
+`action::` is an inline-action value protocol inside legacy Slack OPTIONS controls. It is not a general Block Kit routing protocol: `kiro_crew.slack.interactions.dispatch` calls `_handle_options` only for action IDs with `OPTIONS_ACTION_PREFIX`, which `kiro_crew.slack.format` defines for OPTIONS choices. Other action IDs reach the tool-approval fallback when the interaction supplies a channel and message. `test_unknown_action_id_falls_through_to_tool_approval` locks that fallback.
 
-1. Deletes the original message
-2. Posts the button's `value` as a **visible user message** in the thread
-3. Starts a **new session** with that text
+The dispatcher first requires `is_allowed_user(user_id)`. OPTIONS interactions also pass `channel_inbound_permitted("slack")` before their handler runs. These gates are load-bearing because the action value becomes agent-visible context and a routed turn.
 
-This means structured payloads (JSON, metadata) pollute the chat, and the originating session loses context. Adding new button behaviors requires KiroCrew code changes.
+## Button routing
 
-## Goal
+An OPTIONS choice whose `value` starts with `action::` enters the action branch of `kiro_crew.slack.interactions._handle_options`. The remainder of `value` is an opaque payload; the handler does not parse or require JSON. It derives the visible label from `action["text"]["text"]`, falling back to the selected overflow option's text.
 
-Allow agents to define arbitrary Block Kit buttons whose clicks route back to the **originating session** as invisible context, with no KiroCrew code changes per button type.
+`_route_action_to_session` performs the shared delivery:
 
-## Design
+1. It redacts exfiltration URLs and credentials from the label, then attempts to replace matching elements in the source message with a context label.
+2. It posts the redacted label as a visible reply in the source thread. A failed post aborts routing, so an agent turn never runs without its visible Slack message. `test_post_message_failure_aborts` locks this ordering.
+3. It redacts and bounds the payload according to `_ACTION_PAYLOAD_CAP`, records the Slack access event, and builds an `Action button clicked` context entry.
+4. It calls `kiro_crew.slack.handler.handle_message` with the source message's `thread_ts`, the new reply timestamp, the visible label, and `action_context`.
 
-### Button value protocol
+`ContextBuilder.build_message` appends a non-empty `action_context` before the actual message text. The payload is therefore delivered as context rather than displayed verbatim in the thread; `test_redaction_applied_to_payload` covers payload redaction.
 
-Buttons use a prefix convention in their `value` field to control routing:
+The source-message update is best-effort. `_route_action_to_session` logs and continues when `update_message` fails, so a successful route does not guarantee that the original button has been replaced visually.
 
-| Prefix | Behavior |
-|---|---|
-| `action::{payload}` | Route payload to originating session as context injection |
-| _(no prefix)_ | Current behavior — visible message, new session |
+## Clicked-message rendering
 
-The `action::` prefix is chosen because it's unlikely to collide with natural language button values, and the `::` delimiter is unambiguous.
+`_mark_button_clicked` walks every `actions` block. For each block containing the supplied action ID, it removes every matching element, inserts a `context` block containing `✓ {label}` immediately before that actions block, and omits the actions block when no elements remain. It preserves blocks without a matching element. `TestMarkButtonClicked` covers replacement, unchanged input when no match exists, and removal of an empty actions block.
 
-### Example button
+The identifier match is the load-bearing link between Slack's interaction payload and the rendered message. Reused action IDs in separate actions blocks produce a context label for each matching block.
 
-```json
-{
-  "type": "button",
-  "text": {"type": "plain_text", "text": "📝 Draft reply"},
-  "action_id": "options_choice_0",
-  "value": "action::{\"intent\": \"draft_reply\", \"email_id\": \"AAMk...\", \"from\": \"jbarr\"}"
-}
-```
+## Extended elements
 
-### Clicked-button visual state
+`_handle_options` contains a direct-handler branch for an `action_id` beginning with `action::`. It parses the suffix as a JSON object, obtains a selection through `_extract_selected_value`, adds `selected_value`, derives a label from `placeholder.text` and the selected display text, and routes it through `_route_action_to_session`. `_extract_selected_value` handles `selected_option`, date, time, and datetime fields; malformed JSON or a non-object payload stops this branch without routing.
 
-When a button is clicked, it must remain visible as a non-interactive "done" indicator. Slack Block Kit doesn't support disabled buttons, so we use this approach:
+This branch is not reachable through the normal Slack dispatcher: `dispatch` forwards only `OPTIONS_ACTION_PREFIX` action IDs to `_handle_options`, while an `action::` action ID falls through to `_handle_tool_approval`. `test_extended_element_happy_path`, `test_malformed_json_in_action_id_no_crash`, and `test_non_dict_json_in_action_id_no_crash` exercise `_handle_options` directly, not the dispatcher.
 
-- The `actions` block containing the clicked button is split into:
-  1. A `context` block with mrkdwn text `✓ {button label}` (renders as small gray text)
-  2. A new `actions` block with the remaining (unclicked) buttons
-- If all buttons in an actions block have been clicked, only context blocks remain
+An element with an `OPTIONS_ACTION_PREFIX` action ID can enter the existing value branch when its selected value starts with `action::`, but that selected value is the opaque payload. It does not activate the direct-handler branch or merge a base JSON object with `selected_value`. Agents must not rely on `action::` in an extended element's `action_id` as an available Slack protocol.
 
-This preserves full visual context — with 5 emails × 4 buttons each, the user always sees which actions they've taken and which remain.
+## Tests
 
-### Routing flow
-
-1. User clicks button → Slack sends interaction payload to Socket Mode handler
-2. `interactions.py::_handle_options` checks if `value.startswith("action::")`
-3. **If action button:**
-   - Extract payload: `value[len("action::"):]`
-   - Extract display text from `action["text"]["text"]`
-   - Replace the clicked button with a `✓ {label}` context block (see above)
-   - Update the Slack message via `update_message` with the modified blocks
-   - Post the display text as a visible user message for conversational continuity
-   - Inject the structured payload as a context entry:
-     ```
-     --- CONTEXT ENTRY BEGIN ---
-     [Action button clicked: {"intent": "draft_reply", "email_id": "AAMk...", "from": "jbarr"}]
-     --- CONTEXT ENTRY END ---
-     ```
-   - Route to the **existing session** (same `thread_ts`) via `handle_message`
-4. **If no prefix:** current behavior unchanged (delete message, post value, new session)
-
-### What the agent sees
-
-A normal message turn with:
-- **Visible text:** The button's display text (e.g., "📝 Draft reply")
-- **Context entry:** The full structured payload
-
-The agent parses the JSON from the context entry and dispatches on `intent` or any other field. No KiroCrew code changes needed per button type — the agent's prompt defines the behavior.
-
-### What the user sees
-
-- The button they clicked becomes a static "✓ Draft reply" label (small gray text)
-- All other buttons on the same message remain clickable
-- A short message appears in the thread: "📝 Draft reply"
-- The agent responds in the same thread
-
-No JSON or structured payload visible in chat.
-
-## Files changed
-
-### `src/kiro_crew/slack/interactions.py`
-
-Modify `_handle_options`:
-- Check `value` for `action::` prefix (buttons), then `action_id` (extended elements)
-- For buttons: extract payload from `value` (existing behavior)
-- For extended elements: extract base payload from `action_id`, extract user selection via `_extract_selected_value(action)`, merge as `selected_value`
-- Derive display label: buttons use `text.text`, extended elements use `placeholder.text` + selected display text
-- Rest of flow shared: transform blocks, update message, post display text, inject context, route to session
-- If no prefix on either field: current behavior (unchanged)
-
-Add helper `_extract_selected_value(action) -> tuple[str, str]`:
-- Returns `(raw_value, display_text)` by checking fields in order:
-  `selected_option` → `selected_date` → `selected_time` → `selected_date_time`
-- For `selected_option`: raw = `.value`, display = `.text.text`
-- For date/time: raw = display = the date/time string
-
-Add helper `_mark_button_clicked(blocks, clicked_action_id, label) -> list`:
-- Walk blocks looking for `actions` blocks
-- When the clicked `action_id` is found in an actions block's elements:
-  - Remove the clicked element from elements
-  - Insert a `context` block (with `✓ {label}`) immediately before the actions block
-  - If no elements remain, drop the now-empty actions block
-- Return the updated block list (works for any element type, not just buttons)
-
-### `src/kiro_crew/slack/handler.py`
-
-Add optional `action_context` parameter to `handle_message`:
-- When provided, prepend as a context entry in the message sent to the agent
-
-### `src/kiro_crew/context.py`
-
-Add `action_context` parameter to `ContextBuilder.build_message`:
-- When provided, append as a `--- CONTEXT ENTRY ---` block
-
-## Extended interactive elements
-
-### Supported elements
-
-Beyond buttons, the `action::` protocol extends to other Block Kit interactive elements that fire `block_actions` events:
-
-| Element | Slack payload field | Example use case |
-|---|---|---|
-| Static select menu | `selected_option.value` | Priority picker, category selector |
-| Date picker | `selected_date` (YYYY-MM-DD) | Snooze until, deadline |
-| Time picker | `selected_time` (HH:mm) | Reminder time |
-| Datetime picker | `selected_date_time` (unix epoch) | Schedule send |
-| Overflow menu | `selected_option.value` | Compact action menu |
-| Radio buttons | `selected_option.value` | Single-choice selection |
-
-Not supported (different interaction model):
-- Multi-select menus / checkboxes (array payloads — add later if needed)
-- Plain text input (requires `dispatch_action` or modals)
-- Modals / views
-
-### Routing protocol
-
-The `action_id` carries the routing prefix and base payload. The user's selection is extracted from the element-specific field and merged in:
-
-```
-action_id: "action::{\"intent\": \"snooze\", \"email_id\": \"AAMk...\"}"
-```
-
-When the user picks a date, the handler:
-1. Parses the base payload from `action_id[len("action::"):]`
-2. Extracts the user's selection from the element-specific field
-3. Merges them: `{"intent": "snooze", "email_id": "AAMk...", "selected_value": "2026-04-15"}`
-4. Injects the merged payload as the context entry
-
-The `selected_value` key is normalized — regardless of whether Slack sends `selected_date`, `selected_time`, `selected_option.value`, etc., the context entry always uses `selected_value`.
-
-### Example: date picker
-
-Agent sends:
-```json
-{
-  "type": "datepicker",
-  "action_id": "action::{\"intent\": \"snooze\", \"email_id\": \"AAMk...\"}",
-  "placeholder": {"type": "plain_text", "text": "Snooze until..."}
-}
-```
-
-User picks 2026-04-15. The agent sees:
-```
---- CONTEXT ENTRY BEGIN ---
-[Action element selected: {"intent": "snooze", "email_id": "AAMk...", "selected_value": "2026-04-15"}]
---- CONTEXT ENTRY END ---
-```
-
-### Example: static select
-
-Agent sends:
-```json
-{
-  "type": "static_select",
-  "action_id": "action::{\"intent\": \"set_priority\", \"task_id\": \"T-1234\"}",
-  "placeholder": {"type": "plain_text", "text": "Set priority"},
-  "options": [
-    {"text": {"type": "plain_text", "text": "🔴 High"}, "value": "high"},
-    {"text": {"type": "plain_text", "text": "🟡 Medium"}, "value": "medium"},
-    {"text": {"type": "plain_text", "text": "🟢 Low"}, "value": "low"}
-  ]
-}
-```
-
-User picks "🔴 High". The agent sees:
-```
---- CONTEXT ENTRY BEGIN ---
-[Action element selected: {"intent": "set_priority", "task_id": "T-1234", "selected_value": "high"}]
---- CONTEXT ENTRY END ---
-```
-
-### Visual feedback for non-button elements
-
-Non-button elements use the same `_mark_button_clicked` approach, adapted per element type:
-
-| Element | ✓ label format |
-|---|---|
-| Date picker | `✓ Snooze until: 2026-04-15` |
-| Time picker | `✓ Remind at: 14:30` |
-| Static select | `✓ Priority: 🔴 High` |
-| Overflow / radio | `✓ {selected option text}` |
-
-The label is composed from the element's `placeholder.text` (or a fallback) + the selected display text.
-
-### Key difference from buttons
-
-Buttons carry the full payload in `value`. Extended elements carry the base payload in `action_id` and the user's selection in an element-specific field. This is because:
-- `action_id` is the only field common to all interactive elements
-- `value` is button-specific; other elements use `selected_date`, `selected_option`, etc.
-- The `action_id` has a 255-char limit in Slack, which is sufficient for typical JSON payloads
-
-### `action_id` length validation
-
-`send_message` validates that every `action_id` in the outgoing blocks is ≤ 255 characters. If any `action_id` exceeds the limit, the request is rejected immediately with a clear error (HTTP 400) listing the offending element. This catches oversized payloads before they reach Slack, giving the agent actionable feedback to shorten or use short-ID indirection.
-
-### Implementation
-
-Modify `_handle_options` to:
-1. Check `action_id` (not just `value`) for `action::` prefix
-2. Extract base payload from `action_id`
-3. Extract user selection via priority chain: `selected_option.value` → `selected_date` → `selected_time` → `selected_date_time`
-4. Merge `{"selected_value": extracted}` into base payload
-5. Derive display label from element type + selection text
-6. Rest of flow identical: update message, post display text, inject context, route to session
-
-Buttons use `value` exclusively for the `action::` prefix — no `action_id` fallback. Extended elements use `action_id` exclusively. This keeps routing unambiguous: each element type has exactly one field to check.
-
-## Not in scope
-
-- Custom `action_id` routing beyond the `action::` prefix convention (buttons use `options_choice_` prefix; extended elements use `action::` in `action_id`)
-- Multi-click tracking / state management
-- Dashboard button support (Slack-only for now)
-- Button-specific agent selection (uses thread's current agent)
-- Multi-select menus / checkboxes (array payloads)
-- Plain text input / modals
-
-## Testing
-
-- Unit test: `_mark_button_clicked` correctly transforms blocks for buttons and non-button elements
-- Unit test: `_extract_selected_value` returns correct value/display for each element type
-- Unit test: `_handle_options` with `action::` prefix in `value` (button) routes to existing session
-- Unit test: `_handle_options` with `action::` prefix in `action_id` (extended element) merges `selected_value` and routes
-- Unit test: `_handle_options` without prefix on either field preserves current behavior
-- Manual: send Block Kit message with action buttons, click several, verify ✓ labels persist
-- Manual: send message with date picker, select date, verify merged payload in context
+`test/test_action_interactions.py` covers the direct action-handler path, payload redaction, audit logging, and the block-transforming helpers. `test/test_slack_interactions_coverage.py::TestDispatchPayloadParsing::test_unknown_action_id_falls_through_to_tool_approval` covers the dispatch boundary that excludes arbitrary action IDs.

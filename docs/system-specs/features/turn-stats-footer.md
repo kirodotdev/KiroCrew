@@ -1,78 +1,54 @@
-# Per-Turn Stats Footer (Elapsed Time + Credits) — Design Document
+# Per-Turn Stats Footer (Elapsed Time + Credits)
 
 ## Overview
 
-kiro-cli natively prints an end-of-turn line with elapsed time and credits used; the dashboard chat previously showed neither. This feature attaches per-turn stats (`elapsed_ms`, `credits`, `cost_usd`) to the final assistant message of each completed turn and renders them as an always-visible muted footer line under that message — parity with the CLI.
+The dashboard persists per-turn measurement metadata on an assistant message and renders it as a muted footer when that message is the completed turn's final assistant message. `chat_runner._attach_turn_stats` keeps the metadata on the message before persistence, so the `chat_done` refresh can restore the same footer after reconnects.
 
 ## Data flow
 
 ```
-kiro-cli meteringUsage (unit=="credit")           claude_code result payload
-        │ (acp/_dispatch.py accumulates)                  │ (duration_ms, cost_usd)
-        ▼                                                 ▼
-TurnUsage on EVENT_COMPLETE  ──►  chat_runner captures _turn_elapsed_ms /
-                                  _turn_credits / _turn_cost_usd
-                                          │
-                                          ▼
-                     _attach_turn_stats(slot, …)  →  meta["turn_stats"] on the
-                     last assistant message (before _save_slot_to_history)
-                                          │
-                                          ▼
-                     chat_done WS → frontend refreshSlot re-fetch → meta arrives
-                                          │
-                                          ▼
-                     AssistantMessage renders the stats line (showFooter only)
+ACP metadata / provider usage
+        │
+        ▼
+TurnUsage on EVENT_COMPLETE
+        │
+        ▼
+chat_runner captures elapsed, credits, cost, and model
+        │
+        ▼
+_attach_turn_stats(slot, ...) → meta["turn_stats"] on a current-turn assistant message
+        │
+        ▼
+chat_done → refreshSlot → persisted metadata
+        │
+        ▼
+AssistantMessage renders the footer when its presentation gates permit it
 ```
 
 ## Backend (`src/kiro_crew/dashboard/chat_runner.py`)
 
-- **Turn start stamp**: `_turn_t0 = time.monotonic()` is recorded immediately before the event-stream loop of each turn.
-- **Capture at `EVENT_COMPLETE`**: `_turn_elapsed_ms` prefers the provider-reported `TurnUsage.duration_ms` (claude_code fills it; kiro/acp reports 0) and falls back to local wall clock. `_turn_credits` is kiro-cli's per-turn `meteringUsage` sum; `_turn_cost_usd` is claude_code's API-reported cost; `_turn_model` is `read_turn_model(client)` (see Model attribution).
-- **`_attach_turn_stats(slot, elapsed_ms, credits, cost_usd, turn_boundary)`**: mirrors `_flush_file_changes` — walks `slot.messages[turn_boundary:]` backwards and sets `meta["turn_stats"]` on the last assistant message. `turn_boundary` is `len(slot.messages)` captured at turn start, restricting the scan to messages appended during THIS turn — an error/refusal-only turn (no assistant message) therefore attaches nothing rather than overwriting the previous turn's stats. Runs in the `not _retrying_empty` post-turn block, *before* `_flush_file_changes` and `_save_slot_to_history`, so the meta both persists and reaches live tabs via the existing `chat_done` → `refreshSlot` re-fetch (no new WS event).
+`_run_chat` captures a monotonic start time and message boundary at turn start. On `EVENT_COMPLETE`, it prefers `TurnUsage.duration_ms` when present and otherwise measures elapsed time locally; it reads credits and cost from `TurnUsage` and calls `read_turn_model(client)`. ACP credit telemetry is accumulated from `meteringUsage` entries whose unit is `credit` by `acp.client.AcpClient._track_metadata`; `acp._dispatch.parse_metadata` applies the same unit filter for the shared dispatch path.
 
-### Meta contract
+`_attach_turn_stats(slot, elapsed_ms, credits, cost_usd, turn_boundary, model)` writes `meta["turn_stats"]` on the last assistant message appended at or after `turn_boundary`. `TestAttachTurnStats.test_error_only_turn_does_not_overwrite_previous_turn` and `test_boundary_scopes_to_current_turn_assistant` enforce this boundary: without it, an error-only turn could overwrite the prior turn's measurement. The helper does not fabricate a message, and it returns without a positive elapsed measurement. The post-turn persistence block skips the helper for `_retrying_empty` turns.
 
-```json
-"turn_stats": { "elapsed_ms": 84210, "credits": 2.5, "cost_usd": 0.0231, "model": "claude-sonnet-4.6" }
-```
-
-| Field | Presence | Meaning |
-|-------|----------|---------|
-| `elapsed_ms` | always (> 0) | Turn wall clock (provider duration preferred) |
-| `credits` | only when > 0 (rounded to 4 dp) | kiro per-turn credit spend |
-| `cost_usd` | only when > 0 (rounded to 6 dp) | claude_code API cost |
-| `model` | only when non-empty | What served the turn: a resolved id, or the bare `auto` |
+The helper preserves pre-existing `meta`, always records a positive `elapsed_ms`, and omits non-positive credits, cost, and empty model values. `TestAttachTurnStats.test_credits_rounded` pins credit precision; `test_preserves_existing_meta`, `test_zero_credits_key_omitted`, `test_zero_cost_key_omitted`, and `test_model_omitted_when_unattributable` pin the remaining contract.
 
 ### Model attribution
 
-`read_turn_model` (`dashboard/handlers/usage.py`) answers "what served this turn" in three states, and the distinction between the last two is the point:
+`dashboard.handlers.usage.read_turn_model` returns a concrete resolved model identifier when one is available, the `auto` sentinel for an Auto request without a resolved identifier, or an empty string when neither is known. `TestReadTurnModel` enforces the precedence and the unattributable case. The sentinel distinguishes an explicit Auto selection from absent attribution; callers that need a concrete identifier for pricing or context-window lookup use `read_effective_model` instead.
 
-| State | Value | When |
-|-------|-------|------|
-| Resolved | e.g. `global.anthropic.claude-opus-4-8[1m]` | A concrete id reached the provider chain (`_resolved_model_id`, else `_model`) |
-| Auto | `auto` | The session is on Auto and the backend disclosed no id for the turn |
-| Unattributable | `""` (key omitted) | No model information at all |
+## Frontend
 
-Auto is reported as the bare sentinel rather than collapsed into the empty state because a blank footer is indistinguishable from a turn with no measurement, which reads as a broken footer rather than as "the backend chose". It is never presented as a model id.
+`website/src/pages/ChatPage.tsx` passes `m.meta.turn_stats` to `AssistantMessage` only when `ChatConfig.showTurnStats` is true. `ChatSettings.loadChatConfig` defaults and repairs that persisted setting as enabled under `mc-chat-config`; `ChatPanel` does not currently expose a control for it. `website/src/app-sdk/messageRenderers.tsx` separately forwards `turn_stats` without consulting `ChatConfig`.
 
-Auto's per-turn choice is not on the ACP wire — the `_kiro.dev/metadata` frame carries `contextUsagePercentage` and `meteringUsage` only, and `currentModelId` is session-scoped (`session/new` / `session/load`), which `set_model("auto")` then overwrites with the sentinel. So `auto` is the whole of what can be said truthfully; disclosing which model Auto picked requires the backend to report it per turn.
+`website/src/pages/chat/AssistantMessage.tsx` renders the footer only when the message is not streaming, `showFooter` is true, and `turnStats.elapsed_ms` is positive. `ChatPage` computes `showFooter` for the last assistant message before a user message or, at the end of the transcript, after the slot is no longer running. Together with the backend boundary, these gates prevent an in-progress or earlier assistant segment from presenting the completed-turn footer.
 
-`read_effective_model` remains the reader for pricing and context-window lookups, where the sentinel is not a usable key.
-
-Edge cases: no attach when `elapsed_ms <= 0` (turn never reached `EVENT_COMPLETE`); no synthetic message is fabricated and no earlier turn is touched when a turn produced no assistant message (error-only turns — enforced by `turn_boundary`). Empty-response re-queue turns skip attachment entirely (the whole post-turn block is skipped).
-
-## Frontend (`website/src/pages/chat/AssistantMessage.tsx`)
-
-- New `turnStats?: TurnStats` prop, passed from `ChatPage.tsx` via `m.meta.turn_stats` only when the persisted `ChatConfig.showTurnStats` setting is enabled.
-- **User control**: Chat Settings includes a `Show elapsed time and credits` switch. It defaults to enabled for existing/new users, persists in `mc-chat-config`, and hides only the presentation — collection and persistence continue so re-enabling restores stats on existing messages.
-- Rendered only on messages where `showFooter` is true (the last assistant message of each completed turn) and never while streaming — so exactly one stats line per turn.
-- Always visible (unlike the hover-revealed action footer): 11px muted mono line with a clock icon, e.g. `⏱ 1m 24s · 2.50 credits`. `cost_usd` renders as `· $0.02` only when credits are absent (providers bill in one or the other).
-- **Model chip**: `model` leads the line when present, trimmed by `fmtTurnModel` (drops region/vendor routing prefixes) for width; the untrimmed id stays in the footer tooltip. The `auto` sentinel passes through the trimmer verbatim and renders as `auto`.
-- Formatting: `fmtTurnElapsed` — `3.5s` under 10 s, `42s` under a minute, `2m 34s` beyond; `fmtCredits` — 2 decimals under 10, 1 above.
-- Messages persisted before this feature simply lack the meta and render nothing.
+The footer is visible rather than hover-revealed, uses muted tabular numerals, and places a clock beside elapsed time. Only the optional model label uses the monospace face; `messageFooterFont.test.tsx` protects the footer-level font-setting contract. It displays credits when positive and otherwise displays positive dollar cost; elapsed time always follows the billed value. `fmtTurnModel` trims known routing prefixes for the inline label while the title retains the untrimmed model identifier. `fmtTurnElapsed`, `fmtCredits`, and their formatter tests in `AssistantMessage.test.tsx` pin the display rules. Missing `turn_stats`, `showFooter=false`, and streaming messages render no stats footer.
 
 ## Tests
 
-- `test/test_turn_stats.py` — attach/omit semantics, last-assistant targeting, rounding, meta coexistence with `file_changes`, and the binding that keeps the footer on the auto-aware model reader.
-- `test/test_usage.py` (`TestReadTurnModel`) — the three attribution states.
-- `website/src/test/AssistantMessage.test.tsx` (`turn stats footer` suite) — render variants (credits / cost / elapsed-only / model / `auto`), hidden while streaming / `showFooter=false` / missing meta, formatter contracts.
+- `test/test_turn_stats.py` (`TestAttachTurnStats`) covers attachment, omission, rounding, current-turn targeting, model attribution, and meta coexistence.
+- `test/test_usage.py` (`TestReadTurnModel`) covers resolved, Auto, and unattributable model states.
+- `website/src/test/AssistantMessage.test.tsx` (`turn stats footer`) covers rendering, ordering, model display, suppression gates, and formatters.
+- `website/src/test/ChatSettings.test.tsx` covers the persisted `showTurnStats` default and validation.
+- `website/src/test/messageFooterFont.test.tsx` verifies that the footer follows the configured font family.
