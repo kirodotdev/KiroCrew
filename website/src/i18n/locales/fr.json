@@ -13506,6 +13506,7 @@
       "pick_a_member": "Choisissez un membre pour ouvrir sa conversation.",
       "roster_load_failed": "Impossible de charger la liste des membres.",
       "search_members": "Rechercher des membres…",
+      "add_member": "Ajouter un membre",
       "slug_collision": "Ce membre partage son identifiant avec {{name}}, dont la conversation le détient déjà. Renommez l'une des équipes pour que chacune ait sa propre conversation.",
       "thread_open_failed": "Impossible d'ouvrir la conversation de ce membre.",
       "title": "Membres de l'équipe",

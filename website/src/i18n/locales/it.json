@@ -13505,6 +13505,7 @@
       "pick_a_member": "Scegli un membro per aprire la conversazione.",
       "roster_load_failed": "Impossibile caricare l'elenco dei membri.",
       "search_members": "Cerca membri…",
+      "add_member": "Aggiungi membro",
       "slug_collision": "Questo membro condivide il proprio identificatore con {{name}}, la cui conversazione lo possiede già. Rinomina una delle crew perché ognuna abbia la propria conversazione.",
       "thread_open_failed": "Impossibile aprire la conversazione di questo membro.",
       "title": "Membri della crew",

@@ -230,6 +230,16 @@ describe('MembersPage drawer and edit jump', () => {
     }
   })
 
+  it('the roster header has an add-member entry that navigates to the crew manager crews tab', async () => {
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    await screen.findByText('oncall')
+    // Adding a member IS creating a crew; the crew manager stays the only
+    // write path, so the entry is a navigation (destination pinned with the
+    // explicit ?tab=crews, same as the edit affordance).
+    fireEvent.click(screen.getByTestId('member-add'))
+    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews')
+  })
+
   it('roster rows show the last message preview, not an Idle/Working label', async () => {
     await renderPage([
       row({ last_message: 'Six new issues triaged.' }),

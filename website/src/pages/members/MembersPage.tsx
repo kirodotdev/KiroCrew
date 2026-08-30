@@ -21,7 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, Users, X } from 'lucide-react'
+import { ArrowLeft, Pencil, UserPlus, Users, X } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow } from '../../api/client'
@@ -234,6 +234,17 @@ export default function MembersPage() {
         <div className="px-4 pt-4 pb-1 flex items-center gap-2">
           <Users size={15} className="lucide-inline text-muted" />
           <h1 className="text-sm font-semibold flex-1">{t('pages.membersPage.title')}</h1>
+          {/* Adding a member IS creating a crew, and the crew manager is the
+              only write path — so this is a navigation, not an inline form. */}
+          <button
+            onClick={() => navigate(CREW_MANAGER_PATH)}
+            className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+            aria-label={t('pages.membersPage.add_member')}
+            title={t('pages.membersPage.add_member')}
+            data-testid="member-add"
+          >
+            <UserPlus size={15} />
+          </button>
         </div>
         <div className="px-4 pb-2 text-[11px] text-muted">
           {t('pages.membersPage.member_count', { count: members.length })}

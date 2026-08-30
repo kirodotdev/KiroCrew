@@ -13141,6 +13141,7 @@
       "pick_a_member": "选择一位成员开始对话。",
       "roster_load_failed": "无法加载成员名单。",
       "search_members": "搜索成员…",
+      "add_member": "添加成员",
       "slug_collision": "该成员与 {{name}} 的标识相同，对话已归属后者。请重命名其中一个 crew 以获得各自独立的对话。",
       "thread_open_failed": "无法打开该成员的对话。",
       "title": "团队成员",
