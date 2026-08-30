@@ -419,6 +419,12 @@ def _apply_agent_mcp_policy(
         merged = {**base, **spec}
         merged.pop("neutralized", None)
         merged.pop("disabled", None)  # a grant un-disables a previously denied server
+        # `mountOnly` (set by a policy for a built-in grant) means: mount the
+        # server so the tool is visible, but keep it OFF allowedTools no matter
+        # what the ceiling says, so every call routes through the approval gate
+        # and the user's tool-trust settings decide. It is a policy directive,
+        # not part of the kiro-cli server spec, so pop it before writing.
+        mount_only = bool(merged.pop("mountOnly", False))
         # The POLICY is a third source of `autoApprove` (after the app manifest and
         # the managed specs), so the whole map is filtered once below rather than
         # here — see the pass at the end of this function.
@@ -431,18 +437,42 @@ def _apply_agent_mcp_policy(
         # resolves to "rejected" -- the user asked for this server explicitly, so
         # granting it means granting its use.
         #
-        # ...EXCEPT where the enterprise ceiling forbids it. Auto-approve is the
-        # one path that never reaches `hooks.on_tool_call`: kiro-cli only sends
-        # `session/request_permission` for tools it must ask about, and the gate
-        # (where the governance deny runs) hangs off that request. Writing a
-        # ceiling-denied server here would therefore route around the ONE control
-        # the docs promise cannot be routed around. So the grant is intersected
-        # with the ceiling at write time: permitted -> auto-approve as before;
-        # denied -> the grant stays in `tools` but NOT here, which forces every
-        # call through request_permission, where the gate denies it. A user may
-        # grant anything; whether it RUNS remains the policy's call.
-        if ref not in allowed and _may_auto_approve(f"@{name}"):
+        # ...EXCEPT where the enterprise ceiling forbids it, OR the grant is
+        # mountOnly. Auto-approve is the one path that never reaches
+        # `hooks.on_tool_call`: kiro-cli only sends `session/request_permission`
+        # for tools it must ask about, and the gate (where the governance deny
+        # runs) hangs off that request. Writing a ceiling-denied — or mountOnly —
+        # server here would route around the ONE control the docs promise cannot
+        # be routed around. So the grant is intersected with the ceiling at write
+        # time AND skipped entirely when mountOnly: permitted & not mountOnly ->
+        # auto-approve as before; otherwise the grant stays in `tools` but NOT
+        # here, which forces every call through request_permission / the approval
+        # gate. A user may grant anything; whether it auto-runs remains the
+        # policy's (and the user's trust settings') call.
+        if ref not in allowed and not mount_only and _may_auto_approve(f"@{name}"):
             allowed.append(ref)
+        elif ref not in allowed and mount_only:
+            # A mountOnly grant deliberately withholds auto-approve — the same
+            # permission DECISION the ceiling filter makes, so it emits the same
+            # SEL audit event rather than being the one withhold path with no
+            # trail. (The ceiling case is covered by _ceiling_filtered_allowed;
+            # this is the mountOnly case, which never reaches that filter because
+            # the ref was never added to `allowed`.) Never fail the rebuild on an
+            # audit error.
+            try:
+                sel().log_api_access(
+                    caller="system",
+                    operation="mcp_auto_approve_withheld",
+                    outcome="ok",
+                    source="app_agent_materialization",
+                    resources=(
+                        f"@{name} mounted without auto-approve (mount-only grant) "
+                        f"for agent {agent_name or '?'}; calls go through the "
+                        "approval gate"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — audit must not break materialization
+                logger.debug("SEL audit unavailable for mount-only withhold", exc_info=True)
 
     for name, disabled in neutralized.items():
         if name in granted:

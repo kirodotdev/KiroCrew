@@ -54,6 +54,27 @@ _AUDIENCE_TO_AGENT = {"chat": CHAT_AGENT, "bg": BG_AGENT}
 #: and it is declared by the manifest rather than by the user.
 _OWN_SERVER_PREFIX = "mochi"
 
+#: Built-in grants that do NOT depend on the user's Settings -> MCP choices.
+#: The foreground pet's own prompt tells it to ``spawn_run`` for heavy work,
+#: ``learn_add`` on a correction, and ``cron_add`` for recurring jobs — all of
+#: which live in ``kirocrew-core`` / ``kirocrew-cron``. Leaving those to the
+#: fail-closed neutralize pass stranded every spawn/learn/cron instruction the
+#: chat prompt makes, so the foreground agent is granted both here.
+#:
+#: ONLY the foreground agent. ``mochi-bg`` is itself a spawned SUBAGENT (its
+#: prompt opens "You are a background subagent … you cannot spawn other agents")
+#: and the platform pins "subagents cannot spawn other subagents"
+#: (``subagent.py`` module docstring). Its ``managedToolPolicy`` unmounting of
+#: ``spawn_run`` is the structural enforcement of that invariant; granting it
+#: core would swap that hard denial for a prompt-only one on an untrusted-content
+#: path (bg runs unattended and ``web_fetch``es watch targets), with no gateway
+#: check refusing a subagent-originated spawn. So bg gets neither core nor cron.
+#: A user grant for the same server in Settings still wins (see the merge in
+#: :func:`build_policy`), so this only sets the floor, never overrides intent.
+_BUILTIN_GRANTS: dict[str, list[str]] = {
+    CHAT_AGENT: ["kirocrew-core", "kirocrew-cron"],
+}
+
 
 def policy_path(data_dir: Path) -> Path:
     return data_dir / POLICY_FILENAME
@@ -159,6 +180,27 @@ def build_policy(settings: dict[str, Any], data_dir: Path | None = None) -> dict
             agent = _AUDIENCE_TO_AGENT.get(str(audience))
             if agent is not None:
                 granted[agent][name] = dict(spec)
+
+    # Built-in grants (core/cron) come AFTER the user's entries so a user grant
+    # for the same server keeps its own autoApprove/disabledTools — setdefault
+    # never overwrites an explicit choice, it only fills the floor.
+    #
+    # `mountOnly` marks these built-in grants so the bridge mounts the server
+    # (the tool becomes visible, no longer stranded) but does NOT add it to
+    # `allowedTools`. allowedTools is kiro-cli's auto-approve list, the one path
+    # that never reaches hooks.on_tool_call — writing spawn_run/cron_add there
+    # would let prompt-injected content (the pet web_fetches watch targets)
+    # silently spawn agents or install recurring commands on a host with no
+    # governance ceiling. Left off allowedTools, every call routes through the
+    # approval gate, where the user's tool-trust settings decide auto-approve vs
+    # prompt — so trust is a user choice, not a hardcoded default. A user's own
+    # Settings grant for the same server (no mountOnly) still auto-approves as
+    # before, since setdefault below does not overwrite it.
+    for agent, builtin_names in _BUILTIN_GRANTS.items():
+        for name in builtin_names:
+            granted[agent].setdefault(
+                name, {"autoApprove": [], "disabledTools": [], "mountOnly": True}
+            )
 
     agents: dict[str, dict[str, Any]] = {}
     for agent, servers in granted.items():

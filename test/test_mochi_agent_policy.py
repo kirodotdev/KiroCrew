@@ -11,6 +11,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,8 +38,12 @@ class TestBuildPolicy:
                 ]
             }
         )
-        assert sorted(pol["agents"][CHAT_AGENT]["servers"]) == ["a", "c"]
-        assert sorted(pol["agents"][BG_AGENT]["servers"]) == ["b", "c"]
+        # servers now carry the built-in core/cron grants on top of the user's
+        # entries, so assert membership of the user grants rather than equality.
+        chat = pol["agents"][CHAT_AGENT]["servers"]
+        bg = pol["agents"][BG_AGENT]["servers"]
+        assert {"a", "c"} <= set(chat)
+        assert {"b", "c"} <= set(bg)
 
     def test_string_entry_defaults_to_chat_only(self, monkeypatch):
         """Legacy settings stored bare strings; they must not silently grant bg."""
@@ -107,6 +112,57 @@ class TestBuildPolicy:
         # them: see TestAmbientEnumerationFailsClosed.
         assert pol["agents"][CHAT_AGENT]["neutralize"] == {}
 
+    def test_builtin_core_cron_grants_are_foreground_only(self, monkeypatch):
+        """core/cron are granted from code, not from the user's Settings, and ONLY
+        to the foreground agent.
+
+        The chat prompt tells the pet to spawn_run, learn_add, and cron_add — all
+        in kirocrew-core / kirocrew-cron. Leaving those to the fail-closed
+        neutralize pass stranded every such instruction. But mochi-bg is itself a
+        spawned subagent whose contract forbids these tools ("subagents cannot
+        spawn other subagents"), so bg gets NEITHER — its managedToolPolicy
+        unmount of spawn_run is the structural enforcement of that invariant, and
+        a grant would swap it for a prompt-only one on an untrusted-content path.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.apps.builtins.mochi.agent_policy._ambient_servers",
+            lambda: {"kirocrew-core": ["spawn_run"], "kirocrew-cron": ["cron_add"]},
+        )
+        pol = build_policy({"extraMcpServers": []})
+        chat, bg = pol["agents"][CHAT_AGENT], pol["agents"][BG_AGENT]
+        # foreground: both granted, neither neutralized
+        assert "kirocrew-core" in chat["servers"]
+        assert "kirocrew-cron" in chat["servers"]
+        assert "kirocrew-core" not in chat["neutralize"]
+        assert "kirocrew-cron" not in chat["neutralize"]
+        # ...and granted mountOnly, so the bridge keeps them off allowedTools:
+        # spawn_run/cron_add route through the approval gate, never auto-approve
+        # on a ceiling-less host (this is the fix for the GPT-flagged bypass).
+        assert chat["servers"]["kirocrew-core"]["mountOnly"] is True
+        assert chat["servers"]["kirocrew-cron"]["mountOnly"] is True
+        # background: NEITHER granted, BOTH denied (a subagent must not spawn)
+        assert "kirocrew-core" not in bg["servers"]
+        assert "kirocrew-cron" not in bg["servers"]
+        assert "kirocrew-core" in bg["neutralize"]
+        assert "kirocrew-cron" in bg["neutralize"]
+
+    def test_user_grant_still_wins_over_builtin_floor(self, monkeypatch):
+        """A user's own Settings entry for core keeps its autoApprove/disabledTools
+        — the built-in floor uses setdefault and never overwrites intent.
+        """
+        monkeypatch.setattr(
+            "kiro_crew.apps.builtins.mochi.agent_policy._ambient_servers",
+            lambda: {"kirocrew-core": ["spawn_run"]},
+        )
+        pol = build_policy(
+            {
+                "extraMcpServers": [
+                    {"name": "kirocrew-core", "agents": ["chat"], "autoApprove": ["spawn_run"]},
+                ]
+            }
+        )
+        assert pol["agents"][CHAT_AGENT]["servers"]["kirocrew-core"]["autoApprove"] == ["spawn_run"]
+
     def test_write_policy_lands_where_the_framework_reads_it(self, tmp_path, monkeypatch):
         from kiro_crew.apps import bridges
 
@@ -144,6 +200,45 @@ class TestApplyAgentMcpPolicy:
         # allowedTools too: a server only in `tools` still prompts per call,
         # which for an unattended agent resolves to "rejected".
         assert "@srv" in out["allowedTools"]
+
+    def test_mountonly_grant_mounts_but_is_not_auto_approved(self, monkeypatch):
+        # A mountOnly grant (the built-in core/cron floor) must MOUNT the server
+        # so the tool is visible, but stay OFF allowedTools so every call routes
+        # through the approval gate instead of auto-approving — this is the fix
+        # for the prompt-injection cron/spawn bypass. The marker must not leak
+        # into the kiro-cli server spec.
+        from kiro_crew.apps import bridges
+
+        monkeypatch.setattr(
+            bridges, "_global_mcp_specs", lambda: {"srv": {"command": "srv-cmd", "args": []}}
+        )
+        events: list[dict] = []
+        monkeypatch.setattr(
+            bridges,
+            "sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+        )
+        out = _apply_agent_mcp_policy(
+            {"name": CHAT_AGENT, "tools": ["fs_read"], "allowedTools": ["fs_read"]},
+            CHAT_AGENT,
+            self._policy(
+                servers={"srv": {"autoApprove": [], "disabledTools": [], "mountOnly": True}}
+            ),
+        )
+        assert out["mcpServers"]["srv"]["command"] == "srv-cmd"  # mounted
+        assert "@srv" in out["tools"]  # visible, not stranded
+        assert "@srv" not in out["allowedTools"]  # NOT auto-approved
+        assert "mountOnly" not in out["mcpServers"]["srv"]  # marker stripped
+        # the withhold is a permission DECISION and must leave an audit trail,
+        # matching the ceiling-withhold path (not a silent drop).
+        srv_withheld = [
+            e
+            for e in events
+            if e.get("operation") == "mcp_auto_approve_withheld"
+            and "mount-only grant" in e.get("resources", "")
+        ]
+        assert len(srv_withheld) == 1
+        assert "@srv" in srv_withheld[0]["resources"]
 
     def test_grant_without_any_launch_spec_is_skipped(self, monkeypatch):
         from kiro_crew.apps import bridges
