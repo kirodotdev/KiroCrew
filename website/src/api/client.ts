@@ -1063,6 +1063,13 @@ export interface TailnetMobileMutation {
   detail: string
 }
 
+/** Phone-connection methods surviving the governance filter. `kind` names the
+ *  renderer; the dashboard skips a kind it does not recognise, so an edition's
+ *  new method degrades to absent on an older frontend, never to a broken panel. */
+export interface MobileConnectMethodsData {
+  methods: { id: string; kind: string }[]
+}
+
 /** Durable config established by the explicit mobile setup action. */
 export interface TailnetMobileConfigure {
   /** Trust/origin settings are snapshotted by middleware at gateway boot. */
@@ -2141,6 +2148,12 @@ export const api = {
     url: string
     expires_in: number
   }>,
+  // Phone-connection methods available on this deployment under the current
+  // governance ceiling (CPP mobile_connect seam). Descriptor-only: minting the
+  // credential stays on each method's own endpoint above/below. An empty list
+  // hides the sidebar "Connect your phone" entry entirely.
+  mobileConnectMethods: () =>
+    get('/api/mobile-connect/methods').then(j) as Promise<MobileConnectMethodsData>,
   // Tailnet origin (Settings → Security). READ ONLY here: the toggle writes
   // `dashboard.tailscale.enabled` through the generic config PATCH, because the
   // setting IS a config value and the status endpoint reports what the running
@@ -2156,9 +2169,11 @@ export const api = {
   tailnetMobileUnpublish: () =>
     post('/api/tailnet/mobile/unpublish', {}).then(j) as Promise<TailnetMobileMutation>,
   // Mints a session token. Called ONLY from an explicit user action — never on
-  // render — because the response is a live credential.
-  tailnetMobileQr: (ttl?: string) =>
-    post('/api/tailnet/mobile/qr', ttl ? { ttl } : {}).then(j) as Promise<TailnetMobileQr>,
+  // render — because the response is a live credential. `sessionKey` carries
+  // the caller's REAL slot key so the server's restricted-session guard sees
+  // it instead of the shared `dashboard:ui` placeholder.
+  tailnetMobileQr: (ttl?: string, sessionKey?: string) =>
+    post('/api/tailnet/mobile/qr', ttl ? { ttl } : {}, sessionKey).then(j) as Promise<TailnetMobileQr>,
   // Denied commands (Settings → Security). Every endpoint returns the full
   // refreshed snapshot so callers can seed their query cache from the response.
   deniedCommands: () => get('/api/security/denied-commands').then(j) as Promise<DeniedCommandsData>,

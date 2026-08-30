@@ -38,6 +38,7 @@ from kiro_crew.platform.defaults import (
     DefaultJailProvider,
     DefaultKnowledgeProvider,
     DefaultMcpToolingProvider,
+    DefaultMobileConnectProvider,
     DefaultPackageManager,
     DefaultPromptSourceProvider,
     DefaultProviderRegistry,
@@ -148,6 +149,7 @@ def build_default_context(
         telemetry=DefaultTelemetryProvider(),
         dashboard=DefaultDashboardContributor(),
         jail=DefaultJailProvider(),
+        mobile_connect=DefaultMobileConnectProvider(),
         feature_apps=(),
         governance=governance,
     )

@@ -112,7 +112,8 @@
     "open_command_bar": "Command Bar खोलें",
     "focus_mode": "फ़ोकस मोड",
     "focus_mode_title": "फ़ोकस मोड · Alt+Shift+M",
-    "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M"
+    "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M",
+    "connect_your_phone": "फ़ोन कनेक्ट करें"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6559,7 +6560,7 @@
       "no_description_was_provided": "कोई विवरण नहीं दिया गया।",
       "open_pull_request": "पुल रिक्वेस्ट खोलें",
       "open_slack_settings": "Slack सेटिंग खोलें",
-      "owner_not_configured_guidance": "इस कार्रवाई के लिए एक कॉन्फ़िगर किया गया स्वामी आवश्यक है, जिसे Kiro Crew Slack member ID से पहचानता है। Settings → Channels → Slack में \"Owner Slack member ID\" सेट करें, गेटवे रीस्टार्ट करें, फिर दोबारा साइन इन करें।",
+      "owner_not_configured_guidance": "इस कार्रवाई के लिए एक कॉन्फ़िगर किया गया स्वामी आवश्यक है, जिसे {{productName}} Slack member ID से पहचानता है। Settings → Channels → Slack में \"Owner Slack member ID\" सेट करें, गेटवे रीस्टार्ट करें, फिर दोबारा साइन इन करें।",
       "provider_results_may_be_partial_merge_request": "{{sections}} के लिए प्रोवाइडर के नतीजे अधूरे हो सकते हैं। पूरी सूची के लिए मर्ज रिक्वेस्ट खोलें।",
       "provider_results_may_be_partial_pull_request": "{{sections}} के लिए प्रोवाइडर के नतीजे अधूरे हो सकते हैं। पूरी सूची के लिए पुल रिक्वेस्ट खोलें।",
       "pull_request_sections": "पुल रिक्वेस्ट अनुभाग",
@@ -7552,6 +7553,33 @@
       "status_running": "काम चल रहा है",
       "status_unread": "अपठित",
       "tab_name_with_status": "{{name}} — {{status}}"
+    },
+    "mobileConnect": {
+      "use_kiro_crew_on_your_phone": "अपने फ़ोन पर {{productName}} इस्तेमाल करें",
+      "close": "बंद करें",
+      "scan_with_your_phone_camera_to_continue_with_the_s": "अपने फ़ोन के कैमरे से स्कैन करें और मोबाइल ब्राउज़र में {{productName}} खोलें। सब कुछ इस कंप्यूटर के साथ सिंक रहता है।",
+      "generating": "बनाया जा रहा है…",
+      "show_qr_code": "QR कोड दिखाएँ",
+      "qr_code_for_mobile_access": "मोबाइल एक्सेस के लिए QR कोड",
+      "copy_link": "लिंक कॉपी करें",
+      "could_not_generate_a_code_try_again": "कोड नहीं बन पाया — फिर से आज़माएँ।",
+      "remote_access_is_not_set_up_yet_finish_setup_to_ge": "रिमोट एक्सेस अभी सेट नहीं है। स्कैन करने योग्य कोड पाने के लिए सेटअप पूरा करें।",
+      "or_create_a_one_time_sign_in_link_to_send_to_yours": "कैमरा पास नहीं है? खुद को भेजने के लिए एक बार इस्तेमाल होने वाला लिंक बनाएँ — यह एक बार चलता है, फिर समाप्त।",
+      "creating": "बनाया जा रहा है…",
+      "create_sign_in_link": "साइन-इन लिंक बनाएँ",
+      "could_not_create_a_link_check_that_an_external_add": "लिंक नहीं बन पाया — जाँचें कि इस डैशबोर्ड के लिए बाहरी पता कॉन्फ़िगर है या नहीं।",
+      "mobile_access_link": "मोबाइल एक्सेस लिंक",
+      "one_time_sign_in_link": "एक बार इस्तेमाल होने वाला साइन-इन लिंक",
+      "checking_remote_access": "रिमोट एक्सेस की जाँच हो रही है…",
+      "create_a_one_time_sign_in_link_to_send_to_yourself": "खुद को भेजने के लिए एक बार इस्तेमाल होने वाला साइन-इन लिंक बनाएँ — यह एक बार काम करता है, फिर समाप्त हो जाता है।",
+      "the_link_works_once_and_expires_in_about_minutes": "लिंक एक बार काम करता है और लगभग {{minutes}} मिनट में समाप्त हो जाता है।",
+      "try_again": "पुनः प्रयास करें",
+      "new_code": "नया कोड",
+      "could_not_check_remote_access": "रिमोट एक्सेस की जाँच नहीं हो सकी।",
+      "the_code_signs_you_in_automatically_and_expires_in": "कोड अपने आप साइन इन कर देता है और लगभग {{minutes}} मिनट में समाप्त हो जाता है।",
+      "copy_failed_select_the_link_and_copy_it_manually": "कॉपी नहीं हो सका — लिंक चुनें और उसे मैन्युअल रूप से कॉपी करें।",
+      "could_not_create_a_link_try_again": "लिंक नहीं बन सका — पुनः प्रयास करें।",
+      "phone_connection_is_disabled_by_policy_on_this_dep": "इस परिनियोजन में नीति द्वारा फ़ोन कनेक्शन अक्षम है।"
     }
   },
   "hooks": {
@@ -12520,7 +12548,7 @@
         "streaming": "स्ट्रीमिंग",
         "system_default": "सिस्टम डिफ़ॉल्ट",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg मौजूद नहीं है — इसे इंस्टॉल किए जाने तक ब्राउज़र से आई वॉयस रिकॉर्डिंग ट्रांसक्राइब नहीं हो सकतीं।",
-        "the_bundled_audio_decoder_is_missing_or_damaged": "अंतर्निहित ऑडियो डिकोडर मौजूद नहीं है या क्षतिग्रस्त है। Kiro Crew डेस्कटॉप ऐप को फिर से इंस्टॉल करें; FFmpeg को अलग से इंस्टॉल न करें।",
+        "the_bundled_audio_decoder_is_missing_or_damaged": "अंतर्निहित ऑडियो डिकोडर मौजूद नहीं है या क्षतिग्रस्त है। {{productName}} डेस्कटॉप ऐप को फिर से इंस्टॉल करें; FFmpeg को अलग से इंस्टॉल न करें।",
         "then_restart_the_gateway_so_it_can_import_the_ne": "फिर gateway को पुनः आरंभ करें (Settings → About → Restart gateway) ताकि वह नए पैकेज इंपोर्ट कर सके।",
         "the_desktop_app_can_t_add_transcribe_support_ins": "डेस्कटॉप ऐप Transcribe समर्थन नहीं जोड़ सकता — इसका बंडल किया गया Python अतिरिक्त पैकेज इंस्टॉल नहीं कर सकता। इसके बजाय pip से {{productName}} इंस्टॉल करें और उसी एनवायरनमेंट से gateway चलाएँ।",
         "this_gateway_s_python_can_t_install_extra_packag": "इस gateway का Python अतिरिक्त पैकेज इंस्टॉल नहीं कर सकता, इसलिए यहाँ Transcribe चालू नहीं किया जा सकता। gateway को ऐसे Python एनवायरनमेंट में चलाएँ जहाँ pip से kirocrew[voice] इंस्टॉल हो सके।",

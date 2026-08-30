@@ -322,4 +322,10 @@ def test_mobile_link_writes_its_audit_off_the_event_loop():
 
     assert response.status == 200
     assert spy.call_args_list, "the audit record was written on the event loop"
-    assert all(call.args[0] is auth_mobile._audit for call in spy.call_args_list)
+    # Two legitimate off-loop callees: the SEL audit and the mobile-connect
+    # governance re-check (profile resolution can touch the filesystem). The
+    # audit MUST be among them — that is the property this test pins.
+    callees = [call.args[0] for call in spy.call_args_list]
+    assert auth_mobile._audit in callees, "the audit record was written on the event loop"
+    allowed = {auth_mobile._audit, auth_mobile.mint_denied_reason}
+    assert all(fn in allowed for fn in callees)

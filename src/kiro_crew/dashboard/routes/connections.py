@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_me,
     api_auth_refresh,
 )
+from kiro_crew.dashboard.handlers.mobile_connect import api_mobile_connect_methods
 from kiro_crew.platform import current_context, safe_context_call
 
 
@@ -94,6 +95,9 @@ def register(app: web.Application) -> None:
     # /api/auth/mobile-link are gated by the standard access-cookie auth.
     app.router.add_get("/api/auth/me", api_auth_me)
     app.router.add_post("/api/auth/mobile-link", api_auth_mobile_link)
+    # Phone-connection method listing (CPP mobile_connect seam + governance
+    # filter). Same auth floor as mobile-link's read half.
+    app.router.add_get("/api/mobile-connect/methods", api_mobile_connect_methods)
     app.router.add_post("/api/auth/refresh", api_auth_refresh)
     app.router.add_post("/api/auth/logout", api_auth_logout)
 

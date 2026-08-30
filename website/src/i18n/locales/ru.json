@@ -118,7 +118,8 @@
     "open_command_bar": "Открыть Command Bar",
     "focus_mode": "Режим фокусировки",
     "focus_mode_title": "Режим фокусировки · Alt+Shift+M",
-    "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M"
+    "focus_mode_title_mac": "Режим фокусировки · ⌥⇧M",
+    "connect_your_phone": "Подключить телефон"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6773,7 +6774,7 @@
       "no_description_was_provided": "Описание не указано.",
       "open_pull_request": "Открыть пул-реквест",
       "open_slack_settings": "Открыть настройки Slack",
-      "owner_not_configured_guidance": "Для этого действия нужен настроенный владелец, которого Kiro Crew определяет по Slack member ID. Укажите \"Owner Slack member ID\" в разделе Настройки → Каналы → Slack, перезапустите шлюз, затем войдите снова.",
+      "owner_not_configured_guidance": "Для этого действия нужен настроенный владелец, которого {{productName}} определяет по Slack member ID. Укажите \"Owner Slack member ID\" в разделе Настройки → Каналы → Slack, перезапустите шлюз, затем войдите снова.",
       "provider_results_may_be_partial_merge_request": "Результаты провайдера могут быть неполными для {{sections}}. Открой мерж-реквест, чтобы увидеть полный набор.",
       "provider_results_may_be_partial_pull_request": "Результаты провайдера могут быть неполными для {{sections}}. Открой пул-реквест, чтобы увидеть полный набор.",
       "pull_request_sections": "Разделы пул-реквеста",
@@ -7772,6 +7773,33 @@
       "status_running": "работает",
       "status_unread": "не прочитано",
       "tab_name_with_status": "{{name}} — {{status}}"
+    },
+    "mobileConnect": {
+      "use_kiro_crew_on_your_phone": "{{productName}} на вашем телефоне",
+      "close": "Закрыть",
+      "scan_with_your_phone_camera_to_continue_with_the_s": "Отсканируйте камерой телефона, чтобы открыть {{productName}} в мобильном браузере. Всё синхронизируется с этим компьютером.",
+      "generating": "Создание…",
+      "show_qr_code": "Показать QR-код",
+      "qr_code_for_mobile_access": "QR-код для мобильного доступа",
+      "copy_link": "Копировать ссылку",
+      "could_not_generate_a_code_try_again": "Не удалось создать код — попробуйте ещё раз.",
+      "remote_access_is_not_set_up_yet_finish_setup_to_ge": "Удалённый доступ ещё не настроен. Завершите настройку, чтобы получить сканируемый код.",
+      "or_create_a_one_time_sign_in_link_to_send_to_yours": "Нет камеры под рукой? Создайте одноразовую ссылку и отправьте её себе — она сработает один раз и истечёт.",
+      "creating": "Создание…",
+      "create_sign_in_link": "Создать ссылку для входа",
+      "could_not_create_a_link_check_that_an_external_add": "Не удалось создать ссылку — проверьте, настроен ли внешний адрес для этой панели.",
+      "mobile_access_link": "Ссылка мобильного доступа",
+      "one_time_sign_in_link": "Одноразовая ссылка для входа",
+      "checking_remote_access": "Проверка удалённого доступа…",
+      "create_a_one_time_sign_in_link_to_send_to_yourself": "Создайте одноразовую ссылку для входа и отправьте её себе — она сработает один раз, затем истечёт.",
+      "the_link_works_once_and_expires_in_about_minutes": "Ссылка работает один раз и истекает примерно через {{minutes}} мин.",
+      "try_again": "Повторить",
+      "new_code": "Новый код",
+      "could_not_check_remote_access": "Не удалось проверить удалённый доступ.",
+      "the_code_signs_you_in_automatically_and_expires_in": "Код выполняет вход автоматически и истекает примерно через {{minutes}} мин.",
+      "copy_failed_select_the_link_and_copy_it_manually": "Не удалось скопировать — выделите ссылку и скопируйте её вручную.",
+      "could_not_create_a_link_try_again": "Не удалось создать ссылку — повторите попытку.",
+      "phone_connection_is_disabled_by_policy_on_this_dep": "Подключение телефона отключено политикой в этом развёртывании."
     }
   },
   "hooks": {
@@ -12864,7 +12892,7 @@
         "streaming": "Потоковая передача",
         "system_default": "Системное значение по умолчанию",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg отсутствует — голосовые записи из браузера нельзя транскрибировать, пока он не установлен.",
-        "the_bundled_audio_decoder_is_missing_or_damaged": "Встроенный аудиодекодер отсутствует или повреждён. Переустановите настольное приложение Kiro Crew; не устанавливайте FFmpeg отдельно.",
+        "the_bundled_audio_decoder_is_missing_or_damaged": "Встроенный аудиодекодер отсутствует или повреждён. Переустановите настольное приложение {{productName}}; не устанавливайте FFmpeg отдельно.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Затем перезапустите gateway (Настройки → О программе → Перезапустить gateway), чтобы он смог импортировать новые пакеты.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "Приложение для рабочего стола не может добавить поддержку Transcribe — его встроенный Python не может устанавливать дополнительные пакеты. Установите {{productName}} через pip и запустите gateway из этого окружения.",
         "this_gateway_s_python_can_t_install_extra_packag": "Python этого gateway не может устанавливать дополнительные пакеты, поэтому Transcribe здесь включить нельзя. Запустите gateway из окружения Python, где pip может установить kirocrew[voice].",

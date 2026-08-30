@@ -42,6 +42,7 @@ if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
         JailProvider,
         KnowledgeProvider,
         McpToolingProvider,
+        MobileConnectProvider,
         PackageManager,
         PromptSourceProvider,
         ProviderRegistry,
@@ -302,6 +303,7 @@ class PlatformContext:
     telemetry: "TelemetryProvider"
     dashboard: "DashboardContributor"
     jail: "JailProvider"
+    mobile_connect: "MobileConnectProvider"
 
     # ── bundled feature apps ──
     feature_apps: "Tuple[FeatureApp, ...]"  # [RESERVED] — see RESERVED_SLOTS

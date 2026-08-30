@@ -115,7 +115,8 @@
     "open_command_bar": "Apri Command Bar",
     "focus_mode": "Modalità concentrazione",
     "focus_mode_title": "Modalità concentrazione · Alt+Maiusc+M",
-    "focus_mode_title_mac": "Modalità concentrazione · ⌥⇧M"
+    "focus_mode_title_mac": "Modalità concentrazione · ⌥⇧M",
+    "connect_your_phone": "Collega il telefono"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6666,7 +6667,7 @@
       "no_description_was_provided": "Non è stata fornita alcuna descrizione.",
       "open_pull_request": "Apri la pull request",
       "open_slack_settings": "Apri impostazioni Slack",
-      "owner_not_configured_guidance": "Questa azione richiede un proprietario configurato, che Kiro Crew identifica tramite l'ID membro Slack. Imposta \"Owner Slack member ID\" in Impostazioni → Canali → Slack, riavvia il gateway, quindi accedi di nuovo.",
+      "owner_not_configured_guidance": "Questa azione richiede un proprietario configurato, che {{productName}} identifica tramite l'ID membro Slack. Imposta \"Owner Slack member ID\" in Impostazioni → Canali → Slack, riavvia il gateway, quindi accedi di nuovo.",
       "provider_results_may_be_partial_merge_request": "I risultati del provider potrebbero essere parziali per {{sections}}. Apri la merge request per l’insieme completo.",
       "provider_results_may_be_partial_pull_request": "I risultati del provider potrebbero essere parziali per {{sections}}. Apri la pull request per l’insieme completo.",
       "pull_request_sections": "Sezioni della pull request",
@@ -7662,6 +7663,33 @@
       "status_running": "in corso",
       "status_unread": "non letta",
       "tab_name_with_status": "{{name}} — {{status}}"
+    },
+    "mobileConnect": {
+      "use_kiro_crew_on_your_phone": "Usa {{productName}} sul telefono",
+      "close": "Chiudi",
+      "scan_with_your_phone_camera_to_continue_with_the_s": "Scansiona con la fotocamera del telefono per aprire {{productName}} nel browser mobile. Tutto resta sincronizzato con questo computer.",
+      "generating": "Generazione…",
+      "show_qr_code": "Mostra codice QR",
+      "qr_code_for_mobile_access": "Codice QR per accesso mobile",
+      "copy_link": "Copia link",
+      "could_not_generate_a_code_try_again": "Impossibile generare un codice: riprova.",
+      "remote_access_is_not_set_up_yet_finish_setup_to_ge": "L'accesso remoto non è ancora configurato. Completa la configurazione per ottenere un codice scansionabile.",
+      "or_create_a_one_time_sign_in_link_to_send_to_yours": "Niente fotocamera a portata di mano? Crea un link monouso da inviarti: funziona una volta e poi scade.",
+      "creating": "Creazione…",
+      "create_sign_in_link": "Crea link di accesso",
+      "could_not_create_a_link_check_that_an_external_add": "Impossibile creare un link: verifica che per questa dashboard sia configurato un indirizzo esterno.",
+      "mobile_access_link": "Link di accesso mobile",
+      "one_time_sign_in_link": "Link di accesso monouso",
+      "checking_remote_access": "Verifica dell'accesso remoto…",
+      "create_a_one_time_sign_in_link_to_send_to_yourself": "Crea un link di accesso monouso da inviarti: funziona una volta, poi scade.",
+      "the_link_works_once_and_expires_in_about_minutes": "Il link funziona una sola volta e scade tra circa {{minutes}} minuti.",
+      "try_again": "Riprova",
+      "new_code": "Nuovo codice",
+      "could_not_check_remote_access": "Impossibile verificare l’accesso remoto.",
+      "the_code_signs_you_in_automatically_and_expires_in": "Il codice esegue l'accesso automaticamente e scade tra circa {{minutes}} minuti.",
+      "copy_failed_select_the_link_and_copy_it_manually": "Copia non riuscita: seleziona il link e copialo manualmente.",
+      "could_not_create_a_link_try_again": "Impossibile creare il link: riprova.",
+      "phone_connection_is_disabled_by_policy_on_this_dep": "La connessione del telefono è disabilitata dai criteri in questa distribuzione."
     }
   },
   "hooks": {
@@ -12691,7 +12719,7 @@
         "streaming": "Streaming",
         "system_default": "Predefinito di sistema",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg è mancante — le registrazioni vocali dal browser non possono essere trascritte finché non viene installato.",
-        "the_bundled_audio_decoder_is_missing_or_damaged": "Il decoder audio incluso è mancante o danneggiato. Reinstalla l’app desktop Kiro Crew; non installare FFmpeg separatamente.",
+        "the_bundled_audio_decoder_is_missing_or_damaged": "Il decoder audio incluso è mancante o danneggiato. Reinstalla l’app desktop {{productName}}; non installare FFmpeg separatamente.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Poi riavvia il gateway (Impostazioni → Informazioni → Riavvia gateway) in modo che possa importare i nuovi pacchetti.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "L’app desktop non può aggiungere il supporto per Transcribe: il suo Python integrato non può installare pacchetti aggiuntivi. Installa {{productName}} con pip ed esegui il gateway da quell’ambiente.",
         "this_gateway_s_python_can_t_install_extra_packag": "Il Python di questo gateway non può installare pacchetti aggiuntivi, quindi Transcribe non può essere abilitato qui. Esegui il gateway da un ambiente Python in cui pip possa installare kirocrew[voice].",

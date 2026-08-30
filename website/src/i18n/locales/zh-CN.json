@@ -109,7 +109,8 @@
     "open_command_bar": "打开 Command Bar",
     "focus_mode": "专注模式",
     "focus_mode_title": "专注模式 · Alt+Shift+M",
-    "focus_mode_title_mac": "专注模式 · ⌥⇧M"
+    "focus_mode_title_mac": "专注模式 · ⌥⇧M",
+    "connect_your_phone": "连接手机"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6452,7 +6453,7 @@
       "no_description_was_provided": "未提供描述。",
       "open_pull_request": "打开拉取请求",
       "open_slack_settings": "打开 Slack 设置",
-      "owner_not_configured_guidance": "此操作需要已配置的所有者，Kiro Crew 通过 Slack 成员 ID 识别所有者。请在 设置 → 渠道 → Slack 中设置 \"Owner Slack member ID\"，重启网关后重新登录。",
+      "owner_not_configured_guidance": "此操作需要已配置的所有者，{{productName}} 通过 Slack 成员 ID 识别所有者。请在 设置 → 渠道 → Slack 中设置 \"Owner Slack member ID\"，重启网关后重新登录。",
       "provider_results_may_be_partial_merge_request": "服务商返回的结果可能不完整：{{sections}}。打开合并请求以获取完整内容。",
       "provider_results_may_be_partial_pull_request": "服务商返回的结果可能不完整：{{sections}}。打开拉取请求以获取完整内容。",
       "pull_request_sections": "拉取请求分区",
@@ -7442,6 +7443,33 @@
       "status_running": "正在处理",
       "status_unread": "未读",
       "tab_name_with_status": "{{name}} — {{status}}"
+    },
+    "mobileConnect": {
+      "use_kiro_crew_on_your_phone": "在手机上使用 {{productName}}",
+      "close": "关闭",
+      "scan_with_your_phone_camera_to_continue_with_the_s": "用手机相机扫码，在手机浏览器里打开 {{productName}}。所有内容与这台电脑实时同步。",
+      "generating": "生成中…",
+      "show_qr_code": "显示二维码",
+      "qr_code_for_mobile_access": "手机访问二维码",
+      "copy_link": "复制链接",
+      "could_not_generate_a_code_try_again": "生成二维码失败，请重试。",
+      "remote_access_is_not_set_up_yet_finish_setup_to_ge": "远程访问尚未设置。完成设置后即可获得可扫描的二维码。",
+      "or_create_a_one_time_sign_in_link_to_send_to_yours": "手边没有相机？创建一次性链接发给自己，仅可使用一次，随后过期。",
+      "creating": "创建中…",
+      "create_sign_in_link": "创建登录链接",
+      "could_not_create_a_link_check_that_an_external_add": "创建链接失败——请检查此面板是否配置了外部访问地址。",
+      "mobile_access_link": "手机访问链接",
+      "one_time_sign_in_link": "一次性登录链接",
+      "checking_remote_access": "正在检查远程访问…",
+      "create_a_one_time_sign_in_link_to_send_to_yourself": "创建一次性登录链接并发送给自己，链接使用一次后即失效。",
+      "the_link_works_once_and_expires_in_about_minutes": "链接仅可使用一次，约 {{minutes}} 分钟后失效。",
+      "try_again": "重试",
+      "new_code": "换新码",
+      "could_not_check_remote_access": "无法检查远程访问。",
+      "the_code_signs_you_in_automatically_and_expires_in": "扫码后自动登录，二维码约 {{minutes}} 分钟后失效。",
+      "copy_failed_select_the_link_and_copy_it_manually": "复制失败，请选中链接后手动复制。",
+      "could_not_create_a_link_try_again": "无法创建链接，请重试。",
+      "phone_connection_is_disabled_by_policy_on_this_dep": "此部署已通过策略禁用手机连接。"
     }
   },
   "hooks": {
@@ -12347,7 +12375,7 @@
         "streaming": "流式",
         "system_default": "系统默认",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg 缺失 — 在安装它之前，无法转写来自浏览器的语音录音。",
-        "the_bundled_audio_decoder_is_missing_or_damaged": "内置的音频解码器缺失或已损坏。请重新安装 Kiro Crew 桌面应用；无需单独安装 FFmpeg。",
+        "the_bundled_audio_decoder_is_missing_or_damaged": "内置的音频解码器缺失或已损坏。请重新安装 {{productName}} 桌面应用；无需单独安装 FFmpeg。",
         "then_restart_the_gateway_so_it_can_import_the_ne": "然后重启 gateway（设置 → 关于 → 重启 gateway），以便加载新安装的包。",
         "the_desktop_app_can_t_add_transcribe_support_ins": "桌面应用无法添加 Transcribe 支持——其内置的 Python 无法安装额外的包。请改用 pip 安装 {{productName}}，并从该环境运行 gateway。",
         "this_gateway_s_python_can_t_install_extra_packag": "此 gateway 的 Python 无法安装额外的包，因此无法在这里启用 Transcribe。请在 pip 能够安装 kirocrew[voice] 的 Python 环境中运行 gateway。",

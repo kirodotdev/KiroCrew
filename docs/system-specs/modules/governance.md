@@ -2073,7 +2073,25 @@ default on; a deny makes the tool refuse outright, and it does NOT fall back to
 the `commands` scope, so denying browsing wholesale means denying both this
 capability AND the `playwright-cli` command),
 `capabilities.publish` (artifact publish chokepoint — see below),
-`capabilities.theme_persona` / `capabilities.theme_install`, and
+`capabilities.theme_persona` / `capabilities.theme_install`,
+`capabilities.mobile_connect` (phone-connection methods: filters the
+`GET /api/mobile-connect/methods` listing AND is re-checked fail-closed inside
+both credential-mint endpoints — `/api/tailnet/mobile/qr` and
+`/api/auth/mobile-link` — via `mint_denied_reason`, because a filtered list is
+presentation, never the control. The mint re-check enforces TWO controls
+fail-closed: the method must exist in the active `mobile_connect` provider's
+set (an edition that removed a method disabled it — a direct POST does not
+out-rank the seam), and governance must permit it. Default-allow standalone; a `methods` ruleset
+narrows to individual method ids — `methods:tailnet_qr`, `methods:login_link`.
+The default methods deliberately use ONE spelling for id and kind
+(`tailnet_qr`, `login_link`), so a ruleset written against either binds; an
+edition contributing its own method must keep that property or document its
+ids. The built-in mint endpoints ARE the built-in methods — an edition adding
+a new method ships its own mint endpoint and frontend renderer alongside its
+descriptor. Every decision, list and mint alike, is SEL-audited through
+`vet_and_audit`. Denying everything hides the dashboard's "Connect your phone"
+entry; the method rows themselves come from the `mobile_connect` CPP seam —
+see `platform-context.md`), and
 `capabilities.telemetry` (the anonymous beacon: send gate + both write
 chokepoints — **policy layer only**, see below). Only the live `approval_mode`
 clamp remains reserved.

@@ -43,7 +43,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -141,6 +141,7 @@ import { countUpdatables, registryQueryFn, type UpdatableInstalledRow } from './
 // mount gate at the render site means the chunk is fetched exactly when it
 // can render.
 const UpdateFoundModal = lazy(() => import('./components/UpdateFoundModal'))
+const MobileConnectModal = lazy(() => import('./components/MobileConnectModal'))
 // Same boundary, same reason: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('./components/UpdatePill'))
@@ -1028,6 +1029,22 @@ export default function App() {
   // every mousemove during a grip-drag, and a primitive snapshot lets
   // useSyncExternalStore's Object.is check skip those re-renders of App.
   const bottomTerminalOpen = useBottomTerminalOpen()
+  // "Connect your phone" rail entry. The methods come from the CPP
+  // mobile_connect seam filtered by governance; an empty list (edition
+  // returned none, policy denied all, seam degraded) hides the row entirely —
+  // the endpoint is the authority, the frontend never guesses.
+  const [mobileConnectOpen, setMobileConnectOpen] = useState(false)
+  const mobileConnectQuery = useQuery({
+    queryKey: ['mobile-connect-methods'],
+    queryFn: api.mobileConnectMethods,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+  // Only kinds this frontend can render: an edition's NEW method kind would
+  // otherwise show the rail row and then open an empty dialog.
+  const mobileConnectKinds = (mobileConnectQuery.data?.methods ?? [])
+    .map(m => m.kind)
+    .filter(k => k === 'tailnet_qr' || k === 'login_link')
   // Selected session's project directory: a terminal opened from the nav row
   // starts there (server default when no session is selected or it has none).
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
@@ -2993,6 +3010,11 @@ export default function App() {
           <UpdateFoundModal />
         </Suspense>
       )}
+      {mobileConnectOpen && (
+        <Suspense fallback={null}>
+          <MobileConnectModal kinds={mobileConnectKinds} onClose={() => setMobileConnectOpen(false)} />
+        </Suspense>
+      )}
 
       {/* First-run modal chrome mounted ONCE (scrim + accent panel + floating
           mascots) so the import→customize hand-off swaps only the right-column
@@ -3358,6 +3380,20 @@ export default function App() {
                      focus is a harmless no-op). Explicit re-dock lives in the
                      TerminalDetachedBar below -- never a timing heuristic. */
                   onClickOverride={() => { if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
+                />
+              )}
+              {mobileConnectKinds.length > 0 && (
+                <NavItem
+                  path="#"
+                  label={i18nT('app.connect_your_phone')}
+                  icon={<Smartphone size={16} />}
+                  /* Toggles the connect dialog instead of navigating — same
+                     contract as the terminal row above. */
+                  active={mobileConnectOpen}
+                  pressed={mobileConnectOpen}
+                  collapsed={effectiveCollapsed}
+                  onClick={closeMobileNav}
+                  onClickOverride={() => setMobileConnectOpen(true)}
                 />
               )}
               <div>{renderNavRow(cap)}</div>

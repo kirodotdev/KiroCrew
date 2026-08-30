@@ -28,6 +28,7 @@ import { Badge, Btn, Card, CardTitle } from './ui'
 import Clickable from './Clickable'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
+import { useAppSelector } from '../store'
 
 /** Copy-to-clipboard button with a transient confirmation tick.
  *
@@ -270,6 +271,10 @@ export function TailnetMobileCard() {
   const [actionError, setActionError] = useState('')
   const [inviteExpanded, setInviteExpanded] = useState(readInviteExpanded)
   const [setupRestarting, setSetupRestarting] = useState(false)
+  // The active slot's key rides the mint so the server's restricted-session
+  // guard sees the REAL session, not the shared `dashboard:ui` default.
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const mintSessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
 
   /** Single writer for the invite's open/closed state, so the persisted value
    *  can never drift from what is rendered. */
@@ -361,7 +366,7 @@ export function TailnetMobileCard() {
         )
       }
 
-      return api.tailnetMobileQr()
+      return api.tailnetMobileQr(undefined, mintSessionKey)
     },
     onMutate: () => setActionError(''),
     onSuccess: (res) => {

@@ -1116,6 +1116,13 @@ class TestQrRefusals:
                     "load",
                     classmethod(lambda cls: _load_then_fail()),
                 ),
+                # This test pins the CONFIG fallback, not governance. The
+                # capabilities.mobile_connect pre-check would lazily build the
+                # platform context (its own KiroCrewConfig.load), consuming the
+                # single successful load this fixture budgets for _live_state —
+                # so neutralize it here; the governance path has its own pins
+                # in test_mobile_connect_seam.py.
+                patch.object(tailnet_mobile, "mint_denied_reason", return_value=""),
                 patch.object(tailnet_mobile, "generate_token", side_effect=_fake_mint),
                 patch.object(
                     tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"

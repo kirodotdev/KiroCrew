@@ -65,7 +65,8 @@
     "open_command_bar": "Open Command Bar",
     "focus_mode": "Focus mode",
     "focus_mode_title": "Focus mode · Alt+Shift+M",
-    "focus_mode_title_mac": "Focus mode · ⌥⇧M"
+    "focus_mode_title_mac": "Focus mode · ⌥⇧M",
+    "connect_your_phone": "Connect your phone"
   },
   "appSdk": {
     "chatEmbed": {
@@ -2089,7 +2090,7 @@
       "state_draft": "Draft",
       "state_merged": "Merged",
       "state_open": "Open",
-      "owner_not_configured_guidance": "This action needs a configured owner, which Kiro Crew identifies by Slack member ID. Set \"Owner Slack member ID\" in Settings → Channels → Slack, restart the gateway, then sign in again.",
+      "owner_not_configured_guidance": "This action needs a configured owner, which {{productName}} identifies by Slack member ID. Set \"Owner Slack member ID\" in Settings → Channels → Slack, restart the gateway, then sign in again.",
       "open_slack_settings": "Open Slack settings"
     },
     "registryManager": {
@@ -2540,6 +2541,33 @@
       "status_running": "working",
       "status_unread": "unread",
       "tab_name_with_status": "{{name}} — {{status}}"
+    },
+    "mobileConnect": {
+      "use_kiro_crew_on_your_phone": "Use {{productName}} on your phone",
+      "close": "Close",
+      "scan_with_your_phone_camera_to_continue_with_the_s": "Scan with your phone camera to open {{productName}} in your mobile browser. Everything stays in sync with this computer.",
+      "generating": "Generating…",
+      "show_qr_code": "Show QR code",
+      "qr_code_for_mobile_access": "QR code for mobile access",
+      "copy_link": "Copy link",
+      "could_not_generate_a_code_try_again": "Could not generate a code — try again.",
+      "remote_access_is_not_set_up_yet_finish_setup_to_ge": "Remote access is not set up yet. Finish setup to get a scannable code.",
+      "or_create_a_one_time_sign_in_link_to_send_to_yours": "No camera handy? Create a one-time link to send to yourself — it works once, then expires.",
+      "creating": "Creating…",
+      "create_sign_in_link": "Create sign-in link",
+      "could_not_create_a_link_check_that_an_external_add": "Could not create a link — check that an external address is configured for this dashboard.",
+      "mobile_access_link": "Mobile access link",
+      "one_time_sign_in_link": "One-time sign-in link",
+      "checking_remote_access": "Checking remote access…",
+      "create_a_one_time_sign_in_link_to_send_to_yourself": "Create a one-time sign-in link to send to yourself — it works once, then expires.",
+      "the_link_works_once_and_expires_in_about_minutes": "The link works once and expires in about {{minutes}} minutes.",
+      "try_again": "Try again",
+      "new_code": "New code",
+      "could_not_check_remote_access": "Could not check remote access.",
+      "the_code_signs_you_in_automatically_and_expires_in": "The code signs you in automatically and expires in about {{minutes}} minutes.",
+      "copy_failed_select_the_link_and_copy_it_manually": "Copy failed — select the link and copy it manually.",
+      "could_not_create_a_link_try_again": "Could not create a link — try again.",
+      "phone_connection_is_disabled_by_policy_on_this_dep": "Phone connection is disabled by policy on this deployment."
     }
   },
   "hooks": {

@@ -109,7 +109,8 @@
     "open_command_bar": "Command Bar を開く",
     "focus_mode": "フォーカスモード",
     "focus_mode_title": "フォーカスモード · Alt+Shift+M",
-    "focus_mode_title_mac": "フォーカスモード · ⌥⇧M"
+    "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
+    "connect_your_phone": "スマホを接続"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6452,7 +6453,7 @@
       "no_description_was_provided": "説明が提供されませんでした。",
       "open_pull_request": "プルリクエストを開く",
       "open_slack_settings": "Slack 設定を開く",
-      "owner_not_configured_guidance": "この操作には設定済みのオーナーが必要です。Kiro Crew はオーナーを Slack メンバー ID で識別します。設定 → チャンネル → Slack で「Owner Slack member ID」を設定し、ゲートウェイを再起動してから、再度サインインしてください。",
+      "owner_not_configured_guidance": "この操作には設定済みのオーナーが必要です。{{productName}} はオーナーを Slack メンバー ID で識別します。設定 → チャンネル → Slack で「Owner Slack member ID」を設定し、ゲートウェイを再起動してから、再度サインインしてください。",
       "provider_results_may_be_partial_merge_request": "{{sections}}のプロバイダー結果が部分的である可能性があります。完全なセットについてはマージリクエストを開いてください。",
       "provider_results_may_be_partial_pull_request": "{{sections}}のプロバイダー結果が部分的である可能性があります。完全なセットについてはプルリクエストを開いてください。",
       "pull_request_sections": "プルリクエストセクション",
@@ -7442,6 +7443,33 @@
       "status_running": "処理中",
       "status_unread": "未読",
       "tab_name_with_status": "{{name}} — {{status}}"
+    },
+    "mobileConnect": {
+      "use_kiro_crew_on_your_phone": "スマホで {{productName}} を使う",
+      "close": "閉じる",
+      "scan_with_your_phone_camera_to_continue_with_the_s": "スマホのカメラでスキャンすると、モバイルブラウザーで {{productName}} を開けます。すべてこのパソコンと同期されます。",
+      "generating": "生成中…",
+      "show_qr_code": "QR コードを表示",
+      "qr_code_for_mobile_access": "モバイルアクセス用 QR コード",
+      "copy_link": "リンクをコピー",
+      "could_not_generate_a_code_try_again": "コードを生成できませんでした。もう一度お試しください。",
+      "remote_access_is_not_set_up_yet_finish_setup_to_ge": "リモートアクセスは未設定です。設定を完了するとスキャン可能なコードを取得できます。",
+      "or_create_a_one_time_sign_in_link_to_send_to_yours": "カメラが使えない場合は、自分宛てのワンタイムリンクを作成できます。リンクは 1 回のみ有効です。",
+      "creating": "作成中…",
+      "create_sign_in_link": "サインインリンクを作成",
+      "could_not_create_a_link_check_that_an_external_add": "リンクを作成できませんでした。このダッシュボードに外部アドレスが設定されているか確認してください。",
+      "mobile_access_link": "モバイルアクセスリンク",
+      "one_time_sign_in_link": "ワンタイムサインインリンク",
+      "checking_remote_access": "リモートアクセスを確認しています…",
+      "create_a_one_time_sign_in_link_to_send_to_yourself": "自分宛てに送るワンタイムサインインリンクを作成します。1回使用すると期限切れになります。",
+      "the_link_works_once_and_expires_in_about_minutes": "リンクは1回のみ有効で、約{{minutes}}分で期限切れになります。",
+      "try_again": "再試行",
+      "new_code": "新しいコード",
+      "could_not_check_remote_access": "リモートアクセスを確認できませんでした。",
+      "the_code_signs_you_in_automatically_and_expires_in": "コードで自動的にサインインでき、約{{minutes}}分で期限切れになります。",
+      "copy_failed_select_the_link_and_copy_it_manually": "コピーできませんでした。リンクを選択して手動でコピーしてください。",
+      "could_not_create_a_link_try_again": "リンクを作成できませんでした。再試行してください。",
+      "phone_connection_is_disabled_by_policy_on_this_dep": "このデプロイメントでは、ポリシーにより電話の接続が無効になっています。"
     }
   },
   "hooks": {
@@ -12347,7 +12375,7 @@
         "streaming": "ストリーミング",
         "system_default": "システムのデフォルト",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg が見つかりません — インストールされるまで、ブラウザーからの音声録音は文字起こしできません。",
-        "the_bundled_audio_decoder_is_missing_or_damaged": "内蔵オーディオデコーダーが見つからないか、破損しています。Kiro Crew デスクトップアプリを再インストールしてください。FFmpeg を別途インストールする必要はありません。",
+        "the_bundled_audio_decoder_is_missing_or_damaged": "内蔵オーディオデコーダーが見つからないか、破損しています。{{productName}} デスクトップアプリを再インストールしてください。FFmpeg を別途インストールする必要はありません。",
         "then_restart_the_gateway_so_it_can_import_the_ne": "その後、新しいパッケージを読み込めるよう、ゲートウェイを再起動してください（設定 → 情報 → ゲートウェイを再起動）。",
         "the_desktop_app_can_t_add_transcribe_support_ins": "デスクトップアプリでは Transcribe サポートを追加できません。同梱の Python は追加パッケージをインストールできないためです。代わりに pip で {{productName}} をインストールし、その環境からゲートウェイを起動してください。",
         "this_gateway_s_python_can_t_install_extra_packag": "このゲートウェイの Python は追加パッケージをインストールできないため、ここでは Transcribe を有効にできません。pip で kirocrew[voice] をインストールできる Python 環境でゲートウェイを実行してください。",

@@ -112,7 +112,8 @@
     "open_command_bar": "Command Bar খুলুন",
     "focus_mode": "ফোকাস মোড",
     "focus_mode_title": "ফোকাস মোড · Alt+Shift+M",
-    "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M"
+    "focus_mode_title_mac": "ফোকাস মোড · ⌥⇧M",
+    "connect_your_phone": "ফোন সংযুক্ত করুন"
   },
   "appSdk": {
     "chatEmbed": {
@@ -6559,7 +6560,7 @@
       "no_description_was_provided": "কোনো বিবরণ দেওয়া হয়নি।",
       "open_pull_request": "পুল রিকোয়েস্ট খুলুন",
       "open_slack_settings": "Slack সেটিংস খুলুন",
-      "owner_not_configured_guidance": "এই কাজের জন্য একজন কনফিগার করা মালিক প্রয়োজন, যাকে Kiro Crew Slack member ID দিয়ে শনাক্ত করে। Settings → Channels → Slack-এ \"Owner Slack member ID\" সেট করুন, গেটওয়ে রিস্টার্ট করুন, তারপর আবার সাইন ইন করুন।",
+      "owner_not_configured_guidance": "এই কাজের জন্য একজন কনফিগার করা মালিক প্রয়োজন, যাকে {{productName}} Slack member ID দিয়ে শনাক্ত করে। Settings → Channels → Slack-এ \"Owner Slack member ID\" সেট করুন, গেটওয়ে রিস্টার্ট করুন, তারপর আবার সাইন ইন করুন।",
       "provider_results_may_be_partial_merge_request": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য মার্জ রিকোয়েস্টটি খোলো।",
       "provider_results_may_be_partial_pull_request": "{{sections}}-এর জন্য প্রোভাইডারের ফলাফল আংশিক হতে পারে। সম্পূর্ণ তালিকার জন্য পুল রিকোয়েস্টটি খোলো।",
       "pull_request_sections": "পুল রিকোয়েস্ট বিভাগসমূহ",
@@ -7552,6 +7553,33 @@
       "status_running": "কাজ চলছে",
       "status_unread": "অপঠিত",
       "tab_name_with_status": "{{name}} — {{status}}"
+    },
+    "mobileConnect": {
+      "use_kiro_crew_on_your_phone": "আপনার ফোনে {{productName}} ব্যবহার করুন",
+      "close": "বন্ধ করুন",
+      "scan_with_your_phone_camera_to_continue_with_the_s": "ফোনের ক্যামেরা দিয়ে স্ক্যান করে মোবাইল ব্রাউজারে {{productName}} খুলুন। সবকিছু এই কম্পিউটারের সাথে সিঙ্ক থাকে।",
+      "generating": "তৈরি হচ্ছে…",
+      "show_qr_code": "QR কোড দেখান",
+      "qr_code_for_mobile_access": "মোবাইল অ্যাক্সেসের QR কোড",
+      "copy_link": "লিঙ্ক কপি করুন",
+      "could_not_generate_a_code_try_again": "কোড তৈরি করা যায়নি — আবার চেষ্টা করুন।",
+      "remote_access_is_not_set_up_yet_finish_setup_to_ge": "রিমোট অ্যাক্সেস এখনও সেট করা হয়নি। স্ক্যানযোগ্য কোড পেতে সেটআপ সম্পূর্ণ করুন।",
+      "or_create_a_one_time_sign_in_link_to_send_to_yours": "ক্যামেরা হাতের কাছে নেই? নিজেকে পাঠানোর জন্য এককালীন লিঙ্ক তৈরি করুন — একবার কাজ করে, তারপর মেয়াদ শেষ.",
+      "creating": "তৈরি হচ্ছে…",
+      "create_sign_in_link": "সাইন-ইন লিঙ্ক তৈরি করুন",
+      "could_not_create_a_link_check_that_an_external_add": "লিঙ্ক তৈরি করা যায়নি — এই ড্যাশবোর্ডের জন্য বাহ্যিক ঠিকানা কনফিগার করা আছে কিনা দেখুন।",
+      "mobile_access_link": "মোবাইল অ্যাক্সেস লিঙ্ক",
+      "one_time_sign_in_link": "এককালীন সাইন-ইন লিঙ্ক",
+      "checking_remote_access": "রিমোট অ্যাক্সেস পরীক্ষা করা হচ্ছে…",
+      "create_a_one_time_sign_in_link_to_send_to_yourself": "নিজেকে পাঠানোর জন্য এককালীন সাইন-ইন লিঙ্ক তৈরি করুন — এটি একবার কাজ করে, তারপর মেয়াদ শেষ হয়ে যায়.",
+      "the_link_works_once_and_expires_in_about_minutes": "লিঙ্কটি একবার কাজ করে এবং প্রায় {{minutes}} মিনিটে মেয়াদ শেষ হয়ে যায়।",
+      "try_again": "আবার চেষ্টা করুন",
+      "new_code": "নতুন কোড",
+      "could_not_check_remote_access": "রিমোট অ্যাক্সেস পরীক্ষা করা যায়নি।",
+      "the_code_signs_you_in_automatically_and_expires_in": "কোডটি স্বয়ংক্রিয়ভাবে সাইন ইন করে এবং প্রায় {{minutes}} মিনিটে মেয়াদ শেষ হয়ে যায়।",
+      "copy_failed_select_the_link_and_copy_it_manually": "কপি করা যায়নি — লিঙ্কটি নির্বাচন করে হাতে কপি করুন।",
+      "could_not_create_a_link_try_again": "লিঙ্ক তৈরি করা যায়নি — আবার চেষ্টা করুন।",
+      "phone_connection_is_disabled_by_policy_on_this_dep": "এই ডিপ্লয়মেন্টে নীতি অনুযায়ী ফোন সংযোগ নিষ্ক্রিয় করা আছে।"
     }
   },
   "hooks": {
@@ -12520,7 +12548,7 @@
         "streaming": "স্ট্রিমিং",
         "system_default": "সিস্টেম ডিফল্ট",
         "ffmpeg_is_missing_voice_recordings_from_the_brow": "ffmpeg নেই — এটি ইনস্টল না হওয়া পর্যন্ত ব্রাউজার থেকে আসা ভয়েস রেকর্ডিং ট্রান্সক্রাইব করা যাবে না।",
-        "the_bundled_audio_decoder_is_missing_or_damaged": "বান্ডল করা অডিও ডিকোডারটি নেই বা ক্ষতিগ্রস্ত। Kiro Crew ডেস্কটপ অ্যাপটি পুনরায় ইনস্টল করুন; আলাদাভাবে FFmpeg ইনস্টল করবেন না।",
+        "the_bundled_audio_decoder_is_missing_or_damaged": "বান্ডল করা অডিও ডিকোডারটি নেই বা ক্ষতিগ্রস্ত। {{productName}} ডেস্কটপ অ্যাপটি পুনরায় ইনস্টল করুন; আলাদাভাবে FFmpeg ইনস্টল করবেন না।",
         "then_restart_the_gateway_so_it_can_import_the_ne": "তারপর gateway পুনরায় চালু করুন (Settings → About → Restart gateway) যাতে এটি নতুন প্যাকেজগুলি ইমপোর্ট করতে পারে।",
         "the_desktop_app_can_t_add_transcribe_support_ins": "ডেস্কটপ অ্যাপে Transcribe সমর্থন যোগ করা যাবে না — এর অন্তর্ভুক্ত Python অতিরিক্ত প্যাকেজ ইনস্টল করতে পারে না। পরিবর্তে pip দিয়ে {{productName}} ইনস্টল করুন এবং সেই এনভায়রনমেন্ট থেকে gateway চালান।",
         "this_gateway_s_python_can_t_install_extra_packag": "এই gateway-এর Python অতিরিক্ত প্যাকেজ ইনস্টল করতে পারে না, তাই এখানে Transcribe চালু করা যাবে না। এমন একটি Python এনভায়রনমেন্টে gateway চালান যেখানে pip দিয়ে kirocrew[voice] ইনস্টল করা যায়।",

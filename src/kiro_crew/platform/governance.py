@@ -1179,6 +1179,20 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # telemetry).
     "capabilities.tailnet_origin": ScopeSpec(CAPABILITY, capability_default=True),
+    # "Connect your phone": minting a live mobile session credential (tailnet QR
+    # or one-time login link) is an auth-surface widening an enterprise POLICY
+    # must be able to close wholesale or narrow per method. The ``methods``
+    # ruleset binds on the MobileConnectMethod ids the CPP seam contributes
+    # (mirrors capabilities.publish's ``destinations``); WHO implements a method
+    # is the orthogonal MobileConnectProvider seam — this gate only decides
+    # WHETHER + WHICH. Default True: naming the row without ``enabled`` keeps
+    # the personal-install pair working; a governing policy can pin it off.
+    # Enforced fail-closed at the methods listing AND at each mint endpoint
+    # (the filtered list is presentation, never the control). Data row only —
+    # CONTRACT_VERSION and the evaluator are untouched (mirrors publish).
+    "capabilities.mobile_connect": ScopeSpec(
+        CAPABILITY, capability_default=True, scope_matchers={"methods": "identifier"}
+    ),
 }
 
 

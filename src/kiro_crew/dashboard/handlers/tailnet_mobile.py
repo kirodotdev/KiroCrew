@@ -54,6 +54,7 @@ from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.handlers._shared import _caller_bounds, _is_restricted_session
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
+from kiro_crew.dashboard.handlers.mobile_connect import mint_denied_reason
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
@@ -808,6 +809,18 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
     if refusal is not None:
         await _audit_async(request, "tailnet.mobile.qr", "denied", "restricted-session")
         return refusal
+
+    # Governance chokepoint: minting a phone QR is the "tailnet_qr" method of
+    # the capabilities.mobile_connect scope. The methods listing may already
+    # hide this method, but omission is presentation only — the mint itself
+    # re-runs the decision (fail-closed inside mint_denied_reason). Distinct
+    # from capabilities.tailnet_origin (checked below via the derived step),
+    # which governs the tailnet ORIGIN as a whole; this row governs the
+    # phone-credential family across all methods.
+    denied = await asyncio.to_thread(mint_denied_reason, "tailnet_qr")
+    if denied:
+        await _audit_async(request, "tailnet.mobile.qr", "denied", "governance-mobile-connect")
+        return web.json_response({"error": denied, "code": "governance_denied"}, status=403)
 
     port = _dashboard_port(request)
     # Unconditional, unlike an earlier revision that nested this in `if port:`.
