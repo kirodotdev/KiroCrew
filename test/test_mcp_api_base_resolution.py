@@ -45,6 +45,22 @@ def _bases(monkeypatch: pytest.MonkeyPatch, mcp: Any, sequence: list[str]) -> No
     monkeypatch.setattr(mcp, "_resolve_api_target", lambda: (next(it, last), ""))
 
 
+def _sock_for(port: int) -> str:
+    """The socket path the product derives for *port*, derived the same way.
+
+    Assertions about which gateway a transport reached compare against THIS,
+    never a port substring of the path. The path contains the data home, whose
+    isolation directory is named ``<counter>-kirocrew-home`` from a per-process
+    allocation counter — so a worker that has handed out 5,476 paths puts the
+    literal ``5476`` in every path it builds afterwards. A substring check then
+    reports whichever port the counter happens to equal: the negative form fails
+    a correct socket, and the positive form passes a wrong one.
+    """
+    from kiro_crew.dashboard.origin import dashboard_socket_path
+
+    return str(dashboard_socket_path(port))
+
+
 def _retry_resolution(monkeypatch: pytest.MonkeyPatch, mcp: Any, port: int, source: str) -> None:
     """Script what ``_resolve_api_port`` answers when the replay re-resolves."""
     monkeypatch.setattr(mcp, "_resolve_api_port", lambda: (port, source))
@@ -389,7 +405,7 @@ class TestMcpComputerReplay:
         assert computer._invoke("dashboard:chat-1", "computer_get_state", {}) == {"text": "done"}
         (_, _), (url, sock) = seen
         assert ":7788" in url
-        assert "7788" in sock and "5476" not in sock, f"replay dialled {url} with socket {sock!r}"
+        assert sock == _sock_for(7788), f"replay dialled {url} with socket {sock!r}"
 
     def test_http_error_on_replay_surfaces_the_backend_body(
         self, computer: Any, mcp: Any, monkeypatch
@@ -456,9 +472,8 @@ class TestOneResolutionPerAttempt:
         assert mcp._send("/api/x", headers={}, method="GET") == {"ok": True}
         ((url, sock),) = seen
         assert ":7788" in url
-        assert (
-            "7788" in sock and "9999" not in sock
-        ), f"one attempt aimed TCP at {url} and the unix socket at {sock}"
+        expected = _sock_for(7788)
+        assert sock == expected, f"one attempt aimed TCP at {url} and the unix socket at {sock}"
 
     def test_a_stable_source_still_resolves_once_and_pins(self, mcp: Any, monkeypatch) -> None:
         """Control: the caching rule for stable sources must not change.
@@ -527,9 +542,8 @@ class TestOneResolutionPerAttempt:
         assert len(seen) == 2, "the refused attempt must still be replayed once"
         assert len(runs) == 2, f"two attempts ran the discovery chain {len(runs)} times: {runs}"
         (url1, sock1), (url2, sock2) = seen
-        assert ":5476" in url1 and "5476" in sock1, "first attempt must be self-consistent"
+        assert ":5476" in url1 and sock1 == _sock_for(5476), "first attempt must be self-consistent"
         assert ":7788" in url2, "the replay must dial the re-resolved port"
-        assert (
-            "7788" in sock2 and "9999" not in sock2
-        ), f"the replay aimed TCP at {url2} and the unix socket at {sock2}"
-        assert "5476" not in sock2, "the replay must not reuse the refused resolution"
+        replayed = _sock_for(7788)
+        assert sock2 == replayed, f"the replay aimed TCP at {url2} and the unix socket at {sock2}"
+        assert sock2 != _sock_for(5476), "the replay must not reuse the refused resolution"
