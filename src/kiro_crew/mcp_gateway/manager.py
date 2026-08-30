@@ -892,7 +892,13 @@ class GatewayManager:
         was fetching anyway.
         """
         now = time.monotonic()
-        if now - self._last_drift_check < _DRIFT_RECHECK_INTERVAL_SECS:
+        # Zero means "never checked".  Treating it as a real monotonic stamp
+        # suppresses every first check on a host with less uptime than the
+        # interval (notably freshly provisioned macOS CI runners).
+        if (
+            self._last_drift_check > 0.0
+            and now - self._last_drift_check < _DRIFT_RECHECK_INTERVAL_SECS
+        ):
             return False
         self._last_drift_check = now
         missing = self._adoption_drift(pong)

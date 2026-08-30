@@ -399,6 +399,11 @@ class TestAdoptedDriftRecheck:
         refuses to yield -- and then never ask again for the life of the
         process. One assessment per interval is what keeps the repair available.
         """
+        # A fresh macOS hosted runner can have less uptime than the five-minute
+        # interval.  Zero is the manager's "never checked" sentinel, not a real
+        # monotonic timestamp, so the first assessment must not depend on host
+        # uptime.
+        monkeypatch.setattr(mgr.time, "monotonic", lambda: 60.0)
         manager = _manager(tmp_path, {"KIROCREW_MCP_TARGET_CORE": "run core"})
         asked = AsyncMock(return_value=mgr._ADOPT)
         monkeypatch.setattr(manager, "_repair_or_adopt", asked)
