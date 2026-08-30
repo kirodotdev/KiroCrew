@@ -3057,6 +3057,138 @@ class GatewayOrchestrator:
             origin_key, text, resolved_link=resolved, caller="cron"
         )
 
+    # ── One spelling of the cron failure-alert mechanism ───────────────────
+    #
+    # Two call sites alert on a failed cron run: the script/command helper
+    # (`_alert_cron_failure`) and the message path's own `except` block. They
+    # legitimately differ in control flow (one re-raises), in who owns
+    # `record_failure()`, and in wording. What they must NOT differ in is the
+    # mechanism below -- the dedup window, the Slack-sink hardening, the
+    # one-surface delivery rule, and when the dedup anchor advances.
+    #
+    # That used to rest on a docstring promising the two "cannot drift", which
+    # is prose, not a mechanism: the message path's DM was once left saying only
+    # "check logs" while the helper already carried the reason, and review caught
+    # it rather than a test. These four helpers are the mechanism, so a change
+    # lands on both surfaces or on neither.
+
+    def _failure_alert_is_duplicate(self, job: CronJob, failure_hash: str) -> bool:
+        """Whether this failure repeats the last one inside the reminder window.
+
+        A job that fails identically every minute alerts once per
+        ``_FAILURE_REMINDER_SECS`` rather than once per fire. Both surfaces read
+        the SAME ``last_failure_hash`` / ``last_failure_at`` pair; a job is
+        exactly one kind, so the two writers never interleave on one job.
+        """
+        return (
+            failure_hash == job.last_failure_hash
+            and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS
+        )
+
+    def _slack_safe_fenced(self, text: str) -> str:
+        """Make *text* safe to interpolate into a Slack mrkdwn code fence.
+
+        Two hazards, one of which escaping alone does not cover. Slack PARSES
+        entity markup, and both halves of a failure alert are attacker-shaped --
+        the job name is user-authored and the reason carries subprocess output, so
+        a job named ``<!channel>`` would notify a whole channel the moment it
+        failed. And three backticks inside the reason would CLOSE the fence early
+        and hand the remainder to the parser as markup, which escaping does not
+        prevent.
+
+        Slack-facing sinks only. The dashboard bell is not a mrkdwn sink and
+        escaping there would render a literal ``&lt;``.
+        """
+        return escape_mrkdwn(text).replace("```", "'''")
+
+    async def _deliver_failure_alert(
+        self,
+        job: CronJob,
+        *,
+        mrkdwn: str,
+        plain: str,
+        actor_key: str,
+        silent: bool = False,
+    ) -> tuple[bool, bool, bool]:
+        """Deliver a failure alert on exactly ONE surface.
+
+        Returns ``(channel_delivered, slack_delivered, slack_failed)``.
+        ``slack_failed`` names a real delivery exception, never an unresolved
+        channel -- the caller's dedup decision turns on that split.
+
+        The one-surface rule: when the conversation that scheduled the job will
+        hear about the failure, the owner DM would be a second alert for one
+        event. An explicit ``job.channel`` is a destination the user pinned and
+        still wins, so the channel leg is skipped for it -- without that guard the
+        channel leg reports a delivery, stands the Slack leg down, and the alert
+        lands on the origin conversation instead of the destination the user
+        named.
+
+        *mrkdwn* and *plain* are composed by the caller and are deliberately two
+        strings: Slack's markup is not another transport's dialect, so a shared
+        string would show ``&lt;`` and stray backticks to a channel reader.
+
+        Never raises. Both callers are inside an ``except`` whose exception is the
+        real story, and one of them re-raises it.
+        """
+        channel_delivered = False
+        slack_delivered = False
+        slack_failed = False
+        if not silent and not job.channel:
+            try:
+                channel_delivered = await self._deliver_cron_to_channel(
+                    job.session_key, plain, actor_key=actor_key
+                )
+            except Exception:
+                logger.error(
+                    "Cron '%s': channel failure-alert delivery failed",
+                    job.name,
+                    exc_info=True,
+                )
+        if self.slack and not silent and not channel_delivered:
+            try:
+                channel = job.channel
+                if not channel and (job.created_by or self._owner_id):
+                    channel = await self._open_dm_with_retry(
+                        job.created_by or self._owner_id, job.name
+                    )
+                if channel:
+                    await self.slack.post_message(channel, mrkdwn)
+                    slack_delivered = True
+                else:
+                    logger.warning("Cron '%s': no channel resolved for failure alert", job.name)
+            except Exception:
+                slack_failed = True
+                logger.error(
+                    "Cron '%s': Slack failure-alert delivery failed",
+                    job.name,
+                    exc_info=True,
+                )
+        return channel_delivered, slack_delivered, slack_failed
+
+    def _advance_failure_dedup(
+        self,
+        job: CronJob,
+        failure_hash: str,
+        *,
+        channel_delivered: bool,
+        slack_failed: bool,
+    ) -> None:
+        """Advance the dedup anchor once the reason actually reached someone.
+
+        "No channel available" counts as delivered -- the bell rang -- so a
+        Slack-less install does not re-notify the dashboard on every fire. A
+        confirmed channel delivery counts for the same reason: the reason reached
+        the user even when the Slack leg threw. Only a REAL Slack exception holds
+        the anchor back, so the next identical failure tries again.
+
+        Only the dedup fields move here. ``record_failure()`` has its own owner
+        per run and is deliberately not touched.
+        """
+        if channel_delivered or not slack_failed:
+            job.last_failure_hash = failure_hash
+            job.last_failure_at = time.time()
+
     def _cron_job_is_silent(self, parent_key: str) -> bool:
         """Return True if *parent_key* maps to a cron job marked silent.
 
@@ -3211,10 +3343,7 @@ class GatewayOrchestrator:
                 # Denials and failures hash apart so a policy denial does not read
                 # as a dup of a same-worded crash (and vice versa).
                 fh = _result_hash(f"{'denied' if denied else 'failed'}:{text}")
-                if (
-                    fh == job.last_failure_hash
-                    and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS
-                ):
+                if self._failure_alert_is_duplicate(job, fh):
                     logger.info(
                         "Cron '%s': duplicate failure alert suppressed (%s)",
                         job.name,
@@ -3254,96 +3383,34 @@ class GatewayOrchestrator:
                 # alert is the only place the user learns which one failed. Read
                 # once, ahead of both delivery legs, so they cannot disagree.
                 host = socket.gethostname().split(".")[0]
-                slack_failed = False  # real delivery exceptions only
-                # A configured Slack is not a delivered Slack. The one-surface
-                # rule skips the owner DM when the originating channel already
-                # heard, no channel may resolve at all, and the post can raise --
-                # so the audit trail has to name what LANDED, not what exists.
-                # `self.slack` as the predicate makes every Discord-only alert
-                # read as a Slack egress, which is the one question this record
-                # is kept to answer.
-                slack_delivered = False
-                # The channel that scheduled the job hears about its failures
-                # too. Plain text: the mrkdwn escaping and code fence below are a
-                # Slack rendering concern, and no other transport parses them, so
-                # a shared string would show `&lt;` and stray backticks there.
-                # `label` and `text` are already scrubbed above, and the
-                # transport leg redacts again at its own egress.
-                channel_delivered = False
-                # A pinned `job.channel` wins here exactly as it does on the
-                # result leg. Without this guard the channel leg runs anyway,
-                # reports a delivery, and stands the Slack leg down -- so the
-                # alert lands on the origin conversation and NOT on the
-                # destination the user named, which is the one place they asked to
-                # be told. The comment on the crash leg below claimed this
-                # behaviour before either leg implemented it.
-                if not job.channel:
-                    try:
-                        channel_delivered = await self._deliver_cron_to_channel(
-                            job.session_key,
-                            f"⏰ Cron: {label} {mark} {headline} on {host}\n{text}",
-                            actor_key=f"cron:{job.id}",
-                        )
-                    except Exception:
-                        # Every caller of this alert is inside an ``except``
-                        # whose exception is the real story; a failed alert must
-                        # not replace it.
-                        logger.warning(
-                            "Cron '%s': channel run-failure alert delivery failed",
-                            job.name,
-                            exc_info=True,
-                        )
-                # Same one-surface rule as the result delivery: when the
-                # channel that scheduled the job already heard about the failure,
-                # the Slack owner DM would be a second alert for one event.
-                if self.slack and not channel_delivered:
-                    # Slack PARSES entity markup in a message's text, and both
-                    # halves of this one are attacker-shaped: the job name is
-                    # user-authored and the reason carries subprocess output. A job
-                    # named `<!channel>` would notify every member of the channel
-                    # the moment it failed. Escape at the Slack-facing sink only --
-                    # the dashboard body above is not a mrkdwn sink, and escaping
-                    # there would show a literal `&lt;`.
-                    safe_label = escape_mrkdwn(label)
-                    # Escaping does not neutralize a fence: three backticks inside
-                    # the reason would close this one early and hand the remainder
-                    # to the mrkdwn parser as markup.
-                    safe_text = escape_mrkdwn(text).replace("```", "'''")
-                    msg = (
-                        f"⏰ *Cron: {safe_label}* {mark} "
-                        f"_{headline} on {escape_mrkdwn(host)}_\n```{safe_text}```"
+                # Slack PARSES entity markup and a fence can be closed early by
+                # the reason's own backticks; `_slack_safe_fenced` is the one
+                # spelling of that hardening. `label` and `text` are already
+                # scrubbed above, and the transport leg redacts again at egress.
+                safe_label = self._slack_safe_fenced(label)
+                safe_text = self._slack_safe_fenced(text)
+                msg = (
+                    f"⏰ *Cron: {safe_label}* {mark} "
+                    f"_{headline} on {escape_mrkdwn(host)}_\n```{safe_text}```"
+                )
+                msg, _ = redact_exfiltration_urls(msg)
+                msg, _ = redact_credentials(msg)
+                # Plain twin for a non-Slack transport: mrkdwn is not another
+                # channel's dialect, so a shared string would show `&lt;` and
+                # stray backticks there.
+                plain = f"⏰ Cron: {label} {mark} {headline} on {host}\n{text}"
+                # Silent jobs returned above, so this leg is never suppressed here.
+                channel_delivered, slack_delivered, slack_failed = (
+                    await self._deliver_failure_alert(
+                        job,
+                        mrkdwn=msg,
+                        plain=plain,
+                        actor_key=f"cron:{job.id}",
                     )
-                    msg, _ = redact_exfiltration_urls(msg)
-                    msg, _ = redact_credentials(msg)
-                    try:
-                        channel = job.channel
-                        if not channel and (job.created_by or self._owner_id):
-                            channel = await self._open_dm_with_retry(
-                                job.created_by or self._owner_id, job.name
-                            )
-                        if channel:
-                            await self.slack.post_message(channel, msg)
-                            slack_delivered = True
-                        else:
-                            logger.warning(
-                                "Cron '%s': no channel resolved for run-failure alert", job.name
-                            )
-                    except Exception:
-                        slack_failed = True
-                        logger.error(
-                            "Cron '%s': Slack run-failure alert delivery failed",
-                            job.name,
-                            exc_info=True,
-                        )
-                # Advance dedup only once the reason actually reached someone.
-                # "No channel available" counts as delivered (the bell rang), the
-                # same skip-vs-failure split the message path draws — otherwise a
-                # Slack-less install re-notifies the dashboard on every fire. A
-                # confirmed channel delivery counts for the same reason: the
-                # reason reached the user even when the Slack leg threw.
-                if channel_delivered or not slack_failed:
-                    job.last_failure_hash = fh
-                    job.last_failure_at = time.time()
+                )
+                self._advance_failure_dedup(
+                    job, fh, channel_delivered=channel_delivered, slack_failed=slack_failed
+                )
                 try:
                     # Name every surface the alert actually left on, so the trail
                     # does not read "none" for a run answered on Discord.
@@ -4803,8 +4870,11 @@ class GatewayOrchestrator:
                 # skipped walk has no story at all), and a hash keyed on it
                 # would miss the duplicate and re-page the user.
                 fh = _result_hash(_exc_text)
+                # Kept separately from the suppression gate below: `is_dup` still
+                # selects the "still failing" wording on an alert that DOES go out
+                # because the reminder window has expired.
                 is_dup = fh == job.last_failure_hash
-                if is_dup and time.time() - job.last_failure_at < _FAILURE_REMINDER_SECS:
+                if self._failure_alert_is_duplicate(job, fh):
                     # record_failure() is the counter's sole owner: a suppressed
                     # duplicate is still a failed run, so it must count toward
                     # the auto-pause threshold like every other failure path —
@@ -4887,16 +4957,14 @@ class GatewayOrchestrator:
                 host = socket.gethostname().split(".")[0]
                 # Slack PARSES entity markup here, and job.name is user-authored:
                 # a job named `<!channel>` notifies the whole channel on failure.
-                # Same sink and same source as the script/command alert above, so
-                # it gets the same escaping rather than being left as the one
-                # unescaped Slack interpolation of a cron name.
-                safe_name = escape_mrkdwn(job.name)
+                # Same sink and same source as the script/command alert, so it
+                # goes through the one shared spelling of that hardening.
+                safe_name = self._slack_safe_fenced(job.name)
                 # Carry the reason here too. The dashboard body above and the
                 # script/command DM both do, so leaving this one at "check logs"
                 # made the DM the only failure surface that still withheld what
-                # the caller already knows. Escaped and fence-neutralized for the
-                # same reasons as the script/command alert.
-                safe_reason = escape_mrkdwn(exc_detail).replace("```", "'''")
+                # the caller already knows.
+                safe_reason = self._slack_safe_fenced(exc_detail)
                 if is_dup:
                     # +1: this run's failure is recorded below, after the
                     # awaited Slack attempt, so the display count must include
@@ -4940,63 +5008,24 @@ class GatewayOrchestrator:
                 # AND Slack DMs). The failure is still logged at warning level
                 # and counted toward auto-pause above — we just skip
                 # user-facing noise.
-                slack_failed = False  # track real delivery exceptions only
-                # Same reason as the run-failure path: the audit names the
-                # surface the alert LEFT ON, and a silent job or an unresolved
-                # channel means Slack was never one of them.
-                slack_delivered = False
-                # One surface per event, matching the result and run-failure
-                # legs: when the conversation that scheduled the job will hear
-                # about the crash, the Slack owner DM is a second alert for one
-                # failure. An explicit `job.channel` is a destination the user
-                # pinned and still wins.
-                # The channel that scheduled the job hears about its crashes too.
-                # ``channel_fail_msg`` rather than ``fail_msg``: that string is mrkdwn,
-                # no other transport parses it, and the channel form also carries the
+                # One spelling of the one-surface rule and both delivery legs,
+                # shared with the script/command alert. `channel_fail_msg` rather
+                # than `fail_msg` for the channel leg: that string is mrkdwn, no
+                # other transport parses it, and the channel form also carries the
                 # repeat-failure wording and both egress redaction passes.
-                # Placed before record_failure() for the same reason the Slack
-                # leg is: every await in this handler must precede the counter, so
-                # a cancellation mid-alert cannot leave the run counted twice.
-                channel_delivered = False
-                if not job.silent and not job.channel:
-                    try:
-                        channel_delivered = await self._deliver_cron_to_channel(
-                            job.session_key,
-                            channel_fail_msg,
-                            actor_key=session_key,
-                        )
-                    except Exception:
-                        # This handler re-raises the run's own exception below; a
-                        # failed alert must not replace it.
-                        logger.error(
-                            "Cron job '%s': channel failure-notification delivery failed",
-                            job.name,
-                            exc_info=True,
-                        )
-                if self.slack and not job.silent and not channel_delivered:
-
-                    try:
-                        channel = job.channel
-                        if not channel and (job.created_by or self._owner_id):
-                            channel = await self._open_dm_with_retry(
-                                job.created_by or self._owner_id, job.name
-                            )
-                        if channel:
-                            # fail_msg already redacted at construction above.
-                            await self.slack.post_message(channel, fail_msg)
-                            slack_delivered = True
-                        else:
-                            logger.warning(
-                                "Cron '%s': no channel resolved for error notification", job.name
-                            )
-
-                    except Exception:
-                        slack_failed = True
-                        logger.error(
-                            "Cron job '%s': Slack failure-notification delivery failed",
-                            job.name,
-                            exc_info=True,
-                        )
+                #
+                # Placed before record_failure() deliberately: every await in this
+                # handler must precede the counter, so a cancellation mid-alert
+                # cannot leave the run counted twice.
+                channel_delivered, slack_delivered, slack_failed = (
+                    await self._deliver_failure_alert(
+                        job,
+                        mrkdwn=fail_msg,
+                        plain=channel_fail_msg,
+                        actor_key=session_key,
+                        silent=job.silent,
+                    )
+                )
                 # record_failure() is the counter's sole owner: it continues an
                 # accumulation another writer (gate verdict, timeout) already
                 # built up instead of restarting at 1, and it is deliberately
@@ -5015,16 +5044,20 @@ class GatewayOrchestrator:
                         job.name,
                         job.consecutive_failures,
                     )
-                # Advance dedup state unless Slack delivery raised. "No channel
-                # available" is treated as a skip (not a failure), so dedup still
-                # advances — otherwise every identical failure re-notifies the
-                # dashboard, which is what dedup is supposed to prevent. Only the
-                # dedup fields are gated here; the failure count was already
-                # recorded above. A confirmed channel delivery also advances it:
-                # the reason reached the user even when the Slack leg threw.
+                # One spelling of the advance rule, shared with the
+                # script/command alert: the anchor moves once the reason reached
+                # someone, and only a REAL Slack exception holds it back.
+                self._advance_failure_dedup(
+                    job, fh, channel_delivered=channel_delivered, slack_failed=slack_failed
+                )
+                # The SEL record was nested INSIDE the advance condition before
+                # this refactor, so a Slack exception suppressed the audit line as
+                # well as the anchor. Preserved verbatim rather than quietly
+                # widened -- whether the audit should be unconditional (the
+                # script/command alert logs it either way) is a behaviour question,
+                # not a consolidation one. Restating the condition is what makes
+                # that gating visible instead of implied by indentation.
                 if channel_delivered or not slack_failed:
-                    job.last_failure_hash = fh
-                    job.last_failure_at = time.time()
                     # SEL logging is best-effort — never mask the original
                     # exception if audit logging itself fails.
                     try:
