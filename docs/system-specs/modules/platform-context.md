@@ -862,8 +862,231 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `<root>/<Pkg>/<name>/SKILL.md`, and when two DISTINCT files tie within a tier
   it resolves to `None` — HTTP 404, with the competing candidates logged — rather
   than picking one, because the key cannot express which was meant (paths that
-  merely symlink to the same file are not a tie). An edition that wants both of
-  two same-named skills reachable MUST therefore key them distinguishably);
+  merely symlink to the same file are not a tie). **A qualifier makes a tie
+  addressable:** `package/<qualifier>:<rel>` selects the ROOT whose qualifier the
+  derivation yields for it and globs only that one, which is how an edition names the
+  winning copy when the distinguishing name lives in the ROOT rather than in `<rel>` (a
+  `packages/<Pkg>/<event>/skills` layout). `:` and not `-`, because the route grammar
+  reserves a lone `-` segment ahead of the `tree`/`file` verbs; a key with no `:` takes
+  the pre-existing path unchanged, so every key emitted before the qualifier existed
+  keeps working.
+
+  **A qualifier is the root's identity digest, and nothing else.** It is a `blake2b`
+  digest of the root's CANONICAL path together with that directory's device, inode and
+  INODE CREATION TIME, which is what makes the key SAFE. The path alone would be an
+  ADDRESS rather than an identity — a replacement bundle installed at the same path
+  re-derives it — and dev:inode alone is not enough either, because an inode number is a
+  reusable resource and a replacement can be handed the same one. `st_ctime_ns` is the
+  non-reusable term. The cost is that adding or removing a skill directory in a root moves
+  that root's own `st_ctime_ns` and so re-spells its qualified keys; that is a mutation of
+  the bundle itself, which the re-enumerate-only contract already covers. Residual, since
+  Linux exposes no `st_birthtime`: an uninstall and reinstall completing inside one
+  filesystem timestamp granule (~20ms measured on xfs) AND handed the recycled inode
+  re-derive the replaced key after all.
+  **Declared behaviour change:** keys therefore read `package/05c564ec5e9e4b7a8c1d2e3f4a5b6c7d:<rel>` rather
+  than `package/PkgA:<rel>`.
+
+  **Second declared behaviour change, and it reaches keys that predate the qualifier:** a
+  file read under a `package/` key is refused when its inode carries more than
+  one link. A hardlink canonicalises to its own in-root path, so containment and the
+  sensitive-name check both pass while the bytes belong to the shared inode, and
+  `st_nlink` on the opened descriptor is the only signal that a second name exists. The
+  refusal answers `404` with the code `skill_read_withheld`, NOT `403`: the descriptor gate
+  reports nothing for an absent or unopenable file too, so the response cannot claim a
+  denial it is unable to substantiate. An ABSENT file is separated from a withheld one
+  before either is answered or audited — absence answers `file_not_found` and audits
+  `not_found`, a withhold answers `skill_read_withheld` and audits `blocked` — so an
+  operator's first symptom is a withheld read rather than a skill that looks uninstalled.
+  A read that SUCCEEDS is audited too, with outcome `ok`, taken at the single 200 exit both
+  package reads share (the resolver's and the capability row's). Auditing refusals alone
+  would make the COMMON case the unrecorded one, so an operator reconstructing which
+  package skills an agent opened would see only the reads that failed.
+  The existence check that separates them is diagnostic only and grants no access. The
+  cost is borne by hardlink-DEDUPLICATING installs — content-addressed package stores,
+  store optimisation, `cp -al` deploys — where a legitimate, non-colliding package skill
+  routinely has `st_nlink > 1` and stops being readable on a default install with zero
+  colliding roots. The refusal is intentional and unconditional for this read-only
+  territory; the sibling territories keep the reader they already had.
+
+  **Install requirement for an edition advertising a root here:** the root must hold real
+  files, not links into a shared store. An edition that deploys with `cp -al`, or that
+  materialises skills from a content-addressed store by hardlink, will see every skill
+  under its root answer `404` however correct its layout is. This is stated here rather
+  than only on the `extra_skills()` docstring because the constraint binds whoever
+  performs the INSTALL, who need not be reading the provider seam.
+
+  **What the read refusal actually is, and how a dedup-install breakage is remedied
+  without reverting the grammar.** It is a HARDENING of a read that already existed, not
+  something the grammar first enables: before this change `api_skill_file` already
+  resolved a `package/` key and read it by name, ungated, so the claim that the grammar is
+  what first opens such a file is wrong and is not the reason to keep them together. The
+  honest reason is narrower — the grammar makes a `package/` key resolve to one of SEVERAL
+  colliding roots, so a read that follows a hardlink now picks between bundles rather than
+  merely reading the wrong file; and the same descriptor gate is what the row path already
+  used, so the two surfaces stop disagreeing.
+
+  **No opt-out ships with this change, deliberately.** A config switch was written and
+  then withdrawn: restoring the base reader means restoring `read_skill_file`, which gives
+  up not only the hardlink rule but the descriptor-side sensitive-path check as well, so
+  the switch relaxed more of the boundary than its name implied. It was also anticipatory
+  — no dedup-install report exists and no in-repo layout produces a package skill at all —
+  so the knob is deferred until a real report names the install that needs it. Until then
+  the remedy for such an install is the source edit described below, which is bounded and
+  reviewable rather than a permanently reachable bypass.
+
+  It is SEVERABLE, and deliberately so. The refusal reaches the gate at ONE call site, the
+  `_read_pinned` chokepoint in `handlers/prompts.py`, which the two package reads name in
+  place of the `read_skill_file` call each replaced; the key grammar lives entirely in
+  `handlers/_shared.py`, and this change adds no grammar symbol to `prompts.py` at all. So
+  the remedy for a dedup-install breakage is to restore those two call sites to
+  `read_skill_file`, which returns the base read behaviour and leaves every qualified key,
+  the collision fold and the identity digest untouched. No part of the grammar has to be
+  reverted, and nothing else in the diff depends on the refusal.
+
+  `_read_pinned` also carries the identity pin. A qualified key names one bundle instance,
+  and resolution proving that returns a PATH -- so reading the path re-resolves it, and a
+  bundle uninstalled and replaced at the same canonical name in between was served under
+  the first bundle's key. The read is therefore performed relative to a descriptor pinned
+  on the resolved directory, so `openat` stays inside the inode the resolver validated: a
+  replacement is unreachable under the old key rather than served, and an unlinked one
+  fails closed.
+
+  **Three changes to EXISTING keys travel with this grammar, and each is separately
+  revertable.** (1) The write-side reservation refuses every mutating verb on a
+  `package/` key — one tuple, `READONLY_SKILL_KEY_PREFIXES`, consumed at two guard sites.
+  (2) The core-row prune drops a core skill whose own relative path keys into the reserved
+  prefix — one loop in `enumerate_skill_catalog`, whose warning names the file and the
+  manual remediation. (3) The hardlink read refusal, as above. None of the three shares a
+  symbol with the qualifier grammar, so reverting any one of them does not unpick the
+  feature; this list is the mitigation for their being bundled, and it is only worth
+  anything while it stays accurate, so amend it in the same change that moves any of them.
+
+  **Accepted operator burden for a stranded core skill.** A core skill whose own relative
+  path keys into the reserved prefix is pruned from the catalog and becomes unreachable by
+  key, and no API verb can remove it, because every mutating verb refuses a
+  reserved-prefix key by design — relaxing that is what would let a write resolve the key
+  differently from the read. The remediation is therefore manual and is named in the
+  warning itself, which logs the absolute path and the action: rename or remove that
+  directory to reclaim the key. This is accepted rather than fixed because the alternative
+  is a write path that disagrees with the read path about what a `package/` key means.
+
+  A qualifier must be an IDENTITY rather than a distinguishing path segment, and the
+  failure a segment allows is a silent WRONG WRITE rather than a mere 404. A segment is
+  chosen against whichever roots collide at derivation time, so a root that is REPLACED —
+  uninstalled, and a different root installed still carrying that segment, `<...>/A/skills`
+  giving way to `<...>/A/v2/skills` — would re-derive the same qualifier. The agent-config
+  write path (`apply_skill_mapping`) resolves editor-held keys against a FRESH catalog, so
+  a held key would resolve to a DIFFERENT file and that file's `skill://` URI would be
+  persisted into the agent's config: a skill the user never selected, under a 200, durably.
+  Canonical-path identity closes it — the same root always yields the same qualifier and a
+  different root can never produce it, so a stale key resolves to NOTHING and the write
+  path's existing rule (any unknown key rejects the WHOLE request) means nothing is
+  written at all. `blake2b` and not `hash()`, which is salted per process and would mint
+  new keys on every restart; canonical and not the advertised path, so an edition
+  advertising one root through a symlink alias keeps ONE identity; a root that does not
+  canonicalise yields no qualifier and the path is omitted, since identity that cannot be
+  established fails closed.
+
+  A digest is also key-safe by construction — lowercase hex carries neither the separator,
+  nor a glob metacharacter, nor a traversal element — so the derivation needs no
+  per-candidate filter. What is given up is legibility: a key does not say which bundle it
+  means. The omission warnings carry the absolute path instead, and a resolved row still
+  shows its own file.
+
+  **This buys correct binding AND stability**, because the qualifier is a function of the
+  root alone: installing or removing an unrelated bundle does not change it. A key can
+  still move between a qualified and an unqualified spelling, since whether a rel collides
+  at all depends on what else is installed, so a consumer that wants to survive an
+  arbitrary edition change re-enumerates rather than persisting a key. What is guaranteed
+  is that a qualifier names at most ONE root ever, so a stale one fails closed instead of
+  re-binding.
+  Rows carry a `package` field for a stable edition-supplied identity. The
+  consumer-facing statement lives with the skills API in `memory-skills-hooks.md` and on
+  the `extra_skills()` seam, since that is what a frontend or edition author reads. A
+  qualifier is that CANONICAL derived value and nothing else, never merely a segment the
+  root happens to carry: in the layout above `eventId-1` is a unique segment of one root,
+  yet `package/eventId-1:<rel>` does not resolve, because the catalogue keys that copy
+  under `PkgA`'s identity-bound qualifier. The result is NOT itself a path segment of the
+  root, and nothing may test it as one — resolution RE-DERIVES with the same function.
+
+  **Resolution is the exact INVERSE of enumeration**, which is the binding property:
+  every catalogued key resolves, and no other key does. Both sides run the SAME
+  derivation over the SAME holder set — the EXACT tier only, deduplicated by resolved
+  FILE — and both apply the all-or-nothing rule: a collision in which any root yields no
+  qualifier, or two yield the same one, is omitted whole and refused whole, while a rel
+  with only ONE holder is offered unqualified only. Enumeration also holds each walked
+  rel to the resolver's own path predicate, so neither side can offer what the other
+  refuses; the failure that shape prevents is the phantom row — a key `/tree` lists and
+  `detail` 404s — and its mirror, a key that resolves but was never listed.
+
+  **`:` is RESERVED**, so `package/foo:bar` has exactly one reading (qualifier `foo`,
+  rel `bar`). A rel carrying it is OMITTED from enumeration with a warning; a remainder
+  still carrying it after the split is REFUSED, which covers a half-empty pair
+  (`package/:foo`, `package/foo:`) and a second separator (`package/A:B:C`). There is no
+  verbatim retry of the remainder, and the alternative — deciding the reading from the
+  installed root set — was rejected because it made a key's MEANING depend on which
+  roots exist. A qualifier that cannot BE one segment (an anchor, `..`, a leading `~` or
+  `.`) narrows to no roots rather than to all of them.
+
+  **Four declared behaviour changes, each costing visibility rather than correctness.**
+  A skill whose path carries the separator, or ANY glob metacharacter (`*`, `?`, `[` —
+  `**` embedded also makes `Path.glob` raise, and the others match siblings, so one key
+  would answer with whichever skill matched), or which CONTAINS `..` in a component
+  (`foo..bar`; the resolver's own first gate tests `".." in name` as a SUBSTRING, so a
+  parts-level test on the enumerating side would catalog a key resolution refuses), or
+  which symlinks OUTSIDE the root
+  advertising it (containment is asserted on the CANONICAL form of both sides, because
+  `glob` matches a symlinked dirent and yields a path only lexically inside the root),
+  is invisible in the catalog and `404`s on open. None exists in-repo. In each case the
+  warning names the file's ABSOLUTE path, and that log line is the only remediation
+  surface: the row is simply absent, and the key alone is relative to a root the reader
+  cannot infer. The `..` rule no longer reaches the QUALIFIER: a digest carries no
+  traversal element, so a root whose own name contains `..` is addressable rather than
+  dropped. Only the REL is subject to that rule, because only the rel is a key component
+  the resolver must parse back.
+
+  **The omission is decided in ONE place, for every territory the catalogue keys** — `""`,
+  `kiro-user/`, `kiro-workspace/` and `package/` — because the resolver's gates are not
+  `package/`-specific, and a per-prefix copy of them is what let the two sides drift. The
+  predicate runs on the minted KEY, the exact string resolution receives, and each rule
+  carries the resolver's own scope: `..` anywhere refuses in all four territories, since
+  that gate is reached before any prefix is dispatched; a leading `~` refuses in the
+  unprefixed territory ALONE, since only there would the join expand it, so
+  `kiro-user/~x`, `kiro-workspace/~x`, `package/~x` and a nested `outer/~x` all resolve
+  and stay listed. Widening either rule past the resolver's scope would hide a skill that
+  works.
+
+  **Not made symmetric here, and disclosed rather than fixed:** an edition ROW keyed as
+  something other than its root-relative path opens in `detail` (an exact-row lookup
+  answers it) but still `404`s on `/tree`, which resolves only by globbing a key's
+  remainder against the installed roots. That asymmetry belongs to the row surface, not
+  to this grammar — the qualified keys above are minted by WALKING those roots, so both
+  endpoints agree on every key this change adds — and it is already bounded by the
+  containment invariant on `CapabilityManager.list_skills`, whose runtime warning names
+  any row falling outside every advertised root.
+
+  **Behaviour change — a row and the resolver that disagree are answered by NEITHER.**
+  Where a row claims a `package/` key whose root-relative path ALSO exists under another
+  root, `detail` used to serve the resolver's file, which returned the other root's bytes
+  under the identity the caller selected. Both are now refused with `404` and the withheld
+  read is recorded on the audit trail. The cost is that an edition listing a canonical
+  path for a rel that another installed root also carries stops opening in `detail`,
+  rather than opening the wrong copy.
+
+  **The `package/` prefix is reserved on WRITE as well as read.** A core row whose own
+  relative path is literally `package/<rel>` is PRUNED from the core walk, and
+  `api_skill_detail` routes a `package/` key to the package resolver INSTEAD of the
+  generic name lookup — otherwise one key names two skills, the core file answering the
+  detail modal while `tree`/`file` serve the packaged copy. `PUT`/`DELETE` on any
+  `package/` key is refused unconditionally with `405` and `Allow: GET`, and
+  `api_skills_create` refuses such a name with `400 reserved_skill_prefix` AFTER
+  sanitisation, since that is what the name becomes. Read-side enforcement alone left
+  create open: `package/foo` sanitises unchanged, lands in the core root, and returns
+  `200` for a skill the prune makes instantly invisible. An exact capability-row lookup
+  remains as a fallback when the resolver returns nothing, for a row its edition keyed
+  otherwise, and is entered only for an UNQUALIFIED remainder — a colon-named row would
+  otherwise answer `200` for a key `/tree` omits. Both reads run on
+  `discovery_executor()`);
   `async install_mcp/uninstall_mcp(server_id)`,
   `async install_skill/uninstall_skill(package)`,
   `async install_agent/uninstall_agent(package)` → `CapabilityResult(ok, message)`

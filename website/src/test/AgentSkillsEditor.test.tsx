@@ -142,6 +142,54 @@ describe('AgentSkillsEditor', () => {
     expect(screen.queryByText(/No skills mapped/i)).not.toBeInTheDocument()
   })
 
+  it('re-enumerates the catalog after a rejected save, so a retry cannot re-send a stale key', async () => {
+    // A bundle upgrade under a live editor re-spells every package key, so the cached
+    // catalog would have the retry re-send the identical rejected key.
+    mockApi.agentPatch.mockRejectedValue(new Error('unknown skills'))
+    renderEditor({ skills: [] })
+    await waitFor(() => expect(mockApi.skills).toHaveBeenCalledTimes(1))
+
+    await openAddMenu()
+    fireEvent.click(await screen.findByRole('option', { name: /widgets/i }))
+
+    await waitFor(() => expect(screen.getByText(/unknown skills/i)).toBeInTheDocument())
+    await waitFor(() => expect(mockApi.skills.mock.calls.length).toBeGreaterThan(1))
+  })
+
+  it('disambiguates two colliding copies that share a name and a description', async () => {
+    // Real collisions are two bundles vendoring the SAME skill, so name and description
+    // both match and the qualifier is the only field that differs.
+    const digestA = '05c564ec5e9e4b7a8c1d2e3f4a5b6c7d'
+    const digestB = 'b81f3a9042d75c6e1a4b8d2f6c0e9a37'
+    mockApi.skills.mockResolvedValue([
+      { key: `package/${digestA}:shared-skill`, name: 'shared-skill', description: 'Reconcile a shipment', source: 'package' },
+      { key: `package/${digestB}:shared-skill`, name: 'shared-skill', description: 'Reconcile a shipment', source: 'package' },
+      { key: 'widgets', name: 'widgets', description: 'Render HTML', source: 'kirocrew' },
+    ])
+    renderEditor({ skills: [] })
+    await openAddMenu()
+
+    const options = await screen.findAllByRole('option', { name: /shared-skill/ })
+    expect(options).toHaveLength(2)
+    // Each colliding row carries its own qualifier, so the two are distinguishable.
+    expect(options[0].textContent).toContain(digestA.slice(0, 8))
+    expect(options[1].textContent).toContain(digestB.slice(0, 8))
+    // An uncollided name stays a plain label with no digest noise.
+    const plain = await screen.findByRole('option', { name: /widgets/ })
+    expect(plain.textContent).not.toMatch(/[0-9a-f]{8}/)
+  })
+
+  it('renders a mapped-but-unresolved package key by its readable half, not a raw digest', async () => {
+    // A stale key has no catalog row, so the chip fell back to the whole key and showed
+    // a 32-hex digest to the user.
+    const stale = 'package/05c564ec5e9e4b7a8c1d2e3f4a5b6c7d:shared-skill'
+    mockApi.skills.mockResolvedValue([])
+    renderEditor({ skills: [stale] })
+
+    await waitFor(() => expect(screen.getByText('shared-skill')).toBeInTheDocument())
+    expect(screen.queryByText(stale)).not.toBeInTheDocument()
+  })
+
   it('disables Add when every catalog skill is already mapped', async () => {
     renderEditor({ skills: CATALOG.map(s => s.key) })
     await waitFor(() =>
