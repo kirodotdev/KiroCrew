@@ -5807,6 +5807,26 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # itself the signal (same fail-safe posture as the branches above), so
     # over-matching an odd mixed-separator spelling is the safe direction.
     win_sep = r"[\\/]"
+    # Win32 collapses a repeated separator run, so ``kiro-cli`` and
+    # ``\\kiro-cli`` and ``//kiro-cli`` name the same entry. Matching only the
+    # single-separator spelling was a bypass of every store branch at once
+    # (#6350): a doubled separator at an inter-segment boundary named the fenced
+    # path while matching no branch.
+    #
+    # The patterns below deliberately still spell ONE separator, and the run is
+    # collapsed in the SUBJECT instead -- once, linearly, in
+    # ``is_sensitive_bash_command`` via ``_collapse_separator_runs``.
+    #
+    # Admitting a run in the PATTERNS (``{win_sep}+``) was tried first and is a
+    # denial-of-service on this very gate: the run appears inside the starred
+    # generalized separator below and again after it, so a long run can be split
+    # between them many ways and the engine consumes the whole run at every start
+    # offset. Measured, 6,000 backslashes in one command: 33s against 1.3s on
+    # base, past the gateway's 25s watchdog (found in review). Making the run
+    # maximal with a lookahead only halved it, and capping it at 64 bought speed
+    # by letting a 65-separator spelling escape the fence outright -- trading a
+    # hang for a bypass. Collapsing the subject is complete for any run length
+    # and leaves every pattern here exactly as tight as it already was.
     # Generalized separator: a plain separator, optionally preceded by any
     # chain of canonical no-ops — single-dot segments (``\.``) and same-level
     # down-up excursions (``\X\..``). This is what makes traversal spellings
@@ -5874,7 +5894,8 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"|{re.escape('${env:HOMEDRIVE}${env:HOMEPATH}')})"
     )
     win_home_alts = (
-        f"(?:{home}|{generic_win_home}|{unc_prefix}|{userprofile}|{tilde}|{home_var})"
+        f"(?:{home}|{generic_win_home}|{unc_prefix}|{userprofile}"
+        f"|{tilde}|{home_var})"
     )
     # Between the anchor and the fenced remainder, accept the same
     # canonical-no-op chains (``\.\``, ``\X\..\``): they are equivalent to a
@@ -6019,7 +6040,8 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         r"|\$[A-Za-z_][A-Za-z0-9_]*)"
     )
     win_crew_var_leaf_path = (
-        rf"{win_home_alts}{win_gsep}(?:{win_crew_leaf_parents}){win_sep}{any_expansion}"
+        rf"{win_home_alts}{win_gsep}(?:{win_crew_leaf_parents})"
+        rf"{win_sep}{any_expansion}"
     )
     # ── ~/.kiro/agents WRITE-protection (a whole DIRECTORY, not a leaf) ──
     # A spec under this dir becomes a KIROCREW_MCP_TARGET_<SERVER> command the
@@ -6771,12 +6793,16 @@ _SENSITIVE_SEGMENT_ALT = "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS)
 # Windows-native relative spelling (``..\..\.aws\credentials``) is caught by
 # the traversal matcher below alongside the POSIX one. Forward-slash-only
 # entries still match (the class includes ``/``), so this strictly widens.
+# A repeated separator run is handled by collapsing the SUBJECT before this
+# matcher runs, not by admitting a run here (#6350) -- see
+# ``_collapse_separator_runs``.
 _SENSITIVE_SEGMENT_ALT_ANYSEP = "|".join(
     r"[\\/]".join(re.escape(part) for part in d.split("/"))
     for d in _SENSITIVE_HOME_DIRS
 )
 _RELATIVE_SENSITIVE_RE = re.compile(
-    rf"(?:^|[\s'\"=:,;])(?:\.\.?[\\/])+(?:{_SENSITIVE_SEGMENT_ALT_ANYSEP})(?:[\\/]|\s|$|['\"])",
+    rf"(?:^|[\s'\"=:,;])(?:\.\.?[\\/])+(?:{_SENSITIVE_SEGMENT_ALT_ANYSEP})"
+    rf"(?:[\\/]|\s|$|['\"])",
     re.IGNORECASE,
 )
 
@@ -6851,6 +6877,68 @@ _LINK_CREATE_VERBS: frozenset[str] = frozenset({"ln", "link"})
 _REDIR_PREFIX_RE = re.compile(r"^\d*(?:>>?|<(?!<))")
 
 
+_SEPARATOR_RUN_RE = re.compile(r"[\\/]{2,}")
+#: What a path token may start after, used to recognise a LEADING separator run
+#: (a UNC prefix) as opposed to an interior one.
+_PATH_TOKEN_BOUNDARY = " \t\"'=:,;(<>|&`"
+
+
+def _separator_collapsed_variants(command: str) -> tuple[str, ...]:
+    """Return *command* with separator runs collapsed, one copy per spelling.
+
+    Win32 collapses a repeated separator run, so ``%LOCALAPPDATA%\\\\kiro-cli``
+    and ``%LOCALAPPDATA%\\kiro-cli`` open the same file. The fence matches raw
+    text, so without this the doubled spelling named a fenced store while
+    matching no branch (#6350).
+
+    Collapsing is done to the SUBJECT rather than by admitting a run in the
+    patterns, because a run inside the patterns is a denial-of-service on this
+    gate: it appears both inside the starred generalized separator and after it,
+    so the engine walks the splits and re-consumes the whole run at every start
+    offset (measured 33s on 6,000 backslashes against 1.3s on base, past the 25s
+    watchdog).
+
+    Up to FOUR copies, along two axes, because a single rewrite loses cases:
+
+    * **Which separator.** Not every pattern accepts either character -- the
+      resolved home literal is ``re.escape``-d and requires the platform's exact
+      separator -- so collapsing to one fixed character left a MIXED run
+      (``D:/\\profiles\\u``) matching neither spelling (found in review).
+    * **Whether a LEADING run stays a pair.** A UNC path begins with two
+      separators that its anchor requires, so collapsing them broke every UNC
+      spelling that ALSO had an interior run:
+      ``\\\\server\\share\\.kiro\\\\crew\\security_policy.json`` matched neither
+      the original (interior run) nor the collapsed copy (no UNC prefix left),
+      and the keystone read was permitted (found in review). The boundary form
+      keeps a run that starts a token at two characters and still collapses the
+      interior ones.
+
+    Empty tuple when there is no run to collapse, so the common command costs one
+    search and nothing else. Duplicates are dropped, so a command with only
+    interior backslash runs yields two copies rather than four.
+    """
+    if not _SEPARATOR_RUN_RE.search(command):
+        return ()
+
+    variants: list[str] = []
+    for sep in ("/", "\\"):
+        for keep_leading_pair in (False, True):
+
+            def _replace(
+                match: "re.Match[str]",
+                sep: str = sep,
+                keep_leading_pair: bool = keep_leading_pair,
+            ) -> str:
+                start = match.start()
+                leading = start == 0 or command[start - 1] in _PATH_TOKEN_BOUNDARY
+                return sep * 2 if (keep_leading_pair and leading) else sep
+
+            variant = _SEPARATOR_RUN_RE.sub(_replace, command)
+            if variant != command and variant not in variants:
+                variants.append(variant)
+    return tuple(variants)
+
+
 def is_sensitive_bash_command(command: str) -> str | None:
     """Check if a bash command reads sensitive paths, accesses IMDS, or leaks env creds.
 
@@ -6876,6 +6964,32 @@ def is_sensitive_bash_command(command: str) -> str | None:
     # it (was gated on ln/cp only, so dd/base64/xxd/head/tail slipped past).
     if _RELATIVE_SENSITIVE_RE.search(command):
         return "Blocked: command references a sensitive credential path via relative traversal"
+
+    # ── Pass 1b: the pass-1 matchers again over separator-COLLAPSED copies ──
+    # Win32 collapses a repeated separator run, so ``%LOCALAPPDATA%\\kiro-cli``
+    # opens the fenced store that ``%LOCALAPPDATA%\kiro-cli`` names -- and the
+    # patterns above spell one separator, so the doubled form matched no branch
+    # (#6350). Collapsing the subject closes that for every run length at linear
+    # cost; admitting a run in the patterns instead was measured as a
+    # watchdog-crossing hang on this gate (see ``_separator_collapsed_variants``).
+    #
+    # ALL THREE pass-1 checks are repeated, not just the path matcher: the
+    # extraction check is a separate control, and omitting it let
+    # ``tar -xf evil.tar -C $HOME//.kiro/crew`` overwrite governance files
+    # through the doubled separator (found in review).
+    #
+    # Run only after the original missed, so nothing that needs the run intact
+    # (a UNC ``\\server\share`` anchor) loses its match.
+    for collapsed in _separator_collapsed_variants(command):
+        if _get_sensitive_re().search(collapsed):
+            return "Blocked: command accesses sensitive credential path"
+        if _extracts_into_trust_root(collapsed):
+            return "Blocked: command extracts into the governance trust-root directory"
+        if _RELATIVE_SENSITIVE_RE.search(collapsed):
+            return (
+                "Blocked: command references a sensitive credential path "
+                "via relative traversal"
+            )
 
     # ── Pass 2: normalizer-based sensitive path detection ──
     normalizer_result = _check_sensitive_via_normalizer(command)
