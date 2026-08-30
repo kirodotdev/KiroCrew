@@ -524,6 +524,22 @@ jobs:
           python3 scripts/check_agent_sdk_boundary.py --test
           python3 scripts/check_agent_sdk_boundary.py
 
+      # Blocking IO inside an `async def` stalls every session's turn, and a
+      # stall past dashboard.loop_stall_exit_after_secs (25s) makes the watchdog
+      # kill the gateway — the user sees a restart for no apparent reason and
+      # loses every in-flight turn (#1572). #3057's audit found the sites
+      # cluster where nothing was watching: ~70 on-loop store.db.execute() calls
+      # in dashboard/handlers/knowledge.py against zero in handlers/memory.py
+      # next door. Baselined for the same reason as the gates above — the
+      # known set is recorded as legacy so it can only shrink, while a NEW call
+      # (or one on a line this change adds) fails here.
+      - name: Check for blocking IO inside async def (gate, baselined)
+        run: |
+          # Self-test first: it plants one probe per rule family, so a rule that
+          # silently stops matching fails here instead of shipping green.
+          python3 scripts/check_sync_io_in_async.py --test
+          python3 scripts/check_sync_io_in_async.py
+
       # A secret-bearing file must be locked down BEFORE any content reaches it:
       # a post-publish lockdown leaves the payload at its final path under the
       # inherited DACL, which on Windows is not covered by atomic_write's POSIX

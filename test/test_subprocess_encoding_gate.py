@@ -55,9 +55,11 @@ class TestCiWiring:
         raise AssertionError("gate step not found")
 
     def test_scope_resolver_coupling_is_alive(self) -> None:
-        # The gate imports the black gate's private _changed_paths; a rename
-        # there must fail HERE, not as an AttributeError inside a CI run.
-        assert callable(gate._load_changed_paths())
+        # The gate loads scripts/ratchet_scope.py, which OWNS both answers. A
+        # rename there must fail HERE, not as an AttributeError inside a CI run.
+        scope = gate._load_scope()
+        assert callable(scope.changed_paths)
+        assert callable(scope.added_lines)
 
 
 class TestRuleFamilies:

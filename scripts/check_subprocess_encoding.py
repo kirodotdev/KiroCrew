@@ -81,8 +81,6 @@ import argparse
 import ast
 import importlib.util
 import io
-import re
-import subprocess
 import tokenize
 from pathlib import Path
 
@@ -123,64 +121,23 @@ HEADER = """\
 #   python3 scripts/check_subprocess_encoding.py --update-baseline
 """
 
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
+def _load_scope():
+    """The shared diff-scope helpers (see scripts/ratchet_scope.py).
 
-def _load_changed_paths():
-    """Reuse the black gate's change-scope resolver instead of duplicating it.
-
-    Both gates need the identical answer to "which files does THIS change
-    touch", including the merge-ref subtleties documented there.
+    Loaded by path, not imported: ``scripts/`` is not a package, so a plain
+    import would resolve only by accident of ``sys.path[0]`` -- and not at all
+    when a test loads this gate by path. The pair lives there because three
+    merge-ref ratchets need the identical answers; a private copy per gate is how
+    they would come to disagree about the same added line.
     """
-    script = ROOT / "scripts" / "check_black_formatting.py"
-    spec = importlib.util.spec_from_file_location("check_black_formatting", script)
+    script = ROOT / "scripts" / "ratchet_scope.py"
+    spec = importlib.util.spec_from_file_location("ratchet_scope", script)
     if spec is None or spec.loader is None:
         raise SystemExit(f"cannot load {script}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module._changed_paths
-
-
-def _added_lines(scope_label: str) -> dict[str, set[int]] | None:
-    """Repo-relative path -> line numbers this change ADDED, or None.
-
-    Uses the diff endpoints named by the scope resolver's label, so the added
-    set and the changed-file set always describe the same diff. An unknown
-    label (or a failing git) degrades to None -- the added-line rule is then
-    skipped rather than guessed, and the count rules still apply.
-    """
-    if scope_label == "merge HEAD^1..HEAD":
-        args = ["diff", "--unified=0", "HEAD^1", "HEAD"]
-    elif scope_label == "merge parents":
-        args = ["diff", "--unified=0", "HEAD^1", "HEAD^2"]
-    elif scope_label.endswith("...HEAD"):
-        args = ["diff", "--unified=0", scope_label]
-    else:
-        return None
-    proc = subprocess.run(
-        ["git", "--no-pager", *args],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if proc.returncode != 0:
-        return None
-    added: dict[str, set[int]] = {}
-    current: str | None = None
-    for line in proc.stdout.splitlines():
-        if line.startswith("+++ b/"):
-            current = line[6:]
-        elif line.startswith("+++ "):
-            current = None  # /dev/null or unusual prefix
-        elif current is not None:
-            match = _HUNK_RE.match(line)
-            if match:
-                start = int(match.group(1))
-                count = int(match.group(2)) if match.group(2) is not None else 1
-                added.setdefault(current, set()).update(range(start, start + count))
-    return added
+    return module
 
 
 def _callee_name(node: ast.Call) -> str:
@@ -402,10 +359,11 @@ def run_gate(baseline_path: Path, update: bool) -> int:
         print(f"pruned {pruned} entr(y/ies), lowered {lowered}; {len(survivors)} remain")
         return 0
 
-    changed, scope_label = _load_changed_paths()()
+    scope = _load_scope()
+    changed, scope_label = scope.changed_paths()
     print(f"subprocess-encoding gate scope: {scope_label}", end="")
     print("" if changed is None else f" ({len(changed)} changed file(s))")
-    added = _added_lines(scope_label) if changed is not None else None
+    added = scope.added_lines(scope_label) if changed is not None else None
 
     new_offenders, grown, added_line_offenders, shrunk = _verdicts(
         violations, baseline, changed, added

@@ -1,0 +1,22 @@
+# Blocking IO calls inside an `async def`, as `<count> <path>`.
+# Each one stalls every session's turn while it runs, and a stall longer than
+# dashboard.loop_stall_exit_after_secs (25s) makes the watchdog kill the
+# gateway (#3057, #1572). The gate requires every OTHER file to be clean and
+# none of these counts to grow, so this list can only shrink.
+#
+# Do NOT add or raise a line to make a red gate green: a new offender belongs
+# in a thread (`await asyncio.to_thread(...)`, or a named lane from
+# src/kiro_crew/executors.py), or carries an inline `# on-loop-io-ok: <why it
+# cannot block>` comment. The refresh command below only lowers counts and
+# deletes lines.
+#
+# Refresh (after fixing something listed here):
+#   python3 scripts/check_sync_io_in_async.py --update-baseline
+#
+# See where the remaining calls are, worst files first (the work queue for the
+# cleanup tracked at #7019):
+#   python3 scripts/check_sync_io_in_async.py --report
+63 src/kiro_crew/dashboard/handlers/knowledge.py
+15 src/kiro_crew/knowledge/ingestion.py
+1 src/kiro_crew/knowledge/sync.py
+6 src/kiro_crew/knowledge/watcher.py

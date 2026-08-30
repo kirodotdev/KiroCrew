@@ -130,30 +130,23 @@ HEADER = """\
 """
 
 
-def _load_changed_paths():
-    """Reuse the black gate's change-scope resolver instead of duplicating it.
+def _load_scope():
+    """The shared diff-scope helpers (see scripts/ratchet_scope.py).
 
-    Every baselined gate here needs the identical answer to "which files does
-    THIS change touch", including the merge-ref subtleties documented there.
+    Loaded by path, not imported: ``scripts/`` is not a package, so a plain
+    import would resolve only by accident of ``sys.path[0]`` -- and not at all
+    when a test loads this gate by path. Every baselined gate needs the identical
+    answers to "which files does THIS change touch" and "which lines did it add",
+    and the module owns both so no gate has to reach into another gate's private
+    functions to get them.
     """
-    script = ROOT / "scripts" / "check_black_formatting.py"
-    spec = importlib.util.spec_from_file_location("check_black_formatting", script)
+    script = ROOT / "scripts" / "ratchet_scope.py"
+    spec = importlib.util.spec_from_file_location("ratchet_scope", script)
     if spec is None or spec.loader is None:
         raise SystemExit(f"cannot load {script}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module._changed_paths
-
-
-def _load_added_lines():
-    """Reuse the subprocess gate's added-line resolver for the same reason."""
-    script = ROOT / "scripts" / "check_subprocess_encoding.py"
-    spec = importlib.util.spec_from_file_location("check_subprocess_encoding", script)
-    if spec is None or spec.loader is None:
-        raise SystemExit(f"cannot load {script}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module._added_lines
+    return module
 
 
 def _is_exempt(rel: str) -> bool:
@@ -596,10 +589,11 @@ def run_gate(baseline_path: Path, update: bool) -> int:
         print(f"pruned {pruned} entr(y/ies), lowered {lowered}; {len(survivors)} remain")
         return 0
 
-    changed, scope_label = _load_changed_paths()()
+    scope = _load_scope()
+    changed, scope_label = scope.changed_paths()
     print(f"agent-sdk-boundary gate scope: {scope_label}", end="")
     print("" if changed is None else f" ({len(changed)} changed file(s))")
-    added = _load_added_lines()(scope_label) if changed is not None else None
+    added = scope.added_lines(scope_label) if changed is not None else None
 
     new_offenders, grown, added_line_offenders, shrunk = _verdicts(
         violations, baseline, changed, added

@@ -58,6 +58,7 @@ being a formality. There is deliberately no operation that adds one.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import subprocess
 import sys
@@ -140,51 +141,22 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
     return found
 
 
-def _git(*args: str) -> tuple[int, str]:
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    return proc.returncode, proc.stdout
+def _load_scope():
+    """The shared diff-scope answer (see scripts/ratchet_scope.py).
 
-
-def _changed_paths() -> tuple[set[str] | None, str]:
-    """This change's paths plus how they were determined, for the log.
-
-    Several checkout shapes have to work and they fail in ways that look alike, so
-    each attempt is named and the winner is printed. Guessing silently is what let
-    an earlier version of this gate fall back to whole-tree scope on CI without
-    saying so, and then report a file the base branch had merged.
-
-    * A ``pull_request`` checkout leaves HEAD as the MERGE commit, whose tree is
-      the base tree plus this change. So ``diff HEAD^1 HEAD`` is exactly this
-      change and needs no merge base -- only HEAD and its first parent.
-    * ``diff HEAD^1 HEAD^2`` is equivalent but needs BOTH parents' trees, which a
-      shallow clone may not have.
-    * Locally HEAD is the branch tip, so the three-dot diff against the base
-      branch is the right question.
-
-    None means undeterminable, and the caller must then judge the whole tree
-    rather than nothing: a scope that fails open disables the gate exactly when
-    its inputs are unusual.
+    Loaded by path, not imported: ``scripts/`` is not a package, so a plain
+    import would resolve only by accident of ``sys.path[0]`` -- and not at all
+    when a test loads this gate by path. The resolver lives there because three
+    merge-ref ratchets need the identical answer to "which files does THIS
+    change touch"; a private copy per gate is how they would come to disagree.
     """
-    code, out = _git("rev-list", "--parents", "-n", "1", "HEAD")
-    is_merge = code == 0 and len(out.split()) >= 3
-    attempts: list[tuple[str, list[str]]] = []
-    if is_merge:
-        attempts.append(("merge HEAD^1..HEAD", ["diff", "--name-only", "HEAD^1", "HEAD"]))
-        attempts.append(("merge parents", ["diff", "--name-only", "HEAD^1", "HEAD^2"]))
-    for base in ("origin/main", "main"):
-        attempts.append((f"{base}...HEAD", ["diff", "--name-only", f"{base}...HEAD"]))
-    for label, args in attempts:
-        code, out = _git(*args)
-        if code == 0:
-            return {line.strip() for line in out.splitlines() if line.strip()}, label
-    return None, "undeterminable (judging the whole tree)"
+    script = ROOT / "scripts" / "ratchet_scope.py"
+    spec = importlib.util.spec_from_file_location("ratchet_scope", script)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"cannot load {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _read_baseline(path: Path) -> list[str]:
@@ -228,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pruned {pruned} entr(y/ies); {len(survivors)} remain")
         return 0
 
-    changed, scope_label = _changed_paths()
+    changed, scope_label = _load_scope().changed_paths()
     unlisted = unformatted - baseline
     print(f"black gate scope: {scope_label}", end="")
     print("" if changed is None else f" ({len(changed)} changed file(s))")
