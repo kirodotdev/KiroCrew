@@ -235,16 +235,18 @@ describe('persisted crew UI', () => {
     expect(ctx.crewSortKey).toBe('status')
   })
 
-  it('writes the crews UI back to its own key on change', async () => {
+  it('writes only the changed crews-UI fields back to its own key', async () => {
     renderProvider()
     await waitFor(() => expect(ctx.crews).toHaveLength(2))
     await drive(() => ctx.setCrewFilter('working'))
     await waitFor(() => {
+      // Only the fields that MOVED are written: `crewFilter` here, and `crewView`
+      // because resolving the roster selects the first crew after mount. The two
+      // sort fields never left their mount values, so they are absent -- writing
+      // them would be this tab reasserting its own copy over another tab's.
       expect(JSON.parse(localStorage.getItem(CREW_UI_KEY) ?? '{}')).toEqual({
         crewView: { kind: 'crew', id: 'c1' },
         crewFilter: 'working',
-        crewSortKey: 'status',
-        crewSortDir: 'asc',
       })
     })
   })
@@ -708,5 +710,104 @@ describe('repo switch', () => {
     expect(ctx.selectedPull).toBeNull()
     // A crew id names a crew in ONE repo's store, so the page cannot carry over.
     expect(ctx.crewView).toEqual({ kind: 'none' })
+  })
+})
+
+describe('persisted UI state does not clobber another tab', () => {
+  it('writes only the fields this tab changed', async () => {
+    renderProvider()
+    await readyIssues()
+
+    // A SECOND dashboard tab persists its own state while this provider is mounted.
+    // Written straight to the store because that is exactly what the other tab's own
+    // save does, and this provider has no way to know it happened.
+    const fromOtherTab = { query: 'other-tab-search', selectedIssue: 4242, aiLanguage: 'zh-CN' }
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify({
+      ...JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}'),
+      ...fromOtherTab,
+    }))
+
+    // This tab now changes ONE unrelated field. It used to rewrite the whole
+    // document from its own React state, so the other tab's three fields were
+    // reverted to this tab's mount-time values.
+    await drive(() => ctx.cycleSort('updated'))
+
+    const doc = JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}')
+    expect(doc.sortKey).toBe('updated')
+    expect(doc.query).toBe('other-tab-search')
+    expect(doc.selectedIssue).toBe(4242)
+    expect(doc.aiLanguage).toBe('zh-CN')
+  })
+
+  it('persists nothing merely by mounting', async () => {
+    // The first effect run establishes the diff baseline without writing. If it
+    // wrote, opening a second tab would itself revert the first tab's state -- the
+    // clobber, caused by the fix instead of the bug.
+    const seeded = { query: 'already-here', sortKey: 'updated', selectedIssue: 7 }
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify(seeded))
+
+    renderProvider()
+    await readyIssues()
+
+    expect(JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}')).toMatchObject(seeded)
+  })
+
+  it('re-sends a field whose write was refused, once storage recovers', async () => {
+    renderProvider()
+    await readyIssues()
+
+    // A full quota is swallowed by the save helper. The baseline must NOT advance
+    // over a write that never reached the document.
+    const setItem = Storage.prototype.setItem
+    Storage.prototype.setItem = () => { throw new Error('QuotaExceededError') }
+    try {
+      await drive(() => ctx.setQuery('typed-while-full'))
+    } finally {
+      Storage.prototype.setItem = setItem
+    }
+    expect(JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}').query).toBeUndefined()
+
+    // Storage recovers and an unrelated field changes. If the refused write had
+    // advanced the baseline, this diff would call the query unchanged and never send
+    // it -- the edit would live only in this tab until a reload discarded it.
+    await drive(() => ctx.cycleSort('updated'))
+
+    const doc = JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}')
+    expect(doc.sortKey).toBe('updated')
+    expect(doc.query).toBe('typed-while-full')
+  })
+})
+
+// The crews page keeps its own document on a second key (CREW_UI_KEY, declared
+// above), and it had the same whole-document write -- with no baseline guard at
+// all, so merely opening a tab reverted it.
+describe('persisted crew UI state does not clobber another tab', () => {
+  it('writes only the crew fields this tab changed', async () => {
+    renderProvider()
+    await readyIssues()
+
+    const fromOtherTab = { crewFilter: 'active', crewView: { kind: 'detail', id: 'crew-7' } }
+    localStorage.setItem(CREW_UI_KEY, JSON.stringify({
+      ...JSON.parse(localStorage.getItem(CREW_UI_KEY) || '{}'),
+      ...fromOtherTab,
+    }))
+
+    // One unrelated crew field moves in THIS tab.
+    await drive(() => ctx.cycleCrewSort('name'))
+
+    const doc = JSON.parse(localStorage.getItem(CREW_UI_KEY) || '{}')
+    expect(doc.crewSortKey).toBe('name')
+    expect(doc.crewFilter).toBe('active')
+    expect(doc.crewView).toEqual({ kind: 'detail', id: 'crew-7' })
+  })
+
+  it('persists no crew state merely by mounting', async () => {
+    const seeded = { crewFilter: 'active', crewSortKey: 'name', crewSortDir: 'desc' }
+    localStorage.setItem(CREW_UI_KEY, JSON.stringify(seeded))
+
+    renderProvider()
+    await readyIssues()
+
+    expect(JSON.parse(localStorage.getItem(CREW_UI_KEY) || '{}')).toMatchObject(seeded)
   })
 })

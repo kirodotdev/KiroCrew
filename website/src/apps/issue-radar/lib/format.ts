@@ -242,15 +242,6 @@ export function resolveAiLanguage(pref: string): string {
   return AI_LANGUAGE_CHOICES.some(l => l.code === tag) ? tag : ''
 }
 
-/** The stored preference, coerced but NOT resolved (`''` still means follow).
- *
- * A whole-document save has to write back the value that is currently on disk,
- * which for an unset preference is the empty string, so this deliberately does
- * NOT resolve the follow-the-dashboard case to a concrete tag. */
-export function storedAiLanguage(): string {
-  return coerceAiLanguage(loadUiState().aiLanguage)
-}
-
 
 /** Compact "now / 5m ago / 3h ago / 2d ago" from an epoch-ms timestamp.
  * Used for the issue-list "Updated …" footer; returns '' for a falsy input
@@ -475,11 +466,55 @@ export function coerceDashboardTab(value: unknown): DashboardTab {
   return (DASHBOARD_TABS as readonly string[]).includes(value as string) ? (value as DashboardTab) : 'overview'
 }
 
-export function saveUiState(state: PersistedUiState) {
+/** What a caller may hand `saveUiState`: any subset of the document, and for
+ * `refresh` any subset of ITS members too. `refresh` is a document of its own, so a
+ * caller that changed one member must be able to say so without restating the rest --
+ * see `saveUiState` for why sending the whole object is a clobber one level down. */
+export type UiStatePatch =
+  Partial<Omit<PersistedUiState, 'refresh'>> & { refresh?: Partial<RefreshPrefs> }
+
+/** Merge the given fields into the persisted UI state, leaving every other field
+ * on disk untouched.
+ *
+ * This USED to take the whole `PersistedUiState` and overwrite the document, which
+ * made two dashboard tabs clobber each other: the provider's save effect fires on
+ * any view/filter/selection change, so a tab persisting one unrelated edit rewrote
+ * every other field from whatever it read at mount, reverting the other tab's work.
+ *
+ * Merging is only half the fix and does not work on its own -- a caller that still
+ * passes every field overwrites with the same stale values, because its payload wins
+ * the spread. The caller must send ONLY the fields it actually changed; the provider
+ * does that by diffing against the document it last wrote. Both halves are required,
+ * so keep them together if this is ever refactored.
+ *
+ * `refresh` is merged MEMBER-WISE for the same reason the document is: it holds five
+ * independent settings, so replacing the whole object reproduces the clobber one level
+ * down -- one tab toggling background polling and another changing an interval would
+ * each revert the other's member. Only the members the caller names are written.
+ *
+ * Unlike `patchUiState` this MAY carry `refresh`, because its one caller builds those
+ * values from `refreshPrefs`, which only ever comes out of `coerceRefreshPrefs` in
+ * `setRefreshPrefs`. `patchUiState` keeps the narrower type for the connect flow,
+ * where no such guarantee exists.
+ *
+ * @returns true when the document was written, false when the write was swallowed
+ * (quota exceeded / private mode). A caller that tracks what it last PERSISTED must
+ * not advance that record on false, or the fields in this patch would count as
+ * stored while the document on disk still holds the old ones. */
+export function saveUiState(patch: UiStatePatch): boolean {
   try {
-    localStorage.setItem(UI_STATE_KEY, JSON.stringify(state))
+    const stored = loadUiState()
+    const next: Record<string, unknown> = { ...stored, ...patch }
+    if (patch.refresh) {
+      // Spread the STORED members under the patch, so a member this caller did not
+      // name keeps whatever another tab last wrote for it.
+      next.refresh = { ...(stored.refresh ?? {}), ...patch.refresh }
+    }
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify(next))
+    return true
   } catch {
     /* quota exceeded / private mode — persistence is best-effort */
+    return false
   }
 }
 
@@ -500,11 +535,11 @@ export function patchUiState(
   // cannot introduce the bypass in the first place.
   patch: Partial<Omit<PersistedUiState, 'refresh'>>,
 ) {
-  try {
-    localStorage.setItem(UI_STATE_KEY, JSON.stringify({ ...loadUiState(), ...patch }))
-  } catch {
-    /* best-effort, same as saveUiState */
-  }
+  // The body is `saveUiState`'s -- the merge is the same operation, and this
+  // signature is the only difference worth keeping. `patch.refresh` is
+  // unrepresentable here, so the nested-merge branch there is simply never taken.
+  // The write result is passed through for the same reason it exists there.
+  return saveUiState(patch)
 }
 
 /** Pending "open the first issue" intent, set at connect time.

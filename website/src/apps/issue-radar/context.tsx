@@ -8,7 +8,7 @@
 // touch Workspace's prop wiring. That's what lets multiple agents build
 // different views in parallel without editing the same file.
 import {
-  createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode,
+  createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode,
 } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -24,9 +24,9 @@ import { repoScopeKey } from './lib/links'
 import { DEFAULT_BULK_CHUNK } from './lib/prActions'
 import {
   asArray, coerceAiLanguage, coerceDashboardTab, coerceRefreshPrefs, coerceSortKey, consumeAutoSelectFirstIssue,
-  loadUiState, patchUiState, saveUiState, storedAiLanguage,
+  loadUiState, patchUiState, saveUiState,
 } from './lib/format'
-import type { RefreshPrefs } from './lib/format'
+import type { PersistedUiState, RefreshPrefs, UiStatePatch } from './lib/format'
 import type { RepoRef } from './lib/refLinks'
 
 /** GitHub author_association values that mark a repo member (maintainer). Kept
@@ -102,6 +102,34 @@ function loadCrewUi(): PersistedCrewUi {
     // Corrupt value, or storage blocked (private mode) — the defaults are a
     // usable page, exactly as loadUiState treats the same failure.
     return { crewView: { kind: 'none' }, crewFilter: 'all', crewSortKey: 'status', crewSortDir: 'asc' }
+  }
+}
+
+/** Merge a partial crew-UI patch over the stored document.
+ *
+ * The same reason `saveUiState` merges: this key is ONE document shared by every
+ * tab, so writing it whole from a single tab's React state reverts whatever
+ * another tab last put in the fields this tab did not touch. Only the keys the
+ * caller names move.
+ *
+ * @returns true when the document was written -- see `saveUiState` for why the
+ * caller's baseline must not advance on false. */
+function saveCrewUi(patch: Partial<PersistedCrewUi>): boolean {
+  try {
+    let stored: Record<string, unknown> = {}
+    try {
+      const raw = localStorage.getItem(CREW_UI_KEY)
+      if (raw) stored = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      // Corrupt document: write just the patch rather than dropping this tab's
+      // change, which is how loadCrewUi treats the same input.
+      stored = {}
+    }
+    localStorage.setItem(CREW_UI_KEY, JSON.stringify({ ...stored, ...patch }))
+    return true
+  } catch {
+    /* quota exceeded / private mode — persistence is best-effort */
+    return false
   }
 }
 
@@ -413,17 +441,14 @@ export function IssueRadarProvider({
   const setAiLanguage = useCallback((code: string) => {
     const next = coerceAiLanguage(code)
     setAiLanguageState(next)
-    // Written HERE as a targeted merge rather than left to the whole-document save
-    // below: that save rewrites every field from one tab's React state, so a second
-    // tab persisting an unrelated change would otherwise overwrite this choice with
-    // whatever it read at mount, and the agents would silently go back to English.
-    //
-    // This is a per-field guard, not the general fix. Every other field in the
-    // document still loses to a stale tab. If you are adding a field that needs the
-    // same protection, make `saveUiState` merge over the on-disk document instead of
-    // copying this pair of calls -- the cause is the whole-document write, and one
-    // carve-out per field does not scale. `patchUiState` deliberately excludes
-    // `refresh`, so that field needs its validated setter path either way.
+    // Written HERE as a targeted merge, and this is now the ONLY writer of the field:
+    // the save effect below no longer sends it at all. That effect used to rewrite
+    // every field from one tab's React state, so this pair of calls was a per-field
+    // guard against a second tab reverting the choice to whatever it read at mount.
+    // The general fix has since landed -- `saveUiState` merges, and the effect sends
+    // only the fields that tab actually changed -- so a new field needs no carve-out
+    // here. `patchUiState` still excludes `refresh`, which keeps its validated
+    // setter path.
     patchUiState({ aiLanguage: next })
   }, [])
 
@@ -489,18 +514,54 @@ export function IssueRadarProvider({
   // Persist the crews page + chip filter on their own key (see CREW_UI_KEY), for
   // the same reason the blob below is persisted: leaving Issue Radar and coming
   // back should land on the crew you were reading.
+  //
+  // Both halves of the fix below apply here too, and for the same reason -- this
+  // key is one document shared by every tab. Writing it whole on mount is the
+  // worse half: merely OPENING a second tab reverted the first tab's crew page.
+  const lastWrittenCrew = useRef<PersistedCrewUi | null>(null)
   useEffect(() => {
-    try {
-      localStorage.setItem(CREW_UI_KEY, JSON.stringify({ crewView, crewFilter, crewSortKey, crewSortDir }))
-    } catch {
-      /* quota exceeded / private mode — persistence is best-effort */
+    const current: PersistedCrewUi = { crewView, crewFilter, crewSortKey, crewSortDir }
+    const prev = lastWrittenCrew.current
+    // First run after mount establishes the baseline WITHOUT writing.
+    if (prev === null) { lastWrittenCrew.current = current; return }
+    const changed: Partial<PersistedCrewUi> = {}
+    for (const key of Object.keys(current) as (keyof PersistedCrewUi)[]) {
+      // By VALUE: `crewView` is a fresh object every render. It is diffed as ONE
+      // value rather than member-wise like `refresh`, because it is a single
+      // discriminated selection whose fields always move together, where
+      // `refresh` holds five independent settings owned by separate controls.
+      if (JSON.stringify(current[key]) !== JSON.stringify(prev[key])) {
+        // @ts-expect-error -- indexed write across a union of field types; key and
+        // value are read from the same object so they agree by construction.
+        changed[key] = current[key]
+      }
     }
+    if (Object.keys(changed).length === 0) { lastWrittenCrew.current = current; return }
+    // The baseline records what is DURABLE, so it advances only when the write
+    // landed. Persistence is best-effort and a full quota is swallowed; advancing
+    // anyway would mark these fields stored while the document still holds the old
+    // ones, so the next change would diff them as unchanged, never resend them, and
+    // the edit would survive only in this tab until a reload discarded it. Holding
+    // the baseline back re-sends them on the next change instead.
+    if (saveCrewUi(changed)) lastWrittenCrew.current = current
   }, [crewView, crewFilter, crewSortKey, crewSortDir])
 
   // Persist the view / filter / selection state on every change so navigating
   // away from Issue Radar and back restores the same page (see loadUiState).
+  //
+  // Only the fields THIS tab changed are written. The effect fires on any single
+  // change, so sending the whole object would rewrite every other field from this
+  // tab's mount-time copy and revert a second tab's edits -- the clobber that used
+  // to need a per-field carve-out for `aiLanguage`. Diffing against the document we
+  // last wrote is the other half of `saveUiState`'s merge: merging alone cannot help
+  // while the payload still carries every field.
+  //
+  // `aiLanguage` is deliberately absent: `setAiLanguage` patches it directly, so this
+  // effect has no business writing it at all. It no longer needs the read-back
+  // carve-out either -- a field this tab did not change is now simply not sent.
+  const lastWritten = useRef<Partial<PersistedUiState> | null>(null)
   useEffect(() => {
-    saveUiState({
+    const current: Partial<PersistedUiState> = {
       mainView, dashboardTab, settingsTarget,
       selectedIssue, query,
       selectedLabels: [...selectedLabels],
@@ -512,11 +573,46 @@ export function IssueRadarProvider({
       prCreatedByMember,
       prStateFilter, prSortKey, prSortDir,
       refresh: refreshPrefs,
-      // Read back from the store rather than written from this tab's state: this
-      // save fires on any unrelated change, and a tab whose copy predates another
-      // tab's language change must not carry that stale value back to disk.
-      aiLanguage: storedAiLanguage(),
-    })
+    }
+    const prev = lastWritten.current
+    // First run after mount establishes the baseline WITHOUT writing: a tab that is
+    // merely opened must not persist anything, or opening a second tab would itself
+    // be the clobber this fix exists to prevent.
+    if (prev === null) { lastWritten.current = current; return }
+    // Compared by VALUE, not identity: `selectedLabels` / `prSelectedLabels` are
+    // fresh arrays every render and `settingsTarget` / `refresh` are objects, so
+    // reference equality would report every field as changed on every run and put
+    // the whole document back on the wire.
+    const changed: UiStatePatch = {}
+    for (const key of Object.keys(current) as (keyof PersistedUiState)[]) {
+      if (key === 'refresh') continue
+      if (JSON.stringify(current[key]) !== JSON.stringify(prev[key])) {
+        // @ts-expect-error -- indexed write across a union of field types; the key
+        // and value are read from the same object so they agree by construction.
+        changed[key] = current[key]
+      }
+    }
+    // `refresh` is diffed MEMBER-WISE, not as one value. It holds five independent
+    // settings, so sending the whole object on any change reproduces the clobber one
+    // level down: a tab that toggled background polling and a tab that changed an
+    // interval would each revert the other's member. Only the members this tab moved
+    // are sent, and `saveUiState` merges them over the stored ones.
+    const prevRefresh = prev.refresh
+    if (prevRefresh) {
+      const refreshPatch: Partial<RefreshPrefs> = {}
+      for (const key of Object.keys(refreshPrefs) as (keyof RefreshPrefs)[]) {
+        if (refreshPrefs[key] !== prevRefresh[key]) {
+          // @ts-expect-error -- same indexed-write narrowing as above.
+          refreshPatch[key] = refreshPrefs[key]
+        }
+      }
+      if (Object.keys(refreshPatch).length > 0) changed.refresh = refreshPatch
+    }
+    if (Object.keys(changed).length === 0) { lastWritten.current = current; return }
+    // The baseline records what is DURABLE, so it advances only when the write
+    // landed -- see the crew effect above for why a swallowed failure that advanced
+    // it anyway would lose the edit on the next change.
+    if (saveUiState(changed)) lastWritten.current = current
   }, [
     mainView, dashboardTab, settingsTarget, selectedIssue, query,
     selectedLabels, requestedByMe, assignedToMe, createdByMember, stateFilter, sortKey, sortDir,

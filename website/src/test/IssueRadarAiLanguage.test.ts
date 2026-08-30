@@ -46,7 +46,7 @@ vi.mock('../apps/issue-radar/context', async () => {
 
 const {
   AI_LANGUAGE_CHOICES, AI_LANGUAGE_FOLLOW, UI_STATE_KEY,
-  coerceAiLanguage, patchUiState, resolveAiLanguage, storedAiLanguage,
+  coerceAiLanguage, patchUiState, resolveAiLanguage,
 } = await import('../apps/issue-radar/lib/format')
 const { buildInvestigationPrompt } = await import('../apps/issue-radar/lib/investigate.prompt')
 const { useInvestigate } = await import('../apps/issue-radar/lib/investigate')
@@ -231,6 +231,13 @@ describe('the settings row survives a narrow viewport', () => {
 })
 
 describe('a second tab cannot erase the choice', () => {
+  // Reads the field straight off the stored document. This used to be a
+  // `storedAiLanguage()` export in format.ts, which existed only because a
+  // whole-document save had to write the on-disk value back; the save is now a
+  // per-field merge, so nothing in the app needs it and only this file reads it.
+  const storedLang = () =>
+    coerceAiLanguage((JSON.parse(localStorage.getItem(UI_STATE_KEY) || '{}') as { aiLanguage?: unknown }).aiLanguage)
+
   it('keeps the newest stored value when a stale whole-document save lands', () => {
     // The UI state is persisted as ONE document per tab. Tab A picks a language;
     // tab B then saves an unrelated change from React state it read at mount. If
@@ -238,12 +245,12 @@ describe('a second tab cannot erase the choice', () => {
     // the agents would quietly go back to English.
     localStorage.setItem(UI_STATE_KEY, JSON.stringify({ query: 'crash', aiLanguage: '' }))
     patchUiState({ aiLanguage: 'ja' })
-    expect(storedAiLanguage()).toBe('ja')
+    expect(storedLang()).toBe('ja')
 
     // What a stale tab's whole-document save now writes for this field.
-    const staleTabWrites = storedAiLanguage()
+    const staleTabWrites = storedLang()
     localStorage.setItem(UI_STATE_KEY, JSON.stringify({ query: 'other', aiLanguage: staleTabWrites }))
-    expect(storedAiLanguage()).toBe('ja')
+    expect(storedLang()).toBe('ja')
   })
 
   it('patches only the language, leaving the rest of the document intact', () => {
@@ -256,8 +263,18 @@ describe('a second tab cannot erase the choice', () => {
   it('writes the language from its own setter and never from the whole-state save', async () => {
     const src = await readFile(join(__dirname, '..', 'apps/issue-radar/context.tsx'), 'utf8')
     expect(src).toMatch(/patchUiState\(\{ aiLanguage: next \}\)/)
-    expect(src).toMatch(/aiLanguage: storedAiLanguage\(\)/)
-    // The bare state variable in the saved document is the defect itself.
+    // The save effect must not write this field AT ALL any more. It used to send
+    // `aiLanguage: storedAiLanguage()` -- a read-back carve-out that kept a stale tab
+    // from reverting the choice while the effect still rewrote the whole document.
+    // The effect now sends only the fields that tab changed, so the carve-out is gone
+    // and the setter is the single writer. A payload line for this field, whether the
+    // bare variable or the read-back, is the defect returning.
     expect(src).not.toMatch(/\n      aiLanguage,\n/)
+    expect(src).not.toMatch(/aiLanguage: storedAiLanguage\(\)/)
+    // And the helper that carve-out needed is gone from format.ts. Re-exporting it
+    // is how the read-back would come back, so pin its absence rather than only the
+    // call site: with the function deleted, the assertion above cannot fail on its own.
+    const fmt = await readFile(join(__dirname, '..', 'apps/issue-radar/lib/format.ts'), 'utf8')
+    expect(fmt).not.toMatch(/export function storedAiLanguage/)
   })
 })
