@@ -218,6 +218,54 @@ class TestProjectScopeSatisfied:
         assert project_scope_satisfied("/src/pkg/", tmp_path) is False
         assert project_scope_satisfied("src/pkg", tmp_path) is True
 
+    def test_a_relative_project_is_refused_not_resolved_against_the_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        # The gate promises never to consult the process working directory, but
+        # ``Path.resolve()`` anchors a RELATIVE path to exactly that. Standing the
+        # process inside a tree that DOES hold the fragment is what makes the
+        # difference observable: resolving "." would find "src/pkg" here and admit
+        # the entry, which is the fail-open this gate exists to prevent.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "src" / "pkg").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+
+        assert project_scope_satisfied("src/pkg", ".") is False
+        assert project_scope_satisfied("src/pkg", "") is False
+        assert project_scope_satisfied("src/pkg", "src") is False
+        assert project_scope_satisfied("src/pkg", Path("src") / "pkg") is False
+        # The same project named ABSOLUTELY still qualifies, so this refuses an
+        # unanchored value rather than the project itself.
+        assert project_scope_satisfied("src/pkg", tmp_path) is True
+
+    def test_a_relative_project_cannot_borrow_the_cwd_of_an_unrelated_tree(
+        self, tmp_path, monkeypatch
+    ):
+        # The sharper shape of the same fault: the SESSION's project is one tree
+        # and the gateway's cwd is another, so anchoring to cwd answers about the
+        # wrong repository entirely -- admitting an entry scoped to the checkout
+        # the gateway happens to sit in, for a session working somewhere else.
+        #
+        # The fixture is built so cwd is the ONLY way to reach a True: the
+        # fragment "pkg" exists in the gateway checkout and nowhere in the
+        # session's tree, and the relative project "src" lands inside the gateway
+        # checkout when resolved against its cwd.
+        gateway = tmp_path / "gateway-checkout"
+        (gateway / ".git").mkdir(parents=True)
+        (gateway / "src" / "pkg").mkdir(parents=True)
+        session = tmp_path / "elsewhere"
+        (session / "src").mkdir(parents=True)
+        (session / ".git").mkdir()
+        monkeypatch.chdir(gateway)
+
+        assert project_scope_satisfied("pkg", "src") is False
+        # The session's real project, named absolutely, does not hold the fragment
+        # -- which is the answer the gate should have given all along.
+        assert project_scope_satisfied("pkg", session / "src") is False
+        # Positive control: the gateway's own tree still qualifies when it is the
+        # project, so this refuses an unanchored value rather than a directory.
+        assert project_scope_satisfied("pkg", gateway / "src") is True
+
 
 class TestSkillLoaderSharesTheGate:
     """The skill gate must answer through the shared function, not a copy."""

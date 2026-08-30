@@ -108,9 +108,12 @@ def project_scope_satisfied(relpath: str, project_dir: str | Path | None) -> boo
     the scoped repo would admit the entry into EVERY session, and a packaged
     install would suppress it for every session.
 
-    Fails CLOSED. No project, an unusable one, a traversal fragment, or any
-    filesystem error all suppress the entry, so a surface whose project cannot be
-    established never inherits repository-specific instructions.
+    Fails CLOSED. No project, a RELATIVE one, an unusable one, a traversal
+    fragment, or any filesystem error all suppress the entry, so a surface whose
+    project cannot be established never inherits repository-specific
+    instructions. A relative project belongs on that list because the only way to
+    anchor one is ``Path.cwd()``, and reading that is the very dependence the
+    paragraph above rules out -- so it is refused rather than resolved.
 
     The fragment must name a path BELOW some ancestor, so every form that would
     resolve somewhere else is refused before any filesystem access:
@@ -146,8 +149,13 @@ def project_scope_satisfied(relpath: str, project_dir: str | Path | None) -> boo
     rel = relpath.strip().replace("\\", "/").strip("/")
     if not project_dir:
         return False
+    # Absolute FIRST: ``resolve()`` would anchor a relative project to
+    # ``Path.cwd()``, which is the dependence the docstring rules out.
     try:
-        root = Path(project_dir).resolve()
+        given = Path(project_dir)
+        if not given.is_absolute():
+            return False
+        root = given.resolve()
     except (OSError, RuntimeError, ValueError):
         return False
     for candidate in _walk_to_repo_root(root):
