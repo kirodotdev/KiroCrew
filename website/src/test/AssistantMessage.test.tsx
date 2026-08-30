@@ -431,13 +431,13 @@ describe('AssistantMessage', () => {
     const idle = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} />)
     openOverflow()
     expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeInTheDocument()
-    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
+    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader')).not.toBeInTheDocument()
     idle.unmount()
     render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onPlanFromHere={vi.fn()} onLoadEarlier={vi.fn()} loadingOlder />)
     openOverflow()
     // Both items carry it, so the cue is on whichever one the reader is looking at.
-    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(screen.getByTestId('plan-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
+    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader')).toBeInTheDocument()
+    expect(screen.getByTestId('plan-from-here').querySelector('svg.lucide-loader')).toBeInTheDocument()
   })
 
   it('does not render fork button while streaming', () => {
@@ -467,17 +467,25 @@ describe('AssistantMessage', () => {
     const onPlanFromHere = vi.fn(() => new Promise<void>(res => { resolvePlan = res }))
     const onFork = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
-    fireEvent.click(screen.getByTitle('Plan from here'))
-    const planItem = screen.getByTitle('Plan from here')
-    const forkItem = screen.getByTitle('Fork conversation from here')
-    expect(planItem).toBeDisabled()
-    expect(forkItem).toBeDisabled()
-    // Fork keeps its GitFork icon -- it must NOT have been swapped for a spinner.
-    expect(forkItem.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
-    expect(forkItem.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
-    // Plan's icon IS the spinner while its own action is in flight.
-    expect(planItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(planItem.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
+
+    const planBtn = screen.getByTitle('Plan from here')
+    const forkBtn = screen.getByTitle('Fork conversation from here')
+
+    fireEvent.click(planBtn)
+
+    // Plan button shows its Loader spinner (aria-hidden svg has no title, so
+    // assert via the disabled state + absence of the ClipboardList icon class
+    // is fragile; instead assert both buttons are disabled (busyAction !== null)
+    // while only the fork button still renders its GitFork icon svg).
+    expect(planBtn).toBeDisabled()
+    expect(forkBtn).toBeDisabled()
+    // Fork icon (GitFork, lucide class "lucide-git-fork") must remain the fork
+    // button's icon -- it must NOT have been swapped for a spinner.
+    expect(forkBtn.querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-loader')).not.toBeInTheDocument()
+    // Plan button's icon IS the spinner while its action is in flight.
+    expect(planBtn.querySelector('svg.lucide-loader')).toBeInTheDocument()
+    expect(planBtn.querySelector('svg.lucide-clipboard-list')).not.toBeInTheDocument()
 
     await act(async () => { resolvePlan(); await Promise.resolve() })
     expect(screen.getByTitle('Plan from here')).not.toBeDisabled()
@@ -488,15 +496,18 @@ describe('AssistantMessage', () => {
     const onFork = vi.fn(() => new Promise<void>(res => { resolveFork = res }))
     const onPlanFromHere = vi.fn()
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} onFork={onFork} onPlanFromHere={onPlanFromHere} forkIndex={0} />)
-    fireEvent.click(screen.getByTitle('Fork conversation from here'))
-    const planItem = screen.getByTitle('Plan from here')
-    const forkItem = screen.getByTitle('Fork conversation from here')
-    expect(forkItem).toBeDisabled()
-    expect(planItem).toBeDisabled()
-    expect(planItem.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
-    expect(planItem.querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
-    expect(forkItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(forkItem.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
+
+    const planBtn = screen.getByTitle('Plan from here')
+    const forkBtn = screen.getByTitle('Fork conversation from here')
+
+    fireEvent.click(forkBtn)
+
+    expect(forkBtn).toBeDisabled()
+    expect(planBtn).toBeDisabled()
+    expect(planBtn.querySelector('svg.lucide-clipboard-list')).toBeInTheDocument()
+    expect(planBtn.querySelector('svg.lucide-loader')).not.toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-loader')).toBeInTheDocument()
+    expect(forkBtn.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
 
     await act(async () => { resolveFork(); await Promise.resolve() })
     expect(screen.getByTitle('Fork conversation from here')).not.toBeDisabled()

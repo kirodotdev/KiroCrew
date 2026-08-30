@@ -9,7 +9,7 @@
 // The body is the EXACT text that will be posted (`row.ship_comment`, built by
 // the same `pipeline.build_ship_comment` the poster uses), so what you read here
 // is what the author receives.
-import { Check, Loader2, MessageSquarePlus, ShipWheel } from 'lucide-react'
+import { Check, MessageSquarePlus, ShipWheel, Loader } from 'lucide-react'
 
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 
@@ -67,7 +67,7 @@ export default function ShipSummaryCard({
               </span>
             ) : posting ? (
               <span className="inline-flex items-center gap-1.5 text-[11.5px] text-muted">
-                <Loader2
+                <Loader
                   size={11}
                   className="animate-spin motion-reduce:animate-none"
                   aria-hidden="true"

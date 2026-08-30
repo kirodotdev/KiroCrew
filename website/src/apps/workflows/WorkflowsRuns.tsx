@@ -21,6 +21,7 @@ import {
   Workflow as WorkflowIcon,
   CheckCircle2,
   XCircle,
+  Loader,
   Loader2,
   Ban,
   ListTree,
@@ -335,7 +336,7 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
                 }}
               >
                 {row.badge.active ? (
-                  <Loader2 size={14} className="text-accent animate-spin shrink-0" />
+                  <Loader size={14} className="text-accent animate-spin shrink-0" />
                 ) : row.status === 'finished' ? (
                   <CheckCircle2 size={14} className="text-green-500 shrink-0" />
                 ) : row.status === 'paused' ? (

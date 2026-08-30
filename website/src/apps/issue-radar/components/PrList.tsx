@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import { Virtuoso } from 'react-virtuoso'
-import {
-  RefreshCw, Search, X, GitPullRequest, GitMerge, GitPullRequestClosed, GitPullRequestDraft,
-  CheckCircle2, XCircle, CircleSlash, Loader2, FileDiff,
-} from 'lucide-react'
+import { RefreshCw, Search, X, GitPullRequest, GitMerge, GitPullRequestClosed, GitPullRequestDraft, CheckCircle2, XCircle, CircleSlash, FileDiff, Loader } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useIssueRadar } from '../context'
 import { relativeTimeOrDate, relativeTime } from '../lib/format'
@@ -35,7 +32,7 @@ function prStateVisual(pr: { state: string; draft?: boolean; merged_at?: string 
  * reshuffle between renders and the actionable states read first. */
 const CHECK_BADGES = [
   { key: 'failure', Icon: XCircle, color: 'text-danger', label: 'failing' },
-  { key: 'running', Icon: Loader2, color: 'text-accent', label: 'running' },
+  { key: 'running', Icon: Loader, color: 'text-accent', label: 'running' },
   { key: 'success', Icon: CheckCircle2, color: 'text-ok', label: 'passing' },
   { key: 'other', Icon: CircleSlash, color: 'text-muted', label: 'skipped / neutral' },
 ] as const
@@ -101,7 +98,7 @@ function ChecksDot({ state }: { state: PullRequest['checks_state'] }) {
   if (!state) return null
   const visual = {
     failure: { Icon: XCircle, color: 'text-danger', label: 'checks failing' },
-    running: { Icon: Loader2, color: 'text-accent', label: 'checks running' },
+    running: { Icon: Loader, color: 'text-accent', label: 'checks running' },
     success: { Icon: CheckCircle2, color: 'text-ok', label: 'checks passing' },
     other: { Icon: CircleSlash, color: 'text-muted', label: 'checks skipped / neutral' },
   }[state]

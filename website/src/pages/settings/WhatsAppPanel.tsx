@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { QrCode, Loader2, Check, TriangleAlert, Trash2, Unlink } from 'lucide-react'
+import { QrCode, Loader2, Loader, Check, TriangleAlert, Trash2, Unlink } from 'lucide-react'
 import {
   ApiError,
   api,
@@ -688,7 +688,7 @@ export function WhatsAppPanel() {
               <div className="text-[12px] text-muted">{i18nT('pages.settings.whatsAppPanel.waiting_for_a_code')}</div>
             )}
             <div className="flex items-center gap-1.5 text-[12px] text-muted">
-              <Loader2 size={12} className="animate-spin" />
+              <Loader size={12} className="animate-spin" />
               {phase === 'scanned' ? i18nT('pages.settings.whatsAppPanel.scanned_confirm_on_your_phone') : i18nT('pages.settings.whatsAppPanel.waiting_for_scan')}
             </div>
           </div>

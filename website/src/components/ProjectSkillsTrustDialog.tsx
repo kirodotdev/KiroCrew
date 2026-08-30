@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, ShieldAlert } from 'lucide-react'
+import { Loader, ShieldAlert } from 'lucide-react'
 
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
@@ -110,7 +110,7 @@ export default function ProjectSkillsTrustDialog({
           </Btn>
           <Btn primary onClick={confirm} disabled={pending || !reviewedPath || !reviewedKey}>
             {pending
-              ? <><Loader2 size={14} className="animate-spin" /> {i18nT('components.projectSkillsTrust.working')}</>
+              ? <><Loader size={14} className="animate-spin" /> {i18nT('components.projectSkillsTrust.working')}</>
               : <><ShieldAlert size={14} /> {i18nT('components.projectSkillsTrust.confirm')}</>}
           </Btn>
         </>

@@ -3,34 +3,7 @@
  * Uses three-channel model: chunks via chat:chunk, done via chat:done, messages via chat:message
  */
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import {
-  Ban,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Eraser,
-  Eye,
-  File,
-  Folder,
-  Handshake,
-  LayoutDashboard,
-  LoaderCircle,
-  Palette,
-  PawPrint,
-  Pin,
-  RotateCcw,
-  Settings,
-  Shield,
-  ShieldCheck,
-  ShieldPlus,
-  Square,
-  SquarePen,
-  Trash2,
-  Unplug,
-  Wrench,
-  X,
-} from 'lucide-react'
+import { Ban, Check, ChevronDown, ChevronRight, Copy, Eraser, Eye, File, Folder, Handshake, LayoutDashboard, Palette, PawPrint, Pin, RotateCcw, Settings, Shield, ShieldCheck, ShieldPlus, Square, SquarePen, Trash2, Unplug, Wrench, X, Loader } from 'lucide-react'
 import Clickable from '../../../../components/Clickable'
 import { familyGrantIsDistinct, trustBasePattern, truncateCommandLabel } from '../shared/trustPatterns'
 import Markdown from 'react-markdown'
@@ -1089,7 +1062,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
         }}>
           <span>
             {cloudAutoConnecting
-              ? <><LoaderCircle size={11} style={{ display: 'inline', verticalAlign: '-1px', marginRight: 4 }} />{i18nT('apps.mochi.gateway.starting')}</>
+              ? <><Loader size={11} style={{ display: 'inline', verticalAlign: '-1px', marginRight: 4 }} />{i18nT('apps.mochi.gateway.starting')}</>
               : <><Unplug size={11} style={{ display: 'inline', verticalAlign: '-1px', marginRight: 4 }} />{i18nT('apps.mochi.gateway.disconnected')}</>}
           </span>
           {!cloudAutoConnecting && !gatewayStarting && (

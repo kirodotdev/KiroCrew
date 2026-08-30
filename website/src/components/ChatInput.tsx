@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, Loader } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -2790,7 +2790,7 @@ function ChatInput({
                 </span>
                 {spawnApprovalsResolving ? (
                   <span className="inline-flex items-center gap-1 text-[12px] text-muted/60 shrink-0">
-                    <Loader2 size={12} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
+                    <Loader size={12} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
                   </span>
                 ) : (
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -2832,7 +2832,7 @@ function ChatInput({
                       </code>
                       {a.approving ? (
                         <span className="inline-flex items-center gap-1 text-[11px] text-muted/60 shrink-0">
-                          <Loader2 size={11} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
+                          <Loader size={11} className="animate-spin shrink-0" />{i18nT('components.chatInput.resolving')}
                         </span>
                       ) : (
                         <div className="flex items-center gap-1 shrink-0">
@@ -3570,7 +3570,7 @@ function ChatInput({
                   data-testid="composer-continue"
                   {...offlineProps(connected, 'continue', continueLabel)}
                 >
-                  {continuing ? <Loader2 size={14} className="animate-spin" /> : <RotateCw size={14} />}
+                  {continuing ? <Loader size={14} className="animate-spin" /> : <RotateCw size={14} />}
                   {i18nT('components.chatInput.resume')}
                 </button>
               ) : (

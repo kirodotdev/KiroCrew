@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Loader2, Play } from 'lucide-react'
+import { Play, Loader } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -60,7 +60,7 @@ export const ErrorCard = memo(function ErrorCard({ content, onContinue, continui
         data-testid="error-card-continue"
       >
         {continuing
-          ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+          ? <Loader size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
           : <Play size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
         {i18nT('pages.chat.errorCard.continue')}
       </button>

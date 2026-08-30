@@ -609,6 +609,30 @@ Inline within a `Card`, built from the shared primitives:
   from). It maps known sources to colors and falls back to a neutral pill for an
   unknown one, so pass the raw source string.
 
+## Spinners
+
+**Below 15px use lucide `Loader`. At 15px and above use `LoaderCircle`.**
+
+`LoaderCircle` (exported as both `Loader2` and `LoaderCircle`) draws a single
+2px-stroke arc spanning about 270° of a circle. At 10–14px that stroke is thick
+relative to the radius and the gap is roughly a sixth of the glyph, so it reads
+as a broken ring rather than as motion. `Loader`'s eight discrete spokes stay
+legible as rotation at that size. From 15px up the arc is unambiguous and
+`LoaderCircle` is the better glyph, so both survive — the size decides, not
+per-call-site taste.
+
+```tsx
+<Loader size={14} className="animate-spin" />        {/* small */}
+<LoaderCircle size={16} className="animate-spin" />  {/* 15px and up */}
+```
+
+The rule keys on a **declared** `size`. A spinner sized by CSS instead — the
+`lucide-inline` class is `width: 1em`, so it follows the surrounding font size —
+has no size to check statically and is out of the rule's scope; leave those on
+`LoaderCircle` rather than guessing at their rendered size.
+
+`src/test/spinnerGlyphRule.test.ts` enforces this.
+
 ## Errors
 
 A dismissible banner above the content:

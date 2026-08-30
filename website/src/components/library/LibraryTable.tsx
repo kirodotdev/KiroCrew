@@ -1,6 +1,6 @@
 import type * as React from 'react'
 import { useState, useRef } from 'react'
-import { ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, ExternalLink, Loader2, X, Share2, FileText, FolderOpen, Folder as FolderIcon } from 'lucide-react'
+import { ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, ExternalLink, Loader, X, Share2, FileText, FolderOpen, Folder as FolderIcon } from 'lucide-react'
 import { openPopout } from '../../utils/artifactPopout'
 import { Badge, Btn, Input, IconButton } from '../ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../ui/dropdown-menu'
@@ -428,7 +428,7 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
                 title={i18nT('pages.artifactsPage.remove_from_library')}
                 aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}
               >
-                {deletingSlug === a.slug ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+                {deletingSlug === a.slug ? <Loader size={13} className="animate-spin" /> : <X size={13} />}
               </button>
             </div>
           </td>
@@ -458,7 +458,7 @@ export function SessionDocStar({ d, busy, onMaterialize }: { d: SessionDoc; busy
       aria-label={i18nT('pages.artifactsPage.star_document')}
       className="shrink-0"
     >
-      {busy ? <Loader2 size={14} className="animate-spin" /> : <Star size={14} />}
+      {busy ? <Loader size={14} className="animate-spin" /> : <Star size={14} />}
     </IconButton>
   )
 }

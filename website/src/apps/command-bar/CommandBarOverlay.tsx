@@ -7,7 +7,7 @@ import {
   Clock,
   Command,
   Cog,
-  Loader2,
+  Loader,
   MessageSquare,
   MessageSquarePlus,
   Package,
@@ -926,7 +926,7 @@ export default function CommandBarOverlay({
             named here: an `invoke` launcher row, and the ask row. */}
         {((slot.tag === 'root' && pendingRow === slot.row.id) ||
           (slot.tag === 'ask' && pendingRow === ASK_SLOT_KEY)) && (
-          <Loader2
+          <Loader
             size={13}
             aria-label={i18nT('apps.commandBar.working')}
             className="lucide-inline text-muted shrink-0 animate-spin"

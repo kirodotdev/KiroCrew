@@ -1,7 +1,7 @@
 import type React from 'react'
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertCircle, Check, ChevronRight, Loader2, Send, Server } from 'lucide-react'
+import { AlertCircle, Check, ChevronRight, Send, Server, Loader } from 'lucide-react'
 import { api, type InstanceView } from '../api/client'
 import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem,
@@ -103,7 +103,7 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
               <span className="ml-auto text-[10px] text-muted shrink-0">{notConnected}</span>
             )}
             {st.kind === 'sending' && (
-              <Loader2 size={13} className="ml-auto shrink-0 animate-spin text-muted" />
+              <Loader size={13} className="ml-auto shrink-0 animate-spin text-muted" />
             )}
             {st.kind === 'sent' && st.transcriptOnly && (
               <span

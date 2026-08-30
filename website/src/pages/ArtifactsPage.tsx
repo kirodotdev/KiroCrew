@@ -2,7 +2,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, ImageOff, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, Star, FileText, FilePlus } from 'lucide-react'
+import { AlertTriangle, Bookmark, Cloud, ExternalLink, Globe, ImageOff, Rocket, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, Star, FileText, FilePlus, Loader } from 'lucide-react'
 import { openPopout } from '../utils/artifactPopout'
 import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
 import type { ItemContent } from '@virtuoso.dev/masonry'
@@ -807,7 +807,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
               aria-pressed={!!a.pinned}
             >
               {pinningSlug === a.slug
-                ? <Loader2 size={13} className="animate-spin" />
+                ? <Loader size={13} className="animate-spin" />
                 : <Star size={13} className={a.pinned ? 'fill-current' : ''} />}
             </button>
             <button
@@ -827,7 +827,7 @@ function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
               title={i18nT('pages.artifactsPage.remove_from_library')}
               aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}
             >
-              {deleting ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
+              {deleting ? <Loader size={13} className="animate-spin" /> : <X size={13} />}
             </button>
           </div>
         </div>
@@ -1909,7 +1909,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 className="flex items-center gap-1.5 rounded-r-none"
                 title={i18nT('pages.artifactsPage.start_a_new_blank_document_in_the_library')}
               >
-                {newArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <FilePlus size={13} />} {i18nT('pages.artifactsPage.new_artifact')}
+                {newArtifactMut.isPending ? <Loader size={13} className="animate-spin" /> : <FilePlus size={13} />} {i18nT('pages.artifactsPage.new_artifact')}
               </Btn>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -1931,7 +1931,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                     // outgrow.
                     className="rounded-l-none border-l-0 px-1 self-stretch"
                   >
-                    {addArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <ChevronDown size={13} />}
+                    {addArtifactMut.isPending ? <Loader size={13} className="animate-spin" /> : <ChevronDown size={13} />}
                   </Btn>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, memo } from 'react'
 import { AnimatePresence, motion, useMotionValue, useSpring } from 'framer-motion'
-import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, Loader2, ArrowUp, ArrowDown } from 'lucide-react'
+import { Hourglass, ChevronUp, X, Zap, Pencil, Check, Bot, ArrowUp, ArrowDown, Loader } from 'lucide-react'
 import type { ChatMessage } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
 
@@ -79,7 +79,7 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
     >
       <div className="mb-1 flex items-center gap-2 rounded-md bg-accent/5 border border-accent/15 px-3 py-1.5 text-[12px] font-mono text-muted">
         <Bot size={13} className="text-accent/70 shrink-0" />
-        <Loader2 size={12} className="animate-spin text-accent/70 shrink-0" />
+        <Loader size={12} className="animate-spin text-accent/70 shrink-0" />
         <span>
           {i18nT('components.queueStack.sub_agent_result', { count: count })} {i18nT('components.queueStack.ready_processing_after_the_current_turn')}
         </span>

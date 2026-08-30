@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
+import { Loader } from 'lucide-react'
 import { ApiError, api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { useAppDispatch, useAppSelector } from '../store'
@@ -294,7 +294,7 @@ export default function LinkedSurfacesSection({ slotKey, variant }: {
             * delivery — was indistinguishable from a channel that cannot be
             * connected at all. */}
           {row.pending
-            ? <Loader2 size={13} className="shrink-0 animate-spin" />
+            ? <Loader size={13} className="shrink-0 animate-spin" />
             : <ChannelBrandIcon channel={row.channel} size={13} />}
           <span className="flex min-w-0 flex-col">
             <span className="truncate">

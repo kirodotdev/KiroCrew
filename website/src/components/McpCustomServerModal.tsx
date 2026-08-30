@@ -15,7 +15,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, Loader } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import { Btn } from './ui'
@@ -216,7 +216,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         )}
         {editing && specQuery.isLoading && (
           <span className="flex items-center gap-1.5 text-xs text-muted" role="status">
-            <Loader2 size={13} className="animate-spin" aria-hidden="true" /> {i18nT('components.mcpCustomServerModal.loading_current_spec')}
+            <Loader size={13} className="animate-spin" aria-hidden="true" /> {i18nT('components.mcpCustomServerModal.loading_current_spec')}
           </span>
         )}
         {editing && specQuery.isError && (
@@ -298,7 +298,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
             <Btn onClick={onClose}>{i18nT('components.mcpCustomServerModal.cancel')}</Btn>
             <Btn primary onClick={submit} disabled={!canSubmit || busy}>
               {busy ? (
-                <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                <Loader size={14} className="animate-spin" aria-hidden="true" />
               ) : (
                 <Check size={14} aria-hidden="true" />
               )}

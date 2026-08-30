@@ -19,7 +19,7 @@ import {
   Copy, Check, AlertCircle, RefreshCw, GitPullRequest, GitMerge, GitPullRequestClosed, GitPullRequestDraft,
   MessageSquare, Tag, Users, CalendarDays, GitCommitHorizontal, FileDiff, Milestone as MilestoneIcon,
   Link2, CircleDot, CircleSlash, Pencil, UserPlus, UserMinus,
-  CheckCircle2, XCircle, Eye, GitBranch, ChevronDown, ChevronUp, Loader2, ShieldCheck,
+  CheckCircle2, XCircle, Eye, GitBranch, ChevronDown, ChevronUp, Loader, ShieldCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import RefMarkdown from './RefMarkdown'
@@ -378,7 +378,7 @@ function eventVisual(
  * accent (with a spinner), successes/other stay quiet. */
 const CHECK_VISUAL: Record<PrCheck['bucket'], { Icon: LucideIcon; color: string }> = {
   failure: { Icon: XCircle, color: 'text-danger' },
-  running: { Icon: Loader2, color: 'text-accent' },
+  running: { Icon: Loader, color: 'text-accent' },
   success: { Icon: CheckCircle2, color: 'text-ok' },
   other: { Icon: CircleSlash, color: 'text-muted' },
 }
@@ -459,7 +459,7 @@ function AutoReviewChecks(
     <Section title={i18nT('apps.issueRadar.components.prDetail.auto_review')} icon={<ShieldCheck size={12} />}>
       {loading && checks.length === 0 && (
         <span className="inline-flex items-center gap-1.5 text-muted">
-          <Loader2 size={12} className="animate-spin flex-shrink-0 text-accent" />
+          <Loader size={12} className="animate-spin flex-shrink-0 text-accent" />
           {i18nT('apps.issueRadar.components.prDetail.loading_checks')}
         </span>
       )}

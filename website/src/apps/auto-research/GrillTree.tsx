@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronDown, ChevronRight, Check, Circle, Search, Plus, Trash2, HelpCircle, Loader2, ThumbsUp } from 'lucide-react'
+import { ChevronDown, ChevronRight, Check, Circle, Search, Plus, Trash2, HelpCircle, ThumbsUp, Loader } from 'lucide-react'
 import { GrillNode, GrillAction, nodeDepth } from './grillTreeModel'
 
 import { i18nT } from '../../i18n/t'
@@ -127,7 +127,7 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
                 <span className="text-text">{i18nT('apps.autoResearch.grillTree.answered')} {node.answer}</span>
                 <button onClick={() => expand(node.id)} disabled={atMaxDepth || spinning}
                         className="flex items-center gap-1 text-accent disabled:opacity-40">
-                  {spinning ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} {i18nT('apps.autoResearch.grillTree.expand')}
+                  {spinning ? <Loader size={12} className="animate-spin" /> : <Plus size={12} />} {i18nT('apps.autoResearch.grillTree.expand')}
                 </button>
                 {atMaxDepth && <span className="text-warn">{i18nT('apps.autoResearch.grillTree.max_depth_add_research_manually_or_prune')}</span>}
               </>

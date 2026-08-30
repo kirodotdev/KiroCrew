@@ -1,4 +1,4 @@
-import { Loader2, Check, RotateCcw, type LucideIcon } from 'lucide-react'
+import { Loader, Check, RotateCcw, type LucideIcon } from 'lucide-react'
 import type { InvestigationRecord } from '../api'
 
 import { i18nT } from '../../../i18n/t'
@@ -92,7 +92,7 @@ export default function AgentSessionButton({
         }
       >
         {busy
-          ? <Loader2 size={13} className="animate-spin" />
+          ? <Loader size={13} className="animate-spin" />
           : <ActionIcon size={13} />}
         {actionLabel}
       </button>

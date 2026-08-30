@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef, useId } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, Pin, PinOff, MoreHorizontal } from 'lucide-react'
+import { Copy, Check, Volume2, Code, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader, Link2, Compass, Clock, Pin, PinOff, MoreHorizontal } from 'lucide-react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { copyToClipboard } from '../../utils/clipboard'
 import { copySessionLink } from '../../utils/shareUrl'
@@ -324,8 +324,8 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         {/* A loaded window keeps fork/plan as row buttons, as on base: the menu below exists
             only to give the UNAVAILABLE state a visible reason, and relocating the everyday
             controls taxed chats the bound never touched. */}
-        {onFork && forkIndex !== undefined && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="fork-from-here" title={forkLabel} aria-label={forkLabel} onClick={async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'fork' ? <Loader2 size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
-        {onPlanFromHere && forkIndex !== undefined && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="plan-from-here" title={planLabel} aria-label={planLabel} onClick={async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'plan' ? <Loader2 size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
+        {onFork && forkIndex !== undefined && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="fork-from-here" title={forkLabel} aria-label={forkLabel} onClick={async () => { setBusyAction('fork'); try { await onFork(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'fork' ? <Loader size={14} className="animate-spin" /> : <GitFork size={14} />}</button>}
+        {onPlanFromHere && forkIndex !== undefined && <button className={ROW_ACTION_CLS} disabled={busyAction !== null} data-testid="plan-from-here" title={planLabel} aria-label={planLabel} onClick={async () => { setBusyAction('plan'); try { await onPlanFromHere(forkIndex) } finally { setBusyAction(null) } }}>{busyAction === 'plan' ? <Loader size={14} className="animate-spin" /> : <ClipboardList size={14} />}</button>}
         {/* Row buttons, not menu items: neither depends on `slotHasMore`, and the raw-mode
             state has to be VISIBLE without opening anything. */}
         {text.length >= 50 && onSpeak && <button className="text-muted hover:text-text p-0.5 rounded transition-colors" title={i18nT('pages.chat.assistantMessage.speak')} aria-label={i18nT('pages.chat.assistantMessage.speak_message')} onClick={() => onSpeak(content)}><Volume2 size={14} /></button>}
@@ -376,7 +376,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
                 onSelect={(e) => { e.preventDefault(); if (busyAction !== null) return; setPagingToTarget(true) }}
               >
                 <span className="flex items-center gap-2 opacity-50">
-                  {busyAction === 'fork' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
+                  {busyAction === 'fork' || loadingOlder ? <Loader size={13} className="shrink-0 animate-spin" /> : <GitFork size={13} className="shrink-0" />}
                   <span>{forkLabel}</span>
                 </span>
                 <span id={`${reasonId}-fork`} data-testid="fork-unavailable-reason" className="text-[11px] leading-4 text-muted pl-[21px]">
@@ -393,7 +393,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
                 onSelect={(e) => { e.preventDefault(); if (busyAction !== null) return; setPagingToTarget(true) }}
               >
                 <span className="flex items-center gap-2 opacity-50">
-                  {busyAction === 'plan' || loadingOlder ? <Loader2 size={13} className="shrink-0 animate-spin" /> : <ClipboardList size={13} className="shrink-0" />}
+                  {busyAction === 'plan' || loadingOlder ? <Loader size={13} className="shrink-0 animate-spin" /> : <ClipboardList size={13} className="shrink-0" />}
                   <span>{planLabel}</span>
                 </span>
                 <span id={`${reasonId}-plan`} className="text-[11px] leading-4 text-muted pl-[21px]">

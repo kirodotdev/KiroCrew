@@ -10,9 +10,7 @@
 // a review already in flight runs to completion. The button copy says so; it
 // must never promise an instant stop.
 import { useEffect, useState } from 'react'
-import {
-  CheckCircle2, CircleSlash, Clock, Loader2, XCircle, XOctagon, type LucideIcon,
-} from 'lucide-react'
+import { CheckCircle2, CircleSlash, Clock, XCircle, XOctagon, type LucideIcon, Loader } from 'lucide-react'
 import type { ChangeActivity, PoolStats, Run, RunProgressEntry } from '../lib/types'
 import { TERMINAL_PHASES, formatElapsed, phaseLabel, prLabelFromChange, runElapsedMs } from '../lib/format'
 
@@ -21,7 +19,7 @@ import { i18nT } from '../../../i18n/t'
  * them; the reviewing spinner respects motion-reduce. */
 function phaseVisual(phase: string): { Icon: LucideIcon; color: string; spin?: boolean } {
   switch (phase) {
-    case 'reviewing': return { Icon: Loader2, color: 'text-accent', spin: true }
+    case 'reviewing': return { Icon: Loader, color: 'text-accent', spin: true }
     case 'done': return { Icon: CheckCircle2, color: 'text-ok' }
     case 'failed': return { Icon: XCircle, color: 'text-danger' }
     case 'cancelled': return { Icon: CircleSlash, color: 'text-muted' }
@@ -144,7 +142,7 @@ export default function RunProgress({
           <span className="inline-flex items-center gap-1.5 min-w-0">
             {activity && (
               <>
-                <Loader2
+                <Loader
                   size={11}
                   className="flex-shrink-0 animate-spin motion-reduce:animate-none"
                   aria-hidden="true"

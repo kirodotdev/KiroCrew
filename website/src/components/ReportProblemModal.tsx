@@ -1,14 +1,6 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import {
-  CheckCircle2,
-  AlertCircle,
-  FolderOpen,
-  Download,
-  ExternalLink,
-  Loader2,
-  Lock,
-} from 'lucide-react'
+import { CheckCircle2, AlertCircle, FolderOpen, Download, ExternalLink, Lock, Loader } from 'lucide-react'
 import { Btn, Toggle } from './ui'
 import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import Modal from './Modal'
@@ -98,7 +90,7 @@ export default function ReportProblemModal({ open, onClose }: ReportProblemModal
             <Btn primary disabled={mut.isPending} onClick={() => mut.mutate()}>
               {mut.isPending ? (
                 <>
-                  <Loader2 size={13} className="lucide-inline animate-spin" />{' '}
+                  <Loader size={13} className="lucide-inline animate-spin" />{' '}
                   {i18nT('components.reportProblemModal.collecting')}
                 </>
               ) : (

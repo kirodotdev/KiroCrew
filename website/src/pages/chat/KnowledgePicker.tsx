@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Brain, X, Loader2, Type, Network } from 'lucide-react'
+import { Brain, X, Type, Network, Loader } from 'lucide-react'
 import type { KnowledgeResult } from './useKnowledgeFetch'
 
 import { i18nT } from '../../i18n/t'
@@ -37,7 +37,7 @@ export function KnowledgePicker({ results, query, loading, onInject, onSkip }: P
     return (
       <div className="border border-border rounded-lg p-4 mb-3 animate-pulse">
         <div className="flex items-center gap-2 text-muted text-sm">
-          <Loader2 size={14} className="animate-spin" /> {i18nT('pages.chat.knowledgePicker.searching_knowledge_for_query', { query })}
+          <Loader size={14} className="animate-spin" /> {i18nT('pages.chat.knowledgePicker.searching_knowledge_for_query', { query })}
         </div>
       </div>
     )

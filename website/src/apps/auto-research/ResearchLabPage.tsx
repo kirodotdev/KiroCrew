@@ -1,6 +1,6 @@
 import { useState, useEffect, useReducer, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
+import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader } from 'lucide-react'
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
 import Modal from '../../components/Modal'
@@ -87,7 +87,7 @@ export const STATE_LABEL_KEY: Record<string, string> = {
 }
 
 const STATE_META: Record<string, { color: string; Icon: typeof CheckCircle; spin?: boolean }> = {
-  running: { color: 'text-accent', Icon: Loader2, spin: true },
+  running: { color: 'text-accent', Icon: Loader, spin: true },
   needs_input: { color: 'text-warn', Icon: HelpCircle },
   paused: { color: 'text-muted', Icon: Pause },
   stagnant: { color: 'text-warn', Icon: AlertTriangle },
