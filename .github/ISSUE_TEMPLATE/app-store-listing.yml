@@ -89,7 +89,7 @@ body:
         of the publishing guide); pick tags that land it in the right one.
       placeholder: developer-tools, code-quality, git, code-review
     validations:
-      required: false
+      required: true
 
   - type: input
     id: author
@@ -140,7 +140,7 @@ body:
           required: true
         - label: "Agent JSON files are valid, and each skill `SKILL.md` has proper frontmatter."
           required: true
-        - label: "Opaque icon committed, square, 256x256 or larger, plus a hero image (16:9), a detail banner, and at least one screenshot committed."
+        - label: "Opaque icon committed, square, 512x512, plus a hero image (16:9), a detail banner, and at least one screenshot committed."
           required: true
         - label: "`README.md` documents what the app does, how to use it, and the `agent.apps_allow_third_party` prerequisite if any executable surface is present."
           required: true
