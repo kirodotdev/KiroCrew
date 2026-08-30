@@ -136,8 +136,113 @@ scrubs the app's entries out of the legacy shared file for every ENABLED app on
 every gateway start. Scrubbing only on deregister meant an already-enabled app
 kept leaking until the user happened to disable it.
 
+**The dashboard's whole-config PUT merges rather than replaces, for exactly this
+reason.** `PUT /api/agent/config` persists a whole-file snapshot the client read
+earlier, so an app registration landing between that read and the PUT used to be
+silently clobbered — the app's tools stopped resolving with nothing logged. The
+handler now takes bridges' own flock, re-reads the on-disk spec under it, and
+applies one rule: **preservation requires positive evidence of app or host
+ownership.** An absent `mcpServers` entry is kept only when its owner can be
+named — a host-managed server, or one of the exact `<app>:<server>` names an
+installed app's manifest DECLARES (`_register_mcp_servers` builds every key it
+writes from `manifest.mcpServers`, so the declared set names precisely what an
+app can own). Ownership is matched by exact name, never by namespace prefix: with
+`demo` installed, a client entry named `demo:custom` that the app never declared
+is the client's and is deletable. If that source cannot be read the PUT is
+REFUSED (500, `code: app_ownership_unreadable`) rather than guessed — preserving
+every namespaced entry would make entries undeletable, and treating the declared
+set as empty would clobber live bridges over a possibly-transient fault.
+Everything else is the client's and is deleted.
+
+**"Host-managed" means the entries the rebuild RE-ADDS, not every name in the
+managed map** — the preservation is justified by that re-add, so it reaches
+exactly as far. The handler therefore asks the emitter
+(`agent.emission_eligible_mcp_servers`, the one predicate both spec writers also
+consult) rather than testing membership itself. Two managed entries are NOT
+re-added and stay deletable: `kirocrew-dashboard` carries `opt_in`, an assignable
+set that `build_agent_config` never emits and that a refresh keeps current without
+ever re-granting, so preserving it left the grant unrevocable through the only
+surface that can revoke it; and `kirocrew-computer` carries a `spec_gate` that both
+writers `pop` while it is shut, so preserving it resurrected the backend the gate
+exists to keep unspawned — and the next rebuild removed it again, the two surfaces
+disagreeing about one config. A gate that raises counts as shut, matching the
+emitter's own fail-closed reading.
+
+The direction is load-bearing. The inverse test — keep anything no mcp.json scope
+declares — reads as equivalent but made a server the user added *through this same
+editor* permanently undeletable, because it lives only in the installed spec and
+the spec is not a scope, so every retry re-read it and put it back. Requiring
+evidence costs a bridge nothing, since a bridge is always identifiable. The scope
+census plays no part in the decision: an earlier cut subtracted every
+scope-declared name ahead of the ownership test as **precedence**, but against
+exact manifest names that could only ever remove a name that IS provably owned, so
+a user who also declared `demo:notes` in their own mcp.json had every stale PUT
+delete app `demo`'s live bridge. Proven ownership outranks a declaration, and a
+declared name with no proven owner is deleted by the general rule anyway.
+
+| Case | Outcome |
+|---|---|
+| scope-declared name that an installed, ENABLED app also declares by exact name, absent | **preserved** — proven ownership outranks the declaration |
+| scope-declared name with no proven app or host owner, absent | **deleted** — the general rule; the declaration adds nothing |
+| direct entry the user added here, absent | **deleted** — the ordinary lifecycle works |
+| `<app>:<server>` of an installed, ENABLED app that declares it, absent | **preserved** — remove it through the app lifecycle, not this editor |
+| `<app>:<name>` the app never declared, absent | **deleted** — squatting a namespace confers nothing |
+| `<app>:<server>` of a DISABLED app, absent | **deleted** — the disable lifecycle owns bridge removal, so a failed removal must be cleanable here |
+| `<app>:<server>` whose app dir or `installed.json` is absent | **deleted** — not installed |
+| host-managed server the rebuild always emits (`kirocrew-cron`, `kirocrew-core`, edition extras), absent | **preserved** — the rebuild re-adds it anyway, so removing it here never stuck |
+| host-managed server flagged `opt_in` (`kirocrew-dashboard`), absent | **deleted** — an assignable grant no rebuild re-adds (a refresh keeps an existing one current but never re-grants), so revocation must stick here |
+| host-managed server whose `spec_gate` is CLOSED (`kirocrew-computer` off or unsupported), absent | **deleted** — both spec writers `pop` it, so the rebuild would not re-add it and preserving it resurrects the backend the gate withholds |
+| `installed.json` present but corrupt | **refused** (500, `app_ownership_unreadable`) |
+| `installed.json` present but non-regular (broken symlink, directory, unstattable) | **refused** (500, `app_ownership_unreadable`) |
+| apps root present but not a directory | **refused** (500, `app_ownership_unreadable`) |
+| apps-root child listable but unstattable (e.g. a symlink loop) | **refused** (500, `app_ownership_unreadable`) |
+| app manifest unreadable | **refused** (500, `app_ownership_unreadable`) |
+| apps directory unenumerable | **refused** (500, `app_ownership_unreadable`) |
+
+Ownership therefore requires **installed AND enabled AND declared**. Enablement is
+read through `manager.app_enabled_state`, whose tri-state exists for exactly this
+kind of caller — its docstring separates "not installed" from "unreadable" because
+collapsing them is the wrong answer for a caller deciding whether to *delete*.
+`is_app_enabled` and `list_apps` are both unusable here: each turns an unreadable
+record into a plain "no", which silently narrows ownership and deletes that app's
+bridges.
+
+A record with no `enabled` field counts as **enabled**, matching the manager's own
+parse (`InstalledApp.from_dict` reads `bool(data.get("enabled", True))`) so a legacy
+record is treated here exactly as the rest of the tree treats it.
+
+**Absence is proven by `lstat` raising `FileNotFoundError`, nothing weaker.**
+`Path.is_file()` / `Path.is_dir()` answer False for a malformed path as readily as
+for a missing one, so screening on them alone read a broken symlink or a
+directory-where-a-file-belongs as "not installed" and made that app's live bridges
+deletable. The shape screen lives at the handler's call site
+(`_require_present_shape`), so `manager.app_enabled_state` keeps the contract its
+other callers rely on. The apps-root ENUMERATION obeys the same rule: each child is
+stat'ed explicitly instead of filtered through `is_dir()`, which routes its fault
+through pathlib's `_ignore_error` and returns a plain False for ENOENT, ENOTDIR,
+EBADF and ELOOP — so a child that is a symlink loop looked like a regular file and
+was skipped, deleting the bridges of the app under that name.
+
+The complete row-by-row table, including which test pins each row, is the docstring
+of `dashboard/handlers/agents.py::_app_declared_server_names`.
+
+Scoped to `mcpServers`: all three bridges writers of this file touch that key and
+nothing else, so every other key still replaces wholesale. The merge runs *ahead
+of* the governance filter, so a preserved entry's `autoApprove` is governed like
+any other. An unreadable spec preserves nothing and lets the snapshot land, which
+keeps this endpoint the repair path for a corrupt spec.
+
+The flock spans the merge read **and** the spec write, so neither an app
+registration nor a deregistration can interleave. That matters asymmetrically:
+the deregistration direction never self-healed, because
+`reconcile_enabled_app_resources` only re-registers ENABLED apps, so a bridge
+resurrected from a disabled or uninstalled app would have persisted indefinitely.
+Lock order is unchanged (transaction → config → bridge-file); the widened hold is
+the innermost one.
+
 Writer: `apps/bridges.py::_apply_agent_mcp_policy`, `_mcp_json_path`,
-`_scrub_legacy_shared_mcp`.
+`_scrub_legacy_shared_mcp`;
+`dashboard/handlers/agents.py::_merge_unowned_servers` for the PUT side.
 
 ## 2. Auto-approve is intersected with the governance ceiling
 

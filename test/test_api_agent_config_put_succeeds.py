@@ -371,7 +371,7 @@ async def test_agent_config_write_holds_the_mcp_transaction_lock(tmp_path):
             _recording_lock,
         ),
         patch(
-            "kiro_crew.apps.bridges._mcp_lock",
+            "kiro_crew.dashboard.handlers.agents._agent_file_lock",
             _recording_file_lock,
         ),
         patch(

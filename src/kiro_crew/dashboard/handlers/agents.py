@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import stat
 import subprocess
 import uuid
 from pathlib import Path
@@ -22,6 +23,7 @@ from kiro_crew.agent import (
     AGENT_FILENAME,
     _spec_path_is_safe,
     clear_model_pin,
+    emission_eligible_mcp_servers,
     get_shipped_tools,
     install_agent,
     kiro_agents_dir_path,
@@ -33,6 +35,14 @@ from kiro_crew.agent_discovery import (
     project_agent_names,
     spec_model,
     spec_str,
+)
+from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
+from kiro_crew.apps.bridges import _registration_source
+from kiro_crew.apps.manager import (
+    INSTALLED_META_FILENAME,
+    app_dir,
+    app_enabled_state,
+    apps_dir,
 )
 from kiro_crew.config.loader import (
     ConfigReadError,
@@ -164,21 +174,426 @@ def _installed_agent_config() -> Path:
     return kiro_agents_dir_path() / AGENT_FILENAME
 
 
-def _write_installed_config_locked(path: Path, config: dict[str, Any]) -> None:
-    """Write the installed agent spec while holding bridges' file lock.
+def _merge_unowned_servers(config: dict[str, Any], installed_path: Path) -> tuple[str, ...]:
+    """Re-add ``mcpServers`` entries the submitting client does not own.
 
-    Runs in a worker thread (see :func:`_commit_agent_config`, dispatched
-    through ``_offload_config_write``), which is what makes taking a synchronous
-    flock here legal — on the event loop it would stall the gateway whenever app
-    registration held the lock.
+    MERGE-ON-WRITE (#6664). This PUT persists a whole-file snapshot the client
+    read earlier, and ``apps/bridges.py::_register_mcp_servers`` writes app MCP
+    bridges into that same file under its own flock. A registration landing
+    between the client's read and its PUT was therefore silently clobbered, and
+    the app's tools simply stopped resolving with nothing logged anywhere.
 
-    ``bridges._mcp_lock`` is imported lazily: ``apps.bridges`` imports back into
-    the dashboard handlers, so a module-level import is circular.
+    The rule, in one sentence: **preservation requires positive evidence of app
+    or host ownership.** An on-disk entry absent from the submission is kept only
+    when :func:`_app_or_host_owned` can name its owner by EXACT name; everything
+    else is the client's and is deleted, which is what keeps an ordinary entry the
+    user typed into this editor deletable -- including one parked under an
+    installed app's namespace. If that evidence cannot be read the PUT is refused
+    rather than guessed; see :func:`_app_or_host_owned`.
+
+    The inverse test -- "keep anything no mcp.json scope declares" -- reads as
+    equivalent and is not. A server added through this same editor lives ONLY in
+    the installed spec, which is not a scope, so it looked unowned and was
+    re-inserted on every attempt to remove it: not merely preserved against the
+    user's wishes, but permanently undeletable, because each retry re-read the
+    same entry. Requiring evidence costs an app bridge nothing, since a bridge is
+    always positively identifiable.
+
+    The census is NOT consulted, and the reason is worth naming because an
+    earlier cut did consult it: it subtracted every scope-declared name from the
+    candidates ahead of the ownership test, as precedence carried over from the
+    prefix-matching era. With ownership matched by exact manifest name that
+    subtraction could only ever remove a name that IS provably owned, so a user
+    who also declared ``demo:notes`` in their own mcp.json made every stale PUT
+    delete app ``demo``'s live bridge. Proven ownership therefore outranks a
+    declaration, and a name with no proven owner is deleted whether a scope
+    declares it or not -- which leaves the census unable to change any verdict.
+
+    Two consequences worth naming rather than discovering:
+
+    * A host-MANAGED server the rebuild RE-ADDS (``agent.emission_eligible_mcp_servers``)
+      is preserved. That is not a new restriction -- the rebuild re-adds those
+      entries unconditionally, so removing one through this editor never stuck.
+      The qualifier is load-bearing: a managed entry the rebuild would NOT emit
+      (an ``opt_in`` grant, or one whose ``spec_gate`` is shut) is deleted like
+      any other absent entry, because nothing re-adds it and preserving it made
+      the grant unrevocable and the gated backend resurrectable.
+    * An app bridge cannot be removed through this endpoint. That is the issue's
+      explicit intent; the app lifecycle (disable/uninstall, which calls
+      ``_deregister_mcp_servers``) is what removes it.
+
+    BEST-EFFORT ON AN UNREADABLE SPEC, deliberately. A corrupt installed spec has
+    no parseable entries to preserve, and this editor is the user's repair path
+    for exactly that state -- failing the PUT closed would leave a broken agent
+    with no way to fix it from the dashboard. So an unreadable spec preserves
+    nothing and the snapshot lands as it did pre-fix; enabled apps re-register
+    their servers on the next gateway start
+    (``reconcile_enabled_app_resources``), so the loss self-heals.
+
+    WHAT REMAINS, now that the caller holds bridges' flock across this read and
+    the spec write (see :func:`_commit_agent_config`). Every writer of this file
+    INSIDE the gateway takes that same flock -- ``_register_mcp_servers``,
+    ``_deregister_mcp_servers``, ``reregister_app_mcp_servers``, the agent
+    rebuild, and ``handlers/mcp.py``'s spec syncs -- so no app registration or
+    deregistration can interleave with this read any more, in either direction.
+    The earlier writeup here claimed a bounded, self-healing residual for that
+    window; that was wrong twice over, and both halves are now moot: the
+    deregistration direction was never self-healing (startup reconciliation only
+    re-registers ENABLED apps, so a resurrected bridge from a disabled or
+    uninstalled app persisted indefinitely), and the window itself is closed
+    rather than narrowed.
+
+    The residual that is real is a writer OUTSIDE this process that does not take
+    the flock -- kiro-cli writing the spec itself, or a user editing the file by
+    hand. Nothing in the gateway can serialize against those, and the same
+    exposure applies to every other writer here, so it is a property of the file
+    rather than of this change. Torn reads are not part of it: the in-process
+    writers all go through ``atomic_write``, so a reader sees the whole old file
+    or the whole new one.
+
+    Returns the names it preserved, for the caller to log.
     """
-    from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
+    submitted = config.get("mcpServers")
+    if "mcpServers" in config and not isinstance(submitted, dict):
+        # A non-object ``mcpServers`` is a shape kiro-cli rejects outright.
+        # Merging into it would mean inventing a map the client never sent, so
+        # the submission is left exactly as-is and the existing verbatim-persist
+        # behaviour (and its rejection) is unchanged.
+        logger.warning(
+            "Skipping agent-config merge-on-write: submitted mcpServers is %s, not an object",
+            type(submitted).__name__,
+        )
+        return ()
+    submitted_servers: dict[str, Any] = submitted if isinstance(submitted, dict) else {}
+    try:
+        on_disk = json.loads(installed_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Missing (a first-ever write) or corrupt: nothing recoverable to
+        # preserve. See BEST-EFFORT above.
+        return ()
+    if not isinstance(on_disk, dict):
+        return ()
+    existing = on_disk.get("mcpServers")
+    if not isinstance(existing, dict) or not existing:
+        return ()
+    absent = {name: spec for name, spec in existing.items() if name not in submitted_servers}
+    if not absent:
+        return ()
+    # POSITIVE EVIDENCE decides, and nothing overrides it. An earlier cut
+    # subtracted every scope-declared name from the candidates BEFORE ownership
+    # was tested, as a precedence rule inherited from the prefix-matching era.
+    # Once ownership became the EXACT manifest-declared set, that subtraction
+    # could only ever remove a name that IS provably owned -- a user who also
+    # declares ``demo:notes`` in their own mcp.json made every stale PUT delete
+    # app ``demo``'s live bridge. A name with no proven owner is deleted whether
+    # a scope declares it or not, so the census cannot change any verdict and is
+    # no longer consulted.
+    owned = _app_or_host_owned(absent)
+    preserved = {name: spec for name, spec in absent.items() if name in owned}
+    if not preserved:
+        return ()
+    # Submitted first so the client's own key order is stable and the preserved
+    # entries append; the two maps are disjoint by construction, so which side
+    # wins is not in question.
+    config["mcpServers"] = {**submitted_servers, **preserved}
+    return tuple(sorted(preserved))
 
-    with _agent_file_lock(target=path):
-        write_config_atomically(path, config)
+
+class AppOwnershipUnreadable(RuntimeError):
+    """The app-ownership source could not be read, so nothing may be decided.
+
+    Raised by :func:`_app_or_host_owned` and turned into a 500 with
+    ``code: app_ownership_unreadable`` by the PUT. Deliberately NOT a guess in
+    either direction -- see that function.
+    """
+
+
+def _require_present_shape(path: Path, *, expect: str, what: str) -> bool:
+    """Whether *path* is genuinely ABSENT; raise when it is present but malformed.
+
+    ``Path.is_file()`` and ``Path.is_dir()`` answer False for BOTH "nothing is
+    there" and "something is there but it is the wrong kind of thing" -- a broken
+    or looping symlink, a directory where a file belongs, a fifo, or a path whose
+    parent denies the stat. Reading that False as absence is the
+    cannot-read-becomes-not-owned defect one shape further out: a malformed
+    ``installed.json`` would classify its app as not installed, and its live
+    bridges would become deletable.
+
+    Absence is proven ONLY by ``lstat`` raising ``FileNotFoundError`` -- the link
+    itself, not its target, so a dangling symlink counts as present. Anything
+    else that is present but not *expect* raises
+    :class:`AppOwnershipUnreadable`. The follow-up ``stat`` is what makes a
+    symlink to a VALID file still acceptable: ``lstat`` would call it a link and
+    reject it, while ``stat`` resolves to the regular file it names.
+
+    Returns True when the path is genuinely absent, so the caller can take its
+    own not-installed branch.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True  # genuinely absent
+    except OSError as exc:
+        raise AppOwnershipUnreadable(f"{what} present but unstattable: {exc}") from exc
+    try:
+        st = os.stat(path)  # follows symlinks: a link to a valid target is fine
+    except OSError as exc:
+        # Dangling or looping symlink, or a permission fault on the target. The
+        # entry EXISTS, so this is unreadable rather than absent.
+        raise AppOwnershipUnreadable(f"{what} present but unresolvable: {exc}") from exc
+    ok = stat.S_ISDIR(st.st_mode) if expect == "dir" else stat.S_ISREG(st.st_mode)
+    if not ok:
+        raise AppOwnershipUnreadable(f"{what} present but not a {expect}")
+    return False
+
+
+def _app_declared_server_names() -> frozenset[str]:
+    """The exact ``<app>:<server>`` names installed, ENABLED apps DECLARE.
+
+    Ground truth, and it has to be exact. ``_register_mcp_servers`` builds every
+    key it writes as ``f"{app_name}:{server_name}"`` over
+    ``manifest.mcpServers.items()``, so the manifests' declared server lists name
+    precisely the entries an app can own -- nothing wider. A PREFIX test is not a
+    weaker version of this: with ``demo`` installed, a client entry named
+    ``demo:custom`` matches the prefix and becomes permanently undeletable.
+
+    Read through :func:`bridges._registration_source`, which resolves a shipped
+    builtin from its immutable package root rather than its mutable installed
+    snapshot, so installed metadata cannot borrow a builtin's name and claim
+    entries under it.
+
+    THE COMPLETE CLASSIFICATION TABLE for an entry ABSENT from the client's
+    submitted snapshot. Every reachable combination of name shape, install state,
+    enablement, declaration and manifest readability appears here, so the
+    classification of any absent entry is a table lookup rather than a judgement:
+
+    ===========================  ==========================  ==============================  =====================
+    Name shape                   App / metadata state        Verdict                         Pinned by
+    ===========================  ==========================  ==============================  =====================
+    host-managed, always-emitted  n/a (host, not an app)     PRESERVE                        test_host_managed_entry_is_preserved
+    host-managed, ``opt_in``     n/a (host, not an app)      DELETE                          test_an_opt_in_managed_server_omitted_from_the_snapshot_is_deleted
+    host-managed, gate CLOSED    n/a (host, not an app)      DELETE                          test_a_gate_closed_managed_server_omitted_from_the_snapshot_is_deleted
+    host-managed, gate OPEN      n/a (host, not an app)      PRESERVE                        test_a_gate_open_managed_server_is_still_preserved
+    host-managed, gate RAISES    n/a (host, not an app)      DELETE (gate reads closed)      test_a_managed_server_whose_gate_raises_is_deleted
+    edition extra                n/a (host, not an app)      PRESERVE                        test_an_edition_contributed_server_is_preserved
+    edition extra with ``:``     host-owned AND namespaced   PRESERVE (host outranks)        test_a_namespaced_edition_extra_is_preserved_by_host_ownership
+    host spec not a mapping      n/a (host-produced only)    PRESERVE (pre-fix verdict)      test_a_malformed_host_spec_does_not_fail_the_put
+    plain (no ``:``)             n/a -- no app can own it    DELETE                          test_direct_client_entry_deletes_on_a_sequential_add_then_remove
+    scope-declared, app-owned    enabled, declared           PRESERVE                        test_a_scope_declaration_does_not_defeat_proven_ownership
+    scope-declared, not owned    n/a -- no owner to name     DELETE                          test_a_scope_declared_name_with_no_proven_owner_is_deleted
+    ``<app>:<n>``                app dir absent entirely     DELETE                          test_a_namespaced_entry_of_an_uninstalled_app_is_deleted
+    ``<app>:<n>``                installed.json absent       DELETE                          test_absent_installed_metadata_is_still_skipped
+    ``<app>:<n>``                installed.json corrupt      FAIL ``app_ownership_unreadable``  test_corrupt_installed_metadata_fails_the_put_and_writes_nothing
+    ``<app>:<n>``                installed.json non-regular  FAIL ``app_ownership_unreadable``  test_installed_metadata_as_a_broken_symlink_fails_the_put, test_installed_metadata_as_a_directory_fails_the_put
+    ``<app>:<n>``                enabled=false (disabled)    DELETE                          test_disabled_app_bridge_is_deleted
+    ``<app>:<n>``                ``enabled`` field absent    treat as ENABLED, then declare  test_absent_enabled_field_counts_as_enabled
+    ``<app>:<n>``                enabled, manifest unreadable  FAIL ``app_ownership_unreadable``  test_unreadable_app_manifest_fails_the_put_and_writes_nothing
+    ``<app>:<n>``                enabled, NOT declared       DELETE                          test_client_entry_under_an_installed_apps_namespace_is_deleted
+    ``<app>:<n>``                enabled, declared           PRESERVE                        test_a_declared_app_server_is_still_preserved
+    any                          apps dir unreadable         FAIL ``app_ownership_unreadable``  test_unreadable_apps_directory_fails_the_put
+    any                          apps root not a directory   FAIL ``app_ownership_unreadable``  test_apps_root_as_a_regular_file_fails_the_put
+    any                          apps child unstattable      FAIL ``app_ownership_unreadable``  test_an_unstattable_apps_root_child_fails_the_put
+    ===========================  ==========================  ==============================  =====================
+
+    THE HOST ROWS ARE NOT ONE ROW, and collapsing them was a shipped defect. A
+    host-managed entry is preserved *because the rebuild re-adds it*, so the
+    justification only reaches the entries the rebuild actually emits. It does not
+    reach an ``opt_in`` server (``kirocrew-dashboard``: never auto-emitted, and a
+    refresh keeps an existing grant current without ever re-granting a removed
+    one), which preservation made undeletable through the only surface that can
+    revoke the grant; nor a server whose ``spec_gate`` is CLOSED
+    (``kirocrew-computer`` on an unsupported platform, or with computer use off),
+    which both spec writers ``pop`` — preserving it resurrects exactly the backend
+    the gate exists to keep unspawned, and the next rebuild removes it again. The
+    eligibility test is therefore the emitter's own
+    (``agent.emission_eligible_mcp_servers``), not a second copy here.
+
+    ABSENCE IS PROVEN BY ``lstat`` RAISING ``FileNotFoundError``, nothing weaker.
+    ``Path.is_file()`` and ``Path.is_dir()`` answer False for a malformed path as
+    readily as for a missing one, so screening on them alone read a broken
+    symlink, a directory-where-a-file-belongs, or an unstattable path as "not
+    installed" and made that app's live bridges deletable. Every present-but-wrong
+    shape raises instead -- see :func:`_require_present_shape`, which screens the
+    shape at the CALL SITE so ``manager.app_enabled_state`` keeps the contract its
+    other callers rely on. The ENUMERATION obeys the same rule: each child of the
+    apps root is stat'ed explicitly rather than filtered through ``is_dir()``,
+    because pathlib routes that fault through ``_ignore_error`` and hands back a
+    plain False for ENOENT, ENOTDIR, EBADF and ELOOP alike -- so a child that is a
+    symlink loop looked like a regular file and was skipped, deleting the bridges
+    of the app under that name. Only a resolved stat may exclude a child, and only
+    by proving it is not a directory.
+
+    Four justifications carry the rows that are not self-evident:
+
+    * A SCOPE DECLARATION DOES NOT OUTRANK PROVEN OWNERSHIP. An earlier cut
+      subtracted every scope-declared name from the candidates ahead of this test,
+      as precedence carried over from the prefix-matching era. Against EXACT
+      manifest names that subtraction could only ever remove a name that IS
+      provably owned: a user who also declares ``demo:notes`` in their own mcp.json
+      made every stale PUT delete app ``demo``'s live bridge. A declared name with
+      no proven owner is deleted anyway, by the general rule, so the census cannot
+      change a verdict and is not consulted.
+
+    * DISABLED ⇒ DELETE. The disable lifecycle owns bridge removal
+      (``_deregister_mcp_servers``), and a deregistration that FAILED during
+      disable leaves a stale entry behind. Startup reconciliation only
+      re-registers ENABLED apps, so it never revisits that entry: preserving it
+      would keep a disabled app's code launchable through the retained bridge
+      forever. Ownership therefore requires installed AND enabled.
+    * ABSENT ``enabled`` FIELD ⇒ ENABLED. This matches ``apps.manager``'s own
+      parse exactly -- ``InstalledApp.from_dict`` reads
+      ``bool(data.get("enabled", True))`` (manager.py:170) over a dataclass whose
+      default is ``enabled: bool = True`` (manager.py:114). A legacy record
+      written before the field existed is treated as enabled everywhere else in
+      the tree, and disagreeing here would delete the live bridges of an app the
+      rest of the system considers running.
+    * UNREADABLE ⇒ FAIL LOUD, never a guess. Preserving on an unreadable source
+      strands undeletable entries; deleting clobbers live bridges over a fault
+      that may be transient. The refusal is raised before any durable write.
+
+    Enablement comes from :func:`manager.app_enabled_state`, whose tri-state is
+    written for exactly this caller: its own docstring separates "not installed"
+    and "unreadable" *because* collapsing them is "the wrong [answer] for a
+    caller deciding whether to DELETE its files". ``True``/``False`` are definite
+    answers and ``None`` means the metadata could not be read. ``is_app_enabled``
+    and ``list_apps`` are both unusable here -- each collapses an unreadable
+    record into a plain "no", which silently narrows ownership and deletes that
+    app's bridges.
+    """
+    root = apps_dir()
+    if _require_present_shape(root, expect="dir", what="installed-apps directory"):
+        return frozenset()  # no apps directory at all: nothing is installed
+    try:
+        children = sorted(root.iterdir())
+    except OSError as exc:
+        raise AppOwnershipUnreadable(f"installed-apps directory unreadable: {exc}") from exc
+    entries: list[Path] = []
+    for child in children:
+        # ONE MORE SHAPE SCREEN, for the same reason as the two above. The filter
+        # here used to be ``p.is_dir()``, which routes its fault through pathlib's
+        # ``_ignore_error`` and returns a plain False for ENOENT, ENOTDIR, EBADF
+        # and ELOOP -- the same False a regular file gets. A child that is a
+        # symlink LOOP was therefore skipped as "not an app" and the absent bridges
+        # of the app under that name became deletable. Only a resolved stat may
+        # exclude a child, and only by PROVING it is not a directory.
+        try:
+            st = child.stat()  # follows symlinks, exactly as ``is_dir()`` did
+        except FileNotFoundError:
+            # Absence, and only absence, is a skip: an uninstall completing
+            # between the listing and this stat leaves precisely this state, and a
+            # DANGLING link lands here too -- unlike the metadata screen below,
+            # that is a definite answer rather than an unreadable one, because no
+            # app directory exists under the name at all.
+            continue
+        except OSError as exc:
+            raise AppOwnershipUnreadable(
+                f"installed-apps entry {child.name!r} present but unstattable: {exc}"
+            ) from exc
+        if stat.S_ISDIR(st.st_mode):
+            entries.append(child)
+    declared: set[str] = set()
+    for entry in entries:
+        # SHAPE before CONTENT. ``app_enabled_state`` reaches the metadata through
+        # ``Path.is_file()``, which answers False for a broken symlink, a
+        # directory, or any other non-regular file sitting at that path -- and its
+        # contract turns that False into "not installed", which here would make a
+        # live app's bridges deletable. Screening the shape first keeps that
+        # contract intact for its other callers while giving this one the
+        # present-but-malformed answer it needs.
+        if _require_present_shape(
+            app_dir(entry.name) / INSTALLED_META_FILENAME,
+            expect="file",
+            what=f"app {entry.name!r}: installed metadata",
+        ):
+            continue  # genuinely no installed.json: not an installed app
+        enabled = app_enabled_state(entry.name)
+        if enabled is None:
+            raise AppOwnershipUnreadable(
+                f"app {entry.name!r}: installed metadata present but unreadable"
+            )
+        if not enabled:
+            # Not installed, or installed and deliberately disabled. Both mean no
+            # ownership, so the conflation is harmless here: either way the entry
+            # is the client's and stays deletable.
+            continue
+        manifest, _app_root = _registration_source(entry.name)
+        if manifest is None:
+            # bridges returns None for a manifest it could not parse. That app's
+            # declared servers are UNKNOWN, not empty, and "empty" is what
+            # deletes its live bridges.
+            raise AppOwnershipUnreadable(f"app {entry.name!r}: manifest unreadable")
+        servers = manifest.mcpServers or {}
+        declared.update(f"{entry.name}:{server}" for server in servers)
+    return frozenset(declared)
+
+
+def _app_or_host_owned(names: dict[str, Any]) -> frozenset[str]:
+    """Which of *names* an APP or the HOST provably owns.
+
+    POSITIVE identification by EXACT NAME, and both halves of that matter. The
+    inverse test -- "preserve anything no mcp.json scope declares" -- made a
+    server the user typed into the raw editor permanently undeletable, because it
+    lives only in the installed spec and the spec is not a scope. A prefix test
+    over installed app ids reproduced the same defect for any name the client
+    parked under an app's namespace. Only an exact name an owner actually claims
+    is evidence.
+
+    Two sources, both narrow:
+
+    * HOST-managed, and only the entries a rebuild would actually RE-ADD:
+      ``agent.emission_eligible_mcp_servers()`` — the always-emitted managed
+      servers (cron/core) plus the edition's ``_extra_mcp_servers``. Preserving
+      one is justified BY that re-add, so the set has to be the emitter's, which
+      is why it is imported rather than recomputed here. The two managed entries
+      a rebuild does NOT re-add are excluded and stay deletable: an ``opt_in``
+      grant (``kirocrew-dashboard``) that no rebuild re-introduces, and a
+      server whose ``spec_gate`` is shut (``kirocrew-computer``), which both spec
+      writers actively ``pop``. Preserving those made a revocation impossible
+      through the only surface that can revoke it, and resurrected a backend the
+      gate exists to keep unspawned.
+    * APP-declared: the exact ``<app>:<server>`` set from installed manifests --
+      see :func:`_app_declared_server_names`.
+
+    ON A FAILED READ THIS RAISES rather than guessing, because both guesses are
+    wrong and each one is a defect this span has already shipped. Preserving
+    every namespaced entry makes entries permanently undeletable; treating the
+    declared set as empty deletes live app bridges over a fault that may be
+    transient -- the very clobber #6664 exists to fix. The PUT turns the raise
+    into a 500 the client can retry, and because this runs at step (0a) before
+    any durable write, all three targets stay byte-identical.
+
+    That branch IS reachable: manifests are separate files under the apps
+    directory, not covered by the installed-spec flock this unit holds, so a
+    corrupt ``app.json`` or an unreadable apps directory reaches it and persists
+    until repaired. It is reached whenever ANY candidate is namespaced, host-owned
+    or not: the refusal is per-PUT rather than per-entry, so an edition extra
+    whose name contains ``:`` is refused alongside a genuinely app-shaped one. That
+    is the fail-loud direction and it is retryable, so it stays as it is.
+    """
+    host = emission_eligible_mcp_servers()
+    owned = {name for name in names if name in host}
+    namespaced = {name for name in names if ":" in name}
+    if not namespaced:
+        # No candidate can be app-owned, so the manifests cannot change the
+        # answer and their readability is not this PUT's problem.
+        return frozenset(owned)
+    return frozenset(owned | (namespaced & _app_declared_server_names()))
+
+
+def _write_installed_config(path: Path, config: dict[str, Any]) -> None:
+    """Write the installed agent spec. The CALLER holds bridges' file lock.
+
+    The lock used to be taken here. It moved out to
+    :func:`_commit_agent_config`, which now holds it across the merge's on-disk
+    READ as well as this write -- reacquiring it here would deadlock, because
+    ``flock`` is per open file description and a second fd on the same file
+    blocks against the first from the same thread.
+
+    Still runs in a worker thread, which is what makes the caller's synchronous
+    flock legal -- on the event loop it would stall the gateway whenever app
+    registration held it.
+    """
+    write_config_atomically(path, config)
 
 
 def _commit_agent_config(
@@ -214,7 +629,12 @@ def _commit_agent_config(
     order, are:
 
     0. the governance filter raises — nothing durable, and the caller's 500 is
-       exact (it fails closed, so a raise withholds rather than grants);
+       exact (it fails closed, so a raise withholds rather than grants). The
+       merge-on-write step ahead of it (0a) adds one prefix of its own, and it is
+       the harmless end: it can raise :class:`AppOwnershipUnreadable` while
+       having mutated only the in-memory *config*, so the caller's 500 is exact
+       and all three targets are byte-identical (see
+       :func:`_app_or_host_owned` for why refusing beats guessing);
     1. the ``config.json`` read raises :class:`ConfigReadError` — nothing
        durable, and the caller's 500 is exact;
     2. the ``config.json`` write fails — nothing durable;
@@ -225,11 +645,17 @@ def _commit_agent_config(
        updated, the spec unchanged.
 
     Order inside the unit is chosen to make the *earliest* prefixes the *least*
-    harmful, and three steps are load-bearing rather than incidental:
+    harmful, and four steps are load-bearing rather than incidental:
 
-    * The governance filter is FIRST, and it is in here at all so that the grant
-      decision cannot be made against a ceiling that changes before the write
-      publishes it — see step (0). First because it persists nothing, so its own
+    * The merge (0a) precedes the governance filter, so the entries it re-adds
+      are governed like any other — see step (0a). It is in the unit at all for
+      the same reason as the read at (1): its on-disk read must be adjacent to
+      the write it feeds, or an app registration landing during the flock wait
+      is clobbered exactly as it was pre-fix.
+    * The governance filter is FIRST among the steps that decide what is
+      persisted, and it is in here at all so that the grant decision cannot be
+      made against a ceiling that changes before the write publishes it — see
+      step (0). Ahead of every write because it persists nothing, so its own
       fail-closed raise costs no partial write.
     * The read is FIRST among the writes' own inputs. It is the only
       fallible-by-decision I/O step, and running it here — immediately adjacent
@@ -269,9 +695,70 @@ def _commit_agent_config(
     #
     # Imported lazily: platform.governance is not a module-level dependency of
     # the dashboard handlers.
+    # ── THE BRIDGE-FILE LOCK SPANS THE WHOLE UNIT ─────────────────────────────
+    # Acquired here rather than at the spec write, because merge-on-write reads
+    # this same file and that read is only meaningful if no app writer can
+    # commit between it and the write it feeds. ``_deregister_mcp_servers``
+    # (app disable / uninstall / health demotion) read-modify-writes the spec
+    # under exactly this flock, so an unlocked read let a PUT resurrect a bridge
+    # that had just been removed -- and that direction does NOT self-heal,
+    # because ``reconcile_enabled_app_resources`` only re-registers ENABLED apps
+    # and skips the one whose bridge came back.
+    #
+    # LOCK ORDER IS UNCHANGED: transaction -> config -> bridge-file. The caller
+    # already holds the outer two before dispatching this unit, so widening the
+    # innermost hold adds no edge and inverts nothing. The cost is that app
+    # registration now waits on the ``config.json`` and bookkeeping writes too --
+    # the same accepted trade ``remove_provider_entry`` documents for holding the
+    # MCP lock across its unlinks, and the alternative (a second, later lock hold
+    # for just the spec write) is what reopens the window above.
+    #
+    # Taken once. ``_write_installed_config`` deliberately no longer locks: with
+    # ``flock`` being per open file description, a nested reacquisition from this
+    # same thread would block against this hold forever.
     from kiro_crew.platform.governance import sanitize_agent_config_governance
 
-    sanitize_agent_config_governance(config)
+    with _agent_file_lock(target=installed_path):
+        return _commit_agent_config_locked(
+            config=config,
+            name=name,
+            mc_cfg_path=mc_cfg_path,
+            removed_per_key=removed_per_key,
+            installed_path=installed_path,
+            sanitize=sanitize_agent_config_governance,
+        )
+
+
+def _commit_agent_config_locked(
+    *,
+    config: dict[str, Any],
+    name: str,
+    mc_cfg_path: Path,
+    removed_per_key: dict[str, list[str]],
+    installed_path: Path,
+    sanitize: Any,
+) -> bool:
+    """The commit unit's steps, with bridges' file lock already held.
+
+    Split out only so the lock acquisition reads as one statement; every
+    invariant documented on :func:`_commit_agent_config` applies here, and this
+    is never called from anywhere else.
+    """
+    # (0a) MERGE-ON-WRITE, immediately before the filter that governs the map it
+    # produces. Inside the unit for the same reason as (0) and (1): the on-disk
+    # read has to be adjacent to the write it feeds, or a bridge registration
+    # landing during the (unbounded, cross-process) flock wait is clobbered
+    # exactly as before the fix. BEFORE the filter, not after, so the entries it
+    # re-adds are governed too -- re-injecting them afterwards would hand an
+    # ``autoApprove`` on a preserved entry a path around step (0).
+    preserved = _merge_unowned_servers(config, installed_path)
+    if preserved:
+        logger.info(
+            "agent-config PUT: kept %d mcpServers entry/entries the client does not own: %s",
+            len(preserved),
+            ", ".join(preserved),
+        )
+    sanitize(config)
     # (1) The one fallible READ, and it precedes every write.
     #
     # Fail closed: writing back a {} baseline would drop every other setting
@@ -285,8 +772,8 @@ def _commit_agent_config(
     write_config_atomically(mc_cfg_path, mc_cfg)
     # (3) agent_model_state.json bookkeeping — after (2), before (4).
     changed = agent_state.lift_and_strip_bookkeeping(config, name)
-    # (4) the installed spec, under bridges' file lock.
-    _write_installed_config_locked(installed_path, config)
+    # (4) the installed spec, under the caller's bridge-file lock.
+    _write_installed_config(installed_path, config)
     return changed
 
 
@@ -399,9 +886,12 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # api_mcp_server_detail, mcp_discover, api_capability_mcp_install),
             # and no config-lock or file-lock holder in the tree acquires the
             # transaction lock inside, so there is no ABBA cycle. The file lock is
-            # taken inside the worker thread (by _write_installed_config_locked,
-            # reached from _commit_agent_config) — a blocking flock on the event
-            # loop would freeze the gateway while app registration holds it.
+            # taken inside the worker thread (by ``_commit_agent_config``, which
+            # holds it across the whole unit so merge-on-write's on-disk READ and
+            # the spec write cannot be split by an app writer) — a blocking flock
+            # on the event loop would freeze the gateway while app registration
+            # holds it. Widening that innermost hold changes no ORDER: the outer
+            # two are already held before the unit is dispatched.
             # Nothing else in this branch takes a cross-process lock: governance +
             # SEL and agent_state take none, so running the filter inside the
             # worker adds no lock edge to the transaction → config → file order.
@@ -435,9 +925,11 @@ async def api_agent_config(request: web.Request) -> web.Response:
             )
 
             # Governance floor on the WHOLE-object write path: this handler
-            # persists the request's config verbatim, so a dashboard PUT could
-            # otherwise restore a ceiling-governed @denied grant or a governed
-            # server's autoApprove that the per-ref writers strip.
+            # persists the request's config as submitted (plus the ``mcpServers``
+            # entries merge-on-write re-adds, which the filter therefore also
+            # governs — see ``_commit_agent_config`` step (0a)), so a dashboard
+            # PUT could otherwise restore a ceiling-governed @denied grant or a
+            # governed server's autoApprove that the per-ref writers strip.
             #
             # NOT in phase 1. The filter used to run here, and that placed the
             # grant decision BEFORE both lock acquisitions: the transaction flock
@@ -485,6 +977,20 @@ async def api_agent_config(request: web.Request) -> web.Response:
                             mc_cfg_path=mc_cfg_path,
                             removed_per_key=removed_per_key,
                             installed_path=installed_path,
+                        )
+                    except AppOwnershipUnreadable:
+                        # Step (0a), ahead of every durable write, so all three
+                        # targets are byte-identical and this 500 is exact.
+                        # Refusing is the only honest answer: guessing preserved
+                        # would make entries undeletable, guessing deleted would
+                        # clobber live app bridges. The client can retry.
+                        logger.exception("Refusing agent-config PUT: app ownership unreadable")
+                        return web.json_response(
+                            {
+                                "error": "cannot determine app-owned MCP entries",
+                                "code": "app_ownership_unreadable",
+                            },
+                            status=500,
                         )
                     except ConfigReadError:
                         # The unit's FIRST step, so this 500 is exact: no write of

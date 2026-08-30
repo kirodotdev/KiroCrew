@@ -51,7 +51,6 @@ src/kiro_crew/computer_use/cli.py 68.8   # 130/189
 src/kiro_crew/computer_use/macos_skylight.py 54.8   # 142/259
 src/kiro_crew/conpty.py 27.9   # 12/43
 src/kiro_crew/dashboard/_types.py 0.0   # 0/3
-src/kiro_crew/dashboard/handlers/agents.py 77.4   # 579/748
 src/kiro_crew/dashboard/handlers/cron.py 70.9   # 400/564
 src/kiro_crew/dashboard/handlers/portability.py 17.0   # 15/88
 src/kiro_crew/dashboard/handlers/prompts.py 64.5   # 260/403

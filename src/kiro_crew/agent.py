@@ -752,6 +752,88 @@ def _computer_use_spec_gate() -> bool:
         return False
 
 
+def _mcp_spec_gate_open(name: str, spec: dict) -> bool:
+    """Whether *spec*'s ``spec_gate`` permits emission RIGHT NOW (absent = open).
+
+    The single place a gate is called. A gate that raises is reported CLOSED, for
+    the same fail-closed reason the computer-use gate itself is: emitting the
+    entry is what makes kiro-cli spawn the backend, and a keystone we could not
+    read is not evidence that the capability is on.
+    """
+    gate = spec.get("spec_gate")
+    if gate is None:
+        return True
+    try:
+        return bool(gate())
+    except Exception:
+        logger.debug("spec gate for %s raised; treating as closed", name, exc_info=True)
+        return False
+
+
+def _mcp_server_emission_eligible(
+    name: str, spec: object, *, gated_off: "frozenset[str] | None" = None
+) -> bool:
+    """Whether a FRESH spec build would EMIT this MCP server entry.
+
+    THE single definition of "the rebuild re-adds this", and it has exactly two
+    disqualifiers, both owned by the entry's own spec:
+
+    * ``opt_in`` — an assignable set, never auto-emitted. ``build_agent_config``
+      skips it outright and ``_refresh_dynamic_fields`` keeps an EXISTING grant
+      current without ever re-introducing one, so nothing re-adds a grant the
+      user removed.
+    * a CLOSED ``spec_gate`` — both writers ``pop`` the entry while the gate is
+      shut, so the rebuild actively withholds it rather than merely skipping it.
+
+    Both spec writers consult this, and so does the dashboard PUT's merge-on-write
+    host set (``handlers/agents.py::_app_or_host_owned``). That co-tenancy is the
+    whole point of the helper rather than a convenience: the merge preserves an
+    absent managed entry *because* a rebuild would re-add it, so if the two ever
+    disagreed the merge would resurrect entries the rebuild withholds — an
+    ``opt_in`` grant the user revoked through the only surface that can revoke it,
+    or a gate-closed server whose backend the gate exists to keep unspawned.
+
+    *gated_off* is a caller's ONE-PER-REBUILD gate snapshot
+    (:func:`_gated_off_servers`); passing it keeps a rebuild's emit path and its
+    withhold audit agreeing on one reading, which is why that snapshot exists.
+    Omitted (the merge's case, which audits nothing), the gate is read live.
+
+    A spec that is not a mapping at all is reported ELIGIBLE. Only the host can
+    produce that shape — the managed map is a module constant and the extras come
+    from an edition adapter — the name is host-owned either way, and this keeps
+    the merge's pre-existing verdict for it instead of raising ``AttributeError``
+    out of a commit unit contracted to leave its targets byte-identical.
+    """
+    if not isinstance(spec, dict):
+        return True
+    if spec.get("opt_in"):
+        return False
+    if gated_off is not None:
+        return name not in gated_off
+    return _mcp_spec_gate_open(name, spec)
+
+
+def emission_eligible_mcp_servers() -> frozenset[str]:
+    """Every MCP server name a fresh spec build would emit right now.
+
+    Managed servers and the edition's extras under ONE predicate — extras get no
+    exemption, so an extra that ever carries ``opt_in`` or a gate is withheld
+    here for the same reason a managed one is. Today they carry neither, so this
+    is every extra plus the always-emitted managed entries.
+
+    Exported (no leading underscore) because ``handlers/agents.py``'s
+    merge-on-write is a legitimate out-of-module consumer: it must preserve
+    exactly the set a rebuild would re-add, and computing that itself is what let
+    the two drift. Read live rather than cached — a keystone flip between two PUTs
+    must change the answer.
+    """
+    return frozenset(
+        name
+        for name, spec in (*_MANAGED_MCP_SERVERS.items(), *_extra_mcp_servers().items())
+        if _mcp_server_emission_eligible(name, spec)
+    )
+
+
 def _gated_off_servers() -> frozenset[str]:
     """Managed servers whose ``spec_gate`` is CLOSED right now.
 
@@ -763,20 +845,12 @@ def _gated_off_servers() -> frozenset[str]:
     record is read during incident response, against the config it describes.
 
     A gate that raises is treated as closed, for the same fail-closed reason the
-    computer-use gate itself is.
+    computer-use gate itself is — see :func:`_mcp_spec_gate_open`, which is where
+    that call now lives so the merge-on-write host set reads the gate the same way.
     """
-    closed: set[str] = set()
-    for name, spec in _MANAGED_MCP_SERVERS.items():
-        gate = spec.get("spec_gate")
-        if gate is None:
-            continue
-        try:
-            if not gate():
-                closed.add(name)
-        except Exception:
-            logger.debug("spec gate for %s raised; treating as closed", name, exc_info=True)
-            closed.add(name)
-    return frozenset(closed)
+    return frozenset(
+        name for name, spec in _MANAGED_MCP_SERVERS.items() if not _mcp_spec_gate_open(name, spec)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2020,20 +2094,23 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     if gated_off is None:
         gated_off = _gated_off_servers()
     for name, spec in _MANAGED_MCP_SERVERS.items():
-        if name in gated_off:
-            # The gate is the whole point of this branch: emitting the entry is
-            # what makes kiro-cli spawn the backend, so a closed gate must not
-            # emit one. ``pop`` as well as ``continue`` because the base here is
-            # shipped defaults merged with the user override file, and an entry
-            # arriving from there would otherwise slip past a platform gate that
-            # exists because the capability has no driver on this OS.
-            mcp.pop(name, None)
-            continue
-        # An opt-in server is an assignable set: it belongs to the agents whose
-        # own spec references it, so a freshly built default spec must not carry
-        # it. kiro-cli loads a server only when ``tools`` names it, and the
-        # shipped template names only the always-on ones.
-        if spec.get("opt_in"):
+        if not _mcp_server_emission_eligible(name, spec, gated_off=gated_off):
+            # NOT eligible, and the two reasons part company on one point: a
+            # closed gate must RETRACT the entry, an opt-in one is merely never
+            # introduced.
+            if name in gated_off:
+                # The gate is the whole point of this branch: emitting the entry is
+                # what makes kiro-cli spawn the backend, so a closed gate must not
+                # emit one. ``pop`` as well as ``continue`` because the base here is
+                # shipped defaults merged with the user override file, and an entry
+                # arriving from there would otherwise slip past a platform gate that
+                # exists because the capability has no driver on this OS.
+                mcp.pop(name, None)
+            # An opt-in server is an assignable set: it belongs to the agents whose
+            # own spec references it, so a freshly built default spec must not carry
+            # it. kiro-cli loads a server only when ``tools`` names it, and the
+            # shipped template names only the always-on ones. Left in place rather
+            # than popped: an entry already on disk is a grant the user made.
             continue
         if "invocation_fn" in spec:
             cmd, args = spec["invocation_fn"]()
@@ -2094,7 +2171,8 @@ def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" 
     if gated_off is None:
         gated_off = _gated_off_servers()
     for name, spec in _MANAGED_MCP_SERVERS.items():
-        if name in gated_off:
+        eligible = _mcp_server_emission_eligible(name, spec, gated_off=gated_off)
+        if not eligible and name in gated_off:
             # RETRACT, not merely skip: an earlier refresh wrote this entry while
             # the gate was open, and leaving it would mean turning the feature
             # off never reclaims the backend process turning it on started.
@@ -2117,8 +2195,12 @@ def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" 
         is_new = name not in mcp
         # An opt-in server is granted by the spec itself, so a refresh keeps an
         # entry the user put there current but never introduces one: adding it
-        # back would re-grant a set on every gateway start.
-        if is_new and spec.get("opt_in"):
+        # back would re-grant a set on every gateway start. Spelled through the
+        # shared eligibility predicate (the gate half is already spent above, so
+        # what remains of ineligibility here is exactly ``opt_in``) rather than
+        # re-reading the flag, so the rule cannot drift from the emitter's or the
+        # dashboard merge's reading of it.
+        if is_new and not eligible:
             continue
         if not is_new and spec.get("opt_in") and not isinstance(mcp.get(name), dict):
             # A hand-written entry that is not an object at all. Refreshing it
