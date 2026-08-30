@@ -48,9 +48,9 @@ export const BREATHING_DONE_PATH = `${API_BASE}/breathing-done`
 export const POLL_MS = 10_000
 
 /**
- * Break-interval choices offered as one-tap presets. The panel renders this same
- * list, and `BREAK_PRESETS` in reminders.py holds the same values for the backend,
- * so the surfaces cannot drift.
+ * Break-interval choices offered as one-tap presets. They are a UI affordance,
+ * so the backend has no use for the list: what it enforces is the RANGE below,
+ * via `clamp_break_mins`.
  */
 export const BREAK_PRESETS = [30, 45, 60, 90]
 

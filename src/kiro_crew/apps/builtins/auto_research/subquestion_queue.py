@@ -142,15 +142,6 @@ def pending_count(queue: dict) -> int:
     return len(queue.get("pending", []))
 
 
-def analyzed_count(queue: dict) -> int:
-    return len(queue.get("analyzed", []))
-
-
-def is_known(queue: dict, text: str) -> bool:
-    """True if ``text`` (normalized) is already pending or analyzed."""
-    return _norm(text) in _known_keys(queue)
-
-
 def normalize(text: str) -> str:
     """Public dedup-key normalizer (lowercased, whitespace-collapsed, stripped).
 

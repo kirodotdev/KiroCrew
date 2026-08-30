@@ -70,8 +70,15 @@ MAX_PROJECT_FILES = 4000
 #: cannot balloon the gateway's memory.
 MAX_FILE_BYTES = 8 * 1024 * 1024
 
-#: Suffixes never offered as editable text (LaTeX build artifacts + binaries).
-#: Filtering them here as well as in the UI keeps the two from drifting.
+#: Suffixes that mark a LaTeX build artifact rather than paper source.
+#:
+#: Read only by ``is_artifact``. ``list_files`` does NOT filter on it, so the
+#: tree the API returns still carries artifacts and the UI is what drops them
+#: (``website/src/apps/papyrus/lib.ts``). The two lists have already drifted:
+#: the UI also lists ``.pdf`` and spells ``.synctex.gz`` as one suffix, where
+#: this set has ``.synctex`` and ``.gz`` separately -- so this one would also
+#: hide any plain ``.gz``. Reconcile them before wiring either side to the
+#: other.
 ARTIFACT_SUFFIXES = frozenset(
     {
         ".aux", ".bbl", ".blg", ".fdb_latexmk", ".fls", ".log", ".out",

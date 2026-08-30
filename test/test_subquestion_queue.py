@@ -5,10 +5,8 @@ from pathlib import Path
 
 from kiro_crew.apps.builtins.auto_research.subquestion_queue import (
     QUEUE_FILENAME,
-    analyzed_count,
     dequeue_top_k,
     enqueue,
-    is_known,
     load_queue,
     mark_analyzed,
     new_queue,
@@ -112,18 +110,12 @@ class TestAnalyzedAndDedup:
         popped = dequeue_top_k(q, 1)
         assert popped == items
         mark_analyzed(q, popped)
-        assert analyzed_count(q) == 1
+        assert len(q["analyzed"]) == 1
         assert q["analyzed"][0]["status"] == "analyzed"
         # Re-generating the same sub-question must not be re-admitted.
         again = enqueue(q, [{"text": "Investigate ME"}])
         assert again == []
         assert pending_count(q) == 0
-
-    def test_is_known(self):
-        q = new_queue()
-        enqueue(q, [{"text": "Known one"}])
-        assert is_known(q, "  known   ONE ")
-        assert not is_known(q, "unseen")
 
 
 class TestPersistence:

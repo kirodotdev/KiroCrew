@@ -143,10 +143,6 @@ BREAK_NUDGES: tuple[tuple[str, tuple[str, ...]], ...] = (
 #: panel — this caps the PROMPT, never the exercise.
 MAX_BREATHE_PROMPTS_PER_DAY = 2
 
-#: Break-interval choices offered as one-tap presets. The panel and the dashboard
-#: page render this same list, so the two surfaces cannot drift.
-BREAK_PRESETS = (30, 45, 60, 90)
-
 #: Bounds for a custom interval. Below 5 the companion would be a pest; above 8h
 #: it would never fire in a working day.
 BREAK_MIN_MINS = 5

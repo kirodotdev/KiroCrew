@@ -198,7 +198,7 @@ class AppearanceStore:
                 # The built-in ghost's art is bundled with the frontend, so the
                 # renderer already has it and needs no content here.
                 "animations": {},
-                "colorMap": self._colour_maps.get(DEFAULT_PACK) or {},
+                "colorMap": self.colour_map(DEFAULT_PACK),
             }
 
         pack_dir = self._root / ident
@@ -276,7 +276,7 @@ class AppearanceStore:
             "randomNames": random_names,
             "categories": categories,
             "sprite": sprite,
-            "colorMap": self._colour_maps.get(ident) or {},
+            "colorMap": self.colour_map(ident),
         }
         # The ORIGINAL sheet, when the pack kept one for re-editing. It is not
         # an animation slot, so it never appears in `animations` — and reading
@@ -307,6 +307,12 @@ class AppearanceStore:
         return (self._root / ident).is_dir()
 
     def colour_map(self, pack_id: str) -> dict[str, str]:
+        """A pack's recolouring, as a COPY.
+
+        Callers put this straight into a response payload, so handing out the
+        stored dict would alias the store's own state to whatever the caller
+        does next.
+        """
         ident = _safe_id(pack_id)
         return dict(self._colour_maps.get(ident or "", {}))
 

@@ -481,7 +481,7 @@ def _file_kind(p: Path) -> str:
     return "other"
 
 
-def _entry_meta(p: Path, *, with_size: bool = True) -> dict:
+def _entry_meta(p: Path) -> dict:
     try:
         st = p.stat()  # follow symlinks -- consistent with _file_kind()
     except OSError:
@@ -499,7 +499,7 @@ def _entry_meta(p: Path, *, with_size: bool = True) -> dict:
         "type": kind,
         "mtime": int(st.st_mtime),
     }
-    if with_size and kind == "file":
+    if kind == "file":
         info["size"] = st.st_size
     elif kind == "dir":
         info["size"] = 0
@@ -522,7 +522,6 @@ def _list_dir(p: Path, depth: int = 1, ignore: bool = True) -> tuple[list[dict],
     # makes the containment legible to CodeQL py/path-injection). Descent into
     # subdirs is already gated by the _is_within check in walk().
     p = _contain_in_allowed_roots(p, operation="tree_list")
-    out: list[dict] = []
     count = [0]
 
     def walk(d: Path, rem: int) -> list[dict]:

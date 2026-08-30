@@ -175,17 +175,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _read_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length)
-        try:
-            obj = json.loads(raw)
-            return obj if isinstance(obj, dict) else {}
-        except json.JSONDecodeError:
-            return {}
-
     def _authorized(self, method: str, raw_body: bytes) -> bool:
         """Verify the gateway's X-KiroCrew-Proxy HMAC before dispatch (CWE-306).
 

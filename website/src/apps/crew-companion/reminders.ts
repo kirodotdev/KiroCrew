@@ -86,13 +86,6 @@ export function clampBreakMins(raw: string | number): number | null {
 }
 
 
-/**
- * Break-interval choices offered as one-tap presets. Both the panel and the
- * dashboard app page render this same list, so the two surfaces cannot drift.
- */
-
-/**
- * Break-interval presets, floor and ceiling — the panel's own controls and the
- * backend's clamp must agree, so the numbers live here rather than in the UI.
- */
-export const BREAK_PRESETS = [30, 45, 60, 90]
+// Re-exported so the panel can keep importing its reminder helpers and the
+// presets from one place; the values themselves live in ./constants.
+export { BREAK_PRESETS } from './constants'
