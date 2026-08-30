@@ -12,6 +12,7 @@ import struct
 import zlib
 from pathlib import Path
 
+from kiro_crew.apps.manifest import app_name_error
 from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
@@ -472,6 +473,25 @@ def scaffold_app(
 
     Returns the path to the created app directory.
     """
+    # FIRST, before *name* is used as a directory component OR copied into the
+    # manifest. `app_name_error` is the single app-name contract every path that
+    # admits an app already funnels through -- manifest validation, install,
+    # self-registration -- and scaffolding was the one door that skipped it. The
+    # cost of skipping it is not a containment failure but a DOOMED artifact: the
+    # scaffold reports success and writes `"name": <whatever was passed>`, then
+    # `kirocrew app install` refuses that manifest, so the error surfaces one
+    # command later than the mistake and names a file the user did not type.
+    #
+    # An absolute path already beneath *output_dir* is the case that reads as a
+    # containment bug and is not one: `_resolve_for_write` refuses an absolute
+    # component only when it LEAVES the root, so `--dir out` with name
+    # `out/demo` stays inside and passes, and the manifest then carries a full
+    # filesystem path as the app's identity. Validating the shape here refuses
+    # it for what it actually is -- not a kebab-case name.
+    err = app_name_error(name)
+    if err:
+        raise ValueError(err)
+
     if not display_name:
         display_name = name.replace("-", " ").title()
     if not description:

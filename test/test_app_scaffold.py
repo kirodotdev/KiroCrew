@@ -13,6 +13,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.scaffold import (
     _placeholder_icon_png,
+    _resolve_for_write,
     _write_sites,
     scaffold_app,
 )
@@ -416,6 +417,11 @@ class TestWriteContainment:
         assert list(outside.iterdir()) == []
 
     def test_name_with_traversal_is_refused(self, tmp_path):
+        # Refused by the NAME validator now, which runs before any path is
+        # derived -- "../evil" is not kebab-case. The containment guard behind it
+        # still refuses the same shape and is exercised directly in
+        # TestResolveForWrite below, so this stays an end-to-end assertion that
+        # nothing lands outside --dir rather than a test of which layer says no.
         out = tmp_path / "out"
         out.mkdir()
 
@@ -425,8 +431,17 @@ class TestWriteContainment:
         assert not (tmp_path / "evil").exists()
 
     def test_absolute_name_is_refused(self, tmp_path):
-        """joinpath discards the root for an absolute component, so an absolute
-        name would compare equal trivially while writing outside --dir."""
+        """An absolute name is refused, whether or not it escapes --dir.
+
+        Two independent reasons, and the ORDER matters for what a user sees. The
+        name validator refuses it first (an absolute path is not a kebab-case
+        app name), which is what makes the harmless-looking case fail too: an
+        absolute path already BENEATH --dir passes containment (joinpath discards
+        the root, and the result really is inside), so before validation it
+        scaffolded successfully and wrote the whole filesystem path into the
+        manifest as the app's identity. Containment still refuses the escaping
+        shape underneath -- see TestResolveForWrite.
+        """
         out = tmp_path / "out"
         out.mkdir()
         elsewhere = tmp_path / "elsewhere"
@@ -496,6 +511,125 @@ class TestWriteContainment:
 
         assert (real / "my-app" / "app.json").is_file()
         assert (app_dir / "README.md").is_file()
+
+
+class TestResolveForWrite:
+    """The containment guard, exercised DIRECTLY.
+
+    It used to be reached only through ``scaffold_app``, and the name validation
+    at scaffold entry now refuses the traversal and absolute-component shapes
+    before the guard sees them. Those scaffold-level tests still assert the
+    outcome that matters (nothing outside --dir), but the guard is
+    defense-in-depth for every OTHER caller and for a future one that skips the
+    name check, so its own branches are pinned here rather than depending on
+    which layer happens to refuse first.
+    """
+
+    def test_traversal_component_is_refused(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        with pytest.raises(ValueError):
+            _resolve_for_write(out, "..", "evil")
+
+    def test_absolute_component_escaping_the_root_is_refused(self, tmp_path):
+        # joinpath DISCARDS the root for an absolute component, so target would
+        # equal expected trivially while both point outside; the containment
+        # check has to run before the equality comparison.
+        out = tmp_path / "out"
+        out.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        with pytest.raises(ValueError):
+            _resolve_for_write(out, str(elsewhere / "evil"))
+
+    def test_the_root_itself_is_refused_as_a_target(self, tmp_path):
+        # `expected == resolved_root` is its own branch: an empty component
+        # resolves to the root, and scaffolding INTO --dir itself would treat the
+        # user's output directory as the app directory.
+        out = tmp_path / "out"
+        out.mkdir()
+        with pytest.raises(ValueError):
+            _resolve_for_write(out, "")
+
+    def test_a_plain_relative_component_resolves_beneath_the_root(self, tmp_path):
+        # The permit case, so the refusals above are not vacuously passing on a
+        # guard that rejects everything.
+        out = tmp_path / "out"
+        out.mkdir()
+        assert _resolve_for_write(out, "fine") == out.resolve() / "fine"
+
+
+class TestAppNameValidation:
+    """`scaffold_app` validates the name before it becomes a path OR an identity.
+
+    Backlog f-20260820-04: the scaffold was the one door into the app-name
+    contract that skipped `app_name_error`, so any non-kebab name produced a
+    manifest that `kirocrew app install` then refused -- the scaffold reported
+    success and the error surfaced one command later, naming a file the user
+    never typed.
+    """
+
+    def test_an_absolute_name_beneath_the_output_dir_is_refused(self, tmp_path):
+        """THE reported case, and the one that looks harmless.
+
+        `_resolve_for_write` refuses an absolute component only when it LEAVES
+        the root, so a name that is already inside --dir passes containment: the
+        write really does land in the right place. What was wrong is the
+        IDENTITY -- the manifest carried a full filesystem path as the app name.
+        """
+        out = tmp_path / "out"
+        out.mkdir()
+
+        with pytest.raises(ValueError, match="kebab-case"):
+            scaffold_app(out, str(out / "demo"))
+
+        # Nothing scaffolded: refused before the first directory is created.
+        assert list(out.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "My App",  # spaces
+            "my_app",  # underscore
+            "UPPER",  # uppercase
+            "demo\n",  # trailing newline: KEBAB_RE's `$` admits it under match()
+            "-leading",  # hyphen boundaries
+            "trailing-",
+        ],
+    )
+    def test_a_non_kebab_name_is_refused_before_anything_is_written(self, bad, tmp_path):
+        # The CLASS, not just the reported instance: each of these previously
+        # scaffolded a complete app whose manifest install would reject.
+        out = tmp_path / "out"
+        out.mkdir()
+
+        with pytest.raises(ValueError, match="kebab-case"):
+            scaffold_app(out, bad)
+
+        assert list(out.iterdir()) == []
+
+    def test_a_reserved_name_is_refused_too(self, tmp_path):
+        # Validation delegates to the shared contract rather than re-deriving a
+        # kebab check, so the reserved-name rules come along for free -- "system"
+        # would shadow the reserved system.* notification channel namespace.
+        out = tmp_path / "out"
+        out.mkdir()
+
+        with pytest.raises(ValueError, match="reserved"):
+            scaffold_app(out, "system")
+
+        assert list(out.iterdir()) == []
+
+    def test_a_valid_kebab_name_still_scaffolds_an_installable_manifest(self, tmp_path):
+        # The permit case: the validation must not have narrowed the names that
+        # legitimately work, and the manifest it writes must satisfy the very
+        # contract that used to reject it at install time.
+        from kiro_crew.apps.manifest import app_name_error
+
+        app_dir = scaffold_app(tmp_path, "my-good-app")
+        manifest = json.loads((app_dir / "app.json").read_text(encoding="utf-8"))
+        assert manifest["name"] == "my-good-app"
+        assert app_name_error(manifest["name"]) is None
 
 
 class TestScaffold:
