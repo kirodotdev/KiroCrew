@@ -1,9 +1,9 @@
 """Session cleanup watchdog — a minimal dispatcher for periodic cleanup hooks.
 
-The session cleanup loop delegates several maintenance behaviours (idle expiry,
-orphaned-MCP sweep, orphaned-PID sweep, deniedCommands re-enforcement) to this
-thin container, so new cleanup behaviours (e.g. RSS-based recycling) can be
-added as siblings.
+The session cleanup loop delegates policy hooks (idle expiry, orphaned-MCP
+cleanup, RSS-based recycling, stuck-turn detection, and background drain
+reaping) to this thin container. Process and filesystem sweeps remain directly
+coordinated by the cleanup service.
 
 Each hook is a self-contained :class:`CleanupHook` — the *execution* half of a
 Command. Each hook carries its own try/except internally, so

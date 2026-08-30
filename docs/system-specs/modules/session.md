@@ -10,6 +10,35 @@ Chat sessions are served from the warm pool when eligible (default pool
 agent, default cwd, no resume mapping); otherwise they cold-start on first
 message via `get_or_create()`.
 
+## Implementation Boundaries
+
+`SessionManager` remains the compatibility facade in `session.py`; callers keep
+using its existing public, import, and monkeypatch seams. Mutable policy and
+state are composed behind that facade:
+
+- `session_allocation.py` — live registry, key folding, semaphore leases,
+  cold-start allocation, claims, and companion runtimes
+- `session_pool.py` — warm-provider spawn, inventory, claim, health, and discard
+- `session_background.py` — persistent and multiplexed background runtimes
+- `session_compaction.py` — context gates, compaction execution, verdicts,
+  cooldowns, and guarded escalation
+- `session_lifecycle.py` — refresh/reload, reset/remove/destroy/discard,
+  identity retirement, stop, drain, and close ordering
+- `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
+  policy, and process/filesystem sweeps
+
+Cross-boundary calls that were observable on `SessionManager` route back through
+the facade, and patchable module dependencies are resolved through injected
+call-time functions. Persistence remains owned by the existing `SessionMap`
+contract; this decomposition does not change its stored format.
+
+The owner protocols and forwarding dependency adapters are transitional
+compatibility boundaries, not extension points. New internal behavior belongs
+on the service that owns its state; widen a protocol or adapter only when an
+existing facade/import/monkeypatch seam requires it. Individual adapters may be
+retired in follow-up changes after repository-wide callers and characterization
+tests have moved off the corresponding legacy seam.
+
 ## Background Session
 
 `BACKGROUND_KEY = "_bg"` is a persistent shared session for lightweight
@@ -250,20 +279,17 @@ send time.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
   60min). Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session.
-- **Session Watchdog** (`watchdog.py`): the cleanup loop delegates its periodic
-  behaviours to a `SessionWatchdog` — a stateless sequential dispatcher over
-  named `CleanupHook(name, run)` entries (Command pattern; `tick()` isolates a
-  hook failure with a debug-level backstop only, never promoting the severity
-  of errors the lifted inline blocks swallowed). Hooks registered in
-  `SessionManager.__init__`: `idle_expiry` (gate + clamped timeout published
-  onto `self._idle_sweep_enabled`/`self._idle_timeout` by `_cleanup_loop`),
-  `orphan_mcp` (maintenance-executor offload), `denied_commands`
-  (re-enforcement offloaded to the maintenance executor — deliberate
-  sync→thread change from the old inline block), `rss_threshold`, and
-  `stuck_turn`. The
-  orphan-PID / session-root / sandbox-profile sweeps remain inline in
-
-  `_cleanup_loop` (CR 2 extracts them).
+- **Session Watchdog** (`watchdog.py`): `SessionCleanup` owns the cleanup-loop
+  state and delegates named periodic behaviours to a `SessionWatchdog` — a
+  stateless sequential dispatcher over `CleanupHook(name, run)` entries
+  (`tick()` isolates a hook failure with a debug-level backstop only, never
+  promoting the severity of errors the lifted inline blocks swallowed). The
+  hooks are assembled through the `SessionManager` facade so existing
+  monkeypatch seams remain observable: `idle_expiry`, `orphan_mcp`,
+  `rss_threshold`, `stuck_turn`, and `bg_drain_reap`.
+  `SessionCleanup._cleanup_loop` then directly coordinates the session-root,
+  sandbox-artifact, bytecode-cache, periodic tracked-PID, and untracked-MCP
+  sweeps.
 - **Stuck-turn reporting** (`_stuck_turn_check`, threshold
   `_STUCK_TURN_REPORT_SECS` = 300s, not configurable): reports a turn whose
   consumer has stopped pulling events. Exists because the per-turn watchdog in
@@ -818,29 +844,18 @@ dashboard-turn-loop refactor.
 
 ```
 start_pool()
-  ├── _enforce_denied_commands()  → inject deniedCommands into ALL agent configs
   ├── _spawn_warm() × pool_size   → warm pool queue (instant assignment)
   └── _ensure_background()        → BACKGROUND_KEY session (persistent)
 ```
 
-## Security: deniedCommands Enforcement
+## Security: PreToolUse Command Enforcement
 
-`_enforce_denied_commands()` (from `agent.py`) injects the bundled `deniedCommands`
-patterns into agent configs in `~/.kiro/agents/`. The scope is controlled by
-`agent.enforce_denied_commands` config option:
-
-- `"all"` (default): enforce on ALL agent configs (kirocrew + AIM + third-party)
-- `"kirocrew"`: only enforce on `kirocrew.json`, skip other agents (lite agents always skipped)
-
-This addresses user complaints about KiroCrew overwriting customizations on non-KiroCrew agents every ~60 seconds.
-
-- **At startup**: `start_pool()` calls it before spawning any sessions
-- **Periodic**: `_cleanup_loop()` calls it every ~60s (catches manual edits)
-- **At install**: `install_agent()` calls it after writing `kirocrew.json`
-- **Mtime-based**: skips unchanged files for efficiency
-- **Merge semantics**: union of existing + bundled patterns (never removes agent's own)
-- **Targets**: both `execute_bash` and `shell` tool settings
-- **Config**: set via `~/.kiro/crew/config.json` or Dashboard Config Summary
+Command denial is enforced by Kiro Crew's bundled `hooks.py` `PreToolUse` gate,
+not by injecting `deniedCommands` into kiro agent specs. Agent config generation
+keeps the bundled security hooks as the immutable base, merges user hooks after
+them, and strips retired `deniedCommands` / `autoAllowReadonly` fields left by an
+older installation. Session startup and periodic cleanup do not rewrite agent
+configs.
 
 ## Orphaned MCP Server Cleanup
 

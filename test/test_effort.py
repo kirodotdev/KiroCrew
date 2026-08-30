@@ -529,9 +529,9 @@ class TestPoolEffortBypass:
     def test_disqualifier_present_and_metric_label_bounded(self):
         import inspect
 
-        from kiro_crew import session
+        from kiro_crew import session, session_allocation
 
-        src = inspect.getsource(session)
+        src = inspect.getsource(session_allocation)
         assert 'pool_decision = "bypass_effort"' in src
         assert 'extra_factory_kwargs.get("reasoning_effort_override")' in src
         # The metric's outcome set is closed; an unlisted label folds to

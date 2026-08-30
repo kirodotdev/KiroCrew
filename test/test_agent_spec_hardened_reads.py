@@ -524,7 +524,10 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("mcp_server_rows", "dashboard"),
         ("mcp_stub_eligibility", "dashboard"),
     ],
-    "kiro_crew/session.py": [("resolve_agent_model", "unknown")],
+    "kiro_crew/session.py": [
+        ("forward:operation", "forward:source"),
+        ("resolve_agent_model", "unknown"),
+    ],
 }
 
 
