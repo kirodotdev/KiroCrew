@@ -2518,6 +2518,31 @@ html[data-font-family="mono"] .rail-community-links{ letter-spacing:-0.05em; wor
    button's `text-ellipsis` on `Report issue` handles overflow gracefully;
    a dedicated rule can be added later if visual QA shows truncation matters. */
 
+/* ── OpenDyslexic nav-rail vertical compensation ─────────────────────────
+   OpenDyslexic's taller x-height (cap-height/UPM ~0.78 vs Space Grotesk's
+   ~0.72) increases each nav-item's painted height by ~8%. On a rail with
+   ~12 items, the cumulative growth pushes the bottom-pinned section
+   (Agent Capabilities, Settings, community row) below the rail's overflow
+   boundary.
+
+   Tighten the vertical padding from py-2 (8px) to 6px on nav items when
+   opendyslexic is active. The 2px reduction per item × ~12 items = ~24px
+   recovered — enough to keep the bottom section visible without reducing
+   font size or fighting the accessibility intent.
+
+   The selector matches every `.nav-item`, not just the expanded-rail ones.
+   That is deliberate: the collapsed rail is icon-only (the label span is
+   guarded by `!collapsed &&` in NavItem), so the 2px trim on each side
+   has no visible or functional effect there — the rail's collapsed width
+   is fixed at RAIL_W_COLLAPSED and its items have no text budget to
+   protect. The resulting min touch target under OpenDyslexic remains
+   ~44px tall (6px padding + ~22px x-height glyph + 6px padding + row gap),
+   well above WCAG SC 2.5.8's 24px floor. */
+html[data-font-family="opendyslexic"] .nav-item {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
 /* Cut-edge rule on the pinned-crew chip row. The row is a single nowrap line with
    overflow:hidden so the trailing dropdown stays against the last chip (see
    InstanceTabBar.CrewChipRow), which means the chip at the boundary is cut rather

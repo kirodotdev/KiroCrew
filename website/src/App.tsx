@@ -559,7 +559,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       whileHover={collapsed ? undefined : { scale: 1.02 }}
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      className={`nav-item group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -585,7 +585,7 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       {!collapsed && (
         <span
           aria-label={typeof label === 'string' ? label : undefined}
-          className="whitespace-nowrap overflow-hidden"
+          className="flex-1 min-w-0 truncate"
         >
           {label}
         </span>
