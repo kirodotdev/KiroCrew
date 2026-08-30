@@ -238,6 +238,68 @@ def test_max_stop_hook_nudges_loads_from_config_and_round_trips() -> None:
     assert _load_from_dict(pinned.to_dict()).agent.max_stop_hook_nudges == 7
 
 
+def test_sandbox_expose_docker_config_uses_operator_keystone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "docker_registry_access.json"
+    monkeypatch.setattr(loader_module, "docker_registry_access_state_path", lambda: state_path)
+
+    assert loader_module.docker_registry_access_enabled() is False
+    # Ordinary config is agent-writable and therefore cannot even advertise a
+    # second spelling of the grant.
+    configured = _load_from_dict({"agent": {"sandbox_expose_docker_config": True}})
+    assert not hasattr(configured.agent, "sandbox_expose_docker_config")
+    # Unknown config keys may round-trip, but never carry authorization.
+    assert loader_module.docker_registry_access_enabled() is False
+
+    monkeypatch.setattr(loader_module.time, "time", lambda: 1_000.0)
+    state_path.write_text('{"enabled": true, "expires_at": 1001}', encoding="utf-8")
+    assert loader_module.docker_registry_access_enabled() is True
+    state_path.write_text('{"enabled": true, "expires_at": 999}', encoding="utf-8")
+    assert loader_module.docker_registry_access_enabled() is False
+    state_path.write_text('{"enabled": true, "permanent": true}', encoding="utf-8")
+    assert loader_module.docker_registry_access_enabled() is True
+
+    from kiro_crew import security
+
+    assert state_path.name in security._CREW_SECRET_LEAVES
+    assert security.is_sensitive_path("~/.kiro/crew/docker_registry_access.json") is True
+    # Shell path spelling is no longer a text gate upstream: file tools use
+    # this path guard, and the namespace launcher seals the keystone itself.
+    assert security.is_sensitive_write_path("~/.kiro/crew/docker_registry_access.json")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\xff",
+        b"{",
+        b"[]",
+        b'{"enabled":true,"expires_at":Infinity}',
+        b'{"enabled":true,"expires_at":' + b"9" * 400 + b"}",
+    ],
+)
+def test_malformed_docker_grant_fails_closed(tmp_path, monkeypatch, payload):
+    state_path = tmp_path / "docker_registry_access.json"
+    monkeypatch.setattr(loader_module, "docker_registry_access_state_path", lambda: state_path)
+    state_path.write_bytes(payload)
+    assert loader_module.docker_registry_access_enabled() is False
+
+
+def test_docker_grant_decoder_recursion_fails_closed(tmp_path, monkeypatch):
+    state_path = tmp_path / "docker_registry_access.json"
+    monkeypatch.setattr(loader_module, "docker_registry_access_state_path", lambda: state_path)
+    state_path.write_text('{"enabled": true}', encoding="utf-8")
+
+    def exhausted_decoder(_text):
+        raise RecursionError("nested JSON exceeds decoder limit")
+
+    # Pin the decoder failure rather than an interpreter-dependent nesting depth.
+    with monkeypatch.context() as decoding:
+        decoding.setattr(loader_module.json, "loads", exhausted_decoder)
+        assert loader_module.docker_registry_access_enabled() is False
+
+
 def test_dashboard_tailscale_hydrates_and_survives_a_round_trip() -> None:
     """The opt-in must survive ``load()`` and a later ``save()``.
 

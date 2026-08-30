@@ -1302,6 +1302,7 @@ class AcpRuntime:
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            expose_docker_config=True,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
         )

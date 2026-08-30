@@ -488,6 +488,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # shell. The dashboard PUT handler is the only writer and it opens the path
     # directly, not through this gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Owner-only authorization for Docker credential exposure to new sandboxes.
+    "docker_registry_access.json",
     # Browser Mode's durable ENABLE gate. Same class of control as
     # ``computer_use.json`` directly above: while it is present the browse proxy
     # is registered and the ``browser_*`` tools are in the agent's tool list,

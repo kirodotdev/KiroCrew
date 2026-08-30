@@ -23,6 +23,10 @@ vi.mock('../../api/client', () => ({
     securityPosture: vi.fn(),
     kirocrewConfig: vi.fn(),
     patchConfig: vi.fn(),
+    getDockerRegistryAccess: vi.fn().mockResolvedValue({
+      enabled: false, supported: true,
+    }),
+    saveDockerRegistryAccess: vi.fn(),
     tailnetStatus: vi.fn(),
   },
 }))
@@ -80,6 +84,9 @@ describe('SecurityPanel — tailnet origin', () => {
       version: null, has_policy: false, profile: null, unavailable: false, scopes: [],
     })
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.getDockerRegistryAccess as ReturnType<typeof vi.fn>).mockResolvedValue({
+      enabled: false, supported: true,
+    })
     ;(api.patchConfig as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
   })
 
