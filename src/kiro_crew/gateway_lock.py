@@ -104,6 +104,30 @@ class GatewayLock:
         # O_RDWR | O_CREAT without truncation: a failed acquire must leave the
         # incumbent holder's pid intact so we can name it in the error.
         fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+
+        # Windows stale-PID reclaim: on Windows, msvcrt.locking may leave a
+        # lock file that cannot be re-locked after a crash (the OS does not
+        # guarantee release on abnormal termination the way POSIX flock does).
+        # If the recorded PID is confirmed dead, delete the stale file and
+        # re-open a fresh one so try_acquire_lock sees a clean state.
+        if platform_compat.IS_WINDOWS:
+            stale_pid = _read_pid(fd)
+            if (
+                stale_pid is not None
+                and platform_compat.pid_liveness(stale_pid) == platform_compat.PID_DEAD
+            ):
+                logger.info(
+                    "reclaiming stale gateway lock on %s (dead pid %d)",
+                    self._home,
+                    stale_pid,
+                )
+                os.close(fd)
+                try:
+                    os.unlink(self._path)
+                except OSError:
+                    pass
+                fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+
         # platform_compat.try_acquire_lock: fcntl.flock LOCK_EX|LOCK_NB on
         # POSIX; msvcrt.locking LK_NBLCK on Windows. Returns True iff acquired.
         if not platform_compat.try_acquire_lock(fd, exclusive=True):
