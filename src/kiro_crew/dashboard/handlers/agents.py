@@ -150,15 +150,6 @@ async def _require_owner(request: web.Request, operation: str) -> web.Response |
 # ── Agent Config ──
 
 
-def _auto_install_agent() -> None:
-    """Re-install agent config to kiro-cli so changes take effect immediately."""
-    try:
-        install_agent()
-        logger.info("Auto-applied agent config via dashboard")
-    except Exception:
-        logger.debug("Auto-apply agent config failed", exc_info=True)
-
-
 def _find_agent_config() -> Path:
     """Find agents/defaults.json — delegates to centralized resolver."""
     return resolve_agent_config_path()

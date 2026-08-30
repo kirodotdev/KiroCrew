@@ -2115,7 +2115,6 @@ async def api_update_channel(request: web.Request) -> web.Response:
     # Same reason as the write above: a config read is disk I/O on a path the
     # operator may have put on a network mount.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    _, artifact_base = _cdn_bases()
     return web.json_response(
         {
             "ok": True,

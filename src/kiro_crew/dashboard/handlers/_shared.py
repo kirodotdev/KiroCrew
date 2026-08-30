@@ -1430,7 +1430,6 @@ def list_skill_tree(skill_root: Path) -> list[dict[str, Any]]:
     real path escapes *skill_root* are omitted.
     """
     out: list[dict[str, Any]] = []
-    skipped = 0
     for dirpath, dirnames, filenames in os.walk(skill_root, followlinks=False):
         # Stable order — reproducible across runs / tests.
         dirnames.sort()
@@ -1447,18 +1446,15 @@ def list_skill_tree(skill_root: Path) -> list[dict[str, Any]]:
         for f in filenames:
             full = Path(dirpath) / f
             if is_sensitive_path(str(full)):
-                skipped += 1
                 continue
             try:
                 if full.is_symlink():
                     real = full.resolve(strict=True)
                     real.relative_to(skill_root.resolve(strict=True))
                     if is_sensitive_path(str(real)):
-                        skipped += 1
                         continue
                 stat = full.stat()
             except (OSError, ValueError):
-                skipped += 1
                 continue
             rel = full.relative_to(skill_root).as_posix()
             out.append({"path": rel, "type": "file", "size": int(stat.st_size)})

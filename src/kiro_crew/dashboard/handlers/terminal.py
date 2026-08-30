@@ -35,12 +35,10 @@ from kiro_crew.security import (
 if platform_compat.IS_POSIX:
     import fcntl
     import pty as _pty
-    import signal
     import termios
 else:  # pragma: no cover — Windows fallback
     fcntl = None  # type: ignore[assignment]
     _pty = None  # type: ignore[assignment]
-    signal = None  # type: ignore[assignment]
     termios = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
