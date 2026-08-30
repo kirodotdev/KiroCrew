@@ -28,6 +28,7 @@ import { useBranding } from './hooks/useBranding'
 import { useRumPageView } from './hooks/useRumPageView'
 import { useIsMobile } from './hooks/useIsMobile'
 import { useSidePanelDock } from './hooks/useSidePanelDock'
+import { useDndSensors } from './hooks/useDndSensors'
 import { usePreviewFlagRevision } from './hooks/usePreviewFlag'
 import { setRailWidth, railWidthFor } from './hooks/useRailWidth'
 import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, FOCUS_INSET } from './hooks/useFocusMode'
@@ -58,7 +59,7 @@ import { animateDrawer, registerDrawerTargets, takeOverDrawer } from './hooks/us
 const MOBILE_NAV_TRAVEL = 240
 import { usePersistedBool } from './hooks/usePersistedBool'
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
-import { DndContext, closestCenter, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
+import { DndContext, closestCenter, DragOverlay, type DragStartEvent, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import ChatPage from './pages/ChatPage'
@@ -1528,17 +1529,11 @@ export default function App() {
   // open a gap as you drag, and a DragOverlay renders the floating ghost.
   // activeAppDragId tracks the app being dragged, for the overlay + source dim.
   const [activeAppDragId, setActiveAppDragId] = useState<string | null>(null)
-  // Split mouse/touch sensors so touch can both scroll AND drag:
-  //  - MouseSensor: 8px distance lets a plain click reach NavItem navigation;
-  //    only a deliberate drag past the threshold starts a reorder (desktop).
-  //  - TouchSensor: 250ms press-and-hold (5px tolerance) arms a drag, so a
-  //    quick finger-swipe still scrolls the nav rail natively and only a
-  //    deliberate hold starts a reorder. A single PointerSensor can't do this:
-  //    its `touch-action: none` requirement steals every swipe for dragging.
-  const appDndSensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-  )
+  // Split mouse/touch sensors so touch can both scroll AND drag; the split and
+  // its WebKit reasoning live in the shared hook. 8px of mouse travel is this
+  // rail's own choice: a plain click has to reach NavItem navigation, so the
+  // threshold sits higher than a list whose rows only select.
+  const appDndSensors = useDndSensors({ distance: 8 })
   // Collapse a long Apps list behind a "N more" toggle so the nav can't grow
   // unbounded. Above APPS_NAV_LIMIT visible entries the overflow is hidden until
   // the user expands (persisted).

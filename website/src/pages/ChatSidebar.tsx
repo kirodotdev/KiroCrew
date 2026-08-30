@@ -6,8 +6,8 @@ import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
 import FolderGlyph from '../components/FolderGlyph'
-import { DndContext, closestCenter, pointerWithin, KeyboardSensor, MouseSensor, TouchSensor, useSensor, useSensors, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
-import { SortableContext, verticalListSortingStrategy, useSortable, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
+import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
+import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { shallowEqual } from 'react-redux'
@@ -35,6 +35,7 @@ import FolderConfigModal from '../components/FolderConfigModal'
 import ModelDropdownList from '../components/ModelDropdownList'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import useMoveUndo from '../hooks/useMoveUndo'
@@ -3998,21 +3999,12 @@ function ChatSidebar({
   }, [])
 
   // ── Folder drag-to-reorder ──
-  // Mouse and touch are split on purpose — a single PointerSensor with a
-  // distance constraint swallows touch swipes on WebKit: past the activation
-  // distance dnd-kit preventDefault()s every move via its non-passive window
-  // touchmove listener ("required for iOS Safari", TouchSensor.setup), so a
-  // swipe that begins on a row cannot pan the list. Chromium ignores
-  // preventDefault() on pointermove for panning, which is why it only shows on
-  // WebKit. The TouchSensor's DELAY constraint inverts the contention: moving
-  // past the tolerance CANCELS the sensor and hands the gesture back to the
-  // browser; only a stationary 250ms hold arms a drag. Same split as the Apps
-  // nav rail (App.tsx) and the artifact library.
-  const dndSensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  )
+  // Mouse and touch are split on purpose; the split and its WebKit reasoning
+  // live in the shared hook. 5px of mouse travel is this list's own choice -
+  // rows are tightly packed and a click only selects, so the threshold can sit
+  // lower than the Apps nav rail's. `keyboard` is on because this IS a sortable
+  // ring, so the sortable coordinate getter has somewhere to move.
+  const dndSensors = useDndSensors({ distance: 5, keyboard: true })
   // Tracks the item currently being dragged, for the DragOverlay preview.
   const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
   const reorderFolders = useCallback((activeId: string, overId: string) => {

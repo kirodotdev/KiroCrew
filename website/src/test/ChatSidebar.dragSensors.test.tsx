@@ -24,6 +24,14 @@
  * from source. jsdom has no compositor, so it cannot demonstrate a pan being
  * swallowed — the mechanism above is what the assertions pin, at the one place
  * where it is decided.
+ *
+ * That place is now `hooks/useDndSensors.ts`, which owns the split for all
+ * three drag surfaces, and `useDndSensors.test.tsx` pins the mechanism itself
+ * (separate sensors, delay-not-distance on touch, no PointerSensor anywhere in
+ * the tree). What remains this surface's own is which distance it asks for,
+ * that it still asks for the keyboard sensor, and where touch-action may be
+ * locked; "no second sensor set anywhere" is a tree-wide property and is
+ * scanned there, for every file at once.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -33,33 +41,17 @@ const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
 const src = readFileSync(SRC, 'utf8')
 
 describe('chat sidebar drag sensors', () => {
-  it('splits mouse and touch sensors instead of using one PointerSensor', () => {
-    expect(src).toMatch(/useSensor\(MouseSensor,\s*\{\s*activationConstraint:\s*\{\s*distance:\s*5\s*\}/)
-    expect(src).toMatch(/useSensor\(TouchSensor,\s*\{\s*activationConstraint:\s*\{\s*delay:\s*250,\s*tolerance:\s*5\s*\}/)
+  it('takes its sensors from the shared hook, with this surface 5px distance', () => {
+    // 5px is the list's own call: rows are tightly packed and a click only
+    // selects, so the threshold can sit lower than the Apps nav rail's 8px.
+    expect(src).toMatch(/useDndSensors\(\{\s*distance:\s*5,\s*keyboard:\s*true\s*\}\)/)
+    expect(src).toMatch(/from '\.\.\/hooks\/useDndSensors'/)
   })
 
   it('keeps the keyboard sensor for accessible reordering', () => {
-    expect(src).toMatch(/useSensor\(KeyboardSensor,\s*\{\s*coordinateGetter:\s*sortableKeyboardCoordinates\s*\}/)
-  })
-
-  it('does not construct a PointerSensor', () => {
-    // Both the import binding and the call site have to go: leaving the import
-    // behind is how a later edit quietly reinstates the swallowed-swipe sensor.
-    // Asserted on derived values, not on `src`, so a failure prints the
-    // offending line rather than the whole file. Prose may still NAME
-    // PointerSensor — the comment at the call site explains why it is not used.
-    const importLine = src.split('\n').find(l => l.includes("from '@dnd-kit/core'")) ?? ''
-    expect(importLine).not.toContain('PointerSensor')
-    expect(src.match(/useSensor\(\s*PointerSensor/g)).toBeNull()
-  })
-
-  it('gives the touch sensor a delay constraint, never a bare distance', () => {
-    // A distance-only touch constraint is the defect: `handleMove` ACTIVATES on
-    // distance (and then preventDefaults every move), where a delay constraint
-    // CANCELS on distance and lets the browser pan.
-    const touch = src.match(/useSensor\(TouchSensor,[^)]*\)/)?.[0] ?? ''
-    expect(touch).toContain('delay:')
-    expect(touch).not.toMatch(/\bdistance:/)
+    // This IS a sortable ring, so the sortable coordinate getter has somewhere
+    // to move; the hook supplies the getter itself.
+    expect(src).toMatch(/useDndSensors\([^)]*keyboard:\s*true/)
   })
 
   it('locks touch-action only on resize separators, never on drag rows', () => {

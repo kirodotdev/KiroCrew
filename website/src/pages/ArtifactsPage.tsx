@@ -12,7 +12,7 @@ import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { useCollapseOnScroll, COLLAPSE_MS, CHROME_ATTR } from '../hooks/useCollapseOnScroll'
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight } from '../utils/widgetHeights'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
-import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
+import { DndContext, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
 import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
@@ -25,6 +25,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 import ArtifactFolderDeleteDialog from '../components/ArtifactFolderDeleteDialog'
 import { DndDraggable, DndDroppable } from '../components/dnd'
 import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
+import { useDndSensors } from '../hooks/useDndSensors'
 import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import { sanitize } from '../api/helpers'
 import { compareText } from '../i18n/format'
@@ -1514,26 +1515,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   // → folder-drop nests it into the target, cycle-guarded. (Folders sort
   // alphabetically, so there is no manual sibling reorder.)
   //
-  // Split mouse/touch sensors so a finger can both SCROLL and drag (mirrors the
-  // Apps nav rail in App.tsx):
-  //  - MouseSensor: 6px distance, so a plain click still opens the card and only
-  //    a deliberate mouse drag starts a move.
-  //  - TouchSensor: 250ms press-and-hold (5px tolerance), so a finger swipe that
-  //    travels past the tolerance CANCELS the sensor and the gallery pans
-  //    natively; only a deliberate hold picks the card up.
-  //
-  // A single PointerSensor cannot do this. Past its activation distance
-  // `AbstractPointerSensor.handleMove` calls `preventDefault()` on every
-  // subsequent move event — and dnd-kit installs a non-passive window
-  // `touchmove` listener precisely so those calls take effect ("This is
-  // required for iOS Safari", TouchSensor.setup). Chromium ignores
-  // preventDefault on `pointermove` for panning, so the swallowed swipe only
-  // shows up on WebKit: a gesture starting on a CARD dies while the same
-  // gesture starting in the GAP between cards (no listener, no sensor) scrolls.
-  const dndSensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
-  )
+  // Split mouse/touch sensors so a finger can both SCROLL and drag; the split
+  // and its WebKit reasoning live in the shared hook. 6px of mouse travel is
+  // this surface's own choice: a plain click opens the card, so the threshold
+  // has to clear a click without demanding a long drag. No keyboard sensor -
+  // this DndContext files things rather than sorting a ring, so the sortable
+  // coordinate getter would have nothing to walk.
+  const dndSensors = useDndSensors({ distance: 6 })
   const [activeDrag, setActiveDrag] = useState<LibraryDrag | null>(null)
   // The folder the drag is currently over (''=unfile target, null=none) —
   // drives group highlighting: hovering anywhere over an expanded folder's
