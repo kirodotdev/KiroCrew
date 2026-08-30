@@ -43,7 +43,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })
 
     // Local + the relayed instance tab both render.
-    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /Switch instance/i }))
     expect(screen.getByRole('menuitemradio', { name: /Local/ })).toBeTruthy()
     const cloud = screen.getByRole('menuitemradio', { name: /Cloud One/ })
     expect(cloud).toBeTruthy()
@@ -54,7 +54,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       '*',
     )
 
-    await userEvent.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /Switch instance/i }))
     await userEvent.click(screen.getByRole('menuitemradio', { name: /Local/ }))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-switch-instance', id: null }),
@@ -67,7 +67,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       instances: { warm: {}, activeId: null, mru: [], unread: {}, host: null },
     })
     const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
-    expect(container.querySelector('[aria-label="Remote crews"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Remote instances"]')).toBeNull()
   })
 
   it('honors the relayed pin set: a pinned crew renders as a chip beside the dropdown', async () => {
@@ -83,7 +83,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     // the trailing chevron that reaches every OTHER crew.
     const row = screen.getByTestId('crew-chip-row')
     expect(row.textContent).toMatch(/Cloud One/)
-    expect(screen.getByRole('button', { name: /Switch crew/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Switch instance/i })).toBeTruthy()
   })
 
   it('renders no chip row when the parent relays an empty pin set', () => {
@@ -105,7 +105,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       },
     })
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })
-    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(screen.getByRole('button', { name: /Switch instance/i }))
     const toggle = await screen.findByTestId('crew-stable-order-toggle')
     expect(toggle).toBeTruthy()
     expect(toggle.getAttribute('aria-checked')).toBe('true')
@@ -123,7 +123,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
       },
     })
     const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
-    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(screen.getByRole('button', { name: /Switch instance/i }))
     await screen.findByRole('menuitemradio', { name: /Cloud One/ })
     expect(screen.queryByTestId('crew-stable-order-toggle')).toBeNull()
     // Ordering falls back to the pre-relay default: the active crew still leads.
@@ -142,7 +142,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     })
     renderWithProviders(<InstanceTabBar variant="inline" />, { store })
 
-    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(screen.getByRole('button', { name: /Switch instance/i }))
     await userEvent.click(await screen.findByTestId('crew-stable-order-toggle'))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-set-stable-order', on: true }),
@@ -186,7 +186,7 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     // A pane cannot write the parent's preference store from its own iframe
     // realm, so pinning here must travel up as a message rather than persist
     // locally — otherwise the pane would drift from every other bar.
-    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await userEvent.click(screen.getByRole('button', { name: /Switch instance/i }))
     await userEvent.click(await screen.findByTestId('crew-pin-cd-1'))
     expect(post).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mc-set-crew-pin', id: 'cd-1' }),

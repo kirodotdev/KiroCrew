@@ -6,6 +6,20 @@ SSM Session Manager** tunnels, embedding each remote dashboard as an iframe pane
 below a switcher strip. Opt-in: off by default (`instances.enabled`). The transport is
 per-instance (`connection_method`) — see §13.
 
+> **Naming — "Remote Instances".** The user-facing surfaces label this feature
+> **Remote Instances**: the Settings section (*Settings → Remote Instances*), the
+> top-header switcher group ("Remote Instances" / "Switch instance"), and the
+> keyboard shortcuts. This is deliberately distinct from the product name
+> **Kiro Crew** and from an agent **crew** (an assistant with its own
+> workspace/memory — `kiroCrewAgentsPage`, "Crew Mode"). Earlier UI copy called
+> this feature "Remote Crew"; that wording was retired in favour of "instance" to
+> match the code and config it already sits on (`/api/instances`,
+> `instances.json`, `InstancesPanel`, EC2 `instance_id` / `ssm_target`). Only the
+> **displayed strings** changed — i18n key names and internal identifiers
+> (including the `remoteCrewPanel` component/key namespace) are unchanged, so
+> "crew" as a shorthand for an instance still appears in code and in this spec's
+> prose below.
+
 > **Section numbers in this document are an API.** `src/kiro_crew/cloud/connect.py`
 > cites "instances.md §9" from two docstrings (the module docstring and
 > `ssm_proxy_ssh_host`). Do not renumber existing sections; append new material as
@@ -731,7 +745,7 @@ used by the managed path.
 
 ### Provisioning from the dashboard (`/api/cloud/*`)
 
-The Remote Crew settings page can create an EC2 crew in the user's own AWS
+The Remote Instances settings page can create an EC2 instance in the user's own AWS
 account without dropping to the CLI. `dashboard/handlers_cloud.py` exposes the
 launcher behind the same owner-only guard as `/api/instances/*`: an
 authenticated owner (`request["user"]`), non-Slack, POSIX only, `403` otherwise.

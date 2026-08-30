@@ -67,7 +67,7 @@ const SLOTS = [{
   source_links_total: 0,
 }]
 
-const TRIGGER = '[aria-label^="Switch crew"]'
+const TRIGGER = '[aria-label^="Switch instance"]'
 const CHIP_ROW = '[data-testid="crew-chip-row"]'
 const ACTIVE_LEAD = '.tb-crew-active-chip'
 const STABLE_TOGGLE = '[data-testid="crew-stable-order-toggle"]'

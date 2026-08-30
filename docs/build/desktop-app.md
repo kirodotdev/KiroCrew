@@ -484,9 +484,9 @@ closes the popup and collapses the labels back to the hamburger. The menu surfac
 uses the dashboard theme because native Windows popups capture window input and
 cannot support hover switching; a narrow IPC bridge keeps command execution and
 standard Electron roles in the main process.
-When a remote crew is connected, the instance switcher shares the same bounded
-left region as the menu: it is a single trigger naming the crew on screen (see
-InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant
+When a remote instance is connected, the instance switcher shares the same bounded
+left region as the menu: it is a single trigger naming the instance on screen (see
+InstanceTabBar's SwitcherMenu), not a row of per-instance tabs, so it costs constant
 width whether the menu is collapsed to a hamburger or expanded to full labels.
 The centered command palette yields that region rather than the reverse — the
 correct priority while the menu is open is labels > instance status > an idle

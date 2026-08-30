@@ -58,7 +58,7 @@ beforeEach(() => {
 
 /** Open the crew dropdown and return the menu row for `name`. */
 async function openSwitcher(u: ReturnType<typeof userEvent.setup>, name: RegExp) {
-  await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+  await u.click(await screen.findByRole('button', { name: /Switch instance/i }))
   return await screen.findByRole('menuitemradio', { name })
 }
 
@@ -71,7 +71,7 @@ describe('InstanceTabBar', () => {
     })
     const { container } = renderWithProviders(<InstanceTabBar />, { store })
     // No switcher, and the instances poll is disabled while embedded.
-    expect(container.querySelector('[aria-label^="Switch crew"]')).toBeNull()
+    expect(container.querySelector('[aria-label^="Switch instance"]')).toBeNull()
     expect(api.listInstances).not.toHaveBeenCalled()
   })
 
@@ -79,7 +79,7 @@ describe('InstanceTabBar', () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([]))
     const { container } = renderWithProviders(<InstanceTabBar />)
     await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
-    expect(container.querySelector('[aria-label^="Switch crew"]')).toBeNull()
+    expect(container.querySelector('[aria-label^="Switch instance"]')).toBeNull()
   })
 
   it('renders Local + a tab per connected instance and switches to Local', async () => {
@@ -195,7 +195,7 @@ describe('InstanceTabBar', () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([never]))
     const { container } = renderWithProviders(<InstanceTabBar />)
     await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
-    expect(container.querySelector('[aria-label^="Switch crew"]')).toBeNull()
+    expect(container.querySelector('[aria-label^="Switch instance"]')).toBeNull()
   })
 
   it('keeps the tab and activates it when a reconnect attempt fails', async () => {
@@ -241,7 +241,7 @@ describe('InstanceTabBar', () => {
     // even by screen readers that skip a button's child content.
     expect(await screen.findByRole('button', { name: /3 unread elsewhere/i })).toBeInTheDocument()
 
-    await u.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await u.click(screen.getByRole('button', { name: /Switch instance/i }))
     expect(await screen.findByLabelText('3 unread')).toBeInTheDocument()
   })
 
@@ -265,12 +265,12 @@ describe('InstanceTabBar', () => {
 
     // No chip row at all until something is pinned, so a single-crew user pays
     // no header width for the feature.
-    expect(await screen.findByRole('button', { name: /Switch crew/i })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Switch instance/i })).toBeInTheDocument()
     expect(screen.queryByTestId('crew-chip-row')).toBeNull()
 
     // Pin it from the crew's own row: one lit/unlit pin per destination, no
     // second list of the same crews.
-    await u.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await u.click(screen.getByRole('button', { name: /Switch instance/i }))
     const pinItem = await screen.findByTestId('crew-pin-cd-1')
     expect(pinItem).toHaveAttribute('aria-checked', 'false')
     await u.click(pinItem)
@@ -294,7 +294,7 @@ describe('InstanceTabBar', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />, { store })
 
-    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByRole('button', { name: /Switch instance/i }))
     await u.click(await screen.findByTestId('crew-pin-cd-1'))
     expect(store.getState().instances.activeId).toBeNull()
 
@@ -316,7 +316,7 @@ describe('InstanceTabBar', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />)
 
-    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByRole('button', { name: /Switch instance/i }))
     const pin = await screen.findByTestId('crew-pin-cd-1')
     pin.focus()
     await u.keyboard('{Enter}')
@@ -332,7 +332,7 @@ describe('InstanceTabBar', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />)
 
-    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByRole('button', { name: /Switch instance/i }))
     // One pin per destination (Local + the crew), each naming its own crew.
     expect(await screen.findByTestId('crew-pin-__local__')).toHaveAccessibleName(/Pin Local/i)
     expect(await screen.findByTestId('crew-pin-cd-1')).toHaveAccessibleName(/Pin Cloud One/i)
@@ -349,7 +349,7 @@ describe('InstanceTabBar', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />)
 
-    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByRole('button', { name: /Switch instance/i }))
     const glyph = (await screen.findByTestId('crew-pin-cd-1')).querySelector('svg')
     expect(glyph?.getAttribute('class')).toMatch(/text-muted/)
     expect(glyph?.getAttribute('class')).not.toMatch(/opacity-/)
@@ -366,7 +366,7 @@ describe('InstanceTabBar', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />)
 
-    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByRole('button', { name: /Switch instance/i }))
     const glyph = (await screen.findByTestId('crew-pin-cd-1')).querySelector('svg')
     expect(glyph?.getAttribute('class')).toMatch(/fill-current/)
     expect(glyph?.getAttribute('class')).not.toMatch(/opacity-/)
@@ -451,7 +451,7 @@ describe('InstanceTabBar', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstanceTabBar />, { store })
 
-    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByRole('button', { name: /Switch instance/i }))
     const toggle = await screen.findByTestId('crew-stable-order-toggle')
     expect(toggle).toHaveAttribute('aria-checked', 'false')
     await u.click(toggle)

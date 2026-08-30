@@ -107,7 +107,7 @@ async function main() {
     },
   })
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('[aria-label^="Switch crew"]', { timeout: 20000 })
+  await page.waitForSelector('[aria-label^="Switch instance"]', { timeout: 20000 })
   // The screenshot is about the side panel: wait for its strip AND the selected
   // tab to actually render before cropping, so a broken panel cannot pass as a
   // plausible-looking frame.

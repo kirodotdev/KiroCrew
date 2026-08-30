@@ -1512,7 +1512,7 @@
           "kirocrew_agents": "{{productName}} Agents",
           "logs": "Logs",
           "pages": "Pages",
-          "remote_crew": "Remote Crew",
+          "remote_crew": "Remote Instances",
           "tasks": "Tasks"
         },
         "promptsProvider": {
@@ -2601,7 +2601,7 @@
       "group_actions": "Actions",
       "group_chat_navigation": "Chat Navigation",
       "group_panel_navigation": "Panel Navigation",
-      "group_remote_crews": "Remote Crews",
+      "group_remote_crews": "Remote Instances",
       "jump_to_chat": "Jump to chat {{n}}",
       "last_visited_chat_mru": "Last visited chat (MRU)",
       "next_chat": "Next chat",
@@ -2617,7 +2617,7 @@
       "projects_panel": "Projects panel",
       "schedule_panel": "Schedule panel",
       "switch_to_local": "Switch to Local",
-      "switch_to_remote_crew": "Switch to remote crew {{n}}",
+      "switch_to_remote_crew": "Switch to remote instance {{n}}",
       "walk_back_mru_history": "Walk back MRU history",
       "stop_speaking": "Stop speaking",
       "toggle_focus_mode": "Toggle focus mode",
@@ -4636,7 +4636,7 @@
         "terminal_shell_save_failed": "Could not save the shell setting"
       },
       "instancesPanel": {
-        "add_remote_crew": "Add remote crew",
+        "add_remote_crew": "Add remote instance",
         "adding": "Adding…",
         "connect": "Connect",
         "connect_failed": "Connect to {{id}} failed: {{error}}",
@@ -4649,10 +4649,10 @@
         "disable": "Disable",
         "disabling": "Disabling…",
         "disconnect_failed": "Disconnect of {{id}} failed: {{error}}",
-        "enable_remote_crew_management": "Enable remote crew management",
+        "enable_remote_crew_management": "Enable remote instance management",
         "enabling": "Enabling…",
-        "failed_to_add_remote_crew": "Failed to add remote crew",
-        "failed_to_load_remote_crews": "Failed to load remote crews",
+        "failed_to_add_remote_crew": "Failed to add remote instance",
+        "failed_to_load_remote_crews": "Failed to load remote instances",
         "remove": "Remove {{name}}",
         "remove_failed": "Remove of {{id}} failed: {{error}}",
         "token_left": "· token {{time}} left",
@@ -5309,8 +5309,8 @@
         "label": "Import / Export"
       },
       "instances": {
-        "description": "Manage remote crews over SSH tunnels; switch between them from the top header",
-        "label": "Remote Crew"
+        "description": "Manage remote instances over SSH tunnels; switch between them from the top header",
+        "label": "Remote Instances"
       },
       "notifications": {
         "description": "Sound effects and per-source alert preferences",

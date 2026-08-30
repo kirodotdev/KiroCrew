@@ -94,7 +94,7 @@ const SLOTS = [{
   source_links_total: 0,
 }]
 
-const TRIGGER = '[aria-label^="Switch crew"]'
+const TRIGGER = '[aria-label^="Switch instance"]'
 const CHIP_ROW = '[data-testid="crew-chip-row"]'
 const PIN_ITEM = '[data-testid^="crew-pin-"]'
 const PINNED_KEY = 'mc-crew-switcher-pinned'
@@ -237,7 +237,7 @@ async function main() {
         return { left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width) }
       }
       const row = document.querySelector('[data-testid="crew-chip-row"]')
-      const chevron = document.querySelector('[aria-label^="Switch crew"]')
+      const chevron = document.querySelector('[aria-label^="Switch instance"]')
       const kids = row ? [...row.children] : []
       return {
         overlay: box(document.querySelector('[data-topbar-overlay]')),

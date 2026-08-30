@@ -405,7 +405,7 @@ describe('RemoteCrewPanel — instance actions', () => {
 
     rows = []
     await u.click(screen.getByRole('button', { name: 'Refresh' }))
-    expect(await screen.findByText(/No crews yet/i, undefined, { timeout: 5_000 })).toBeInTheDocument()
+    expect(await screen.findByText(/No instances yet/i, undefined, { timeout: 5_000 })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Deleting/ })).not.toBeInTheDocument()
   })
 
@@ -624,7 +624,7 @@ describe('RemoteCrewPanel — disabled feature gate', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    const enable = await screen.findByRole('button', { name: /Enable remote crew management/ })
+    const enable = await screen.findByRole('button', { name: /Enable remote instance management/ })
     await u.click(enable)
     await waitFor(() => expect(screen.getByRole('button', { name: /Enabling/ })).toBeDisabled())
     expect(api.patchConfig).toHaveBeenCalledWith('instances.enabled', true)
@@ -641,7 +641,7 @@ describe('RemoteCrewPanel — disabled feature gate', () => {
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
 
-    await u.click(await screen.findByRole('button', { name: /Enable remote crew management/ }))
+    await u.click(await screen.findByRole('button', { name: /Enable remote instance management/ }))
     expect(await screen.findByText(/config is locked/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
@@ -653,7 +653,7 @@ describe('RemoteCrewPanel — disabled feature gate', () => {
     renderWithProviders(<RemoteCrewPanel />)
 
     expect(await screen.findByText('owner only', undefined, { timeout: 5_000 })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Enable remote crew management/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable remote instance management/ })).not.toBeInTheDocument()
     await u.click(screen.getAllByRole('button', { name: 'Refresh' })[0])
     await waitFor(() => expect(vi.mocked(api.listInstances).mock.calls.length).toBeGreaterThan(1))
   })
@@ -872,7 +872,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     const ttl = form.getByRole('textbox', { name: /Token TTL/i })
     await u.clear(ttl)
     await u.type(ttl, '4h')
-    await u.click(await screen.findByRole('button', { name: /Apply my edits to the crew as it is now/i }))
+    await u.click(await screen.findByRole('button', { name: /Apply my edits to the instance as it is now/i }))
     await u.click(await screen.findByRole('button', { name: /Save changes/i }))
 
     await waitFor(() => expect(api.updateInstance).toHaveBeenCalled())
@@ -1006,7 +1006,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
     expect(screen.queryByRole('group', { name: /Edit dev-box-1/i })).not.toBeInTheDocument()
 
-    await u.click(screen.getByRole('button', { name: /Your crews|Crews/i }))
+    await u.click(screen.getByRole('button', { name: /Your instances|Instances/i }))
     const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     expect((reopened.getByRole('textbox', { name: /SSH host/i }) as HTMLInputElement).value).toBe(
       'dev-box-1-corrected',
@@ -1042,13 +1042,13 @@ describe('RemoteCrewPanel — editing a crew', () => {
       await u.click(screen.getByRole('button', { name: 'Refresh' }))
     })
     await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
-    await u.click(screen.getByRole('button', { name: /Your crews/i }))
+    await u.click(screen.getByRole('button', { name: /Your instances/i }))
     const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
 
     // The port moved externally, which is a machine coordinate, so the save is
     // withheld until the user adopts the current record. The point of the test
     // survives that: adopting must not turn the stale port into a write.
-    await u.click(await screen.findByRole('button', { name: /Apply my edits to the crew as it is now/i }))
+    await u.click(await screen.findByRole('button', { name: /Apply my edits to the instance as it is now/i }))
     // Adopting the record remounts the form (it re-seeds from the merged draft), so
     // the old scope is detached — re-query rather than reusing it.
     const afterRebase = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
@@ -1164,7 +1164,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
 
     // Adopting the current record restores Save, and the request is a partial update
     // against THAT record: the port the user never touched is not written back.
-    await u.click(screen.getByRole('button', { name: /Apply my edits to the crew as it is now/i }))
+    await u.click(screen.getByRole('button', { name: /Apply my edits to the instance as it is now/i }))
     await u.click(await screen.findByRole('button', { name: /Save changes/i }))
     await waitFor(() => expect(api.updateInstance).toHaveBeenCalled())
     const body = vi.mocked(api.updateInstance).mock.calls[0][1]

@@ -1369,7 +1369,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "toggle",
     "occurrence": 1,
     "configKey": "instances.enabled",
-    "label": "Enable remote crew management"
+    "label": "Enable remote instance management"
   },
   {
     "id": "notifications.sound-category-turn",

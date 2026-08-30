@@ -1,4 +1,4 @@
-# Setting up Remote Crew on an EC2 instance
+# Setting up a Remote Instance on EC2
 
 You run the Kiro Crew gateway on an EC2 box and drive it from your laptop. The
 gateway always binds **loopback only**, so you reach it through a tunnel — either
@@ -22,7 +22,7 @@ plus the EC2-specific gotchas people actually hit (from `kirocrew doctor`).
 | Best when | you already SSH to the box | the box has zero SSH ingress (the hardened default) |
 
 Both end at the same loopback gateway and both are managed identically once
-registered in **Settings → Remote Crew**.
+registered in **Settings → Remote Instances**.
 
 ## Way 1 — SSH tunnel
 
@@ -36,8 +36,8 @@ registered in **Settings → Remote Crew**.
    Then open `http://localhost:5476`. Run `kirocrew token` on the box to mint the
    sign-in URL. (Full details, including a non-default port, in
    [remote-and-mobile.md](remote-and-mobile.md#ssh-tunnel-laptop).)
-2. To let the dashboard manage it, add it in **Settings → Remote Crew → Add remote
-   crew → Connection method = SSH tunnel**, giving the **SSH host / alias** and the
+2. To let the dashboard manage it, add it in **Settings → Remote Instances → Add remote
+   instance → Connection method = SSH tunnel**, giving the **SSH host / alias** and the
    **remote port**.
 
 ## Way 2 — AWS SSM Session Manager (no inbound SSH)
@@ -49,7 +49,7 @@ port, no SSH key.
 - **Automated (recommended):** the one-command launcher provisions a box, installs
   the gateway, and registers it over SSM for you — see
   [cloud-instance-ssm-vs-ssh.md](cloud-instance-ssm-vs-ssh.md).
-- **Manual (a box you already have):** **Settings → Remote Crew → Add remote crew →
+- **Manual (a box you already have):** **Settings → Remote Instances → Add remote instance →
   Connection method = AWS SSM Session Manager**, then fill **SSM target** (the EC2
   instance id `i-…`, or an SSM managed-instance id `mi-…`), optional **AWS profile**
   / **AWS region** / **Remote user**, and the **Remote port** (the gateway's real

@@ -60,7 +60,7 @@ const SLOTS = [{
 
 /** 1280 is the reported case (49px short); 900 is a deeper shortage. */
 const WIDTHS = [1280, 900]
-const TRIGGER = '[aria-label^="Switch crew"]'
+const TRIGGER = '[aria-label^="Switch instance"]'
 const CHIP_ROW = '[data-testid="crew-chip-row"]'
 const PINNED_KEY = 'mc-crew-switcher-pinned'
 
@@ -106,7 +106,7 @@ async function shot(width, state) {
 
   const m = await page.evaluate(() => {
     const row = document.querySelector('[data-testid="crew-chip-row"]')
-    const trig = document.querySelector('[aria-label^="Switch crew"]')
+    const trig = document.querySelector('[aria-label^="Switch instance"]')
     const search = document.querySelector('[data-topbar-overlay]')
     const kids = [...row.children]
     const sb = search ? search.getBoundingClientRect() : null

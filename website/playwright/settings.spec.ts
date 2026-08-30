@@ -32,7 +32,7 @@ test.describe('Settings Page', () => {
     await expect(page.getByRole('button', { name: 'Overview', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Display', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Chat', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Remote Crew', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Remote Instances', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'About', exact: true })).toBeVisible()
   })
 
@@ -138,7 +138,7 @@ test.describe('Settings Page', () => {
   test('/instances redirects to /settings/instances', async ({ page }) => {
     await page.goto('/instances', { waitUntil: 'domcontentloaded' })
     await page.waitForURL('**/settings/instances', { timeout: 10000 })
-    // Remote Crew panel should render — check for the tab being active
-    await expect(page.getByRole('button', { name: 'Remote Crew', exact: true })).toBeVisible({ timeout: 5000 })
+    // Remote Instances panel should render — check for the tab being active
+    await expect(page.getByRole('button', { name: 'Remote Instances', exact: true })).toBeVisible({ timeout: 5000 })
   })
 })

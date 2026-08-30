@@ -19,7 +19,7 @@ import { logPageProblems, stubDashboardApi, json } from './lib/stub-dashboard-ap
 
 const OUT = process.argv[2] || '../temp-screenshots/crew-pin-chips'
 const VIEWPORT = { width: 1280, height: 760 }
-const TRIGGER = '[aria-label^="Switch crew"]'
+const TRIGGER = '[aria-label^="Switch instance"]'
 const CHIP_ROW = '[data-testid="crew-chip-row"]'
 
 const crew = (id, name, sshHost, port) => ({
@@ -203,7 +203,7 @@ async function main() {
     const row = document.querySelector(rowSel)
     const kids = row ? [...row.children] : []
     const overlay = document.querySelector('[data-topbar-overlay]')
-    const chevron = document.querySelector('[aria-label^="Switch crew"]')
+    const chevron = document.querySelector('[aria-label^="Switch instance"]')
     return {
       chips: kids.length,
       // Horizontal: the row is one nowrap line, so a chip is cut off once its

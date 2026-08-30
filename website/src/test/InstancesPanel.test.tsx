@@ -42,8 +42,8 @@ describe('InstancesPanel', () => {
     ;vi.mocked(api.patchConfig).mockResolvedValue({})
     const u = userEvent.setup()
     renderWithProviders(<InstancesPanel />)
-    expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
-    await u.click(screen.getByRole('button', { name: /Enable remote crew management/i }))
+    expect(await screen.findByText(/Remote instance management is off/i)).toBeInTheDocument()
+    await u.click(screen.getByRole('button', { name: /Enable remote instance management/i }))
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('instances.enabled', true))
   })
 
@@ -52,14 +52,14 @@ describe('InstancesPanel', () => {
     renderWithProviders(<InstancesPanel />)
     expect(await screen.findByText(/not active yet/i)).toBeInTheDocument()
     expect(screen.getByText(/kirocrew restart/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Disable remote crew management/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Disable remote instance management/i })).toBeInTheDocument()
   })
 
   it('renders the empty state + Add form when no instances configured', async () => {
     ;vi.mocked(api.listInstances).mockResolvedValue({ active: true, instances: [], warm_set_cap: 5 })
     renderWithProviders(<InstancesPanel />)
-    expect(await screen.findByText(/No remote crews configured yet/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add remote crew' })).toBeInTheDocument()
+    expect(await screen.findByText(/No remote instances configured yet/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add remote instance' })).toBeInTheDocument()
   })
 
   it('passes the optional remote_bin path through the Add form', async () => {
@@ -68,14 +68,14 @@ describe('InstancesPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstancesPanel />)
 
-    await screen.findByText(/No remote crews configured yet/i)
+    await screen.findByText(/No remote instances configured yet/i)
     await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
     await u.type(
       screen.getByPlaceholderText(/leave blank for standard installs/i),
       '/home/nimbus/.local/bin/kirocrew',
     )
-    await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
+    await u.click(screen.getByRole('button', { name: 'Add remote instance' }))
 
     await waitFor(() =>
       expect(api.addInstance).toHaveBeenCalledWith(
@@ -98,10 +98,10 @@ describe('InstancesPanel', () => {
     const u = userEvent.setup()
     const first = renderWithProviders(<InstancesPanel />)
 
-    await screen.findByText(/No remote crews configured yet/i)
+    await screen.findByText(/No remote instances configured yet/i)
     await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
-    await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
+    await u.click(screen.getByRole('button', { name: 'Add remote instance' }))
 
     await screen.findByText(/name already in use/i)
     await u.click(screen.getByRole('button', { name: /agent/i }))
@@ -118,7 +118,7 @@ describe('InstancesPanel', () => {
     // A successful add retires them — otherwise the NEXT add would open pre-filled
     // with the crew that was just created.
     ;vi.mocked(api.addInstance).mockResolvedValue({})
-    await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
+    await u.click(screen.getByRole('button', { name: 'Add remote instance' }))
     await waitFor(() => expect(api.addInstance).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue(''))
   })
@@ -151,12 +151,12 @@ describe('InstancesPanel', () => {
     // same port the existing crew uses.
     const portInput = await screen.findByPlaceholderText('5476')
     expect(portInput).toHaveValue('5476')
-    expect(screen.queryByText(/already used by another remote crew/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/already used by another remote instance/i)).not.toBeInTheDocument()
 
     // Filling the remaining required fields enables Add despite the shared port.
     await u.type(screen.getByLabelText('Name'), 'CD2')
     await u.type(screen.getByLabelText('SSH host / alias'), 'cd-2-alias')
-    expect(screen.getByRole('button', { name: 'Add remote crew' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Add remote instance' })).toBeEnabled()
   })
 
   it('switching the connection method to AWS SSM swaps in the SSM fields', async () => {

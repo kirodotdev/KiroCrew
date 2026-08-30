@@ -204,13 +204,13 @@
     },
     {
       "id": "remote-crew",
-      "feature": "Remote Crew",
+      "feature": "Remote Instances",
       "title": "Reach another machine's Kiro Crew",
-      "body": "Add another Kiro Crew gateway over SSH or AWS SSM in **Settings › Remote Crew**, then switch between instances from the header.",
+      "body": "Add another Kiro Crew gateway over SSH or AWS SSM in **Settings › Remote Instances**, then switch between instances from the header.",
       "why": "",
       "doc": "",
       "cta_prompt": "",
-      "action": { "kind": "route", "label": "Open Remote Crew settings", "route": "/settings/instances" }
+      "action": { "kind": "route", "label": "Open Remote Instances settings", "route": "/settings/instances" }
     },
     {
       "id": "secrets-vault",
