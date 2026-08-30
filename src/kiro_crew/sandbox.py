@@ -416,6 +416,9 @@ def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[st
         ) from exc
 
 
+_MAXPATHLEN = 1024
+
+
 def _open_directory_descriptor(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> int:
     """Open a directory identity without making its descriptor inheritable."""
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
@@ -444,6 +447,27 @@ def _directory_ancestor_identities(descriptor: int) -> tuple[tuple[int, int], ..
         os.close(current)
 
 
+def _descriptor_directory_path(descriptor: int) -> str:
+    """Resolve a verified directory descriptor back to a pathname.
+
+    ``/dev/fd/N`` cannot be used as a spawn ``cwd`` on macOS when N is a
+    *directory* descriptor. Unlike Linux's ``/proc/self/fd/N`` -- a magic symlink
+    that resolves to the directory itself -- a ``/dev/fd`` entry is served by
+    fdescfs, which reopens the underlying vnode as a file rather than exposing it
+    as something traversable. ``chdir()`` on it fails with ``ENOTDIR``, so a child
+    spawned with that ``cwd`` dies before ``exec`` with
+    ``NotADirectoryError: [Errno 20] Not a directory: '/dev/fd/N'``.
+
+    ``F_GETPATH`` asks the kernel for the pathname of the descriptor whose
+    identity was just verified, so the value handed to the child still derives
+    from the checked vnode rather than from the caller's original string.
+    """
+    import fcntl  # POSIX-only, and this helper is reached on darwin alone.
+
+    resolved = fcntl.fcntl(descriptor, fcntl.F_GETPATH, bytes(_MAXPATHLEN))
+    return os.fsdecode(resolved.split(b"\0", 1)[0])
+
+
 def bind_voice_safe_agent_workspace(
     workspace: str | os.PathLike[str],
 ) -> tuple[str, int | None]:
@@ -451,9 +475,10 @@ def bind_voice_safe_agent_workspace(
 
     A pathname-only overlap check has an unavoidable check/use window: another
     sandboxed process can retarget a workspace symlink after ``stat`` and before
-    Kiro initializes its own sandbox. On macOS, open the workspace first, compare
-    directory ancestry entirely through descriptors, and make the child chdir via
-    that descriptor. The returned descriptor must stay open until the child exits.
+    Kiro initializes its own sandbox. On macOS, open the workspace first and
+    compare directory ancestry entirely through descriptors, then resolve that
+    verified descriptor back to the pathname the child chdirs into. The returned
+    descriptor must stay open until the child exits.
 
     Other platforms keep their original pathname and do not inherit a descriptor.
     """
@@ -481,7 +506,19 @@ def bind_voice_safe_agent_workspace(
                     "runtime; keep the workspace and Kiro Crew data home disjoint"
                 )
 
-        return f"/dev/fd/{workspace_fd}", workspace_fd
+        spawn_path = _descriptor_directory_path(workspace_fd)
+        # F_GETPATH yields a pathname, and a pathname can be retargeted between
+        # this resolution and the child's chdir(). Confirm it still names the
+        # vnode whose ancestry was just cleared and fail closed if it does not,
+        # so the narrowed window cannot widen back into the check/use gap this
+        # descriptor-based verification exists to remove.
+        spawn_identity = os.stat(spawn_path)
+        if (spawn_identity.st_dev, spawn_identity.st_ino) != workspace_id:
+            raise RuntimeError(
+                "macOS agent workspace changed identity while binding; refusing "
+                "to spawn into a directory that is no longer the verified one"
+            )
+        return spawn_path, workspace_fd
     except OSError as exc:
         if workspace_fd >= 0:
             os.close(workspace_fd)

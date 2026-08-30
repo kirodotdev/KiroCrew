@@ -412,11 +412,108 @@ class TestBuildSeatbeltProfile:
         )
         closed: list[int] = []
         monkeypatch.setattr(sandbox_mod.os, "close", closed.append)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_descriptor_directory_path",
+            lambda descriptor: "/mutable/workspace",
+        )
+
+        def fake_stat(path):
+            assert path == "/mutable/workspace"
+            result = MagicMock()
+            result.st_dev = 7
+            result.st_ino = 101
+            return result
+
+        monkeypatch.setattr(sandbox_mod.os, "stat", fake_stat)
 
         path, descriptor = sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace")
 
-        assert (path, descriptor) == ("/dev/fd/41", 41)
+        # The child receives a real, traversable pathname -- never "/dev/fd/N",
+        # which cannot be chdir'd into on macOS (see the ENOTDIR regression test
+        # below) -- while the verified descriptor is still handed back to keep
+        # the workspace pinned for the child's lifetime.
+        assert (path, descriptor) == ("/mutable/workspace", 41)
         assert closed == [42]
+
+    def test_macos_workspace_binding_rejects_identity_change_after_resolution(
+        self, monkeypatch
+    ):
+        """F_GETPATH returns a pathname, so re-verify it still names the vnode."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (),
+        )
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_open_directory_descriptor",
+            lambda path, **_kwargs: 71,
+        )
+
+        def fake_fstat(descriptor):
+            result = MagicMock()
+            result.st_dev = 9
+            result.st_ino = 404
+            return result
+
+        monkeypatch.setattr(sandbox_mod.os, "fstat", fake_fstat)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_directory_ancestor_identities",
+            lambda descriptor: ((9, 404), (9, 1)),
+        )
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_descriptor_directory_path",
+            lambda descriptor: "/mutable/workspace",
+        )
+
+        def swapped_stat(path):
+            result = MagicMock()
+            result.st_dev = 9
+            result.st_ino = 999  # retargeted between resolution and use
+            return result
+
+        monkeypatch.setattr(sandbox_mod.os, "stat", swapped_stat)
+        closed: list[int] = []
+        monkeypatch.setattr(sandbox_mod.os, "close", closed.append)
+
+        with pytest.raises(RuntimeError, match="no longer the verified one"):
+            sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace")
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="macOS /dev/fd semantics")
+    def test_bound_workspace_path_is_actually_spawnable(self, tmp_path):
+        """End-to-end guard for the ENOTDIR regression this binding once shipped.
+
+        Every other test in this class mocks ``_open_directory_descriptor``,
+        ``os.fstat`` and ``os.close``, so none of them ever performs a real
+        ``chdir()``. That is precisely how a ``cwd`` of ``/dev/fd/N`` -- which
+        macOS rejects with ``ENOTDIR`` for a directory descriptor -- passed CI
+        while failing every real spawn. This test does the real thing: bind a
+        real directory, then spawn a real process into the returned path.
+        """
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        path, descriptor = sandbox_mod.bind_voice_safe_agent_workspace(str(workspace))
+        try:
+            assert not path.startswith("/dev/fd/")
+            completed = subprocess.run(
+                [sys.executable, "-c", "import os; print(os.getcwd())"],
+                cwd=path,
+                pass_fds=(descriptor,) if descriptor is not None else (),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert os.path.realpath(completed.stdout.strip()) == os.path.realpath(
+                str(workspace)
+            )
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def test_macos_workspace_binding_rejects_opened_runtime_ancestor(self, monkeypatch):
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
