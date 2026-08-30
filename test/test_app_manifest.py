@@ -80,6 +80,33 @@ class TestValidation:
         errors = m.validate()
         assert any("reserved" in e for e in errors)
 
+    @pytest.mark.parametrize("name", ["registry", "registries", "blob", "install", "register"])
+    def test_literal_route_segment_name_rejected(self, name):
+        """Issue #7111: the literal first-segment routes under /api/apps/ are
+        shared routes registered before the /api/apps/{name} catch-all. Reserving
+        these names is the defense-in-depth backstop that keeps NEW apps from
+        claiming them (the token_auth carve-out is the primary boundary)."""
+        from kiro_crew.apps.manifest import app_name_error, is_reserved_app_name
+
+        reason = app_name_error(name)
+        assert reason is not None
+        assert "reserved" in reason
+        assert is_reserved_app_name(name) is True
+        m = AppManifest.from_dict(_valid_manifest(name=name))
+        errors = m.validate()
+        assert any("reserved" in e for e in errors), (name, errors)
+
+    @pytest.mark.parametrize("name", ["file-explorer", "registry-viewer", "installer"])
+    def test_names_merely_resembling_a_route_segment_stay_valid(self, name):
+        """The reservation matches the exact literal segment only: kebab names
+        that merely contain or resemble a segment must still validate."""
+        from kiro_crew.apps.manifest import app_name_error, is_reserved_app_name
+
+        assert app_name_error(name) is None
+        assert is_reserved_app_name(name) is False
+        m = AppManifest.from_dict(_valid_manifest(name=name))
+        assert m.validate() == []
+
     @pytest.mark.parametrize("name", sorted(WINDOWS_DEVICE_STEMS))
     def test_every_windows_device_stem_is_rejected(self, name):
         """The whole documented device-name set, not just the stems that happen
