@@ -25,7 +25,7 @@ from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
     _redact_meta_for_role,
     _sync_dashboard_slots,
-    effective_session_key,
+    note_authorization_session_key,
     slot_history_key,
     slot_transcript_key,
 )
@@ -854,8 +854,14 @@ def _rehydrate_slot_from_history(
             # A legacy channel transcript carrying neither marker is surfaced by
             # ``channel_slot_reconciler`` instead, which sets the flag -- and the
             # first save then persists it, so later boots need no inference.
+            # ``linked_session_key`` is a legacy provenance inference. It must
+            # not fire for an app-owned row: such a row records a binding the
+            # slot boundary now refuses, and inferring provenance from it would
+            # restore the same transcript authority through ``slot_history_key``.
+            # Explicit persisted provenance remains authoritative.
             channel_origin=(
-                bool(meta.get("channel_origin")) or bool(meta.get("linked_session_key"))
+                bool(meta.get("channel_origin"))
+                or (bool(meta.get("linked_session_key")) and not meta.get("app"))
             ),
             # Restore the persisted origin. Re-deriving it here would relabel
             # every rehydrated slot on restart, so a cron slot would come back
@@ -2422,19 +2428,24 @@ def _save_slot_to_history(
     # drain drops it from the live window on the event loop.
     #
     # Authorization and the write target must come from ONE observation of the
-    # routing. Both keys derive from ``slot.linked_session_key``, which the event
-    # loop rebinds with no running gate, so reading it per row -- or again when
-    # the write target is resolved -- authorizes rows against one session and
-    # then writes the file of another. Snapshot-then-confirm with the same
-    # bounded retry this function already uses for the window pair. The two keys
+    # routing. The write target derives from ``slot.linked_session_key`` while
+    # the authorization key also includes a refused app-slot binding claim. The
+    # event loop can mutate either with no running gate, so reading them per row
+    # -- or again when the write target is resolved -- authorizes rows against
+    # one session and then writes the file of another. Snapshot-then-confirm with
+    # the same bounded retry this function already uses for the window pair. The two keys
     # stay DISTINCT: collapsing them would send a channel-born slot the
     # dashboard could not bind to the phantom file ``slot_history_key`` exists
     # to avoid.
     for _ in range(_FLUSH_SNAPSHOT_RETRIES):
         routing = getattr(slot, "linked_session_key", "")
-        note_auth_key = effective_session_key(slot)
+        authorization_claim = getattr(slot, "linked_session_claim", "")
+        note_auth_key = note_authorization_session_key(slot)
         history_key = slot_history_key(slot)
-        if getattr(slot, "linked_session_key", "") == routing:
+        if (
+            getattr(slot, "linked_session_key", "") == routing
+            and getattr(slot, "linked_session_claim", "") == authorization_claim
+        ):
             break
     kept = [m for m in window if not _note_authorized_elsewhere(m.get("meta"), note_auth_key)]
     dropped_notes = len(window) - len(kept)
