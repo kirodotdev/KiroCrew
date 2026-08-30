@@ -7,6 +7,8 @@ happy path against a throwaway git repo in tmp_path.
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import functools
 import os
 import pathlib
@@ -42,6 +44,55 @@ from kiro_crew.validation import FOLLOWUP_BRANCH_RE, is_valid_followup_branch
 def _branch_exists(root: str, branch: str) -> bool:
     """Whether ``refs/heads/<branch>`` resolves in ``root``."""
     return bool(_resolve_commit(root, f"refs/heads/{branch}"))
+
+
+#: Every helper in this module that reaches git through ``worktree._run_git``,
+#: and therefore through ``sandbox.wrap_argv``. Calling one from an ``async def``
+#: body puts blocking sandbox preparation on the event loop, which `wrap_argv`
+#: refuses (see :func:`_off_loop`). ``TestNoBlockingGitOnTheEventLoop`` enforces
+#: that every such call in an async body goes through `_off_loop`.
+_BLOCKING_GIT_HELPERS = frozenset(
+    {
+        "_branch_exists",
+        "_checkout_filter",
+        "_claim_branch",
+        "_cleanup_partial",
+        "_require_sandbox_exec",
+        "_resolve_base_ref",
+        "_resolve_commit",
+        "_run_git",
+        "_sandbox_exec_reason",
+        "_worktree_branches",
+        "_worktree_config_active",
+        "_git_toplevel",
+    }
+)
+
+
+def _on_event_loop() -> bool:
+    """Whether the caller is running on an asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+async def _off_loop(fn, /, *args):
+    """Await one of ``worktree.py``'s blocking git helpers on a worker thread.
+
+    ``sandbox.wrap_argv`` refuses to run on a running event loop — it performs
+    blocking sandbox preparation, so it must be reached from a thread (guard
+    added in f2575b1bb / #6746). The endpoint honours that: every sync helper
+    reached by ``api_worktree_create`` goes through ``asyncio.to_thread``.
+
+    An ``async def`` test body is ON the loop, so calling the same helper
+    directly trips the guard inside the *assertion* rather than in the code under
+    test, and the ``RuntimeError`` arrives dressed as ``SandboxUnavailable`` —
+    indistinguishable from the "this host has no sandbox backend" refusal the
+    tests legitimately assert. Mirror what production does instead.
+    """
+    return await asyncio.to_thread(fn, *args)
 
 
 def _make_app(*projects: str, app_claim: str | None = "", user: str = "owner") -> web.Application:
@@ -106,6 +157,16 @@ def _sandbox_exec_reason() -> str:
     runners pass the user-namespace probe but deny `unshare(NEWNS)` at exec time
     (errno 1), which the launcher can only report from the child.
     """
+    # Never let a verdict be produced ON the event loop. `wrap_argv`'s loop guard
+    # would be cached here as "sandbox unavailable" and silently skip every
+    # git-touching test in this worker for the wrong reason — the exact failure
+    # mode that let the on-loop assertions below reach CI unnoticed (they skip or
+    # fail depending only on which test populated this cache first). Fail loudly
+    # instead; async callers must come through `_off_loop`.
+    assert not _on_event_loop(), (
+        "_sandbox_exec_reason() runs _run_git, which cannot be reached from the "
+        "event loop — call it via `await _off_loop(_require_sandbox_exec)`"
+    )
     with tempfile.TemporaryDirectory() as tmp:
         try:
             proc = _run_git(["--version"], tmp)
@@ -231,7 +292,7 @@ class TestWorktreeCreate:
     async def test_rejects_missing_directory(self, tmp_path):
         # Reaches the git probe, so it needs a host where the sandbox can run
         # (a refusal answers 503 before any directory check is reported).
-        _require_sandbox_exec()
+        await _off_loop(_require_sandbox_exec)
         async with TestClient(TestServer(_make_app(str(tmp_path)))) as client:
             resp = await client.post(
                 "/api/worktree/create",
@@ -241,7 +302,7 @@ class TestWorktreeCreate:
 
     @pytest.mark.asyncio
     async def test_rejects_non_git_directory(self, tmp_path):
-        _require_sandbox_exec()
+        await _off_loop(_require_sandbox_exec)
         plain = tmp_path / "plain"
         plain.mkdir()
         async with TestClient(TestServer(_make_app(str(plain)))) as client:
@@ -455,7 +516,7 @@ class TestIdempotentReentry:
                 )
                 assert resp.status == 400
             assert not (repo.parent / "proj-wt-doomed").exists()
-            assert not _branch_exists(str(repo), "feat/doomed")
+            assert not await _off_loop(_branch_exists, str(repo), "feat/doomed")
             # And the retry path is clear: a good request now succeeds.
             ok = await client.post(
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/doomed"}
@@ -475,7 +536,7 @@ class TestIdempotentReentry:
                 )
                 assert resp.status == 400
         assert not (repo.parent / "proj-wt-nobase").exists()
-        assert not _branch_exists(str(repo), "feat/nobase")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/nobase")
 
 
 class TestConcurrencySafety:
@@ -504,7 +565,7 @@ class TestConcurrencySafety:
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/race"}
             )
             assert second.status == 409
-        assert _branch_exists(str(repo), "feat/race")
+        assert await _off_loop(_branch_exists, str(repo), "feat/race")
         assert os.path.isdir(path + "-moved")
 
     def test_cleanup_spares_a_worktree_registered_to_another_branch(self, repo):
@@ -661,7 +722,7 @@ class TestConcurrencySafety:
                 )
                 assert resp.status == 503, await resp.text()
         assert not (repo.parent / "proj-wt-blind").exists()
-        assert not _branch_exists(str(repo), "feat/blind")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/blind")
 
 
 class TestSlugCollision:
@@ -685,8 +746,9 @@ class TestSlugCollision:
             body = await second.json()
         assert "already exists" in body["error"]
         # The first worktree is untouched and still on its own branch.
-        assert _worktree_branches(str(repo))[os.path.normcase(dest)] == "feat/shared"
-        assert not _branch_exists(str(repo), "fix/shared")
+        trees = await _off_loop(_worktree_branches, str(repo))
+        assert trees[os.path.normcase(dest)] == "feat/shared"
+        assert not await _off_loop(_branch_exists, str(repo), "fix/shared")
 
 
 class TestCheckoutFilters:
@@ -707,7 +769,7 @@ class TestCheckoutFilters:
             body = await resp.json()
         assert "content filter" in body["error"]
         assert not (repo.parent / "proj-wt-filtered").exists()
-        assert not _branch_exists(str(repo), "feat/filtered")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/filtered")
 
     @pytest.mark.asyncio
     async def test_unrelated_local_config_is_not_refused(self, repo):
@@ -732,7 +794,7 @@ class TestCheckoutFilters:
         _git("config", "extensions.worktreeConfig", "true", cwd=repo)
         _git("config", "--worktree", key, "sh -c 'touch /tmp/pwned'", cwd=repo)
         # Precondition: the old probe genuinely could not see this key.
-        local = _run_git(["config", "--local", "--name-only", "--list"], str(repo))
+        local = await _off_loop(_run_git, ["config", "--local", "--name-only", "--list"], str(repo))
         assert key not in local.stdout.splitlines()
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.post(
@@ -742,7 +804,7 @@ class TestCheckoutFilters:
             body = await resp.json()
         assert "content filter" in body["error"]
         assert not (repo.parent / "proj-wt-wtfiltered").exists()
-        assert not _branch_exists(str(repo), "feat/wtfiltered")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/wtfiltered")
 
     @pytest.mark.asyncio
     async def test_linked_worktree_scoped_filter_config_is_refused(self, repo, tmp_path):
@@ -759,25 +821,29 @@ class TestCheckoutFilters:
         _git("worktree", "add", str(linked), "-b", "linked-br", "HEAD", cwd=repo)
         _git("config", "--worktree", "filter.evil.smudge", "sh -c 'touch /tmp/pwned'", cwd=linked)
         # Precondition: the file is NOT where the common-dir probe looked.
-        common = _run_git(["rev-parse", "--git-common-dir"], str(linked)).stdout.strip()
-        gitdir = _run_git(["rev-parse", "--absolute-git-dir"], str(linked)).stdout.strip()
+        common = (
+            await _off_loop(_run_git, ["rev-parse", "--git-common-dir"], str(linked))
+        ).stdout.strip()
+        gitdir = (
+            await _off_loop(_run_git, ["rev-parse", "--absolute-git-dir"], str(linked))
+        ).stdout.strip()
         assert not os.path.isfile(os.path.join(common, "config.worktree"))
         assert os.path.isfile(os.path.join(gitdir, "config.worktree"))
-        assert _worktree_config_active(str(linked))
+        assert await _off_loop(_worktree_config_active, str(linked))
         async with TestClient(TestServer(_make_app(str(linked)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(linked), "branch": "feat/linked"}
             )
             assert resp.status == 409, await resp.text()
             assert "content filter" in (await resp.json())["error"]
-        assert not _branch_exists(str(repo), "feat/linked")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/linked")
 
     @pytest.mark.asyncio
     async def test_worktree_config_enabled_but_empty_still_succeeds(self, repo):
         """The extension alone must not refuse: `--worktree --list` exits 128 when
         no `config.worktree` file exists, and that is not a filter."""
         _git("config", "extensions.worktreeConfig", "true", cwd=repo)
-        assert not _worktree_config_active(str(repo))
+        assert not await _off_loop(_worktree_config_active, str(repo))
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/extonly"}
@@ -803,9 +869,11 @@ class TestCheckoutFilters:
         included.write_text('[filter "evil"]\n\tsmudge = "sh -c \\"touch /tmp/pwned\\""\n')
         _git("config", "--local", "include.path", str(included), cwd=repo)
         # Preconditions: resolvable by git, invisible without --includes.
-        resolved = _run_git(["config", "--includes", "--get", "filter.evil.smudge"], str(repo))
+        resolved = await _off_loop(
+            _run_git, ["config", "--includes", "--get", "filter.evil.smudge"], str(repo)
+        )
         assert resolved.stdout.strip()
-        blind = _run_git(["config", "--local", "--name-only", "--list"], str(repo))
+        blind = await _off_loop(_run_git, ["config", "--local", "--name-only", "--list"], str(repo))
         assert not [k for k in blind.stdout.splitlines() if k.startswith("filter.")]
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             resp = await client.post(
@@ -813,7 +881,7 @@ class TestCheckoutFilters:
             )
             assert resp.status == 409, await resp.text()
             assert "content filter" in (await resp.json())["error"]
-        assert not _branch_exists(str(repo), "feat/included")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/included")
 
 
 class TestRound9Hardening:
@@ -868,7 +936,7 @@ class TestRound9Hardening:
                 )
                 assert resp.status == 503, await resp.text()
                 assert "sandbox" in (await resp.json())["error"].lower()
-        assert not _branch_exists(str(repo), "feat/nosbx")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/nosbx")
 
     def test_git_runs_in_strict_sandbox_mode(self):
         """Round 11 BLOCKING: `--includes` means `include.path` is repo-controlled,
@@ -961,7 +1029,7 @@ class TestCallerIsolation:
             )
             assert resp.status == 403
         assert not (repo.parent / "proj-wt-app").exists()
-        assert not _branch_exists(str(repo), "feat/app")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/app")
 
     @pytest.mark.asyncio
     async def test_non_owner_dashboard_subject_is_refused(self, repo):
@@ -974,7 +1042,7 @@ class TestCallerIsolation:
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/nonowner"}
             )
             assert resp.status == 403
-        assert not _branch_exists(str(repo), "feat/nonowner")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/nonowner")
 
     @pytest.mark.asyncio
     async def test_absent_auth_claim_is_refused(self, repo):
@@ -985,7 +1053,7 @@ class TestCallerIsolation:
                 "/api/worktree/create", json={"repo": str(repo), "branch": "feat/noauth"}
             )
             assert resp.status == 403
-        assert not _branch_exists(str(repo), "feat/noauth")
+        assert not await _off_loop(_branch_exists, str(repo), "feat/noauth")
 
 
 class TestResolveBaseRef:
@@ -1214,3 +1282,55 @@ class TestLauncherAdvisoryIsNotARefusal:
         proc = _run_git(["rev-parse", "HEAD"], str(tmp_path))
 
         assert proc.returncode == 128
+
+
+class TestNoBlockingGitOnTheEventLoop:
+    """Regression guard for the loop-guard regression (RC run 33295704858).
+
+    ``wrap_argv`` refuses to run on a running event loop, so every helper that
+    reaches git through ``worktree._run_git`` must be awaited on a worker thread
+    from an ``async def`` body — exactly as ``api_worktree_create`` does. When an
+    async test called one directly, the guard's ``RuntimeError`` surfaced as
+    ``SandboxUnavailable`` from inside the assertion, which is byte-identical to
+    the "this host has no sandbox backend" refusal these tests legitimately
+    assert. Worse, the shared ``_sandbox_exec_reason`` cache made the outcome
+    depend on ordering: poisoned from the loop it SKIPPED every git test in the
+    worker (green CI, no coverage), populated from a sync test it FAILED them.
+
+    A static check, not a runtime one: the offending call has to execute to be
+    caught otherwise, and the skip path is what hid it in the first place.
+    """
+
+    def test_no_blocking_git_helper_is_called_from_an_async_body(self):
+        tree = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+        offenders: list[str] = []
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.on_loop = 0
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self.on_loop += 1
+                self.generic_visit(node)
+                self.on_loop -= 1
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                # A plain ``def`` nested in an async body is a callback (a patch
+                # side_effect), and its caller decides where it runs — for these
+                # helpers that is always inside the endpoint's own worker thread.
+                outer, self.on_loop = self.on_loop, 0
+                self.generic_visit(node)
+                self.on_loop = outer
+
+            def visit_Call(self, node: ast.Call) -> None:
+                # `_off_loop(_branch_exists, ...)` passes the helper by REFERENCE,
+                # so it is a Name load and never reaches this branch.
+                if self.on_loop and getattr(node.func, "id", None) in _BLOCKING_GIT_HELPERS:
+                    offenders.append(f"{node.func.id}() on line {node.lineno}")
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        assert not offenders, (
+            "blocking git helper called on the event loop; wrap it with "
+            "`await _off_loop(helper, ...)`: " + ", ".join(offenders)
+        )
