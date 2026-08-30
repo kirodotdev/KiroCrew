@@ -615,10 +615,6 @@ interface Slot {
     // OPTIONAL on the wire for the same reason `kind` is: a bundle newer than
     // the gateway it talks to must keep rendering. See `chipLabel`.
     label?: string
-    // Jira's project key. No longer read — the serializer sends the assembled
-    // `label` instead — and kept on the wire only until no pre-`label` bundle
-    // can still be live.
-    repo?: string
     ci?: 'running' | 'passed' | 'failed' | null
     state?: 'open' | 'draft' | 'merged' | 'closed'
     // Owner-gated chips spread the whole cached chip-status entry, which also

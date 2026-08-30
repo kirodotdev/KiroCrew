@@ -226,11 +226,14 @@ class TestChatSlot:
         carries a ready ``label`` because PROJ-123 is the whole identifier --
         the number alone is meaningless outside its project.
 
-        ``repo`` is still sent, and that overlap is deliberate rather than
-        leftover: the renderer that shipped before ``label`` assembles the Jira
-        chip name from it, and an already-open tab is not reloaded on an upgrade
-        that does not change ``kiro_crew.__version__``. Asserted so the field
-        cannot be dropped by accident before a release has passed.
+        ``repo`` is NOT sent. It carried Jira's project key only so that a
+        renderer predating ``label`` -- which assembles the Jira chip name as
+        ``{repo}-{number}`` -- would not print ``undefined-123`` in an
+        already-open tab, since a restart without a ``kiro_crew.__version__``
+        bump never trips the reload-on-upgrade guard. Releases have shipped past
+        the change that introduced ``label``, so no such bundle can still be
+        live. Absence is asserted rather than left unpinned so the field cannot
+        drift back in and grow a second naming rule.
         """
         slot = _ChatSlot("s1")
         slot.append("user", "Please look at https://acme.atlassian.net/browse/PROJ-123", ts="t1")
@@ -241,7 +244,7 @@ class TestChatSlot:
         assert link["provider"] == "jira"
         assert link["kind"] == "issue"
         assert link["label"] == "PROJ-123"
-        assert link["repo"] == "PROJ"
+        assert "repo" not in link
         assert link["number"] == 123
         assert link["url"] == "https://acme.atlassian.net/browse/PROJ-123"
 

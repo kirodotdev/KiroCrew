@@ -4537,23 +4537,6 @@ class _ChatSlot:
                         # provider's convention; see
                         # :func:`source_ref_label`.
                         "label": source_ref_label(ref),
-                        # Jira's project key, kept ONLY to survive a version
-                        # skew, and deliberately no longer read by this build.
-                        #
-                        # The renderer that shipped before ``label`` builds the
-                        # Jira chip name as ``{repo}-{number}``, so dropping
-                        # this field renders ``undefined-123`` on an ALREADY
-                        # OPEN dashboard tab. The websocket's reload-on-upgrade
-                        # guard does not save that tab: it compares
-                        # ``kiro_crew.__version__`` between status frames, so a
-                        # restart onto newer code WITHOUT a version bump -- the
-                        # normal case between releases -- never triggers it, and
-                        # the stale bundle keeps rendering until someone
-                        # refreshes by hand.
-                        #
-                        # Removable once no pre-``label`` bundle can still be
-                        # live, i.e. one release after this one.
-                        **({"repo": ref.repo} if ref.provider == "jira" else {}),
                     }
         links = list(found.values())
         self._source_links_cache = (cache_key, links)
