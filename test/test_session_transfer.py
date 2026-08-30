@@ -1,8 +1,9 @@
 """Session transfer between instances — bundle, validation, and import.
 
-Covers the two halves of the feature (``build_transfer_bundle`` on the sending
-side, ``api_chat_slot_import`` on the receiving side) plus the tunnel-manager
-delivery hop, with the emphasis on the invariants a reviewer would want pinned:
+Covers the two halves of the feature (``build_transfer_bundle_async`` on the
+sending side, ``api_chat_slot_import`` on the receiving side) plus the
+tunnel-manager delivery hop, with the emphasis on the invariants a reviewer would
+want pinned:
 
 * **copy, never move** — the source is untouched and the target key is new;
 * **project does NOT travel** — the documented decision that an imported
@@ -25,7 +26,7 @@ from aiohttp import web
 from kiro_crew.dashboard.session_transfer import (
     BUNDLE_VERSION,
     _validate_bundle,
-    build_transfer_bundle,
+    build_transfer_bundle_async,
     local_instance_label,
 )
 
@@ -71,7 +72,8 @@ def _state(messages):
     return SimpleNamespace(conversation_log=_FakeLog(messages))
 
 
-def test_bundle_carries_only_visible_roles():
+@pytest.mark.asyncio
+async def test_bundle_carries_only_visible_roles():
     msgs = [
         {"role": "user", "content": "hi", "ts": "t1"},
         {"role": "tool", "content": "tool frame", "ts": "t2"},
@@ -79,7 +81,7 @@ def test_bundle_carries_only_visible_roles():
         {"role": "system", "content": "sys", "ts": "t4"},
     ]
     slot = _slot(msgs)
-    bundle = build_transfer_bundle(_state(msgs), slot, origin="mac")
+    bundle = await build_transfer_bundle_async(_state(msgs), slot, origin="mac")
 
     assert bundle["bundle_version"] == BUNDLE_VERSION
     assert bundle["origin"] == "mac"
@@ -87,164 +89,49 @@ def test_bundle_carries_only_visible_roles():
     assert [m["content"] for m in bundle["messages"]] == ["hi", "hello"]
 
 
-def test_bundle_does_not_carry_project_or_model():
+@pytest.mark.asyncio
+async def test_bundle_does_not_carry_project_or_model():
     """The two fields deliberately dropped — a dangling path and an
     entitlement-specific model id (see the module docstring in the source)."""
     msgs = [{"role": "user", "content": "hi", "ts": ""}]
     slot = _slot(msgs, project="/Volumes/workplace/only-on-my-mac")
     slot.model = "some-model-id"
-    bundle = build_transfer_bundle(_state(msgs), slot)
+    bundle = await build_transfer_bundle_async(_state(msgs), slot)
 
     assert "project" not in bundle
     assert "model" not in bundle
     assert "/Volumes/workplace/only-on-my-mac" not in json.dumps(bundle)
 
 
-def test_bundle_reads_full_history_not_just_resident_window():
+@pytest.mark.asyncio
+async def test_bundle_reads_full_history_not_just_resident_window():
     """A long session keeps only a tail in memory; the bundle must be complete."""
     on_disk = [{"role": "user", "content": f"turn {i}", "ts": ""} for i in range(10)]
     # slot.messages holds only the last two — bundling those would truncate.
     # disk_older=8 is what a real slot reports: eight on-disk rows precede the
     # resident window, and the tail merge must scan only the window region.
     slot = _slot(on_disk[-2:], disk_older=8)
-    bundle = build_transfer_bundle(_state(on_disk), slot)
+    bundle = await build_transfer_bundle_async(_state(on_disk), slot)
 
     assert len(bundle["messages"]) == 10
     assert bundle["messages"][0]["content"] == "turn 0"
 
 
-def test_bundle_appends_unflushed_tail():
-    on_disk = [{"role": "user", "content": "persisted", "ts": ""}]
-    slot = _slot(on_disk, dirty=True)
-    slot.messages = on_disk + [{"role": "assistant", "content": "not yet saved", "ts": ""}]
-    slot._resumed_count = 1
-    bundle = build_transfer_bundle(_state(on_disk), slot)
-
-    assert [m["content"] for m in bundle["messages"]] == ["persisted", "not yet saved"]
-
-
-def test_durably_injected_row_is_not_duplicated_in_the_bundle():
-    """Regression for #4684 — mirrors #4137's duplication test on the read path.
-
-    A durable injector (``cron_inject``/``workflow_inject``/``crew_chat``) puts
-    the same row into the window AND onto disk with one ``meta.mid``, without a
-    save — so ``_disk_window_len`` does not move while the disk read already
-    returns the row. Sizing the un-flushed tail as
-    ``slot.messages[slot._disk_window_len:]`` then re-appends the injected row
-    on top of its own disk copy, and the exported bundle carries it twice.
-
-    Both rows here carry ids, so this exercises the id-matching arm — the one a
-    durable injector's rows actually take.
-    """
-    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
-    injected = {
-        "role": "assistant",
-        "content": "cron result",
-        "ts": "t2",
-        "meta": {"mid": "m-2"},
-    }
-    slot = _slot([persisted])  # boundary == 1: the save never saw the injection
-    slot.messages = [persisted, dict(injected)]
-    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
-
-    assert [m["content"] for m in bundle["messages"]] == ["hello", "cron result"], (
-        "a durably-injected row the disk read already returned was appended again"
-    )
-
-
-def test_durably_injected_row_is_not_duplicated_when_older_rows_have_no_id():
-    """Same contract on the ordered-comparison arm.
-
-    A transcript written before ids existed holds id-less rows, so the id arm is
-    ineligible (it requires EVERY window-region disk row to carry one) and the
-    tail must be sized by the ordered body walk instead — which must equally
-    refuse to re-append the injected row.
-    """
-    persisted = {"role": "user", "content": "hello", "ts": "t1"}  # pre-id era row
-    injected = {
-        "role": "assistant",
-        "content": "cron result",
-        "ts": "t2",
-        "meta": {"mid": "m-2"},
-    }
-    slot = _slot([persisted])
-    slot.messages = [persisted, dict(injected)]
-    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
-
-    assert [m["content"] for m in bundle["messages"]] == ["hello", "cron result"], (
-        "a durably-injected row the disk read already returned was appended again"
-    )
-
-
-def test_genuinely_owed_row_still_travels_after_an_injection():
-    """Control, mirroring #4137's: a fix that merely stopped appending would pass
-    the duplication tests above and silently drop a real un-flushed turn here."""
-    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
-    injected = {
-        "role": "assistant",
-        "content": "cron result",
-        "ts": "t2",
-        "meta": {"mid": "m-2"},
-    }
-    owed = {"role": "user", "content": "follow-up", "ts": "t3", "meta": {"mid": "m-3"}}
-    slot = _slot([persisted])
-    slot.messages = [persisted, dict(injected), owed]
-    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
-
-    assert [m["content"] for m in bundle["messages"]] == [
-        "hello",
-        "cron result",
-        "follow-up",
-    ], "each turn must appear exactly once, with the owed turn last"
-
-
-def test_durably_injected_row_with_a_frozen_prefix_is_not_duplicated():
-    """The sync path's one new field dependency: ``_disk_older_count``.
-
-    The tail merge scans only the disk WINDOW region, ``all_msgs[disk_older:]``.
-    With two frozen-prefix rows ahead of the window, an off-by-one in that
-    offset would either let a prefix occurrence fund a false id match (dropping
-    an owed row) or re-append the injected row. Exercise the injection with a
-    non-zero prefix to pin the arithmetic.
-    """
-    prefix = [
-        {"role": "user", "content": "old 0", "ts": "t0", "meta": {"mid": "m-p0"}},
-        {"role": "assistant", "content": "old 1", "ts": "t0b", "meta": {"mid": "m-p1"}},
-    ]
-    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
-    injected = {
-        "role": "assistant",
-        "content": "cron result",
-        "ts": "t2",
-        "meta": {"mid": "m-2"},
-    }
-    owed = {"role": "user", "content": "follow-up", "ts": "t3", "meta": {"mid": "m-3"}}
-    slot = _slot([persisted], disk_older=2)
-    slot.messages = [persisted, dict(injected), owed]
-    bundle = build_transfer_bundle(_state(prefix + [persisted, dict(injected)]), slot)
-
-    assert [m["content"] for m in bundle["messages"]] == [
-        "old 0",
-        "old 1",
-        "hello",
-        "cron result",
-        "follow-up",
-    ], "each turn must appear exactly once, prefix intact, owed turn last"
-
-
-def test_bundle_title_marker_does_not_compound_across_hops():
+@pytest.mark.asyncio
+async def test_bundle_title_marker_does_not_compound_across_hops():
     """A session bounced back and forth must not grow one prefix per hop."""
     msgs = [{"role": "user", "content": "hi", "ts": ""}]
     slot = _slot(msgs, title="⇄ Already imported once")
-    bundle = build_transfer_bundle(_state(msgs), slot)
+    bundle = await build_transfer_bundle_async(_state(msgs), slot)
 
     assert bundle["title"] == "Already imported once"
 
 
-def test_bundle_untitled_slot_carries_empty_title():
+@pytest.mark.asyncio
+async def test_bundle_untitled_slot_carries_empty_title():
     msgs = [{"role": "user", "content": "hi", "ts": ""}]
     slot = _slot(msgs, title="slot-1", titled=False)
-    assert build_transfer_bundle(_state(msgs), slot)["title"] == ""
+    assert (await build_transfer_bundle_async(_state(msgs), slot))["title"] == ""
 
 
 @pytest.mark.asyncio
@@ -316,24 +203,6 @@ async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
     assert resp.status == 200, resp.body
     contents = [m["content"] for m in captured["bundle"]["messages"]]
     assert contents == ["persisted", "unsaved turn"], contents
-
-
-def test_bundle_accepts_a_prefetched_history_without_touching_disk():
-    """The async wrapper reads the transcript in a thread and passes it in; the
-    assembler must use it rather than re-reading."""
-
-    class _Exploding:
-        def read_messages_chained(self, _key):
-            raise AssertionError("must not read disk when history is supplied")
-
-    slot = _slot([])
-    slot.messages = []
-    state = SimpleNamespace(conversation_log=_Exploding())
-    prefetched = [{"role": "user", "content": "from thread", "ts": ""}]
-
-    bundle = build_transfer_bundle(state, slot, history=prefetched)
-
-    assert [m["content"] for m in bundle["messages"]] == ["from thread"]
 
 
 @pytest.mark.asyncio
@@ -457,45 +326,15 @@ async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monke
     monkeypatch.setattr(st.asyncio, "to_thread", real_to_thread)
 
 
-def test_bundle_ignores_the_resume_count_and_ships_each_turn_once():
-    """Regression, restated for the id-based tail (#4684).
-
-    Originally this pinned "the boundary is ``_disk_window_len``, not
-    ``_resumed_count``": slicing on the resume count (0 for a slot created in
-    this gateway run) appended the entire resident window on top of the disk
-    history and duplicated every persisted turn. The sync builder no longer
-    slices on ANY counter — the tail is sized by message identity — so the
-    surviving contract is the one that always mattered: with two of three
-    window rows already on disk, each turn appears exactly once and the
-    un-flushed one still travels, regardless of what either counter says.
-    """
-    persisted = [
-        {"role": "user", "content": "one", "ts": ""},
-        {"role": "assistant", "content": "two", "ts": ""},
-    ]
-    unsaved = {"role": "user", "content": "three", "ts": ""}
-
-    slot = _slot(persisted)
-    slot.messages = persisted + [unsaved]
-    # A fresh (never-rehydrated) slot that has flushed: resume count is still 0,
-    # but two window messages are on disk.
-    slot._resumed_count = 0
-    slot._disk_window_len = 2
-    slot._dirty = True
-
-    bundle = build_transfer_bundle(_state(persisted), slot)
-
-    assert [m["content"] for m in bundle["messages"]] == ["one", "two", "three"]
-
-
-def test_bundle_appends_nothing_when_everything_is_persisted():
+@pytest.mark.asyncio
+async def test_bundle_appends_nothing_when_everything_is_persisted():
     persisted = [{"role": "user", "content": "one", "ts": ""}]
     slot = _slot(persisted)
     slot.messages = list(persisted)
     slot._disk_window_len = 1
     slot._dirty = False
 
-    bundle = build_transfer_bundle(_state(persisted), slot)
+    bundle = await build_transfer_bundle_async(_state(persisted), slot)
 
     assert [m["content"] for m in bundle["messages"]] == ["one"]
 
@@ -654,7 +493,8 @@ async def test_import_refuses_when_the_durable_save_fails(monkeypatch):
     assert state._slots == {}
 
 
-def test_bundle_redacts_assistant_content_on_the_way_out():
+@pytest.mark.asyncio
+async def test_bundle_redacts_assistant_content_on_the_way_out():
     """The bundle leaves this host, so redaction cannot be left to the receiver.
 
     A transcript written before the redactors existed (or carried in from a
@@ -667,7 +507,7 @@ def test_bundle_redacts_assistant_content_on_the_way_out():
         {"role": "assistant", "content": f"noted {secret}", "ts": ""},
     ]
     slot = _slot(msgs)
-    bundle = build_transfer_bundle(_state(msgs), slot)
+    bundle = await build_transfer_bundle_async(_state(msgs), slot)
     user_msg, assistant_msg = bundle["messages"]
 
     assert secret not in assistant_msg["content"]
@@ -688,7 +528,8 @@ def test_session_transfer_is_registered_as_an_egress_sink():
     assert "dashboard/session_transfer.py" not in NON_EGRESS_REDACTION_MODULES
 
 
-def test_bundle_redacts_the_title_on_the_way_out():
+@pytest.mark.asyncio
+async def test_bundle_redacts_the_title_on_the_way_out():
     """A title is generated from user content, and the resume path assigns a
     client-supplied title with no scan of its own — so it can carry a credential
     that would otherwise leave the host verbatim."""
@@ -696,7 +537,7 @@ def test_bundle_redacts_the_title_on_the_way_out():
     msgs = [{"role": "user", "content": "hi", "ts": ""}]
     slot = _slot(msgs, title=f"debugging {secret}")
 
-    bundle = build_transfer_bundle(_state(msgs), slot)
+    bundle = await build_transfer_bundle_async(_state(msgs), slot)
 
     assert secret not in bundle["title"]
 
@@ -763,7 +604,8 @@ async def test_snapshot_rechecks_pending_rewrite_after_the_await():
         st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
 
-def test_bundle_reads_the_transcript_key_not_the_session_key():
+@pytest.mark.asyncio
+async def test_bundle_reads_the_transcript_key_not_the_session_key():
     """Regression: an unbound channel slot's session key names a phantom file.
 
     ``surface_channel_session`` deliberately surfaces a channel-born slot
@@ -791,7 +633,7 @@ def test_bundle_reads_the_transcript_key_not_the_session_key():
     slot.channel_origin = True
     slot.key = "slack_1700000000"
 
-    bundle = st.build_transfer_bundle(SimpleNamespace(conversation_log=_Log()), slot)
+    bundle = await build_transfer_bundle_async(SimpleNamespace(conversation_log=_Log()), slot)
 
     assert reads, "expected a transcript read"
     # The phantom dashboard-prefixed key must NOT be what we read.

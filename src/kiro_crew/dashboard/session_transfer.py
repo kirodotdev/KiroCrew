@@ -2,8 +2,8 @@
 
 Two halves live here:
 
-* :func:`build_transfer_bundle` serialises one slot's visible conversation into
-  a portable, version-tagged dict. Called on the **sending** side.
+* :func:`build_transfer_bundle_async` serialises one slot's visible conversation
+  into a portable, version-tagged dict. Called on the **sending** side.
 * :func:`api_chat_slot_import` accepts such a dict and materialises it as a new
   slot. Called on the **receiving** side.
 
@@ -67,9 +67,8 @@ from kiro_crew.config.paths import kiro_sessions_dir
 # Layering: this module may import chat_handlers, never the reverse — the only
 # consumer of session_transfer is handlers_instances, which chat_handlers'
 # transitive graph does not reach. If chat_handlers ever needs session_transfer,
-# move _append_unflushed_tail and its collaborators down to chat_persistence
-# first rather than creating the cycle.
-from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
+# move the shared collaborators down to chat_persistence first rather than
+# creating the cycle.
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop, session_was_deleted
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
@@ -509,14 +508,24 @@ def _join_layer_b(sessions: Any, sm_key: str, sid: str) -> bool:
 async def build_transfer_bundle_async(
     state: DashboardState, slot: _ChatSlot, *, origin: str = ""
 ) -> dict[str, Any]:
-    """:func:`build_transfer_bundle` with the disk read off the event loop.
+    """Serialise *slot*'s visible conversation into a portable bundle, with the
+    disk read off the event loop.
 
-    The two builders size the un-flushed tail DIFFERENTLY: this one keeps a
-    ``_disk_window_len`` boundary slice, valid only because the flush below runs
-    first — the save folds a durable injector's ``append_if_absent`` copy into
-    the window and advances the boundary, so the counter is honest by the time
-    the tail is snapshotted. The sync sibling cannot flush, so it sizes by
-    message id instead — see the comment at its tail merge.
+    Carries the FULL conversation rather than only the window currently held in
+    memory — a long-running session keeps just its tail resident, and bundling
+    ``slot.messages`` alone would silently truncate the transfer to that tail.
+    *origin* is a human label for where the session came from (an instance name
+    or ``"local"``); it is recorded for provenance and shown on arrival.
+
+    The un-flushed tail is a ``_disk_window_len`` boundary slice, which is valid
+    only because the flush below runs first: the save folds a durable injector's
+    ``append_if_absent`` copy into the window and advances the boundary, so the
+    counter is honest by the time the tail is snapshotted. A caller that bundled
+    WITHOUT flushing could not use this slice — a durable injector
+    (``cron_inject``, ``workflow_inject``, ``crew_chat``) puts the same row into
+    the window and onto disk without a save, so the boundary would start one row
+    too early and ship the injection twice. There is deliberately no such
+    caller: this is the only builder, and it always flushes.
 
     The transcript read is synchronous file IO plus JSON parsing over a whole
     session, which is exactly the "large synchronous file IO" the
@@ -775,62 +784,6 @@ def _read_and_assemble(
         # which means there was never a context to carry.
         layer_b_skipped = True
     return _assemble_bundle(history, title, agent, origin, layer_b, layer_b_skipped)
-
-
-def build_transfer_bundle(
-    state: DashboardState,
-    slot: _ChatSlot,
-    *,
-    origin: str = "",
-    history: list[dict] | None = None,
-) -> dict[str, Any]:
-    """Serialise *slot*'s visible conversation into a portable bundle.
-
-    Carries the FULL conversation rather than only the window currently held in
-    memory — a long-running session keeps just its tail resident, and bundling
-    ``slot.messages`` alone would silently truncate the transfer to that tail.
-
-    *history* supplies an already-read on-disk transcript so the blocking read
-    can happen in a thread; when omitted it is read inline, which is fine for
-    tests and any caller not on the event loop. It must be the FULL chained
-    corpus (:func:`_read_chained_history`'s shape): the tail merge below indexes
-    it with ``slot._disk_older_count``, so a single-file or partial read would
-    mis-size the window region.
-
-    *origin* is a human label for where the session came from (an instance name
-    or ``"local"``); it is recorded for provenance and shown on arrival.
-    """
-    all_messages: list[dict] = (
-        list(history)
-        if history is not None
-        else _read_chained_history(state, slot_history_key(slot))
-    )
-    # Append the resident messages that are not on disk yet, so the bundle carries
-    # the tail the user can actually see.
-    #
-    # Sized by MESSAGE IDENTITY, not by ``_disk_window_len``. That counter
-    # advances only on the save and load paths, but a durable injector
-    # (``cron_inject``, ``workflow_inject``, ``crew_chat``) appends the same row
-    # to the window AND to disk without going through a save — the disk read
-    # above already returns the row while the counter has not moved, so a
-    # boundary slice starts one row too early and ships the injection twice.
-    # The read path rejected this exact estimator for this exact job (#4137,
-    # measured: substituting it broke the duplication regression) and replaced
-    # it with :func:`_append_unflushed_tail`, which matches window rows against
-    # the disk read by ``meta.mid`` — the id a durable injector stamps on both
-    # copies — falling back to an ordered body comparison when any row in the
-    # disk window region lacks an id, and merges in only the rows disk does not
-    # already hold. (The async sibling keeps its boundary snapshot: it flushes a
-    # dirty slot first, and the save both folds the injector's durable copy into
-    # the window and advances the boundary, so its slice is taken against a
-    # counter the flush just made honest.)
-    all_messages = _append_unflushed_tail(slot, all_messages)
-    return _assemble_bundle(
-        all_messages,
-        slot.title if slot._titled else "",
-        slot.agent,
-        origin,
-    )
 
 
 def _assemble_bundle(

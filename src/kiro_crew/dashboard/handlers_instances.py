@@ -979,12 +979,13 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # The source is NOT flushed before bundling. A copy leaves the source
-    # untouched, and build_transfer_bundle already merges the on-disk transcript
-    # with the unflushed in-memory tail — so a flush here would add nothing
-    # except a duplication bug: save_slot_off_loop writes the tail to disk
-    # without clearing ``_dirty``, after which the bundle re-appends that same
-    # tail from memory and every unsaved turn lands twice in the copy.
+    # No flush HERE: the builder owns it. ``build_transfer_bundle_async`` flushes
+    # a dirty slot itself (best_effort=False) and only then takes its boundary
+    # slice, so by that point the tail is empty and the bundle comes wholly from
+    # disk. A flush at this call site would add nothing — and the version of this
+    # code that flushed here and then sliced on ``_resumed_count``, which the save
+    # does NOT advance, is what re-appended the same tail from memory and landed
+    # every unsaved turn twice in the copy.
     try:
         bundle = await build_transfer_bundle_async(state, slot, origin=local_instance_label())
     except SnapshotUnstable:
