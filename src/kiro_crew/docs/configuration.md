@@ -131,6 +131,15 @@ typo costs you a line in the log rather than a gateway that will not start.
 
 Set via `kirocrew config set agent.acp_backend kas`.
 
+### OpenCode (not selectable)
+
+The OpenCode adapter is retained for development but cannot run in this build.
+Its tool permissions cannot yet be guaranteed to pass through Kiro Crew's
+security gate. Installing OpenCode or setting `OPENCODE_BIN` does not enable
+it. A saved `agent.acp_backend` value of `opencode` is treated as unselectable
+and falls back to Kiro with a warning; use a supported backend until the
+permission-routing requirement is satisfied.
+
 ## Key Settings
 
 ```json

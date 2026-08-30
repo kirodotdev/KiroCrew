@@ -264,6 +264,10 @@ the recorded identity omits the line number and a reflow keeps it.
 Every job here is blocking. Every job that costs real runner time also `needs:`
 `await-fast-gate`, so on a red gate it does not run at all.
 
+The shared added-line parser disables external diff and textconv drivers, so
+local presentation settings cannot hide hunks or substitute transformed line
+numbers for the working-tree source the gates scan.
+
 | Job | What it enforces |
 |---|---|
 | `changes` | "Detect changed surface". Resolves the path filters every other job reads, so a diff that cannot affect a surface does not pay for it |

@@ -15,13 +15,16 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
 )
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
+from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
 
 #: Backends whose spec projection lives in this folder.
 MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_CLAUDE: ClaudeCodeMirror,
+    ACP_BACKEND_OPENCODE: OpenCodeMirror,
 }
 
 #: Backends that deliberately have no mirror, and why. Read as a claim to be

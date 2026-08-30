@@ -107,14 +107,15 @@ def _declaration_kwargs(**overrides: object) -> dict:
     return base
 
 
-# ── 1. Parity: a selectable harness always has an auth answer ────────────────
+# ── 1. Parity: every known harness has an auth answer ───────────────────────
 
 
 def test_every_known_harness_has_a_declaration() -> None:
-    """A harness becomes selectable by joining the known set, and joining it
-    without an auth answer is how a live OAuth token stayed off the credential
-    floor once already. Names the gap rather than comparing lengths, so a failure
-    says which harness is unanswered."""
+    """Known includes dormant harnesses, whose credentials still need fencing.
+
+    Selectability is a separate registry decision. Names the gap rather than
+    comparing lengths, so a failure says which harness is unanswered.
+    """
     assert host_auth.missing_declarations() == ()
 
 
@@ -391,6 +392,84 @@ def test_an_own_leaf_from_its_own_declaration_is_accepted() -> None:
         )
     )
     assert declaration.adapter_own_leaves == (".probe/token.json",)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "",
+        ".",
+        "..",
+        "../token.json",
+        "probe/../token.json",
+        "probe/./token.json",
+        "/probe/token.json",
+        "probe//token.json",
+        "probe/",
+        "probe\\token.json",
+        "C:/probe/token.json",
+        "probe/token\x00.json",
+    ],
+)
+def test_an_unsafe_override_suffix_is_refused(suffix: str) -> None:
+    """Override suffixes must stay beneath the declared root on every host."""
+    with pytest.raises(ValueError, match="safe relative POSIX path"):
+        host_auth.AgentAuthDeclaration(
+            **_declaration_kwargs(
+                home_override_env_vars=("PROBE_DATA_HOME",),
+                credential_override_suffixes=((".probe/token.json", "PROBE_DATA_HOME", suffix),),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("leaf", "env_var"),
+    [(".other/token.json", "PROBE_DATA_HOME"), (".probe/token.json", "OTHER_HOME")],
+)
+def test_an_override_suffix_must_name_declared_inputs(leaf: str, env_var: str) -> None:
+    with pytest.raises(ValueError, match="undeclared credential leaf or override"):
+        host_auth.AgentAuthDeclaration(
+            **_declaration_kwargs(
+                home_override_env_vars=("PROBE_DATA_HOME",),
+                credential_override_suffixes=((leaf, env_var, "probe/token.json"),),
+            )
+        )
+
+
+def test_a_duplicate_override_suffix_is_refused() -> None:
+    """One leaf/root pair must not have an order-dependent security answer."""
+    with pytest.raises(ValueError, match="duplicate credential override"):
+        host_auth.AgentAuthDeclaration(
+            **_declaration_kwargs(
+                home_override_env_vars=("PROBE_DATA_HOME",),
+                credential_override_suffixes=(
+                    (".probe/token.json", "PROBE_DATA_HOME", "probe/token.json"),
+                    (".probe/token.json", "PROBE_DATA_HOME", "other/token.json"),
+                ),
+            )
+        )
+
+
+def test_nested_override_suffix_is_optional_and_pure(monkeypatch) -> None:
+    declaration = host_auth.AgentAuthDeclaration(
+        **_declaration_kwargs(
+            home_override_env_vars=("PROBE_DATA_HOME", "PROBE_HOME"),
+            credential_override_suffixes=(
+                (".probe/token.json", "PROBE_DATA_HOME", "probe/token.json"),
+            ),
+        )
+    )
+    monkeypatch.setattr(host_auth, "AGENT_AUTH_DECLARATIONS", (declaration,))
+    assert host_auth.override_leaf_suffix(".probe/token.json", "PROBE_DATA_HOME") == (
+        "probe/token.json"
+    )
+    assert host_auth.override_leaf_suffix(".probe/token.json", "PROBE_HOME") == "token.json"
+    assert host_auth.override_anchored_leaves() == (
+        (".probe/token.json", ("PROBE_DATA_HOME", "PROBE_HOME")),
+    )
+    assert (
+        host_auth.AgentAuthDeclaration(**_declaration_kwargs()).credential_override_suffixes == ()
+    )
 
 
 @pytest.mark.parametrize(

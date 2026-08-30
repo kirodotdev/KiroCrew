@@ -10657,6 +10657,7 @@
         "missing_components": "Mancante su questa macchina: {{components}}",
         "missing_components_with_command": "Mancante su questa macchina: {{components}}. Installalo con: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Le nuove sessioni usano questo agente. Una sessione già aperta mantiene quello con cui è stata avviata: cambiarlo qui non la modifica a metà sessione.",
+        "opencode": "OpenCode",
         "retry": "Riprova",
         "set_is_fixed_at_gateway_start": "Quali agenti compaiono qui viene deciso all'avvio del gateway. Un deployment gestito può limitare l'insieme tramite policy; modificare quella policy ha effetto al prossimo avvio."
       },

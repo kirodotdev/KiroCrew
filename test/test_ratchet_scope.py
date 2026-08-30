@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -510,6 +512,95 @@ class TestParseAddedLines:
 
     def test_anchor_deletions_adds_the_deletion_point(self) -> None:
         assert scope.parse_added_lines(self.DIFF, anchor_deletions=True) == {2, 3, 4, 11, 21}
+
+
+@pytest.fixture(params=("config", "environment", "textconv"))
+def presentation_diff(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> tuple[str, str]:
+    """Plant a presentation driver that hides a real added H5 violation.
+
+    The fixture git helper neutralizes external diff config for its own calls.
+    The resolver intentionally inherits the ambient environment, so clear the
+    inherited config overrides before setting the input this test measures.
+    Global/system config is already isolated by test/conftest.py.
+    """
+    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
+    monkeypatch.delenv("GIT_EXTERNAL_DIFF", raising=False)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    path = "src/kiro_crew/probe.py"
+    source = repo / path
+    source.parent.mkdir(parents=True)
+    source.write_text("before = True\n", encoding="utf-8")
+    _git(repo, "add", path)
+    _git(repo, "commit", "-m", "base for the added-line probe")
+    base = _git(repo, "rev-parse", "HEAD")
+    _set_origin_main(repo)
+    _git(repo, "checkout", "-b", "topic")
+    source.write_text("before = True\nif not self._is_claude:\n    pass\n", encoding="utf-8")
+    _git(repo, "add", path)
+    _git(repo, "commit", "-m", "add a negative harness identity")
+
+    driver = repo.parent / "presentation.py"
+    driver.write_text("print('presentation only')\n", encoding="utf-8")
+    command = shlex.join([sys.executable, str(driver)])
+    if request.param == "config":
+        _git(repo, "config", "diff.external", command)
+    elif request.param == "environment":
+        monkeypatch.setenv("GIT_EXTERNAL_DIFF", command)
+    else:
+        (repo / ".gitattributes").write_text("*.py diff=presentation\n", encoding="utf-8")
+        _git(repo, "config", "diff.presentation.textconv", command)
+
+    # Prove the planted setting is active, not shadowed by a fixture's config
+    # neutralizer: external diff replaces the patch; textconv makes both images
+    # identical. Either way a hunk-only parser would silently judge no lines.
+    hidden = scope._git_strict("diff", "--unified=0", base, "--", path)
+    assert hidden == ("" if request.param == "textconv" else "presentation only\n")
+    return base, path
+
+
+class TestPresentationIndependentDiffs:
+    @pytest.mark.parametrize(
+        "scope_label",
+        ("explicit", "origin/main...HEAD", "merge HEAD^1..HEAD", "merge parents"),
+    )
+    def test_added_lines_ignore_presentation_drivers(
+        self, repo: Path, presentation_diff: tuple[str, str], scope_label: str
+    ) -> None:
+        base, path = presentation_diff
+        if scope_label.startswith("merge"):
+            _git(repo, "checkout", "main")
+            _git(repo, "merge", "--no-ff", "-m", "merge ref", "topic")
+
+        if scope_label == "explicit":
+            assert scope.added_lines_at(base, path) == {2, 3}
+        else:
+            assert scope.added_lines(scope_label) == {path: {2, 3}}
+
+    def test_h5_enforcement_cannot_be_hidden_by_a_presentation_driver(
+        self,
+        repo: Path,
+        presentation_diff: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        base, path = presentation_diff
+        script = ROOT / "scripts" / "check_harness_parity.py"
+        spec = importlib.util.spec_from_file_location("ratchet_harness_gate", script)
+        assert spec and spec.loader
+        gate = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, gate)
+        spec.loader.exec_module(gate)
+        monkeypatch.setattr(gate, "REPO_ROOT", str(repo))
+        monkeypatch.setattr(gate, "_SCOPE_MODULE", scope)
+        monkeypatch.setenv("HARNESS_BASE_REF", base)
+
+        assert gate.main([]) == 1
+        output = capsys.readouterr().out
+        assert f"{path}:2" in output
+        assert "negative-identity" in output
+        assert "H5" in output
 
 
 def test_env_base_gates_delegate_to_the_shared_plumbing() -> None:

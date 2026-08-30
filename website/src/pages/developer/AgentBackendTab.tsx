@@ -20,6 +20,7 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ''
 const CLAUDE = 'claude'
 const KAS = 'kas'
+const OPENCODE = 'opencode'
 
 /**
  * The agents this frontend has a translated name and an icon for.
@@ -403,6 +404,7 @@ export function AgentBackendTab() {
     [KIRO]: i18nT('pages.developer.agentBackendTab.kiro_cli'),
     [CLAUDE]: i18nT('pages.developer.agentBackendTab.claude_code'),
     [KAS]: i18nT('pages.developer.agentBackendTab.kas_kiro_agent'),
+    [OPENCODE]: i18nT('pages.developer.agentBackendTab.opencode'),
   }
 
   const ICON: Record<string, React.ReactNode> = {

@@ -210,6 +210,30 @@ gate bypass. Its stdio shim answers an empty `tools/list` while the keystone
 enable is off — retained as defence in depth for a mid-session disable, on top of
 the `spec_gate` above that keeps the process from existing in the first place.
 
+### OpenCode's dormant MCP mirror
+
+`providers/mirrors/opencode.py` declares OpenCode's projection without admitting
+the harness. Native named `allow` rules can skip `session/request_permission`,
+so an `ask` default is not an execution gate. The backend remains unselectable
+and its constructors refuse it before workspace I/O; the mirror independently
+returns `mcpServers: []`, even if a caller supplies
+`permission_surface_owned=True`. It writes no native OpenCode configuration.
+
+The separate `candidate_session_servers()` helper is **not used for mounting**.
+It reuses `acp/session_mcp.py`'s bounded, project-first agent-spec reader and
+re-derives only `kirocrew-core` / `kirocrew-cron` invocations from the managed
+authority. Its pure `project_managed_servers()` step requires a whole-server
+`@server` or bare `*` grant; missing/malformed specs, per-tool-only grants,
+nonempty/malformed `disabledTools`, disabled servers, and ambiguous wire names
+withhold the affected server. User/app servers, computer use, and opt-in sets
+are not projected, and no spec command, environment override, `autoApprove`,
+or Kiro-only extension is copied into the portable descriptors.
+
+This is a tested representation candidate, not proof of governance or complete
+OpenCode support. Activation requires verified, fail-closed delivery of every
+tool execution to Crew's PreToolUse gate, including precedence over native
+permission rules; a caller-controlled ownership flag cannot supply that proof.
+
 ### The final auto-approve pass
 
 `allowedTools` is kiro-cli's blanket auto-approve list, and it is the one path

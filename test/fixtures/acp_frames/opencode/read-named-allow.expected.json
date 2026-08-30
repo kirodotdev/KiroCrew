@@ -1,0 +1,186 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.18.23",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "test/test-model",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "OpenCode Zen/Big Pickle",
+            "value": "opencode/big-pickle"
+          },
+          {
+            "name": "OpenCode Zen/Hy3 Free",
+            "value": "opencode/hy3-free"
+          },
+          {
+            "name": "OpenCode Zen/MiMo V2.5 Free",
+            "value": "opencode/mimo-v2.5-free"
+          },
+          {
+            "name": "OpenCode Zen/Muse Spark 1.2 Free",
+            "value": "opencode/muse-spark-1.2-contributor-free"
+          },
+          {
+            "name": "OpenCode Zen/Nemotron 3 Ultra Free",
+            "value": "opencode/nemotron-3-ultra-free"
+          },
+          {
+            "name": "OpenCode Zen/Nemotron 3.5 Lightning Free",
+            "value": "opencode/nemotron-3.5-lightning-free"
+          },
+          {
+            "name": "OpenCode Zen/Ox Alpha Free (Unlimited)",
+            "value": "opencode/x-preview-f-free"
+          },
+          {
+            "name": "Test/Test Model",
+            "value": "test/test-model"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "session-read-named-allow"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "available_commands_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "read",
+        "tool_call_id": "call_probe",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "filePath": "<workspace>/read-input.txt"
+        },
+        "title": "read",
+        "tool_call_id": "call_probe",
+        "tool_input": "{\n  \"filePath\": \"<workspace>/read-input.txt\"\n}",
+        "tool_kind": "read",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_probe",
+        "tool_final": true,
+        "tool_output": "ISOLATED_READ_CANARY_NOT_A_SECRET"
+      },
+      {
+        "kind": "tool_call_update",
+        "title": "<workspace>/read-input.txt",
+        "tool_call_id": "call_probe",
+        "wire_title": "<workspace>/read-input.txt"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "probe complete"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "probe complete",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      100000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

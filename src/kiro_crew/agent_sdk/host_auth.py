@@ -65,6 +65,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
 )
 
@@ -192,6 +193,12 @@ class AgentAuthDeclaration:
     #: Which of :data:`ENTITLEMENT_SOURCES` this harness's entitlement comes from.
     entitlement_source: str
 
+    #: Optional ``(home_leaf, override_env, relative_suffix)`` mappings for a
+    #: credential nested below an override root. Without a mapping, the existing
+    #: basename rule applies. Both the read floor and sandbox mask consume the
+    #: same suffix; this relocates a declared credential, never exempts one.
+    credential_override_suffixes: Tuple[Tuple[str, str, str], ...] = ()
+
     # There is deliberately NO field for re-exposing a file the mask hides.
     #
     # A re-exposure is an EDIT to the mask, and the rule this class exists to
@@ -222,6 +229,28 @@ class AgentAuthDeclaration:
             raise ValueError(f"{self.backend!r} declares no sign-in remedy")
         if not self.signed_out_message.strip():
             raise ValueError(f"{self.backend!r} declares no signed-out message")
+        override_pairs: set[tuple[str, str]] = set()
+        for leaf, env_var, suffix in self.credential_override_suffixes:
+            if leaf not in self.credential_leaves or env_var not in self.home_override_env_vars:
+                raise ValueError(
+                    f"{self.backend!r} names an undeclared credential leaf or override "
+                    f"in {(leaf, env_var)!r}"
+                )
+            pair = (leaf, env_var)
+            if pair in override_pairs:
+                raise ValueError(
+                    f"{self.backend!r} declares a duplicate credential override {pair!r}"
+                )
+            override_pairs.add(pair)
+            # Reject traversal, absolute roots and Windows path syntax before
+            # security.paths joins these POSIX-authored segments on any host.
+            if any(segment in {"", ".", ".."} for segment in suffix.split("/")) or any(
+                character in suffix for character in ("\\", ":", "\x00")
+            ):
+                raise ValueError(
+                    f"{self.backend!r} credential override suffix must be a safe relative "
+                    f"POSIX path: {suffix!r}"
+                )
         stray = tuple(
             leaf for leaf in self.adapter_own_leaves if leaf not in self.credential_leaves
         )
@@ -292,9 +321,9 @@ _KIRO_SIGNED_OUT = (
 #: order, so the floor, the mask and the panel all read the harnesses in one order.
 #:
 #: ``test/test_agent_sdk_host_auth.py`` fails when a member of
-#: ``ACP_BACKENDS_KNOWN`` is missing here. That is the parity gate: a harness
-#: becomes selectable by joining that set, and joining it without an auth answer
-#: is exactly how a live OAuth token stayed off the credential floor once already.
+#: ``ACP_BACKENDS_KNOWN`` is missing here. Known includes dormant harnesses:
+#: their credentials need fencing even before the separate registry decision
+#: makes the harness selectable.
 AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
     AgentAuthDeclaration(
         backend=ACP_BACKEND_KIRO,
@@ -358,6 +387,31 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # is still authenticated.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_OPENCODE,
+        credential_leaves=(
+            ".local/share/opencode/auth.json",
+            ".local/share/opencode/mcp-auth.json",
+        ),
+        home_override_env_vars=("XDG_DATA_HOME",),
+        # Dormant and unverified: no enforced routing applies a mask that could
+        # justify granting this child an own-credential exclusion.
+        adapter_own_leaves=(),
+        sign_in_remedy=(
+            "OpenCode signs in on its own — run opencode auth login in your "
+            "terminal, or configure its model provider. Neither is checked here."
+        ),
+        signed_out_message=(
+            "OpenCode is not signed in. Run `opencode auth login` in your "
+            "terminal, or configure its model provider, then start a new chat."
+        ),
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        credential_override_suffixes=(
+            (".local/share/opencode/auth.json", "XDG_DATA_HOME", "opencode/auth.json"),
+            (".local/share/opencode/mcp-auth.json", "XDG_DATA_HOME", "opencode/mcp-auth.json"),
+        ),
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_CLAUDE,
@@ -446,6 +500,20 @@ def override_anchored_leaves() -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
         if declaration.home_override_env_vars
         for leaf in declaration.credential_leaves
     )
+
+
+def override_leaf_suffix(leaf: str, env_var: str) -> str:
+    """The POSIX-authored credential suffix beneath an override root.
+
+    Existing harnesses use only the basename. A nested data root is additive
+    metadata, shared by the read floor and sandbox mask without changing either
+    the override-pair projection or the resolved-root cache key.
+    """
+    for declaration in AGENT_AUTH_DECLARATIONS:
+        for home_leaf, override_env, suffix in declaration.credential_override_suffixes:
+            if home_leaf == leaf and override_env == env_var:
+                return suffix
+    return leaf.rsplit("/", 1)[-1]
 
 
 def backends_retired_by_host_logout() -> FrozenSet[str]:

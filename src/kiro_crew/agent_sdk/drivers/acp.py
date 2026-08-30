@@ -42,6 +42,10 @@ __all__ = [
     "claude_components_resolve",
     "derived_agent_permissions",
     "kiro_cli_resolves",
+    "opencode_cli_resolves",
+    "opencode_install_command",
+    "opencode_models_from_providers",
+    "query_opencode_models",
     "resolve_pin_spelling",
     "run_kiro_native_commands",
 ]
@@ -102,6 +106,50 @@ def kiro_cli_resolves() -> bool:
     from kiro_crew.acp.client import _resolve_kiro_bin
 
     return bool(_resolve_kiro_bin())
+
+
+def opencode_cli_resolves() -> bool:
+    """Ask the same uncached executable resolver that the OpenCode spawn uses."""
+    from kiro_crew.acp.opencode import resolve_opencode_bin
+
+    return bool(resolve_opencode_bin())
+
+
+def opencode_install_command() -> str:
+    """Name the npm package that installs OpenCode's native ACP-capable CLI."""
+    from kiro_crew.acp.opencode import OPENCODE_NPM_PKG
+
+    return f"npm i -g {OPENCODE_NPM_PKG}"
+
+
+async def query_opencode_models(*, work_dir: str | None = None) -> list[dict[str, str]]:
+    """Return plain catalog rows without exposing ACP types to the dashboard."""
+    from kiro_crew.acp.opencode import query_available_opencode_models
+
+    return await query_available_opencode_models(work_dir=work_dir)
+
+
+def opencode_models_from_providers(providers: list[object]) -> list[dict[str, str]]:
+    """Map only an OpenCode session's advertised ids into plain catalog rows."""
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+    for provider in providers:
+        if capabilities_of(provider).backend == ACP_BACKEND_OPENCODE:
+            advertised = provider.available_models()  # type: ignore[attr-defined]
+            if advertised:
+                return [
+                    {
+                        "model_name": model["modelId"],
+                        "display_name": model.get("name") or model["modelId"],
+                        "description": model.get("description", ""),
+                    }
+                    for model in advertised
+                    if isinstance(model, dict)
+                    and isinstance(model.get("modelId"), str)
+                    and model["modelId"]
+                ]
+    return []
 
 
 def claude_components_resolve() -> tuple[bool, bool]:

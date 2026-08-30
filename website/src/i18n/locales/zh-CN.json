@@ -10351,6 +10351,7 @@
         "missing_components": "本机缺少：{{components}}",
         "missing_components_with_command": "本机缺少：{{components}}。安装命令：{{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "新会话使用此代理。已打开的会话保持启动时所用的代理；在此切换不影响正在进行的会话。",
+        "opencode": "OpenCode",
         "retry": "重试",
         "set_is_fixed_at_gateway_start": "此处显示哪些 agent 在 gateway 启动时确定。受管部署可通过策略限制该集合；修改策略需下次启动才生效。"
       },

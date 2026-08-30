@@ -33,8 +33,9 @@ refactor changes the shape of a turn.
 
 ## Recording a fixture
 
-There is no recorder in this repository yet. Every fixture here was written by
-hand from the shapes the parsers accept (see the provenance table below). The
+There is no recorder in this repository yet. Fixtures are synthesized from the
+shapes the parsers accept or sanitized from isolated wire traces (see the
+provenance table below). The
 opt-in recorder — `KIROCREW_ACP_RECORD_FRAMES=<dir>`, appending every inbound
 frame from both transports to `<dir>/<backend>.jsonl` with owner-only file
 permissions — ships in the follow-up PR titled *opt-in ACP frame recorder
@@ -109,12 +110,21 @@ not reach all of: an initialize response, a `session/new` response, an
 This is the second requirement in the host contract enforced by behaviour rather
 than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
+Corpus coverage does not grant runtime admission. Pure replay covers every known
+id, including dormant OpenCode. The reader fault tests in
+`test/test_acp_frame_record_provider_safety.py` construct only backends in
+`BASELINE_SELECTABLE_BACKENDS`; they keep a separate all-known corpus-name check
+and verify that replaying OpenCode fixtures leaves both ACP constructors blocked,
+with recording enabled or disabled. A fixture must never require bypassing that
+constructor refusal.
+
 ## Provenance of what is committed today
 
-Every fixture in this corpus is currently `synthesized`. Stated plainly because
-it bounds what the corpus proves: it locks the dispatch layer's behaviour against
-refactoring, which is what it was built for, and it does **not** prove that any
-backend really emits these shapes.
+Every fixture in this corpus is currently `synthesized`. It locks the dispatch
+layer's behaviour against refactoring; it is not an unedited wire recording.
+The OpenCode sequences preserve the shapes and ordering measured from a real
+binary, but their sanitized identifiers and paths make them synthesized fixtures
+under this corpus's provenance rule.
 
 | Directory | Backend id | Provenance | Why |
 |---|---|---|---|
@@ -122,6 +132,49 @@ backend really emits these shapes.
 | `kas/` | `kas` | synthesized | Reached through the kiro-cli relay, so same as above. The `_meta.kiro` discriminants follow `src/kiro_crew/acp/kas_wire.py`. |
 | `claude/` | `claude` | synthesized | `claude-agent-acp` was not installed on the recording host. |
 | `codex/` | `codex` | synthesized | `codex-acp` was not installed on the recording host. |
+| `opencode/` | `opencode` | synthesized from isolated traces | OpenCode 1.18.23 emitted the eight sequences described below. Absolute workspace paths and generated session/message identifiers are replaced; no frame is added, omitted, or reordered. This is parser evidence for a dormant backend, not admission or permission-enforcement evidence. |
+
+### OpenCode permission scenarios
+
+The source experiment ran native `opencode acp --cwd <workspace>` against a
+loopback fake model and, for the MCP pair, an inert local stdio server named
+`probe` with one `ping` tool. Each run had a separate temporary home, workspace,
+XDG directories, and config. Project config, default plugins, model fetching,
+automatic updates, and automatic compaction were disabled. No real credential or
+external model service was used. These frames come directly from that native
+process, outside Kiro Crew's constructor admission gate.
+
+All eight runs set `OPENCODE_PERMISSION={"*":"ask"}`. In `*-wildcard-deny`,
+the host answered every permission request with the advertised `reject` option.
+In `*-named-allow`, the build agent also had named `allow` entries for `edit`,
+`bash`, `read`, and `probe_ping`; the host retained the same reject handler.
+The wildcard filenames describe the host's denial response, not a native
+wildcard `deny` setting.
+
+| Pair | Wildcard ask + host reject | Named allow + same host reject handler |
+|---|---|---|
+| `write-*` | One permission request, failed tool update; no marker file | No permission request, completed update; marker file created |
+| `bash-*` | One permission request, failed tool update; no marker file | No permission request, completed update; marker file created |
+| `read-*` | One permission request, failed tool update; fake model did not receive canary | No permission request, completed update; fake model received the inert canary |
+| `mcp-*` | One permission request, failed tool update; fake server did not create marker | No permission request, completed update; fake server created marker |
+
+The file and fake-model observations in this table came from the source probe's
+outcome checks. Replay does not execute tools, inspect marker files, or contact a
+model; it pins the corresponding frames only. In particular, a completed tool
+update without a permission request must stay visible in the snapshots: adding a
+synthetic request would hide the bypass that keeps OpenCode dormant.
+
+Every sequence retains its initialize response, session response, commands
+notification, tool frames, usage notification, and prompt response in source
+order. The allow sequences also contain the measured `agent_message_chunk`;
+there is no supplemental fabricated text frame. Sanitization replaces all
+workspace-path spellings, including paths embedded in diffs and result text,
+with `<workspace>` and replaces generated session/message ids with scenario
+labels. Tool arguments, option ids (`once`, `always`, `reject`), empty `rawInput`
+objects, duplicate refinement updates, tool-output nesting, model-option lists,
+and zero usage values are preserved. The zero USD/token readings come from the
+fake model and establish no real billing behavior. No control-marker tool was
+tested, so these fixtures establish no session-directive compatibility.
 
 Replacing any row with a live capture is a strict improvement and needs no
 change to the test. Record it, set `recorded` to `live`, fill in the real

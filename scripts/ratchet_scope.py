@@ -49,6 +49,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WHOLE_TREE_ENV = "RATCHET_SCOPE_WHOLE_TREE"
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+# Presentation drivers can omit hunks or renumber transformed source. The gates
+# scan working-tree bytes, so their line numbers must come from git's raw diff.
+_RAW_DIFF_OPTIONS = ("--no-ext-diff", "--no-textconv")
 
 
 def _git(*args: str) -> tuple[int, str]:
@@ -197,7 +200,7 @@ def added_lines(scope_label: str) -> dict[str, set[int]] | None:
     else:
         return None
     proc = subprocess.run(
-        ["git", "--no-pager", *args],
+        ["git", "--no-pager", *args, *_RAW_DIFF_OPTIONS],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -307,7 +310,11 @@ def added_lines_at(frm: str, path: str, *, anchor_deletions: bool = False) -> se
     only "Binary files differ", leaving nothing to scan and passing the file
     silently. Per PATH rather than whole-diff, matching how the env-base gates
     consume it — see :func:`parse_added_lines` for why single-path diffs need
-    no ``+++`` attribution.
+    no ``+++`` attribution. External diff and textconv drivers are disabled:
+    their presentation output need not contain hunks or preserve the line
+    numbers of the source the gate scans.
     """
-    diff = _git_strict("diff", "--unified=0", "--no-color", "--text", frm, "--", path)
+    diff = _git_strict(
+        "diff", *_RAW_DIFF_OPTIONS, "--unified=0", "--no-color", "--text", frm, "--", path
+    )
     return parse_added_lines(diff, anchor_deletions=anchor_deletions)

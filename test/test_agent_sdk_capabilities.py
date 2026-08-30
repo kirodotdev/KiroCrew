@@ -301,13 +301,12 @@ def test_codex_still_needs_its_read_only_mode() -> None:
     assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "read-only")
 
 
-def test_known_membership_is_unchanged_by_the_move() -> None:
-    """``ACP_BACKENDS_KNOWN`` gained and lost nothing.
-
-    Membership is the gate on the ``acp_backend`` kwarg, so a widened set means
-    provider construction accepts a value it must reject.
-    """
-    assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == ["", "claude", "codex", "kas"]
+def test_known_opencode_does_not_widen_baseline_admission() -> None:
+    """Recognizing a dormant id grants no construction or selection capability."""
+    assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == ["", "claude", "codex", "kas", "opencode"]
+    assert sorted(sdk_backends.BASELINE_SELECTABLE_BACKENDS) == ["", "claude", "codex", "kas"]
+    with pytest.raises(ValueError, match="OpenCode is not admitted"):
+        sdk_backends.require_backend_admission(sdk_backends.ACP_BACKEND_OPENCODE)
 
 
 #: Every capability field for every known id, plus an unknown one.
@@ -321,6 +320,7 @@ EXPECTED_CAPABILITIES = {
     "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True),
     "codex": (PROVIDER_ACP, "codex", True, True, False),
+    "opencode": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
     "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False),
 }
 

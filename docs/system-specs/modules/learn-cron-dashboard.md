@@ -1327,6 +1327,18 @@ Bounds (`validation.py`, single source of truth) still gate the tool's arguments
 
 ### Key Endpoints
 
+**OpenCode model catalog**: the OpenCode branch of `GET /api/models` stays
+behind `agent_sdk.drivers.acp`: it first reads an active OpenCode provider's
+advertised models, otherwise runs the fixed `opencode models` catalog query.
+Provider-qualified ids remain unchanged and never pass through Kiro's model
+registry or entitlement list. The cold query uses the shared OpenCode executable
+resolver, the configured OS sandbox without Kiro delegation, a scrubbed child
+environment with `KIRO_API_KEY` removed, bounded output, and a timeout with
+child reaping. Failure answers 503 `opencode_model_list_unavailable` rather
+than an empty successful catalog. Install probing uses that same resolver and
+reports the `opencode` CLI component independently of admission; OpenCode is
+not selectable while its permission-routing guarantee is unproven.
+
 **AutoNudge maintenance**: `maintenance_service()` gives administrative recovery one authoritative store view and holds a per-data-home transaction lock across its full cleanup; service startup and public `add()` / `update()` / `remove()` transactions take the same lock, so maintenance cannot scan a temporary in-memory absence from a removal that later rolls back or race an external reactivation. The maintenance view owns unserialized cleanup mutations while its transaction is held. A per-loop quiesce signal wakes an update/removal already queued behind that transaction instead of letting a firing timer and maintenance wait on each other's lock; cleanup retains and ultimately removes the durable row. A caller-authorized arm carries a commit-time session predicate into `add()`, evaluated only after it owns this transaction, so an arm validated before cleanup cannot recreate the archived slot afterward. Startup holds the lock across load, repair, timer arming, and singleton publication, while concurrent maintenance waits and then reuses the published live service. An offline view never arms timers or publishes the singleton. `deactivate_and_wait()` persists an inactive restart marker and waits for both the timer captured before the update and any replacement installed while that update waited. Administrative recovery removes the marker only after its dependent worker cleanup succeeds. Persistence is the commit point for every mutation: failed add/update writes restore the prior live loop and timer state, while failed removal restores the in-memory row (and its timer when active), leaving the same durable view visible for an immediate retry.
 
 **Status/System**: `/api/status`, `/api/system` (live metrics, 1s refresh, static fields cached), `/api/stream` (SSE), `/api/ws` (WebSocket — single multiplexed connection replacing SSE + polling for React SPA)

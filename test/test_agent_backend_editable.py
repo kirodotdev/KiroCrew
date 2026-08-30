@@ -21,6 +21,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -30,8 +31,9 @@ from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 FIELD = "agent.acp_backend"
 
 #: Known ids the public baseline deliberately does not offer, each entry carrying its
-#: reason in ``test_baseline_ships_every_known_backend``. Empty is the healthy state.
-NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
+#: reason in ``test_baseline_ships_every_known_backend``.
+# Named OpenCode permission rules can bypass Crew's pre-execution gate.
+NOT_SHIPPED_SELECTABLE: frozenset = frozenset({ACP_BACKEND_OPENCODE})
 
 
 @pytest.fixture
@@ -151,9 +153,9 @@ def test_baseline_ships_every_known_backend():
 
     ``NOT_SHIPPED_SELECTABLE`` is where that reason goes. It is an explicit list
     rather than a relaxed assertion so a plain ``baseline != known`` still fails:
-    an id may sit outside the baseline only by being named there. It is empty
-    today — every known id is offered, so a switch that renders always has an
-    install probe behind it to explain a session that failed to start.
+    an id may sit outside the baseline only by being named there. OpenCode is
+    known but its named native allow rules can bypass Crew's gate. Its install
+    probe cannot establish permission safety, so it stays outside the baseline.
     """
     baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
     assert baseline == sorted(

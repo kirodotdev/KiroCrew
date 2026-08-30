@@ -137,6 +137,9 @@ ACP_BACKEND_KAS = "kas"
 # translates ACP onto its operations. Selectable on a plain build, with an install
 # probe in ``agent_sdk/backend_install.py`` behind the switch.
 ACP_BACKEND_CODEX = "codex"
+# Native ACP transport; admission remains blocked until every tool call can be
+# forced through Crew's gate independently of OpenCode's local allow rules.
+ACP_BACKEND_OPENCODE = "opencode"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -150,6 +153,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
     }
 )
 
@@ -209,6 +213,30 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX}
 )
 
+# A transport may be implemented without being safe to run. These explicit
+# blockers apply to registration AND direct construction, not just the picker.
+# An absent entry preserves an existing backend's admission contract.
+_ADMISSION_BLOCKERS: dict[str, str] = {
+    ACP_BACKEND_OPENCODE: (
+        "OpenCode is not admitted: its named permission rules can allow tools "
+        "without calling Kiro Crew's security gate. A verified, non-overridable "
+        "pre-execution routing mechanism is required before this backend can run."
+    ),
+}
+
+
+def require_backend_admission(backend: str) -> None:
+    """Refuse an explicitly blocked transport before any session-side effects.
+
+    This is not the config selection gate: persisted choices still flow through
+    resolve_selected_backend. It also does not infer a blocker from an unknown
+    routing mode, which would change unrelated edition backends.
+    """
+    reason = _ADMISSION_BLOCKERS.get(backend)
+    if reason:
+        raise ValueError(reason)
+
+
 # ── Policy-facing spelling ──
 # A governance rule is written by a human into ``security_policy.json`` and is
 # matched as an identifier, so the kiro backend cannot be spelled the way the code
@@ -227,6 +255,7 @@ POLICY_ID_BY_BACKEND: dict = {
     # to deny — any id this build can spell, and the mapping is what makes the id
     # nameable in a rule at all.
     ACP_BACKEND_CODEX: ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE: ACP_BACKEND_OPENCODE,
 }
 
 #: The backend a deployment policy may never deny.
@@ -285,6 +314,7 @@ def register_selectable_backend(backend: str) -> None:
             f"cannot register unknown ACP backend {backend!r}; "
             f"known: {sorted(ACP_BACKENDS_KNOWN)}"
         )
+    require_backend_admission(backend)
     _baseline.add(backend)
     _selectable.add(backend)
 

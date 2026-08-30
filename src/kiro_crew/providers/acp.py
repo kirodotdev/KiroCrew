@@ -26,6 +26,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
@@ -37,6 +38,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
+    PROVIDER_LABEL_OPENCODE,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
@@ -287,7 +289,7 @@ _RESUME_BACKOFF_BASE_S = 1.0  # backoff = base * 2**attempt → 1s, 2s, 4s betwe
 
 
 class AcpProvider(LLMProvider):
-    """LLMProvider backed by ACP JSON-RPC over stdio (kiro-cli or claude-agent-acp)."""
+    """LLMProvider backed by ACP JSON-RPC over stdio."""
 
     def __init__(
         self,
@@ -504,6 +506,11 @@ class AcpProvider(LLMProvider):
     def is_kas_backend(self) -> bool:
         """True when this ACP provider talks to KAS (kiro-agent)."""
         return self._client.backend == ACP_BACKEND_KAS
+
+    @property
+    def is_opencode_backend(self) -> bool:
+        """Identify the dormant OpenCode transport without granting a capability."""
+        return self._client.backend == ACP_BACKEND_OPENCODE
 
     @property
     def is_kiro_backend(self) -> bool:
@@ -1342,7 +1349,7 @@ class AcpProvider(LLMProvider):
             # sessions (session sharing).
             await self._start_kiro_runtime()
         else:
-            # ── CC path: legacy AcpClient (unchanged) ──
+            # Adapted backends use one AcpClient process per session.
             await self._client.ensure_ready()
 
         await self._apply_initial_effort()
@@ -1675,7 +1682,7 @@ class AcpProvider(LLMProvider):
 
     @property
     def session_id(self) -> str:
-        """Return the kiro-cli session UUID."""
+        """Return the active backend session id."""
         return self._client._session_id if self._client and self._client._session_id else ""
 
     async def cleanup_session(self, session_id: str) -> None:
@@ -1684,7 +1691,7 @@ class AcpProvider(LLMProvider):
         (The claude seam's SDK transcript cleanup, ~/.claude/projects/, is
         re-added by the internal companion alongside its Claude backend.)
         """
-        if not session_id:
+        if not session_id or self._client.backend == ACP_BACKEND_OPENCODE:
             return
         sessions_dir = kiro_sessions_dir()
         for suffix in (".json", ".jsonl"):
@@ -1739,4 +1746,6 @@ def provider_label(provider: Any) -> str:
         return PROVIDER_LABEL_KAS
     if backend == ACP_BACKEND_CODEX:
         return PROVIDER_LABEL_CODEX
+    if backend == ACP_BACKEND_OPENCODE:
+        return PROVIDER_LABEL_OPENCODE
     return PROVIDER_LABEL_DEFAULT

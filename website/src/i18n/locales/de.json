@@ -10504,6 +10504,7 @@
         "missing_components": "Auf diesem Rechner fehlt: {{components}}",
         "missing_components_with_command": "Auf diesem Rechner fehlt: {{components}}. Installieren mit: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Neue Sitzungen verwenden diesen Agenten. Eine bereits geöffnete Sitzung behält den Agenten, mit dem sie gestartet ist – ein Wechsel hier ändert sie nicht mitten in der Sitzung.",
+        "opencode": "OpenCode",
         "retry": "Erneut versuchen",
         "set_is_fixed_at_gateway_start": "Welche Agenten hier erscheinen, wird beim Start des Gateways festgelegt. Eine verwaltete Installation kann die Auswahl per Richtlinie einschränken; Änderungen an dieser Richtlinie greifen beim nächsten Start."
       },

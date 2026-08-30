@@ -1618,12 +1618,12 @@ def _home_dir_targets_uncached(
     for _leaf, _root_envs in _OVERRIDE_ANCHORED_LEAVES:
         if _leaf not in home_dirs:
             continue
-        _basename = _leaf_basename(_leaf)
         for _env in _root_envs:
             _root = _adapter_roots.get(_env)
             if not _root:
                 continue
-            _full = os.path.join(_root, _basename)
+            _suffix = host_auth.override_leaf_suffix(_leaf, _env)
+            _full = os.path.join(_root, *_leaf_segments(_suffix))
             sensitive_targets.add(_full.casefold())
             _full_real = _realpath_or_none(_full)
             if _full_real is not None:
@@ -2260,11 +2260,11 @@ def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[st
     for leaf, root_envs in _OVERRIDE_ANCHORED_LEAVES:
         if leaf in excluded or leaf not in _SENSITIVE_HOME_DIRS:
             continue
-        basename = _leaf_basename(leaf)
         for env in root_envs:
             root = adapter_roots.get(env)
             if root:
-                targets.add(os.path.join(root, basename))
+                suffix = host_auth.override_leaf_suffix(leaf, env)
+                targets.add(os.path.join(root, *_leaf_segments(suffix)))
     return tuple(sorted(targets))
 
 

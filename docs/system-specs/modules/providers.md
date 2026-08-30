@@ -12,6 +12,13 @@ and `BASELINE_SELECTABLE_BACKENDS` decides which ids an operator may choose.
 Several are selectable on a plain public build, so "one provider" never meant
 "one backend".
 
+OpenCode is a known but dormant backend, not another provider. Its direct
+`AcpProvider` construction delegates to `AcpClient`, which refuses admission
+before any workspace access or process creation. `AcpRuntime` independently
+refuses the same backend so callers cannot fall through to the Kiro transport.
+The selectable baseline remains Kiro, Claude Code, KAS and Codex; see
+[harness-parity.md](harness-parity.md) for the measured permission-routing gap.
+
 ### Architecture
 
 ```

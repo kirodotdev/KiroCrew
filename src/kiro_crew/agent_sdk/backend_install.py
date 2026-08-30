@@ -48,6 +48,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_KNOWN,
     POLICY_ID_BY_BACKEND,
 )
@@ -79,6 +80,7 @@ COMPONENT_CLAUDE_CODE_CLI = "claude"
 #: The codex-acp adapter. ONE component, not two: the adapter ships its own
 #: compatible Codex binary, so there is no second executable Crew resolves.
 COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
+COMPONENT_OPENCODE_CLI = "opencode"
 
 #: How long a verdict is reused. The Claude driver shells out to mise and globs
 #: the filesystem, and the dashboard polls this endpoint, so an uncached probe
@@ -240,11 +242,26 @@ def _probe_codex() -> BackendInstallState:
     )
 
 
+def _probe_opencode() -> BackendInstallState:
+    """Presence only: a resolving CLI does not establish permission admission."""
+    policy_id = _policy_id(ACP_BACKEND_OPENCODE)
+    if acp_driver.opencode_cli_resolves():
+        return BackendInstallState(ACP_BACKEND_OPENCODE, policy_id, INSTALLED)
+    return BackendInstallState(
+        ACP_BACKEND_OPENCODE,
+        policy_id,
+        MISSING,
+        (COMPONENT_OPENCODE_CLI,),
+        acp_driver.opencode_install_command(),
+    )
+
+
 _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_KIRO: _probe_kiro,
     ACP_BACKEND_KAS: _probe_kas,
     ACP_BACKEND_CLAUDE: _probe_claude,
     ACP_BACKEND_CODEX: _probe_codex,
+    ACP_BACKEND_OPENCODE: _probe_opencode,
 }
 
 
@@ -328,6 +345,7 @@ __all__ = [
     "COMPONENT_CLAUDE_ACP_ADAPTER",
     "COMPONENT_CLAUDE_CODE_CLI",
     "COMPONENT_KIRO_CLI",
+    "COMPONENT_OPENCODE_CLI",
     "INSTALLED",
     "MISSING",
     "UNKNOWN",

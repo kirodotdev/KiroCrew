@@ -70,6 +70,82 @@ basename, and Windows can grant its Kiro-only delegation without trusting a
 filename heuristic. Resolution runs off the event loop (`asyncio.to_thread`, shielded so a
 cancelled caller still lets the worker settle).
 
+### OpenCode: known, not admitted
+
+`ACP_BACKEND_OPENCODE` is a known backend id with its own provider label and
+policy-facing name, but is deliberately absent from the selectable baseline
+and from every capability set. The retained per-session transport prepares
+`opencode acp --cwd <work_dir>` and an integer `PROTOCOL_VERSION_OPENCODE`
+handshake. These are adapter-development paths, not a claim that a live Crew
+session is supported or validated.
+
+`agent_sdk.backends.require_backend_admission` refuses OpenCode registration
+and direct construction of `AcpClient` or `AcpRuntime`, before session-side I/O.
+Persisted selection still passes through the existing logged config-selection
+gate and degrades to Kiro. None of these changes grants another backend's
+capabilities or changes the existing backends' admission conditions.
+
+The blocker is tool-permission routing, not installation. An isolated check of
+OpenCode 1.18.23 confirmed that named `allow` rules for bash, read, write, and
+MCP tools can skip `session/request_permission`, even when a wildcard rule
+requests approval. A permission callback or a generated wildcard policy cannot
+therefore guarantee Crew's PreToolUse gate runs. Admission requires a verified,
+non-overridable pre-execution routing mechanism; neither model discovery nor
+MCP projection establishes it.
+
+Source comparison against native OpenCode 1.18.30 found the same permission and
+ACP event logic; this is source evidence, not a new runtime measurement. A
+`tool.execute.before` plugin is not a complete replacement: native task prompt
+file expansion can call the read tool directly, without that hook, and plugin
+initialization can fail without refusing startup. Admission therefore needs a
+native host-authorized execution gate covering built-ins, prompt expansion,
+subagents, custom tools, MCP calls and MCP resource reads before side effects.
+Missing or failed routing must refuse execution, independently of named rules,
+session approvals and cached `allow_always` decisions.
+
+OpenCode's sign-in is declared through `agent_sdk.host_auth`, not a separate
+first-run bypass. The read floor covers `auth.json` and `mcp-auth.json`
+under `~/.local/share/opencode/` and an absolute `<XDG_DATA_HOME>/opencode/`,
+using the same declared suffixes for the read gate and sandbox-target projection.
+No own-leaf exemption is granted while admission is unverified. Its spawn preparation and catalog query
+refuse non-absolute `XDG_DATA_HOME` values (including unexpanded `~`) because the
+native child and host otherwise resolve different credential locations. The
+declaration never reads a credential and Kiro logout never retires an OpenCode
+child. Real OpenCode sign-in and session execution remain unvalidated.
+
+That declaration is not universal OS-level isolation. The credential-target
+projection is applied by enforced adapter preflight, currently Codex; generic
+sandbox tiers and script/command cron launches do not automatically consume it.
+OpenCode's catalog wrapper likewise does not apply this extra mask. Also, the
+launch-time rejection does not retroactively protect stores an independent native
+CLI created beneath a relative or literal-tilde data root: the host may normalize
+that spelling to a different path. Both are unresolved credential-protection
+limits, not guarantees supplied by the dormant transport. Native admission remains
+blocked; widening generic sandbox policy or supporting arbitrary external working
+directories requires a separate cross-harness compatibility decision.
+
+`acp/opencode.py` owns `resolve_opencode_bin`: executable `OPENCODE_BIN`
+override, then mise, `~/.opencode/bin`, then augmented daemon PATH. Resolution
+preserves the launch path rather than replacing a shim with its resolved
+target. The dormant transport and `agent_sdk.backend_install` share that
+resolver; the install probe distinguishes installed, missing, and failed-check
+unknown, and names the `opencode` CLI and its `opencode-ai` package when absent.
+Presence does not remove the admission blocker.
+
+Model-catalog preparation also stays behind `agent_sdk.drivers.acp`: it maps
+only OpenCode session advertisements or calls the fixed `opencode models`
+query, preserving provider-qualified ids. The cold query uses the configured
+OS sandbox with `is_kiro_cli=False`, removes the Kiro-only API key from its
+scrubbed environment, bounds both output streams, and reaps the child on
+timeout or cancellation. Native catalog discovery can load its own provider
+credentials and plugins; it is not a credential-free executable probe. Sandbox
+preparation uses the shared shielded helper so
+cancellation also retires a profile returned late by the wrapping worker.
+Invalid output and command failures remain failures,
+not a successful empty catalog. The dashboard adapter uses the SDK's plain
+rows and adds no direct ACP import; it is not reachable from a persisted
+OpenCode choice while admission remains blocked.
+
 ## Tool Permission Protocol
 
 `session/request_permission` is the single inbound channel. The agent sends:

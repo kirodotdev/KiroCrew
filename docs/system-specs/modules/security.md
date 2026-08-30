@@ -179,6 +179,22 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 ### XPIA Hardening (`security.py` + `hooks.py`)
 
 **Sensitive path protection** — blocks at the hook layer before tool execution:
+
+Harness-owned auth files are projected from `agent_sdk.host_auth` into both the
+read floor and `sandbox_credential_targets`. Override roots use the declared
+relative suffix when present, otherwise the leaf basename. OpenCode's two stores
+are `~/.local/share/opencode/{auth.json,mcp-auth.json}`, or
+`$XDG_DATA_HOME/opencode/{auth.json,mcp-auth.json}` for absolute overrides; both
+forms stay on the read floor, while sibling configuration files remain readable. Declared
+override roots participate in the canonical-root cache key. This floor is not a
+sandbox opt-in: dormant OpenCode has no own-credential mask exemption and remains
+unverified at the tool-enforcement boundary. Only enforced-adapter preflight
+consumes the extra sandbox-target projection; generic sandbox tiers and cron
+subprocesses do not inherit it. An external native CLI's relative or literal-tilde
+XDG store can also differ from the host-normalized root and remains an unresolved
+read-floor gap. Rejecting that configuration at the dormant OpenCode launcher
+does not protect files created outside it; see [acp-client](acp-client.md).
+
 - `is_sensitive_path(path)` — checks `fs_read`/`ReadFile` targets against sensitive dirs
 - `path_contains_sensitive(dir)` — the **reverse direction**: True when a protected location lies UNDER the given directory (the home dir itself, or any ancestor of `~/.ssh`/`~/.aws`/the crew data home). For bulk operations rooted at a directory — e.g. the Notes builtin's `git add -A` over an attached vault (see [md-notebook.md](md-notebook.md)) — where `is_sensitive_path` on the root passes but the sweep would stage a credential store wholesale. List-based prefix comparison against the known sensitive roots (no filesystem walk, O(sensitive entries) on any tree size); shares `_candidate_forms` / `_home_dir_targets` with `is_sensitive_path` so the symlink/casefold/`KIROCREW_HOME` hardening cannot drift between the two directions
 - **Symlink resolution (CWE-59)**: `is_sensitive_path()` resolves symlinks before matching — it checks multiple candidate forms (`os.path.realpath` + `Path.resolve`, plus the lexically-normalized path as a fail-safe when resolution can't complete) and returns True if ANY lands in a sensitive location, `casefold`-comparing against sensitive dirs anchored at BOTH the logical home and its realpath (defeats a home-prefix OS symlink like macOS `/var`→`/private/var`). So a workspace symlink pointing at `~/.aws/credentials` (absolute or `../../.aws/credentials` traversal) cannot be read through the link

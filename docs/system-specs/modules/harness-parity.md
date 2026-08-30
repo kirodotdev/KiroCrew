@@ -19,11 +19,14 @@ core can spell is an id an operator can choose unless something states the
 exception — pinned by
 `test_agent_backend_editable.py::test_baseline_ships_every_known_backend`, which
 guards against an undocumented NARROWING rather than a widening.
-There is no exception today: `NOT_SHIPPED_SELECTABLE` is empty, which is the
-healthy state. `ACP_BACKEND_CODEX` was the last member and left it once both
-halves landed — `backend_install.py` gained its probe, so the install row names
-the missing component and its command instead of reading `unknown`, and
-`acp_tool_gate` established that its tool calls reach the PreToolUse gate.
+`ACP_BACKEND_OPENCODE` is the explicit exception in `NOT_SHIPPED_SELECTABLE`.
+Its native ACP transport and installation/catalog helpers exist, but OpenCode
+1.18.23's named permission rules can allow tools without asking Crew. The
+backend stays dormant: registration and direct client/runtime construction
+refuse before filesystem or process effects. Neither installation nor a seeded
+wildcard `ask` policy proves pre-execution routing. The existing four-backend
+baseline and its capability memberships are unchanged; the containment contract
+is pinned by `test_acp_backend_opencode.py`.
 
 Read the invariants below against that tree: four harnesses can serve a real
 session today, so a site that spells "kiro" by exclusion is already wrong on
@@ -145,6 +148,6 @@ source of truth for what blocks.
    the id is named in that test's `NOT_SHIPPED_SELECTABLE` allowlist together
    with the reason it cannot be offered yet: the id becomes spellable but
    unreachable, and that state needs a stated reason rather than a default.
-   The allowlist is empty today. The full sequence a new
+   OpenCode is the explicit permission-routing exception. The full sequence a new
    harness walks, and which stage decides whether it lands dormant or
    selectable, is [harness-onboarding.md](harness-onboarding.md).

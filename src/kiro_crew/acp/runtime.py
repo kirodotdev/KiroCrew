@@ -102,6 +102,7 @@ from kiro_crew.acp.types import (
     backends_retired_by_host_logout,
 )
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.agent_sdk.backends import require_backend_admission
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
@@ -715,6 +716,7 @@ class AcpRuntime:
         acp_backend: str = ACP_BACKEND_KIRO,
         crew_agent: str = "",
     ):
+        require_backend_admission(acp_backend)
         if work_dir:
             self._work_dir = Path(work_dir)
         else:

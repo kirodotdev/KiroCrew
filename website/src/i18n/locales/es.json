@@ -10657,6 +10657,7 @@
         "missing_components": "Falta en esta máquina: {{components}}",
         "missing_components_with_command": "Falta en esta máquina: {{components}}. Instálalo con: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Las sesiones nuevas usan este agente. Una sesión ya abierta conserva el agente con el que se inició: cambiarlo aquí no la modifica a mitad de sesión.",
+        "opencode": "OpenCode",
         "retry": "Reintentar",
         "set_is_fixed_at_gateway_start": "Qué agentes aparecen aquí se decide al iniciar el gateway. Una implementación gestionada puede restringir el conjunto por política; editar esa política surte efecto en el siguiente inicio."
       },

@@ -41,13 +41,14 @@ from kiro_crew.agent_sdk import host_auth
 
 
 @pytest.fixture(autouse=True)
-def _clean_cache():
+def _clean_cache(monkeypatch):
     """Verdicts are cached in a module global, so one test must not seed another.
 
     Cleared on both sides: a test that populates the cache and fails partway
     would otherwise hand its verdict to the next one, which then passes for the
     wrong reason.
     """
+    monkeypatch.setattr(probe.acp_driver, "opencode_cli_resolves", lambda: False)
     probe.clear_probe_cache()
     yield
     probe.clear_probe_cache()
@@ -575,7 +576,7 @@ class TestEndpointPayloadShape:
         assert response.status == 200
 
         rows = json.loads(response.text or "{}")["backends"]
-        assert [r["policy_id"] for r in rows] == ["claude", "codex", "kas", "kiro"]
+        assert [r["policy_id"] for r in rows] == ["claude", "codex", "kas", "kiro", "opencode"]
         for row in rows:
             assert set(row) == {
                 "id",
@@ -630,6 +631,19 @@ class TestEndpointPayloadShape:
         # ``selectable`` stays False here because this test PINS the live enum to
         # ``["", "kas"]`` above; it asserts the payload shape, not the registry.
         assert by_policy["codex"]["selectable"] is False
+        assert by_policy["opencode"] == {
+            "id": "opencode",
+            "policy_id": "opencode",
+            "selectable": False,
+            "installed": "missing",
+            "missing_components": [probe.COMPONENT_OPENCODE_CLI],
+            "install_command": "npm i -g opencode-ai",
+            "restart_required": False,
+            "auth": {
+                "sign_in_remedy": host_auth.declaration_for("opencode").sign_in_remedy,
+                "signs_in_separately": True,
+            },
+        }
 
     def test_an_unknown_row_names_no_components(self, monkeypatch):
         """The three-state rule, enforced at the payload boundary too.

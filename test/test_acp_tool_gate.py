@@ -430,19 +430,29 @@ def test_mask_reanchors_a_relocated_credential(
     ), "the relocated claude credential store is not denied to the enforced child"
 
 
-def test_mask_still_exposes_the_adapters_own_token() -> None:
+def test_mask_still_exposes_the_adapters_own_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
     """The harness must keep reading its OWN token or it cannot authenticate.
 
     The deliberate asymmetry: this mask fences the CHILD, while the read gate still
     fences the same leaf for the agent's own file tools, so the two controls cover
     different readers.
     """
-    masked = gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX)
+    home = tmp_path / "home"
+    codex_home = tmp_path / "codex"
+    data_home = tmp_path / "data"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+    masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CODEX))
     own = gate.ADAPTER_OWN_CREDENTIAL_LEAVES[ACP_BACKEND_CODEX][0]
-    basename = own.split("/")[-1]
-    assert not any(
-        entry.endswith(basename) for entry in masked
-    ), "the adapter's own OAuth token was masked, which would break its auth"
+    assert str(home.joinpath(*own.split("/"))) not in masked
+    assert str(codex_home / "auth.json") not in masked
+    # A shared basename does not make another harness's credential its own.
+    assert str(home / ".local" / "share" / "opencode" / "auth.json") in masked
+    assert str(data_home / "opencode" / "auth.json") in masked
 
 
 def test_sandbox_off_refuses_an_enforced_adapter(monkeypatch: pytest.MonkeyPatch) -> None:

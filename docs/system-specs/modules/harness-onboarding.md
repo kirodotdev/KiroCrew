@@ -147,6 +147,7 @@ to be fencing your credential before Stage 7 lets an operator choose you.
 | `entitlement_source` | One of `host_identity_store` or `own_credential_file`. The doctor row and the logout policy branch on it, so a third spelling fails a test rather than reading as a harness nobody has an answer for; a harness entitled by the ambient cloud environment adds the third when it exists. |
 | `credential_leaves` | The home-relative leaves you STORE, spliced onto the read-gate floor so an agent's file tools can read none of them. Empty when your entitlement is the host store: those locations are the host's, declared in `identity_stores.py`, and re-declaring them would hand a driver a say over the host's own store. |
 | `home_override_env_vars` | The variables that relocate your credential `$HOME`. Every declared leaf is re-anchored under each of them, which is what keeps a relocated token fenced. |
+| `credential_override_suffixes` | Optional `(home_leaf, override_env, relative_suffix)` tuples when an override names a parent data root. Defaults to the leaf basename. Each pair must be unique and name a declared leaf and variable; the suffix must be a safe relative POSIX path. The read floor and sandbox mask consume the same projection. |
 | `adapter_own_leaves` | The leaf your own child must still read. A SUBSET of `credential_leaves`, and enforced as one: a driver may only ask the mask to spare a leaf its own declaration put on the floor, and `__post_init__` raises otherwise. |
 | `sign_in_remedy` | A finished sentence, server-owned and rendered verbatim wherever it appears. Untranslated on purpose — a translated per-harness string is a per-harness edit to thirteen locale files by construction, and the harness nobody remembers to add is exactly the one that needs the sentence. |
 | `host_logout_retires_children` | Whether a host logout may retire your already-running children. True only alongside `host_identity_store`; the other pairing is refused, because a logout says nothing about a store you never read. |
@@ -155,6 +156,21 @@ The declaration says what you **store**; the host still decides what is **fenced
 That is why no field names a path to leave open in general, and why a malformed
 declaration raises at import rather than reaching a floor that fences less than its
 author believed.
+
+OpenCode declares `.local/share/opencode/auth.json` and
+`.local/share/opencode/mcp-auth.json` beneath the operator's home, with
+`$XDG_DATA_HOME/opencode/auth.json` and `$XDG_DATA_HOME/opencode/mcp-auth.json`
+when that override is absolute. `OPENCODE_CONFIG_DIR` and `OPENCODE_TEST_HOME`
+do not relocate these stores.
+Its launcher requires a nonempty `XDG_DATA_HOME` to be absolute, so the child and
+host cannot resolve a relative data root against different working directories.
+OpenCode's sign-in is independent (`opencode auth login` or provider configuration),
+is not probed by the host, and is not retired by host logout. The dormant,
+unverified routing declares no own-credential mask exemption. The declaration
+does not install masks on generic subprocess launchers, nor retroactively fence
+stores created by an external native CLI under relative or literal-tilde data
+roots. These protection limits are recorded in [acp-client](acp-client.md);
+the declaration does not certify its file tools or make it selectable.
 
 `AgentInteractiveLogin` is the optional half, and the absence is the point. A
 harness whose sign-in happens outside the product — in the operator's own terminal,

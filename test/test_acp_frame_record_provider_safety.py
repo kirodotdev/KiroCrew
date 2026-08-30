@@ -2,7 +2,7 @@
 
 Read this file as the answer to one question: "does turning this change on, or
 having it misbehave, break any provider that is running right now?" Every test
-below drives a REAL ``AcpClient._read_message`` for EVERY known backend id --
+below drives a REAL ``AcpClient._read_message`` for EVERY admitted backend id --
 kiro-cli (``""``), ``kas``, ``claude``, ``codex`` -- and asserts that the frame
 still comes back as a ``JsonRpcMessage`` no matter what state the recorder is
 in. If one of these tests fails, a provider's reader loop would have raised or
@@ -33,6 +33,12 @@ catch-all that ``_mark_dead``s the runtime, taking every session on that
 provider down at once. So the runtime tests assert three things after each
 fault: the frame reached its session queue, the runtime is not dead, and the
 reader task is still running.
+
+Known dormant backends still need corpus names and parser replay coverage, but
+those facts do not grant permission to construct a live transport. The runtime
+fault cases follow the build's admitted baseline; the dormant cases below assert
+that replaying their fixtures cannot bypass constructor admission, with recording
+either on or off.
 """
 
 from __future__ import annotations
@@ -48,16 +54,23 @@ import pytest
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="ACP frame recorder is Linux-only")
 
+from acp_frame_replay_harness import CORPUS, read_fixture, replay_frames  # noqa: E402
+
 from kiro_crew.acp import _frame_record  # noqa: E402
 from kiro_crew.acp.client import AcpClient, JsonRpcMessage  # noqa: E402
 from kiro_crew.acp.runtime import AcpRuntime  # noqa: E402
 from kiro_crew.acp.types import METHOD_SESSION_UPDATE  # noqa: E402
-from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN, POLICY_ID_BY_BACKEND  # noqa: E402
+from kiro_crew.acp_backends import (  # noqa: E402
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKENDS_KNOWN,
+    BASELINE_SELECTABLE_BACKENDS,
+    POLICY_ID_BY_BACKEND,
+)
 
-# Every backend id this build can construct a provider for. The empty string is
-# kiro-cli, and it is deliberately in the list: a test that forgot it would pass
-# while the default provider broke.
-PROVIDERS = sorted(ACP_BACKENDS_KNOWN, key=lambda b: (b == "", b))
+# A known id may be dormant, so only the admitted baseline runs reader faults.
+# Corpus-name and pure replay checks still cover every known id independently.
+PROVIDERS = sorted(BASELINE_SELECTABLE_BACKENDS, key=lambda b: (b == "", b))
+KNOWN_PROVIDERS = sorted(ACP_BACKENDS_KNOWN, key=lambda b: (b == "", b))
 assert "" in PROVIDERS, "kiro-cli (backend id '') must be under test"
 assert len(PROVIDERS) >= 4, PROVIDERS
 
@@ -498,21 +511,45 @@ async def test_runtime_recorder_fault_does_not_leak_across_sessions(monkeypatch,
 # ── 5. Every provider has a corpus file name ────────────────────────────────
 
 
-@pytest.mark.parametrize("backend", PROVIDERS, ids=lambda b: b or "kiro-cli")
+@pytest.mark.parametrize("backend", KNOWN_PROVIDERS, ids=lambda b: b or "kiro-cli")
 def test_every_known_provider_maps_to_a_corpus_file_name(backend):
-    """PROVIDER SAFETY: ``fixture_dir_name`` must not KeyError for any backend a
-    real provider can be built with. kiro-cli's id is ``""``, which is not a
+    """PROVIDER SAFETY: ``fixture_dir_name`` must not KeyError for any known id,
+    including a dormant backend. kiro-cli's id is ``""``, which is not a
     filename, so the mapping is the thing to pin."""
     name = _frame_record.fixture_dir_name(backend)
     assert name and "/" not in name and name.strip() == name, (backend, name)
 
 
 def test_provider_set_under_test_matches_the_build():
-    """If a new backend id is added, this module must grow with it. A backend
-    that a provider can be constructed for but that is not under test here is a
-    provider whose reader loop this file says nothing about."""
-    assert set(PROVIDERS) == set(ACP_BACKENDS_KNOWN)
-    assert set(PROVIDERS) <= set(POLICY_ID_BY_BACKEND)
+    """Every admitted backend runs reader faults; every known id keeps a name."""
+    assert set(PROVIDERS) == set(BASELINE_SELECTABLE_BACKENDS)
+    assert set(PROVIDERS) <= set(KNOWN_PROVIDERS)
+    assert set(KNOWN_PROVIDERS) == set(ACP_BACKENDS_KNOWN)
+    assert set(KNOWN_PROVIDERS) <= set(POLICY_ID_BY_BACKEND)
+
+
+@pytest.mark.parametrize("provider_type", [AcpClient, AcpRuntime], ids=["client", "runtime"])
+@pytest.mark.parametrize("recording", [False, True], ids=["recorder-off", "recorder-on"])
+def test_dormant_fixture_replay_does_not_grant_runtime_admission(
+    monkeypatch, tmp_path, provider_type, recording
+):
+    """OpenCode's parser corpus stays usable while both transports refuse it."""
+    assert ACP_BACKEND_OPENCODE in KNOWN_PROVIDERS
+    assert ACP_BACKEND_OPENCODE not in PROVIDERS
+    fixtures = sorted((CORPUS / POLICY_ID_BY_BACKEND[ACP_BACKEND_OPENCODE]).glob("*.jsonl"))
+    assert fixtures, "the dormant backend still needs pure replay coverage"
+    if recording:
+        monkeypatch.setenv(_frame_record.ENV_RECORD_FRAMES, str(tmp_path / "recordings"))
+        assert _frame_record.start_recorder() is True
+
+    for fixture in fixtures:
+        meta, frames = read_fixture(fixture)
+        assert meta["backend"] == ACP_BACKEND_OPENCODE
+        assert replay_frames(frames), fixture.name
+        with pytest.raises(ValueError, match="OpenCode is not admitted"):
+            provider_type(acp_backend=meta["backend"], work_dir=str(tmp_path / "workspace"))
+
+    assert not (tmp_path / "workspace").exists()
 
 
 # ── 6. Import-time: loading the module never raises, on or off ──────────────

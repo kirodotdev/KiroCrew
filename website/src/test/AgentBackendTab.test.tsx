@@ -300,6 +300,88 @@ describe('AgentBackendTab', () => {
     await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'claude'))
   })
 
+  it('offers the translated OpenCode name only when the server advertises it', async () => {
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas', 'codex', 'opencode']))
+    acpBackendsMock.mockResolvedValue({
+      backends: ['', 'claude', 'kas', 'codex', 'opencode'].map(id => probeRow(id)),
+    })
+    wrap()
+    await waitFor(() => expect(button('OpenCode')).toBeEnabled())
+    for (const label of ['Kiro CLI', 'Claude Code', 'KAS (kiro-agent)', 'codex']) {
+      expect(button(label)).toBeEnabled()
+    }
+
+    fireEvent.click(button('OpenCode'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'opencode'))
+  })
+
+  it.each([
+    { schemaValues: ['', 'claude', 'kas'], probeSelectable: true, installed: 'missing' },
+    { schemaValues: ['', 'claude', 'kas', 'opencode'], probeSelectable: false, installed: 'installed' },
+    { schemaValues: undefined, probeSelectable: false, installed: 'unknown' },
+  ])('hides OpenCode when either server admission gate excludes it: %j', async ({ schemaValues, probeSelectable, installed }) => {
+    const remedy = 'Finish the OpenCode sign-in before starting a session.'
+    schemaMock.mockReturnValue(schemaWith(schemaValues))
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('', { installed: 'unknown' }),
+        probeRow('opencode', {
+          selectable: probeSelectable,
+          installed,
+          missing_components: installed === 'missing' ? ['opencode'] : [],
+          install_command: 'npm install -g opencode-ai',
+          auth: { sign_in_remedy: remedy, signs_in_separately: true },
+        }),
+      ],
+    })
+    wrap()
+    // This line only appears after the probe payload is rendered, so the negative
+    // assertions cannot pass merely because the registry has not answered yet.
+    await screen.findByText('Could not check whether this is installed on this machine.')
+    expect(screen.queryByRole('button', { name: 'OpenCode' })).not.toBeInTheDocument()
+    expect(screen.queryByText('OpenCode')).not.toBeInTheDocument()
+    expect(screen.queryByText(/npm install -g opencode-ai/)).not.toBeInTheDocument()
+    expect(screen.queryByText(remedy)).not.toBeInTheDocument()
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('does not add OpenCode to the static floor while registry information is absent', async () => {
+    schemaMock.mockReturnValue(undefined)
+    acpBackendsMock.mockReturnValue(new Promise(() => {}))
+    wrap()
+    await screen.findByRole('button', { name: 'Kiro CLI' })
+    expect(screen.queryByRole('button', { name: 'OpenCode' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { installed: 'missing', restartRequired: false, disabled: true, status: 'Missing on this machine: opencode' },
+    { installed: 'installed', restartRequired: true, disabled: true, status: 'Installed on this machine, but this gateway must restart before it can be used.' },
+    { installed: 'unknown', restartRequired: false, disabled: false, status: 'Could not check whether this is installed on this machine.' },
+  ])('keeps the machine gate for OpenCode: %j', async ({ installed, restartRequired, disabled, status }) => {
+    schemaMock.mockReturnValue(schemaWith(['', 'opencode']))
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow(''), probeRow('opencode', {
+        installed,
+        restart_required: restartRequired,
+        missing_components: installed === 'missing' ? ['opencode'] : [],
+      })],
+    })
+    wrap()
+    await screen.findByText(status)
+    const option = button('OpenCode')
+    expect(option).toHaveAttribute('aria-describedby', 'agent-backend-status-opencode')
+    if (disabled) {
+      expect(option).toBeDisabled()
+      fireEvent.click(option)
+      expect(patchConfigMock).not.toHaveBeenCalled()
+    } else {
+      expect(option).toBeEnabled()
+      fireEvent.click(option)
+      await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'opencode'))
+    }
+    expect(button('Kiro CLI')).toBeEnabled()
+  })
+
   it('leaves every option visible and selectable while the schema is still loading', async () => {
     // Flashing disabled and then live reads as a broken control; the PATCH
     // allowlist is the real gate, so an optimistic enable costs one refusal. The

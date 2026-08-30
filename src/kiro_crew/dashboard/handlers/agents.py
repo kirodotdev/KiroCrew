@@ -43,8 +43,13 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_OPENCODE
 from kiro_crew.agent_sdk.capabilities import capabilities_of
-from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
+from kiro_crew.agent_sdk.drivers.acp import (
+    opencode_models_from_providers,
+    query_opencode_models,
+    resolve_pin_spelling,
+)
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
 from kiro_crew.apps.bridges import _registration_source
@@ -1769,6 +1774,30 @@ def _normalize_model_key(name: str) -> str:
     return string_fold
 
 
+def _advertised_opencode_models(request: web.Request) -> list[dict[str, str]]:
+    """Read the advertised catalog without crossing the agent-SDK boundary."""
+    try:
+        state: DashboardState = request.app["state"]
+        providers = state.sessions.active_providers()
+    except (KeyError, AttributeError):
+        return []
+    return opencode_models_from_providers(list(providers))
+
+
+def _with_backend_default(models: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Prepend the backend-default sentinel when it was not advertised."""
+    if any(model.get("model_name") == "auto" for model in models):
+        return models
+    return [{"model_name": "auto", "display_name": "Auto", "description": ""}, *models]
+
+
+async def _cold_opencode_models(request: web.Request) -> list[dict[str, str]]:
+    """Read the cold catalog through the SDK's plain-data driver contract."""
+    state: DashboardState | None = request.app.get("state")
+    project_dir = active_project_dir(state, _read_session_key(request)) if state else None
+    return await query_opencode_models(work_dir=str(project_dir) if project_dir else None)
+
+
 def _advertised_cc_models(request: web.Request, namespace: str) -> list[dict]:
     """Map a live provider's advertised models to the API shape, per namespace.
 
@@ -2127,7 +2156,8 @@ async def api_models(request: web.Request) -> web.Response:
 
     kiro-family backends read kiro-cli's ``--list-models`` catalog (narrowed to a
     live session's entitlement); claude and codex read what their adapter
-    advertised, because neither accepts an id from that catalog.
+    advertised, because neither accepts an id from that catalog. The dormant
+    OpenCode adapter retains its own catalog preparation path.
     """
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
@@ -2135,6 +2165,24 @@ async def api_models(request: web.Request) -> web.Response:
         return web.json_response(_cc_models(request, configured_default=cfg.agent.model))
     if backend == ACP_BACKEND_CODEX:
         return web.json_response(_codex_models(request, configured_default=cfg.agent.model))
+    if backend == ACP_BACKEND_OPENCODE:
+        try:
+            models = _advertised_opencode_models(request)
+            if not models:
+                models = await _cold_opencode_models(request)
+            return web.json_response(_with_backend_default(models))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("api_models: OpenCode model list unavailable", exc_info=True)
+            return web.json_response(
+                {
+                    "error": "opencode model list unavailable",
+                    "code": "opencode_model_list_unavailable",
+                },
+                status=503,
+            )
+
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),
