@@ -9336,6 +9336,11 @@ class TestOrchestratorPlanGateArming:
     def _make_mock_client(events):
         client = AsyncMock()
         client.context_usage_pct = MagicMock(return_value=10.0)
+        client.context_window_tokens = MagicMock(return_value=0)
+        client.context_used_tokens = MagicMock(return_value=0)
+        client.available_models = MagicMock(return_value=[])
+        client.client = MagicMock()
+        client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
 
         async def _stream(msg):
             for ev in events:

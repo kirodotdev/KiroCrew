@@ -146,8 +146,9 @@ class TestBoundedTurnSetup:
     async def test_task_creation_failure_restores_deadline_and_closes_turn(
         self, monkeypatch
     ) -> None:
+        original_deadline = td._TURN_DEADLINE.get()
         previous_deadline = 12345.0
-        token = td._TURN_DEADLINE.set(previous_deadline)
+        td._TURN_DEADLINE.set(previous_deadline)
 
         async def _turn() -> None:
             raise AssertionError("failed setup must not start the turn")
@@ -164,12 +165,13 @@ class TestBoundedTurnSetup:
             assert td._TURN_DEADLINE.get() == previous_deadline
             assert turn.cr_frame is None
         finally:
-            td._TURN_DEADLINE.reset(token)
+            td._TURN_DEADLINE.set(original_deadline)
 
     @pytest.mark.asyncio
     async def test_timer_creation_failure_cancels_and_joins_owned_turn(self, monkeypatch) -> None:
+        original_deadline = td._TURN_DEADLINE.get()
         previous_deadline = 67890.0
-        token = td._TURN_DEADLINE.set(previous_deadline)
+        td._TURN_DEADLINE.set(previous_deadline)
         created_tasks: list[asyncio.Task[None]] = []
         real_ensure_future = asyncio.ensure_future
 
@@ -197,7 +199,7 @@ class TestBoundedTurnSetup:
             assert created_tasks[0].cancelled()
             assert turn.cr_frame is None
         finally:
-            td._TURN_DEADLINE.reset(token)
+            td._TURN_DEADLINE.set(original_deadline)
 
 
 class TestTimeoutCard:
