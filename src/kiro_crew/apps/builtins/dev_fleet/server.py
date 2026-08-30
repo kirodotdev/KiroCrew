@@ -6901,21 +6901,6 @@ def _dropin_content(worktree: Path, kcbin: Path) -> str:
     )
 
 
-def _restore_dropin(dropin: Path, prior: str | None) -> bool:
-    """Restore the drop-in to its pre-cutover state after a failed cutover:
-    rewrite *prior* content, or delete the file when there was none. Returns
-    ``True`` when the on-disk state was restored; best-effort, returning
-    ``False`` on any OSError so the caller can report ``rolled_back: false``."""
-    try:
-        if prior is None:
-            dropin.unlink(missing_ok=True)
-        else:
-            gateway_service.atomic_write_text(dropin, prior)
-        return True
-    except OSError:
-        return False
-
-
 async def _find_worktree_by_path(path: str) -> tuple[dict | None, str | None]:
     """Resolve a discovered worktree by filesystem path.
 

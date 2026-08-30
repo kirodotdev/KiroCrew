@@ -2209,26 +2209,48 @@ def test_foreground_backend_is_none_off_posix(monkeypatch):
 # --------------------------------------------------------------------------
 # drop-in rollback + path selector
 # --------------------------------------------------------------------------
-def test_restore_dropin_deletes_when_there_was_none(tmp_path):
+def _systemd_backend(dropin: Path) -> gateway_service.SystemdBackend:
+    """A SystemdBackend whose drop-in path is *dropin*.
+
+    ``rollback`` touches only the injected drop-in path and the module-level
+    ``atomic_write_text``, so the remaining seams stay inert stubs.
+    """
+    return gateway_service.SystemdBackend(
+        AsyncMock(return_value=(0, "", "")),
+        lambda: "kirocrew.service",
+        platform="linux",
+        which=lambda _name: "/usr/bin/systemctl",
+        dropin_path=lambda: dropin,
+        dropin_content=lambda _wt, _kcbin: "",
+    )
+
+
+def test_service_rollback_deletes_the_dropin_when_there_was_none(tmp_path):
+    """No prior drop-in -> the file staged over it is removed, not left behind."""
     dropin = tmp_path / "make-live.conf"
     dropin.write_text("[Service]\n", encoding="utf-8", newline="\n")
-    assert mod._restore_dropin(dropin, None) is True
+    assert _systemd_backend(dropin).rollback(None) is True
     assert not dropin.exists()
 
 
-def test_restore_dropin_rewrites_prior_content(tmp_path):
+def test_service_rollback_rewrites_prior_content(tmp_path):
+    """A prior drop-in -> its exact content is restored over the staged one."""
     dropin = tmp_path / "make-live.conf"
     dropin.write_text("new\n", encoding="utf-8", newline="\n")
-    assert mod._restore_dropin(dropin, "prior\n") is True
+    assert _systemd_backend(dropin).rollback("prior\n") is True
     assert dropin.read_text(encoding="utf-8") == "prior\n"
 
 
-def test_restore_dropin_reports_failure(monkeypatch, tmp_path):
+def test_service_rollback_reports_failure(monkeypatch, tmp_path):
+    """A failed restore returns False so the caller can report
+    ``rolled_back: false`` rather than claiming a rollback that did not land."""
+
     def _boom(path, content):
         raise OSError("read-only fs")
 
     monkeypatch.setattr(gateway_service, "atomic_write_text", _boom)
-    assert mod._restore_dropin(tmp_path / "make-live.conf", "prior") is False
+    backend = _systemd_backend(tmp_path / "make-live.conf")
+    assert backend.rollback("prior") is False
 
 
 @pytest.mark.asyncio
