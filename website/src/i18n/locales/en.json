@@ -6663,11 +6663,12 @@
       "opening_thread": "Opening the conversation…",
       "pick_a_member": "Pick a member to open their conversation.",
       "roster_load_failed": "Could not load the member roster.",
+      "search_members": "Search members…",
       "slug_collision": "This member shares its identifier with {{name}}, whose thread already owns it. Rename one of the crews to give each its own thread.",
       "thread_open_failed": "Could not open this member's conversation.",
       "title": "Crew Members",
-      "workspace": "Workspace",
-      "search_members": "Search members…"
+      "unread_message": "Unread message",
+      "workspace": "Workspace"
     },
     "migrationPage": {
       "app_migration": "App Migration",

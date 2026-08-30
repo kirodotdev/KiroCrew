@@ -13441,8 +13441,8 @@
       "edit_in_crew_manager": "Modifica nel gestore delle crew",
       "empty_roster": "Ancora nessun membro. Crea una crew nel gestore per vederla qui.",
       "inherited": "Ereditato",
-      "member_count_one": "{{count}} membro",
       "member_count_many": "{{count}} membri",
+      "member_count_one": "{{count}} membro",
       "member_count_other": "{{count}} membri",
       "memory_shared_note": "I membri condividono attualmente una sola memoria. Ciò che dici a uno lo sanno tutti.",
       "memory_store": "Archivio memoria",
@@ -13450,11 +13450,12 @@
       "opening_thread": "Apertura della conversazione…",
       "pick_a_member": "Scegli un membro per aprire la conversazione.",
       "roster_load_failed": "Impossibile caricare l'elenco dei membri.",
+      "search_members": "Cerca membri…",
       "slug_collision": "Questo membro condivide il proprio identificatore con {{name}}, la cui conversazione lo possiede già. Rinomina una delle crew perché ognuna abbia la propria conversazione.",
       "thread_open_failed": "Impossibile aprire la conversazione di questo membro.",
       "title": "Membri della crew",
-      "workspace": "Spazio di lavoro",
-      "search_members": "Cerca membri…"
+      "unread_message": "Messaggio non letto",
+      "workspace": "Spazio di lavoro"
     }
   },
   "privacyDisclosure": {

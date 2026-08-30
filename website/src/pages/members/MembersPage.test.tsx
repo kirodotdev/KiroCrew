@@ -313,4 +313,29 @@ describe('MembersPage unread drain', () => {
       expect.arrayContaining(['member-research', 'chat-123']),
     )
   })
+
+  it('a flagged member shows the unread dot on its roster row; unflagged members do not', async () => {
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'scout', slug: 'scout' }),
+    ])
+    await screen.findByText('scout')
+    expect(screen.queryByTestId('member-unread-dot')).toBeNull()
+    act(() => {
+      store.dispatch(markSlotUnread('member-oncall'))
+    })
+    // Exactly one dot: the flagged member's, not every row's.
+    expect(screen.getAllByTestId('member-unread-dot')).toHaveLength(1)
+  })
+
+  it('opening the thread clears the roster dot along with the badge', async () => {
+    const { store } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    act(() => {
+      store.dispatch(markSlotUnread('member-oncall'))
+    })
+    expect(await screen.findByTestId('member-unread-dot')).toBeInTheDocument()
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('chat-pane-stub')
+    await waitFor(() => expect(screen.queryByTestId('member-unread-dot')).toBeNull())
+  })
 })

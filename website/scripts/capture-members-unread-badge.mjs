@@ -77,18 +77,22 @@ await stubDashboardApi(page, {
 await page.goto(base + '/members')
 
 // 01 — the badge the user reported: 1 unread member thread, roster visible,
-// and nothing on screen that could clear it.
+// and the flagged member's row carries the unread dot saying WHICH member.
 const badge = page.locator('[aria-label="1 unread member threads"]')
 await badge.waitFor({ state: 'visible', timeout: 15000 })
 await page.getByText('Rotation summary posted.').waitFor({ timeout: 15000 })
+const rosterDot = page.locator('[data-testid="member-unread-dot"]')
+await rosterDot.waitFor({ state: 'visible', timeout: 15000 })
 await page.screenshot({ path: `${OUT}/01-badge-stuck.png` })
-console.log('01-badge-stuck: rail badge visible = 1 unread member threads')
+console.log('01-badge-stuck: rail badge = 1 unread member threads, roster dot visible')
 
 // 02 — open the thread. Mounting it IS reading it: the badge must drain.
 await page.getByText('oncall', { exact: true }).first().click()
 await page.getByText('Quiet shift — one page, auto-resolved. Summary is in the channel.').waitFor({ timeout: 15000 })
 // FAILS on unfixed code: nothing dispatched markSlotRead, the badge sticks.
 await badge.waitFor({ state: 'detached', timeout: 10000 })
+// The roster dot drains with it — same store row, same drain.
+await rosterDot.waitFor({ state: 'detached', timeout: 10000 })
 // Gone because it DRAINED, not because the shell crashed.
 if (await page.getByText('Something went wrong').isVisible().catch(() => false)) {
   throw new Error('ErrorBoundary visible after open — frame would show a crash, not the fix')

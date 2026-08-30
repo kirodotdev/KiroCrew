@@ -13442,8 +13442,8 @@
       "edit_in_crew_manager": "Editar en el gestor de equipos",
       "empty_roster": "Aún no hay miembros. Crea un equipo en el gestor de equipos para verlo aquí.",
       "inherited": "Heredado",
-      "member_count_one": "{{count}} miembro",
       "member_count_many": "{{count}} miembros",
+      "member_count_one": "{{count}} miembro",
       "member_count_other": "{{count}} miembros",
       "memory_shared_note": "Los miembros comparten actualmente una sola memoria. Lo que le digas a uno lo sabrán todos.",
       "memory_store": "Almacén de memoria",
@@ -13451,11 +13451,12 @@
       "opening_thread": "Abriendo la conversación…",
       "pick_a_member": "Elige un miembro para abrir su conversación.",
       "roster_load_failed": "No se pudo cargar la lista de miembros.",
+      "search_members": "Buscar miembros…",
       "slug_collision": "Este miembro comparte su identificador con {{name}}, cuya conversación ya lo posee. Cambia el nombre de uno de los equipos para que cada uno tenga su propia conversación.",
       "thread_open_failed": "No se pudo abrir la conversación de este miembro.",
       "title": "Miembros del equipo",
-      "workspace": "Espacio de trabajo",
-      "search_members": "Buscar miembros…"
+      "unread_message": "Mensaje sin leer",
+      "workspace": "Espacio de trabajo"
     }
   },
   "privacyDisclosure": {

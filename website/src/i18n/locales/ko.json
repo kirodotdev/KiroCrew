@@ -13094,11 +13094,12 @@
       "opening_thread": "대화를 여는 중…",
       "pick_a_member": "멤버를 선택해 대화를 시작하세요.",
       "roster_load_failed": "멤버 명단을 불러오지 못했습니다.",
+      "search_members": "멤버 검색…",
       "slug_collision": "이 멤버는 {{name}}와(과) 식별자가 같아 대화가 이미 그쪽에 속해 있습니다. 각자 별도의 대화를 가지려면 크루 이름 중 하나를 변경하세요.",
       "thread_open_failed": "이 멤버의 대화를 열 수 없습니다.",
       "title": "크루 멤버",
-      "workspace": "워크스페이스",
-      "search_members": "멤버 검색…"
+      "unread_message": "읽지 않은 메시지",
+      "workspace": "워크스페이스"
     }
   },
   "privacyDisclosure": {

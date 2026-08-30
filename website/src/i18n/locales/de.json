@@ -13272,11 +13272,12 @@
       "opening_thread": "Unterhaltung wird geöffnet…",
       "pick_a_member": "Wähle ein Mitglied, um die Unterhaltung zu öffnen.",
       "roster_load_failed": "Die Mitgliederliste konnte nicht geladen werden.",
+      "search_members": "Mitglieder suchen…",
       "slug_collision": "Dieses Mitglied teilt seinen Bezeichner mit {{name}}, dessen Unterhaltung ihn bereits belegt. Benenne eine der Crews um, damit jede ihre eigene Unterhaltung erhält.",
       "thread_open_failed": "Die Unterhaltung dieses Mitglieds konnte nicht geöffnet werden.",
       "title": "Crew-Mitglieder",
-      "workspace": "Arbeitsbereich",
-      "search_members": "Mitglieder suchen…"
+      "unread_message": "Ungelesene Nachricht",
+      "workspace": "Arbeitsbereich"
     }
   },
   "privacyDisclosure": {

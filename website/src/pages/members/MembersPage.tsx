@@ -154,6 +154,20 @@ export default function MembersPage() {
     if (activeSlot && activeSlotUnread) dispatch(markSlotRead(activeSlot))
   }, [activeSlot, activeSlotUnread, dispatch])
 
+  // Per-row unread marker: the rail badge says "1", this says WHICH member.
+  // Keyed the same way isRunning resolves a member's slot (thread-endpoint
+  // cache first, roster binding as the cold-start fallback), and read straight
+  // from unreadSlots so the drain effect above clears the dot the moment the
+  // thread is opened.
+  const unreadSlots = useAppSelector((s) => s.dashboard.unreadSlots)
+  const isUnread = useCallback(
+    (m: MemberRosterRow) => {
+      const key = slots[m.name] || m.slot_key
+      return !!key && unreadSlots.includes(key)
+    },
+    [slots, unreadSlots],
+  )
+
   const openMember = useCallback(
     (m: MemberRosterRow) => {
       setActiveName(m.name)
@@ -293,6 +307,22 @@ export default function MembersPage() {
                     {m.last_message || '\u00a0'}
                   </span>
                 </span>
+                {/* Unread marker on the row's right edge — the IM convention
+                    (and where the rail badge sits), vertically centered by the
+                    row's items-center. Accent-filled w-2 h-2 like ChatSidebar's
+                    unread dot, with a real accessible name: nothing else on
+                    the row says "unread". The left side is taken — presence
+                    rides the avatar. */}
+                {isUnread(m) && (
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ background: 'var(--accent)' }}
+                    role="img"
+                    aria-label={t('pages.membersPage.unread_message')}
+                    title={t('pages.membersPage.unread_message')}
+                    data-testid="member-unread-dot"
+                  />
+                )}
               </button>
             </li>
           ))}
