@@ -2533,7 +2533,11 @@ class TestProbeServerProcessCleanup:
         proc = AsyncMock()
         proc.returncode = None  # process still running
         proc.stdin = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
         proc.stdin.close = MagicMock()
+        proc.stderr = MagicMock()
+        proc.stderr.read = AsyncMock(return_value=b"")
         proc.kill = MagicMock()
         if wait_side_effect:
             proc.wait = AsyncMock(side_effect=wait_side_effect)
@@ -2562,7 +2566,7 @@ class TestProbeServerProcessCleanup:
     async def test_fallback_kill_on_timeout(self) -> None:
         """When graceful shutdown times out, falls back to proc.kill()."""
         proc = self._make_mock_proc(
-            wait_side_effect=[asyncio.TimeoutError(), AsyncMock(return_value=0)()]
+            wait_side_effect=[asyncio.TimeoutError(), 0]
         )
         server = McpServerInfo(name="test", command="echo")
 
@@ -2769,6 +2773,8 @@ class TestProbeServerTimeout:
         mock_proc.stdin.close = MagicMock()
         mock_proc.stdout = AsyncMock()
         mock_proc.stdout.readline = AsyncMock(side_effect=[init_resp, asyncio.TimeoutError])
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read = AsyncMock(return_value=b"")
         mock_proc.returncode = None
         mock_proc.kill = MagicMock()
         mock_proc.wait = AsyncMock(return_value=0)
@@ -2793,14 +2799,15 @@ class TestProbeServerTimeout:
 
         mock_proc = AsyncMock()
         mock_proc.stdin = AsyncMock()
-        # `StreamWriter.write` is synchronous; only `drain()` is awaited. As an
-        # AsyncMock auto-child it returned a coroutine nobody awaits, surfacing later
-        # as an unraisable "never awaited" warning attributed to whichever test
-        # triggered the GC. The sibling test above already pins this.
+        # StreamWriter.write/close are synchronous while drain is async; stderr.read
+        # is async but returns bytes. Model each boundary explicitly so AsyncMock
+        # cannot invent a coroutine-returning bytes.decode() on the error path.
         mock_proc.stdin.write = MagicMock()
         mock_proc.stdin.close = MagicMock()
         mock_proc.stdout = AsyncMock()
         mock_proc.stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.read = AsyncMock(return_value=b"")
         mock_proc.returncode = None
         mock_proc.kill = MagicMock()
         mock_proc.wait = AsyncMock(return_value=0)
