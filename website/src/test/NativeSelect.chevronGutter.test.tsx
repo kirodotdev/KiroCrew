@@ -16,7 +16,13 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
-import { NativeSelect, NativeSelectOption, CHEVRON_GUTTER } from '../components/ui/native-select'
+import { NativeSelect, NativeSelectOption } from '../components/ui/native-select'
+
+/** The gutter is restated here on purpose. Importing the component's own
+ *  constant would make every assertion below true by construction — it would
+ *  only prove the padding equals whatever it was set from, and a wrong value
+ *  would sail through. Stated independently, a changed gutter reddens this. */
+const CHEVRON_GUTTER = '2.25rem'
 
 // The touch branch is what this file is about: on a mouse device SimpleSelect
 // renders the Radix popup instead and there is no native control to inspect.

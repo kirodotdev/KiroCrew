@@ -89,6 +89,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 
 const RECENT_WINDOW_LS_KEY = 'mc-session-recent-window-ms'
+const RECENT_FILTER_LS_KEY = 'mc-session-recent-only'
 const STALE_COLLAPSE_LS_KEY = 'mc-session-stale-collapse-ms'
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -131,16 +132,6 @@ async function openFilterMenu() {
   return screen.findByRole('menuitem', { name: /Recent/ })
 }
 
-/** Open the menu and turn the Recent filter ON, which is what reveals its
- *  inline picker (a picker on an inactive filter would report an effect it is
- *  not having). Returns the Recent row. */
-async function openFilterMenuWithRecentOn() {
-  const row = await openFilterMenu()
-  fireEvent.click(row)
-  await screen.findByText('Within')
-  return row
-}
-
 /** The filter menu is still mounted (its label row survives). */
 const filterMenuOpen = () => screen.queryAllByText('Filter').length > 0
 
@@ -150,7 +141,7 @@ afterEach(() => vi.clearAllMocks())
 describe('sessions filter menu — duration pickers at phone width', () => {
   it('renders the Recent window picker inline, not behind a submenu trigger', async () => {
     renderSidebar()
-    const recentRow = await openFilterMenuWithRecentOn()
+    const recentRow = await openFilterMenu()
 
     // Inline: no flyout to open, so the row must not advertise one.
     expect(recentRow.getAttribute('aria-haspopup')).toBeNull()
@@ -165,19 +156,22 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     }
   })
 
-  it('hides the window picker while the Recent filter is off', async () => {
+  it('shows the window picker even while the Recent filter is off', async () => {
     renderSidebar()
     await openFilterMenu()
 
-    // Picking a window does not enable the filter, so an always-visible picker
-    // would turn a chip green and change nothing in the list.
-    expect(screen.queryByText('Within')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '1 week' })).not.toBeInTheDocument()
+    // It was gated on the filter being active, because picking a window did not
+    // enable it and a visible picker on an inactive filter reported an effect it
+    // was not having. Picking now enables it, so the gate's reason is gone — and
+    // a gate on one viewport was the per-modality thinking that caused the bug.
+    expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
+    expect(screen.getByText('Within')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '1 week' })).toBeInTheDocument()
   })
 
   it('commits a preset from the inline chip without dismissing the menu', async () => {
     renderSidebar()
-    await openFilterMenuWithRecentOn()
+    await openFilterMenu()
 
     fireEvent.click(screen.getByRole('button', { name: '1 week' }))
 
@@ -228,5 +222,64 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     expect(screen.queryByText('Within')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Custom recency amount')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '1 week' })).not.toBeInTheDocument()
+  })
+
+  it('turns the Recent filter on when a window is chosen, on BOTH viewports', async () => {
+    // Neither leg may enable the filter on its way to the chip, or the final
+    // assertion passes without the fix. The mobile leg used to tap the row first
+    // (to reveal a gated picker), which wrote the flag before the pick and made
+    // that leg true by construction; the picker is no longer gated, so the tap is
+    // gone and both legs now discriminate.
+    for (const isMobile of [true, false]) {
+      localStorage.clear()
+      mobile.value = isMobile
+      const view = renderSidebar()
+      const row = await openFilterMenu()
+      expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
+
+      if (!isMobile) {
+        // ArrowRight is the one key ChatSidebar lets fall through to Radix's
+        // submenu-open handler (Enter/Space toggle the filter instead).
+        fireEvent.keyDown(row, { key: 'ArrowRight' })
+      }
+      await screen.findByText('Within')
+      // Reaching the picker must not have enabled anything by itself.
+      expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: '1 week' }))
+      await waitFor(() => expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBe('1'))
+      view.unmount()
+    }
+  })
+
+  it('enables the filter even when the clicked preset is the one already stored', async () => {
+    // DEFAULT_RECENT_WINDOW_MS equals the "1 hour" preset, so this is the chip a
+    // fresh user is most likely to click — and a value-equality gate on the shared
+    // commit seam would swallow exactly this case, keeping the defect alive for
+    // the most common pick.
+    renderSidebar()
+    await openFilterMenu()
+    const chip = screen.getByRole('button', { name: '1 hour' })
+    expect(chip).toHaveAttribute('aria-pressed', 'true')
+    expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
+
+    fireEvent.click(chip)
+
+    await waitFor(() => expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBe('1'))
+    expect(localStorage.getItem(RECENT_WINDOW_LS_KEY)).toBe(String(60 * 60 * 1000))
+  })
+
+  it('does not toggle the filter when a commit re-writes the same window', async () => {
+    mobile.value = false
+    renderSidebar()
+    const row = await openFilterMenu()
+    fireEvent.keyDown(row, { key: 'ArrowRight' })
+    const amount = await screen.findByLabelText('Custom recency amount')
+
+    // Default is 1 hour and the draft already reads "1", so a bare blur commits
+    // the identical window. That must not read as "the user chose recency".
+    fireEvent.blur(amount)
+    await waitFor(() => expect(localStorage.getItem(RECENT_WINDOW_LS_KEY)).toBe(String(60 * 60 * 1000)))
+    expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
   })
 })

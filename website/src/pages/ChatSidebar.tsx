@@ -2608,6 +2608,16 @@ function ChatSidebar({
       return next
     })
   }, [])
+  const enableFilter = useCallback((key: SessionFilterKey) => {
+    setActiveFilters(prev => {
+      if (prev.has(key)) return prev
+      const next = new Set(prev)
+      next.add(key)
+      const filterDef = SESSION_FILTERS.find(sf => sf.key === key)!
+      safeSetItem(filterDef.storageKey, '1')
+      return next
+    })
+  }, [])
   // Signal from the SSE/data-fetch layer indicating the initial slot list
   // has arrived. Used by the auto-drain effect to distinguish "data not yet
   // loaded" from "data loaded and genuinely empty".
@@ -2648,6 +2658,20 @@ function ChatSidebar({
     setRecentWindowMs(ms)
     safeSetItem(RECENT_WINDOW_LS_KEY, String(ms))
   }, [])
+  /**
+   * Commit a window the user explicitly PICKED, which also turns the filter on.
+   *
+   * Intent is decided here rather than by comparing the new window to the stored
+   * one, because an identical value does not mean the user did nothing: the
+   * default window IS the first preset (`DEFAULT_RECENT_WINDOW_MS` === the
+   * `1 hour` chip), so the chip a fresh user is most likely to click is exactly
+   * the one a value-equality gate would swallow — leaving the "chip goes green,
+   * list does not change" defect alive for the most common pick.
+   */
+  const chooseRecentWindow = useCallback((ms: number) => {
+    setRecentWindow(ms)
+    enableFilter('recent')
+  }, [setRecentWindow, enableFilter])
   // Custom-picker draft state. The amount is a raw string (not derived from the
   // committed window) so the field can be cleared / partially edited without
   // snapping to 1 on every keystroke, and the unit stays exactly as the user
@@ -2657,20 +2681,27 @@ function ChatSidebar({
   const [recentAmountDraft, setRecentAmountDraft] = useState(() => String(decomposeRecentWindow(recentWindowMs).value))
   const [recentUnitDraft, setRecentUnitDraft] = useState<RecentUnit>(() => decomposeRecentWindow(recentWindowMs).unit)
   const selectRecentPreset = useCallback((ms: number) => {
-    setRecentWindow(ms)
+    chooseRecentWindow(ms)
     const { value, unit } = decomposeRecentWindow(ms)
     setRecentAmountDraft(String(value))
     setRecentUnitDraft(unit)
-  }, [setRecentWindow])
+  }, [chooseRecentWindow])
   const commitRecentAmount = useCallback(() => {
     const clamped = clampRecentAmount(recentAmountDraft)
     setRecentAmountDraft(String(clamped))
-    setRecentWindow(customRecentWindowMs(clamped, recentUnitDraft))
-  }, [recentAmountDraft, recentUnitDraft, setRecentWindow])
+    const next = customRecentWindowMs(clamped, recentUnitDraft)
+    setRecentWindow(next)
+    // The amount field commits on BLUR as well as Enter, so leaving the field
+    // untouched re-commits the window it already held. A changed amount is the
+    // intent signal here; a bare blur must not toggle the filter behind the
+    // user's back. The picked paths above need no such test — a click on a chip
+    // or a unit is unambiguous even when the value repeats.
+    if (next !== recentWindowMs) enableFilter('recent')
+  }, [recentAmountDraft, recentUnitDraft, recentWindowMs, setRecentWindow, enableFilter])
   const changeRecentUnit = useCallback((unit: RecentUnit) => {
     setRecentUnitDraft(unit)
-    setRecentWindow(customRecentWindowMs(recentAmountDraft, unit))
-  }, [recentAmountDraft, setRecentWindow])
+    chooseRecentWindow(customRecentWindowMs(recentAmountDraft, unit))
+  }, [recentAmountDraft, chooseRecentWindow])
   const [recentTick, setRecentTick] = useState(0)
   useEffect(() => {
     if (!recentFilterActive) return
@@ -5494,11 +5525,12 @@ function ChatSidebar({
                       // the window options sit under it, one tap each. No chevron
                       // — there is nothing left to open.
                       //
-                      // The picker shows only while the filter is ON. Picking a
-                      // window does not enable it, so an always-visible picker on
-                      // an inactive filter turns a chip green and changes nothing
-                      // in the list — a control that reports an effect it is not
-                      // having. Tapping the row enables the filter and reveals it.
+                      // The picker is NOT gated on the filter being active. It was,
+                      // on the reasoning that picking a window did not enable the
+                      // filter so an always-visible picker reported an effect it
+                      // was not having — and picking now DOES enable it, at the
+                      // commit seam, for every viewport. Keeping the gate would be
+                      // the per-modality thinking that caused this defect.
                       return (
                         <Fragment key={filterDef.key}>
                           <DropdownMenuItem
@@ -5507,7 +5539,7 @@ function ChatSidebar({
                           >
                             {rowBody}
                           </DropdownMenuItem>
-                          {active && <div className="px-2 pb-1">{picker}</div>}
+                          <div className="px-2 pb-1">{picker}</div>
                         </Fragment>
                       )
                     }
