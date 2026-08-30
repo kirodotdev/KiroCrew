@@ -54,8 +54,8 @@ import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
 import { canRenderMobileConnectKind } from './components/mobileConnectRenderers'
-import { motion, AnimatePresence, useMotionValue } from 'framer-motion'
-import { animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
+import { motion, AnimatePresence, useMotionValue, useTransform } from 'framer-motion'
+import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
 
 /** Mobile nav drawer travel: its 220px width + the 8px mx-2 inset + border. */
 /** Mobile nav drawer width. Shared with its travel below so the two cannot drift
@@ -1603,6 +1603,18 @@ export default function App() {
   const mobileNavX = useMotionValue(0)
   const mobileNavPanelRef = useRef<HTMLElement | null>(null)
   const mobileNavScrimRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * The dashboard shell — the common ancestor of `<main>`, the nav drawer's
+   * panel and its scrim. Bound rather than `<main>` because the panel and scrim
+   * are `fixed` siblings OUTSIDE it, so a gesture rooted at `<main>` never sees
+   * the touches that should CLOSE the drawer: the finger lands on the scrim or
+   * the panel, and the listener is on an element neither is inside.
+   *
+   * Widening the root does not widen what arms: dialogs render through a portal
+   * to `document.body`, so they are outside this element entirely, and a page
+   * with its own drawer claims its sides with `data-owns-swipe`.
+   */
+  const shellRef = useRef<HTMLDivElement | null>(null)
   // Safe against the projection bug only because the drawer's nav rows drop
   // their `layout` prop on mobile — see registerDrawerTargets' precondition.
   useEffect(() => registerDrawerTargets(mobileNavX, {
@@ -1617,6 +1629,15 @@ export default function App() {
     setMobileNavPhase('open')
     animateDrawer(mobileNavX, 0)
   }, [mobileNavX])
+  /** Scrim opacity derived from the panel's own offset: 1 at rest, 0 as it
+   *  clears the edge, so a half-open drag is half-dimmed and a cancelled drag
+   *  un-dims with the finger. Divided by the drawer's OWN travel, matching the
+   *  sessions drawer. A literal `opacity: 0` was correct only while the tap was
+   *  the sole mover — the compositor settle animates the scrim in lockstep and
+   *  never reads this, but a DRAG writes the MotionValue and nothing else would
+   *  paint the dim. */
+  const mobileNavScrim = useTransform(mobileNavX, x =>
+    Math.max(0, Math.min(1, 1 + x / Math.max(1, mobileNavTravel()))))
   const closeMobileNavDrawer = useCallback(() => {
     if (mobileNavPhaseRef.current !== 'open') return
     mobileNavPhaseRef.current = 'closing'
@@ -1627,6 +1648,36 @@ export default function App() {
       setMobileNavPhase('closed')
     })
   }, [mobileNavX])
+  /**
+   * Mount the drawer for a gesture that has begun opening it, WITHOUT the slide
+   * `openMobileNav` would start: the finger owns the offset from here until it
+   * lifts, and a settle running against it would pull the panel out from under
+   * the drag. Same split as the chat page's own drawer.
+   */
+  const beginMobileNavDrag = useCallback(() => {
+    mobileNavPhaseRef.current = 'open'
+    setMobileNavPhase('open')
+  }, [])
+  /**
+   * The nav drawer is reachable by swipe on EVERY page, not just chat: the
+   * gesture is bound on the shell, so it covers both the page content that opens
+   * it and the scrim/panel that close it. A page owning the same side declares
+   * `data-owns-swipe` on the element it binds, which suppresses this instance
+   * there (the chat page keeps its sessions drawer on a rightward drag). The
+   * hamburger stays the discoverable path.
+   */
+  useDrawerSwipe(shellRef, {
+    enabled: isMobile,
+    travel: mobileNavTravel,
+    open: mobileNavPhase === 'open',
+    x: mobileNavX,
+    onGestureOpen: beginMobileNavDrag,
+    onSettle: open => {
+      if (open) return
+      mobileNavPhaseRef.current = 'closed'
+      setMobileNavPhase('closed')
+    },
+  })
 
   // Dynamic app nav items — all apps (builtin + installed) with UI pages
   const [appNavItems, setAppNavItems] = useState<Array<{ path: string; id: string; label: string; group: string; icon: React.ReactElement }>>([])
@@ -2654,6 +2705,7 @@ export default function App() {
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
+      ref={shellRef}
       data-testid="dashboard-shell"
       className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       // Retire the entrance animation once it has played, so re-showing this
@@ -3342,11 +3394,11 @@ export default function App() {
           add a giant tab stop over the whole page, which is why this is NOT
           the Clickable component. */}
       {isMobile && mobileNavMounted && (
-        <div
+        <motion.div
           ref={mobileNavScrimRef}
           data-testid="nav-backdrop"
           aria-hidden="true"
-          style={{ opacity: 0 }}
+          style={{ opacity: mobileNavScrim }}
           className="fixed inset-0 z-[46] bg-black/50 backdrop-blur-sm"
           onClick={closeMobileNavDrawer}
         />
@@ -3752,21 +3804,28 @@ export default function App() {
                  the 8px inset on all four keeps the drawer reading as one
                  floating card. `top-0 bottom-0` with both margins resolves the
                  height to viewport-16px, so nothing is clipped. */
-              /* Plain nav, not motion.nav: the slide runs on the COMPOSITOR
-                 (animateDrawer via mobileNavPanelRef), and framer must not own
-                 a competing transform on the same element. Seated offscreen by
-                 an inline transform so the first painted frame is the closed
-                 offset; the settle overwrites it. */
-              <nav
+              /* motion.nav, like the sessions drawer and the right overlay: a
+                 drag writes `mobileNavX` directly and ONLY a live binding paints
+                 those frames. A plain <nav> reading `mobileNavX.get()` at render
+                 time was correct while the tap was this panel's only mover —
+                 a MotionValue deliberately does not re-render React, so once the
+                 drawer gained a gesture the panel froze after the single
+                 re-render the lock happens to cause, and moved only on release
+                 when the settle took over. The settle still runs on the
+                 COMPOSITOR through mobileNavPanelRef; framer and that animation
+                 coexist here exactly as they do for the other two panels,
+                 because `takeOverDrawer` adopts and cancels whatever is running
+                 before either one writes. */
+              <motion.nav
                 key="mobile-nav-drawer"
                 ref={mobileNavPanelRef}
-                style={{ width: MOBILE_NAV_WIDTH, transform: `translate3d(${mobileNavX.get()}px, 0, 0)` }}
+                style={{ width: MOBILE_NAV_WIDTH, x: mobileNavX }}
                 className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-2 mb-2 shadow-sm z-50 overflow-hidden fixed top-safe left-safe bottom-safe"
                 role="navigation"
                 aria-label={i18nT('app.main_navigation')}
               >
                 {navBody}
-              </nav>
+              </motion.nav>
             )}
           </>
         ) : (

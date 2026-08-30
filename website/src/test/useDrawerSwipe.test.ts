@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { animate, motionValue } from 'framer-motion'
 import { useDrawerSwipe } from '../hooks/useDrawerSwipe'
@@ -8,7 +8,16 @@ import { useDrawerSwipe } from '../hooks/useDrawerSwipe'
  *  millisecond, which would pin every gesture's velocity at 0. */
 function touch(type: string, clientX: number, clientY = 0, timeStamp = 0): TouchEvent {
   const t = { clientX, clientY } as Touch
-  const init: TouchEventInit = { bubbles: true }
+  // `composed: true` is what a real touch event carries, and it is what lets the
+  // event escape a shadow root — without it a fixture that dispatches inside one
+  // never reaches a listener outside, and a test asserting "the gesture stood
+  // down" passes because nothing ran at all.
+  //
+  // `cancelable: true` likewise: a real touchmove is cancelable unless it was
+  // already committed to a passive listener, and the hook's page suppression
+  // checks that flag before calling preventDefault. Omit it and the suppression
+  // correctly does nothing, so the test measures the fixture, not the code.
+  const init: TouchEventInit = { bubbles: true, composed: true, cancelable: true }
   if (type === 'touchstart' || type === 'touchmove') init.touches = [t]
   if (type === 'touchend' || type === 'touchcancel') init.changedTouches = [t]
   const e = new TouchEvent(type, init)
@@ -460,9 +469,18 @@ describe('useDrawerSwipe', () => {
   })
 
   // ── Horizontal scroller ownership (carried over from useSwipeEdge) ───────
-  // A wide code block or a card strip under the finger owns the gesture while
-  // it still has somewhere to scroll. Losing this makes every horizontal pan
-  // inside a message close or open the drawer.
+  // A wide code block, a markdown table or a card strip under the finger owns
+  // the gesture OUTRIGHT. Losing this makes every horizontal pan inside a
+  // message close or open a drawer.
+  //
+  // It used to be conditional — deferring only while the scroller still had
+  // somewhere to go in the drag's direction, so the gesture was handed over at
+  // its end the way nested scroll views do. That is right when the parent is
+  // itself a scroller and wrong when the parent is a drawer: a freshly rendered
+  // code block sits at `scrollLeft === 0`, so the FIRST rightward drag on it had
+  // nothing to reveal and opened the drawer instead of scrolling the code. The
+  // two cases below are the ones that changed, and they are the common state
+  // rather than an edge.
 
   function appendScroller(scrollLeft: number, scrollWidth = 900, clientWidth = 300): HTMLDivElement {
     const sc = document.createElement('div')
@@ -494,21 +512,356 @@ describe('useDrawerSwipe', () => {
     expect(x.get()).toBe(0)
   })
 
-  it('closes over a scroller already at its end that did not move', () => {
+  it('does not close over a scroller already at its end', () => {
+    // Mirror of the reported defect: a table scrolled to its right edge, dragged
+    // left, used to open the side panel because there was nothing further to
+    // reveal. The table still owns the axis.
     const sc = appendScroller(600)
     x.set(0)
     mount(true)
     expect(sc.scrollLeft).toBe(sc.scrollWidth - sc.clientWidth)
     fire(sc, touch('touchstart', 200))
     fire(sc, touch('touchmove', 100))
-    expect(x.get()).toBe(-100)
+    expect(x.get()).toBe(0)
   })
 
-  it('opens from the left band over a scroller already at its start', () => {
+  it('does not open over a scroller already at its start', () => {
+    // The reported defect itself: a code block renders at scrollLeft 0, so the
+    // first rightward drag on it has nothing to reveal — and must still scroll
+    // the code rather than summon the drawer.
     const sc = appendScroller(0)
     mount()
-    fire(sc, touch('touchstart', 40))
-    fire(sc, touch('touchmove', 200))
+    fire(sc, touch('touchstart', 200))
+    fire(sc, touch('touchmove', 360))
+    expect(onGestureOpen).not.toHaveBeenCalled()
+    // Untouched: a gesture that never armed does not seat the closed offset
+    // either, so the value stays where the consumer left it.
+    expect(x.get()).toBe(0)
+  })
+
+  it('still opens over content that has nothing to scroll', () => {
+    // Deference is owed to a scroller, not to any element inside a message: a
+    // code block whose content fits has no axis to own, so the drag is
+    // unambiguous and the drawer is still reachable there.
+    const fits = appendScroller(0, 300, 300)
+    expect(fits.scrollWidth - fits.clientWidth).toBe(0)
+    mount()
+    fire(fits, touch('touchstart', 200))
+    fire(fits, touch('touchmove', 360))
     expect(onGestureOpen).toHaveBeenCalledTimes(1)
+  })
+
+  /** A shadow host whose shadow root holds the element that actually scrolls —
+   *  the shape of a finished chat code block (Pierre's `diffs-container`).
+   *
+   *  Dispatched on the HOST with a stubbed `composedPath()`, which is what a real
+   *  engine presents: the listener outside the root sees `target === host`
+   *  (retargeting), while `composedPath()` still carries the inner node. jsdom
+   *  does not retarget on its own, so dispatching straight at the inner node
+   *  would leave `e.target` pointing inside the root and let a plain
+   *  `parentElement` walk find the scroller — a fixture that cannot fail. */
+  function appendShadowScroller(scrolls: boolean): { host: HTMLDivElement; inner: HTMLDivElement } {
+    const host = document.createElement('div')
+    el.appendChild(host)
+    const shadow = host.attachShadow({ mode: 'open' })
+    const inner = document.createElement('div')
+    if (scrolls) {
+      inner.style.overflowX = 'scroll'
+      Object.defineProperty(inner, 'scrollWidth', { configurable: true, value: 900 })
+      Object.defineProperty(inner, 'clientWidth', { configurable: true, value: 300 })
+      Object.defineProperty(inner, 'scrollLeft', { configurable: true, writable: true, value: 0 })
+    }
+    shadow.appendChild(inner)
+    return { host, inner }
+  }
+
+  function fireThroughShadow(host: HTMLElement, inner: HTMLElement, e: TouchEvent) {
+    Object.defineProperty(e, 'composedPath', {
+      value: () => [inner, inner.getRootNode(), host, el, document.body, document, window],
+    })
+    host.dispatchEvent(e)
+  }
+
+  it('finds a scroller INSIDE a shadow root', () => {
+    // Why the earlier fix did not help: the deference condition was right, but
+    // the scroller was never FOUND. `e.target` is retargeted to the host, so a
+    // walk up `parentElement` sees a host with nothing to scroll and concludes
+    // there is none. `composedPath()` crosses the boundary.
+    const { host, inner } = appendShadowScroller(true)
+    mount()
+    fireThroughShadow(host, inner, touch('touchstart', 200))
+    fireThroughShadow(host, inner, touch('touchmove', 360))
+    expect(onGestureOpen).not.toHaveBeenCalled()
+    expect(x.get()).toBe(0)
+  })
+
+  it('defers when the BOUND element is itself the scroller', () => {
+    // Pins the asymmetry between the two chain readers, which is easy to
+    // "simplify" away: the scroller search includes `root` (a consumer that binds
+    // a horizontally scrollable element gets no gesture — the pre-existing
+    // contract), while the ownership search excludes it (an instance does not
+    // suppress itself with its own claim).
+    el.style.overflowX = 'auto'
+    Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 900 })
+    Object.defineProperty(el, 'clientWidth', { configurable: true, value: 300 })
+    mount()
+    fire(el, touch('touchstart', 200))
+    fire(el, touch('touchmove', 360))
+    expect(onGestureOpen).not.toHaveBeenCalled()
+  })
+
+  it('a shadow host with nothing to scroll does not suppress the gesture', () => {
+    // Control: crossing the boundary must not turn every web component into a
+    // gesture sink.
+    const { host, inner } = appendShadowScroller(false)
+    mount()
+    fireThroughShadow(host, inner, touch('touchstart', 200))
+    fireThroughShadow(host, inner, touch('touchmove', 360))
+    expect(onGestureOpen).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── The page stands down for the duration of a locked gesture ──────────────
+// The four tracking listeners are passive, so without this the browser keeps
+// doing its own thing WHILE the finger drives the panel: the transcript scrolls
+// vertically under the drawer, and the release fires a click on whatever the
+// drag passed over.
+describe('useDrawerSwipe page suppression', () => {
+  let el: HTMLDivElement
+  let ref: { current: HTMLDivElement }
+  let x: ReturnType<typeof motionValue<number>>
+  let onGestureOpen: ReturnType<typeof vi.fn>
+  let onSettle: ReturnType<typeof vi.fn>
+  let clicked: ReturnType<typeof vi.fn>
+  let button: HTMLButtonElement
+
+  beforeEach(() => {
+    el = document.createElement('div')
+    document.body.appendChild(el)
+    clicked = vi.fn()
+    button = document.createElement('button')
+    button.addEventListener('click', clicked)
+    el.appendChild(button)
+    ref = { current: el }
+    x = motionValue(0)
+    onGestureOpen = vi.fn()
+    onSettle = vi.fn()
+    Object.defineProperty(window, 'innerWidth', { writable: true, value: 400 })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    el.remove()
+  })
+
+  function mount(open = false) {
+    return renderHook(() => useDrawerSwipe(ref, {
+      enabled: true, side: 'left', open, x, onGestureOpen, onSettle,
+    }))
+  }
+
+  function fire(target: EventTarget, e: TouchEvent) {
+    act(() => { target.dispatchEvent(e) })
+    return e
+  }
+
+  /** A cancelable click, so `defaultPrevented` and the handler both mean
+   *  something — the two halves of "the button did not fire". */
+  function click(target: EventTarget) {
+    const e = new MouseEvent('click', { bubbles: true, cancelable: true })
+    act(() => { target.dispatchEvent(e) })
+    return e
+  }
+
+  it('prevents the page from scrolling once the gesture is locked', () => {
+    mount()
+    fire(el, touch('touchstart', 40))
+    const locking = fire(el, touch('touchmove', 60))
+    // The frame that locked escapes: a listener added mid-dispatch only governs
+    // SUBSEQUENT events. That is the frame the axis lock spent proving intent.
+    expect(locking.defaultPrevented).toBe(false)
+    const after = fire(el, touch('touchmove', 200))
+    expect(after.defaultPrevented).toBe(true)
+  })
+
+  it('leaves a touch that never locks entirely to the browser', () => {
+    mount()
+    fire(el, touch('touchstart', 40))
+    // Vertical: the scroller owns it, and it must keep scrolling.
+    const move = fire(el, touch('touchmove', 42, 80))
+    expect(move.defaultPrevented).toBe(false)
+    const next = fire(el, touch('touchmove', 44, 160))
+    expect(next.defaultPrevented).toBe(false)
+  })
+
+  it('swallows the click a released drag would fire on a button under the finger', () => {
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    fire(el, touch('touchmove', 240))
+    fire(el, touch('touchend', 240))
+    const e = click(button)
+    expect(clicked).not.toHaveBeenCalled()
+    expect(e.defaultPrevented).toBe(true)
+  })
+
+  it('swallows only ONE click, so the next genuine tap gets through', () => {
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    fire(el, touch('touchend', 240))
+    click(button)
+    expect(clicked).not.toHaveBeenCalled()
+    click(button)
+    expect(clicked).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops swallowing after the window elapses, so a later tap is not eaten', () => {
+    vi.useFakeTimers()
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    fire(el, touch('touchend', 240))
+    // Nothing disarms it here: an engine that suppressed the click itself sends
+    // none, so the timer is the only way back. Well past the swallow window.
+    act(() => { vi.advanceTimersByTime(2000) })
+    click(button)
+    expect(clicked).toHaveBeenCalledTimes(1)
+  })
+
+  it('declines a DIAGONAL drag the browser has likely already started scrolling', () => {
+    // dy under dx, so the "is this vertical?" test passes — but dy alone was
+    // already past the platform's scroll slop, so the page is moving and no
+    // amount of preventDefault takes the touch back. The band between the slop
+    // and dx is exactly where this hook's rule and the browser's disagreed.
+    mount()
+    fire(el, touch('touchstart', 40, 0))
+    fire(el, touch('touchmove', 52, 9))
+    expect(onGestureOpen).not.toHaveBeenCalled()
+    expect(x.get()).toBe(0)
+    // And it stays declined: the gesture is ABANDONED, not merely postponed. The
+    // finger's dy can wobble back under the slop, but the scroll it started is
+    // already running — so a later clean horizontal stretch of the same touch
+    // must not retroactively claim it.
+    fire(el, touch('touchmove', 200, 4))
+    expect(onGestureOpen).not.toHaveBeenCalled()
+    expect(x.get()).toBe(0)
+  })
+
+  it('still arms on the small vertical drift a real horizontal swipe carries', () => {
+    // The control: a thumb arc is never perfectly straight, and declining it
+    // would be a gesture nobody can perform.
+    mount()
+    fire(el, touch('touchstart', 40, 0))
+    fire(el, touch('touchmove', 60, 5))
+    expect(onGestureOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-opens immediately after a closing swipe, while the settle still runs', () => {
+    // The reported defect: swipe shut, swipe straight back open, and the second
+    // gesture is intermittently declined. `onSettle` runs in the settle
+    // animation's completion callback, so the consumer's `open` prop still reads
+    // TRUE for the whole closing slide — and a static prop here models exactly
+    // that window. The re-opening drag was judged as an opening drag on an open
+    // panel and reset. Direction is immaterial: this one is perfectly clean.
+    mount(true)
+    fire(el, touch('touchstart', 200))
+    fire(el, touch('touchmove', 180))   // leftward: closes a left panel
+    fire(el, touch('touchend', 40, 0, 400))
+    expect(onSettle).not.toHaveBeenCalled()  // the settle is still in flight
+
+    onGestureOpen.mockClear()
+    fire(el, touch('touchstart', 200, 0, 500))
+    fire(el, touch('touchmove', 240, 0, 516))
+    expect(onGestureOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it('adopts an open state the CONSUMER set, so a drag can close a tapped-open panel', () => {
+    // The other half of the rule above. A settle commits its own target, but a
+    // panel opened by the hamburger never went through one — the prop is the only
+    // authority there, so a prop CHANGE must be adopted or the gesture would still
+    // believe the panel closed and decline the closing drag.
+    const h = renderHook(
+      ({ open }: { open: boolean }) => useDrawerSwipe(ref, {
+        enabled: true, side: 'left', open, x, onGestureOpen, onSettle,
+      }),
+      { initialProps: { open: false } },
+    )
+    act(() => { h.rerender({ open: true }) })
+    fire(el, touch('touchstart', 200))
+    fire(el, touch('touchmove', 160))   // leftward: closes a left panel
+    expect(x.get()).toBeLessThan(0)
+  })
+
+  it('suppresses the page again on a second drag inside the click window', () => {
+    // The two fixes interact: committing the settle target made an immediate
+    // re-open ARM, and the ~350ms click-swallow window is exactly that beat. A
+    // suppression parked for the click has already dropped its touchmove
+    // listener, so inheriting it left the second drag scrolling the page.
+    vi.useFakeTimers()
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    fire(el, touch('touchend', 240))
+    // Still inside the click window: the first suppression is parked, not gone.
+    act(() => { vi.advanceTimersByTime(50) })
+    // The first drag committed the panel OPEN, so the second is the CLOSING
+    // direction — "swipe out, swipe straight back in", the same beat.
+    fire(el, touch('touchstart', 200, 0, 500))
+    fire(el, touch('touchmove', 180, 0, 516))
+    const after = fire(el, touch('touchmove', 100, 0, 532))
+    expect(after.defaultPrevented).toBe(true)
+  })
+
+  it('stops swallowing as soon as a NEW touch begins', () => {
+    // The common case, not a rare one: a drag over non-interactive content has
+    // its synthetic click suppressed by the locked gesture's own
+    // preventDefault, so nothing arrives to disarm the swallower and it stays
+    // armed for the whole window — long enough to eat the user's next real tap,
+    // which is this feature's core beat (swipe open, then tap something in the
+    // drawer). A fresh finger means any pending click belongs to it.
+    vi.useFakeTimers()
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    fire(el, touch('touchend', 240))
+    // Well inside CLICK_SWALLOW_MS, and no click has arrived to disarm it.
+    act(() => { vi.advanceTimersByTime(60) })
+    // The user's next deliberate tap: touchstart, then its click.
+    fire(el, touch('touchstart', 100, 0, 500))
+    fire(el, touch('touchend', 100, 0, 540))
+    const e = click(button)
+    expect(clicked).toHaveBeenCalledTimes(1)
+    expect(e.defaultPrevented).toBe(false)
+  })
+
+  it('a plain tap that never became a gesture is never swallowed', () => {
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchend', 41))
+    click(button)
+    expect(clicked).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases its window listeners when unbound mid-gesture', () => {
+    // These listeners live on `window`, so an unmount that left them armed would
+    // keep preventing scroll and eat a tap on whatever replaced the hook.
+    const h = mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    h.unmount()
+    const move = fire(el, touch('touchmove', 200))
+    expect(move.defaultPrevented).toBe(false)
+    click(button)
+    expect(clicked).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases suppression when the gesture is cancelled rather than released', () => {
+    mount()
+    fire(el, touch('touchstart', 40))
+    fire(el, touch('touchmove', 60))
+    fire(el, touch('touchcancel', 60))
+    const move = fire(el, touch('touchmove', 200))
+    expect(move.defaultPrevented).toBe(false)
   })
 })

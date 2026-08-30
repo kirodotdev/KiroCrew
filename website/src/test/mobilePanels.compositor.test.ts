@@ -225,3 +225,105 @@ describe('the nav drawer travels its own width too', () => {
     expect(slack / (width + inset)).toBeLessThan(0.03)
   })
 })
+
+describe('a panel with a gesture is bound LIVE to its offset', () => {  // The defect this pins, observed on a real device: the nav panel read
+  // `mobileNavX.get()` into an inline transform at render time. A MotionValue
+  // deliberately does not re-render React, so a drag wrote the value every frame
+  // while the DOM moved only on the single re-render the gesture's own
+  // setDragging causes — the panel came out "a little" and then completed only
+  // on release, when the settle took over. Correct while the tap was its only
+  // mover; wrong the moment it gained a gesture.
+  it('binds the nav panel and its scrim to the MotionValue, not a snapshot', () => {
+    expect(app).toMatch(/<motion\.nav[\s\S]{0,200}?style=\{\{ width: MOBILE_NAV_WIDTH, x: mobileNavX \}\}/)
+    expect(app).toMatch(/<motion\.div[\s\S]{0,200}?ref=\{mobileNavScrimRef\}[\s\S]{0,200}?style=\{\{ opacity: mobileNavScrim \}\}/)
+    // A render-time read of the value is the bug, on either element.
+    expect(app).not.toContain('mobileNavX.get()}px')
+    expect(app).not.toMatch(/ref=\{mobileNavScrimRef\}[\s\S]{0,200}?style=\{\{ opacity: 0 \}\}/)
+  })
+
+  it('derives the scrim from the same travel the panel uses', () => {
+    // Divided by the drawer's OWN travel, so the dim reaches 0 exactly as the
+    // panel clears the edge rather than at some fraction of the viewport.
+    expect(app).toMatch(/useTransform\(mobileNavX, x =>\s*\n?\s*Math\.max\(0, Math\.min\(1, 1 \+ x \/ Math\.max\(1, mobileNavTravel\(\)\)\)\)\)/)
+  })
+
+  it('keeps every gesture-driven panel on the same rule', () => {
+    // The sessions drawer and the right overlay were already live-bound; the
+    // rule is now uniform, so a future panel copying any of them gets it right.
+    expect(chat).toMatch(/slideX=\{isMobile \? drawerX : undefined\}/)
+    // The right overlay binds through a ternary (it is display:none while closed,
+    // to keep an iframe alive), so the live binding is the branch, not the whole
+    // style prop.
+    expect(chat).toMatch(/\{ x: sideOverlayX \}\)/)
+  })
+
+  it('makes every in-shell gesture consumer declare its claim', () => {
+    // The invariant, not a headcount: any consumer that binds its OWN gesture
+    // inside the shell has to claim its sides, or it and the app-wide instance
+    // arm on one touch. App.tsx is the shell instance itself, so it declares
+    // nothing — everyone else must. A new page that adds a drawer gesture and
+    // forgets the attribute trips this rather than shipping a fight.
+    const consumers = { 'App.tsx': app, 'ChatPage.tsx': chat }
+    for (const [name, src] of Object.entries(consumers)) {
+      if (!/useDrawerSwipe\(/.test(src)) continue
+      const isShellInstance = /useDrawerSwipe\(shellRef, \{/.test(src)
+      if (isShellInstance) continue
+      expect(src, `${name} binds a drawer gesture without data-owns-swipe`)
+        .toContain('data-owns-swipe')
+    }
+  })
+
+  it('withholds the claim exactly where the page binds nothing', () => {
+    // An embedded ChatPage renders INSIDE the shell (artifact companion, Papyrus
+    // co-author, app SDK panel) at full width on mobile, and both of its own
+    // instances are gated on `!embedded`. A claim there suppressed the nav swipe
+    // while owning nothing — a dead gesture on the whole screen, and a direct
+    // defeat of the fail-open default, since the one page that declares was
+    // declaring past its own ownership.
+    expect(chat).toContain("data-owns-swipe={embedded ? undefined : 'left right'}")
+    expect(chat).not.toContain('data-owns-swipe="left right"')
+    // The gates the claim now mirrors.
+    expect((chat.match(/enabled: isMobile && !embedded/g) ?? []).length).toBe(2)
+  })
+
+  it('documents the override, so a page author can find it', () => {
+    // A cross-component DOM contract that lives only in code comments is one a
+    // new page never learns about. page-layout.md is where the sibling mobile
+    // and gesture rules already live.
+    const doc = readFileSync(resolve(__dirname, '../../docs/page-layout.md'), 'utf8')
+    expect(doc).toContain('data-owns-swipe')
+    // The two halves that are silent when wrong: which element carries it, and
+    // that a panel gaining a gesture must stop serializing its offset.
+    expect(doc).toMatch(/not including/)
+    expect(doc).toMatch(/bound LIVE|bind it instead|Bind it instead/i)
+    // …and the widget half, which is the one no attribute expresses.
+    expect(doc).toContain('touch-action: none')
+  })
+})
+
+describe('the nav drawer is swipeable on every page', () => {
+  it('binds the gesture on the shell, which the scrim and panel are inside too', () => {
+    // NOT <main>: the panel and scrim are `fixed` siblings outside it, so a
+    // gesture rooted there can open the drawer but never sees the touch that
+    // should close it.
+    expect(app).toMatch(/ref=\{shellRef\}\s*\n\s*data-testid="dashboard-shell"/)
+    expect(app).toMatch(/useDrawerSwipe\(shellRef, \{/)
+    expect(app).not.toMatch(/<main ref=/)
+    // Mounted for a gesture WITHOUT the tap animation, or the settle would race
+    // the finger for the same value.
+    expect(app).toContain('onGestureOpen: beginMobileNavDrag')
+    expect(app).not.toMatch(/useDrawerSwipe\(shellRef, \{[^}]*onGestureOpen: openMobileNav/)
+  })
+
+  it('lets the chat page keep both of its own sides', () => {
+    // The claim has to sit on the SAME element the page binds its own gestures
+    // to: one line lower and the page suppresses itself, one line higher and the
+    // app-wide instance never sees it. Pinned as adjacency because no runtime
+    // assertion can observe which element an attribute was authored on.
+    expect(chat).toMatch(/ref=\{chatContainerRef\}[\s\S]{0,1600}?data-owns-swipe=/)
+    for (const bound of ['useDrawerSwipe(chatContainerRef, {']) expect(chat).toContain(bound)
+    // Both instances still name chatContainerRef, so the claimed sides and the
+    // bound sides cannot drift apart.
+    expect((chat.match(/useDrawerSwipe\(chatContainerRef, \{/g) ?? []).length).toBe(2)
+  })
+})

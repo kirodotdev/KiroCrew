@@ -443,6 +443,183 @@ Carbon's five-action cap, Apple's "define which items move to the overflow menu"
 is what `AUTOSDE.yaml`'s `max-two-buttons-per-row` encodes. Wrapping such a row below `md`
 keeps the controls reachable, but it is an interim, not the answer.
 
+### A horizontal drag on mobile belongs to the nav drawer unless a page claims it
+
+The mobile nav drawer is bound app-wide: **one** `useDrawerSwipe` on the shell
+(`[data-testid="dashboard-shell"]`), so a rightward drag opens it and a leftward one
+closes it on every routed page, including surfaces that know nothing about it. The
+root is the SHELL, not `<main>` — the drawer's panel and scrim are `fixed`
+**siblings** of `<main>`, so an instance rooted there can open the drawer but never
+receives the touch that should close it: the finger lands on the scrim, and the
+listener is on an element the scrim is not inside.
+
+**A page with its own horizontal drawer must claim the sides it owns**, or two
+instances arm on one touch and fight for the same direction. Put
+`data-owns-swipe` on the element the page binds its OWN gesture to, listing the
+sides — `"left"`, `"right"`, or both space-separated:
+
+```tsx
+<div ref={chatContainerRef} data-owns-swipe="left right">
+```
+
+`side` here is the edge a panel is ANCHORED to, matching `useDrawerSwipe`'s own
+option: a left-anchored drawer opens on a rightward drag.
+
+The hook walks from the touch target up to but **not including** its own root, which
+is what lets one attribute serve both instances — the claim is strictly below the
+shell (so the app-wide instance stands down) and IS the page instance's own root (so
+the page proceeds). Put the attribute anywhere else and one of the two breaks
+silently: on a descendant, the page suppresses its own drawer; on an ancestor, the
+app-wide instance never sees it.
+
+**The mechanism fails OPEN.** No attribute means the app-wide gesture works, so a page
+that forgets to declare gets a visible conflict. The inverse default would let one
+missing attribute kill the gesture dashboard-wide with nothing to see.
+
+**Which is why the claim must track what is actually BOUND, not the page.** A claim
+that outlives its ownership defeats that default from the one place that declares.
+The chat page binds nothing when `embedded` — and an embedded chat renders *inside*
+the shell at full width on mobile (the artifact companion, the Papyrus co-author
+panel, an app SDK panel), so an unconditional claim there suppressed the nav swipe
+while serving nothing: a dead gesture across the whole screen, on the chat-shaped
+surface where a user is most likely to try it. Gate the attribute on the same
+condition as the bindings:
+
+```tsx
+data-owns-swipe={embedded ? undefined : 'left right'}
+```
+
+Two kinds of surface need no attribute, and it is worth knowing why rather than
+copying:
+
+- **Anything portaled to `document.body`** is outside the shell entirely, so the
+  gesture cannot reach it. That covers `Modal`, the notification sheet, and the
+  collapsed-rail tooltips. A static read of the JSX suggests otherwise — the sheet is
+  written inside the topbar — so check for `createPortal` before concluding a surface
+  is inside the shell.
+- **Content that scrolls horizontally** already claims the gesture by being
+  scrollable: the hook defers to the nearest horizontally-scrollable ancestor
+  **outright**, whatever its scroll position. Wide code blocks, markdown tables and
+  diagram strips need nothing declared. The deference is deliberately not the
+  nested-scroll handoff you would give a scrollable PARENT — deferring only while
+  the inner scroller still had somewhere to go meant a freshly rendered code block,
+  which sits at `scrollLeft: 0`, handed the very first rightward drag to the drawer
+  instead of scrolling the code. An element with nothing to scroll (content that
+  fits) owns no axis, so the drawer is still reachable over it.
+
+  **The search crosses shadow boundaries, via `composedPath()`.** `e.target` read
+  from a listener outside a shadow root is retargeted to the HOST, so walking
+  `parentElement` from it never sees a scroller inside the root — and that is not a
+  corner case: a *finished* chat code block renders through `@pierre/diffs`, whose
+  `diffs-container` is a web component carrying the `overflow` on an element in its
+  shadow root. Read from the outside, such a block looks scroller-less and the drawer
+  took every drag over it. Testing this needs a fixture that dispatches on the host
+  with a real `composedPath()`; dispatching straight at the inner node leaves
+  `e.target` inside the root, where a plain parent walk also finds the scroller, and
+  the test cannot fail.
+
+**A locked gesture takes the page's own handling away, and only then.** The four touch
+listeners are `passive: true`, which is what keeps a touch that never becomes a gesture
+on the browser's scroll fast path; the price is that a passive listener may not
+`preventDefault()`, so the page kept scrolling vertically under the moving drawer and
+fired a click on release. Both are suppressed from the moment the gesture LOCKS — a
+non-passive `touchmove` added then governs the rest of the gesture, plus a one-shot
+capture-phase `click` swallower for the release, both on `window` and both released when
+the gesture ends. The click swallower is not redundant with `preventDefault`: a touch
+that BEGAN on a button and then moved still fires its click. A suppression that has ENDED
+is a different thing wearing the same slot — parked only to eat the release's click, with
+its touchmove listener already removed — so a new gesture must release it and install a
+fresh one rather than inheriting it. That window is ~350ms, which is exactly the
+"swipe shut, swipe straight back open" beat, so inheriting it left the second of two
+quick drags with no scroll suppression at all. It is also released as soon as a NEW touch
+begins, because a fresh finger means any pending click belongs to that touch — without
+which the swallower eats a genuine tap in the COMMON case rather than a rare one: a drag
+over non-interactive content has its synthetic click suppressed by `preventDefault()`
+already, so nothing arrives to disarm the swallower, it stays armed for the full window,
+and the next real tap is the one it swallows — right on this feature's core beat, swipe
+the drawer open and immediately tap something in it.
+
+**Ownership is declined, never contested: the browser decides first.** It commits a
+touch to a scroller earlier than this hook's axis lock does and by its own rule, and
+once it has, nothing takes the touch back — `preventDefault()` is ignored. A diagonal
+drag is where the two rules disagreed: a dy just under dx passed the "is this vertical?"
+test while dy alone had already started a scroll, so the drawer arrived to find the page
+moving under it. So a gesture whose vertical drift reaches `PLATFORM_SCROLL_SLOP` (8px,
+deliberately below the 10px axis lock) is abandoned rather than fought for. Reading the
+platform's own answer instead — an engine marks a touchmove non-cancelable once it owns
+the touch — is **not** safe to act on: `cancelable` is false by default on a synthetic
+event and is not guaranteed true for an ordinary touchmove delivered to a passive
+listener, and a false reading abandons every gesture. A displacement threshold is
+engine-independent and fails toward keeping the gesture.
+
+**The gesture reads the state the panel is COMMITTED to, not the `open` prop.** The
+consumer learns a new state from `onSettle`, which runs in the settle animation's
+completion callback, so for the whole ~200-300ms of a closing slide the prop still says
+open. A gesture starting in that window judged its direction against a panel that was
+already leaving — a re-opening drag read as an opening drag on an open panel and was
+declined — so swiping the drawer shut and immediately swiping it back open failed for as
+long as the settle ran, intermittently and with the direction perfectly clean. A settle
+therefore commits its own target the moment it starts, and the prop is adopted when it
+CHANGES, which is the authority for a panel opened by tap rather than by gesture. Both
+halves are load-bearing: without the first, re-opening is declined; without the second, a
+hamburger-opened drawer cannot be dragged shut.
+
+**A MODAL LAYER owns every touch inside it, read from its `role`.** A dialog is not
+necessarily portaled out of the shell: the changelog and update-error overlays are plain
+`fixed inset-0` JSX inside it (the shell element spans `App.tsx` 2635-3878, and both sit
+between), so a horizontal drag across one pulled the nav drawer out BEHIND the dialog.
+The hook therefore stands down for any `role="dialog"` / `role="alertdialog"` in the
+chain. Read as a rule rather than a list of overlays, because `src/` declares dozens of
+dialogs and a list means the next one silently fights the drawer — the same reasoning as
+the `touch-action` rule below. Only those two roles count: treating any `role` as
+ownership would hand away most of the page.
+
+**A drag WIDGET needs no attribute either, because `touch-action: none` already says
+so.** Sliders, resize handles, column splitters and pinch-zoom canvases are not
+horizontally scrollable, so the scroller deference does not cover them — and they run
+on POINTER events, whose `preventDefault` does NOT stop the touch stream from reaching
+a listener on an ancestor. The hook therefore also yields to any element in the chain
+whose computed `touch-action` is `none`, which is the platform's own declaration that
+the element took touch handling from the browser. Only a full `none` counts: the root
+sets `pan-x pan-y` under a coarse pointer to switch page zoom off, and treating that as
+ownership would kill the gesture everywhere.
+
+Reading the property is what keeps this from being a list that goes stale. There are
+around a dozen such widget families in `src/` today (`ResizeHandle`, `ColumnSplitter`,
+`BottomTerminalPanel`, `SessionGridLayout`, `DiagramLightbox`, the `Slider` in
+`components/ui.tsx`, …); asking each to remember an attribute means the next one
+silently fights the nav drawer instead.
+
+**Count the panels before believing the rule holds.** Four are driven by
+`registerDrawerTargets` today: the nav drawer, the chat page's sessions drawer and
+activity panel (all three with gestures), and the notification sheet (no gesture,
+portaled). Only the chat page declares a claim, because it is the only one that binds
+its own gesture inside the shell.
+
+### A panel that gains a gesture must be bound LIVE to its offset
+
+A panel moved only by a tap may serialize its offset at render time —
+`style={{ transform: \`translate3d(${x.get()}px, 0, 0)\` }}` — because `animateDrawer`
+writes the arrival into the element's own inline style. The notification sheet still
+does this, correctly.
+
+**The moment that panel gains a drag, that form is wrong**, and the failure looks
+like a feel problem rather than a bug: a MotionValue deliberately does not re-render
+React, so the drag writes the value every frame while the DOM moves only on whatever
+re-render happens to occur — the panel comes out a little, freezes, and completes on
+release when the settle takes over. Bind it instead, as all three gesture-driven
+panels do:
+
+```tsx
+<motion.nav style={{ x: mobileNavX }}>
+```
+
+Framer and the compositor settle coexist on one element, because `takeOverDrawer`
+adopts and cancels whatever is running before either writes. A scrim has the same
+requirement in its other half: derive its opacity from the offset (over the drawer's
+OWN travel, so the dim reaches 0 exactly as the panel clears the edge) rather than
+holding a literal, or it cannot dim with the finger.
+
 ### Horizontal insets below the breakpoint
 
 Padding stacks, and the eye reads the SUM. On a wide viewport a page gutter plus a card

@@ -30,6 +30,33 @@ import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold
 /** Travel, in px, before the gesture's axis is decided. */
 const AXIS_LOCK = 10
 /**
+ * Vertical travel, in px, past which the browser is assumed to have already
+ * committed this touch to a scroller.
+ *
+ * The browser decides who owns a touch EARLIER than this hook's axis lock does
+ * and by a different rule, and once it has handed the touch to a scroller
+ * nothing takes it back: `preventDefault()` is ignored and the event is reported
+ * non-cancelable. A DIAGONAL drag is where the two rules disagree — a dy just
+ * under dx passes the "is this vertical?" test, while dy alone was already
+ * enough to start a scroll, so the drawer arrives to find the page moving under
+ * it and no way to stop it.
+ *
+ * So this is deliberately smaller than `AXIS_LOCK`: any touch that drifted this
+ * far vertically before earning its horizontal lock is declined rather than
+ * wrestled for. Sized at the platform scroll slop, which is ~8px on the engines
+ * that publish one — erring low costs a slightly cleaner gesture, erring high
+ * brings the conflict back.
+ *
+ * A tempting alternative is to read the platform's answer directly, since an
+ * engine marks a touchmove non-cancelable once it owns the touch. That is not
+ * safe to act on: `cancelable` is FALSE by default on a synthetic event and
+ * there is no guarantee every engine reports it true for an ordinary touchmove
+ * delivered to a passive listener — and a false reading would abandon every
+ * gesture, costing the whole feature to fix an occasional one. A displacement
+ * threshold is engine-independent and fails toward keeping the gesture.
+ */
+const PLATFORM_SCROLL_SLOP = 8
+/**
  * Dead zone at each viewport edge where an OPENING drag may NOT begin.
  *
  * Not 0. The platform's own back/forward swipe lives in the first ~20-30px of
@@ -81,6 +108,17 @@ const VELOCITY_MIN_SPAN_MS = 16
 /** Samples retained for the window — 100ms at 60Hz is ~6, with headroom for a
  *  higher-rate digitizer and one baseline sample outside the window. */
 const VELOCITY_SAMPLES = 16
+/**
+ * How long, after a locked gesture ends, the synthesized `click` is still
+ * swallowed.
+ *
+ * A release fires `click` AFTER `touchend`, so the swallower cannot be removed
+ * synchronously with the gesture — but it must not stay armed either, or it eats
+ * the user's next genuine tap. This is long enough to cover an engine still
+ * carrying the legacy ~300ms tap delay, and it is a ceiling rather than the
+ * usual lifetime: the first click it swallows removes it immediately.
+ */
+const CLICK_SWALLOW_MS = 350
 /**
  * The settle curve, and the two durations — ONE shape, a reveal and a dismissal
  * that differ only in how long they take.
@@ -493,19 +531,21 @@ export function animateDrawer(x: MotionValue<number>, to: number, onDone?: () =>
     /**
      * Paint the tween onto the ELEMENTS' OWN inline styles, not just `x`.
      *
-     * Framer writes a transform only where it is BOUND to `x` (the two panels
-     * with a drag gesture — the sessions drawer and the right overlay — carry
-     * `style={{ x }}`, because a drag writes the value directly and only a live
-     * binding paints those frames). The nav drawer is a plain <nav>, so on this
-     * path its MotionValue would travel while its DOM never moved — the panel
-     * stays at the mounted CLOSED offset and is simply unreachable. Having no
-     * gesture, it is also the one for which this fallback is the ONLY path
-     * whenever the compositor one is unavailable: under
-     * `prefers-reduced-motion`, and when the panel element has not appeared
-     * within the mount grace frames. Same root cause as the cancel-fill bounce
+     * Framer writes a transform only where it is BOUND to `x`, and every panel
+     * this runs for carries `style={{ x }}` — the sessions drawer, the right
+     * overlay and the nav drawer, each of which has a drag gesture, so a drag
+     * writes the value directly and only a live binding paints those frames.
+     * That makes this write redundant for them: framer publishes the same value
+     * from its own subscription.
+     *
+     * It is kept because the binding is a property of the CONSUMER, not of this
+     * function, and the failure mode when one is missing is silent and total: a
+     * panel whose element is not bound sits at the mounted CLOSED offset while
+     * its MotionValue travels the whole way, leaving it unreachable with no
+     * error anywhere. Spelling the write out here means a consumer that renders
+     * a plain element still animates. Same root cause as the cancel-fill bounce
      * (a non-framer-bound element needs the write spelled out), on the fallback
-     * path instead of the compositor one. Redundant where framer IS bound — it
-     * writes the same value from its own subscription.
+     * path instead of the compositor one.
      */
     const paint = rt
       ? (at: number) => {
@@ -623,20 +663,110 @@ export function animateDrawer(x: MotionValue<number>, to: number, onDone?: () =>
 }
 
 /**
- * Nearest ancestor of `from`, up to and including `root`, that scrolls
- * horizontally. Returns null when the touch did not start inside one.
+ * The elements a touch passed through, innermost first, out to and including
+ * `root`.
+ *
+ * `composedPath()` rather than a walk up `parentElement`, because that is what
+ * crosses a SHADOW BOUNDARY. `e.target` read from a listener outside a shadow
+ * root is retargeted to the host element, so the walk never sees the nodes
+ * inside it — and a finished chat code block is exactly that shape: Pierre
+ * renders `diffs-container` as a web component whose shadow root holds the
+ * element carrying `overflow: scroll clip`. The scroller was therefore invisible
+ * from here, and a drag over code opened the side panel no matter how the
+ * deference below was written.
+ *
+ * Falls back to the parent walk where `composedPath` is unavailable, so the
+ * ordinary light-DOM case never depends on it.
  */
-function findHorizontalScroller(from: EventTarget | null, root: HTMLElement): HTMLElement | null {
-  let node: Element | null = from instanceof Element ? from : null
-  while (node) {
-    if (node instanceof HTMLElement && node.scrollWidth - node.clientWidth > 1) {
-      const overflowX = getComputedStyle(node).overflowX
-      if (overflowX === 'auto' || overflowX === 'scroll') return node
+function touchedChain(e: TouchEvent, root: HTMLElement): HTMLElement[] {
+  const out: HTMLElement[] = []
+  const path = typeof e.composedPath === 'function' ? e.composedPath() : []
+  if (path.length) {
+    for (const n of path) {
+      if (n instanceof HTMLElement) out.push(n)
+      if (n === root) break
     }
+    return out
+  }
+  let node: Element | null = e.target instanceof Element ? e.target : null
+  while (node) {
+    if (node instanceof HTMLElement) out.push(node)
     if (node === root) break
     node = node.parentElement
   }
+  return out
+}
+
+/**
+ * Nearest element in `chain` that scrolls horizontally, or null.
+ *
+ * `root` is eligible: the bound element itself may be the scroller.
+ */
+function findHorizontalScroller(chain: HTMLElement[]): HTMLElement | null {
+  for (const node of chain) {
+    if (node.scrollWidth - node.clientWidth > 1) {
+      const overflowX = getComputedStyle(node).overflowX
+      if (overflowX === 'auto' || overflowX === 'scroll') return node
+    }
+  }
   return null
+}
+
+/** Which edge a drawer is anchored to. Decides the sign of every offset. */
+type Side = 'left' | 'right'
+
+/**
+ * Whether something BELOW this instance already owns the drag starting here.
+ *
+ * Two ways an element can own it, both read from the touch target up to but NOT
+ * INCLUDING `root`:
+ *
+ * 1. `data-owns-swipe` naming this side — a page with its own drawer on the same
+ *    side (the chat page's sessions drawer). The nav drawer binds this hook
+ *    app-wide on the shell, so every page's content is inside its element, and
+ *    without this both instances arm on one drag and fight for the same
+ *    direction. The root exclusion is what lets ONE attribute serve both: the
+ *    claim sits on the page's own bound element, so the app-wide instance sees it
+ *    and yields while the page's own instance finds it only on its root and
+ *    proceeds. A claim ON `root` is an instance claiming its own gesture —
+ *    meaningless, and ignored rather than treated as self-suppression.
+ *
+ * 2. `touch-action: none` — the PLATFORM's own declaration that this element has
+ *    taken touch handling away from the browser, which is what a drag widget
+ *    does: sliders, resize handles, column splitters, pinch-zoom canvases. They
+ *    are not horizontally scrollable, so `findHorizontalScroller` does not cover
+ *    them, and they run on POINTER events whose `preventDefault` does not stop
+ *    the touch stream from reaching a listener up here. Reading the property
+ *    instead of asking each widget to remember an attribute is what keeps this
+ *    from being a list that goes stale: a slider that lost the nav drawer's
+ *    gesture to it would otherwise need the attribute, and so would every future
+ *    drag widget.
+ *
+ * Failing OPEN is deliberate: neither signal present means the app-wide gesture
+ * works, so a surface that owns a drag without declaring it gets a visible
+ * conflict rather than a silently dead gesture across the whole dashboard.
+ */
+function dragOwnedBelow(chain: HTMLElement[], root: HTMLElement, side: Side): boolean {
+  for (const node of chain) {
+    if (node === root) return false
+    const claim = node.dataset.ownsSwipe
+    if (claim && claim.split(/\s+/).includes(side)) return true
+    // A modal layer owns every touch inside it. This is the same kind of
+    // declaration as the two below — the element saying "I am the surface in
+    // front", in the platform's own vocabulary — and it matters because a modal
+    // is not necessarily portaled out of the shell: the changelog and
+    // update-error overlays are plain `fixed inset-0` JSX inside it, so a drag
+    // across one used to pull the nav drawer out BEHIND the dialog. Read as a
+    // rule rather than a list of overlays, since `src/` declares dozens of
+    // dialogs and the next one would have to remember an attribute.
+    const role = node.getAttribute('role')
+    if (role === 'dialog' || role === 'alertdialog') return true
+    // Computed, not inline: a drag widget declares this through a class
+    // (Tailwind's `touch-none`), and the computed value covers both that and an
+    // inline style in every engine including jsdom.
+    if (getComputedStyle(node).touchAction === 'none') return true
+  }
+  return false
 }
 
 interface DrawerSwipeOptions {
@@ -654,7 +784,7 @@ interface DrawerSwipeOptions {
    * opening drag for the other one. The consumer settles that by disabling the
    * far side whenever a panel is open.
    */
-  side?: 'left' | 'right'
+  side?: Side
   /**
    * The offset span between closed and open, in px. Defaults to the viewport
    * width.
@@ -689,8 +819,30 @@ export function useDrawerSwipe(
   // Everything the move handler reads lives in a ref. A touchmove fires at
   // frame rate and this hook is bound inside the chat pane, so a re-render per
   // sample would drop frames on the very gesture it is meant to smooth.
+  /**
+   * The panel's state as the GESTURE must read it: where it is, or where it is
+   * already heading.
+   *
+   * Deliberately not the `open` prop on its own, which LAGS by the length of a
+   * settle. The consumer learns the new state from `onSettle`, which runs in the
+   * settle animation's COMPLETION callback, so for the whole ~200-300ms of a
+   * closing slide the prop still says open. A gesture starting inside that window
+   * judged its direction against a panel that was already leaving: a re-opening
+   * drag read as an opening drag on an open panel and was declined outright.
+   * Swiping the drawer shut and immediately swiping it back open therefore failed
+   * for as long as the settle ran — intermittently, and with the direction
+   * perfectly clean, which is why no axis rule catches it.
+   *
+   * So the prop is adopted when it CHANGES — a consumer opening the panel by tap
+   * is the authority — while a settle commits its own target the moment it starts,
+   * rather than waiting to be told what it already decided.
+   */
   const openRef = useRef(open)
-  openRef.current = open
+  const lastOpenProp = useRef(open)
+  if (lastOpenProp.current !== open) {
+    lastOpenProp.current = open
+    openRef.current = open
+  }
   const onGestureOpenRef = useRef(onGestureOpen)
   onGestureOpenRef.current = onGestureOpen
   const onSettleRef = useRef(onSettle)
@@ -716,6 +868,10 @@ export function useDrawerSwipe(
    * decided once, when the gesture is decided.
    */
   const gestureBase = useRef(0)
+  /** Live page-suppression for a locked gesture — see `suppressPageDuringDrag`.
+   *  A ref, not state: it must survive the effect's own teardown so an unbind
+   *  mid-gesture can still let go of the listeners it installed on `window`. */
+  const suppressing = useRef<{ release: () => void; end: () => void; ended: () => boolean } | null>(null)
   const lastX = useRef(0)
   const lastT = useRef(0)
   /**
@@ -725,8 +881,6 @@ export function useDrawerSwipe(
    * be recovered from a single pair of samples after the fact.
    */
   const samples = useRef<{ x: number; t: number }[]>([])
-  const scroller = useRef<HTMLElement | null>(null)
-  const scrollerLeft = useRef(0)
 
   useEffect(() => {
     const el = ref.current
@@ -767,6 +921,10 @@ export function useDrawerSwipe(
      * gesture's own outcome.
      */
     const settle = (to: number, open: boolean, releaseVelocity?: number) => {
+      // Commit the target NOW rather than when the animation reports it. A
+      // gesture that starts mid-settle must judge itself against where the panel
+      // is going — see the openRef declaration.
+      openRef.current = open
       takeOverDrawer(x)
       animateDrawer(x, to, () => onSettleRef.current(open), releaseVelocity)
     }
@@ -774,9 +932,84 @@ export function useDrawerSwipe(
     /** Drop a gesture that had not taken the panel over yet (still deciding its
      *  axis). Nothing was mounted and `x` was never written, so there is no
      *  visual state to put back. */
+    /**
+     * Take the touch away from the browser for the rest of a LOCKED gesture,
+     * and swallow the click its release would otherwise synthesize.
+     *
+     * The four tracking listeners are `passive: true`, which is what keeps the
+     * common case — a touch that never becomes this gesture — on the browser's
+     * scroll fast path. The price is that a passive listener may not
+     * `preventDefault()`, so while the finger drives the panel the page also
+     * keeps doing its own thing: it scrolls vertically under the drawer for any
+     * dy the drag carries, and on release it fires a click on whatever was under
+     * the finger — a button in the content the drag passed over.
+     *
+     * So the suppression is attached only once the gesture LOCKS, and is torn
+     * down when it ends. A listener added while an event is being dispatched
+     * still receives every SUBSEQUENT event, so a non-passive `touchmove` bound
+     * here governs the whole remainder of the gesture; only the frame that
+     * locked it escapes, which is the frame the axis lock spent proving intent
+     * anyway.
+     *
+     * Both halves are needed. `preventDefault()` on touchmove suppresses the
+     * click on its own in the ordinary case, but not for a touch that BEGAN on
+     * an interactive element and then moved — the case being reported. And the
+     * click swallower alone would leave the page scrolling.
+     *
+     * Bound to `window`, not to `el`: touch events for a gesture keep targeting
+     * the touchstart target and bubble from there, so `window` catches them
+     * wherever the drag wandered, including out of `el`.
+     */
+    const suppressPageDuringDrag = () => {
+      // A suppression still governing its own gesture is reused as-is. One that
+      // has ENDED is a different thing wearing the same slot: it is parked only
+      // to eat the release's click, and `end()` already removed its touchmove
+      // listener. Inheriting THAT would leave the new gesture with no scroll
+      // suppression at all — and it is reachable, because the ~350ms click
+      // window is exactly the "swipe shut, swipe straight back open" beat.
+      const live = suppressing.current
+      if (live && !live.ended()) return
+      live?.release()
+      let timer = 0
+      const eatTouchMove = (e: TouchEvent) => { if (e.cancelable) e.preventDefault() }
+      const eatClick = (e: MouseEvent) => {
+        e.stopPropagation()
+        e.preventDefault()
+        // One click per gesture: a genuine tap that follows must get through.
+        release()
+      }
+      const stopPreventing = () =>
+        window.removeEventListener('touchmove', eatTouchMove, { capture: true })
+      const release = () => {
+        if (!suppressing.current) return
+        suppressing.current = null
+        stopPreventing()
+        window.removeEventListener('click', eatClick, { capture: true })
+        window.clearTimeout(timer)
+      }
+      window.addEventListener('touchmove', eatTouchMove, { passive: false, capture: true })
+      window.addEventListener('click', eatClick, { capture: true })
+      suppressing.current = {
+        release,
+        end: () => {
+          if (timer) return
+          stopPreventing()
+          timer = window.setTimeout(release, CLICK_SWALLOW_MS)
+        },
+        ended: () => timer !== 0,
+      }
+    }
+
+    /**
+     * Stop preventing the page's own handling, but keep eating one click for a
+     * moment: at the point every caller reaches this the release's click has not
+     * been dispatched yet.
+     */
+    const endSuppression = () => suppressing.current?.end()
+
     const reset = () => {
       phase.current = 'idle'
-      scroller.current = null
+      endSuppression()
       setDragging(false)
     }
 
@@ -834,6 +1067,24 @@ export function useDrawerSwipe(
     }
 
     const onTouchStart = (e: TouchEvent) => {
+      // A new finger means any click still pending belongs to IT, not to the
+      // drag that just ended — so stop swallowing now rather than waiting out
+      // CLICK_SWALLOW_MS.
+      //
+      // Without this the swallower eats a genuine tap in the COMMON case, not a
+      // rare one: for a drag over non-interactive content the locked gesture's
+      // own `preventDefault()` already suppressed the synthetic click, so
+      // nothing ever arrives to disarm the swallower, it stays armed for the
+      // full window, and the next real tap is the one it swallows. That window
+      // sits exactly on this feature's core beat — swipe the drawer open, then
+      // immediately tap something in it.
+      //
+      // Safe because the ordering is fixed: a release's synthesized click is
+      // dispatched before any subsequent touchstart, so this only ever narrows
+      // the window. It also fails in the right direction — toward letting a
+      // click through rather than eating one the user meant.
+      const pending = suppressing.current
+      if (pending && pending.ended()) pending.release()
       // A second finger LANDING is a pinch or a two-finger scroll, not this
       // gesture — abandon on the spot. Checked before the phase guard on
       // purpose: a locked gesture would otherwise return here and only give the
@@ -849,6 +1100,31 @@ export function useDrawerSwipe(
         // began, so a start position inside the pane carries no other meaning.
         if (x0 < PLATFORM_EDGE || x0 > window.innerWidth - PLATFORM_EDGE) return
       }
+      // A page below this one that binds its own drawer on this side owns the
+      // drag, and so does any widget that has taken touch handling from the
+      // browser (`touch-action: none` — sliders, resize handles, splitters).
+      // Decided here rather than at lock time because neither depends on the
+      // direction — the instance's own side is fixed — so an owned gesture never
+      // arms at all.
+      const chain = touchedChain(e, el)
+      if (dragOwnedBelow(chain, el, side)) return
+      // Content that scrolls horizontally owns the drag, unconditionally — a wide
+      // code block, a markdown table, a diagram strip.
+      //
+      // This used to defer only while the scroller still had somewhere to go in
+      // the drag's direction, handing the gesture over at its end the way nested
+      // scroll views do. That is right when the parent is itself a scroller and
+      // wrong when the parent is a DRAWER: a freshly rendered code block sits at
+      // `scrollLeft === 0`, so the very first rightward drag on it had nothing to
+      // reveal and summoned the drawer instead of scrolling the code — the common
+      // state, not an edge case. The mirror case is a table scrolled to its right
+      // edge, where a leftward drag opened the side panel.
+      //
+      // Costing the drawer some reachability inside these regions is the right
+      // trade: they are a small share of the screen, the rest of the shell still
+      // opens it, and the hamburger is always there. Decided at touchstart
+      // because it no longer depends on the direction.
+      if (findHorizontalScroller(chain)) return
       travelPx.current = span()
       startX.current = touch.clientX
       startY.current = touch.clientY
@@ -856,10 +1132,7 @@ export function useDrawerSwipe(
       lastT.current = e.timeStamp
       samples.current = [{ x: touch.clientX, t: e.timeStamp }]
       phase.current = 'pending'
-      scroller.current = findHorizontalScroller(e.target, el)
-      scrollerLeft.current = scroller.current ? scroller.current.scrollLeft : 0
     }
-
     const onTouchMove = (e: TouchEvent) => {
       if (phase.current === 'idle') return
       if (e.touches.length > 1) { abandon(); return }
@@ -872,23 +1145,21 @@ export function useDrawerSwipe(
         // rather than staying armed, so a later horizontal wobble during a
         // scroll cannot retroactively claim the gesture.
         if (Math.abs(dy) > Math.abs(dx)) { reset(); return }
+        // Ambiguous enough that the browser has likely already started scrolling
+        // — see PLATFORM_SCROLL_SLOP. Declined for the same reason as the test
+        // above, one step earlier: a gesture that has to fight a scroll in
+        // progress cannot win, so it must not start.
+        if (Math.abs(dy) >= PLATFORM_SCROLL_SLOP) { reset(); return }
         if (Math.abs(dx) < AXIS_LOCK) return
-        // A horizontal scroller under the finger (a wide code block, a
-        // carousel) owns the gesture while it still has somewhere to go in
-        // this direction. Checked at lock time, on the direction now known.
-        const sc = scroller.current
-        if (sc) {
-          if (sc.scrollLeft !== scrollerLeft.current) { reset(); return }
-          const maxScrollLeft = sc.scrollWidth - sc.clientWidth
-          const canReveal = dx < 0 ? sc.scrollLeft < maxScrollLeft - 1 : sc.scrollLeft > 1
-          if (canReveal) { reset(); return }
-        }
         // Wrong direction for the current state: a closed panel only opens on a
         // drag AWAY from its own edge, an open one only closes on a drag back
         // toward it. This is also what lets a left and a right instance share
         // one element — each rejects the other's opening direction.
         if (openRef.current ? dx * openDir > 0 : dx * openDir < 0) { reset(); return }
         phase.current = 'locked'
+        // The finger owns the page from here: no vertical scroll under the
+        // drawer, and no click on release.
+        suppressPageDuringDrag()
         gestureBase.current = openRef.current ? 0 : closedOffset()
         // Take the value over from ANY animation still running on it — this
         // hook's own settle, or one the consumer started for the toggle, the
@@ -972,7 +1243,10 @@ export function useDrawerSwipe(
       // way. The panel itself is not settled here; the consumer's own
       // leaving-mobile reset owns where it ends up.
       phase.current = 'idle'
-      scroller.current = null
+      // Unlike `reset`, drop the click swallower outright rather than leaving it
+      // armed on a timer: these listeners live on `window`, so a deferred
+      // release would outlive the hook and eat a tap on whatever replaced it.
+      suppressing.current?.release()
       setDragging(false)
     }
     // `open` is intentionally absent — see the header note. The callbacks are

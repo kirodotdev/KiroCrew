@@ -7108,7 +7108,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         message bodies, previews, and panels alike -- so a pasted Jira URL
         chips identically wherever it renders. Cloud URLs need no provider. */}
     <JiraHostsCtx.Provider value={jiraSourceHosts}>
-    <div ref={chatContainerRef} className="flex flex-1 min-h-0 h-full overflow-hidden relative">
+    <div
+      ref={chatContainerRef}
+      /* Both sides are this page's own: a rightward drag opens the sessions
+         drawer and a leftward one the activity panel, so the app-wide nav
+         gesture bound on the shell must not also arm here. Declared on the SAME
+         element the two instances below bind, which is what lets them read the
+         claim as their own and proceed.
+
+         Withheld when `embedded`, because that is exactly when this page binds
+         NOTHING (both instances are gated on `!embedded`) — and an embedded chat
+         renders INSIDE the shell (the artifact companion, the Papyrus co-author
+         panel, an app SDK panel), at full width on mobile. A claim that outlives
+         its ownership there suppressed the nav swipe while serving nothing: a
+         dead gesture across the whole screen, on the chat-shaped surface where
+         the gesture was most likely to be tried. The claim has to track what is
+         actually bound, or the fail-open default is defeated by the one page
+         that declares.
+
+         Not also gated on `isMobile`: the app-wide instance is mobile-only, so a
+         desktop claim suppresses nothing, and adding the term would imply this
+         attribute carries a guarantee about a case it cannot affect. */
+      data-owns-swipe={embedded ? undefined : 'left right'}
+      className="flex flex-1 min-h-0 h-full overflow-hidden relative"
+    >
       <AnimatePresence>
         {isMobile && drawerMounted && (
           <motion.div
