@@ -1,0 +1,74 @@
+# Imports of the ACP layer from application code, as `<count> <path>`.
+# Both `kiro_crew.acp` and `kiro_crew.providers` count: providers re-exports ACP
+# shapes (LLMEvent, EVENT_*, is_claude_backend), so watching only `acp` would let
+# a consumer look migrated while still reading the backend's own types.
+#
+# The gate requires every OTHER file under src/ to be clean and none of these
+# counts to grow, so this list can only shrink. There is no inline opt-out
+# marker: "this consumer legitimately needs ACP" is the claim the boundary
+# refuses, so the baseline is the only exemption mechanism.
+#
+# Do NOT add or raise a line to make a red gate green -- route the dependency
+# through kiro_crew.agent_sdk instead. Design of record:
+# docs/request-for-change/rfc-crew-agent-sdk-boundary.md
+#
+# Refresh (after removing something listed here):
+#   python3 scripts/check_agent_sdk_boundary.py --update-baseline
+2 src/kiro_crew/agent.py
+1 src/kiro_crew/apps/builtins/auto_improvement/backend/pr_watchers.py
+1 src/kiro_crew/apps/builtins/auto_improvement/backend/runner.py
+1 src/kiro_crew/apps/builtins/auto_improvement/spine/agent_runner.py
+1 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/followup.py
+2 src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_pool.py
+1 src/kiro_crew/channel.py
+3 src/kiro_crew/cli_chat.py
+3 src/kiro_crew/cli_doctor.py
+1 src/kiro_crew/cli_setup.py
+1 src/kiro_crew/config/loader.py
+1 src/kiro_crew/connections/mint.py
+1 src/kiro_crew/cron.py
+3 src/kiro_crew/dashboard/chat_handlers.py
+5 src/kiro_crew/dashboard/chat_runner.py
+1 src/kiro_crew/dashboard/chat_summary.py
+1 src/kiro_crew/dashboard/chat_utils.py
+2 src/kiro_crew/dashboard/handlers/agents.py
+2 src/kiro_crew/dashboard/handlers/core.py
+1 src/kiro_crew/dashboard/handlers/hooks.py
+1 src/kiro_crew/dashboard/handlers/optimizer.py
+2 src/kiro_crew/dashboard/handlers/sessions.py
+1 src/kiro_crew/dashboard/handlers/side.py
+1 src/kiro_crew/dashboard/handlers/taskrunner.py
+1 src/kiro_crew/dashboard/handlers/usage.py
+1 src/kiro_crew/dashboard/session_memory.py
+1 src/kiro_crew/dashboard/stall_enrichment.py
+1 src/kiro_crew/dashboard/state.py
+1 src/kiro_crew/dashboard/steer_settle.py
+1 src/kiro_crew/dashboard/turn_dispatch.py
+1 src/kiro_crew/discord/renderer.py
+1 src/kiro_crew/eval/judge.py
+2 src/kiro_crew/eval/runner.py
+1 src/kiro_crew/knowledge/llm_pool.py
+5 src/kiro_crew/llm_helpers.py
+1 src/kiro_crew/mcp_shared.py
+1 src/kiro_crew/messaging/auto_title.py
+1 src/kiro_crew/messaging/dispatch.py
+1 src/kiro_crew/messaging/driver.py
+12 src/kiro_crew/session.py
+2 src/kiro_crew/session_allocation.py
+2 src/kiro_crew/session_background.py
+1 src/kiro_crew/session_cleanup.py
+2 src/kiro_crew/session_compaction.py
+1 src/kiro_crew/session_map.py
+3 src/kiro_crew/session_pid.py
+1 src/kiro_crew/session_pool.py
+3 src/kiro_crew/slack/gateway.py
+3 src/kiro_crew/slack/handler.py
+1 src/kiro_crew/slack/transport_dispatch.py
+9 src/kiro_crew/subagent.py
+2 src/kiro_crew/subagent_persistence.py
+2 src/kiro_crew/task_executor.py
+1 src/kiro_crew/task_planner.py
+1 src/kiro_crew/taskrunner.py
+1 src/kiro_crew/telegram/transport_dispatch.py
+1 src/kiro_crew/workflows/agent_pool.py
+2 src/kiro_crew/workflows/service.py

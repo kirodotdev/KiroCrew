@@ -479,6 +479,17 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
+      # Application code must reach the agent backend through kiro_crew.agent_sdk,
+      # not by importing kiro_crew.acp (or kiro_crew.providers, which re-exports
+      # the same ACP shapes and would otherwise be a laundering channel). Today's
+      # edges are carried in the baseline as pre-existing and it is shrink-only. Design
+      # record: docs/request-for-change/rfc-crew-agent-sdk-boundary.md.
+      # Self-test first, same reason as the gate above.
+      - name: Check agent-SDK import boundary (gate, baselined)
+        run: |
+          python3 scripts/check_agent_sdk_boundary.py --test
+          python3 scripts/check_agent_sdk_boundary.py
+
       # A secret-bearing file must be locked down BEFORE any content reaches it:
       # a post-publish lockdown leaves the payload at its final path under the
       # inherited DACL, which on Windows is not covered by atomic_write's POSIX
