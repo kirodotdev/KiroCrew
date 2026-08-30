@@ -491,10 +491,21 @@ def _safe_int(value: object, default: int, lo: int | None = None, hi: int | None
     return result
 
 
-def _safe_nonnegative_int(value: object, default: int) -> int:
-    """Convert a legacy integer value and reject negative results."""
+def _safe_nonnegative_int(value: object, default: int, hi: int | None = None) -> int:
+    """Convert a legacy integer value and reject negative results.
+
+    *hi* caps the result. Deliberately a ceiling only, with no matching floor
+    argument: a negative value still returns *default* rather than clamping up to
+    0, because 0 is MEANINGFUL for the budgets this guards (a zero chunk budget
+    turns that sweep off). Clamping -1 to 0 would silently disable a sweep the
+    operator never asked to disable, where returning the default keeps it running.
+    The ceiling has no such ambiguity, and it is where the exposure was: an absurd
+    hand-edited budget loaded verbatim and became real scheduled work.
+    """
     result = _safe_int(value, default)
-    return result if result >= 0 else default
+    if result < 0:
+        return default
+    return result if hi is None else min(hi, result)
 
 
 def _port_or_unset(value: object) -> int:
@@ -4357,6 +4368,53 @@ MAX_SUBAGENTS_FIXED_FLOOR = 3
 AUTOCOMPACT_PCT_MIN = 5.0
 AUTOCOMPACT_PCT_MAX = 90.0
 
+# ── Load/write bound parity ────────────────────────────────────────────────────
+# Ranges for bounded numeric fields whose LOAD path previously applied no bounds
+# at all, while `_EDITABLE_CONFIG` rejected the same values at write time. A
+# hand-edited config.json goes nowhere near the dashboard API, so every one of
+# these loaded verbatim -- the same asymmetry #4688 and #4734 closed for the
+# security-relevant knobs.
+#
+# Defined HERE and imported by `_EDITABLE_CONFIG` rather than spelled twice, so
+# the write gate and the load clamp cannot drift. Three fields already clamped on
+# load but duplicated their literals across the two files; those now read from
+# these names too, which is the "two-literal drift" half of the same problem.
+#
+# Bounds are the ones the write path already declared. This change does not
+# re-litigate any range; it makes the load path honour what the API promised.
+COMPLETION_KEEP_CHARS_MIN = 0
+# Mirrors ``context_management.RESULT_FILE_MAX_BYTES`` (500 KB) rather than importing
+# it: ``context_management`` does ``from kiro_crew.config.loader import config_dir``, so
+# importing it here is a genuine circular import, not a style preference. The value is
+# therefore spelled in both places and pinned equal by
+# ``test_the_completion_keep_ceiling_matches_its_owner`` -- a test can import both
+# without the cycle, which is the only place the two spellings can be held together.
+COMPLETION_KEEP_CHARS_MAX = 512_000
+MCP_PROBE_TIMEOUT_MIN = 5
+MCP_PROBE_TIMEOUT_MAX = 120
+RECENT_TINT_COUNT_MIN = 0
+RECENT_TINT_COUNT_MAX = 10
+SESSION_TIMEOUT_MIN = 0
+SESSION_TIMEOUT_MAX = 86400
+POOL_TTL_SECS_MIN = 0
+POOL_TTL_SECS_MAX = 7200
+SOFT_STOP_BUDGET_MIN = 0.5
+SOFT_STOP_BUDGET_MAX = 60.0
+EXTRACTION_POOL_SIZE_MIN = 1
+EXTRACTION_POOL_SIZE_MAX = 10
+# knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
+# of them (a zero budget disables that sweep), so the floor is deliberately not
+# enforced by clamping a negative up to 0 -- see `_safe_nonnegative_int`, which
+# keeps returning the default for a negative value. Only the missing CEILING is
+# added here, which is where the actual exposure was: an absurd hand-edited
+# budget was loaded verbatim and became real work.
+AUTO_INGEST_CHUNK_BUDGET_MAX = 10000
+FOLDER_INGEST_CHUNK_BUDGET_MAX = 10000
+DEDUP_EVERY_N_SWEEPS_MAX = 288
+SWEEP_CHUNK_BUDGET_MAX = 50000
+KNOWLEDGE_MAX_SOURCES_MAX = 1000
+EMBED_RATE_LIMIT_MAX = 10000
+
 # (section, key, min, max) for each bounded field clamped at load time. The
 # mins match the runtime floors: subagent_auto_max has a floor of 3
 # (``subagent._LEGACY_DEFAULT_MAX`` — the auto-size minimum), so a value < 3 is
@@ -7673,7 +7731,10 @@ class KiroCrewConfig:
                     agent_data.get("completion_keep", "head")
                 ),
                 completion_keep_chars=_safe_int(
-                    agent_data.get("completion_keep_chars", 3000), 3000
+                    agent_data.get("completion_keep_chars", 3000),
+                    3000,
+                    COMPLETION_KEEP_CHARS_MIN,
+                    COMPLETION_KEEP_CHARS_MAX,
                 ),
                 subagent_result_ttl_secs=_safe_int(
                     agent_data.get("subagent_result_ttl_secs", 3600), 3600
@@ -7695,11 +7756,27 @@ class KiroCrewConfig:
                 max_channels=agent_data.get("max_channels", 1),
                 max_channel_agents=agent_data.get("max_channel_agents", 3),
                 soft_stop_budget_secs=max(
-                    0.5, min(60.0, _safe_float(agent_data.get("soft_stop_budget_secs", 10.0), 10.0))
+                    SOFT_STOP_BUDGET_MIN,
+                    min(
+                        SOFT_STOP_BUDGET_MAX,
+                        _safe_float(agent_data.get("soft_stop_budget_secs", 10.0), 10.0),
+                    ),
                 ),
             ),
             session=SessionConfig(
-                timeout_secs=session_data.get("timeout_secs", DEFAULT_SESSION_TIMEOUT),
+                # The only field in this group whose site had no `_safe_int` at all, so
+                # it is added here for consistency -- but NOT because the type was
+                # unhandled. Verified: on the base revision a hand-edited `"abc"` or
+                # `true` already loaded as the 3600 default, because
+                # `_validate_config_data` runs over the raw dict before section
+                # extraction and owns type handling. What was missing for this field, as
+                # for the other ten, is the RANGE: an int of 999999999 loaded verbatim.
+                timeout_secs=_safe_int(
+                    session_data.get("timeout_secs", DEFAULT_SESSION_TIMEOUT),
+                    DEFAULT_SESSION_TIMEOUT,
+                    SESSION_TIMEOUT_MIN,
+                    SESSION_TIMEOUT_MAX,
+                ),
                 empty_response_auto_continue=bool(
                     session_data.get("empty_response_auto_continue", True)
                 ),
@@ -7716,7 +7793,12 @@ class KiroCrewConfig:
                     POOL_SIZE_MAX,
                 ),
                 pool_agent=str(session_data.get("pool_agent", "")),
-                pool_ttl_secs=_safe_int(session_data.get("pool_ttl_secs", 1800), 1800),
+                pool_ttl_secs=_safe_int(
+                    session_data.get("pool_ttl_secs", 1800),
+                    1800,
+                    POOL_TTL_SECS_MIN,
+                    POOL_TTL_SECS_MAX,
+                ),
                 eager_spawn=bool(session_data.get("eager_spawn", True)),
                 archive_retention_days=_archive_retention_days(session_data),
                 watchdog_rss_max_mb=_safe_int(session_data.get("watchdog_rss_max_mb", 0), 0),
@@ -7838,13 +7920,19 @@ class KiroCrewConfig:
                     knowledge_data.get("auto_register_project_docs", False)
                 ),
                 auto_ingest_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("auto_ingest_chunk_budget", 150), 150
+                    knowledge_data.get("auto_ingest_chunk_budget", 150),
+                    150,
+                    AUTO_INGEST_CHUNK_BUDGET_MAX,
                 ),
                 folder_ingest_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("folder_ingest_chunk_budget", 300), 300
+                    knowledge_data.get("folder_ingest_chunk_budget", 300),
+                    300,
+                    FOLDER_INGEST_CHUNK_BUDGET_MAX,
                 ),
                 dedup_every_n_sweeps=_safe_nonnegative_int(
-                    knowledge_data.get("dedup_every_n_sweeps", 12), 12
+                    knowledge_data.get("dedup_every_n_sweeps", 12),
+                    12,
+                    DEDUP_EVERY_N_SWEEPS_MAX,
                 ),
                 doc_ingest_hosts=[
                     str(h)
@@ -7856,17 +7944,22 @@ class KiroCrewConfig:
                     knowledge_data.get("auto_discover_dirname", "knowledge-docs")
                 ).strip()[:128],
                 sweep_chunk_budget=_safe_nonnegative_int(
-                    knowledge_data.get("sweep_chunk_budget", 500), 500
+                    knowledge_data.get("sweep_chunk_budget", 500),
+                    500,
+                    SWEEP_CHUNK_BUDGET_MAX,
                 ),
-                max_sources=_safe_nonnegative_int(knowledge_data.get("max_sources", 50), 50),
+                max_sources=_safe_nonnegative_int(
+                    knowledge_data.get("max_sources", 50), 50, KNOWLEDGE_MAX_SOURCES_MAX
+                ),
                 embed_rate_limit=_safe_nonnegative_int(
-                    knowledge_data.get("embed_rate_limit", 120), 120
+                    knowledge_data.get("embed_rate_limit", 120), 120, EMBED_RATE_LIMIT_MAX
                 ),
                 extraction_model=str(knowledge_data.get("extraction_model", "")).strip(),
                 extraction_pool_size=max(
-                    1,
+                    EXTRACTION_POOL_SIZE_MIN,
                     min(
-                        10, _safe_nonnegative_int(knowledge_data.get("extraction_pool_size", 3), 3)
+                        EXTRACTION_POOL_SIZE_MAX,
+                        _safe_nonnegative_int(knowledge_data.get("extraction_pool_size", 3), 3),
                     ),
                 ),
             ),
@@ -8071,7 +8164,10 @@ class KiroCrewConfig:
                 avatar=dashboard_data.get("avatar", ""),
                 merge_queued_messages=dashboard_data.get("merge_queued_messages", False),
                 mcp_probe_timeout_secs=_safe_int(
-                    dashboard_data.get("mcp_probe_timeout_secs", 15), 15
+                    dashboard_data.get("mcp_probe_timeout_secs", 15),
+                    15,
+                    MCP_PROBE_TIMEOUT_MIN,
+                    MCP_PROBE_TIMEOUT_MAX,
                 ),
                 loop_stall_exit_after_secs=(
                     None
@@ -8105,7 +8201,12 @@ class KiroCrewConfig:
                 sso_login_flags=str(dashboard_data.get("sso_login_flags", "")),
                 theme_color=dashboard_data.get("theme_color", ""),
                 language=str(dashboard_data.get("language", "")),
-                recent_tint_count=_safe_int(dashboard_data.get("recent_tint_count", 0), 0),
+                recent_tint_count=_safe_int(
+                    dashboard_data.get("recent_tint_count", 0),
+                    0,
+                    RECENT_TINT_COUNT_MIN,
+                    RECENT_TINT_COUNT_MAX,
+                ),
                 update_nudge=(
                     dashboard_data.get("update_nudge", {})
                     if isinstance(dashboard_data.get("update_nudge"), dict)

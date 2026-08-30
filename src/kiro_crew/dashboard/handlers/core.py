@@ -28,11 +28,30 @@ from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NO
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
 from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
+    AUTO_INGEST_CHUNK_BUDGET_MAX,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
+    COMPLETION_KEEP_CHARS_MIN,
+    DEDUP_EVERY_N_SWEEPS_MAX,
+    EMBED_RATE_LIMIT_MAX,
+    EXTRACTION_POOL_SIZE_MAX,
+    EXTRACTION_POOL_SIZE_MIN,
+    FOLDER_INGEST_CHUNK_BUDGET_MAX,
+    KNOWLEDGE_MAX_SOURCES_MAX,
     MAX_SUBAGENTS_FIXED_FLOOR,
+    MCP_PROBE_TIMEOUT_MAX,
+    MCP_PROBE_TIMEOUT_MIN,
+    POOL_TTL_SECS_MAX,
+    POOL_TTL_SECS_MIN,
+    RECENT_TINT_COUNT_MAX,
+    RECENT_TINT_COUNT_MIN,
+    SESSION_TIMEOUT_MAX,
+    SESSION_TIMEOUT_MIN,
+    SOFT_STOP_BUDGET_MAX,
+    SOFT_STOP_BUDGET_MIN,
     SUBAGENT_AUTO_MAX_CEILING,
     SUBAGENT_MAX_TURNS_CEILING,
+    SWEEP_CHUNK_BUDGET_MAX,
     KiroCrewConfig,
     config_path,
 )
@@ -1578,9 +1597,17 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
-    "agent.completion_keep_chars": {"type": "int", "min": 0, "max": RESULT_FILE_MAX_BYTES},
-    "agent.soft_stop_budget_secs": {"type": "float", "min": 0.5, "max": 60.0},
-    "session.timeout_secs": {"type": "int", "min": 0, "max": 86400},
+    "agent.completion_keep_chars": {
+        "type": "int",
+        "min": COMPLETION_KEEP_CHARS_MIN,
+        "max": RESULT_FILE_MAX_BYTES,
+    },
+    "agent.soft_stop_budget_secs": {
+        "type": "float",
+        "min": SOFT_STOP_BUDGET_MIN,
+        "max": SOFT_STOP_BUDGET_MAX,
+    },
+    "session.timeout_secs": {"type": "int", "min": SESSION_TIMEOUT_MIN, "max": SESSION_TIMEOUT_MAX},
     # Range shared with the load-time clamp in config/loader.py — one constant
     # pair, so the write gate and the load path cannot drift (issue #4734).
     "session.autocompact_pct": {
@@ -1590,7 +1617,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     },
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
-    "session.pool_ttl_secs": {"type": "int", "min": 0, "max": 7200},
+    "session.pool_ttl_secs": {"type": "int", "min": POOL_TTL_SECS_MIN, "max": POOL_TTL_SECS_MAX},
     # Intent-level session summaries in the chat right panel. Only the boolean
     # enable is editable here: it spends tokens on turns the user did not ask to
     # pay for, so it is off by default and the Settings toggle is the single
@@ -1598,8 +1625,16 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # config-file-only — they are power-user knobs, not first-run choices.
     "session_summary.enabled": {"type": "bool"},
     "auto_update": {"type": "bool"},
-    "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
-    "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    "dashboard.mcp_probe_timeout_secs": {
+        "type": "int",
+        "min": MCP_PROBE_TIMEOUT_MIN,
+        "max": MCP_PROBE_TIMEOUT_MAX,
+    },
+    "dashboard.recent_tint_count": {
+        "type": "int",
+        "min": RECENT_TINT_COUNT_MIN,
+        "max": RECENT_TINT_COUNT_MAX,
+    },
     # Per-version snooze/skip verdict for the proactive update popup, written
     # as ONE atomic record: the three fields only mean anything together, so
     # per-field writes would open both a crash window (old verdict paired
@@ -1701,14 +1736,26 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.auto_add_documents": {"type": "bool"},
     "knowledge.auto_register_project_docs": {"type": "bool"},
     "knowledge.auto_ingest_artifacts": {"type": "bool"},
-    "knowledge.auto_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
-    "knowledge.folder_ingest_chunk_budget": {"type": "int", "min": 0, "max": 10000},
-    "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": 288},
-    "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": 50000},
-    "knowledge.max_sources": {"type": "int", "min": 0, "max": 1000},
-    "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": 10000},
+    "knowledge.auto_ingest_chunk_budget": {
+        "type": "int",
+        "min": 0,
+        "max": AUTO_INGEST_CHUNK_BUDGET_MAX,
+    },
+    "knowledge.folder_ingest_chunk_budget": {
+        "type": "int",
+        "min": 0,
+        "max": FOLDER_INGEST_CHUNK_BUDGET_MAX,
+    },
+    "knowledge.dedup_every_n_sweeps": {"type": "int", "min": 0, "max": DEDUP_EVERY_N_SWEEPS_MAX},
+    "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": SWEEP_CHUNK_BUDGET_MAX},
+    "knowledge.max_sources": {"type": "int", "min": 0, "max": KNOWLEDGE_MAX_SOURCES_MAX},
+    "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
     "knowledge.extraction_model": {"type": "str"},
-    "knowledge.extraction_pool_size": {"type": "int", "min": 1, "max": 10},
+    "knowledge.extraction_pool_size": {
+        "type": "int",
+        "min": EXTRACTION_POOL_SIZE_MIN,
+        "max": EXTRACTION_POOL_SIZE_MAX,
+    },
     # Computer use — BUDGET KNOBS ONLY. There is deliberately no
     # "computer_use.enabled" key here: the primary enable lives on the keystone
     # ``computer_use.json`` (see config.loader.computer_use_state_path) so the
