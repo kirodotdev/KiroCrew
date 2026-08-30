@@ -4,9 +4,11 @@
  * Pins the credential-safety contract and the seam's forward-compat shape:
  *  1. a QR/link credential is minted ONLY on explicit click, never on mount
  *     (the responses carry live session tokens);
- *  2. sections render per `kinds` from the governed methods endpoint, and an
- *     unrecognised kind renders NOTHING (an edition's new method degrades to
- *     absent on this frontend, never to a broken panel);
+ *  2. sections render per `kinds` from the governed methods endpoint; a kind with
+ *     neither a built-in section nor a registered renderer renders NOTHING (an
+ *     unknown method degrades to absent, never to a broken panel), while an
+ *     edition's kind draws through the renderer seam
+ *     (`mobileConnectRenderers.tsx`);
  *  3. the not-ready tailnet state routes to the real setup card instead of
  *     minting.
  */
@@ -27,6 +29,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mocks }))
 
 import MobileConnectModal from './MobileConnectModal'
+import {
+  registerMobileConnectRenderer,
+  BUILTIN_MOBILE_CONNECT_KINDS,
+} from './mobileConnectRenderers'
 
 function mount(kinds: string[], onClose: () => void = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -151,5 +157,90 @@ describe('MobileConnectModal', () => {
     // The tick swaps the icon; the label persists — assert the click didn't throw
     // and the value stayed rendered (the copy path completed).
     await waitFor(() => expect(screen.getByDisplayValue('https://ext/?token=once')).toBeInTheDocument())
+  })
+})
+
+describe('MobileConnectModal — edition renderer seam', () => {
+  // Registered once for the file: the registry is a module singleton read at
+  // render (registration is a composition-time act, not per-test state), and
+  // these kinds are unique to this block so no other test's `kinds` matches them.
+  registerMobileConnectRenderer({
+    kind: 'modal_test_tunnel_qr',
+    component: () => <div>edition tunnel section</div>,
+  })
+  registerMobileConnectRenderer({
+    kind: 'modal_test_throws',
+    component: () => {
+      throw new Error('renderer exploded')
+    },
+  })
+
+  it('draws a registered renderer for a kind the deployment offers', () => {
+    mount(['modal_test_tunnel_qr'])
+    expect(screen.getByText('edition tunnel section')).toBeInTheDocument()
+    // The edition owns its own mint endpoint, so no built-in mint is touched.
+    expect(mocks.tailnetMobile).not.toHaveBeenCalled()
+    expect(mocks.tailnetMobileQr).not.toHaveBeenCalled()
+    expect(mocks.mobileLoginLink).not.toHaveBeenCalled()
+  })
+
+  it('draws nothing for a registered kind the deployment does NOT offer', () => {
+    // The seam cannot widen governance: the endpoint filters every id through
+    // `capabilities.mobile_connect` before a kind reaches this dialog, so a
+    // renderer for a denied or absent method has no section to draw.
+    mount(['login_link'])
+    expect(screen.queryByText('edition tunnel section')).not.toBeInTheDocument()
+  })
+
+  it('renders the edition section above the built-in link, which keeps working', () => {
+    mount(['modal_test_tunnel_qr', 'login_link'])
+    const edition = screen.getByText('edition tunnel section')
+    const builtin = screen.getByText('Create sign-in link')
+    // DOCUMENT_POSITION_FOLLOWING: a contributed method is the deployment's
+    // primary way in, and the built-in link is the fallback beneath it.
+    expect(edition.compareDocumentPosition(builtin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('a throwing renderer disables only itself', () => {
+    // Each section has its own ErrorBoundary, so one bad edition renderer must
+    // not blank the dialog and take the built-in sections down with it.
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mount(['modal_test_throws', 'login_link'])
+      expect(screen.getByText('Use Kiro Crew on your phone')).toBeInTheDocument()
+      expect(screen.getByText('Create sign-in link')).toBeInTheDocument()
+    } finally {
+      err.mockRestore()
+    }
+  })
+
+  it('a throwing renderer that is the ONLY method still leaves usable content', () => {
+    // No `fallback={null}` here, unlike the Overview stat-card slot: a vanishing
+    // card leaves a grid of siblings, but this section can be the whole dialog,
+    // and emptying it would strand a user who arrived from a nav row that
+    // promised a way in.
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mount(['modal_test_throws'])
+      expect(screen.getByText('Something went wrong')).toBeInTheDocument()
+      expect(screen.getByText('Try Again')).toBeInTheDocument()
+    } finally {
+      err.mockRestore()
+    }
+  })
+})
+
+describe('MobileConnectModal — every built-in kind actually draws', () => {
+  // Pins `BUILTIN_MOBILE_CONNECT_KINDS` to the sections that exist. A member
+  // added to that constant without a section here would report as drawable,
+  // show the nav row, and then open a dialog with an empty body — the exact
+  // outcome the renderer seam exists to prevent.
+  it.each(BUILTIN_MOBILE_CONNECT_KINDS)('%s renders a section', async kind => {
+    mocks.tailnetMobileQr.mockResolvedValue({ url: 'https://h/?t=x', image: 'data:image/png;base64,x' })
+    mocks.mobileLoginLink.mockResolvedValue({ url: 'https://ext/?token=once', expires_in: 300 })
+    mount([kind])
+    // Each built-in section's mint affordance is its proof of presence.
+    const affordance = kind === 'tailnet_qr' ? 'Show QR code' : 'Create sign-in link'
+    expect(await screen.findByText(affordance)).toBeInTheDocument()
   })
 })

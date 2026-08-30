@@ -39,6 +39,12 @@ import {
   suppressOverviewBuiltin,
   isOverviewBuiltinSuppressed,
 } from '../pages/overviewBuiltins'
+import {
+  registerMobileConnectRenderer,
+  getMobileConnectRenderers,
+  canRenderMobileConnectKind,
+  BUILTIN_MOBILE_CONNECT_KINDS,
+} from '../components/mobileConnectRenderers'
 import { apiTransport } from '../api/apiTransport'
 // Importing the client installs the blessed transport (installApiTransport runs
 // at client module load), so `apiTransport` is populated for the test below.
@@ -358,6 +364,66 @@ describe('overviewBuiltins — built-in suppression seam', () => {
     // this path.
     expect(() => suppressOverviewBuiltin('tailnet-mobile')).not.toThrow()
     expect(isOverviewBuiltinSuppressed('tailnet-mobile')).toBe(true)
+  })
+})
+
+describe('mobileConnectRenderers — phone-connection method renderer seam', () => {
+  // The registry is a module singleton, so every test here is self-contained on
+  // its OWN kind and none asserts an absolute registry size — an assertion like
+  // that passes or fails on test ORDER once a sibling has registered (it fails
+  // under --sequence.shuffle). The "core registers nothing" claim is the one
+  // that genuinely needs an untouched registry, so it takes a fresh module.
+  it('registers nothing of its own — a fresh registry is empty', async () => {
+    vi.resetModules()
+    const fresh = await import('../components/mobileConnectRenderers')
+    expect(fresh.getMobileConnectRenderers()).toEqual([])
+    for (const kind of fresh.BUILTIN_MOBILE_CONNECT_KINDS) {
+      expect(fresh.canRenderMobileConnectKind(kind)).toBe(true)
+    }
+    expect(fresh.canRenderMobileConnectKind('seam_test_unregistered')).toBe(false)
+  })
+
+  it('registering a kind is what makes it drawable', () => {
+    const Comp = () => null
+    expect(canRenderMobileConnectKind('seam_test_new')).toBe(false)
+    registerMobileConnectRenderer({ kind: 'seam_test_new', component: Comp })
+    // The single definition of the renderable set: this predicate is what gates
+    // the nav rail's row, so registering is what makes the row appear at all.
+    expect(canRenderMobileConnectKind('seam_test_new')).toBe(true)
+    expect(getMobileConnectRenderers()).toContainEqual({ kind: 'seam_test_new', component: Comp })
+  })
+
+  it('refuses a built-in kind — that would be an override, not a contribution', () => {
+    // `tailnet_qr` and `login_link` are drawn by core sections whose mint
+    // endpoints the core audits. Silently replacing one would let a composition
+    // step redirect a credential mint the core still believes it owns.
+    expect(() =>
+      registerMobileConnectRenderer({ kind: 'tailnet_qr', component: () => null }),
+    ).toThrow(/drawn by a built-in section/)
+    expect(getMobileConnectRenderers().some(r => r.kind === 'tailnet_qr')).toBe(false)
+  })
+
+  it('refuses a kind that could never match a descriptor verbatim', () => {
+    // Blank, whitespace-padded, and non-string all route to one rejection: the
+    // readers compare the server's `kind` verbatim, so normalizing here would
+    // register a key nothing can ever match, and reaching for `.trim()` on a
+    // non-string would throw a raw TypeError in production instead of degrading.
+    for (const kind of ['', '   ', ' padded_qr ', 123 as unknown as string]) {
+      expect(() => registerMobileConnectRenderer({ kind, component: () => null })).toThrow(
+        /non-empty method kind with no surrounding whitespace/,
+      )
+    }
+    expect(getMobileConnectRenderers().some(r => r.kind.includes('padded'))).toBe(false)
+  })
+
+  it('throws on a duplicate kind in dev/test; the first renderer keeps it', () => {
+    const first = () => null
+    const second = () => null
+    registerMobileConnectRenderer({ kind: 'seam_test_dup', component: first })
+    expect(() =>
+      registerMobileConnectRenderer({ kind: 'seam_test_dup', component: second }),
+    ).toThrow(/already has a renderer/)
+    expect(getMobileConnectRenderers().find(r => r.kind === 'seam_test_dup')?.component).toBe(first)
   })
 })
 

@@ -52,6 +52,7 @@ import AgentImportFlow from './components/AgentImportFlow'
 import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
+import { canRenderMobileConnectKind } from './components/mobileConnectRenderers'
 import { motion, AnimatePresence, useMotionValue } from 'framer-motion'
 import { animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from './hooks/useDrawerSwipe'
 
@@ -160,6 +161,11 @@ import { countUpdatables, registryQueryFn, type UpdatableInstalledRow } from './
 // mount gate at the render site means the chunk is fetched exactly when it
 // can render.
 const UpdateFoundModal = lazy(() => import('./components/UpdateFoundModal'))
+// The dialog is lazy; the renderer registry it consults is NOT (imported at the
+// top of this file). The nav rail decides whether to show the "Connect your
+// phone" row before this chunk is ever fetched, so a predicate hiding inside it
+// would answer "cannot draw" for every method until the user had already opened
+// a dialog the row never offered.
 const MobileConnectModal = lazy(() => import('./components/MobileConnectModal'))
 // Same boundary, same reason: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
@@ -1169,11 +1175,13 @@ export default function App() {
     staleTime: 5 * 60_000,
     retry: false,
   })
-  // Only kinds this frontend can render: an edition's NEW method kind would
-  // otherwise show the rail row and then open an empty dialog.
+  // Only kinds this frontend can draw — a built-in section or an edition's
+  // registered renderer (`components/mobileConnectRenderers.tsx`). A kind
+  // nothing can draw would otherwise show the rail row and then open an empty
+  // dialog, so the predicate, not a literal list, is what gates the row.
   const mobileConnectKinds = (mobileConnectQuery.data?.methods ?? [])
     .map(m => m.kind)
-    .filter(k => k === 'tailnet_qr' || k === 'login_link')
+    .filter(canRenderMobileConnectKind)
   // Selected session's project directory: a terminal opened from the nav row
   // starts there (server default when no session is selected or it has none).
   const activeSlotProject = useAppSelector(selectActiveSlotProject)

@@ -9,6 +9,8 @@ import { useAppSelector } from '../store'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { copyToClipboard } from '../utils/clipboard'
 import { parseErrorCode } from '../utils/errorReport'
+import ErrorBoundary from './ErrorBoundary'
+import { getMobileConnectRenderers } from './mobileConnectRenderers'
 
 /** Machine-readable code from a mint error's JSON body (same shape as the
  *  Settings card's helper): lets the UI blame configuration only when the
@@ -22,11 +24,15 @@ const linkErrorCode = (error: unknown): string | undefined =>
  * "Connect your phone" — the sidebar entry's centered dialog (mockup A1).
  *
  * Renders one section per governed method the `/api/mobile-connect/methods`
- * endpoint returned (the CPP `mobile_connect` seam). Kinds this frontend
- * knows: `tailnet_qr` (server-rendered QR carrying a live session token,
- * minted ONLY on explicit click) and `login_link` (one-time sign-in URL).
- * An unrecognised kind renders nothing — an edition's new method degrades to
- * absent on this frontend, never to a broken panel.
+ * endpoint returned (the CPP `mobile_connect` seam). The core draws two kinds
+ * itself: `tailnet_qr` (server-rendered QR carrying a live session token,
+ * minted ONLY on explicit click) and `login_link` (one-time sign-in URL). A
+ * downstream edition's kinds are drawn by the renderer seam in
+ * `mobileConnectRenderers.tsx`, and those sections come first: a deployment
+ * that contributes a method offers it as the primary way in, so the built-in
+ * link sits below as the fallback. A kind with neither a built-in section nor a
+ * registered renderer renders nothing, so an unknown method is absent rather
+ * than a broken panel.
  *
  * Credentials are minted on demand and never on mount: the QR/link responses
  * carry live tokens, so nothing here fetches one until the user asks.
@@ -45,6 +51,10 @@ export default function MobileConnectModal({
   useDialogFocusTrap(dialogRef, onClose)
 
   const hasQr = kinds.includes('tailnet_qr')
+  // Only renderers whose kind this deployment actually offers: the endpoint has
+  // already filtered every id through `capabilities.mobile_connect`, so a
+  // registered renderer for a denied or absent method draws nothing.
+  const editionSections = getMobileConnectRenderers().filter(r => kinds.includes(r.kind))
 
   return (
     <div
@@ -76,8 +86,23 @@ export default function MobileConnectModal({
             {t('components.mobileConnect.scan_with_your_phone_camera_to_continue_with_the_s')}
           </p>
         )}
+        {/* Edition sections, each in its own ErrorBoundary so a throwing
+            renderer disables only itself. Deliberately WITHOUT `fallback={null}`,
+            unlike the Overview stat-card slot: a card that vanishes leaves a grid
+            of siblings, but a registered section here can be the dialog's ONLY
+            content, and silently emptying it would strand a user who reached it
+            from a nav row that promised a way in. The default boundary keeps the
+            section occupied, which is also what makes counting these sections a
+            sound input to `standalone` below. */}
+        {editionSections.map(r => (
+          <ErrorBoundary key={r.kind} scope={`mobile-connect:${r.kind}`}>
+            <r.component onClose={onClose} />
+          </ErrorBoundary>
+        ))}
         {hasQr && <TailnetQrSection onClose={onClose} />}
-        {kinds.includes('login_link') && <LoginLinkSection standalone={!hasQr} />}
+        {kinds.includes('login_link') && (
+          <LoginLinkSection standalone={!hasQr && editionSections.length === 0} />
+        )}
       </div>
     </div>
   )
