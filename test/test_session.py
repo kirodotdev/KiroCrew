@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.acp.runtime import AcpWorkspaceBindingError
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO, AcpPromptStats
 from kiro_crew.config import KiroCrewConfig
@@ -29,6 +30,12 @@ def cfg():
     return c
 
 
+async def _empty_provider_stream(_command: str):
+    """An empty async iterator for provider methods consumed by ``async for``."""
+    if False:  # pragma: no cover - establishes the async-generator protocol
+        yield None
+
+
 def _mock_provider_factory():
     """Return a factory that creates mock LLMProviders."""
 
@@ -41,7 +48,10 @@ def _mock_provider_factory():
         # "alive" only by truthiness while leaking an un-awaited coroutine.
         m.is_process_alive = lambda: True
         m.context_usage_pct = lambda: 0.0
+        m.context_window_tokens = lambda: 0
         m.has_active_turn = lambda: False
+        m.runtime_info = lambda: (None, None)
+        m.stream_command = MagicMock(side_effect=_empty_provider_stream)
         return m
 
     return factory
@@ -59,7 +69,10 @@ def _alive_provider_factory():
         m.is_process_alive = lambda: True
         m.is_alive = lambda: True
         m.context_usage_pct = lambda: 0.0
+        m.context_window_tokens = lambda: 0
         m.has_active_turn = lambda: False
+        m.runtime_info = lambda: (None, None)
+        m.stream_command = MagicMock(side_effect=_empty_provider_stream)
         return m
 
     return factory
@@ -1980,6 +1993,7 @@ class TestReloadProviderFactory:
         mgr.release("k1")
         # Put something in warm pool
         mock_pool_p = AsyncMock()
+        mock_pool_p.is_process_alive = lambda: False
         mgr._warm_pool.put_nowait((mock_pool_p, "agent"))
 
         with (
@@ -2507,6 +2521,7 @@ class TestContextInfo:
         with patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path):
             assert SessionManager._resolve_agent_model("small") == "pinned-by-small"
 
+    @requires_symlinks
     def test_resolve_agent_model_refuses_a_link_to_a_sensitive_target(self, tmp_path, monkeypatch):
         """A spec that is a symlink resolving onto a sensitive target is refused,
         so the model is not resolved out of whatever the link names."""
@@ -3272,6 +3287,7 @@ class TestClaudeBackendCompaction:
         # already registered a fresh replacement under the same key.
         replacement_provider = AsyncMock()
         replacement_provider.shutdown = AsyncMock()
+        replacement_provider.is_process_alive = lambda: True
         replacement = _Session(
             provider=replacement_provider, first_turn=FirstTurnState.NOTHING_ARMED
         )
@@ -4264,6 +4280,7 @@ class TestContextInfoBasic:
         bg_info = [i for i in info if i["key"] == BACKGROUND_KEY]
         assert len(bg_info) == 1
         assert "Background" in bg_info[0]["name"]
+        await mgr.close_all()
 
 
 class TestCleanupLoopResilience:
