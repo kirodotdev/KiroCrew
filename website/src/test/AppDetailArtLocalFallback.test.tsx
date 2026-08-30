@@ -281,11 +281,15 @@ describe('AppDetailPage screenshots — per-thumbnail local fallback, index-alig
       return el!
     })
     fireEvent.error(s2)
-    // The aligned placeholder at index 1 is '' — nothing to try. A filtered
-    // fallback list would put LOCAL_C here: a silently WRONG image, worse
-    // than the hidden one this fix addresses.
-    await waitFor(() => expect(imgBySrc(R_S2)!.style.display).toBe('none'))
+    // The aligned placeholder at index 1 is '' — nothing to try, so the
+    // thumbnail (and its now-pointless button) unmounts. A filtered fallback
+    // list would put LOCAL_C here: a silently WRONG image, worse than the
+    // hidden one this fix addresses.
+    await waitFor(() => expect(imgBySrc(R_S2)).toBeNull())
     expect(imgBySrc(LOCAL_C)).toBeNull()
+    // Neighbours untouched.
+    expect(imgBySrc(R_S1)).not.toBeNull()
+    expect(imgBySrc(R_S3)).not.toBeNull()
   })
 
   it('a swapped thumbnail whose local art also fails returns to the hidden terminal state', async () => {
@@ -298,10 +302,11 @@ describe('AppDetailPage screenshots — per-thumbnail local fallback, index-alig
     fireEvent.error(s1)
     await waitFor(() => expect(imgBySrc(LOCAL_A)).not.toBeNull())
     fireEvent.error(imgBySrc(LOCAL_A)!)
-    await waitFor(() => {
-      const el = document.querySelectorAll('.h-40')[0] as HTMLImageElement
-      expect(el.style.display).toBe('none')
-    })
+    // Terminal: the thumbnail unmounts; its neighbours stay.
+    await waitFor(() => expect(imgBySrc(LOCAL_A)).toBeNull())
+    expect(imgBySrc(R_S1)).toBeNull()
+    expect(imgBySrc(R_S2)).not.toBeNull()
+    expect(imgBySrc(R_S3)).not.toBeNull()
   })
 
   it('a theme flip swaps to the dark list and re-arms the latches; the dark fallback family is used', async () => {
@@ -341,24 +346,112 @@ describe('AppDetailPage screenshots — per-thumbnail local fallback, index-alig
       return el!
     })
     fireEvent.error(a)
-    await waitFor(() => expect(imgBySrc(LOCAL_C)!.style.display).toBe('none'))
+    await waitFor(() => expect(imgBySrc(LOCAL_C)).toBeNull())
     // No cross-index borrow: LOCAL_A still shows its own primary only once.
     expect(document.querySelectorAll(`img[src="${LOCAL_A}"]`).length).toBe(1)
   })
 })
 
 describe('ScreenshotGallery — component contract', () => {
-  it('stays default-inert with no fallbacks prop: error hides the thumbnail, exactly as today', () => {
-    render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1]} /></MemoryRouter>)
-    const img = imgBySrc(R_S1)!
-    fireEvent.error(img)
-    expect(imgBySrc(R_S1)!.style.display).toBe('none')
+  it('stays default-inert with no fallbacks prop: error unmounts the thumbnail, no swap attempted', () => {
+    render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1, R_S2]} /></MemoryRouter>)
+    fireEvent.error(imgBySrc(R_S1)!)
+    expect(imgBySrc(R_S1)).toBeNull()
+    expect(document.querySelectorAll('img').length).toBe(1)
+    expect(imgBySrc(R_S2)).not.toBeNull()
   })
 
   it('skips a fallback identical to the failed primary', () => {
-    render(<MemoryRouter><ScreenshotGallery screenshots={[LOCAL_A]} fallbacks={[LOCAL_A]} /></MemoryRouter>)
+    render(<MemoryRouter><ScreenshotGallery screenshots={[LOCAL_A, R_S2]} fallbacks={[LOCAL_A, '']} /></MemoryRouter>)
     fireEvent.error(imgBySrc(LOCAL_A)!)
-    expect(imgBySrc(LOCAL_A)!.style.display).toBe('none')
+    expect(imgBySrc(LOCAL_A)).toBeNull()
+    expect(imgBySrc(R_S2)).not.toBeNull()
+  })
+
+  it('the lightbox enlarges the SWAPPED src, not the dead primary (#6886 review finding)', () => {
+    render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1]} fallbacks={[LOCAL_A]} /></MemoryRouter>)
+    fireEvent.error(imgBySrc(R_S1)!)
+    expect(imgBySrc(LOCAL_A)).not.toBeNull()
+    fireEvent.click(document.querySelector('button[aria-label="Open screenshot 1"]')!)
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog).not.toBeNull()
+    const enlarged = dialog.querySelector('img')!
+    expect(enlarged.getAttribute('src')).toBe(LOCAL_A)
+  })
+
+  it('suppresses the whole section (header included) when every thumbnail is terminal', () => {
+    const { container } = render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1]} /></MemoryRouter>)
+    fireEvent.error(imgBySrc(R_S1)!)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).not.toContain('Screenshots')
+  })
+
+  it('lightbox navigation skips terminal indices and counts only the visible subset (#6886 UX round 3)', () => {
+    render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1, R_S2, R_S3]} /></MemoryRouter>)
+    // Middle screenshot dies: its thumbnail unmounts.
+    fireEvent.error(imgBySrc(R_S2)!)
+    expect(imgBySrc(R_S2)).toBeNull()
+    // Open the first; arrow-right must land on the THIRD, not a blank slide.
+    fireEvent.click(document.querySelector('button[aria-label="Open screenshot 1"]')!)
+    const dialog = () => document.querySelector('[role="dialog"]')!
+    expect(dialog().querySelector('img')!.getAttribute('src')).toBe(R_S1)
+    fireEvent.keyDown(dialog(), { key: 'ArrowRight' })
+    expect(dialog().querySelector('img')!.getAttribute('src')).toBe(R_S3)
+    // Counter reflects the visible subset (2 of 2), not the raw length.
+    expect(dialog().textContent).toContain('2 / 2')
+    // No further next: the chevron is gone and arrow-right is a no-op.
+    expect(dialog().querySelector('button[aria-label="Next"]')).toBeNull()
+    fireEvent.keyDown(dialog(), { key: 'ArrowRight' })
+    expect(dialog().querySelector('img')!.getAttribute('src')).toBe(R_S3)
+    // Arrow-left walks back over the gap.
+    fireEvent.keyDown(dialog(), { key: 'ArrowLeft' })
+    expect(dialog().querySelector('img')!.getAttribute('src')).toBe(R_S1)
+    expect(dialog().textContent).toContain('1 / 2')
+  })
+
+  it('refuses a cross-origin fallback URL: error goes terminal, no request to a third-party host (#6886 GPT security finding)', () => {
+    // A registry-only row's raw spread can deliver attacker-chosen fallback
+    // keys. Honouring an absolute URL would leak the viewer's address to
+    // that host on load failure — the surface must never render it.
+    const EVIL = 'https://evil.example/tracker.png'
+    render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1, R_S2]} fallbacks={[EVIL, LOCAL_A]} /></MemoryRouter>)
+    fireEvent.error(imgBySrc(R_S1)!)
+    expect(imgBySrc(EVIL)).toBeNull()
+    expect(imgBySrc(R_S1)).toBeNull()
+    // The same-origin sibling still swaps normally.
+    fireEvent.error(imgBySrc(R_S2)!)
+    expect(imgBySrc(LOCAL_A)).not.toBeNull()
+  })
+
+  it('survives malformed runtime shapes: a non-array in either prop never crashes the page', () => {
+    // The registry-only branch spreads the raw third-party row into the view
+    // model, so `screenshots: {}` or a colliding `screenshotsFallback: {}`
+    // reaches this component despite the string[] type (GPT review finding).
+    const bad = {} as unknown as string[]
+    const { container: c1 } = render(<MemoryRouter><ScreenshotGallery screenshots={bad} /></MemoryRouter>)
+    expect(c1.querySelector('img')).toBeNull()
+    const { container: c2 } = render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1]} fallbacks={bad} /></MemoryRouter>)
+    expect(c2.querySelector(`img[src="${R_S1}"]`)).not.toBeNull()
+    // And the malformed fallback is treated as absent: error goes terminal.
+    fireEvent.error(c2.querySelector(`img[src="${R_S1}"]`)!)
+    expect(c2.querySelector('img')).toBeNull()
+  })
+
+  it('page survives a registry-only row carrying a malformed screenshotsFallback key', async () => {
+    getApp.mockRejectedValue(new Error('not installed'))
+    listRegistry.mockResolvedValue({
+      apps: [registryRow({ screenshots: [R_S1], screenshotsFallback: {} })],
+      serverPlatform: { os: 'linux', arch: 'x86_64' },
+    })
+    render(detailUi())
+    // The raw-row spread delivers the malformed key; the page must render.
+    const s1 = await waitFor(() => {
+      const el = imgBySrc(R_S1)
+      expect(el).not.toBeNull()
+      return el!
+    })
+    fireEvent.error(s1)
+    expect(imgBySrc(R_S1)).toBeNull()
   })
 })
 
@@ -379,6 +472,14 @@ describe('HeroBanner — component contract', () => {
 
   it('renders nothing when there is no primary at all', () => {
     render(<HeroBanner src="" fallbackSrc={LOCAL_HERO} isDetail={false} />)
+    expect(heroBox()).toBeNull()
+  })
+
+  it('refuses a cross-origin fallback URL and unmounts instead (#6886 GPT security finding)', () => {
+    const EVIL = 'https://evil.example/hero.png'
+    render(<HeroBanner src={R_HERO} fallbackSrc={EVIL} isDetail={false} />)
+    fireEvent.error(imgBySrc(R_HERO)!)
+    expect(imgBySrc(EVIL)).toBeNull()
     expect(heroBox()).toBeNull()
   })
 })

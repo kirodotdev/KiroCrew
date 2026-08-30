@@ -159,6 +159,15 @@ interface AppManifest {
 // fallback list on a registry-supplied primary.
 export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: string[]; fallbacks?: string[] }) {
   const [selected, setSelected] = useState<number | null>(null)
+  // Both lists are TYPED string[] but can arrive as arbitrary JSON at
+  // runtime: the registry-only branch spreads the raw (third-party) registry
+  // row into the view model, so a malformed row declaring `screenshots: {}`
+  // or a colliding `screenshotsFallback` key reaches this component as-is,
+  // and a bare `.join`/`.map` would take the whole page down. Same
+  // unknown-typed defensiveness as installedArtList (GPT review finding on
+  // #6886; the `screenshots` case pre-existed as a `.map` crash).
+  const screenList: string[] = Array.isArray(screenshots) ? screenshots : []
+  const fallbackList: string[] = Array.isArray(fallbacks) ? fallbacks : []
   // Per-thumbnail failure latches, mirroring AppIcon's two-latch shape
   // (#6804): a thumbnail whose primary errored swaps to ITS OWN fallback; one
   // whose fallback errored too is hidden — the pre-#6864 terminal state.
@@ -173,30 +182,52 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
   // flip, refetch) clears BOTH latch sets; a changed fallback list alone (an
   // install completing under a mounted page) re-arms only the fallback
   // latches. '\n' cannot appear in a URL, so the join is unambiguous.
-  const screensKey = screenshots.join('\n')
-  const fallbacksKey = (fallbacks ?? []).join('\n')
+  const screensKey = screenList.join('\n')
+  const fallbacksKey = fallbackList.join('\n')
   useEffect(() => {
     setPrimaryFailed(new Set())
     setFallbackFailed(new Set())
   }, [screensKey])
   useEffect(() => { setFallbackFailed(new Set()) }, [fallbacksKey])
 
-  if (screenshots.length === 0) return null
+  // The effective (post-swap) src for one index — '' when the index is
+  // terminal (primary failed and no usable fallback: absent, an '' alignment
+  // placeholder, identical to the failed primary, or itself failed). Shared
+  // by the thumbnail AND the lightbox, so a thumbnail that swapped to local
+  // art never enlarges to the dead primary URL (review finding on #6886).
+  //
+  // The fallback must be SAME-ORIGIN: for a registry-only app the raw row
+  // spread can deliver attacker-chosen fallback keys, and honouring an
+  // absolute URL here would let a third-party index point this <img> at any
+  // host on load failure, leaking the viewer's address and headers (GPT
+  // security finding on #6886). installedArt already emits only same-origin
+  // routes, so legitimate installed-app fallbacks always pass.
+  const resolvedAt = (i: number): string => {
+    const url = screenList[i]
+    if (!primaryFailed.has(i)) return url
+    const fallback = fallbackList[i] || ''
+    if (!fallback || classifyManifestArt(fallback) !== 'same-origin') return ''
+    return fallback !== url && !fallbackFailed.has(i) ? fallback : ''
+  }
+
+  if (screenList.length === 0) return null
+  // When every thumbnail is terminal, drop the whole section: a bare
+  // "SCREENSHOTS" header over nothing is the empty-box state this fix removes
+  // from the hero, and it stays reachable for non-installed apps.
+  if (!screenList.some((_, i) => resolvedAt(i) !== '')) return null
 
   return (
     <>
       <div className="mb-6">
         <div className="text-[12px] text-muted uppercase tracking-wider mb-3">{i18nT('pages.appDetailPage.screenshots')}</div>
         <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none">
-          {screenshots.map((url, i) => {
-            // Second chance per thumbnail: swap to the index-paired local
-            // route when the primary fails to LOAD, skipping a fallback that
-            // is absent (an '' alignment placeholder), identical to the
-            // failed primary (retrying it is a second doomed request), or
-            // already failed itself — hiding stays the terminal state.
-            const fallback = fallbacks?.[i] || ''
-            const useFallback = primaryFailed.has(i) && !!fallback && fallback !== url && !fallbackFailed.has(i)
-            const terminal = primaryFailed.has(i) && !useFallback
+          {screenList.map((_, i) => {
+            // Second chance per thumbnail; a terminal index unmounts its
+            // button entirely — the old display:none shape left an invisible,
+            // tabbable "Open screenshot N" button that opened a broken
+            // lightbox for keyboard users.
+            const shown = resolvedAt(i)
+            if (!shown) return null
             return (
               <button
                 key={i}
@@ -210,10 +241,9 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
                 {/* the rule flags onError regardless. */}
                 {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
                 <img
-                  src={useFallback ? fallback : url}
+                  src={shown}
                   alt={i18nT('pages.appDetailPage.screenshot', { n: i + 1 })}
                   className="h-40 rounded-lg border border-border hover:border-accent/40 hover:shadow-md transition-all object-cover"
-                  style={terminal ? { display: 'none' } : undefined}
                   onError={() => {
                     if (!primaryFailed.has(i)) setPrimaryFailed(prev => new Set(prev).add(i))
                     else setFallbackFailed(prev => new Set(prev).add(i))
@@ -226,38 +256,46 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
       </div>
 
       {/* Lightbox */}
-      {selected !== null && (
-        // Modal backdrop: click-to-dismiss is a mouse affordance; keyboard users
-        // dismiss/navigate via the onKeyDown handler (Escape / arrows) below.
-        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-        <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-bg/80 backdrop-blur-sm"
-          onClick={() => setSelected(null)}
-          onKeyDown={e => {
-            if (e.key === 'Escape') setSelected(null)
-            if (e.key === 'ArrowRight' && selected < screenshots.length - 1) setSelected(selected + 1)
-            if (e.key === 'ArrowLeft' && selected > 0) setSelected(selected - 1)
-          }}
-          tabIndex={-1}
-          ref={el => el?.focus()}
-          role="dialog"
-          aria-modal="true"
-        >
-          {/* Presentational wrapper: stops backdrop-dismiss when clicking the image. */}
-          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
-          <div className="relative max-w-4xl max-h-[80vh] mx-4" onClick={e => e.stopPropagation()}>
-            <img src={screenshots[selected]} alt="" className="max-w-full max-h-[80vh] rounded-xl shadow-2xl" />
-            <button className="absolute top-2 right-2 bg-bg/80 rounded-full p-1.5 text-muted hover:text-text" onClick={() => setSelected(null)} aria-label={i18nT('pages.appDetailPage.close')}><X size={18} /></button>
-            {selected > 0 && (
-              <button className="absolute left-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(selected - 1) }} aria-label={i18nT('pages.appDetailPage.previous')}><ChevronLeft size={20} /></button>
-            )}
-            {selected < screenshots.length - 1 && (
-              <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(selected + 1) }} aria-label={i18nT('pages.appDetailPage.next')}><ChevronRight size={20} /></button>
-            )}
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[12px] text-muted bg-bg/80 px-3 py-1 rounded-full">{selected + 1} / {screenshots.length}</div>
+      {selected !== null && (() => {
+        // Navigation walks the VISIBLE subset: terminal indices have no
+        // thumbnail, so stepping raw indices would land on a blank slide with
+        // a counter that includes the hidden ones (UX review on #6886).
+        // `selected` stays a raw index so thumbnail clicks need no mapping.
+        const visible = screenList.map((_, i) => i).filter(i => resolvedAt(i) !== '')
+        const nextVisible = visible.find(i => i > selected)
+        const prevVisible = [...visible].reverse().find(i => i < selected)
+        return (
+          // Modal backdrop: click-to-dismiss is a mouse affordance; keyboard users
+          // dismiss/navigate via the onKeyDown handler (Escape / arrows) below.
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+          <div
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-bg/80 backdrop-blur-sm"
+            onClick={() => setSelected(null)}
+            onKeyDown={e => {
+              if (e.key === 'Escape') setSelected(null)
+              if (e.key === 'ArrowRight' && nextVisible !== undefined) setSelected(nextVisible)
+              if (e.key === 'ArrowLeft' && prevVisible !== undefined) setSelected(prevVisible)
+            }}
+            tabIndex={-1}
+            ref={el => el?.focus()}
+            role="dialog"
+            aria-modal="true"
+          >
+            {/* Presentational wrapper: stops backdrop-dismiss when clicking the image. */}
+            <div role="presentation" className="relative max-w-4xl max-h-[80vh] mx-4" onClick={e => e.stopPropagation()}>
+              <img src={resolvedAt(selected)} alt="" className="max-w-full max-h-[80vh] rounded-xl shadow-2xl" />
+              <button className="absolute top-2 right-2 bg-bg/80 rounded-full p-1.5 text-muted hover:text-text" onClick={() => setSelected(null)} aria-label={i18nT('pages.appDetailPage.close')}><X size={18} /></button>
+              {prevVisible !== undefined && (
+                <button className="absolute left-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(prevVisible) }} aria-label={i18nT('pages.appDetailPage.previous')}><ChevronLeft size={20} /></button>
+              )}
+              {nextVisible !== undefined && (
+                <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-bg/80 rounded-full p-2 text-muted hover:text-text" onClick={e => { e.stopPropagation(); setSelected(nextVisible) }} aria-label={i18nT('pages.appDetailPage.next')}><ChevronRight size={20} /></button>
+              )}
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[12px] text-muted bg-bg/80 px-3 py-1 rounded-full">{visible.indexOf(selected) + 1} / {visible.length}</div>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
     </>
   )
 }
@@ -290,14 +328,20 @@ export function HeroBanner({ src, fallbackSrc, isDetail }: { src: string; fallba
   // fallback pair has a dark variant, an install completing under a mounted
   // page) and must never inherit a stale failure.
   useEffect(() => { setFallbackFailed(false) }, [fallbackSrc])
-  const useFallback = primaryFailed && !!fallbackSrc && fallbackSrc !== src && !fallbackFailed
+  // Same-origin gate on the fallback, mirroring resolvedAt in the gallery:
+  // the registry-only raw-row spread can deliver attacker-chosen fallback
+  // keys, and an absolute URL honoured on error would leak the viewer's
+  // address to a third-party host. installedArt only emits same-origin
+  // routes, so real installed-app fallbacks always pass (GPT finding, #6886).
+  const safeFallback = fallbackSrc && classifyManifestArt(fallbackSrc) === 'same-origin' ? fallbackSrc : ''
+  const useFallback = primaryFailed && !!safeFallback && safeFallback !== src && !fallbackFailed
   if (!src || (primaryFailed && !useFallback)) return null
   return (
     <div className={`w-full ${isDetail ? 'aspect-[25/6]' : 'aspect-video'} max-h-72 rounded-2xl border border-border overflow-hidden mb-6 bg-[var(--card)]`}>
       {/* onError is an image-load lifecycle handler (swap to local art, then hide). */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
       <img
-        src={useFallback ? fallbackSrc : src}
+        src={useFallback ? safeFallback : src}
         alt=""
         className="w-full h-full object-cover"
         onError={() => {

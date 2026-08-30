@@ -263,9 +263,12 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await loaded()
 
     const thumb = screen.getByAltText('Screenshot 1') as HTMLImageElement
-    expect(thumb.style.display).toBe('')
     fireEvent.error(thumb)
-    expect(thumb.style.display).toBe('none')
+    // #6864/#6886 review: a terminal thumbnail unmounts its button entirely —
+    // the old display:none shape left an invisible, tabbable "Open screenshot"
+    // button that opened a broken lightbox for keyboard users.
+    expect(screen.queryByAltText('Screenshot 1')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Open screenshot 1')).not.toBeInTheDocument()
   })
 
   it('prefers the dark screenshot set when the resolved mode is dark', async () => {
