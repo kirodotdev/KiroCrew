@@ -8539,7 +8539,11 @@
         "more_actions": "Weitere Aktionen",
         "needs_active_chat": "Verfügbar, sobald diese Unterhaltung vollständig geöffnet ist",
         "needs_earlier_history_count_one": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachricht",
-        "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten"
+        "needs_earlier_history_count_other": "Auswählen, um früheren Verlauf zu laden – noch {{count}} frühere Nachrichten",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Beschreiben Sie den Skill, der aus diesem Chat erstellt werden soll.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create"
       },
       "chatFooter": {
         "compacting": "Wird verdichtet…",
@@ -9077,7 +9081,8 @@
       "what_can_i_do_for_you": "Was kann ich für Sie tun?",
       "worktree_creation_returned_no_path": "Die Worktree-Erstellung hat keinen Pfad zurückgegeben",
       "loading_earlier_messages": "Frühere Nachrichten werden geladen…",
-      "send_failed_with_error": "Senden fehlgeschlagen: {{error}}"
+      "send_failed_with_error": "Senden fehlgeschlagen: {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 übersprungen — aktuell ausgewählt)",

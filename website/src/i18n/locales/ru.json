@@ -8793,7 +8793,11 @@
         "needs_earlier_history_count_one": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщение",
         "needs_earlier_history_count_few": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщения",
         "needs_earlier_history_count_many": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
-        "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений"
+        "needs_earlier_history_count_other": "Выберите, чтобы загрузить более раннюю историю — осталось {{count}} сообщений",
+        "create_skill": "Создать навык",
+        "create_skill_hint": "Опишите навык, который нужно создать из этого чата.",
+        "create_skill_placeholder": "Назначение навыка",
+        "create_skill_submit": "Создать"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -9353,7 +9357,8 @@
       "what_can_i_do_for_you": "Чем могу помочь?",
       "worktree_creation_returned_no_path": "Создание worktree не вернуло путь",
       "loading_earlier_messages": "Загрузка предыдущих сообщений…",
-      "send_failed_with_error": "Не удалось отправить: {{error}}"
+      "send_failed_with_error": "Не удалось отправить: {{error}}",
+      "create_skill_failed_error": "Не удалось начать создание навыка: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

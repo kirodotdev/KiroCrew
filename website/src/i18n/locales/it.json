@@ -8666,7 +8666,11 @@
         "needs_active_chat": "Disponibile quando questa conversazione ha finito di aprirsi",
         "needs_earlier_history_count_one": "Seleziona per caricare la cronologia precedente: resta {{count}} messaggio precedente",
         "needs_earlier_history_count_many": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
-        "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti"
+        "needs_earlier_history_count_other": "Seleziona per caricare la cronologia precedente: restano {{count}} messaggi precedenti",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Descrivi la competenza da creare da questa chat.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create"
       },
       "chatFooter": {
         "compacting": "Compattazione in corso…",
@@ -9215,7 +9219,8 @@
       "what_can_i_do_for_you": "Cosa posso fare per te?",
       "worktree_creation_returned_no_path": "La creazione del worktree non ha restituito alcun percorso",
       "loading_earlier_messages": "Caricamento dei messaggi precedenti…",
-      "send_failed_with_error": "Invio non riuscito: {{error}}"
+      "send_failed_with_error": "Invio non riuscito: {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 saltata — attualmente selezionata)",

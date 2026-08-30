@@ -138,10 +138,11 @@ import ProjectPicker from '../components/ProjectPicker'
 import InboundLinkChip from '../components/InboundLinkChip'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
 } from '../components/ui/dropdown-menu'
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
+import CreateSkillDialog from './chat/CreateSkillDialog'
 
 import ChatInput from '../components/ChatInput'
 import ErrorNotice from '../components/ErrorNotice'
@@ -296,12 +297,13 @@ const createFailReason = (e: unknown): string => {
   return typeof msg === 'string' && msg.trim() ? msg : 'the server did not respond'
 }
 
-export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: {
-  activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; mode?: string
+export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode, onCreateSkill }: {
+  activeSlot: string | null; agent?: string; onReveal?: () => void; onRename?: () => void; mode?: string; onCreateSkill?: (purpose: string) => void | Promise<void>
 }) {
   // Controlled open state: lets the colour-swatch row (not a Radix menu item)
   // close the menu after a pick, via the onColorPicked hook passed below.
   const [open, setOpen] = useState(false)
+  const [skillOpen, setSkillOpen] = useState(false)
   // MCP server list is fetched lazily when its submenu opens (driven by the
   // Radix Sub's open state).
   const [mcpOpen, setMcpOpen] = useState(false)
@@ -337,6 +339,7 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
   const loadedTools = useMemo(() => deriveLoadedMcpTools(sessionMessages), [sessionMessages])
 
   return (
+    <>
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
@@ -371,12 +374,32 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
           ]}
           onReveal={onReveal}
           onRename={onRename}
+          // "Create skill" sits right after the Autopilot/Chat toggle; header-only,
+          // so it rides in via modeSlots and opens the purpose modal on select.
+          modeSlots={onCreateSkill ? [
+            <DropdownMenuItem
+              key="create-skill"
+              onSelect={e => {
+                // Close the menu and open the purpose modal.
+                e.preventDefault()
+                setOpen(false)
+                setSkillOpen(true)
+              }}
+            >
+              <Sparkles size={13} className="shrink-0 text-muted" />
+              <span className="flex-1">{i18nT('pages.chat.assistantMessage.create_skill')}</span>
+            </DropdownMenuItem>,
+          ] : undefined}
           // The header controls its own menu, so close it after a colour pick.
           onColorPicked={() => setOpen(false)}
         />
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+    {onCreateSkill && (
+      <CreateSkillDialog open={skillOpen} onOpenChange={setSkillOpen} onSubmit={onCreateSkill} />
+    )}
+    </>
   )
 }
 
@@ -5407,6 +5430,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     })
   }, [activeSlot, regenerating, slotRunning, messages, lastTextIdx, dispatch, showRefusedPress])
 
+  const handleCreateSkill = useCallback(async (purpose: string) => {
+    if (!activeSlot) return
+    try {
+      await api.createSkillFromSession(activeSlot, purpose)
+    } catch (e: unknown) {
+      // Surface the failure AND re-throw so the dialog keeps the typed purpose and
+      // stays open to retry instead of discarding it.
+      alert(i18nT('pages.chatPage.create_skill_failed_error', { error: e instanceof Error ? e.message : String(e) }))
+      throw e
+    }
+  }, [activeSlot])
+
   // ---- Continue the thread ---------------------------------------------------
   // A turn can end without the assistant handing the floor back: the connection
   // dropped, the gateway restarted during an app update, the app was force-quit,
@@ -7130,6 +7165,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <ChatHeaderMenu
                   activeSlot={activeSlot}
                   agent={currentSlot?.agent}
+                  onCreateSkill={handleCreateSkill}
                   onReveal={activeSlot && embedMode !== 'chat' ? () => {
                     // The request rides the store, not a window event: with the
                     // drawer collapsed ChatSidebar is unmounted, so an event
