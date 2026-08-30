@@ -474,8 +474,29 @@ class Llama:
         # Restored or truncated state must decode before sampling.
         self._requires_eval = True
         self.input_ids: npt.NDArray[np.intc] = np.ndarray((n_ctx,), dtype=np.intc)
+        # kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python (issue #6827):
+        # upstream unconditionally allocates the full per-token logits buffer
+        # here. For an embedding-only model that is dead weight measured in
+        # gigabytes (Qwen3-Embedding-0.6B: 2048 rows x 151,936 vocab x 4 bytes
+        # ~= 1.24 GB of float32), because nothing on the embedding path ever
+        # reads self.scores: embed() / create_embedding() return vectors via
+        # llama_get_embeddings_seq / llama_get_embeddings, and eval() only
+        # writes scores when self._logits_all is set. So when the model is
+        # opened in embedding mode with logits_all off, allocate ZERO ROWS.
+        # The attribute, its dtype, its ndim and its vocab width are unchanged,
+        # so every slice-based reader (the _scores and eval_logits properties,
+        # save_state/load_state) stays valid and simply yields an empty result.
+        # Only explicit row indexing -- the generation / logprob paths, which
+        # llama.cpp does not support on an embeddings context in the first
+        # place -- would raise, and it raises loudly rather than silently
+        # returning wrong logits.
+        n_score_rows = (
+            0
+            if (embedding and not self._logits_all)
+            else (n_ctx if logits_all == True else n_batch)
+        )
         self.scores: npt.NDArray[np.single] = np.ndarray(
-            (n_ctx if logits_all == True else n_batch, self._n_vocab), dtype=np.single
+            (n_score_rows, self._n_vocab), dtype=np.single
         )
 
         self._mirostat_mu = ctypes.c_float(

@@ -114,6 +114,20 @@ dylibs on macOS), replace `llama_cpp/` with the new wheel's Python code (minus
 `lib/` and `server/`), and re-run the embedding smoke test in
 `test/test_embeddings.py`.
 
+### Local divergences from upstream (re-apply on every upgrade)
+
+The upgrade step above replaces `llama_cpp/` wholesale with the new wheel's
+Python code, which would silently drop the patches below. Each is marked in
+source with a `kiro_crew DIVERGENCE FROM UPSTREAM` comment, so
+`grep -rn 'kiro_crew DIVERGENCE' llama_cpp/` lists what must be re-applied.
+
+- `llama_cpp/llama.py`, `Llama.__init__` — the eager `self.scores` per-token
+  logits buffer is allocated with **zero rows** when the model is opened in
+  embedding mode with `logits_all` off (issue #6827). Upstream always allocates
+  `(n_batch, n_vocab)` float32, which for the shipped Qwen3-Embedding-0.6B is
+  ~1.24 GB that the embedding path never reads. `test/test_embed_scores_buffer.py`
+  parses this file and fails if the divergence goes missing.
+
 ### Updating the vendored tree (checksum manifest)
 
 Everything under `_vendor/` is excluded from source-level content review

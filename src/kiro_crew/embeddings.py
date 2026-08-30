@@ -1328,6 +1328,13 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 embedding=True,
                 pooling_type=_POOLING_TYPE_LAST,
                 n_ctx=_N_CTX,
+                # n_batch == n_ctx so the logical batch always covers the whole
+                # input in one go, which last-token pooling needs. This used to
+                # also size a ~1.24 GB per-token logits buffer in the vendored
+                # constructor; that buffer is now skipped entirely in embedding
+                # mode (see the `n_score_rows` divergence comment in
+                # src/kiro_crew/_vendor/llama_cpp/llama.py, issue #6827), so
+                # n_batch no longer trades memory against input length.
                 n_batch=_N_CTX,
                 n_ubatch=_N_UBATCH,
                 # Both pools are pinned. Embedding is prompt processing, so the
