@@ -10225,6 +10225,24 @@ def _might_contain_credential(text: str) -> bool:
     )
 
 
+# Minimum string length at which `_might_contain_credential` is cheaper than the
+# `_CREDENTIAL_PATTERNS` alternation it gates. The pre-filter has a fixed ~590 ns
+# floor (21 substring searches plus 5 anchored regex calls) that does not shrink
+# with the input, so on a very short string the alternation simply wins: measured
+# 684 ns against 494 ns at 8 characters, crossing over at 12 and reaching 3.4x by
+# 256. Callers scanning SHORT strings -- a decoded base64 blob is typically 16-30
+# characters -- must gate on this rather than assume the pre-filter is
+# unconditionally cheaper.
+#
+# Held at 16 rather than the measured crossover of 12, deliberately: the gate is
+# verdict-neutral (the pre-filter is a proven superset, so either route reaches the
+# same answer), which makes a conservative threshold cost at most one alternation
+# scan on a 12-15 character blob and makes it robust to the crossover drifting as
+# the pre-filter's own cost changes. It has already drifted once -- adding the
+# case-insensitive Authorization anchor moved it from 16 to 12.
+_PREFILTER_MIN_LEN = 16
+
+
 # Base64 alphabet: at least 40 chars of [A-Za-z0-9+/] ending with optional =
 _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 
@@ -10243,6 +10261,16 @@ _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
 # run of >=40 base64-alphabet chars (word-boundary look-arounds keep surrounding
 # prose intact and stop a longer high-entropy blob from being split and missed),
 # then require the *specific 40-char secret shape* per token.
+#
+# NO LONGER CONSULTED BY `redact_credentials`. Pass 3 derives its runs from
+# `_B64_CHUNK_RE` instead (`run = chunk.rstrip("=")`), because that one scan feeds
+# both pass 2 and pass 3 and the two patterns select identical spans. The only
+# remaining consumer here is `_text_contains_bare_secret`. That split is a
+# desync hazard: WIDENING THIS PATTERN ALONE (adding base64url `-_`, say) would
+# change the URL scan and leave the redactor untouched, silently. Any edit to the
+# character class or the `{40,}` floor must be mirrored in `_B64_CHUNK_RE` above.
+# `test_the_two_base64_run_patterns_stay_structurally_coupled` pins both literals
+# so such an edit fails loudly rather than drifting.
 _BARE_SECRET_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])")
 
 # Exactly-40 is the AWS secret-key length. Keeping the shape check length-exact
@@ -10323,6 +10351,12 @@ def _has_all_three_char_classes(text: str) -> bool:
     return False
 
 
+# The byte set counted as "printable" by :func:`_decodes_to_printable_text`: tab,
+# LF, CR and the printable ASCII range 0x20-0x7E. Held as ``bytes`` so the count
+# can be delegated to ``bytes.translate``, which runs in C.
+_PRINTABLE_BYTES: bytes = bytes(sorted({0x09, 0x0A, 0x0D} | set(range(0x20, 0x7F))))
+
+
 def _decodes_to_printable_text(token: str) -> bool:
     """Return True if *token* base64-decodes to mostly-printable ASCII.
 
@@ -10337,7 +10371,21 @@ def _decodes_to_printable_text(token: str) -> bool:
         return False
     if not raw:
         return False
-    printable = sum(1 for b in raw if 0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D))
+    # Count the printable bytes by DELETING them in C and measuring what is left,
+    # rather than testing every byte in a Python loop. ``translate(None, set)``
+    # returns exactly the bytes NOT in *set*, so ``len(raw) - len(...)`` is the
+    # member count -- an integer identity, so the ratio and the comparison below
+    # are bit-identical to the previous per-byte sum (asserted against a verbatim
+    # copy of that sum in ``test_printable_count_matches_the_per_byte_sum``,
+    # including all 256 single-byte inputs exhaustively).
+    #
+    # This is the single most expensive operation in pass 3, because the helper
+    # runs once per base64-alphabet run AND again per 40-char window as gate 7 of
+    # `_looks_like_secret_key`, and the old loop cost scaled with the DECODED byte
+    # count rather than with the 40-char window. Measured 14.6x at 48 bytes rising
+    # to 69x at 1500; a 2 KB encoded blob fell from 86.3 us to 1.2 us, which is
+    # 98% of what `_contains_bare_secret` spent on such a run.
+    printable = len(raw) - len(raw.translate(None, _PRINTABLE_BYTES))
     return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
 
 
@@ -10520,15 +10568,48 @@ def _decode_b64_chunk(chunk: str) -> str:
     takes the padding — so the inner `finditer` was pure duplicate work on the
     hot path, once per base64-looking run in every redacted message.
     """
+    # NO LENGTH SHORT-CIRCUIT HERE, deliberately. It is tempting to skip the decode
+    # when `len(chunk) % 4` is non-zero, on the reasoning that `validate=True`
+    # rejects a length that is not a multiple of 4. That reasoning is INTERPRETER
+    # DEPENDENT and would be a redaction bypass: `binascii.a2b_base64`'s padding
+    # leniency changed with `strict_mode`, so on Python 3.10 and 3.11 a chunk of 40
+    # data characters plus one `=` (length 41) DECODES, while on 3.12 it raises.
+    # Skipping it would leave a base64-encoded credential in that shape unredacted
+    # on exactly the interpreters CI still builds. No version-invariant form of the
+    # test exists either -- 43 data characters plus `==` decodes on 3.10 while
+    # failing both a total-length and a stripped-length predicate. Pinned by
+    # `test_a_decode_length_precondition_would_be_version_dependent`.
     try:
         decoded = base64.b64decode(chunk, validate=True).decode("utf-8", errors="ignore")
     except Exception:
+        return ""
+    # Gate the alternation behind the cheap superset pre-filter, exactly as pass 1
+    # does. `_might_contain_credential` may return True where the pattern would not
+    # match but never False where it would, so the verdict cannot move -- only the
+    # cost. Real decoded blobs almost never look like credentials: 0 of 18 in the
+    # session corpus and 1 of 849 in a hash-heavy corpus reach the alternation.
+    #
+    # LENGTH-GATED, because here the pre-filter is NOT unconditionally cheaper. Its
+    # ~540 ns floor is fixed while the alternation's cost scales with length, so
+    # below `_PREFILTER_MIN_LEN` the alternation wins outright. A decoded blob is
+    # exactly the size where that matters -- 48 raw bytes from a 64-char run, and
+    # shorter once `errors="ignore"` drops invalid sequences, measured 12-31
+    # characters -- so this straddles the crossover instead of sitting above it.
+    if len(decoded) >= _PREFILTER_MIN_LEN and not _might_contain_credential(decoded):
         return ""
     return decoded if _CREDENTIAL_PATTERNS.search(decoded) else ""
 
 
 def _decode_b64_safe(text: str) -> str:
-    """Try to base64-decode chunks in text; return decoded content or ''."""
+    """Try to base64-decode chunks in text; return decoded content or ''.
+
+    Deliberately left UNOPTIMISED. `_decode_b64_chunk` above is the hot-path
+    single-chunk form, and this function is what pins it: the differential test
+    asserts the two agree on every chunk in the corpus, and the pre-optimisation
+    reference oracle calls this one. Applying the same gates here would make both
+    sides of that comparison share the change and the check would stop detecting
+    anything.
+    """
     for m in _B64_CHUNK_RE.finditer(text):
         try:
             decoded = base64.b64decode(m.group(), validate=True).decode("utf-8", errors="ignore")

@@ -16,9 +16,12 @@ fails when a branch is added without a matching pre-filter anchor.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import random
 import re
 import string
+import sys
 
 import pytest
 
@@ -26,10 +29,14 @@ from kiro_crew.security import (
     _B64_CHUNK_RE,
     _BARE_SECRET_RUN_RE,
     _CREDENTIAL_PATTERNS,
+    _PREFILTER_MIN_LEN,
+    _PRINTABLE_BYTES,
     _REDACTED_CREDENTIAL_TAG,
+    _SECRET_PRINTABLE_DECODE_RATIO,
     _contains_bare_secret,
     _decode_b64_chunk,
     _decode_b64_safe,
+    _decodes_to_printable_text,
     _might_contain_credential,
     redact_credentials,
 )
@@ -187,6 +194,29 @@ def _rebuild(branches: list[str]) -> re.Pattern[str]:
 # ── Corpus ──
 
 
+# Fixtures for the pass-2/pass-3 per-run cases below. Deliberately deterministic
+# so corpus ids stay stable across runs.
+_B64_RUN_40 = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0"  # 40 chars, len % 4 == 0
+# base64 of readable prose -> decodes to printable, so the run-level gate in
+# `_contains_bare_secret` returns before the sliding window runs.
+_PRINTABLE_BLOB = base64.b64encode(
+    b"the quick brown fox jumps over the lazy dog while deploying"
+).decode()
+# base64 of bytes 0x00-0x2F -> 19 of 48 bytes printable (0.40), below the 0.85
+# ratio, so this reaches the sliding window instead.
+_GARBAGE_BLOB = base64.b64encode(bytes(range(48))).decode()
+# 30 bare UTF-8 continuation bytes: a valid 40-char base64 chunk that decodes to
+# 30 raw bytes but to the EMPTY string once `errors="ignore"` drops them all. This
+# is the only way a decoded string lands below `_PREFILTER_MIN_LEN`, since a chunk
+# is at least 40 base64 characters and so always decodes to >= 30 bytes.
+_SHORT_DECODE_BLOB = base64.b64encode(bytes([0x80] * 30)).decode()
+# A real encoded credential with its padding stripped, so the corpus can carry the
+# misaligned shapes whose decodability differs between 3.10/3.11 and 3.12.
+_ENCODED_CRED_STEM = (
+    base64.b64encode(f"aws_secret_access_key={AWS_SECRET}".encode()).decode().rstrip("=")
+)
+
+
 def _corpus() -> list[str]:
     """Every shape the three passes can encounter, plus the awkward boundaries."""
     glued = "X" + AWS_SECRET  # 41-char run: exact-40 gate fails, sliding window catches
@@ -242,6 +272,50 @@ def _corpus() -> list[str]:
         ("lorem ipsum dolor sit amet " * 4000),
         ("lorem ipsum dolor sit amet " * 4000) + f" ghp_{'a' * 36}",
         f"ghp_{'a' * 36} " + ("lorem ipsum dolor sit amet " * 4000),
+        # ── blast radius of the pass-2/pass-3 per-run work ──
+        # Many hex digests in one string. Each is a 64-char base64-alphabet run
+        # that IS 4-aligned, so every one reaches the decode; this is the shape
+        # the per-run cost was measured on.
+        " ".join(f"{i:064x}" for i in range(40)),
+        " ".join(f"{i:064X}" for i in range(40)),  # uppercase: different gate path
+        # Runs at each length residue: %4 == 0 decodes, the rest cannot.
+        _B64_RUN_40,  # 40, %4 == 0
+        _B64_RUN_40 + "a",  # 41, %4 == 1
+        _B64_RUN_40 + "ab",  # 42, %4 == 2
+        _B64_RUN_40 + "abc",  # 43, %4 == 3
+        _B64_RUN_40 + "abcd",  # 44, %4 == 0
+        # A long non-decodable run beside a decodable one, in one string.
+        _B64_RUN_40 + "a" + " and " + _B64_RUN_40,
+        # Padding variants layered onto each residue, since `={0,2}` is consumed
+        # by the chunk regex and shifts the length the precondition sees.
+        _B64_RUN_40 + "ab" + "==",  # 44 total -> decodes
+        _B64_RUN_40 + "abc" + "=",  # 44 total -> decodes
+        _B64_RUN_40 + "abcd" + "=",  # 45 total -> cannot decode
+        _B64_RUN_40 + "abcd" + "==",  # 46 total -> cannot decode
+        # Decodes to printable TEXT: the run-level gate exits before the slide.
+        _PRINTABLE_BLOB,
+        f"blob {_PRINTABLE_BLOB} end",
+        # Decodes to high-entropy GARBAGE: reaches the sliding window.
+        _GARBAGE_BLOB,
+        f"blob {_GARBAGE_BLOB} end",
+        # Decodes to the EMPTY string once invalid UTF-8 is dropped: the only
+        # shape that lands below the pre-filter length gate.
+        _SHORT_DECODE_BLOB,
+        f"blob {_SHORT_DECODE_BLOB} end",
+        # A real encoded credential whose decoded text sits BELOW the pre-filter
+        # length gate, so the gate is skipped and the alternation runs directly.
+        base64.b64encode(b"ghp_" + b"a" * 36).decode(),
+        # ... and one comfortably ABOVE it, so the gate is applied.
+        base64.b64encode(
+            f"aws_secret_access_key={AWS_SECRET} trailing prose to lengthen".encode()
+        ).decode(),
+        # An encoded credential in the MISALIGNED padding shapes whose decodability
+        # is interpreter dependent (40 data chars + one `=` decodes on 3.10/3.11 and
+        # raises on 3.12). Whichever way the decode goes, live and oracle must agree.
+        _ENCODED_CRED_STEM + "=",
+        _ENCODED_CRED_STEM + "==",
+        _ENCODED_CRED_STEM,
+        f"payload {_ENCODED_CRED_STEM}= end",
     ]
     return cases
 
@@ -367,6 +441,34 @@ def test_b64_chunk_spans_match_bare_secret_run_spans() -> None:
         chunks = [m.group() for m in _B64_CHUNK_RE.finditer(text)]
         runs = [m.group() for m in _BARE_SECRET_RUN_RE.finditer(text)]
         assert [c.rstrip("=") for c in chunks] == runs, repr(text[:80])
+
+
+def test_the_two_base64_run_patterns_stay_structurally_coupled() -> None:
+    """Pin both run patterns against a SILENT widening of one of them.
+
+    Pass 3 stopped reading `_BARE_SECRET_RUN_RE` when the shared scan landed -- it
+    derives runs from `_B64_CHUNK_RE` now. `_BARE_SECRET_RUN_RE` is still live for
+    `_text_contains_bare_secret`, so the two can be edited independently, and
+    widening one alone (base64url `-_`, say) would change the URL scan while leaving
+    the redactor untouched. The span-equality test above catches that only if the
+    corpus happens to carry the widened shape, so pin the literals here too: an edit
+    to either fails at this assertion, which names the shared-scan invariant.
+    """
+    assert _B64_CHUNK_RE.pattern == r"[A-Za-z0-9+/]{40,}={0,2}"
+    assert _BARE_SECRET_RUN_RE.pattern == r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}(?![A-Za-z0-9+/])"
+
+    # Assert the coupling itself -- shared alphabet and shared {40,} floor -- so the
+    # intent survives a cosmetic re-spelling of either literal.
+    alphabet = "[A-Za-z0-9+/]"
+    assert _B64_CHUNK_RE.pattern.count(alphabet) == 1
+    assert _BARE_SECRET_RUN_RE.pattern.count(alphabet) == 3  # body plus 2 look-arounds
+    assert "{40,}" in _B64_CHUNK_RE.pattern
+    assert "{40,}" in _BARE_SECRET_RUN_RE.pattern
+
+    # Negative control: prove this assertion can detect a base64url widening.
+    widened = _BARE_SECRET_RUN_RE.pattern.replace("A-Za-z0-9+/", "A-Za-z0-9+/\\-_")
+    assert widened != _BARE_SECRET_RUN_RE.pattern, "control failed to mutate the pattern"
+    assert widened.count(alphabet) != 3, "a widened character class must fail the pin"
 
 
 def test_decode_b64_chunk_matches_generic_helper_on_chunks() -> None:
@@ -728,3 +830,262 @@ def test_a_widened_branch_cannot_outgrow_its_anchor() -> None:
         f"only {checked} generated samples were assertable across {len(BRANCHES)} "
         f"branches; the generator is too weak to guard them"
     )
+
+
+# ── Per-run work in passes 2 and 3: independent oracles ──
+#
+# `_decodes_to_printable_text` is reached THROUGH `_contains_bare_secret`, which
+# the reference oracle above also calls. So the byte-identity assertion shares
+# that helper with the implementation and structurally cannot detect a change
+# inside it. These tests supply the missing oracle: a verbatim copy of the
+# pre-rewrite body, compared against the live one.
+
+
+def _reference_printable_count(raw: bytes) -> int:
+    """The per-byte sum `_decodes_to_printable_text` used before the rewrite."""
+    return sum(1 for b in raw if 0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D))
+
+
+def _reference_decodes_to_printable_text(token: str) -> bool:
+    """Verbatim pre-rewrite body of `_decodes_to_printable_text`."""
+    try:
+        raw = base64.b64decode(token + "=" * (-len(token) % 4), validate=False)
+    except Exception:
+        return False
+    if not raw:
+        return False
+    printable = _reference_printable_count(raw)
+    return printable / len(raw) >= _SECRET_PRINTABLE_DECODE_RATIO
+
+
+def _translate_count(raw: bytes) -> int:
+    """The live count: delete the printable set in C and measure the remainder."""
+    return len(raw) - len(raw.translate(None, _PRINTABLE_BYTES))
+
+
+def test_printable_count_matches_the_per_byte_sum() -> None:
+    """The translate-based count must equal the per-byte sum for every input.
+
+    Exhaustive over all 256 single-byte values -- which is a complete proof for
+    the membership question itself, since `translate` decides each byte
+    independently -- then fuzzed over multi-byte inputs to cover the length
+    arithmetic.
+    """
+    for b in range(256):
+        raw = bytes([b])
+        assert _translate_count(raw) == _reference_printable_count(raw), hex(b)
+
+    rng = random.Random(20260830)
+    for _ in range(4000):
+        raw = bytes(rng.randrange(256) for _ in range(rng.randint(0, 300)))
+        assert _translate_count(raw) == _reference_printable_count(raw), repr(raw[:24])
+
+
+def test_decodes_to_printable_text_matches_the_reference_implementation() -> None:
+    """The live helper must agree with the pre-rewrite body on every input.
+
+    Covers the shapes the rewrite is exposed to: every base64 run in the corpus,
+    both `=`-stripped and as matched, plus fuzzed runs across every length
+    residue and padding form.
+    """
+    checked = 0
+    for text in CORPUS:
+        for m in _B64_CHUNK_RE.finditer(text):
+            chunk = m.group()
+            for candidate in (chunk, chunk.rstrip("=")):
+                checked += 1
+                assert _decodes_to_printable_text(candidate) == (
+                    _reference_decodes_to_printable_text(candidate)
+                ), repr(candidate[:48])
+    assert checked >= 40, f"only {checked} runs exercised; corpus too weak"
+
+    rng = random.Random(11)
+    alphabet = string.ascii_letters + string.digits + "+/"
+    for _ in range(3000):
+        n = rng.randint(0, 200)
+        token = "".join(rng.choice(alphabet) for _ in range(n)) + rng.choice(("", "=", "=="))
+        assert _decodes_to_printable_text(token) == _reference_decodes_to_printable_text(
+            token
+        ), repr(token[:48])
+
+
+def test_a_decode_length_precondition_would_be_version_dependent() -> None:
+    """Records why `_decode_b64_chunk` carries NO length short-circuit.
+
+    Skipping the decode when `len(chunk) % 4` is non-zero looks sound -- and IS
+    sound on 3.12, where `validate=True` rejects such a length. It is a REDACTION
+    BYPASS on 3.10 and 3.11: `binascii.a2b_base64`'s padding leniency changed with
+    `strict_mode`, so a chunk of 40 data characters plus one `=` decodes there, and
+    skipping it would leave an encoded credential unredacted. No version-invariant
+    predicate exists either -- 43 data characters plus `==` decodes on 3.10 while
+    failing both a total-length and a stripped-length test.
+
+    So assert the property that DOES hold on every interpreter: the hot-path chunk
+    helper agrees with the ungated `_decode_b64_safe`, for exactly the misaligned
+    shapes that motivated the rejected guard. Whether they decode may differ by
+    version; that the two helpers agree may not.
+    """
+    payload = f"aws_secret_access_key={AWS_SECRET}"
+    stem = base64.b64encode(payload.encode()).decode().rstrip("=")
+
+    misaligned = 0
+    for shape in (stem, stem + "=", stem + "==", stem[:-1], stem[:-1] + "=", stem[:-2] + "=="):
+        assert _decode_b64_chunk(shape) == _decode_b64_safe(shape), repr(shape[:40])
+        if len(shape) % 4:
+            misaligned += 1
+    assert misaligned >= 2, "shapes no longer exercise a non-4-aligned chunk"
+
+    # And the credential in its canonical, correctly padded form is still redacted,
+    # on every interpreter -- the guard's removal must not have cost detection.
+    canonical = base64.b64encode(payload.encode()).decode()
+    assert _decode_b64_chunk(canonical), "canonical encoded credential must be detected"
+
+
+def test_decode_gate_agrees_with_the_ungated_helper_across_the_length_gate() -> None:
+    """Both sides of `_PREFILTER_MIN_LEN` must agree with the ungated helper.
+
+    Below the threshold the pre-filter is skipped and the alternation runs
+    directly; at or above it the pre-filter gates the alternation. `_decode_b64_safe`
+    is ungated and untouched, so it is the oracle for both sides, and this asserts
+    the corpus actually reaches each one.
+
+    Note the asymmetry the gate relies on: a chunk is at least 40 base64
+    characters, so it always decodes to at least 30 raw bytes, and a decoded
+    STRING shorter than the threshold only arises when `errors="ignore"` discards
+    invalid UTF-8. No `_CREDENTIAL_PATTERNS` branch matches text that short, so the
+    below-threshold path is reached only by non-credential blobs -- and even if one
+    existed, skipping the pre-filter runs the FULL alternation, never less.
+    """
+    below = above = 0
+    for text in CORPUS:
+        for m in _B64_CHUNK_RE.finditer(text):
+            chunk = m.group()
+            assert _decode_b64_chunk(chunk) == _decode_b64_safe(chunk), repr(chunk[:40])
+            # Classify by what actually decodes, NOT by `len(chunk) % 4`: whether a
+            # misaligned chunk decodes is interpreter dependent (see
+            # `test_a_decode_length_precondition_would_be_version_dependent`), so a
+            # length test here would silently skip real cases on 3.10 and 3.11.
+            try:
+                decoded = base64.b64decode(chunk, validate=True).decode("utf-8", errors="ignore")
+            except binascii.Error:
+                continue
+            if len(decoded) >= _PREFILTER_MIN_LEN:
+                above += 1
+            else:
+                below += 1
+
+    assert below > 0, "corpus never produces a decoded blob below the length gate"
+    assert above > 0, "corpus never produces a decoded blob at or above the length gate"
+
+    # And a real encoded credential, which necessarily sits above the gate, is
+    # still detected through it.
+    cred = base64.b64encode(
+        f"aws_secret_access_key={AWS_SECRET} trailing prose to lengthen".encode()
+    ).decode()
+    assert _decode_b64_chunk(cred) == _decode_b64_safe(cred)
+    assert _decode_b64_chunk(cred), "the gate must not hide a real encoded credential"
+
+
+def test_chunk_and_repadded_run_are_not_interchangeable_decode_inputs() -> None:
+    """Records why pass 2's decode is NOT shared with pass 3's.
+
+    Pass 2 decodes the chunk as matched with `validate=True`; pass 3 reaches
+    `_decodes_to_printable_text`, which strips `=`, re-pads to a multiple of 4 and
+    decodes with `validate=False`. Those two inputs coincide only when the chunk
+    as written already carries minimal padding, so the results are NOT one value
+    and sharing the decode between the passes would not be sound.
+    """
+    differing = 0
+    for text in CORPUS:
+        for m in _B64_CHUNK_RE.finditer(text):
+            chunk = m.group()
+            run = chunk.rstrip("=")
+            if run + "=" * (-len(run) % 4) != chunk:
+                differing += 1
+    assert differing > 0, (
+        "no corpus chunk's padding differs from its re-padded run, so the "
+        "decode-sharing hazard is unexercised"
+    )
+
+
+# ── Negative controls for the per-run work: prove these tests can fail ──
+
+
+def test_printable_equivalence_control_detects_a_narrowed_byte_set() -> None:
+    """Prove `test_printable_count_matches_the_per_byte_sum` can fail.
+
+    Drop tab/LF/CR from the byte set -- the exact mistake a hand-written set
+    would make -- and the count must diverge from the per-byte sum.
+    """
+    narrowed = bytes(sorted(set(range(0x20, 0x7F))))
+    raw = b"line one\nline two\ttabbed\r\n"
+
+    narrowed_count = len(raw) - len(raw.translate(None, narrowed))
+    assert narrowed_count != _reference_printable_count(
+        raw
+    ), "the equivalence assertion cannot detect a narrowed printable set"
+    assert _translate_count(raw) == _reference_printable_count(raw)
+
+
+def test_differential_test_detects_a_too_narrow_decoded_blob_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove the byte-identity assertion catches a broken decoded-blob gate.
+
+    Disarm the pre-filter that pass 2 now consults, so a genuine base64-encoded
+    credential is skipped instead of redacted. The reference oracle decodes via
+    the ungated `_decode_b64_safe`, so it still redacts and the comparison must
+    diverge. Without this control the gate could be arbitrarily narrow and the
+    differential test would still pass.
+    """
+    import kiro_crew.security as security
+
+    monkeypatch.setattr(security, "_might_contain_credential", lambda text: False)
+
+    payload = f"aws_secret_access_key={AWS_SECRET}"
+    sample = "payload " + base64.b64encode(payload.encode()).decode() + " end"
+    assert len(payload) >= _PREFILTER_MIN_LEN, "payload must clear the length gate"
+
+    live = security.redact_credentials(sample)
+    reference = _reference_redact_credentials(sample)
+    assert live != reference, "the differential test cannot detect a broken blob gate"
+    assert "[REDACTED: encoded credential]" in reference[0]
+    assert (
+        "[REDACTED: encoded credential]" not in live[0]
+    ), "expected the disarmed gate to leak the encoded credential"
+
+
+def test_a_length_short_circuit_would_leak_an_encoded_credential() -> None:
+    """Control for the REJECTED `len(chunk) % 4` short-circuit.
+
+    Simulate the guard and show it can only ever suppress detection, never improve
+    it. On 3.10 and 3.11 it drops a decodable credential chunk outright; on 3.12
+    the shape does not decode anyway, which is exactly why the defect was invisible
+    when the change was tested on 3.12 alone.
+    """
+    payload = f"aws_secret_access_key={AWS_SECRET}"
+    stem = base64.b64encode(payload.encode()).decode().rstrip("=")
+
+    # Only shapes the rejected guard would actually have rejected. `stem + "="` is
+    # the canonical 4-aligned form here, so it must NOT be counted as misaligned.
+    misaligned = [s for s in (stem, stem + "=", stem + "==") if len(s) % 4]
+    assert misaligned, "no misaligned shape constructed"
+
+    leaked = 0
+    for shape in misaligned:
+        real = _decode_b64_chunk(shape)
+        guarded = ""  # what the rejected `len(chunk) % 4` guard would have returned
+        assert not (guarded and not real), "guard cannot detect more than no guard"
+        if real:
+            leaked += 1
+
+    if sys.version_info < (3, 12):
+        assert leaked >= 1, (
+            "expected the lenient pre-3.12 decoder to make the length guard a "
+            "redaction bypass on at least one misaligned shape"
+        )
+    else:
+        assert leaked == 0, (
+            "3.12 rejects these shapes outright, which is exactly why the bypass "
+            "was invisible when the change was tested on 3.12 alone"
+        )
