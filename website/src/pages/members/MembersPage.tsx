@@ -25,7 +25,8 @@ import { ArrowLeft, Pencil, Users, X } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow } from '../../api/client'
-import { useAppSelector } from '../../store'
+import { useAppDispatch, useAppSelector } from '../../store'
+import { markSlotRead } from '../../store/dashboardSlice'
 import CrewAvatar from '../../components/CrewAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -131,6 +132,22 @@ export default function MembersPage() {
   }, [members, filter])
   const activeSlot = active ? slots[active.name] ?? '' : ''
   const activeError = active ? errors[active.name] ?? '' : ''
+
+  // Mounting a member thread IS reading it, but nothing on this page moves
+  // `chat.activeSlot` (that transition belongs to the Sessions page's
+  // switchSlot, the only other markSlotRead caller), so the websocket
+  // unread-marker keeps flagging this slot even while the user is looking at
+  // it. Drain it here instead: once when the thread opens, and again every
+  // time a live message re-flags the mounted thread. Without this the rail
+  // badge is permanent — no code path clears a live member slot's unread
+  // until the slot itself is deleted.
+  const dispatch = useAppDispatch()
+  const activeSlotUnread = useAppSelector(
+    (s) => !!activeSlot && s.dashboard.unreadSlots.includes(activeSlot),
+  )
+  useEffect(() => {
+    if (activeSlot && activeSlotUnread) dispatch(markSlotRead(activeSlot))
+  }, [activeSlot, activeSlotUnread, dispatch])
 
   const openMember = useCallback(
     (m: MemberRosterRow) => {

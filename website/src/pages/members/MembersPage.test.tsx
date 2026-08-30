@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
+import { markSlotUnread } from '../../store/dashboardSlice'
 
 /* ── api client mock ─────────────────────────────────────────────────────
  * The page reads exactly two endpoints; mocking them keeps every case
@@ -263,5 +264,51 @@ describe('MembersPage drawer and edit jump', () => {
     expect(screen.getByText('scribe')).toBeTruthy()
     fireEvent.change(box, { target: { value: '' } })
     expect(screen.getByText('radar')).toBeTruthy()
+  })
+})
+
+describe('MembersPage unread drain', () => {
+  // The websocket unread-marker flags any slot that is not `chat.activeSlot`,
+  // and this page never moves `chat.activeSlot` — so the page itself must
+  // drain the mounted thread's unread flag, or the Crew Members rail badge is
+  // permanent (nothing else clears a live member slot's unread).
+
+  it('opening a flagged member thread drains its unread flag', async () => {
+    const { store } = await renderPage()
+    act(() => {
+      store.dispatch(markSlotUnread('member-oncall'))
+    })
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('chat-pane-stub')
+    await waitFor(() =>
+      expect(store.getState().dashboard.unreadSlots).not.toContain('member-oncall'),
+    )
+  })
+
+  it('a live message re-flagging the MOUNTED thread is drained again, not left as a stuck badge', async () => {
+    const { store } = await renderPage()
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('chat-pane-stub')
+    // Simulate the websocket marker firing while the user is looking at the
+    // thread (its check is against chat.activeSlot, which this page never sets).
+    act(() => {
+      store.dispatch(markSlotUnread('member-oncall'))
+    })
+    await waitFor(() =>
+      expect(store.getState().dashboard.unreadSlots).not.toContain('member-oncall'),
+    )
+  })
+
+  it('drains ONLY the mounted thread — other slots keep their unread flags', async () => {
+    const { store } = await renderPage()
+    act(() => {
+      store.dispatch(markSlotUnread('member-research'))
+      store.dispatch(markSlotUnread('chat-123'))
+    })
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('chat-pane-stub')
+    expect(store.getState().dashboard.unreadSlots).toEqual(
+      expect.arrayContaining(['member-research', 'chat-123']),
+    )
   })
 })
