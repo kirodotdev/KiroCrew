@@ -533,6 +533,24 @@ class RealSlackClient(SlackClientOps):
     ) -> str | None:
         """Start a streaming message via chat.startStream with task plan mode."""
         try:
+            # Resolve this channel's home workspace before reading the cache.
+            # Inbound Slack handlers call ensure_channel_team() once per message,
+            # so a stream started from a Slack event always finds a warm cache.
+            # The dashboard->Slack MIRROR does not: it starts a stream with no
+            # inbound event behind it, and this cache is per-process in memory, so
+            # a gateway restart -- or a session linked from Slack and then driven
+            # only from the dashboard -- leaves the channel unresolved. With
+            # neither a cached team nor an explicit team_id, an org-wide install
+            # rejects chat.startStream with missing_recipient_team_id and the
+            # stream silently demotes to the non-streaming chat.update surface.
+            #
+            # Resolving the HOME team needs only the channel, which every caller
+            # already has, so this is fixed here rather than by threading a
+            # team_id (or a linking user) down from each call site. Costs nothing
+            # for the inbound callers: ensure_channel_team returns without an API
+            # call when the channel is already cached or already known
+            # unresolvable, which one inbound message per channel guarantees.
+            await self.ensure_channel_team(channel)
             body: dict[str, Any] = {
                 "channel": channel,
                 "thread_ts": thread_ts,
