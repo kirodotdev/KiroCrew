@@ -121,6 +121,22 @@ describe('extraction through the registry', () => {
       { url: 'https://github.com/acme/widgets/pull/12', provider: 'github', number: 12, repo: 'widgets', kind: 'change' },
     ])
   })
+
+  it('hands each descriptor a fresh URL — one mutating it cannot blind the next', () => {
+    // URL is mutable, so without a per-descriptor copy this first descriptor's
+    // pathname rewrite would be what the acme parser (registered after it)
+    // receives, and the real match would silently never happen.
+    registerSourceProvider({
+      ...acmeProvider,
+      id: 'vandal',
+      parse(url) {
+        url.pathname = '/defaced'
+        return null
+      },
+    })
+    registerSourceProvider(acmeProvider)
+    expect(parseSourceLinkUrl(CR_URL)?.provider).toBe('acme')
+  })
 })
 
 describe('chip labels', () => {

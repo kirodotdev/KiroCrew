@@ -156,6 +156,37 @@ def test_path_markers_include_the_plugin_contribution(plugin) -> None:
         assert builtin in markers
 
 
+def test_path_markers_refuse_prefilter_defeating_contributions(plugin) -> None:
+    # A bare "/" (or any one-character marker) would admit essentially every
+    # URL and turn the prefilter into a full parse of the whole transcript,
+    # and an unbounded marker inflates every substring check the scanner runs.
+    # Only the well-formed contribution survives.
+    plugin.path_markers = lambda: ["/", "/x", "cr/", "/" + "a" * 100, "/ok/"]
+    markers = source.source_link_path_markers()
+    assert "/ok/" in markers
+    for rejected in ("/", "/x", "cr/", "/" + "a" * 100):
+        assert rejected not in markers
+
+
+def test_path_markers_cap_consumption_of_a_generator_hook(plugin) -> None:
+    # "Bounded per plugin" must hold for the materialization step too: islice
+    # stops pulling at the cap, so a generator-returning hook is not exhausted
+    # before slicing.
+    consumed: list[int] = []
+
+    def markers_gen():
+        for index in range(50):
+            consumed.append(index)
+            yield f"/gen{index:02d}/"
+
+    plugin.path_markers = lambda: markers_gen()
+    contributed = [m for m in source.source_link_path_markers() if m.startswith("/gen")]
+    assert len(contributed) == source._MAX_PLUGIN_PATH_MARKERS
+    # islice may look one element past the cap, but a list()-then-slice would
+    # have consumed all 50 -- the exhaustion is what the bound forbids.
+    assert len(consumed) <= source._MAX_PLUGIN_PATH_MARKERS + 1
+
+
 @pytest.mark.asyncio
 async def test_fetch_pull_request_dispatches_redacts_and_caches(plugin) -> None:
     first = await source.fetch_pull_request(CR_URL)
@@ -267,6 +298,24 @@ async def test_capacity_error_from_a_plugin_keeps_its_retryable_type(plugin) -> 
     plugin.fetch_full = fetch_full
     with pytest.raises(source.SourceCapacityError):
         await source.fetch_pull_request(CR_URL)
+
+
+@pytest.mark.asyncio
+async def test_confirmation_required_from_a_plugin_keeps_its_answerable_type(plugin) -> None:
+    # `ConfirmationRequired` is what makes the mutation response carry
+    # `confirmationRequired: True` -- the client's only cue to offer the
+    # confirm-and-retry affordance. The redaction boundary must not downcast
+    # it to the plain-`ValueError` arm (which would render a dead-end error),
+    # and its message is scrubbed like any other plugin failure text.
+    async def enable_auto_merge(ref, *, confirm_immediate_merge: bool = False):
+        raise source.ConfirmationRequired(
+            "would merge now; token=ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+        )
+
+    plugin.enable_auto_merge = enable_auto_merge
+    with pytest.raises(source.ConfirmationRequired) as excinfo:
+        await source.enable_pull_request_auto_merge(CR_URL)
+    assert "ghp_" not in str(excinfo.value)
 
 
 @pytest.mark.asyncio

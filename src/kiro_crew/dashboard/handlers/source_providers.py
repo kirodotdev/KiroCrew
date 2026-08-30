@@ -15,6 +15,7 @@ import base64
 import contextlib
 import fnmatch
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -653,11 +654,19 @@ def source_link_path_markers() -> tuple[str, ...]:
             continue
         if isinstance(extra, str) or not isinstance(extra, Iterable):
             continue
-        for marker in list(extra)[:_MAX_PLUGIN_PATH_MARKERS]:
+        for marker in itertools.islice(extra, _MAX_PLUGIN_PATH_MARKERS):
             # At least two characters beyond the leading slash: a bare "/" (or a
             # one-character marker) would admit essentially every URL and turn
-            # the prefilter into a full parse of the whole transcript.
-            if isinstance(marker, str) and marker.startswith("/") and len(marker) >= 3:
+            # the prefilter into a full parse of the whole transcript. The upper
+            # bound keeps a runaway string out of the scanner's per-candidate
+            # substring checks; no realistic path marker approaches it. islice
+            # rather than list()[:n] so a generator-returning hook is consumed
+            # only up to the cap instead of exhausted before slicing.
+            if (
+                isinstance(marker, str)
+                and marker.startswith("/")
+                and 3 <= len(marker) <= _MAX_PLUGIN_PATH_MARKER_LEN
+            ):
                 markers.append(marker)
     return tuple(dict.fromkeys(markers))
 
@@ -666,6 +675,10 @@ def source_link_path_markers() -> tuple[str, ...]:
 # with several URL shapes, small enough that the scanner's per-candidate cost
 # stays bounded no matter how many providers register.
 _MAX_PLUGIN_PATH_MARKERS = 8
+
+# Ceiling on one marker's length: markers are substring-searched against every
+# URL candidate in a transcript, so their size is part of the scanner's cost.
+_MAX_PLUGIN_PATH_MARKER_LEN = 64
 
 
 def _plugin_for_change(ref: SourceRef) -> SourceProviderPlugin | None:
@@ -716,6 +729,14 @@ def _plugin_errors(plugin_id: str) -> Iterator[None]:
 
     The exception TYPE is preserved so each caller's own handling, and the
     status code each maps to, are unchanged; only the message is scrubbed.
+
+    Deliberately NOT ``except Exception``: an unlisted type (a plugin's bare
+    ``RuntimeError``, ``KeyError``, its own class) propagates to a generic 500
+    whose body carries no exception text, so there is nothing to scrub on that
+    route. That safety lives in the response handlers only writing
+    ``SourceProviderError`` / ``ValueError`` text into client-visible bodies --
+    anyone widening a handler to render other exception text must widen this
+    boundary in the same change.
     """
     try:
         yield
@@ -728,6 +749,20 @@ def _plugin_errors(plugin_id: str) -> Iterator[None]:
     except SourceProviderError as exc:
         raise SourceProviderError(
             _safe_error_text(str(exc), fallback=f"the {plugin_id} source provider failed")
+        ) from exc
+    except ConfirmationRequired as exc:
+        # A ``ValueError`` subclass with response semantics: it is what makes
+        # `_owner_mutation_response` add ``confirmationRequired: True`` to the
+        # 400 body, which is the client's only cue to offer the confirm-and-
+        # retry affordance. Downcasting it to the parent arm below turns a
+        # plugin's answerable refusal into a dead-end error, so it keeps its
+        # type just as the ``SourceProviderError`` subclasses above keep
+        # theirs. (Defined later in the module; an ``except`` clause is only
+        # resolved when this context manager actually runs.)
+        raise ConfirmationRequired(
+            _safe_error_text(
+                str(exc), fallback=f"the {plugin_id} source provider needs confirmation"
+            )
         ) from exc
     except ValueError as exc:
         raise ValueError(
