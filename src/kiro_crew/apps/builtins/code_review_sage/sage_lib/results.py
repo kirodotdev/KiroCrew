@@ -72,16 +72,7 @@ def write_reviewed(index: dict, root: Path | None = None) -> Path:
     store.ensure_layout(root)
     path = reviewed_path(root)
     data = json.dumps(index, indent=2).encode("utf-8")
-    fd, tmp = store.open_locked_temp(path.parent)
-    try:
-        try:
-            os.write(fd, data)
-        finally:
-            os.close(fd)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    store.atomic_write_locked(path, data)
     return path
 
 
@@ -246,16 +237,7 @@ def write_result(record: dict, root: Path | None = None,
         store.ensure_layout(root)
     path = result_path(record["change_id"], root, run_id)
     data = json.dumps(record, indent=2).encode("utf-8")
-    fd, tmp = store.open_locked_temp(path.parent)
-    try:
-        try:
-            os.write(fd, data)
-        finally:
-            os.close(fd)  # always close the fd, even if os.write raised
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    store.atomic_write_locked(path, data)
     return path
 
 
@@ -463,21 +445,10 @@ def adopt_from_shared(change_id: str, root: Path | None = None,
     # Write a private temp file in the destination directory, then rename over
     # the name: atomic, so a valid record is never destroyed by a failed write,
     # and the rename replaces the NAME without following a link planted there.
-    tmp = None
     try:
-        fd, tmp = store.open_locked_temp(dst.parent, prefix=".adopt-", suffix=".json")
-        with open(fd, "wb") as fh:
-            fh.write(raw)
-        os.replace(tmp, dst)
-        tmp = None
+        store.atomic_write_locked(dst, raw)
     except OSError:
         return False
-    finally:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
     try:
         src.unlink()
     except OSError:
@@ -509,7 +480,6 @@ def publish_to_shared(change_id: str, root: Path | None = None,
     store.ensure_layout(root)
     shared = results_dir(root, None)
     dst = shared / f"{safe_change_id(change_id)}.json"
-    tmp = None
     try:
         # Read through the same no-follow guard the adoption direction uses. The
         # RUN results dir is worker-writable too, so a worker that replaced its
@@ -525,17 +495,7 @@ def publish_to_shared(change_id: str, root: Path | None = None,
                 max_bytes=_RECORD_MAX_BYTES)
         if raw is None:
             return False
-        fd, tmp = store.open_locked_temp(shared, prefix=".publish-", suffix=".json")
-        with open(fd, "wb") as fh:
-            fh.write(raw)
-        os.replace(tmp, dst)
-        tmp = None
+        store.atomic_write_locked(dst, raw)
     except OSError:
         return False
-    finally:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
     return True

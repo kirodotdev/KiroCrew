@@ -24,6 +24,7 @@ Run ``python3 sage_lib/store.py --ensure`` to create/repair the layout and seed
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -154,8 +155,7 @@ def restrict_to_owner(path: str | os.PathLike) -> None:
     os.chmod(path, 0o600)  # pragma: no cover - standalone fallback
 
 
-def open_locked_temp(directory: str | os.PathLike, *,
-                     prefix: str = "", suffix: str = ".tmp") -> tuple[int, str]:
+def open_locked_temp(directory: str | os.PathLike) -> tuple[int, str]:
     """Create a temp file in ``directory`` that is ALREADY owner-only, and return
     ``(fd, path)`` with the file still open for writing.
 
@@ -172,7 +172,7 @@ def open_locked_temp(directory: str | os.PathLike, *,
     AND removes the temp file here -- the exception escapes before the caller's
     own ``try/finally`` is entered, so nothing downstream would clean either up.
     """
-    fd, tmp = tempfile.mkstemp(dir=str(directory), prefix=prefix, suffix=suffix)
+    fd, tmp = tempfile.mkstemp(dir=str(directory), suffix=".tmp")
     try:
         restrict_to_owner(tmp)
     except BaseException:
@@ -183,6 +183,175 @@ def open_locked_temp(directory: str | os.PathLike, *,
             pass
         raise
     return fd, tmp
+
+
+#: True when this platform can pin a directory and act relative to it. The
+#: confinement in :func:`atomic_write_locked` needs ``open``, ``unlink`` and the
+#: rename family to all accept a directory descriptor, and Windows has none of
+#: them, so the capability is resolved once here rather than guessed per call.
+#: Probed via ``os.rename``: CPython registers the rename family under that name,
+#: so ``os.replace in os.supports_dir_fd`` is False even where the pinned
+#: ``os.replace(..., src_dir_fd=, dst_dir_fd=)`` call works. (Same probe shape as
+#: ``spec_builder``'s ``_CAN_PIN_DIR``, which documents that quirk.)
+_CAN_PIN_DIR = (
+    hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and os.open in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and os.rename in os.supports_dir_fd
+)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of *data* to *fd*, or raise.
+
+    ``os.write`` is the raw syscall: it is permitted to accept fewer bytes than
+    it was given, and near a full disk it does. A one-shot call therefore
+    publishes a TRUNCATED record, and one caller (``results.adopt_into_run``)
+    deletes its source once the publish returns -- so a short write there loses
+    the only valid copy. Looping until the buffer is drained is what makes the
+    rename a publish of complete content; zero progress is treated as an error
+    rather than spun on, since a descriptor that accepts nothing will not start.
+    """
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:  # pragma: no cover - kernel would have raised first
+            raise OSError(errno.EIO, "short write while staging a record")
+        view = view[written:]
+
+
+def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
+    """Write *data* to *path* atomically, resolving the parent directory ONCE.
+
+    Every writer in this app stages a private temp file beside its target and
+    renames over the name, which stops a symlink planted AT that name from being
+    followed. What it did not stop is a swapped ANCESTOR: ``mkstemp(dir=...)``
+    resolves the parent by name, then ``os.replace(tmp, path)`` resolves it twice
+    more, so a reviewer worker -- which runs prompt-injected model output and has
+    a shell inside its own run tree -- could swap a directory for a symlink
+    between those resolutions and redirect the write outside the sandbox. The
+    content is gateway-derived, so the primitive is a fixed-content clobber
+    rather than injection, but it lets the sandboxed side make the unsandboxed
+    gateway write where the sandbox refused.
+
+    Pinning collapses those three resolutions into one: the parent is opened as a
+    descriptor and the create, the rename and any cleanup are all relative to
+    that inode, so a swap AFTER the pin cannot redirect them -- it renames a
+    directory the descriptor no longer names. ``O_NOFOLLOW`` on the pin also
+    refuses a parent that is itself a link.
+
+    What remains is the ANCESTOR CHAIN: ``mkdir(parents=True)`` and the pin's own
+    ``os.open`` both resolve the full path by name, and ``O_NOFOLLOW`` guards
+    only its final component, so an INTERMEDIATE ancestor swapped for a symlink
+    is still followed. That residue is REDUCIBLE, not a floor: walking the chain
+    componentwise from a trusted anchor (``os.open(component,
+    O_DIRECTORY|O_NOFOLLOW, dir_fd=parent_fd)`` per component, creating with
+    ``os.mkdir(..., dir_fd=...)``) shrinks the trusted surface to that anchor
+    alone. It is deliberately NOT done here: choosing the anchor is a design
+    decision in this app, whose directory helpers are root-parameterized, and it
+    is filed as its own change. This narrows three windows to one; it does not
+    close the last one.
+
+    Owner-only comes from the ``0o600`` creation mode instead of a follow-up
+    ``restrict_to_owner`` call, which would be another resolution by name. On the
+    fallback path (Windows: :data:`_CAN_PIN_DIR` is False because none of the
+    dir_fd variants exist there) the behaviour is exactly today's
+    :func:`open_locked_temp` + ``os.replace``, DACL lockdown included -- the
+    platform that cannot pin is the platform that keeps the old shape.
+    Callers own creating the parent, and every one of the nine does -- either
+    `mkdir(parents=True)` directly (`learning`, `report`, `followup`) or
+    `ensure_layout` / `ensure_run_layout` (`discovery`, `results`). This function
+    deliberately does NOT create it: an `exist_ok` mkdir here RESURRECTS a
+    directory tree that a concurrent namespace deletion is removing, so the
+    delete reports success while a stale record survives under a namespace that
+    is supposed to be gone. Dropping it also removes the last by-name `mkdir`
+    from this path, leaving the pin as the only place the parent is resolved.
+    """
+    target = Path(path)
+    parent = target.parent
+
+    if not _CAN_PIN_DIR:  # pragma: no cover - exercised on Windows
+        fd, tmp = open_locked_temp(parent)
+        try:
+            try:
+                _write_all(fd, data)
+            finally:
+                os.close(fd)
+            os.replace(tmp, target)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        return
+
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    dir_fd = os.open(
+        str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | cloexec
+    )
+    try:
+        # Unpredictable, like mkstemp's own name: the reviewer must not be able
+        # to pre-plant the temp it is about to be handed. The randomness is the
+        # whole of that property, so the name deliberately does NOT embed
+        # ``target.name``: a change id built from a long GHE host, owner and repo
+        # already approaches NAME_MAX, and adding the target plus a suffix on top
+        # pushed the temp component past it -- ENAMETOOLONG, and no record
+        # written. Fixed length, whatever the target is called.
+        tmp_name = f".sage-{os.urandom(8).hex()}.tmp"
+        fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | cloexec,
+            0o600,
+            dir_fd=dir_fd,
+        )
+        try:
+            try:
+                _write_all(fd, data)
+            finally:
+                os.close(fd)
+            os.rename(tmp_name, target.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            # The pin is what makes a mid-write swap harmless, and the same
+            # property means a publish into a directory that has since been
+            # renamed AWAY succeeds into the DETACHED inode -- correct bytes, in
+            # a place nothing at the caller's path can reach.
+            # ``results.adopt_into_run`` unlinks its source once this returns,
+            # so reporting success there would delete the only reachable copy.
+            # Compare the descriptor against the name after the rename and
+            # refuse to claim success on a mismatch.
+            #
+            # DETECTION, not prevention: the name can change again immediately
+            # after this stat. That is fine, because the guarantee being offered
+            # is not "the name is stable" but "a caller that must not delete its
+            # only copy gets an error rather than a false success". The security
+            # property is untouched -- the bytes never went through the swapped
+            # name, which is what the pin is for.
+            try:
+                named = os.stat(str(parent))
+            except OSError as exc:
+                raise OSError(
+                    errno.ESTALE,
+                    f"parent of {target.name} vanished mid-publish",
+                ) from exc
+            pinned = os.fstat(dir_fd)
+            if (named.st_dev, named.st_ino) != (pinned.st_dev, pinned.st_ino):
+                raise OSError(
+                    errno.ESTALE,
+                    f"parent of {target.name} was replaced mid-publish",
+                )
+        except BaseException:
+            # Relative to the SAME descriptor, so the cleanup cannot be
+            # redirected either.
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except OSError:  # pragma: no cover - best-effort cleanup
+                pass
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def atomic_write_text(path: str | os.PathLike, text: str) -> None:
+    """UTF-8 convenience wrapper over :func:`atomic_write_locked`."""
+    atomic_write_locked(path, text.encode("utf-8"))
 
 
 # Optional Kiro Crew redaction. Lives here rather than in `pipeline` because readers

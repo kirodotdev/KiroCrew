@@ -45,9 +45,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
-import tempfile
 import time
 from pathlib import Path
 
@@ -269,21 +267,16 @@ def write_descriptor(run_id: str, change_id: str, *, sid: str, agent: str = "",
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # mkstemp, not a predictable `<name>.tmp`: the reviewer can pre-plant a
-        # symlink at a name it can guess, and writing through it would land this
-        # content on whatever it points at. An O_EXCL temp with a random name
-        # cannot be pre-empted, and os.replace does not follow a link at the
-        # destination.
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(path.parent), prefix=".resume-", suffix=".json")
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(payload, ensure_ascii=False))
-            os.replace(tmp, path)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        # A random O_EXCL temp renamed over the name, not a predictable
+        # `<name>.tmp`: the reviewer can pre-plant a symlink at a name it can
+        # guess, and writing through it would land this content on whatever it
+        # points at. Both the staging and the rename are anchored to a
+        # DESCRIPTOR for the parent rather than resolving its name three times,
+        # so a directory swapped mid-write cannot redirect either -- see
+        # ``store.atomic_write_locked``.
+        store.atomic_write_locked(
+            path, json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        )
     except Exception:
         logger.warning("followup: could not record descriptor", exc_info=True)
         return False

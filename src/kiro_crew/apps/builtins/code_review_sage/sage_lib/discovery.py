@@ -24,7 +24,6 @@ the agent-writable project tree.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import threading
 from datetime import datetime, timedelta, timezone
@@ -373,16 +372,7 @@ def _write_repos(repos: list[dict], root: Path | None = None) -> Path:
     store.ensure_layout(root)
     path = repos_path(root)
     payload = json.dumps({"repos": repos}, indent=2).encode("utf-8")
-    fd, tmp = store.open_locked_temp(path.parent)
-    try:
-        try:
-            os.write(fd, payload)
-        finally:
-            os.close(fd)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    store.atomic_write_locked(path, payload)
     return path
 
 

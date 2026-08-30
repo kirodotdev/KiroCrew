@@ -3,6 +3,7 @@
 Locks in the fix for the "Initializing…" stuck state: when the generic app
 config handler has already seeded an empty ``{}`` config.json, ensure_layout
 must upgrade it to include ``resolved_paths`` so the UI can bootstrap."""
+import errno
 import json
 import os
 import shutil
@@ -12,6 +13,116 @@ from pathlib import Path
 from unittest import mock
 
 from sage_lib import store
+
+from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
+
+
+class TestPinnedAtomicWrite(unittest.TestCase):
+    """``atomic_write_locked`` resolves the parent directory ONCE.
+
+    The staging temp and the rename that publishes it used to resolve the parent
+    by NAME three times over (``mkstemp(dir=...)`` plus both halves of
+    ``os.replace``). The review worker runs prompt-injected model output and has
+    a shell inside its own run tree, so it could swap a directory for a symlink
+    between those resolutions and steer the write out of the sandbox.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        # Registered at creation, not in tearDown: an exception later in setUp
+        # skips tearDown entirely, and the residue is a directory tree.
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_a_plain_write_lands_owner_only_and_leaves_no_temp(self):
+        # The primitive does not create the parent -- every production caller
+        # does, and an exist_ok mkdir inside it would resurrect a namespace mid
+        # deletion. So the test creates it too.
+        target = self.tmp / "nested" / "record.json"
+        target.parent.mkdir(parents=True)
+
+        store.atomic_write_locked(target, b"payload")
+
+        self.assertEqual(target.read_bytes(), b"payload")
+        # Owner-only from the creation mode, so no follow-up chmod by name.
+        if os.name == "posix":
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual([p.name for p in target.parent.iterdir()], ["record.json"])
+
+    def test_a_target_name_near_the_filename_limit_still_publishes(self):
+        """`safe_change_id` does not cap length, so a change id built from a long
+        GHE host, owner and repo produces a stem that already approaches
+        NAME_MAX. A temp name derived from the target would exceed it and fail
+        with ENAMETOOLONG, writing no record at all; the staging name is fixed
+        length for exactly that reason.
+        """
+        target = self.tmp / ("x" * 240 + ".json")
+
+        store.atomic_write_locked(target, b"payload")
+
+        self.assertEqual(target.read_bytes(), b"payload")
+
+    def test_a_short_write_still_publishes_the_whole_record(self):
+        """``os.write`` may accept fewer bytes than it is given, and near a full
+        disk it does. A one-shot call would publish a truncated record -- and
+        ``results.adopt_into_run`` deletes its source once the publish returns,
+        so a truncation there loses the only valid copy.
+        """
+        target = self.tmp / "record.json"
+        payload = b'{"change_id": "abc", "verdict": "ok"}'
+        real_write = os.write
+        calls = {"n": 0}
+
+        def dribbling_write(fd, data):
+            calls["n"] += 1
+            return real_write(fd, bytes(data)[:1])  # one byte per call
+
+        with mock.patch.object(os, "write", dribbling_write):
+            store.atomic_write_locked(target, payload)
+
+        self.assertEqual(target.read_bytes(), payload)
+        self.assertEqual(calls["n"], len(payload), "the write was not looped")
+
+    @unittest.skipUnless(
+        SYMLINKS_OK and store._CAN_PIN_DIR, "needs symlinks and dir_fd support"
+    )
+    def test_a_parent_swapped_mid_write_cannot_redirect_the_write(self):
+        """The swap lands in the window the finding names, and is defeated.
+
+        Mid-write the parent is renamed aside and a symlink to an attacker-owned
+        directory takes its NAME. Two things must hold, and the second is why
+        this raises rather than returning quietly:
+
+        * nothing goes through the link -- the bytes land in the inode that was
+          pinned, which resolving the name again would not have done;
+        * the call REFUSES, because that pinned inode is now detached from the
+          caller's path. Publishing into a directory nobody can reach and
+          reporting success is how ``results.adopt_into_run`` would delete its
+          only reachable copy.
+        """
+        real = self.tmp / "real"
+        real.mkdir()
+        impostor = self.tmp / "impostor"
+        impostor.mkdir()
+        target = real / "record.json"
+        real_write = os.write
+        state = {"swapped": False}
+
+        def swapping_write(fd, data):
+            if not state["swapped"]:
+                state["swapped"] = True
+                real.rename(self.tmp / "moved")
+                (self.tmp / "real").symlink_to(impostor)
+            return real_write(fd, data)
+
+        with mock.patch.object(os, "write", swapping_write):
+            with self.assertRaises(OSError) as caught:
+                store.atomic_write_locked(target, b"payload")
+
+        self.assertTrue(state["swapped"], "the swap never ran, so this proved nothing")
+        self.assertEqual(caught.exception.errno, errno.ESTALE)
+        # Landed in the inode that was pinned, never through the planted link.
+        self.assertEqual((self.tmp / "moved" / "record.json").read_bytes(), b"payload")
+        self.assertEqual(list(impostor.iterdir()), [])
 
 
 class TestSeedConfigUpgrade(unittest.TestCase):
