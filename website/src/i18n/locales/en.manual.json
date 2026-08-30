@@ -2089,7 +2089,7 @@
       "state_draft": "Draft",
       "state_merged": "Merged",
       "state_open": "Open",
-      "owner_not_configured_guidance": "This action needs a configured owner, which Kiro Crew identifies by Slack member ID. Set \"Owner Slack member ID\" in Settings → Channels → Slack, restart the gateway, then sign in again.",
+      "owner_not_configured_guidance": "This action needs a configured owner, which {{productName}} identifies by Slack member ID. Set \"Owner Slack member ID\" in Settings → Channels → Slack, restart the gateway, then sign in again.",
       "open_slack_settings": "Open Slack settings"
     },
     "registryManager": {
