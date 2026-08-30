@@ -253,13 +253,24 @@ class TestExecutePlan:
     async def test_execute_starts_running(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)
         _planned_run(runner)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _block_execution(*_args: object) -> None:
+            started.set()
+            await release.wait()
+
+        runner._execute_tasks = _block_execution  # type: ignore[assignment]
         with patch("kiro_crew.taskrunner.git_coord"):
             task_id = await runner.execute_plan("plan_test")
-        assert task_id == "plan_test"
-        # Give the async task a tick to start
-        await asyncio.sleep(0.05)
-        run = runner._runs["plan_test"]
-        assert run.status in ("running", "completed", "failed")
+            task = runner._tasks[task_id]
+            await started.wait()
+            try:
+                assert task_id == "plan_test"
+                assert runner._runs["plan_test"].status == "running"
+            finally:
+                release.set()
+                await task
 
     @pytest.mark.asyncio
     async def test_execute_rejects_non_planned(self, tmp_path: Path) -> None:
@@ -281,12 +292,18 @@ class TestExecutePlan:
         run.error = "Shutdown signal received"
         with patch("kiro_crew.taskrunner.git_coord"):
             await runner.execute_plan("plan_test")
-        # Reset happens synchronously before async execution starts
-        assert run.tasks[0].status == StepStatus.PASSED  # preserved
-        assert run.tasks[1].status == StepStatus.PENDING
-        assert run.tasks[1].error == ""
-        assert run.tasks[1].result == ""
-        assert run.error == ""
+            task = runner._tasks["plan_test"]
+            try:
+                # Reset happens synchronously before async execution starts.
+                assert run.tasks[0].status == StepStatus.PASSED  # preserved
+                assert run.tasks[1].status == StepStatus.PENDING
+                assert run.tasks[1].error == ""
+                assert run.tasks[1].result == ""
+                assert run.error == ""
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
 
     @pytest.mark.asyncio
     async def test_execute_failed_project_resets_pending(self, tmp_path: Path) -> None:
@@ -300,12 +317,18 @@ class TestExecutePlan:
         run.error = "Task 2 failed"
         with patch("kiro_crew.taskrunner.git_coord"):
             await runner.execute_plan("plan_test")
-        # Reset happens synchronously before async execution starts
-        assert run.tasks[0].status == StepStatus.PASSED  # preserved
-        assert run.tasks[1].status == StepStatus.PENDING
-        assert run.tasks[1].error == ""
-        assert run.tasks[1].result == ""
-        assert run.error == ""
+            task = runner._tasks["plan_test"]
+            try:
+                # Reset happens synchronously before async execution starts.
+                assert run.tasks[0].status == StepStatus.PASSED  # preserved
+                assert run.tasks[1].status == StepStatus.PENDING
+                assert run.tasks[1].error == ""
+                assert run.tasks[1].result == ""
+                assert run.error == ""
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
 
     @pytest.mark.asyncio
     async def test_execute_fresh_resets_all_tasks(self, tmp_path: Path) -> None:
@@ -318,11 +341,17 @@ class TestExecutePlan:
         run.tasks[1].error = "old error"
         with patch("kiro_crew.taskrunner.git_coord"):
             await runner.execute_plan("plan_test", fresh=True)
-        # fresh=True resets ALL tasks including PASSED
-        assert run.tasks[0].status == StepStatus.PENDING
-        assert run.tasks[0].result == ""
-        assert run.tasks[1].status == StepStatus.PENDING
-        assert run.tasks[1].error == ""
+            task = runner._tasks["plan_test"]
+            try:
+                # fresh=True resets ALL tasks including PASSED.
+                assert run.tasks[0].status == StepStatus.PENDING
+                assert run.tasks[0].result == ""
+                assert run.tasks[1].status == StepStatus.PENDING
+                assert run.tasks[1].error == ""
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
 
     @pytest.mark.asyncio
     async def test_execute_runs_all_steps(self, tmp_path: Path) -> None:
