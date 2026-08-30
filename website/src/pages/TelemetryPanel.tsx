@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ChevronDown, ChevronRight, ChevronUp, Coins, Gauge, Rocket } from 'lucide-react'
@@ -11,6 +11,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import { SettingRef } from '../components/settingRef/SettingRef'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
+import { usePersistedString } from '../hooks/usePersistedString'
 import { compareText, fmtBytes, fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 // ── GET /api/telemetry/startup shape (dashboard/handlers/telemetry.py) ──
@@ -756,18 +757,12 @@ function convoCols(navigable: string): Col<CostConvo>[] {
       left: true,
       sort: v => v.title ?? v.slot,
       render: v =>
-        // TWO conditions, not one. A title alone is not enough: ChatPage
-        // resolves ?sid against the live DASHBOARD slot list, so a Telegram
-        // thread — a real conversation, often titled — would render as a link
-        // that lands on `Session "…" not found` after a 5s timeout. And a
-        // dashboard row with no title is untitled BECAUSE its slot is gone, so
-        // it has nothing to resolve either. Only a titled dashboard row gets a
-        // router link; everything else is plain text.
-        //
-        // The `!!navigable` guard makes this fail CLOSED: without it, a payload
-        // missing `navigable_category` would satisfy `v.category === navigable`
-        // for every row that also has no category, and link all of them.
-        v.title && !!navigable && v.category === navigable ? (
+        // The rule itself is `linksToConversation` -- shared with the Context
+        // table's session column so the two cannot drift apart. The tooltip
+        // differs on purpose: here it reveals the underlying slot, which is
+        // otherwise unreachable on this tab, whereas Context shows the slot as
+        // the row's text when no conversation joined.
+        linksToConversation(v, navigable) ? (
           <Link
             to={`/chat?sid=${encodeURIComponent(v.slot)}`}
             className="block max-w-[320px] truncate text-[var(--accent)] hover:underline"
@@ -904,8 +899,14 @@ function shareCols(first: string, total: number): Col<CostRow>[] {
   ]
 }
 
+const SPEND_GROUPS = ['session', 'category', 'model'] as const
+
 function SpendTab({ c }: { c: Cost }) {
-  const [group, setGroup] = useState<SpendGroup>('session')
+  const [group, setGroup] = usePersistedChoice<SpendGroup>(
+    'telemetry:spend-group',
+    SPEND_GROUPS,
+    'session',
+  )
   const bands = c.context_bands
   return (
     <Card className="mb-4">
@@ -1041,18 +1042,107 @@ function SpendTab({ c }: { c: Cost }) {
  * dropped on the floor, so the only way to see which conversation was near
  * compaction was to read the spend ranking and hope the two windows agreed.
  */
-function sessionCols(): Col<ContextSession>[] {
+/**
+ * What a Context row calls itself, given the spend row it joined (or none).
+ *
+ * Three outcomes, in the order the reader benefits from: the conversation's title;
+ * the dated "untitled conversation" wording Spend already uses when a joined row has
+ * no title (a title exists only while a conversation is open, so a closed one joins
+ * and still has nothing to show); and the raw slot when nothing joined at all, which
+ * is the only case with no conversation record to name.
+ *
+ * The middle case matters for cross-tab reading: the same conversation read
+ * "Untitled conversation on <date>" in Spend and a bare slot here, so its rows could
+ * not be matched between the two tabs. It needs no new copy - the key exists.
+ */
+/**
+ * Whether a conversation row should render as a link to the conversation.
+ *
+ * TWO conditions, not one, and the rule lives here rather than in each cell
+ * because both tables ask it and a silent divergence between them is exactly the
+ * cross-tab inconsistency this column set is trying to remove.
+ *
+ * A title alone is not enough: ChatPage resolves `?sid` against the live
+ * DASHBOARD slot list, so a Telegram thread -- a real conversation, often titled
+ * -- would render as a link that lands on `Session "..." not found` after a 5s
+ * timeout. And a dashboard row with no title is untitled BECAUSE its slot is
+ * gone, so it has nothing to resolve either.
+ *
+ * The `!!navigable` guard makes it fail CLOSED: without it a payload missing
+ * `navigable_category` would satisfy the comparison for every row that also has
+ * no category, and link all of them.
+ */
+function linksToConversation(
+  convo: Pick<CostConvo, 'title' | 'category'> | undefined,
+  navigable: string | undefined,
+): boolean {
+  return !!convo?.title && !!navigable && convo.category === navigable
+}
+
+function sessionLabel(convo: CostConvo | undefined, slot: string): string {
+  if (convo?.title) return convo.title
+  if (convo) {
+    return i18nT('pages.telemetryPanel.untitled_conversation_on', {
+      date: fmtDateNumeric(convo.first_ts * 1000),
+    })
+  }
+  return slot
+}
+
+function sessionCols(
+  convoFor: (slot: string) => CostConvo | undefined,
+  navigable: string | undefined,
+): Col<ContextSession>[] {
   return [
     {
       key: 'slot',
       label: i18nT('pages.telemetryPanel.session_col'),
       left: true,
-      sort: s => s.slot,
-      render: s => (
-        <span className="block max-w-[260px] truncate font-mono text-[11.5px]" title={s.slot}>
-          {s.slot}
-        </span>
-      ),
+      // Sorted on what the row SHOWS. Sorting on the slot while displaying a
+      // title puts the column in an order the reader cannot see.
+      sort: s => sessionLabel(convoFor(s.slot), s.slot),
+      render: s => {
+        // The occupancy payload carries no title - it never has - so the whole spend
+        // row is joined on the slot the two share. The fallback is the raw slot, and
+        // it is load-bearing rather than defensive: the two measurements come from
+        // the same store over DIFFERENT windows, so a conversation sampled for
+        // occupancy can legitimately have no spend row. Either way the row still has
+        // to identify itself.
+        const convo = convoFor(s.slot)
+        const label = sessionLabel(convo, s.slot)
+        // Same rule as Spend, held in one place. Sharing the affordance is the
+        // point: this tab's task is "find which conversation is near compaction
+        // and go deal with it", and a title that is a link one tab over and inert
+        // here dead-ends exactly that.
+        //
+        // No explicit type size on these: TXT_CELL already sets 12.5px for every
+        // left-aligned cell in these tables.
+        if (linksToConversation(convo, navigable)) {
+          return (
+            <Link
+              to={`/chat?sid=${encodeURIComponent(s.slot)}`}
+              className="block max-w-[260px] truncate text-[var(--accent)] hover:underline"
+              title={convo?.title}
+            >
+              {convo?.title}
+            </Link>
+          )
+        }
+        return convo ? (
+          // Muted, like every non-link title on Spend: the same conversation should
+          // read the same weight on both tabs, and the contrast with the accent link
+          // is what makes "this one is clickable" legible at a glance.
+          <span className="block max-w-[260px] truncate text-muted" title={label}>
+            {label}
+          </span>
+        ) : (
+          // Monospace only for the raw id: an id is a token to compare
+          // character by character, a title is prose.
+          <span className="block max-w-[260px] truncate font-mono text-[11.5px]" title={s.slot}>
+            {s.slot}
+          </span>
+        )
+      },
     },
     {
       key: 'peak',
@@ -1106,7 +1196,25 @@ function sessionCols(): Col<ContextSession>[] {
   ]
 }
 
-function ContextTab({ c }: { c: Context }) {
+function ContextTab({
+  c,
+  convos,
+  navigable,
+}: {
+  c: Context
+  convos?: CostConvo[]
+  navigable?: string
+}) {
+  // The whole spend row is kept, not just its title: the row is what decides
+  // linkability (category vs the payload's navigable category) and what supplies the
+  // dated untitled wording. Built once per render rather than scanned per row - the
+  // spend payload is capped but still hundreds of conversations on a busy install,
+  // and the table sorts, which would re-scan it for every comparison.
+  const convoFor = useMemo(() => {
+    const bySlot = new Map<string, CostConvo>()
+    for (const v of convos ?? []) bySlot.set(v.slot, v)
+    return (slot: string) => bySlot.get(slot)
+  }, [convos])
   return (
     <Card className="mb-4">
       <CardTitle>
@@ -1123,7 +1231,7 @@ function ContextTab({ c }: { c: Context }) {
         rows={c.sessions ?? []}
           key="telemetry-context"
           tableId="telemetry-context"
-        cols={sessionCols()}
+        cols={sessionCols(convoFor, navigable)}
         rowKey={s => s.slot}
         defaultSort="peak"
         emptyTitle={i18nT('pages.telemetryPanel.no_occupancy_samples')}
@@ -1336,6 +1444,8 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
 
 type StartupGroup = 'phase' | 'channel' | 'distribution'
 
+const STARTUP_GROUPS = ['phase', 'channel', 'distribution'] as const
+
 function statCols(first: string): Col<Stat & { name: string }>[] {
   return [
     {
@@ -1377,7 +1487,11 @@ type Bucket = { label: string; count: number; idx: number }
 
 
 function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; total: number; days: number }) {
-  const [group, setGroup] = useState<StartupGroup>('phase')
+  const [group, setGroup] = usePersistedChoice<StartupGroup>(
+    'telemetry:startup-group',
+    STARTUP_GROUPS,
+    'phase',
+  )
 
   const buckets: Bucket[] = []
   if (s.distribution?.buckets?.length) {
@@ -1580,13 +1694,52 @@ function HealthBar({ t, days }: { t: Turn | null; days: number }) {
 
 type Tab = 'spend' | 'context' | 'latency' | 'startup'
 
+const TABS = ['spend', 'context', 'latency', 'startup'] as const
+
+/**
+ * A string-union choice remembered across reloads, the same way a chosen sort is.
+ *
+ * The tab and both group-by controls were plain `useState`, so every visit reopened
+ * on Spend grouped by session no matter what the reader had been looking at - while
+ * the sort inside those very tables was remembered. The storage half is
+ * `usePersistedString`, so this shares the quota-defensive write and the read-once
+ * mount behaviour with every other remembered preference rather than re-spelling it.
+ *
+ * What this ADDS is validation. A stored value outlives the choices it named: this
+ * page's own sort persistence carries a comment about a sort saved by an older column
+ * layout surviving in localStorage, and a tab set changes the same way - the segment
+ * list is already filtered by which data exists, so `startup` can be stored on a
+ * machine that has no startup shard today. An unrecognised value falls back rather
+ * than selecting nothing, which is what a segmented control does with a value it has
+ * no segment for.
+ *
+ * Local to this file on purpose: there is one consumer today (three call sites in it).
+ * If a second page needs it, it belongs beside `usePersistedBool` and
+ * `usePersistedString` in `hooks/` rather than copied.
+ */
+function usePersistedChoice<T extends string>(
+  key: string,
+  allowed: readonly T[],
+  fallback: T,
+): readonly [T, (next: T) => void] {
+  // Delegates the storage half to `usePersistedString` rather than re-spelling its
+  // initializer and write effect. What this adds is validation, and validating on
+  // READ rather than correcting the stored value matters: a choice written by a
+  // NEWER build (a tab this build does not have yet) is unknown here, so it shows
+  // the fallback -- but it stays in storage and comes back intact on the newer
+  // build, instead of being clobbered by whichever version mounted last.
+  const [raw, setRaw] = usePersistedString(key, fallback)
+  const value = (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback
+  return [value, setRaw as (next: T) => void] as const
+}
+
 export default function TelemetryPanel() {
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ['telemetry-startup'],
     queryFn: () => api.telemetryStartup(),
     refetchInterval: 5000,
   })
-  const [tab, setTab] = useState<Tab>('spend')
+  const [tab, setTab] = usePersistedChoice<Tab>('telemetry:tab', TABS, 'spend')
 
   if (isLoading && !data) return <Notice>{i18nT('pages.telemetryPanel.loading_telemetry')}</Notice>
 
@@ -1621,7 +1774,7 @@ export default function TelemetryPanel() {
     return (
       <div className="overflow-y-auto flex-1 min-h-0 pb-8">
         {offCost && <SpendTab c={offCost} />}
-        {data.context && <ContextTab c={data.context} />}
+        {data.context && <ContextTab c={data.context} convos={offCost?.conversations} navigable={offCost?.navigable_category} />}
         <div className="border border-border bg-card rounded-xl p-3 text-[11px] leading-relaxed">
           <span className="text-text font-medium">{i18nT('pages.telemetryPanel.telemetry_is_off')}</span>{' '}
           <span className="text-muted">{offBody}</span>
@@ -1707,7 +1860,7 @@ export default function TelemetryPanel() {
       )}
 
       {active === 'spend' && data.cost && <SpendTab c={data.cost} />}
-      {active === 'context' && ctx && <ContextTab c={ctx} />}
+      {active === 'context' && ctx && <ContextTab c={ctx} convos={data?.cost?.conversations} navigable={data?.cost?.navigable_category} />}
       {active === 'latency' && <LatencyTab other={other} days={data.window_days} />}
       {active === 'startup' && s && <StartupTab s={s} faults={startupFaults} total={startupTotal} days={data.window_days} />}
 
