@@ -866,7 +866,13 @@ Each step checks if the tool is already installed and skips if present.
    edits in another terminal to rescue them is the natural response to the
    prompt, and is exactly what would otherwise be reset away). Only `HEAD` can
    move in that window, so the re-check needs no second fetch.
-2. Rebuilds the dashboard via `build_frontend_sync()` (npm; non-fatal on failure)
+2. Rebuilds the dashboard via `build_frontend_sync()` (npm; non-fatal on failure).
+   Non-fatal also means non-destructive: `npm ci` deletes `node_modules` before it
+   installs, so the tree is moved aside and restored unless the install succeeds
+   (`node_modules_txn.NodeModulesBackup`). A failed install therefore costs the
+   rebuild, not the dependency tree -- which matters because the registry needed
+   to rebuild one is usually what was unavailable. The gateway's unattended
+   auto-apply takes the async sibling and is protected the same way.
 3. Reinstalls backend via `pip install -e .`
 
 ## Client Port Resolution

@@ -25,6 +25,7 @@ from typing import Callable, Iterator, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.node_modules_txn import NodeModulesBackup
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,10 @@ _SIBLING_DIR_NAME = "KiroCrewWebsite"
 # Build timeouts (seconds). npm installs/builds can be slow on cold caches.
 _INSTALL_TIMEOUT = 300
 _BUILD_TIMEOUT = 300
+#: How long to wait for a killed install tree to actually exit before restoring
+#: over it. Short by design: the group has already been SIGKILLed, so this only
+#: covers reaping, and waiting longer would delay a recovery that is already late.
+_REAP_TIMEOUT = 30
 # Seconds to wait for a SIGKILLed build to be reaped before giving up. SIGKILL is
 # not catchable, so this only covers the kernel tearing the tree down; there are
 # no pipes to drain because the build's output goes to DEVNULL.
@@ -621,22 +626,112 @@ def build_frontend_sync(
         if (website_dir / "package-lock.json").is_file()
         else ["install", "--no-audit", "--no-fund"]
     )
-    try:
-        r = subprocess.run(
-            [npm, *install_args],
-            cwd=str(website_dir), capture_output=True, timeout=_INSTALL_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        log("  ⚠️  Frontend npm install timed out — dashboard may be stale")
-        return
-    if r.returncode != 0:
-        log("  ⚠️  Frontend npm install failed — dashboard may be stale")
-        return
+    # `npm ci` deletes node_modules BEFORE it installs, so a refusal from the
+    # registry leaves no tree at all -- and the registry is the one thing needed
+    # to rebuild one. Move it aside and put it back unless the install succeeds.
+    #
+    # The whole transaction runs under ONE holder of the staging lock, install
+    # included. That is not about `website/dist` -- it is what makes `begin`'s
+    # recovery branch safe. That branch adopts a backup it finds beside the tree,
+    # and it cannot tell a CRASHED earlier run's backup (adopt it) from a LIVE
+    # peer's (leave it alone); nothing on disk distinguishes them. Serializing the
+    # armed interval means a live peer cannot be in it, so the only backup `begin`
+    # can ever see is a dead run's. Without that, two updates could each adopt the
+    # other's stash and one's commit would delete the tree the other still needed.
+    #
+    # It must be one holder, not two: the lock is an flock keyed per
+    # open-file-description, so re-entering through a second open() in this same
+    # process would deadlock against itself (see _staging_lock). Hence the build
+    # and stage happen inside here too, via the _locked variant.
+    #
+    # The cost is real and deliberate: a peer now waits for an install (up to
+    # _INSTALL_TIMEOUT) rather than only for a build. Two frontend builds on one
+    # checkout were already mutually destructive, so waiting is the correct
+    # outcome, not a regression.
+    #
+    # RESIDUAL: this closes races between Kiro Crew's own Python flows. Dev Fleet's
+    # Pull+Build takes this same lock for its build+stage child, but its `npm ci`
+    # step runs from a generated stdlib-only script that cannot import kiro_crew
+    # and so cannot take it. A Pull+Build install overlapping one of these is
+    # therefore still possible; it is tracked separately rather than papered over.
+    backup = NodeModulesBackup(website_dir / "node_modules", lambda m: log(f"  ⚠️  {m}"))
 
-    # npm install does not touch website/dist, so only the build+stage pair
-    # needs the lock.
+    def _reap_tree(proc) -> None:
+        """Kill the install's whole process group, then wait for it.
+
+        Both halves matter. The GROUP, because `npm ci` spawns node and any
+        lifecycle scripts, and survivors would write into the directory being
+        restored. The WAIT, because a killed process is not yet a finished one.
+        Every failure is suppressed: the group can exit between the decision to
+        kill and the kill itself, and a ProcessLookupError escaping from a
+        best-effort reap would turn a recoverable install failure into a crash.
+        """
+        if proc is None or proc.returncode is not None:
+            return
+        with contextlib.suppress(ProcessLookupError, OSError, ValueError):
+            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired, OSError, ValueError):
+            proc.communicate(timeout=_REAP_TIMEOUT)
+
+    proc = None
     try:
         with _staging_lock(proj_path / "src" / "kiro_crew" / "static"):
+            if not backup.begin():
+                return
+            try:
+                try:
+                    # Popen rather than subprocess.run: run() never exposes the
+                    # pid, and without it only the direct child can be signalled
+                    # on timeout. `npm ci` spawns node and any lifecycle scripts
+                    # the lockfile asks for, and those keep writing into
+                    # node_modules after their parent dies -- so a survivor would
+                    # race the rollback and land its leftovers in the restored
+                    # tree. Its own group, so the whole tree can be signalled.
+                    proc = subprocess.Popen(
+                        [npm, *install_args],
+                        cwd=str(website_dir),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        start_new_session=platform_compat.IS_POSIX,
+                        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                    )
+                except OSError as exc:
+                    backup.rollback()
+                    log(f"  ⚠️  Frontend npm install could not start ({exc}) — tree left as it was")
+                    return
+                try:
+                    proc.communicate(timeout=_INSTALL_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    # A timeout KILLS npm mid-install, so what it leaves is a
+                    # PARTIAL tree -- exactly what the rollback exists for, not a
+                    # reason to skip it.
+                    _reap_tree(proc)
+                    backup.rollback()
+                    log("  ⚠️  Frontend npm install timed out — the dependency tree was left as it was")
+                    return
+                if proc.returncode != 0:
+                    backup.rollback()
+                    log("  ⚠️  Frontend npm install failed — the dependency tree was left as it was")
+                    return
+                backup.commit()
+            except BaseException:
+                # Ctrl-C is the case this exists for: KeyboardInterrupt is a
+                # BaseException, so none of the handlers above see it, and without
+                # this the tree would stay stashed under its backup name while the
+                # path the rest of the app reads is simply missing. Covers the
+                # whole armed interval, so no future edit inside it can
+                # reintroduce the gap. rollback() is a no-op once commit() or an
+                # earlier rollback disarmed it.
+                #
+                # Reap FIRST, and note WHY that is not optional here: the install
+                # runs in its own session (so its whole tree can be signalled on
+                # timeout), which also means a terminal Ctrl-C does NOT reach it --
+                # SIGINT goes to the foreground process group, and npm is no longer
+                # in it. So npm survives the interrupt and would keep writing into
+                # the directory being restored.
+                _reap_tree(proc)
+                backup.rollback()
+                raise
             _npm_build_and_stage_locked(website_dir, proj_path, npm, log)
     except OSError as exc:
         log(f"  ⚠️  Could not acquire the static/dist staging lock: {exc}")
@@ -683,47 +778,202 @@ async def build_frontend_async(
         if (website_dir / "package-lock.json").is_file()
         else ["install", "--no-audit", "--no-fund"]
     )
-    npm_i = await asyncio.create_subprocess_exec(
-        npm, *install_args,
-        cwd=str(website_dir),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        await asyncio.wait_for(npm_i.wait(), timeout=_INSTALL_TIMEOUT)
-    except asyncio.TimeoutError:
-        try:
-            npm_i.kill()
-        except ProcessLookupError:
-            pass
-        await npm_i.wait()
-        _warn("Frontend npm install timed out -- dashboard may be stale")
-        return
-    if npm_i.returncode != 0:
-        _warn("Frontend npm install failed -- dashboard may be stale")
-        return
+    # `npm ci` deletes node_modules BEFORE it installs. This is the UNATTENDED
+    # path: the gateway's auto-apply reaches it at boot with no operator, and it
+    # never retries, because the next boot sees the commit already applied. So a
+    # registry refusal here destroyed the tree until a human happened to notice.
+    #
+    # The transaction's removals and renames are BLOCKING filesystem work on a
+    # tree of tens of thousands of files, so they run in a worker thread for the
+    # same reason the build+stage below does: on the event loop they would stall
+    # the gateway's heartbeat and every in-flight request. And it collects its
+    # messages instead of warning directly, because `_warn` reaches
+    # `push_progress`, which belongs to the LOOP thread -- they are replayed here.
+    txn_log: list[str] = []
+    backup = NodeModulesBackup(website_dir / "node_modules", txn_log.append)
 
-    # The build and the stage run under ONE lock holder, in a worker thread.
-    # Vite empties website/dist, so a peer flow staging concurrently would copy
-    # a partially written tree; and acquiring a blocking flock on the event loop
-    # would freeze the gateway for the length of someone else's build.
+    def _drain() -> None:
+        while txn_log:
+            _warn(txn_log.pop(0))
+
+    # Submitted through the executor DIRECTLY rather than loop.run_in_executor, so
+    # the concurrent future is in hand: a cancelled `await` does NOT cancel work
+    # that has already started in the thread, and the lock must not be released
+    # while such a step is still renaming or removing the tree -- that would admit
+    # a peer mid-mutation. Tracked here, drained in the finally.
+    inflight: list = []
+
+    async def _offload(step):
+        future = subprocess_executor().submit(step)
+        inflight.append(future)
+        try:
+            result = await asyncio.wrap_future(future)
+        finally:
+            _drain()
+        # Reached only when the step actually completed. A cancelled await skips
+        # this, so the future stays tracked and the finally waits for it.
+        inflight.remove(future)
+        return result
+
+    async def _kill_and_wait(proc) -> None:
+        """Kill npm AND its descendants, then wait, before anything clears the tree.
+
+        `npm ci` is not a leaf: it spawns node and any lifecycle scripts the
+        lockfile asks for, and those keep writing into `node_modules` after their
+        parent dies. Killing only the direct child therefore left writers racing
+        the rollback. `kill_and_reap` signals the whole group, which is why the
+        spawn below opens a session of its own -- a child sharing our group has no
+        tree to signal and the group kill is skipped for it.
+
+        The wait is the load-bearing half: a killed child is not a finished one.
+        """
+        if proc is None:
+            return
+        if proc.returncode is not None:
+            # Already exited: nothing to signal, and nothing to wait for. This
+            # matters because the interruption handlers also cover the build and
+            # stage, which run AFTER the install has finished -- reaping there
+            # would signal a pid that is gone (or, worse, reused).
+            return
+        with contextlib.suppress(asyncio.CancelledError, ProcessLookupError, OSError):
+            await platform_compat.kill_and_reap(proc)
+
+    npm_i = None
+    # ONE holder of the staging lock spans this whole transaction, install
+    # included. That is what makes `begin`'s recovery branch safe: it adopts a
+    # backup it finds beside the tree and cannot tell a CRASHED earlier run's from
+    # a LIVE peer's, because nothing on disk distinguishes them. Serializing the
+    # armed interval means a live peer cannot be inside it, so the only backup
+    # `begin` can see is a dead run's. See build_frontend_sync for the same
+    # reasoning, its cost, and the Dev Fleet residual.
+    #
+    # It is entered and exited through the executor because taking a blocking
+    # flock on the event loop would freeze the gateway for the length of someone
+    # else's install -- and it must be ONE holder, since the lock is keyed per
+    # open-file-description and re-entering in this process would deadlock.
+    lock = contextlib.ExitStack()
+    static_parent = proj_path / "src" / "kiro_crew" / "static"
     messages: list[str] = []
-
-    def _locked_build_and_stage() -> bool:
-        # Collect rather than calling _warn: this runs on a worker thread, and
-        # _warn reaches push_progress, which belongs to the loop thread.
+    staged = False
+    try:
+        await _offload(lambda: lock.enter_context(_staging_lock(static_parent)))
+    except OSError as exc:
+        _warn(f"Could not acquire the static/dist staging lock: {exc}")
+        return
+    try:
+        # begin() is INSIDE the protected interval: it arms the transaction in a
+        # worker thread, so a cancellation delivered just after the rename but
+        # before the body would otherwise leave the tree stashed with nothing to
+        # put it back.
+        if not await _offload(backup.begin):
+            return
         try:
-            with _staging_lock(proj_path / "src" / "kiro_crew" / "static"):
+            npm_i = await asyncio.create_subprocess_exec(
+                npm, *install_args,
+                cwd=str(website_dir),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                # Its own group, so the whole install tree can be signalled --
+                # see _kill_and_wait. No-op on the platform that lacks each half.
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            )
+        except OSError as exc:
+            await _offload(backup.rollback)
+            _warn(f"Frontend npm install could not start ({exc}) -- tree left as it was")
+            return
+        try:
+            await asyncio.wait_for(npm_i.wait(), timeout=_INSTALL_TIMEOUT)
+        except asyncio.TimeoutError:
+            await _kill_and_wait(npm_i)
+            # Killed mid-install, so what is on disk is PARTIAL. Restore before
+            # reporting, so the message is true by the time anyone reads it.
+            await _offload(backup.rollback)
+            _warn("Frontend npm install timed out -- the dependency tree was left as it was")
+            return
+        if npm_i.returncode != 0:
+            await _offload(backup.rollback)
+            _warn("Frontend npm install failed -- the dependency tree was left as it was")
+            return
+        await _offload(backup.commit)
+
+        # Still inside the SAME holder, so this calls the _locked variant --
+        # re-entering _staging_lock here would deadlock against ourselves. Vite
+        # empties website/dist, so a peer staging concurrently would copy a
+        # partially written tree.
+        def _build_and_stage() -> bool:
+            # Collect rather than calling _warn: this runs on a worker thread, and
+            # _warn reaches push_progress, which belongs to the loop thread.
+            #
+            # OSError is caught HERE rather than left to the interruption handlers
+            # below. The build spawns its own npm, so a missing binary raises
+            # FileNotFoundError -- an OSError -- and letting that propagate would
+            # turn a reported build failure into an exception escaping this helper,
+            # which on the unattended path means it escapes into the gateway's
+            # auto-apply. Reporting it keeps the caller's contract: this function
+            # warns and returns, it does not raise for a failed build.
+            try:
                 return _npm_build_and_stage_locked(
                     website_dir, proj_path, npm, messages.append
                 )
-        except OSError as exc:
-            messages.append(f"Could not acquire the static/dist staging lock: {exc}")
-            return False
+            except OSError as exc:
+                messages.append(f"Frontend build could not run: {exc}")
+                return False
 
-    staged = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), _locked_build_and_stage
-    )
+        # Through _offload, NOT raw run_in_executor: that is what puts the future
+        # in `inflight` so the `finally` waits for it before releasing the lock.
+        # Otherwise a cancellation here releases the flock while this thread is
+        # still running `npm run build` (which rewrites website/dist) and staging
+        # it, and a peer would publish a bundle vite is mid-rewrite -- the mixed
+        # bundle the lock exists to prevent. Before this PR the lock was taken
+        # INSIDE the worker, so a cancelled await could not release it early.
+        staged = await _offload(_build_and_stage)
+    except asyncio.CancelledError:
+        # Gateway shutdown during the install. Left alone this strands the tree:
+        # ours stays stashed while npm keeps writing a fresh one, and if npm gets
+        # far enough BOTH paths exist -- which the next run can only read as
+        # ambiguous, refusing every build until someone clears one by hand.
+        #
+        # Reap FIRST. The child outlives its cancelled parent, so clearing the
+        # directory it is writing would race it.
+        await _kill_and_wait(npm_i)
+        # Then roll back SYNCHRONOUSLY rather than through the executor. This is
+        # MAINTAINER-ADJUDICATED, not a preference: `executors.py` registers an
+        # atexit shutdown that calls `shutdown(wait=False, cancel_futures=True)`,
+        # so at interpreter exit -- which is exactly when this path runs -- queued
+        # executor work is CANCELLED and running work is not waited for. Offloading
+        # here would turn a guaranteed recovery into a probabilistic one in the one
+        # scenario the transaction exists for. Shielding the await does not help:
+        # it protects the await, not the queued future. A brief block during a
+        # shutdown that is already ending is the cheaper side of that trade.
+        backup.rollback()
+        _drain()
+        raise
+    except BaseException:
+        # Any other interruption across the armed interval -- SystemExit, or a
+        # cancellation raised somewhere an await is not expected. Unlike the
+        # cancelled case above this task is still live, so the cleanup can go
+        # through the executor, and the re-raise waits for it to finish.
+        await _kill_and_wait(npm_i)
+        await _offload(backup.rollback)
+        raise
+    finally:
+        # Drain before releasing. A cancelled await leaves its executor step
+        # RUNNING, so the lock would otherwise be released while a thread is still
+        # renaming or removing the tree, admitting a peer into a half-applied
+        # transaction. Waited on synchronously, for the same adjudicated reason the
+        # cancellation rollback is synchronous: this runs during shutdown, where a
+        # further await is not guaranteed to resume and the executor is being torn
+        # down with cancel_futures=True.
+        for future in inflight:
+            with contextlib.suppress(Exception):
+                future.result(timeout=_REAP_TIMEOUT)
+        _drain()
+        # Releasing is an flock release and a file close -- microseconds, unlike
+        # the tree work -- so doing it inline is safe even on the cancelled path.
+        with contextlib.suppress(Exception):
+            lock.close()
+
     for message in messages:
         # Surface the specific cause (build timeout / build failure / staging
         # refusal / lock failure) rather than one generic line: without it the

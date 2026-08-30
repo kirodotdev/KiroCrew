@@ -154,13 +154,23 @@ def test_no_edition_dir_is_never_missing():
 
 
 def _popen_recorder(seen: list) -> type:
-    """Record the build spawn: the build runs through ``subprocess.Popen``."""
+    """Record a spawn: BOTH the install and the build run through ``subprocess.Popen``.
+
+    The install moved from ``subprocess.run`` to ``Popen`` so its pid is available
+    -- ``run`` never exposes one, and without a pid only the direct child can be
+    signalled on timeout, leaving npm's descendants writing into the dependency
+    tree while it is restored. So this fake answers both protocols: ``communicate``
+    for the install, ``wait`` for the build.
+    """
 
     class _P:
         returncode = 0
 
         def __init__(self, argv, **kwargs):
             seen.append((argv, kwargs.get("env")))
+
+        def communicate(self, timeout=None):
+            return (b"", b"")
 
         def wait(self, timeout=None):
             return 0

@@ -302,11 +302,20 @@ def test_build_frontend_sync_spawns_resolved_npm_path(tmp_path, monkeypatch):
     class _Result:
         returncode = 0
 
-    def _fake_run(cmd, **kw):
-        calls.append(cmd)
-        return _Result()
+        def __init__(self, cmd, **kw):
+            calls.append(cmd)
 
-    monkeypatch.setattr(frontend.subprocess, "run", _fake_run)
+        def communicate(self, timeout=None):
+            return (b"", b"")
+
+        def wait(self, timeout=None):
+            return 0
+
+    # The install moved from subprocess.run to Popen -- run never exposes a pid,
+    # so only the direct child could be signalled on timeout, leaving npm's
+    # descendants writing into the dependency tree while it is restored. Both the
+    # install and the build are now recorded through this one seam.
+    monkeypatch.setattr(frontend.subprocess, "Popen", _Result)
     frontend.build_frontend_sync(tmp_path, log=lambda *a: None)
 
     assert calls, "no subprocess was spawned"
