@@ -187,6 +187,22 @@ export function installedArtList(paths: unknown, appName: string | undefined): s
 }
 
 /**
+ * Like :func:`installedArtList` but INDEX-ALIGNED with the declared list:
+ * refused entries become ``''`` placeholders instead of being dropped.
+ *
+ * Exists for callers that pair this list positionally with ANOTHER resolution
+ * of the same declared field (the registry row's blob-proxy rewrite, in the
+ * detail page's screenshot fallback). With the filtered variant, a refused
+ * middle entry shifts every later index down by one, so thumbnail N silently
+ * pairs with the art for thumbnail N-1 — a wrong image, which is worse than a
+ * hidden one. Callers must skip the ``''`` placeholders at use time.
+ */
+export function installedArtListAligned(paths: unknown, appName: string | undefined): string[] {
+  if (!Array.isArray(paths)) return []
+  return paths.map(p => installedArt(p, appName))
+}
+
+/**
  * An installed app's ICON, resolving the two fields that can declare one.
  *
  * This exists because the two-term rule was spelled out at eight call sites and

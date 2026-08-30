@@ -308,7 +308,12 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(document.querySelector('img[src="/hero/browse-light.png"]')).toBeNull()
 
     fireEvent.error(hero)
-    expect(hero.style.display).toBe('none')
+    // #6864: the terminal state is now an UNMOUNTED banner. The fallback
+    // candidate here is the identical URL (no registry row, so the local art
+    // already won the precedence), nothing is retried, and no empty bordered
+    // box is left where the banner was.
+    expect(document.querySelector('img[src="/hero/detail-light.png"]')).toBeNull()
+    expect(document.querySelector('.aspect-\\[25\\/6\\]')).toBeNull()
   })
 
   // --- Install log panel ---------------------------------------------------

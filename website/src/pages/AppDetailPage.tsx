@@ -28,7 +28,7 @@ import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
 } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
-import { classifyManifestArt, installedArt, installedArtList, installedIcon } from '../components/appstore/useHeroArt'
+import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
@@ -53,6 +53,17 @@ type AppInfo = {
   heroImageDark?: string
   heroImageDetail?: string
   heroImageDetailDark?: string
+  // Second-chance hero/screenshot art (#6864): an INSTALLED app's own local
+  // routes, consulted only when the primary (usually registry) URL fails to
+  // load. Optional because only the installed branch sets them — a
+  // not-installed app has no local bytes, so hide-on-error stays its terminal
+  // state. The screenshot lists are index-aligned with their primaries.
+  heroImageFallback?: string
+  heroImageDarkFallback?: string
+  heroImageDetailFallback?: string
+  heroImageDetailDarkFallback?: string
+  screenshotsFallback?: string[]
+  screenshotsDarkFallback?: string[]
   repo?: string
   trustRepository?: string
   branch?: string
@@ -143,8 +154,32 @@ interface AppManifest {
   minKiroCrewVersion?: string
 }
 
-function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
+// Exported for tests: the per-index latch guards (self-match, '' placeholder
+// skip) are not all reachable through the page once the call site gates the
+// fallback list on a registry-supplied primary.
+export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: string[]; fallbacks?: string[] }) {
   const [selected, setSelected] = useState<number | null>(null)
+  // Per-thumbnail failure latches, mirroring AppIcon's two-latch shape
+  // (#6804): a thumbnail whose primary errored swaps to ITS OWN fallback; one
+  // whose fallback errored too is hidden — the pre-#6864 terminal state.
+  // Per-index state, not one flag for the strip: one unreachable asset must
+  // not blank its neighbours. `fallbacks` is optional so untouched callers
+  // stay default-inert (the contract #6865 locked for AppIcon).
+  const [primaryFailed, setPrimaryFailed] = useState<ReadonlySet<number>>(new Set())
+  const [fallbackFailed, setFallbackFailed] = useState<ReadonlySet<number>>(new Set())
+  // Per-URL reset discipline (AppIcon's, list-shaped), keyed on the joined
+  // URLs rather than array identity because the caller builds these props
+  // inline, so identity changes every render. A changed primary list (theme
+  // flip, refetch) clears BOTH latch sets; a changed fallback list alone (an
+  // install completing under a mounted page) re-arms only the fallback
+  // latches. '\n' cannot appear in a URL, so the join is unambiguous.
+  const screensKey = screenshots.join('\n')
+  const fallbacksKey = (fallbacks ?? []).join('\n')
+  useEffect(() => {
+    setPrimaryFailed(new Set())
+    setFallbackFailed(new Set())
+  }, [screensKey])
+  useEffect(() => { setFallbackFailed(new Set()) }, [fallbacksKey])
 
   if (screenshots.length === 0) return null
 
@@ -153,25 +188,40 @@ function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
       <div className="mb-6">
         <div className="text-[12px] text-muted uppercase tracking-wider mb-3">{i18nT('pages.appDetailPage.screenshots')}</div>
         <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-none">
-          {screenshots.map((url, i) => (
-            <button
-              key={i}
-              type="button"
-              aria-label={i18nT('pages.appDetailPage.open_screenshot', { n: i + 1 })}
-              className="p-0 border-none bg-transparent shrink-0 cursor-pointer"
-              onClick={() => setSelected(i)}
-            >
-              {/* onError is an image-load lifecycle handler (hide broken images), */}
-              {/* not a user interaction; the rule flags onError regardless. */}
-              {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-              <img
-                src={url}
-                alt={i18nT('pages.appDetailPage.screenshot', { n: i + 1 })}
-                className="h-40 rounded-lg border border-border hover:border-accent/40 hover:shadow-md transition-all object-cover"
-                onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
-              />
-            </button>
-          ))}
+          {screenshots.map((url, i) => {
+            // Second chance per thumbnail: swap to the index-paired local
+            // route when the primary fails to LOAD, skipping a fallback that
+            // is absent (an '' alignment placeholder), identical to the
+            // failed primary (retrying it is a second doomed request), or
+            // already failed itself — hiding stays the terminal state.
+            const fallback = fallbacks?.[i] || ''
+            const useFallback = primaryFailed.has(i) && !!fallback && fallback !== url && !fallbackFailed.has(i)
+            const terminal = primaryFailed.has(i) && !useFallback
+            return (
+              <button
+                key={i}
+                type="button"
+                aria-label={i18nT('pages.appDetailPage.open_screenshot', { n: i + 1 })}
+                className="p-0 border-none bg-transparent shrink-0 cursor-pointer"
+                onClick={() => setSelected(i)}
+              >
+                {/* onError is an image-load lifecycle handler (swap to local */}
+                {/* art, then hide broken images), not a user interaction; */}
+                {/* the rule flags onError regardless. */}
+                {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+                <img
+                  src={useFallback ? fallback : url}
+                  alt={i18nT('pages.appDetailPage.screenshot', { n: i + 1 })}
+                  className="h-40 rounded-lg border border-border hover:border-accent/40 hover:shadow-md transition-all object-cover"
+                  style={terminal ? { display: 'none' } : undefined}
+                  onError={() => {
+                    if (!primaryFailed.has(i)) setPrimaryFailed(prev => new Set(prev).add(i))
+                    else setFallbackFailed(prev => new Set(prev).add(i))
+                  }}
+                />
+              </button>
+            )
+          })}
         </div>
       </div>
 
@@ -209,6 +259,53 @@ function ScreenshotGallery({ screenshots }: { screenshots: string[] }) {
         </div>
       )}
     </>
+  )
+}
+
+/**
+ * Hero banner with a local-art second chance (#6864).
+ *
+ * Renders `src`; when it fails to LOAD, swaps once to `fallbackSrc` (an
+ * installed app's own local route); when that fails too — or no usable
+ * fallback exists — unmounts entirely, so no empty bordered box is left where
+ * the banner was (the pre-#6864 terminal state, preserved). Latch discipline
+ * mirrors AppIcon (#6804): two latches, per-URL resets so a theme flip
+ * re-arms, and the self-match guard skipping a fallback identical to the
+ * failed primary (when the local candidate already won the precedence,
+ * retrying the URL that just errored is a second doomed request).
+ */
+// Exported for tests (direct latch-discipline coverage).
+export function HeroBanner({ src, fallbackSrc, isDetail }: { src: string; fallbackSrc?: string; isDetail: boolean }) {
+  const [primaryFailed, setPrimaryFailed] = useState(false)
+  const [fallbackFailed, setFallbackFailed] = useState(false)
+  // A changed primary clears BOTH latches: a theme flip changes `src` without
+  // any prop the parent re-keys on, and an app update rewrites the local file
+  // in place, so a stale fallback latch would be a sticky failure.
+  useEffect(() => {
+    setPrimaryFailed(false)
+    setFallbackFailed(false)
+  }, [src])
+  // The same per-URL reset for the fallback latch alone: the fallback
+  // candidate moves independently of the primary (a theme flip where only the
+  // fallback pair has a dark variant, an install completing under a mounted
+  // page) and must never inherit a stale failure.
+  useEffect(() => { setFallbackFailed(false) }, [fallbackSrc])
+  const useFallback = primaryFailed && !!fallbackSrc && fallbackSrc !== src && !fallbackFailed
+  if (!src || (primaryFailed && !useFallback)) return null
+  return (
+    <div className={`w-full ${isDetail ? 'aspect-[25/6]' : 'aspect-video'} max-h-72 rounded-2xl border border-border overflow-hidden mb-6 bg-[var(--card)]`}>
+      {/* onError is an image-load lifecycle handler (swap to local art, then hide). */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+      <img
+        src={useFallback ? fallbackSrc : src}
+        alt=""
+        className="w-full h-full object-cover"
+        onError={() => {
+          if (!primaryFailed) setPrimaryFailed(true)
+          else setFallbackFailed(true)
+        }}
+      />
+    </div>
   )
 }
 
@@ -367,6 +464,30 @@ export default function AppDetailPage() {
               || installedArt(m.heroImageDetail, installed.name),
             heroImageDetailDark: registryEntry?.heroImageDetailDark
               || installedArt(m.heroImageDetailDark, installed.name),
+            // The app IS installed on this branch, so its hero/screenshot
+            // bytes are on local disk: carry those routes as LOAD-failure
+            // fallbacks, the same shape as the icon pair above. Deliberately
+            // not a precedence change — the registry assets stay the primary
+            // `src` (#6804 rejects a flip); these are consulted only when a
+            // primary errors (offline, captive portal, blocked host) (#6864).
+            heroImageFallback: installedArt(m.heroImage, installed.name),
+            heroImageDarkFallback: installedArt(m.heroImageDark, installed.name),
+            heroImageDetailFallback: installedArt(m.heroImageDetail, installed.name),
+            heroImageDetailDarkFallback: installedArt(m.heroImageDetailDark, installed.name),
+            // The screenshot fallbacks pair with their primaries BY INDEX, so
+            // they use the aligned resolver (refused entries stay as ''
+            // placeholders) — the filtered list would shift every entry after
+            // a refusal and pair a thumbnail with its neighbour's art. Set
+            // only when the registry supplied the primary list: when the
+            // local list won the precedence above, the primary already IS the
+            // local route (filtered, so aligned indices would not match), and
+            // retrying an identical URL is a guaranteed second failure.
+            screenshotsFallback: registryEntry?.screenshots
+              ? installedArtListAligned(m.screenshots, installed.name)
+              : undefined,
+            screenshotsDarkFallback: registryEntry?.screenshotsDark
+              ? installedArtListAligned(m.screenshotsDark, installed.name)
+              : undefined,
             // Left as the row's own value: this field also names the repo in the
             // trust-consent prompt and the details list, and widening those to a
             // fallback identifier is a separate decision from resolving art.
@@ -709,6 +830,23 @@ export default function AppDetailPage() {
   // 1200x288 (25:6) ratio so object-cover doesn't horizontally crop the art
   // on viewports narrower than 1200px. Fall back to 16:9 for the Browse hero.
   const heroIsDetail = Boolean(heroDetailSrc)
+  // Local-art fallback candidate (#6864): the SAME two-level choice
+  // re-evaluated over the fallback fields. The detail-vs-Browse order cannot
+  // put detail-ratio art into the 16:9 container: a non-empty detail FALLBACK
+  // implies a detail PRIMARY (the primary resolution above already falls back
+  // to the same local candidate when the registry has none), so whenever the
+  // first term below is non-empty, heroIsDetail is true and the container is
+  // already sized 25:6. The reachable cross-tier case is the converse — a
+  // registry detail banner failing with only local Browse art on disk — where
+  // borrowing the other tier's art beats no art, the ratio stays keyed on the
+  // primary (heroIsDetail above), and object-cover crops rather than distorts.
+  const heroDetailFallback = resolvedMode === 'dark'
+    ? (app.heroImageDetailDarkFallback || app.heroImageDetailFallback || '')
+    : (app.heroImageDetailFallback || app.heroImageDetailDarkFallback || '')
+  const heroBrowseFallback = resolvedMode === 'dark'
+    ? (app.heroImageDarkFallback || app.heroImageFallback || '')
+    : (app.heroImageFallback || app.heroImageDarkFallback || '')
+  const heroSrcFallback = heroDetailFallback || heroBrowseFallback
   // Resolve untrusted registry metadata once and use the same normalized arrays
   // for both visibility and content. Reading the raw field for visibility would
   // render an empty titled card when a third-party index supplied a string or a
@@ -809,19 +947,8 @@ export default function AppDetailPage() {
           </div>
         )}
 
-        {/* Hero banner (only when the app ships one) */}
-        {heroSrc && (
-          <div className={`w-full ${heroIsDetail ? 'aspect-[25/6]' : 'aspect-video'} max-h-72 rounded-2xl border border-border overflow-hidden mb-6 bg-[var(--card)]`}>
-            {/* onError is an image-load lifecycle handler (hide broken images). */}
-            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
-            <img
-              src={heroSrc}
-              alt=""
-              className="w-full h-full object-cover"
-              onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-            />
-          </div>
-        )}
+        {/* Hero banner (only when the app ships one, or its local fallback survives a load failure) */}
+        <HeroBanner src={heroSrc} fallbackSrc={heroSrcFallback || undefined} isDetail={heroIsDetail} />
 
         {/* Hero */}
         <div className="flex items-start gap-5 mb-6">
@@ -1020,11 +1147,23 @@ export default function AppDetailPage() {
         </Card>
 
         {/* Screenshots */}
-        <ScreenshotGallery screenshots={(() => {
+        {(() => {
           const dark = app.screenshotsDark || []
           const light = app.screenshots || []
-          return resolvedMode === 'dark' && dark.length ? dark : light
-        })()} />
+          const useDark = resolvedMode === 'dark' && dark.length > 0
+          // The fallback list must come from the SAME theme family the
+          // primary list came from: the two arrays pair by index against the
+          // same declared manifest field, so mixing families (dark primary,
+          // light fallback) could pair a thumbnail with a different image
+          // entirely. When the matching family has no local list, the gallery
+          // stays default-inert, exactly as before #6864.
+          return (
+            <ScreenshotGallery
+              screenshots={useDark ? dark : light}
+              fallbacks={useDark ? app.screenshotsDarkFallback : app.screenshotsFallback}
+            />
+          )
+        })()}
 
         {/* Concise operator guidance, kept separate from the marketing feature list. */}
         {(useCases.length > 0 || configuration.length > 0) && (
