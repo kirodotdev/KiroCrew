@@ -351,17 +351,28 @@ MyAppRepo/
 
 There are two listing surfaces, and they take different paths:
 
-**The official App Store catalog** lives in its own repository,
-[KiroCrewApps](https://github.com/kirodotdev/KiroCrewApps) — not in the Kiro Crew
-repo. Since the catalog became the store's inventory, publishing an entry there
-is what makes your app appear in the store *and installable*, with **no Kiro
-Crew release involved**. You author a `git` source (URL + a branch or tag; the
-publish pipeline resolves and pins the exact commit) plus a category, and open a
-pull request on that repository. Its README documents the authored schema, the
-validators, and the two-schema (authored vs published) contract. Clients install
-the pinned commit exactly and read update availability from the published
-entry's `version` field, so publishing a new revision of the catalog is also how
-an update reaches users.
+**The official App Store catalog** is the store's inventory, and it is
+maintainer-curated. Its authoring repository is private and not publicly
+writable, so outside authors do not open the listing pull request themselves —
+there is no self-serve PR path for third-party apps. A published entry is what
+makes your app appear in the store *and installable*, with **no Kiro Crew
+release involved**: a maintainer authors a `git` source (URL + a branch or tag;
+the publish pipeline resolves and pins the exact commit) plus a category against
+the authored schema, and the pipeline emits the published document that clients
+read. The authored-vs-published two-schema contract is unchanged — you supply
+the source and category, the pipeline pins the commit and bakes `version` from
+your `app.json` into the published entry. Clients install the pinned commit
+exactly and read update availability from the published entry's `version` field,
+so republishing a revised entry is also how an update reaches users.
+
+To request a listing, open an **App Store listing request** issue using the
+[listing request template](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml).
+Provide the git source, the ref to pin, the display name, a summary, the
+category/tags, and author credit, and confirm the section 14 review checklist.
+A maintainer picks it up and authors the catalog entry with full author credit.
+(Opening the catalog repository up to outside contributors is a possible
+alternative, but it is a maintainer-only org-visibility decision, not something
+an author can do.)
 
 **The bundled seed** (`src/kiro_crew/apps/app-registry.json` in the Kiro Crew
 repo) is the catalog's offline snapshot, not the listing surface: it is what a
@@ -393,10 +404,11 @@ The seed (and any federated registry index) uses this row shape:
 | `detectInstalled` | | Shell command that exits 0 when the app is already present on the machine (for self-managed apps). It runs sandboxed with a 5s timeout. |
 | `featured` | | Curator flag for the Discover editorial layer. `true` marks the app featured; a number both marks it and orders the slots (lower first). It lives on the registry entry, not in `app.json`, and is honored only for core-registry entries: a `featured` flag from an external registry is ignored, so adding a registry cannot seize the spotlight. With nothing flagged, the store falls back to a deterministic pick (apps with hero art first, then verified publishers, then name). |
 
-To reach the official store, open the pull request on **KiroCrewApps** (add your
-entry to `catalog/official-registry.json` there; run its `tools/validate.py`
-first). A seed change in the Kiro Crew repo follows the normal contribution flow
-and ships with the next release.
+To reach the official store, open an **App Store listing request** issue with the
+[listing request template](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml)
+— that is the reachable path for an outside author, since the catalog repository
+is not publicly writable. A seed change in the Kiro Crew repo, by contrast,
+follows the normal contribution flow and ships with the next release.
 
 ## 11. Federated external registries
 
@@ -570,7 +582,7 @@ useful to Kiro Crew users.
 | Enable | `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |
 | Update local copy | `POST /api/apps/{name}/update` |
-| List a registry app | Add an entry to `app-registry.json`, open a pull request |
+| List a registry app | Official catalog: open an [App Store listing request](https://github.com/kirodotdev/KiroCrew/issues/new?template=app-store-listing.yml) issue (maintainer-curated). Bundled seed or a federated registry: add an entry to `app-registry.json`, open a pull request |
 | User install | Apps page, Discover, Install |
 | Ship an update | Bump `version`, push |
 
