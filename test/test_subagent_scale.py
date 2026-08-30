@@ -1071,10 +1071,10 @@ class TestWaveDigest:
         # unchanged, only its owning function moved.
         import inspect
 
-        from kiro_crew import subagent as _mod
-        src = inspect.getsource(_mod.SubagentManager._report_terminal)
-        on_done_pos = src.index("await asyncio.wait_for(self._on_done(info)")
-        settle_pos = src.index("self._settle_digest_holds(info)")
+        from kiro_crew.subagent_manager.terminal import TerminalCoordinator
+        src = inspect.getsource(TerminalCoordinator._report_terminal_impl)
+        on_done_pos = src.index("await asyncio.wait_for(self._manager._on_done(info)")
+        settle_pos = src.index("self._manager._settle_digest_holds(info)")
         assert settle_pos > on_done_pos
 
     @pytest.mark.asyncio

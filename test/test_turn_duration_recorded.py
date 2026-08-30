@@ -94,7 +94,7 @@ EXPECTED_SITES = {
                                     # heartbeat + its timeout + monitor + its
                                     # timeout, extracted in issue #1086)
     "task_executor.py": 2,          # task step + self-review
-    "subagent.py": 1,
+    "subagent_manager/run.py": 1,
     "workflows/agent_exec.py": 1,
 }
 

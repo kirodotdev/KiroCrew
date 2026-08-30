@@ -8,7 +8,9 @@ and a refusal is loud.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import textwrap
 import types
 
 import pytest
@@ -307,7 +309,9 @@ class TestSpawnSkipsTheScanWhenPrevalidated:
         # guard exists AND that the flag threads into the queued params.
         import inspect
 
-        src = inspect.getsource(subagent.SubagentManager.spawn)
+        from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+
+        src = inspect.getsource(SpawnAdmissionCoordinator.spawn_impl)
         assert "and not _agent_prevalidated" in src
         assert '"_agent_prevalidated": _agent_prevalidated,' in src
 
@@ -429,8 +433,20 @@ class TestChildGateInheritsTheApp:
     def test_child_gate_forwards_the_app(self):
         import inspect
 
-        from kiro_crew import subagent
+        from kiro_crew.subagent_manager.run import RunEventCoordinator
 
-        src = inspect.getsource(subagent.SubagentManager)
-        assert "on_tool_call(" in src
-        assert 'app=info.app or ""' in src
+        src = inspect.getsource(RunEventCoordinator._run_inner_impl)
+        tree = ast.parse(textwrap.dedent(src))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "on_tool_call"
+        ]
+        assert len(calls) == 1
+        app_arg = next(keyword.value for keyword in calls[0].keywords if keyword.arg == "app")
+        expected = ast.parse('info.app or ""', mode="eval").body
+        assert ast.dump(app_arg, include_attributes=False) == ast.dump(
+            expected, include_attributes=False
+        )

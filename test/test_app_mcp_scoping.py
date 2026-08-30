@@ -1090,9 +1090,9 @@ class TestQueuedSpawnKeepsAppIdentity:
     def test_the_queued_params_include_app(self) -> None:
         import inspect
 
-        from kiro_crew import subagent
+        from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 
-        src = inspect.getsource(subagent.SubagentManager.spawn)
+        src = inspect.getsource(SpawnAdmissionCoordinator.spawn_impl)
         assert '"app": app,' in src, "the queued params must carry the app identity"
 
 

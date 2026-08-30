@@ -1228,6 +1228,16 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # a third party — the surfaces that SHOW a refusal (the dashboard's
         # notice line) are the registered sinks.
         "name_grant.py",
+        # Internal coordinator partitions behind the single registered
+        # ``subagent.py`` output boundary.  They redact lifecycle payloads before
+        # handing them to facade-owned event/completion callbacks, but the split
+        # adds no new transport or audience and therefore no additional posture
+        # row.
+        "subagent_manager/admission.py",
+        "subagent_manager/continuation.py",
+        "subagent_manager/monitoring.py",
+        "subagent_manager/run.py",
+        "subagent_manager/terminal.py",
         # The shared recursive redactor helper itself — a pure scrubber, not an
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.

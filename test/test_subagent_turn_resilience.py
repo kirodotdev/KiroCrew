@@ -662,6 +662,54 @@ async def test_orphan_injection_false_without_callback():
 
 
 @pytest.mark.asyncio
+async def test_orphan_injection_callback_error_returns_false():
+    notify = AsyncMock(side_effect=RuntimeError("dashboard unavailable"))
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_notify=notify)
+
+    assert await mgr._try_inject_orphan_notification("dashboard:main", "msg") is False
+    notify.assert_awaited_once_with("dashboard:main", "msg", None)
+
+
+@pytest.mark.asyncio
+async def test_delivered_orphan_survives_audit_and_tombstone_failures():
+    notify = AsyncMock(return_value=True)
+    audit = MagicMock()
+    audit.log_api_access.side_effect = RuntimeError("audit unavailable")
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_notify=notify)
+    state = {
+        "id": "orphan-1",
+        "task": "recover work",
+        "parent_session": "dashboard:main",
+    }
+
+    with (
+        patch("kiro_crew.subagent.has_dashboard_surface", return_value=True),
+        patch("kiro_crew.subagent.sel", return_value=audit),
+        patch(
+            "kiro_crew.subagent.write_tombstone", side_effect=OSError("disk unavailable")
+        ) as write_tombstone,
+    ):
+        result = await mgr._notify_orphan("orphan-1", state, "notification_pending", False)
+
+    assert result is None
+    notify.assert_awaited_once()
+    audit.log_api_access.assert_called_once_with(
+        caller="dashboard:main",
+        operation="subagent.orphan_notification_injected",
+        outcome="ok",
+        source="subagent",
+    )
+    write_tombstone.assert_called_once_with(
+        "orphan-1",
+        cause="gateway_restart",
+        recovery_action="delivered",
+        pid=None,
+        turns=0,
+        last_tool="",
+    )
+
+
+@pytest.mark.asyncio
 async def test_orphan_dm_delegates_to_callback():
     dm = AsyncMock(return_value=True)
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
@@ -930,14 +978,17 @@ def test_no_raw_cancel_outside_chokepoint():
     pending cancel-recovery scheduler task — none of the latter two are managed
     runs, so the marker contract (and recovery) never applies to them."""
     import inspect
+    from pathlib import Path
 
     import kiro_crew.subagent as subagent_mod
 
-    source = inspect.getsource(subagent_mod)
-    lines = source.splitlines()
+    source_root = Path(subagent_mod.__file__).resolve().parent
+    source_paths = [Path(subagent_mod.__file__).resolve()]
+    source_paths.extend(sorted((source_root / "subagent_manager").glob("*.py")))
     raw_sites = [
-        (i + 1, line.strip())
-        for i, line in enumerate(lines)
+        (path.relative_to(source_root).as_posix(), i + 1, line.strip())
+        for path in source_paths
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines())
         if ".cancel()" in line
         and not line.strip().startswith("#")
         and "``" not in line  # docstring mentions, not call sites
@@ -959,19 +1010,19 @@ def test_no_raw_cancel_outside_chokepoint():
     )
     chokepoint_src = inspect.getsource(subagent_mod.SubagentManager._cancel_task_intentionally)
     assert "task.cancel()" in chokepoint_src
-    for lineno, line in raw_sites:
+    for rel, lineno, line in raw_sites:
         assert any(s in line for s in allowed_substrings), (
-            f"raw .cancel() at subagent.py:{lineno} ({line!r}) — route it "
+            f"raw .cancel() at {rel}:{lineno} ({line!r}) — route it "
             "through _cancel_task_intentionally with a terminal marker"
         )
     # The generic 'task.cancel()' form must appear ONLY inside the chokepoint.
     generic = [
-        (n, l)
-        for n, l in raw_sites
-        if "task.cancel()" in l
-        and "_reaper_task" not in l
-        and "recovery_task" not in l
-        and "report_task" not in l
+        (rel, n, line)
+        for rel, n, line in raw_sites
+        if "task.cancel()" in line
+        and "_reaper_task" not in line
+        and "recovery_task" not in line
+        and "report_task" not in line
     ]
     assert len(generic) == 1, (
         f"expected exactly one raw task.cancel() (the chokepoint body), " f"found: {generic}"

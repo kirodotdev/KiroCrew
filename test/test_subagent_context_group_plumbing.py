@@ -19,13 +19,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew import subagent as subagent_mod
 from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
     _context_groups_field,
     _context_groups_of,
 )
+from kiro_crew.subagent_manager.continuation import ContinuationCoordinator
 from kiro_crew.subagent_persistence import create_agent_folder, read_state
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
@@ -230,9 +230,9 @@ class TestContinuationInheritsScope:
         assert mgr.recorded_cwd("conv9") == str(proj)
 
         # A project that no longer exists is forwarded ANYWAY, so `spawn` refuses
-        # it. Round 35 filtered this to "" to keep the continuation working; that
-        # was the wrong trade, because an empty cwd resolves to the POOL project and
-        # a follow-up naming relative files would then edit an unrelated repository.
+        # it. Filtering this to "" would be unsafe because an empty cwd resolves
+        # to the POOL project, so a follow-up naming relative files would then edit
+        # an unrelated repository.
         # A loud refusal is recoverable; a silent write to the wrong tree is not.
         gone = tmp_path / "deleted-project"
         monkeypatch.setattr(
@@ -247,8 +247,9 @@ class TestContinuationInheritsScope:
         # And the synchronous path carries no probe of its own. Comments are
         # stripped first: the method explains the hazard by naming the call, and a
         # scan that counted prose would fail on its own documentation.
-        src = Path(subagent_mod.__file__).read_text(encoding="utf-8")
-        body = src.split("def continue_conversation")[1].split("\n    def ")[0]
+        src = Path(ContinuationCoordinator.__module__.replace(".", "/") + ".py")
+        src = (Path(__file__).parents[1] / "src" / src).read_text(encoding="utf-8")
+        body = src.split("def continue_conversation_impl")[1].split("\n    def ")[0]
         code = "\n".join(
             ln for ln in body.splitlines() if not ln.lstrip().startswith("#")
         )

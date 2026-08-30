@@ -2430,10 +2430,10 @@ class TestEventTableCompleteness:
         declared, which is silent loss of the whole subagent stream rather than a
         loud error.
         """
-        src = (
-            Path(__file__).resolve().parents[1]
-            / "src" / "kiro_crew" / "subagent.py"
-        ).read_text(encoding="utf-8")
+        source_root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+        source_paths = [source_root / "subagent.py"]
+        source_paths.extend(sorted((source_root / "subagent_manager").glob("*.py")))
+        src = "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
         # `_fire_event(` then the first string literal, across a line break.
         fired = set(re.findall(r'_fire_event\(\s*\n?\s*"([a-z_]+)"', src))
         assert len(fired) >= 8, f"emitter scan found too few names: {sorted(fired)}"
