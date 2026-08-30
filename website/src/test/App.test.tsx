@@ -52,6 +52,7 @@ function topbarTracks(): { sides: string[]; search: string } {
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => <div data-testid="system-page">SystemPage</div> }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => <div data-testid="projects-page">ProjectsPage</div> }))
+vi.mock('../pages/ProjectBundlesPage', () => ({ default: () => <div data-testid="project-bundles-page">Projects</div> }))
 vi.mock('../pages/LogsPage', () => ({ default: () => <div data-testid="logs-page">LogsPage</div> }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => <div data-testid="mc-agents-page">MCAgentsPage</div> }))
 vi.mock('../pages/CapabilitiesPage', () => ({ default: () => <div data-testid="capabilities-page">CapabilitiesPage</div> }))
@@ -421,7 +422,7 @@ describe('App routing', () => {
     expect(screen.getByTestId('capabilities-page')).toBeInTheDocument()
   })
 
-  // /projects now resolves through BuiltinAppRoute -> BUILTIN_COMPONENT_REGISTRY
+  // /projects resolves through BuiltinAppRoute -> BUILTIN_COMPONENT_REGISTRY
   // like every other builtin app page, so the component arrives lazily behind a
   // Suspense fallback. These two await it rather than querying synchronously.
   it('renders projects page at /projects', async () => {
@@ -437,6 +438,12 @@ describe('App routing', () => {
   it('renders logs page at /logs', () => {
     renderWithProviders(<App />, { route: '/logs' })
     expect(screen.getByTestId('logs-page')).toBeInTheDocument()
+  })
+
+  it('does not expose Projects as a top-level navigation item', () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).queryByRole('button', { name: 'Projects' })).not.toBeInTheDocument()
   })
 
   it('redirects unknown routes to /chat', () => {

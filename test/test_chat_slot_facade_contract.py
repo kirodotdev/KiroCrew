@@ -31,6 +31,7 @@ _TO_DICT_KEYS = (
     # "runs locally" from "the field is missing on an older gateway".
     "executor",
     "instance_id",
+    "project_id",
     "artifact",
     "messages",
     "running",

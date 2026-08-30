@@ -22,6 +22,8 @@ import type {
   SessionTrashResult,
   UpdateCheckResult,
   WorkflowRunSummary,
+  ProjectBundle,
+  ProjectBundlesResponse,
 } from '../types'
 import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
 import type { MemoryRecord, MemoryRecordRef, MemoryRecordQuery, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRevision } from '../types/memoryEditing'
@@ -3582,8 +3584,9 @@ export const api = {
    *  for EXECUTION: it lives in this machine's list and history, and its turns run
    *  over there. The backend opens the peer's slot first, so a peer that is
    *  disconnected or on a different version fails the create rather than yielding
-   *  a session that cannot send. */
-  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string) => {
+   *  a session that cannot send. `project_id` binds the slot to a project bundle,
+   *  so the session opens on that project's workspace and context. */
+  createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, instance_id?: string, project_id?: string) => {
     const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
       () => fetch('/api/dashboard/config').then(j),
     )
@@ -3597,6 +3600,7 @@ export const api = {
       ...(artifact ? { artifact } : {}),
       ...(folder_id ? { folder_id } : {}),
       ...(instance_id ? { instance_id } : {}),
+      ...(project_id ? { project_id } : {}),
     }).then(j) as Promise<ChatSlot>
   },
   /** Inject silent background context into a slot — consumed on the next user
@@ -3799,6 +3803,19 @@ export const api = {
   logLevel: () => fetch('/api/logs/level').then(j),
   setLogLevel: (level: string) => post('/api/logs/level', { level }).then(j),
   // Task runner
+  projectBundles: () => fetch('/api/project-bundles').then(j) as Promise<ProjectBundlesResponse>,
+  createProjectBundle: (name: string, path: string) =>
+    post('/api/project-bundles', { name, path }).then(j) as Promise<ProjectBundle>,
+  addProjectBundle: (source: string) =>
+    post('/api/project-bundles/add', { source }).then(j) as Promise<ProjectBundle>,
+  syncProjectBundle: (id: string) =>
+    post('/api/project-bundles/' + encodeURIComponent(id) + '/sync', {}).then(j) as Promise<ProjectBundle>,
+  activateProjectBundle: (id: string, expectedKey: string) =>
+    post('/api/project-bundles/' + encodeURIComponent(id) + '/activate', { expected_key: expectedKey }).then(j) as Promise<ProjectBundle['capabilities']>,
+  deactivateProjectBundle: (id: string) =>
+    del('/api/project-bundles/' + encodeURIComponent(id) + '/activate').then(j) as Promise<ProjectBundle['capabilities']>,
+  removeProjectBundle: (id: string) =>
+    del('/api/project-bundles/' + encodeURIComponent(id)).then(j) as Promise<{ ok: true; id: string }>,
   taskRunnerStatus: () => fetch('/api/taskrunner').then(j),
   startTaskRunner: (spec: string, agent?: string, workspaceDir?: string) => post('/api/taskrunner', { spec, agent: agent || '', workspace_dir: workspaceDir || '' }).then(j),
   cancelTaskRunner: (taskId?: string) => post('/api/taskrunner/cancel', taskId ? { task_id: taskId } : undefined).then(j),

@@ -102,6 +102,8 @@ export const CHUNK_BUDGETS = {
   // merged analyze build measures the chunk at 807,525 B (788.6 KB); keep
   // roughly 5% headroom (matching the `all` entry's convention above) over that
   // combined measurement so expected catalog growth does not block descendants.
+  // The Projects (project bundles) surface adds 58 more English UI strings and
+  // no runtime dependency, which fits inside the headroom above.
   t: 819 * KB, // measured 788.6 KB on the merged (structured-monitor + managed-credentials) build (~3.7% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose

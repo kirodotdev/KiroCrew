@@ -250,6 +250,7 @@ from kiro_crew.name_grant import (
     shell_command_for_event,
 )
 from kiro_crew.platform import redact_via_context
+from kiro_crew.project_sessions import ProjectSessionError
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -6265,6 +6266,39 @@ class _AppAgentNotLoaded(Exception):
     """
 
 
+async def _refresh_project_attachment(slot: _ChatSlot) -> None:
+    """Resolve the Project's current state before any session binds its directory.
+
+    Runs on every turn of a Project-attached slot, not once per slot: Project
+    storage moves underneath a live session. A sync repoints a repository
+    source (its cached checkout then fails provenance and is unavailable), and
+    a removal deletes the derived tree entirely. Re-resolving each turn is
+    what turns those into a rebound session or a loud attachment error instead
+    of a turn that runs in whichever directory the slot last remembered.
+
+    A workspace that differs from the slot's bound directory arms the deferred
+    reset (consumed later in this same turn), so the provider cold-starts in
+    the new directory rather than keeping the old cwd for the rest of the
+    session. A removed Project raises ``ProjectSessionError`` from
+    ``resolve_project_attachment`` (the Project is not registered), which the
+    turn's dedicated handler surfaces as the terminal error.
+    """
+    if not slot.project_id:
+        return
+    from kiro_crew.project_sessions import resolve_project_attachment
+
+    attachment = await asyncio.to_thread(resolve_project_attachment, slot.project_id)
+    workspace = str(attachment.workspace_dir)
+    if slot.project and slot.project != workspace and slot._project_brief:
+        # The bound directory moved under an attached session: cold-start the
+        # provider in the new one. Only a change away from an already resolved
+        # attachment arms the reset; the first resolution of a restored slot
+        # binds without one.
+        slot._pending_reset_history_key = effective_session_key(slot)
+    slot.project = workspace
+    slot._project_brief = attachment.brief
+
+
 async def _run_chat(
     state: DashboardState,
     slot: _ChatSlot,
@@ -7169,6 +7203,14 @@ async def _run_chat(
         # after the resolve block). Captured inside the try so the raise below
         # lives OUTSIDE it and is not swallowed by the resolve except.
         _app_agent_unresolved = False
+        # Restored slots persist the Project id and the last known cwd, but not
+        # the derived brief. Resolve the current bundle BEFORE capturing the
+        # binding below: attachment failure must abort rather than letting
+        # get_or_create launch in the stale persisted workspace, and the
+        # refreshed ``slot.project`` is what the binding guard must treat as
+        # the baseline (resolving after the capture would read as a concurrent
+        # binding change and fail the turn).
+        await _refresh_project_attachment(slot)
 
         def _current_binding() -> tuple:
             return (
@@ -7936,6 +7978,7 @@ async def _run_chat(
                 resumed=resumed,
                 workspace=slot.workspace or None,
                 project=slot.project or None,
+                project_brief=slot._project_brief or None,
                 memory_store=memory_store,
                 compressed_history=compressed,
                 mode=slot.mode,
@@ -13066,6 +13109,12 @@ async def _run_chat(
                 # moves it back).
                 slot._fallback_candidate_idx = 0
                 slot._fallback_walked = []
+    except ProjectSessionError as exc:
+        # Project attachment is pre-session setup, not a backend conversation
+        # failure. Surface it without poisoning the native-session retry streak.
+        error = _redact_for_display(str(exc))
+        logger.warning("Project attachment failed for slot %s: %s", slot.key, error)
+        slot.append("error", error, "msg msg-err")
     except _AppAgentNotLoaded as exc:
         # An app-owned slot whose agent never materialized, even after the
         # self-heal warm. Deliberately terminal: running the default agent here is

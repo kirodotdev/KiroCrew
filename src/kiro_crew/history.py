@@ -197,6 +197,7 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # written at relay start is carried forward past a clean completion, so
         # every later restart would append a false "interrupted" row.
         "relay_in_flight",
+        "project_id",
         "folder_id",
         "app",
         "artifact",

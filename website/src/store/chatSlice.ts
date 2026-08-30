@@ -2891,7 +2891,7 @@ export const warmSlotCache = createAsyncThunk(
 
 export const createSlot = createAsyncThunk<
   ChatSlot,
-  { agent?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; activate?: boolean; instanceId?: string } | string | undefined,
+  { agent?: string; model?: string; mode?: string; memory_mode?: string; folder_id?: string | null; title?: string; color_index?: number | null; color_hex?: string | null; project?: string | null; project_id?: string | null; activate?: boolean; instanceId?: string } | string | undefined,
   { fulfilledMeta: { originActiveSlot: string | null; activate: boolean } }
 >(
   'chat/createSlot',
@@ -2914,6 +2914,9 @@ export const createSlot = createAsyncThunk<
     // creates the local one, so a failure leaves nothing behind — patching later
     // would put a session in the sidebar that looks ready and refuses every send.
     const instanceId = typeof opts === 'string' ? undefined : opts?.instanceId
+    // Bind the new session to a project bundle at birth, same reasoning: the
+    // backend resolves the project's workspace when it opens the slot.
+    const projectId = typeof opts === 'string' ? undefined : opts?.project_id
     // `activate: false` creates the session WITHOUT stealing focus, so a caller
     // that must finish setting the slot up (e.g. scoping it to a worktree) can
     // do so before the user is able to type into it. Defaults to true — every
@@ -2929,7 +2932,7 @@ export const createSlot = createAsyncThunk<
     // entry points resolve the persisted preference here, before the first turn
     // can read or write memory.
     const memory_mode = requestedMemoryMode || await configuredDefaultMemoryMode()
-    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId)
+    const slot = await api.createChatSlot(undefined, agent, model, mode, memory_mode, title, undefined, folderId || undefined, instanceId, projectId || undefined)
     const dashState = (getState() as RootState).dashboard
     // An explicit color (e.g. carried from a slot being recreated on a
     // mode switch) wins; otherwise fall back to the default-color policy.
@@ -2977,8 +2980,11 @@ export const createSlot = createAsyncThunk<
     // lose its project — re-apply it via the dedicated endpoint. (We do NOT
     // re-issue setSlotAgent here: that endpoint resets the project back to the
     // workspace default, which would clobber this carry. Agent rides the
-    // create payload instead.)
-    if (project) {
+    // create payload instead.) A slot created WITH a Project binding skips this:
+    // the backend already resolved its workspace from the bundle, and the
+    // project endpoint is the detaching path — re-applying the directory would
+    // strip the very identity the create just established.
+    if (project && !projectId) {
       slot.project = project
       // Await the scope on BOTH paths before publishing the slot. Publishing
       // (dashboardSlice's createSlot.fulfilled matcher) makes the slot

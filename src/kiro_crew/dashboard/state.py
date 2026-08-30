@@ -3423,6 +3423,8 @@ class _ChatSlot:
         "memory_store",
         "_memory_assignment_from_history",
         "project",
+        "project_id",
+        "_project_brief",
         "created_at",
         "messages",
         "total_messages",
@@ -3644,6 +3646,8 @@ class _ChatSlot:
         # and rehydration appends an "interrupted" row rather than leaving the
         # transcript silently stopped. Set/cleared in ``remote_relay.relay_remote_turn``.
         self._relay_in_flight: bool = False
+        self.project_id: str = ""
+        self._project_brief: str = ""
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.messages: list[dict[str, Any]] = []
         self._buffers = SlotBufferCoordinator()
