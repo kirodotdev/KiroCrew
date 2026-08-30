@@ -34,7 +34,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
@@ -442,14 +442,45 @@ def _update_file_blocking(target: Path, content: str) -> str | None:
         return "notfound"
     if stat.S_ISLNK(pre.st_mode) or not stat.S_ISREG(pre.st_mode):
         return "notfound"
+    # Hand atomic_write a descriptor on the existing file so it can read the
+    # access-control xattrs off it. mode= carries permission BITS only, so a
+    # named POSIX ACL (system.posix_acl_access) the owner
+    # set is otherwise silently dropped the moment the replace installs a fresh
+    # inode -- handing back a file protected more narrowly than the one it
+    # replaced.
+    #
+    # open_access_control_source returns None on a platform with no xattr
+    # syscalls, which is what keeps this write working on Windows: nothing to
+    # carry there, and a read handle held open across the write would make
+    # os.replace fail with PermissionError on every save.
+    try:
+        src_fd = open_access_control_source(target)
+    except OSError:
+        # The file vanished or turned into a link between the lstat above and
+        # here; treat it the same as the lstat miss above.
+        return "notfound"
     try:
         # Preserve the file's existing permissions rather than forcing 0o600:
         # the old in-place write inherited them, and a project steering file
         # checked out group-readable should not be silently tightened by a save.
-        atomic_write(target, content, fsync=True, mode=stat.S_IMODE(pre.st_mode), newline="")
+        # preserve_access_control_from is ADDITIVE to mode=: bits plus the ACL.
+        atomic_write(
+            target,
+            content,
+            fsync=True,
+            mode=stat.S_IMODE(pre.st_mode),
+            newline="",
+            preserve_access_control_from=src_fd,
+        )
     except OSError as exc:
         logger.warning("steering update failed: %s", type(exc).__name__)
         return "writefailed"
+    finally:
+        if src_fd is not None:
+            try:
+                os.close(src_fd)
+            except OSError:
+                pass
     return None
 
 

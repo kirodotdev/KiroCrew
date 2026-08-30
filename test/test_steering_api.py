@@ -733,6 +733,63 @@ class TestUpdateDeleteEndpoints:
         assert [p.name for p in root.iterdir()] == ["a.md"]
 
     @pytest.mark.asyncio
+    async def test_update_routes_acl_preservation_through_atomic_write(
+        self, fake_home, monkeypatch
+    ):
+        """The update path must hand atomic_write a source descriptor.
+
+        atomic_write's mode= carries permission BITS only; a named POSIX ACL
+        survives only when the source's xattrs are carried from
+        an OPEN descriptor. Assert the handler opens one and passes it via
+        preserve_access_control_from, so a revert to the bits-only call fails
+        here. The fd must reference the existing file, so its content matches.
+        """
+        import os as _os
+
+        import kiro_crew.atomic_write as aw
+        from kiro_crew.dashboard.handlers import steering as mod
+
+        root = fake_home / ".kiro" / "steering"
+        path = _write_steering(root, "a.md", "original\n")
+
+        captured: dict[str, object] = {}
+        original = mod.atomic_write
+
+        def recording(target, content, **kwargs):
+            captured["kwargs"] = dict(kwargs)
+            src_fd = kwargs.get("preserve_access_control_from")
+            if isinstance(src_fd, int):
+                # The descriptor must point at the file being replaced.
+                captured["source_bytes"] = _os.read(src_fd, 4096)
+            original(target, content, **kwargs)
+
+        monkeypatch.setattr(mod, "atomic_write", recording)
+        async with TestClient(TestServer(_make_app(_state()))) as client:
+            assert (
+                await client.put("/api/steering/user/a.md", json={"content": "new"})
+            ).status == 200
+
+        kwargs = captured["kwargs"]
+        # On a platform with the xattr syscalls the handler must hand over a real
+        # descriptor; where they do not exist (Windows) the contract is the
+        # opposite -- open_access_control_source returns None ON PURPOSE, because
+        # os.replace there fails while any other handle is open on either path.
+        # Asserting `int` unconditionally would demand the very handle that would
+        # break every save. Either way the kwarg must be PASSED, so a revert to
+        # the bits-only call still fails here.
+        assert "preserve_access_control_from" in kwargs
+        if aw.ACCESS_CONTROL_XATTRS_SUPPORTED:
+            assert isinstance(kwargs["preserve_access_control_from"], int)
+            assert captured["source_bytes"] == b"original\n"
+        else:  # pragma: no cover - exercised on Windows CI only
+            assert kwargs["preserve_access_control_from"] is None
+        # Additive to the permission-bit carry, not a replacement.
+        assert kwargs["newline"] == ""
+        assert kwargs["fsync"] is True
+        assert kwargs["mode"] == stat.S_IMODE(path.stat().st_mode)
+        assert path.read_text() == "new"
+
+    @pytest.mark.asyncio
     async def test_delete_removes_file(self, fake_home):
         path = _write_steering(fake_home / ".kiro" / "steering", "a.md")
         async with TestClient(TestServer(_make_app(_state()))) as client:

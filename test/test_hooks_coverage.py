@@ -52,6 +52,7 @@ from kiro_crew.hooks import (
     _is_declared_builtin_mcp_server,
     _is_first_party_app,
     _script_hooks_capability_denied,
+    _should_carry_xattr,
     effective_denied_regexes_from_config,
     emit_internal_read_audit,
     fire_tool_hooks,
@@ -554,13 +555,36 @@ class TestSafeReadPrefix:
 
 
 class TestIsAccessControlXattr:
-    @pytest.mark.parametrize("attr", ["security.selinux", "system.posix_acl_access"])
+    @pytest.mark.parametrize("attr", ["system.posix_acl_access", "system.posix_acl_default"])
     def test_access_control_attrs(self, attr):
         assert _is_access_control_xattr(attr) is True
 
     @pytest.mark.parametrize("attr", ["user.comment", "trusted.thing", ""])
     def test_informational_attrs(self, attr):
         assert _is_access_control_xattr(attr) is False
+
+    @pytest.mark.parametrize(
+        "attr",
+        ["security.capability", "security.ima", "security.evm", "security.selinux"],
+    )
+    def test_a_privileged_attr_is_neither_carried_nor_fail_closed(self, attr):
+        """These are outside the carry entirely, so also outside the refusal.
+
+        The carry replays attributes onto an inode holding CALLER-supplied
+        content, so a privilege- or integrity-bearing name must never be
+        reproduced (see ``atomic_write._CARRIED_ACCESS_CONTROL_XATTRS``). Since it
+        is never collected, no ``setxattr`` is attempted for it and it cannot
+        refuse a save either -- which also stops ``security.selinux`` from failing
+        every write on an enforcing host that denies ``relabelto``.
+        """
+        assert _should_carry_xattr(attr) is False
+        assert _is_access_control_xattr(attr) is False
+
+    @pytest.mark.parametrize(
+        "attr", ["system.posix_acl_access", "system.posix_acl_default", "user.comment"]
+    )
+    def test_the_carried_set(self, attr):
+        assert _should_carry_xattr(attr) is True
 
 
 class TestSafeReadFileBytesNolink:
@@ -1676,8 +1700,8 @@ class TestSafeWriteFileNolinkXattrs:
     def test_an_uncopyable_access_control_attr_refuses_the_write(self, tmp_path, monkeypatch):
         self._require_xattrs()
         f = _write(tmp_path / "a.txt", "old")
-        monkeypatch.setattr(os, "listxattr", lambda fd: ["security.selinux"])
-        monkeypatch.setattr(os, "getxattr", lambda fd, attr: b"label")
+        monkeypatch.setattr(os, "listxattr", lambda fd: ["system.posix_acl_access"])
+        monkeypatch.setattr(os, "getxattr", lambda fd, attr: b"acl")
 
         def _refuse(fd, attr, value):
             raise OSError(1, "cannot set")
@@ -1685,6 +1709,34 @@ class TestSafeWriteFileNolinkXattrs:
         monkeypatch.setattr(os, "setxattr", _refuse)
         assert safe_write_file_nolink(str(f), "new") is False
         assert f.read_text(encoding="utf-8") == "old"
+
+    def test_a_privileged_attr_is_not_carried_and_does_not_refuse(self, tmp_path, monkeypatch):
+        """File capabilities and integrity signatures must not reach the copy.
+
+        ``safe_write_file_nolink`` also installs a fresh inode holding
+        caller-supplied content, so it shares ``atomic_write``'s allowlist:
+        replaying ``security.capability`` there would attach the old file's
+        privileges to the new bytes, and ``security.ima``/``security.evm`` are
+        signatures over bytes that no longer exist. The ACL beside them is still
+        carried, so this is a filter and not a blanket stop.
+        """
+        self._require_xattrs()
+        f = _write(tmp_path / "a.txt", "old")
+        present = [
+            "security.capability",
+            "security.ima",
+            "security.evm",
+            "security.selinux",
+            "system.posix_acl_access",
+        ]
+        monkeypatch.setattr(os, "listxattr", lambda fd: list(present))
+        monkeypatch.setattr(os, "getxattr", lambda fd, attr: attr.encode())
+        written: list[str] = []
+        monkeypatch.setattr(os, "setxattr", lambda fd, attr, value: written.append(attr))
+
+        assert safe_write_file_nolink(str(f), "new") is True
+        assert f.read_text(encoding="utf-8") == "new"
+        assert written == ["system.posix_acl_access"]
 
     def test_an_uncopyable_informational_attr_is_best_effort(self, tmp_path, monkeypatch):
         self._require_xattrs()

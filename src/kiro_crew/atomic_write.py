@@ -8,6 +8,7 @@ writers target the same file.
 from __future__ import annotations
 
 import asyncio
+import errno
 import io
 import logging
 import os
@@ -20,6 +21,123 @@ from typing import Literal
 from kiro_crew import platform_compat
 
 logger = logging.getLogger(__name__)
+
+# errnos meaning "this filesystem has no extended attributes", as opposed to "the
+# lookup failed". Only the former is safe to treat as "nothing to carry": a
+# failed lookup is not proof that there is nothing to lose.
+#
+# These xattr helpers live here rather than in hooks.py because hooks.py already
+# imports this leaf module transitively (via platform_compat), while this module
+# must not import hooks.py (heavy, aiohttp-adjacent dependency chain). hooks.py
+# re-imports them from here so the two ACL-carry sites -- safe_write_file_nolink
+# and this module's atomic_write -- share one spelling of the policy.
+_XATTR_UNSUPPORTED_ERRNOS = frozenset(
+    e
+    for e in (getattr(errno, n, None) for n in ("ENOTSUP", "EOPNOTSUPP", "ENOSYS"))
+    if e is not None
+)
+
+#: Attributes an inode-replacing write reproduces on the replacement, and the
+#: ONLY ones -- losing any of these leaves the new file protected less than the
+#: one it replaced, which is what the carry exists to prevent.
+#:
+#: This is an ALLOWLIST, and that direction is the security property. Both carry
+#: sites install a FRESH inode holding content the CALLER supplied, so every
+#: attribute replayed onto it is applied to NEW bytes. Replaying a
+#: privilege-bearing attribute therefore grants the new content whatever the old
+#: file was trusted with:
+#:
+#: * ``security.capability`` is file capabilities. An authenticated
+#:   ``/api/file-write`` or steering save that rewrites a capability-bearing file
+#:   would leave e.g. ``CAP_NET_RAW`` attached to attacker-chosen content -- a
+#:   privilege grant the replacement never earned.
+#: * ``security.ima`` / ``security.evm`` are integrity signatures OVER THE OLD
+#:   BYTES. Carrying them forges an appraisal for content that was never
+#:   measured, which is worse than losing one: the file is not merely unprotected
+#:   but affirmatively vouched for.
+#:
+#: A denylist of those three would close exactly today's cases and silently
+#: re-open on the next privileged namespace the kernel grows, so the carry names
+#: what it needs and drops everything else. Dropping is safe by construction: an
+#: attribute the replacement never receives leaves it with the defaults a plain
+#: editor save would have produced, which is the floor, not a regression.
+#:
+#: ``security.selinux`` is deliberately NOT here, on both halves of the argument.
+#: A freshly created inode already gets its type from the parent directory's
+#: transition rule -- the same label any ordinary save yields -- so carrying buys
+#: nothing; and writing that attribute needs ``relabelfrom``/``relabelto`` in the
+#: writing domain, which a dashboard process on an enforcing host typically lacks
+#: (``EACCES``). Under the fail-closed half of :func:`_carry_xattrs` that would
+#: refuse every save on exactly the hosts that are most locked down.
+_CARRIED_ACCESS_CONTROL_XATTRS = frozenset(
+    (
+        "system.posix_acl_access",  # the file's own named-user/group ACL entries
+        "system.posix_acl_default",  # the ACL children inherit (directories)
+    )
+)
+
+#: Informational namespaces carried BEST EFFORT -- see :func:`_carry_xattrs`.
+#: Application metadata (tags, provenance notes) is worth reproducing but never
+#: worth failing a save over, and ``user.*`` is unprivileged by kernel rule: it
+#: is writable by anyone who can write the file, so it can carry no authority the
+#: writer did not already hold.
+_CARRIED_INFORMATIONAL_XATTR_PREFIXES = ("user.",)
+
+#: Whether this platform exposes the xattr syscalls an ACL carry needs at all.
+#:
+#: Windows has none of them, and typeshed guards all three behind
+#: ``sys.platform == "linux"``, so every use is a ``hasattr`` probe rather than a
+#: direct call.
+ACCESS_CONTROL_XATTRS_SUPPORTED = all(
+    hasattr(os, name) for name in ("listxattr", "getxattr", "setxattr")
+)
+
+
+def open_access_control_source(path: Path | str) -> int | None:
+    """Open *path* for a :func:`atomic_write` ``preserve_access_control_from``.
+
+    Returns ``None`` — meaning "pass no descriptor" — on a platform without the
+    xattr syscalls. That is not merely an optimisation: there is nothing to carry
+    there, AND holding a read handle open across the write is not free on
+    Windows, where ``os.replace`` fails with ``PermissionError`` while ANY other
+    handle is open on either path. A descriptor kept for a carry that cannot
+    happen would therefore fail every write on that platform, which is what this
+    helper exists to prevent — and why both call sites go through it rather than
+    spelling the ``os.open`` themselves.
+
+    ``O_NOFOLLOW`` is defense-in-depth only. Both callers hand in a path already
+    canonicalized (``hooks.validate_file_path``) or ``lstat``-checked, so the
+    final component is symlink-free by construction and this open rejects
+    nothing legitimate; it closes the window where that component is swapped for
+    a link after the check. An ``OSError`` propagates so the caller can treat it
+    as a rejected target rather than a server fault.
+    """
+    if not ACCESS_CONTROL_XATTRS_SUPPORTED:
+        return None
+    return os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+
+
+def _should_carry_xattr(attr: str) -> bool:
+    """True when *attr* is one an inode-replacing write reproduces at all.
+
+    The gate for BOTH carry sites, applied when the source is READ so a
+    privilege-bearing value is never even held in memory to be replayed by a
+    later edit. See :data:`_CARRIED_ACCESS_CONTROL_XATTRS` for why this is an
+    allowlist rather than a denylist of the privileged namespaces.
+    """
+    return attr in _CARRIED_ACCESS_CONTROL_XATTRS or attr.startswith(
+        _CARRIED_INFORMATIONAL_XATTR_PREFIXES
+    )
+
+
+def _is_access_control_xattr(attr: str) -> bool:
+    """True when losing *attr* would leave the file less protected.
+
+    Only these justify refusing a write. `user.*` is application metadata: worth
+    carrying, not worth failing a save over on a filesystem that cannot store it.
+    """
+    return attr in _CARRIED_ACCESS_CONTROL_XATTRS
+
 
 #: What to do when the owner-only lockdown cannot be applied.
 #:
@@ -413,6 +531,83 @@ def _refuse_if_link(path: Path, component: Path) -> None:
         )
 
 
+def _read_source_xattrs(source_fd: int, path: Path) -> list[tuple[str, bytes]]:
+    """Read the CARRIABLE xattrs off *source_fd*, or refuse.
+
+    Only attributes :func:`_should_carry_xattr` admits are read at all, so a
+    privilege-bearing value (``security.capability``) or an integrity signature
+    over the OLD bytes (``security.ima``/``security.evm``) is never captured, and
+    so cannot be replayed onto the fresh inode by :func:`_carry_xattrs`. Filtering
+    HERE rather than at the write is deliberate: it makes "we do not carry this"
+    a property of what was collected instead of a branch a later edit can miss.
+
+    Read from the DESCRIPTOR, never by name: a by-name ``listxattr(path)``
+    re-resolves the whole path, so an ancestor swapped mid-save makes the lookup
+    fail (or read a different file's attributes) while the rename still lands on
+    the original. This mirrors ``hooks.safe_write_file_nolink``, which reads from
+    its open fd for the same reason.
+
+    A filesystem that does not support xattrs at all is NOT an error: there is
+    nothing on the source to lose. Any OTHER failure means we cannot know what we
+    would be dropping, so it refuses (raises) rather than installing a
+    replacement that might silently drop the owner's ACL -- a lookup failure is
+    not "there are none".
+
+    On platforms without ``os.listxattr``/``getxattr`` (Windows, and macOS
+    typeshed under ``mypy --platform linux``) there is nothing to carry, so this
+    returns an empty list.
+    """
+    if not ACCESS_CONTROL_XATTRS_SUPPORTED:
+        return []
+    collected: list[tuple[str, bytes]] = []
+    try:
+        for attr in os.listxattr(source_fd):
+            if not _should_carry_xattr(attr):
+                continue
+            collected.append((attr, os.getxattr(source_fd, attr)))
+    except OSError as exc:
+        if exc.errno in _XATTR_UNSUPPORTED_ERRNOS:
+            return []
+        raise OSError(
+            exc.errno,
+            f"refusing to write {path}: could not read the source file's extended "
+            f"attributes ({exc}), so a replacement could silently drop access controls",
+        ) from exc
+    return collected
+
+
+def _carry_xattrs(dest_fd: int, xattrs: list[tuple[str, bytes]], path: Path) -> None:
+    """Reproduce *xattrs* onto *dest_fd*, refusing on a lost access control.
+
+    *xattrs* has already been narrowed to the carriable set by
+    :func:`_read_source_xattrs`, so nothing privilege- or integrity-bearing
+    reaches this loop. What is left splits by what the attribute DOES, matching
+    ``safe_write_file_nolink``:
+
+    * a POSIX ACL (``system.posix_acl_access``/``_default``) that fails to copy is
+      a security regression -- the rename would install an inode the owner has
+      protected LESS than the one it replaced -- so the write is REFUSED (the
+      caller's ``except BaseException`` cleans up the temp file and leaves the
+      original untouched);
+    * an informational ``user.*`` attribute is best effort, because failing
+      closed there would break every save on a filesystem that simply cannot
+      store xattrs, which is worse than losing a tag.
+    """
+    if not ACCESS_CONTROL_XATTRS_SUPPORTED:
+        return
+    for attr, value in xattrs:
+        try:
+            os.setxattr(dest_fd, attr, value)
+        except OSError as exc:
+            if _is_access_control_xattr(attr):
+                raise OSError(
+                    exc.errno,
+                    f"refusing to write {path}: could not carry access-control "
+                    f"attribute {attr!r} onto the replacement",
+                ) from exc
+            continue  # informational attribute -- keep going
+
+
 def atomic_write(
     path: Path | str,
     content: str | bytes,
@@ -422,6 +617,7 @@ def atomic_write(
     newline: str | None = None,
     restrict_to_owner: bool = False,
     restrict_on_error: RestrictErrorPolicy = "raise",
+    preserve_access_control_from: int | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -472,14 +668,32 @@ def atomic_write(
     after a warn; on Windows ``fchmod_safe`` is a no-op, so a warn genuinely
     publishes the file under its inherited ACL. That is the exposure those
     callers accept today, stated rather than implied.
+
+    *preserve_access_control_from* is an OPEN file descriptor for the file being
+    replaced. When given, the source's extended attributes are read from that
+    descriptor BEFORE staging and reproduced on the replacement inode before the
+    rename. ``mode=`` alone carries permission BITS only, so a named POSIX ACL
+    (stored in ``system.posix_acl_access``/``_default``) the owner set is
+    otherwise dropped the moment a fresh inode is installed, handing back
+    a file protected more narrowly than the one it replaced. What is carried is an
+    ALLOWLIST -- those two names plus informational ``user.*`` -- and privileged
+    namespaces are deliberately excluded, because the replacement holds content
+    the CALLER supplied: see :data:`_CARRIED_ACCESS_CONTROL_XATTRS`. The rest of
+    the policy mirrors
+    ``hooks.safe_write_file_nolink``: an access-control attribute that cannot be
+    carried REFUSES the write (the original is left untouched); an informational
+    ``user.*`` attribute is best effort; a filesystem with no xattrs at all
+    (``ENOTSUP``/``EOPNOTSUPP``/``ENOSYS``) is nothing to carry, not an error; any
+    OTHER read failure is a refusal, because a failed lookup is not proof that
+    there are none. Reading from the descriptor rather than by name keeps the
+    read pinned to the inode the caller validated. The carry is ADDITIVE to
+    ``mode=``, not a replacement.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
         raise TypeError("newline is a text-mode concept and cannot apply to bytes content")
     if restrict_to_owner and mode is not None and mode != 0o600:
-        raise ValueError(
-            f"restrict_to_owner implies 0o600; refusing to also honour mode={mode:#o}"
-        )
+        raise ValueError(f"restrict_to_owner implies 0o600; refusing to also honour mode={mode:#o}")
     if restrict_on_error != "raise" and not restrict_to_owner:
         # Reject rather than ignore: a caller passing this without asking for the
         # lockdown believes they configured a failure policy for something that
@@ -492,6 +706,13 @@ def atomic_write(
     # default after the lockdown has been applied.
     effective_mode = 0o600 if restrict_to_owner else mode
     path = Path(path)
+    # Read the source's access-control xattrs BEFORE staging. A refusal here
+    # (a lookup failure that is not "this filesystem has none") must abort before
+    # any temp file exists, so there is nothing to clean up and the original is
+    # untouched.
+    src_xattrs: list[tuple[str, bytes]] = []
+    if preserve_access_control_from is not None:
+        src_xattrs = _read_source_xattrs(preserve_access_control_from, path)
     if restrict_to_owner:
         # Before the mkdir: mkdir(parents=True) walks THROUGH a planted link and
         # would create the missing directories under its target, so checking
@@ -525,6 +746,12 @@ def atomic_write(
             fd, effective_mode if effective_mode is not None else _get_default_mode()
         )
         _write_all(fd, _encode(content, newline=newline), path)
+        # Carry the source's access-control xattrs onto the replacement inode
+        # before the rename, so the file is never briefly visible without them.
+        # A refusal raises out to the except below, which reclaims the temp file
+        # and leaves the original in place.
+        if src_xattrs:
+            _carry_xattrs(fd, src_xattrs, path)
         if fsync:
             os.fsync(fd)
         # Close BEFORE the rename: on Windows os.replace cannot swap a file that

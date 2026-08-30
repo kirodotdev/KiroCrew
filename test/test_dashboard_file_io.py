@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -303,6 +306,123 @@ class TestFileWrite:
                 "/api/file-write", json={"path": str(home_patch / ".ssh/id_rsa"), "content": "x"}
             )
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_write_routes_acl_preservation_through_atomic_write(
+        self, tmp_file, mock_sel, home_patch, monkeypatch
+    ):
+        """api_file_write must carry the source inode's ACL, not just its bits.
+
+        The old mkstemp+copymode path carried permission BITS only, dropping a
+        named POSIX ACL on every save. Assert the handler now
+        routes through atomic_write with an OPEN source descriptor via
+        preserve_access_control_from and the existing file mode; a revert to
+        copymode fails here.
+        """
+        import os as _os
+
+        import kiro_crew.atomic_write as aw
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        captured: dict[str, object] = {}
+        original = files_mod.atomic_write
+
+        def recording(target, content, **kwargs):
+            captured["kwargs"] = dict(kwargs)
+            captured["thread"] = threading.current_thread().ident
+            src_fd = kwargs.get("preserve_access_control_from")
+            if isinstance(src_fd, int):
+                captured["source_bytes"] = _os.read(src_fd, 4096)
+            original(target, content, **kwargs)
+
+        monkeypatch.setattr(files_mod, "atomic_write", recording)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/file-write", json={"path": str(tmp_file), "content": "updated"}
+            )
+            assert resp.status == 200
+
+        kwargs = captured["kwargs"]
+        # See the steering twin: a descriptor where the xattr syscalls exist,
+        # None where they do not (Windows), because a handle held open there
+        # would make os.replace fail. The kwarg itself must always be passed.
+        assert "preserve_access_control_from" in kwargs
+        if aw.ACCESS_CONTROL_XATTRS_SUPPORTED:
+            assert isinstance(kwargs["preserve_access_control_from"], int)
+            assert captured["source_bytes"] == b"hello world"
+        else:  # pragma: no cover - exercised on Windows CI only
+            assert kwargs["preserve_access_control_from"] is None
+        assert kwargs["mode"] == stat.S_IMODE(tmp_file.stat().st_mode)
+        assert tmp_file.read_text(encoding="utf-8") == "updated"
+        # Off the event loop (no-blocking-call-on-event-loop): every call in the
+        # transaction is a blocking filesystem call, so a network-backed path
+        # would otherwise freeze chat and the heartbeat -- and atomic_write's
+        # Windows rename retry degrades to a single attempt on a loop thread.
+        assert captured["thread"] != threading.current_thread().ident
+
+    @pytest.mark.asyncio
+    async def test_write_refuses_a_final_component_swapped_to_a_link(
+        self, tmp_path, mock_sel, home_patch, monkeypatch
+    ):
+        """A TOCTOU swap of the final component into a link is a 4xx, not a 500.
+
+        ``_validate_dashboard_path`` canonicalizes through ``realpath``, so the
+        path reaching the handler is symlink-free by construction and a leaf link
+        is followed to its target exactly as it was before this change. The
+        ``O_NOFOLLOW`` in ``open_access_control_source`` therefore only closes
+        the window where that component is swapped for a link AFTER the check.
+        When it fires, that is a rejected target rather than a server fault: the
+        handler returns 404 (matching the steering peer's ``notfound``) and
+        ``atomic_write`` is never reached.
+        """
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        target = tmp_path / "real.md"
+        target.write_text("protected", encoding="utf-8")
+
+        def swapped_under_us(*args, **kwargs):
+            raise OSError(errno.ELOOP, "symbolic link loop")
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("atomic_write must not run once the open is refused")
+
+        monkeypatch.setattr(files_mod, "open_access_control_source", swapped_under_us)
+        monkeypatch.setattr(files_mod, "atomic_write", fail_if_called)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/file-write", json={"path": str(target), "content": "attacker"}
+            )
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "not_found"
+        assert target.read_text(encoding="utf-8") == "protected"
+        mock_sel.log_tool_invocation.assert_called_with(
+            session_key="dashboard",
+            tool_name="file_write",
+            outcome="not_found",
+            resources=str(target),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name == "nt", reason="creating a symlink on Windows needs elevation")
+    async def test_write_follows_a_leaf_symlink_to_its_canonical_target(
+        self, tmp_path, mock_sel, home_patch
+    ):
+        """Writing a leaf symlink lands on its target, as it did before.
+
+        Stated as a test because the ACL carry added an ``os.open`` on the write
+        path, and it must not change which inode a save reaches: ``realpath``
+        resolution happens in the path guard, upstream of everything here.
+        """
+        real = tmp_path / "real.md"
+        real.write_text("old", encoding="utf-8")
+        link = tmp_path / "link.md"
+        link.symlink_to(real)
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/file-write", json={"path": str(link), "content": "new"})
+            assert resp.status == 200
+        assert real.read_text(encoding="utf-8") == "new"
+        assert link.is_symlink()
 
 
 def _make_send_app(state) -> web.Application:

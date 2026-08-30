@@ -29,6 +29,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write, open_access_control_source
 from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
 from kiro_crew.dashboard import part_stream
@@ -2930,6 +2931,58 @@ async def api_file_stream(request: web.Request) -> web.StreamResponse:
             await asyncio.to_thread(f.close)
 
 
+def _file_write_blocking(path: str, content: str) -> str | None:
+    """Replace *path*'s contents atomically, carrying its access controls.
+
+    Returns ``None`` on success or ``"notfound"`` when the target was rejected;
+    any other failure propagates for the caller to log.
+
+    Split out of :func:`api_file_write` so the whole transaction runs OFF the
+    event loop. Every call in here is a blocking filesystem call, and on a
+    network-backed path (an SMB share, a stalled FUSE mount) each one can take
+    seconds, which on the loop thread freezes chat and the heartbeat alongside
+    it. Being on a worker thread also re-arms the Windows rename retry inside
+    ``atomic_write``, which deliberately degrades to a single attempt when it
+    finds a running loop in its own thread.
+
+    Routing through ``open_access_control_source`` rather than a bare ``os.open``
+    is what keeps this working on Windows: it returns ``None`` where the xattr
+    syscalls do not exist, and a read handle held open across the write would
+    make ``os.replace`` fail with ``PermissionError`` on every save there.
+
+    ``path`` is already canonicalized by ``_validate_dashboard_path``
+    (``realpath``), so its final component is symlink-free and the helper's
+    ``O_NOFOLLOW`` rejects nothing legitimate -- it closes the window where that
+    component is swapped for a link after the check. That refusal is a rejected
+    target rather than a server fault, hence ``"notfound"`` and not an exception.
+    """
+    try:
+        src_fd = open_access_control_source(path)
+    except OSError:
+        return "notfound"
+    try:
+        src_stat = os.fstat(src_fd) if src_fd is not None else os.stat(path)
+        # mode= keeps the previous copymode behaviour (permission bits), and
+        # preserve_access_control_from is ADDITIVE to it: copymode carried BITS
+        # only, so a named POSIX ACL (system.posix_acl_access) the owner set was
+        # silently dropped the moment the replace installed a fresh inode. The
+        # carry is allowlisted to the ACL and user.* names -- it must NOT replay a
+        # privilege-bearing security.capability onto caller-supplied content.
+        atomic_write(
+            path,
+            content,
+            mode=_stat_mod.S_IMODE(src_stat.st_mode),
+            preserve_access_control_from=src_fd,
+        )
+    finally:
+        if src_fd is not None:
+            try:
+                os.close(src_fd)
+            except OSError:
+                pass
+    return None
+
+
 async def api_file_write(request: web.Request) -> web.Response:
     """POST /api/file-write — write file content from the markdown panel."""
     from kiro_crew.validation import (  # noqa: F811
@@ -2974,24 +3027,17 @@ async def api_file_write(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "not found"}, status=404)
     try:
-        import shutil  # noqa: F811
-        import tempfile  # noqa: F811
-
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path))
-        try:
-            try:
-                shutil.copymode(path, tmp_path)
-            except OSError:
-                pass
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(body.get("content", ""))
-            os.replace(tmp_path, path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        # Off the event loop: see _file_write_blocking's own note on why the
+        # whole transaction is offloaded rather than each call individually.
+        outcome = await asyncio.to_thread(_file_write_blocking, path, body.get("content", ""))
+        if outcome == "notfound":
+            _sel().log_tool_invocation(
+                session_key="dashboard",
+                tool_name="file_write",
+                outcome="not_found",
+                resources=path,
+            )
+            return web.json_response({"error": "not found", "code": "not_found"}, status=404)
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="file_write", outcome="success", resources=path
         )
