@@ -75,9 +75,6 @@ _REARM_BACKOFF_MAX_SHIFT = 16  # clamp the 2**shift exponent
 # to cancel the pending fire again if they are still actively conversing.
 _OVERDUE_REARM_SECS = 10
 
-# Sentinel file per loop: creating it halts the loop on next cycle.
-STOP_SENTINEL = "STOP"
-
 # Persisted source category for a deliberate ``autonudge_stop`` directive.
 # The caller's free-form explanation is intentionally not stored: it is
 # model-authored text and the watchdog only needs the deterministic source.

@@ -1177,27 +1177,6 @@ class TestWatchdogLoop:
         assert any("stalled task" in call.args[0] for call in notify.await_args_list)
 
 
-# ── Tests hook ──
-
-
-class TestRunTests:
-    @pytest.mark.asyncio
-    async def test_no_command_configured(self, tmp_path: Path) -> None:
-        ok, out = await _runner(tmp_path)._run_tests()
-        assert (ok, out) == (True, "no test command configured")
-
-    @pytest.mark.asyncio
-    async def test_delegates_to_run_tests(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        runner = _runner(tmp_path)
-        runner._test_cmd = ["pytest", "-q"]
-        fake = AsyncMock(return_value=(False, "1 failed"))
-        monkeypatch.setattr(tr, "run_tests", fake)
-        assert await runner._run_tests() == (False, "1 failed")
-        assert fake.await_args.args == (["pytest", "-q"], Path(tmp_path))
-
-
 # ── Registry persistence ──
 
 

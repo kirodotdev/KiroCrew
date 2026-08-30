@@ -27,7 +27,6 @@ from kiro_crew.subagent import compute_max_subagents
 from kiro_crew.task_executor import (
     build_task_prompt,
     execute_single_task,
-    run_tests,
 )
 from kiro_crew.task_executor import self_review as self_review_fn
 
@@ -1820,13 +1819,6 @@ class TaskRunner:
             if run.last_task_time > now - _STALL_TIMEOUT:
                 stall_notified = False
                 self._stall_cancelled_ids.discard(run.task_id)
-
-    # ── Test Verification ──
-
-    async def _run_tests(self) -> tuple[bool, str]:
-        if not self._test_cmd:
-            return True, "no test command configured"
-        return await run_tests(self._test_cmd, self._work_dir)
 
     # ── Runs Persistence ──
 
