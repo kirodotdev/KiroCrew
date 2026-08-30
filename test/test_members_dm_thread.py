@@ -134,7 +134,11 @@ class TestDmBinding:
 
 
 def _make_members_app(state) -> web.Application:
-    from kiro_crew.dashboard.handlers.members import api_member_thread, api_members
+    from kiro_crew.dashboard.handlers.members import (
+        api_member_activity,
+        api_member_thread,
+        api_members,
+    )
 
     @web.middleware
     async def _auth(request: web.Request, handler):
@@ -146,6 +150,7 @@ def _make_members_app(state) -> web.Application:
     app["state"] = state
     app.router.add_get("/api/members", api_members)
     app.router.add_post("/api/members/{slug}/thread", api_member_thread)
+    app.router.add_get("/api/members/{slug}/activity", api_member_activity)
     return app
 
 
@@ -395,6 +400,7 @@ class TestMemberRoutes:
             async with TestClient(TestServer(app)) as client:
                 assert (await client.get("/api/members")).status == 404
                 assert (await client.post("/api/members/code-reviewer/thread")).status == 404
+                assert (await client.get("/api/members/code-reviewer/activity")).status == 404
         assert not state._slots
 
     @pytest.mark.asyncio
@@ -1304,3 +1310,162 @@ class TestOrphanedHistory:
                 assert resp.status == 200
                 assert (await resp.json())["member"] == CREW
         assert read_dm_binding(CREW)["member"] == CREW
+
+
+class TestMemberActivityRoute:
+    """GET /api/members/{slug}/activity — the drawer's timeline feed."""
+
+    @pytest.mark.asyncio
+    async def test_returns_recorded_entries_newest_first_with_allowlist_fields(self, tmp_path):
+        state = _make_state(tmp_path)
+        from kiro_crew.members import record_activity
+
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
+        assert record_activity(
+            CREW, "dashboard_chat-2", "persistent", project="/repo", via="select_crew"
+        )
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get(
+                    "/api/members/code-reviewer/activity", params={"member": CREW}
+                )
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["slug"] == "code-reviewer"
+        assert data["member"] == CREW
+        assert data["capped"] is False
+        assert len(data["entries"]) == 2
+        # Newest first — the drawer renders top-down.
+        assert data["entries"][0]["via"] == "select_crew"
+        assert data["entries"][0]["project"] == "/repo"
+        assert data["entries"][0]["ts"] >= data["entries"][1]["ts"] > 0
+        # Session keys stay OUT of the payload: the drawer renders what
+        # happened, never handles into other sessions. This is the response's
+        # field allowlist, pinned exactly.
+        assert set(data["entries"][0]) == {"ts", "via", "project"}
+
+    @pytest.mark.asyncio
+    async def test_colliding_slugs_do_not_mix_histories(self, tmp_path):
+        """Two names sharing a slug share a log file, never a timeline.
+
+        Slugification is lossy ('Code Review' and 'code-review' both derive
+        code-review), so the endpoint filters by the exact member name each
+        record carries — one member's drawer must not render (or count) the
+        other's events.
+        """
+        state = _make_state(tmp_path)
+        from kiro_crew.members import record_activity
+
+        other = "Code_Reviewer"  # distinct exact name, same derived slug
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
+        assert record_activity(other, "dashboard_chat-2", "persistent", via="chat")
+        with _patched_config([CREW, other]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                mine = await (
+                    await client.get("/api/members/code-reviewer/activity", params={"member": CREW})
+                ).json()
+                theirs = await (
+                    await client.get(
+                        "/api/members/code-reviewer/activity", params={"member": other}
+                    )
+                ).json()
+        assert len(mine["entries"]) == 1
+        assert len(theirs["entries"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_member_param_is_required(self, tmp_path):
+        """Without the exact name a colliding slug's read is unsound, so the
+        parameter is required by construction rather than caller discipline."""
+        state = _make_state(tmp_path)
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get("/api/members/code-reviewer/activity")
+                assert resp.status == 400
+                assert (await resp.json())["code"] == "missing_member"
+                bad = await client.get(
+                    "/api/members/code-reviewer/activity", params={"member": "no spaces!"}
+                )
+                assert bad.status == 400
+
+    @pytest.mark.asyncio
+    async def test_empty_log_and_invalid_slug(self, tmp_path):
+        state = _make_state(tmp_path)
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get(
+                    "/api/members/code-reviewer/activity", params={"member": CREW}
+                )
+                assert resp.status == 200
+                assert (await resp.json())["entries"] == []
+                # Path traversal / bad grammar refused before any file IO.
+                bad = await client.get("/api/members/Bad_Slug!/activity", params={"member": CREW})
+                assert bad.status == 400
+                assert (await bad.json())["code"] == "invalid_member_slug"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_timestamps_are_skipped_not_sorted_as_garbage(self, tmp_path):
+        """A record without a parseable STRING ts cannot be placed on a
+        timeline — including a numeric epoch from a foreign writer, which
+        must read as unplaceable rather than crash the endpoint."""
+        state = _make_state(tmp_path)
+        from kiro_crew.members import ACTIVITY_FILE_NAME, member_dir, record_activity
+
+        assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
+        path = member_dir("code-reviewer") / ACTIVITY_FILE_NAME
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f'\n{{"ts": "not-a-date", "member": "{CREW}", "via": "chat"}}\n')
+            fh.write(f'\n{{"ts": 1735689600, "member": "{CREW}", "via": "chat"}}\n')
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get(
+                    "/api/members/code-reviewer/activity", params={"member": CREW}
+                )
+                assert resp.status == 200
+                data = await resp.json()
+        assert len(data["entries"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_project_values_are_redacted_at_the_boundary(self, tmp_path):
+        """A project value is operator-supplied text that can embed a
+        credential; the response is a network boundary, so it runs the same
+        redaction chain as the roster's message preview."""
+        state = _make_state(tmp_path)
+        from kiro_crew.members import record_activity
+
+        assert record_activity(
+            CREW,
+            "dashboard_chat-1",
+            "persistent",
+            project="/repos/AKIAIOSFODNN7EXAMPLE/app",
+            via="chat",
+        )
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get(
+                    "/api/members/code-reviewer/activity", params={"member": CREW}
+                )
+                assert resp.status == 200
+                data = await resp.json()
+        assert len(data["entries"]) == 1
+        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["project"]
+
+    @pytest.mark.asyncio
+    async def test_display_cap_reports_capped_and_keeps_newest(self, tmp_path):
+        """Entries beyond the display cap trim the OLDEST tail, and the
+        response says the window is saturated so the drawer renders its
+        derived counters as floors ("N+") instead of asserting exact totals."""
+        state = _make_state(tmp_path)
+        from kiro_crew.dashboard.handlers import members as handler_mod
+        from kiro_crew.members import record_activity
+
+        for i in range(handler_mod._ACTIVITY_LIMIT + 3):
+            assert record_activity(CREW, f"dashboard_chat-{i}", "persistent", via="chat")
+        with _patched_config([CREW]):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                resp = await client.get(
+                    "/api/members/code-reviewer/activity", params={"member": CREW}
+                )
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["capped"] is True
+        assert len(data["entries"]) == handler_mod._ACTIVITY_LIMIT

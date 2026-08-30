@@ -6695,7 +6695,21 @@
       "thread_open_failed": "Could not open this member's conversation.",
       "title": "Crew Members",
       "unread_message": "Unread message",
-      "workspace": "Workspace"
+      "workspace": "Workspace",
+      "drawer_working": "Working",
+      "stat_today": "Today",
+      "stat_week": "Past 7 days",
+      "recent_activity": "Recent activity",
+      "activity_chat": "Conversation",
+      "activity_routed": "Routed to this member",
+      "activity_empty": "No recorded activity yet.",
+      "wake_sources": "Wake sources",
+      "open_schedule": "Open Schedule",
+      "wake_none": "Nothing wakes this member automatically.",
+      "wake_error": "Couldn't load this member's wake sources.",
+      "wake_paused": "paused",
+      "wake_webhook": "webhook",
+      "activity_error": "Couldn't load this member's activity."
     },
     "migrationPage": {
       "app_migration": "App Migration",

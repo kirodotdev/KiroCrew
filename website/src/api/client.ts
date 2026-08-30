@@ -2025,6 +2025,17 @@ export interface MemberRosterRow {
   [extra: string]: unknown
 }
 
+/** One entry of GET /api/members/{slug}/activity — a recorded engagement.
+ *  `via` distinguishes a session the user opened with the member ('chat')
+ *  from an orchestrator routing decision ('select_crew'); the latter records
+ *  intent, not a run. */
+export interface MemberActivityEntry {
+  /** Epoch seconds (UTC) the engagement was recorded. */
+  ts: number
+  via: 'chat' | 'select_crew' | string
+  project?: string
+}
+
 export const api = {
   status: () => fetch('/api/status').then(j),
   tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -2364,6 +2375,20 @@ export const api = {
   // mode="member"), so this is also the only place a member slot key comes from.
   memberThread: (slug: string) =>
     post('/api/members/' + encodeURIComponent(slug) + '/thread').then(j) as Promise<{ slot_key: string; slug: string; member: string }>,
+  // A member's recent activity pointers (real recorded signal only: session
+  // participations and routing decisions). `member` is the exact crew name —
+  // slugs are lossy, so the backend filters the shared log by exact name.
+  // Fetched on drawer open, never polled.
+  memberActivity: (slug: string, member: string) =>
+    fetch(
+      '/api/members/' + encodeURIComponent(slug) + '/activity?member=' + encodeURIComponent(member),
+    ).then(j) as Promise<{
+      slug: string
+      member: string
+      /** True when the display window is saturated — derived counters are floors. */
+      capped: boolean
+      entries: MemberActivityEntry[]
+    }>,
   updateKirocrewAgent: (name: string, body: object) =>
     put('/api/agents/' + encodeURIComponent(name), body).then(j),
   deleteKirocrewAgent: (name: string) =>

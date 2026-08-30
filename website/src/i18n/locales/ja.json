@@ -13149,7 +13149,21 @@
       "thread_open_failed": "このメンバーの会話を開けませんでした。",
       "title": "クルーメンバー",
       "unread_message": "未読メッセージ",
-      "workspace": "ワークスペース"
+      "workspace": "ワークスペース",
+      "drawer_working": "作業中",
+      "stat_today": "今日",
+      "stat_week": "過去 7 日間",
+      "recent_activity": "最近のアクティビティ",
+      "activity_chat": "会話",
+      "activity_routed": "このメンバーにルーティング",
+      "activity_empty": "記録されたアクティビティはまだありません。",
+      "wake_sources": "起動ソース",
+      "open_schedule": "スケジュールを開く",
+      "wake_none": "このメンバーを自動的に起動するものはありません。",
+      "wake_error": "このメンバーの起動ソースを読み込めませんでした。",
+      "wake_paused": "一時停止中",
+      "wake_webhook": "Webhook",
+      "activity_error": "このメンバーのアクティビティを読み込めませんでした。"
     }
   },
   "privacyDisclosure": {

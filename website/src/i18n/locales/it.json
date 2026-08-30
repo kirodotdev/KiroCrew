@@ -13513,7 +13513,21 @@
       "thread_open_failed": "Impossibile aprire la conversazione di questo membro.",
       "title": "Membri della crew",
       "unread_message": "Messaggio non letto",
-      "workspace": "Spazio di lavoro"
+      "workspace": "Spazio di lavoro",
+      "drawer_working": "Al lavoro",
+      "stat_today": "Oggi",
+      "stat_week": "Ultimi 7 giorni",
+      "recent_activity": "Attività recente",
+      "activity_chat": "Conversazione",
+      "activity_routed": "Instradato a questo membro",
+      "activity_empty": "Nessuna attività registrata finora.",
+      "wake_sources": "Origini di attivazione",
+      "open_schedule": "Apri pianificazione",
+      "wake_none": "Niente attiva questo membro automaticamente.",
+      "wake_error": "Impossibile caricare le origini di attivazione di questo membro.",
+      "wake_paused": "in pausa",
+      "wake_webhook": "webhook",
+      "activity_error": "Impossibile caricare l'attività di questo membro."
     }
   },
   "privacyDisclosure": {

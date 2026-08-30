@@ -21,10 +21,13 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Pencil, UserPlus, Users, X } from 'lucide-react'
+import { ArrowLeft, Clock, ExternalLink, Pencil, UserPlus, Users, Webhook, X } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
-import { api, type MemberRosterRow } from '../../api/client'
+import { api, type MemberActivityEntry, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
+import type { CronJob } from '../../types'
+import { wakesCrew, webhookBoundToCrew } from '../../components/crew/wakesCrew'
+import { timeAgo } from '../../utils/timeAgo'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { markSlotRead } from '../../store/dashboardSlice'
 import CrewAvatar from '../../components/CrewAvatar'
@@ -47,6 +50,8 @@ const ROSTER_MIN = 200
 const ROSTER_MAX = 420
 const ROSTER_DEFAULT = 264
 const ROSTER_WIDTH_KEY = 'mc-members-roster-width'
+/** Punctuation, not prose: joins an activity label to its project name. */
+const PROJECT_SEPARATOR = ' \u00b7 '
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
 const loadRosterWidth = () => loadColumnWidth(ROSTER_WIDTH_KEY, ROSTER_MIN, ROSTER_MAX, ROSTER_DEFAULT)
 
@@ -137,6 +142,112 @@ export default function MembersPage() {
   }, [members, filter])
   const activeSlot = active ? slots[active.name] ?? '' : ''
   const activeError = active ? errors[active.name] ?? '' : ''
+
+  // Recent-activity pointers for the drawer, fetched when it opens for a
+  // member and cached for the page's lifetime. Keyed by the exact member
+  // NAME, not the slug — slugs are lossy, and the whole point of the
+  // backend's member filter is that two names sharing a slug have distinct
+  // histories. Real recorded signal only — the drawer derives its counts
+  // from these instead of fabricating stats. Three states per member:
+  // absent = still loading, 'error' = fetch failed, object = loaded.
+  // A pending or failed read must not render the affirmative "no activity".
+  const [activity, setActivity] = useState<
+    Record<string, { entries: MemberActivityEntry[]; capped: boolean } | 'error'>
+  >({})
+  const activeSlug = active?.slug ?? ''
+  const activeMemberName = active?.name ?? ''
+  useEffect(() => {
+    if (!activeSlug || !activeMemberName || !drawerOpen) return
+    let cancelled = false
+    api
+      .memberActivity(activeSlug, activeMemberName)
+      .then((r) => {
+        if (!cancelled)
+          setActivity((prev) => ({
+            ...prev,
+            [activeMemberName]: { entries: r.entries, capped: !!r.capped },
+          }))
+      })
+      .catch(() => {
+        if (!cancelled) setActivity((prev) => ({ ...prev, [activeMemberName]: 'error' }))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeSlug, activeMemberName, drawerOpen])
+  const activityState = activeMemberName ? activity[activeMemberName] : undefined
+  const activityLoading = activityState === undefined
+  const activityError = activityState === 'error'
+  const activeEntries = useMemo(
+    () => (typeof activityState === 'object' ? activityState.entries : []),
+    [activityState],
+  )
+  const activityCapped = typeof activityState === 'object' && activityState.capped
+
+  // Wake sources — global lists (crons, webhook tokens, the default crew),
+  // fetched ONCE on the first drawer open and filtered per member at render.
+  // `failed` is kept distinct from empty: absence of an answer and an answer
+  // of "none" must not render the same (a failed fetch would otherwise show
+  // the affirmative "nothing wakes this member", a false statement).
+  const [wake, setWake] = useState<{
+    loaded: boolean
+    failed: boolean
+    jobs: CronJob[]
+    tokens: WebhookTokenEntry[]
+    defaultAgent: string
+  }>({ loaded: false, failed: false, jobs: [], tokens: [], defaultAgent: '' })
+  useEffect(() => {
+    if (!drawerOpen || wake.loaded || wake.failed) return
+    let cancelled = false
+    Promise.all([api.crons(), api.webhooks(), api.kirocrewAgents()])
+      .then(([crons, hooks, agents]) => {
+        if (cancelled) return
+        setWake({
+          loaded: true,
+          failed: false,
+          jobs: crons?.jobs || [],
+          tokens: hooks?.tokens || [],
+          defaultAgent: agents?.default_agent || '',
+        })
+      })
+      .catch(() => {
+        if (!cancelled) setWake((prev) => ({ ...prev, failed: true }))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [drawerOpen, wake.loaded, wake.failed])
+  const wakeJobs = useMemo(
+    () =>
+      active
+        ? wake.jobs.filter((j) => wakesCrew(j, active.name, active.name === wake.defaultAgent))
+        : [],
+    [active, wake.jobs, wake.defaultAgent],
+  )
+  const wakeHooks = useMemo(
+    () => (active ? wake.tokens.filter((t) => webhookBoundToCrew(t, active.name)) : []),
+    [active, wake.tokens],
+  )
+  const { todayCount, weekCount, todayFloorTs, weekFloorTs } = useMemo(() => {
+    const midnight = new Date()
+    midnight.setHours(0, 0, 0, 0)
+    const todayFloor = midnight.getTime() / 1000
+    const weekFloor = Date.now() / 1000 - 7 * 86400
+    let today = 0
+    let week = 0
+    for (const e of activeEntries) {
+      if (e.ts >= todayFloor) today += 1
+      if (e.ts >= weekFloor) week += 1
+    }
+    return { todayCount: today, weekCount: week, todayFloorTs: todayFloor, weekFloorTs: weekFloor }
+  }, [activeEntries])
+  // When the display window is saturated (server capped the entries) AND the
+  // oldest returned entry still falls inside a counting window, more in-window
+  // events exist beyond the cap — the count is a floor, rendered as "N+"
+  // rather than asserted as exact.
+  const oldestTs = activeEntries.length ? activeEntries[activeEntries.length - 1].ts : 0
+  const todayIsFloor = activityCapped && oldestTs >= todayFloorTs
+  const weekIsFloor = activityCapped && oldestTs >= weekFloorTs
 
   // Mounting a member thread IS reading it, but nothing on this page moves
   // `chat.activeSlot` (that transition belongs to the Sessions page's
@@ -443,9 +554,22 @@ export default function MembersPage() {
               data-testid="member-drawer"
               aria-label={t('pages.membersPage.details')}
             >
-          <div className="flex items-center mb-2">
-            <div className="text-[11px] font-semibold tracking-wide text-muted flex-1">
-              {t('pages.membersPage.configuration')}
+          {/* Member header — who this drawer is about, mirroring the detail
+              mock: avatar, name, and a live status line (working now, or the
+              last time anything happened on the thread). */}
+          <div className="flex items-center gap-3 mb-3">
+            <CrewAvatar seed={active.name} size={40} />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold truncate">{active.name}</div>
+              <div className="text-[11px] truncate" data-testid="member-drawer-status">
+                {isRunning(active) ? (
+                  <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
+                ) : active.last_active_ts ? (
+                  <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
+                ) : (
+                  <span className="text-muted">{'\u00a0'}</span>
+                )}
+              </div>
             </div>
             {/* Drawer-local close, MOBILE ONLY: below md the overlay covers
                 the header's toggle, so without this the drawer cannot be
@@ -459,6 +583,112 @@ export default function MembersPage() {
             >
               <X size={14} className="lucide-inline" />
             </button>
+          </div>
+          {/* Honest counters only — both derive from the recorded activity
+              log. Semantic stats the backend cannot attest (PRs, triages,
+              spend) are deliberately absent rather than fabricated. */}
+          <div className="grid grid-cols-2 gap-2 mb-4" data-testid="member-stats">
+            <div className="border border-border rounded-lg px-3 py-2">
+              <div className="text-lg font-semibold leading-tight">
+                {activityLoading || activityError ? '\u2013' : `${todayCount}${todayIsFloor ? '+' : ''}`}
+              </div>
+              <div className="text-[11px] text-muted">{t('pages.membersPage.stat_today')}</div>
+            </div>
+            <div className="border border-border rounded-lg px-3 py-2">
+              <div className="text-lg font-semibold leading-tight">
+                {activityLoading || activityError ? '\u2013' : `${weekCount}${weekIsFloor ? '+' : ''}`}
+              </div>
+              <div className="text-[11px] text-muted">{t('pages.membersPage.stat_week')}</div>
+            </div>
+          </div>
+          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5">
+            {t('pages.membersPage.recent_activity')}
+          </div>
+          {/* Three states, never conflated: a pending or failed read must not
+              render the affirmative "no recorded activity". */}
+          {activityLoading ? (
+            <div className="mb-4 space-y-1.5" data-testid="member-activity-loading" aria-hidden>
+              <div className="h-3 rounded bg-accent/40 animate-pulse" />
+              <div className="h-3 w-3/4 rounded bg-accent/40 animate-pulse" />
+            </div>
+          ) : activityError ? (
+            <div className="text-[11px] text-muted mb-4" role="alert" data-testid="member-activity-error">
+              {t('pages.membersPage.activity_error')}
+            </div>
+          ) : activeEntries.length === 0 ? (
+            <div className="text-[11px] text-muted mb-4">
+              {t('pages.membersPage.activity_empty')}
+            </div>
+          ) : (
+            <ul className="list-none m-0 p-0 mb-4 space-y-1.5" data-testid="member-activity">
+              {activeEntries.slice(0, 8).map((e, i) => (
+                <li
+                  key={`${e.ts}-${i}`}
+                  className="flex gap-2 text-[11px] border-b border-border/60 pb-1.5 last:border-b-0"
+                >
+                  <span className="text-muted shrink-0 whitespace-nowrap">{timeAgo(e.ts)}</span>
+                  <span className="min-w-0 truncate">
+                    {e.via === 'select_crew'
+                      ? t('pages.membersPage.activity_routed')
+                      : t('pages.membersPage.activity_chat')}
+                    {e.project ? PROJECT_SEPARATOR + e.project : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center">
+            <span className="flex-1">{t('pages.membersPage.wake_sources')}</span>
+            {/* Read-only view; managing schedules stays on the Schedule page
+                (same jump idiom as the crew editor's wake pane). */}
+            <button
+              onClick={() => navigate('/schedule')}
+              className="inline-flex items-center p-0.5 rounded hover:bg-accent/40 text-muted hover:text-text"
+              aria-label={t('pages.membersPage.open_schedule')}
+              title={t('pages.membersPage.open_schedule')}
+              data-testid="member-wake-jump"
+            >
+              <ExternalLink size={12} className="lucide-inline" />
+            </button>
+          </div>
+          {!wake.loaded && !wake.failed ? (
+            <div className="mb-4 space-y-1.5" data-testid="member-wake-loading" aria-hidden>
+              <div className="h-3 rounded bg-accent/40 animate-pulse" />
+            </div>
+          ) : wake.failed ? (
+            <div className="text-[11px] text-muted mb-4" role="alert" data-testid="member-wake-error">
+              {t('pages.membersPage.wake_error')}
+            </div>
+          ) : wakeJobs.length === 0 && wakeHooks.length === 0 ? (
+            <div className="text-[11px] text-muted mb-4">{t('pages.membersPage.wake_none')}</div>
+          ) : (
+            <ul className="list-none m-0 p-0 mb-4 space-y-1.5" data-testid="member-wake-sources">
+              {wakeJobs.map((jb) => (
+                <li key={jb.id} className="flex items-center gap-2 text-[11px]">
+                  <Clock size={12} className="lucide-inline text-muted shrink-0" />
+                  <span className={`min-w-0 truncate flex-1 ${jb.enabled ? '' : 'text-muted'}`}>
+                    {jb.name}
+                    {!jb.enabled && ` (${t('pages.membersPage.wake_paused')})`}
+                  </span>
+                  <span className="font-mono text-muted shrink-0 max-w-[45%] truncate" title={jb.schedule}>
+                    {jb.schedule}
+                  </span>
+                </li>
+              ))}
+              {wakeHooks.map((tk) => (
+                <li key={tk.id} className="flex items-center gap-2 text-[11px]">
+                  <Webhook size={12} className="lucide-inline text-muted shrink-0" />
+                  <span className={`min-w-0 truncate flex-1 ${tk.enabled === false ? 'text-muted' : ''}`}>
+                    {tk.label}
+                    {tk.enabled === false && ` (${t('pages.membersPage.wake_paused')})`}
+                  </span>
+                  <span className="text-muted shrink-0">{t('pages.membersPage.wake_webhook')}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="text-[11px] font-semibold tracking-wide text-muted mb-2">
+            {t('pages.membersPage.configuration')}
           </div>
           <dl className="text-xs space-y-2">
             <div className="flex gap-2">

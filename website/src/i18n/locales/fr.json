@@ -13514,7 +13514,21 @@
       "thread_open_failed": "Impossible d'ouvrir la conversation de ce membre.",
       "title": "Membres de l'équipe",
       "unread_message": "Message non lu",
-      "workspace": "Espace de travail"
+      "workspace": "Espace de travail",
+      "drawer_working": "En cours",
+      "stat_today": "Aujourd'hui",
+      "stat_week": "7 derniers jours",
+      "recent_activity": "Activité récente",
+      "activity_chat": "Conversation",
+      "activity_routed": "Acheminé vers ce membre",
+      "activity_empty": "Aucune activité enregistrée pour l'instant.",
+      "wake_sources": "Sources de réveil",
+      "open_schedule": "Ouvrir la planification",
+      "wake_none": "Rien ne réveille ce membre automatiquement.",
+      "wake_error": "Impossible de charger les sources de réveil de ce membre.",
+      "wake_paused": "en pause",
+      "wake_webhook": "webhook",
+      "activity_error": "Impossible de charger l'activité de ce membre."
     }
   },
   "privacyDisclosure": {

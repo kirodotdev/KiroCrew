@@ -11,6 +11,10 @@ vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
     memberThread: vi.fn(),
+    memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
+    crons: vi.fn(() => Promise.resolve({ jobs: [] })),
+    webhooks: vi.fn(() => Promise.resolve({ tokens: [] })),
+    kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: '' })),
   },
 }))
 
@@ -238,6 +242,97 @@ describe('MembersPage drawer and edit jump', () => {
     // explicit ?tab=crews, same as the edit affordance).
     fireEvent.click(screen.getByTestId('member-add'))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews')
+  })
+
+  it('the drawer renders the recorded activity timeline and honest counters derived from it', async () => {
+    const now = Date.now() / 1000
+    vi.mocked(api.memberActivity).mockResolvedValue({
+      slug: 'oncall',
+      member: 'oncall',
+      capped: false,
+      entries: [
+        { ts: now - 120, via: 'chat', project: '' },
+        { ts: now - 3600, via: 'select_crew', project: 'kirocrew' },
+        // Older than 7 days: appears in the timeline but not in either counter.
+        { ts: now - 9 * 86400, via: 'chat', project: '' },
+      ],
+    })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall', last_active_ts: now - 120 })])
+    fireEvent.click(await screen.findByText('oncall'))
+    const list = await screen.findByTestId('member-activity')
+    expect(list.children).toHaveLength(3)
+    // Routing decisions are labeled as intent, distinct from conversations,
+    // and the project rides along when recorded.
+    expect(list).toHaveTextContent(/routed to this member/i)
+    expect(list).toHaveTextContent('kirocrew')
+    // Counters are derived from the same entries — 2 within 7 days; the
+    // 9-day-old one is excluded (today's count depends on wall clock, so only
+    // the week card is pinned exactly).
+    const stats = screen.getByTestId('member-stats')
+    expect(stats).toHaveTextContent('2')
+  })
+
+  it('the drawer lists wake sources filtered to the member, via the shared predicates', async () => {
+    vi.mocked(api.crons).mockResolvedValue({
+      jobs: [
+        { id: 'j1', name: 'nightly-triage', message: '', enabled: true, schedule: '0 2 * * *', last_status: '', agent: 'oncall' },
+        { id: 'j2', name: 'other-crew-job', message: '', enabled: true, schedule: '@hourly', last_status: '', agent: 'research' },
+        // Script jobs open no session — they wake NO crew (shared wakesCrew rule).
+        { id: 'j3', name: 'script-job', message: '', enabled: true, schedule: '@daily', last_status: '', agent: 'oncall', script: 'x.py:f' },
+      ],
+    })
+    vi.mocked(api.webhooks).mockResolvedValue({
+      tokens: [
+        { id: 'w1', label: 'ci-callback', agent: 'oncall', enabled: true },
+        { id: 'w2', label: 'unbound-hook', agent: '', enabled: true },
+      ],
+    })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await screen.findByText('oncall'))
+    const list = await screen.findByTestId('member-wake-sources')
+    expect(list).toHaveTextContent('nightly-triage')
+    expect(list).toHaveTextContent('0 2 * * *')
+    expect(list).toHaveTextContent('ci-callback')
+    expect(list).not.toHaveTextContent('other-crew-job')
+    expect(list).not.toHaveTextContent('script-job')
+    expect(list).not.toHaveTextContent('unbound-hook')
+  })
+
+  it('a failed wake-sources fetch renders the error state, never the affirmative empty state', async () => {
+    vi.mocked(api.crons).mockRejectedValue(new Error('boom'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('member-wake-error')
+    // "Nothing wakes this member" would be a false statement about the member
+    // when the request simply failed.
+    expect(screen.queryByText(/nothing wakes this member/i)).toBeNull()
+  })
+
+  it('a saturated activity window renders counters as floors (N+), never exact claims', async () => {
+    const now = Date.now() / 1000
+    // Server capped the window and the OLDEST returned entry is still within
+    // both counting windows — more in-window events exist beyond the cap.
+    vi.mocked(api.memberActivity).mockResolvedValue({
+      slug: 'oncall',
+      member: 'oncall',
+      capped: true,
+      entries: [
+        { ts: now - 60, via: 'chat', project: '' },
+        { ts: now - 120, via: 'chat', project: '' },
+      ],
+    })
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await screen.findByText('oncall'))
+    const stats = await screen.findByTestId('member-stats')
+    await waitFor(() => expect(stats).toHaveTextContent('2+'))
+  })
+
+  it('a failed activity fetch renders the error state, never the affirmative empty state', async () => {
+    vi.mocked(api.memberActivity).mockRejectedValue(new Error('boom'))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await screen.findByText('oncall'))
+    await screen.findByTestId('member-activity-error')
+    expect(screen.queryByText(/no recorded activity/i)).toBeNull()
   })
 
   it('roster rows show the last message preview, not an Idle/Working label', async () => {

@@ -13149,7 +13149,21 @@
       "thread_open_failed": "이 멤버의 대화를 열 수 없습니다.",
       "title": "크루 멤버",
       "unread_message": "읽지 않은 메시지",
-      "workspace": "워크스페이스"
+      "workspace": "워크스페이스",
+      "drawer_working": "작업 중",
+      "stat_today": "오늘",
+      "stat_week": "최근 7일",
+      "recent_activity": "최근 활동",
+      "activity_chat": "대화",
+      "activity_routed": "이 멤버로 라우팅됨",
+      "activity_empty": "기록된 활동이 아직 없습니다.",
+      "wake_sources": "웨이크 소스",
+      "open_schedule": "일정 열기",
+      "wake_none": "이 멤버를 자동으로 깨우는 항목이 없습니다.",
+      "wake_error": "이 멤버의 웨이크 소스를 불러오지 못했습니다.",
+      "wake_paused": "일시 중지됨",
+      "wake_webhook": "웹훅",
+      "activity_error": "이 멤버의 활동을 불러오지 못했습니다."
     }
   },
   "privacyDisclosure": {

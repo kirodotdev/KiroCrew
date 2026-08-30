@@ -13514,7 +13514,21 @@
       "thread_open_failed": "No se pudo abrir la conversación de este miembro.",
       "title": "Miembros del equipo",
       "unread_message": "Mensaje sin leer",
-      "workspace": "Espacio de trabajo"
+      "workspace": "Espacio de trabajo",
+      "drawer_working": "Trabajando",
+      "stat_today": "Hoy",
+      "stat_week": "Últimos 7 días",
+      "recent_activity": "Actividad reciente",
+      "activity_chat": "Conversación",
+      "activity_routed": "Enrutado a este miembro",
+      "activity_empty": "Aún no hay actividad registrada.",
+      "wake_sources": "Fuentes de activación",
+      "open_schedule": "Abrir programación",
+      "wake_none": "Nada activa a este miembro automáticamente.",
+      "wake_error": "No se pudieron cargar las fuentes de activación de este miembro.",
+      "wake_paused": "en pausa",
+      "wake_webhook": "webhook",
+      "activity_error": "No se pudo cargar la actividad de este miembro."
     }
   },
   "privacyDisclosure": {

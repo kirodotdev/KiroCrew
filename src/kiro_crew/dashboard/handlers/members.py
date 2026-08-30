@@ -33,6 +33,34 @@ from kiro_crew.validation import _AGENT_NAME_RE
 
 logger = logging.getLogger(__name__)
 
+#: Activity entries returned to the drawer. Bounds the payload and the JSONL
+#: scan alike; the log itself rotates at ~256KiB so this is a display cap,
+#: not a durability boundary.
+_ACTIVITY_LIMIT = 50
+
+
+def _parse_activity_ts(raw: str) -> float:
+    """Epoch seconds from an activity record's ISO-8601 ``ts``, or 0.0.
+
+    ``record_activity`` writes ``%Y-%m-%dT%H:%M:%SZ`` (UTC, second
+    precision); tolerate a ``+00:00`` suffix too since ``fromisoformat``
+    accepts it and hand-edited logs exist. Anything that is not a string in
+    that shape — including a numeric epoch from a foreign writer — reads as
+    unplaceable (0.0) rather than crashing the endpoint: the log is
+    append-only from multiple processes and tolerant reads are its contract.
+    """
+    if not isinstance(raw, str) or not raw:
+        return 0.0
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        return 0.0
+
 
 def _sel():
     """Late-binding _sel() for test monkeypatch compatibility."""
@@ -363,3 +391,97 @@ async def api_member_thread(request: web.Request) -> web.Response:
             )
 
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
+
+
+async def api_member_activity(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/activity — a member's recent activity pointers.
+
+    Feeds the detail drawer's "recent activity" timeline and its derived
+    counts. Entries come from the member's own append-only pointer log
+    (``members.record_activity``), so everything here is REAL recorded
+    signal — the drawer omits a stat rather than fabricating one.
+
+    Response entries carry an allowlist of fields only: ``ts`` (epoch
+    seconds), ``via`` (how the member was engaged — ``chat`` is a session
+    the user opened with it, ``select_crew`` is a routing decision), and
+    ``project``. Session keys stay out of the payload: the drawer renders
+    what happened, not handles into other sessions.
+
+    ``member`` (query, REQUIRED) is the exact crew name. Slugification is
+    lossy — two distinct names can share one slug and therefore one log
+    file — and each record carries the exact name precisely so attribution
+    stays recoverable. Filtering here (BEFORE the display limit) is what
+    keeps a colliding slug's drawer from rendering the other member's
+    events; making the parameter required makes the mixed read impossible
+    by construction rather than a caller obligation.
+    """
+    denied = _deny_app_caller(request, "members.activity")
+    if denied is not None:
+        return denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not member or not _AGENT_NAME_RE.match(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+
+    entries = await asyncio.to_thread(members_mod.read_activity, slug)
+
+    def _sanitize(text: str) -> str:
+        # Same redaction chain the roster's message preview uses: a project
+        # value is an operator-supplied path that can embed a credential or
+        # presigned URL, and this response is a network boundary. Run it on
+        # the FULL value (nothing here truncates, so order is trivial today,
+        # but keeping the shared chain means a future cap cannot split a
+        # token past the patterns).
+        text, _ = _h.redact_exfiltration_urls(text)
+        text, _ = _h.redact_credentials(text)
+        return text
+
+    rows: list[tuple[float, int, dict]] = []
+    for idx, entry in enumerate(entries):
+        if entry.get("member") != member:
+            # A colliding slug's log holds records for another exact name;
+            # they belong to that member's drawer, not this one's.
+            continue
+        ts = _parse_activity_ts(entry.get("ts", ""))
+        if ts <= 0:
+            # A record without a readable timestamp cannot be placed on a
+            # timeline; skip it rather than sorting garbage to the top.
+            continue
+        rows.append(
+            (
+                ts,
+                idx,
+                {
+                    "ts": ts,
+                    "via": entry.get("via", "") or "chat",
+                    "project": _sanitize(str(entry.get("project", "") or "")),
+                },
+            )
+        )
+    # Newest first — the drawer renders top-down and the newest event is the
+    # one the user opened the drawer to see. The log's ts is second-precision,
+    # so append order (the read index) breaks same-second ties: without it two
+    # events in one second would render oldest-first at the top. The display
+    # cap applies AFTER the member filter and the sort, so it can only ever
+    # trim the oldest tail — never another member's share of a shared log.
+    rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    capped = len(rows) > _ACTIVITY_LIMIT
+    return web.json_response(
+        {
+            "slug": slug,
+            "member": member,
+            # `capped` tells the drawer its derived counters are floors, not
+            # totals, once the window is saturated — it renders "N+" instead
+            # of asserting an exact count it cannot know.
+            "capped": capped,
+            "entries": [r[2] for r in rows[:_ACTIVITY_LIMIT]],
+        }
+    )

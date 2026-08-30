@@ -13332,7 +13332,21 @@
       "thread_open_failed": "इस सदस्य की बातचीत नहीं खोली जा सकी।",
       "title": "क्रू सदस्य",
       "unread_message": "अपठित संदेश",
-      "workspace": "वर्कस्पेस"
+      "workspace": "वर्कस्पेस",
+      "drawer_working": "काम कर रहा है",
+      "stat_today": "आज",
+      "stat_week": "पिछले 7 दिन",
+      "recent_activity": "हाल की गतिविधि",
+      "activity_chat": "बातचीत",
+      "activity_routed": "इस सदस्य को भेजा गया",
+      "activity_empty": "अभी तक कोई गतिविधि दर्ज नहीं है।",
+      "wake_sources": "वेक स्रोत",
+      "open_schedule": "शेड्यूल खोलें",
+      "wake_none": "कुछ भी इस सदस्य को स्वचालित रूप से नहीं जगाता।",
+      "wake_error": "इस सदस्य के वेक स्रोत लोड नहीं हो सके।",
+      "wake_paused": "रुका हुआ",
+      "wake_webhook": "वेबहुक",
+      "activity_error": "इस सदस्य की गतिविधि लोड नहीं हो सकी।"
     }
   },
   "privacyDisclosure": {

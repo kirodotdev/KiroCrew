@@ -13149,7 +13149,21 @@
       "thread_open_failed": "无法打开该成员的对话。",
       "title": "团队成员",
       "unread_message": "未读消息",
-      "workspace": "工作区"
+      "workspace": "工作区",
+      "drawer_working": "工作中",
+      "stat_today": "今日动态",
+      "stat_week": "近 7 天",
+      "recent_activity": "最近动态",
+      "activity_chat": "参与会话",
+      "activity_routed": "被编排器选中",
+      "activity_empty": "暂无活动记录。",
+      "wake_sources": "唤醒来源",
+      "open_schedule": "打开日程",
+      "wake_none": "没有自动唤醒此成员的来源。",
+      "wake_error": "无法加载此成员的唤醒来源。",
+      "wake_paused": "已暂停",
+      "wake_webhook": "webhook",
+      "activity_error": "无法加载此成员的活动记录。"
     }
   },
   "privacyDisclosure": {

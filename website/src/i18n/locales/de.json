@@ -13331,7 +13331,21 @@
       "thread_open_failed": "Die Unterhaltung dieses Mitglieds konnte nicht geöffnet werden.",
       "title": "Crew-Mitglieder",
       "unread_message": "Ungelesene Nachricht",
-      "workspace": "Arbeitsbereich"
+      "workspace": "Arbeitsbereich",
+      "drawer_working": "Arbeitet",
+      "stat_today": "Heute",
+      "stat_week": "Letzte 7 Tage",
+      "recent_activity": "Letzte Aktivität",
+      "activity_chat": "Unterhaltung",
+      "activity_routed": "An dieses Mitglied geleitet",
+      "activity_empty": "Noch keine aufgezeichnete Aktivität.",
+      "wake_sources": "Aufweckquellen",
+      "open_schedule": "Zeitplan öffnen",
+      "wake_none": "Nichts weckt dieses Mitglied automatisch.",
+      "wake_error": "Aufweckquellen dieses Mitglieds konnten nicht geladen werden.",
+      "wake_paused": "pausiert",
+      "wake_webhook": "Webhook",
+      "activity_error": "Aktivität dieses Mitglieds konnte nicht geladen werden."
     }
   },
   "privacyDisclosure": {

@@ -13332,7 +13332,21 @@
       "thread_open_failed": "এই সদস্যের কথোপকথন খোলা যায়নি।",
       "title": "ক্রু সদস্যরা",
       "unread_message": "অপঠিত বার্তা",
-      "workspace": "ওয়ার্কস্পেস"
+      "workspace": "ওয়ার্কস্পেস",
+      "drawer_working": "কাজ করছে",
+      "stat_today": "আজ",
+      "stat_week": "গত ৭ দিন",
+      "recent_activity": "সাম্প্রতিক কার্যকলাপ",
+      "activity_chat": "কথোপকথন",
+      "activity_routed": "এই সদস্যের কাছে পাঠানো হয়েছে",
+      "activity_empty": "এখনও কোনো কার্যকলাপ রেকর্ড হয়নি।",
+      "wake_sources": "ওয়েক উৎস",
+      "open_schedule": "শিডিউল খুলুন",
+      "wake_none": "কিছুই এই সদস্যকে স্বয়ংক্রিয়ভাবে জাগায় না।",
+      "wake_error": "এই সদস্যের ওয়েক উৎস লোড করা যায়নি।",
+      "wake_paused": "বিরতিতে",
+      "wake_webhook": "ওয়েবহুক",
+      "activity_error": "এই সদস্যের কার্যকলাপ লোড করা যায়নি।"
     }
   },
   "privacyDisclosure": {
