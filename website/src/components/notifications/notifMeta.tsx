@@ -22,8 +22,6 @@ import { fmtTime as fmtClockTime, fmtDateTime, fmtDateFields } from '../../i18n/
  * construction rather than managing it with a storage migration.
  */
 
-export type Kind = 'cron' | 'hook' | 'heartbeat' | 'agent' | 'approval' | 'subagent' | 'taskrunner' | 'skills'
-
 export function parseTs(ts: string | number): Date {
   // A numeric epoch (number, or an all-digits string) can arrive in any unit —
   // seconds, milliseconds, microseconds, or nanoseconds — depending on the

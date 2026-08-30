@@ -43,12 +43,6 @@ export interface SourceLocation {
   chunk_range?: string
 }
 
-export interface SourceSummary {
-  topic?: string
-  themes?: string[]
-  generated_at?: string
-}
-
 /**
  * Per-source indexing progress and the Kiro requests still owed for it.
  *
@@ -105,13 +99,6 @@ export interface SourceFilesResponse {
   done: number
   failed: number
   skipped: number
-}
-
-export interface Stats {
-  items: number
-  entities: number
-  relations: number
-  sources: number
 }
 
 export interface GraphData {

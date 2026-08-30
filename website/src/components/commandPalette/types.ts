@@ -166,12 +166,6 @@ export type EnterAction =
   | { kind: 'invoke'; run: () => void }
 
 /**
- * Discriminant strings of {@link EnterAction}, for exhaustiveness checks and
- * test fixtures.
- */
-export type EnterActionKind = EnterAction['kind']
-
-/**
  * Central Enter dispatcher signature (§2). `CommandPalette.tsx`
  * implements one `onEnter(result, withModifier)` that reads `result.enter`
  * (falling back to the legacy `on*Activate` closures while providers are

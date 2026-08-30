@@ -234,5 +234,3 @@ export function TokenDailyChart({
     </div>
   )
 }
-
-export default TokenDailyChart

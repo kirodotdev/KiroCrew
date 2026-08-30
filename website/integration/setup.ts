@@ -355,7 +355,7 @@ if (typeof (globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserve
 }
 
 // jsdom polyfill: EventSource. jsdom doesn't implement the SSE Web API; the
-// useFileWatch / useLogSSE / useSSE hooks open an EventSource. Provide a
+// useFileWatch / useLogSSE hooks open an EventSource. Provide a
 // minimal no-op stub so any component that opens a stream doesn't crash under
 // test. Tests that need to drive SSE events install their own richer per-test
 // mock, which overrides this stub.

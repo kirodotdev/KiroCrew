@@ -23,10 +23,6 @@ export function formatRelativeDate(iso: string): string {
   return i18nT('pages.knowledge.helpers.months_ago', { n: Math.floor(days / 30) })
 }
 
-export function copyText(text: string) {
-  navigator.clipboard.writeText(text)
-}
-
 export function useCopy() {
   const [copied, setCopied] = useState(false)
   const copy = (text: string) => {

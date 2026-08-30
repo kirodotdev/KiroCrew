@@ -27,5 +27,3 @@ import ghostMarkUrl from '../assets/kiro-ghost-mark.svg'
 export function KiroGhostMark({ size = 16, className = 'inline-block shrink-0' }: { size?: number; className?: string }) {
   return <BrandGlyph url={ghostMarkUrl} size={size} className={className} testId="kiro-ghost-mark" />
 }
-
-export default KiroGhostMark

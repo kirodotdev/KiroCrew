@@ -24,7 +24,7 @@ import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import ArtifactFolderDeleteDialog from '../components/ArtifactFolderDeleteDialog'
 import { DndDraggable, DndDroppable } from '../components/dnd'
-import { useArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
+import { useArtifactFolders, useInvalidateArtifactFolders, useMoveArtifactToFolder } from '../hooks/useArtifactFolders'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
 import { sanitize } from '../api/helpers'
@@ -1286,10 +1286,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     })
   }, [])
 
-  const invalidateFolders = useCallback(() => {
-    qc.invalidateQueries({ queryKey: ['artifact-folders'] })
-    qc.invalidateQueries({ queryKey: ['artifacts'] })
-  }, [qc])
+  const invalidateFolders = useInvalidateArtifactFolders()
   const createFolderMut = useMutation({
     mutationFn: (body: { name: string; parent_id?: string }) => api.createArtifactFolder(body),
     onSuccess: invalidateFolders,

@@ -75,14 +75,6 @@ export function registerToolPill(id: string, el: HTMLElement): () => void {
   }
 }
 
-/** Smoothly scroll the registered pill into the centre of the viewport. */
-export function scrollToToolPill(id: string): boolean {
-  const entry = entries.get(id)
-  if (!entry) return false
-  entry.el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  return true
-}
-
 function subscribe(cb: () => void) {
   subscribers.add(cb)
   return () => { subscribers.delete(cb) }

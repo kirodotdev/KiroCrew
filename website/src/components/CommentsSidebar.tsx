@@ -601,5 +601,3 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
     </aside>
   )
 })
-
-export default CommentsSidebar
