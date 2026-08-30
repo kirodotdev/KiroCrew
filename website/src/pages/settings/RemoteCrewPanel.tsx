@@ -49,6 +49,9 @@ import {
   type CloudCoords,
 } from '../../api/client'
 import { Card, Btn, Badge, IconButton } from '../../components/ui'
+import { SettingsToggle } from '../../components/settings'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_REMOTE_CREW_CHAT, setPreviewFlag } from '../../utils/previewFlags'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -647,6 +650,7 @@ export function RemoteCrewPanel() {
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   const [tab, setTab] = useState<'crews' | 'setup'>('crews')
+  const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
 
   // Setup-tab form + preflight state. `checkedProfile`/`checkedRegion` are the
   // committed values the preflight ran against, so typing a profile does not
@@ -1126,6 +1130,20 @@ export function RemoteCrewPanel() {
 
       {tab === 'crews' ? (
         <div className="space-y-4">
+          {/* Preview opt-in for dispatching a chat to a crew. It lives here
+           *  rather than in Developer > Feature Previews because the capability
+           *  is meaningless without a connected crew, and this is the page where
+           *  crews are managed — so the toggle sits next to the thing it acts on.
+           *  No ingress link of its own: flipping it puts the create-menu entry
+           *  back in the same tick, and that menu is already reachable. */}
+          <Card>
+            <SettingsToggle
+              label={i18nT('pages.settings.remoteCrewPanel.chat_on_a_crew')}
+              description={i18nT('pages.settings.remoteCrewPanel.chat_on_a_crew_desc')}
+              checked={remoteCrewChat}
+              onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
+            />
+          </Card>
           <Card>
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-2 text-text font-medium">

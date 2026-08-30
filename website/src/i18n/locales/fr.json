@@ -9418,6 +9418,7 @@
       "new_autopilot_chat": "Nouveau chat en autopilote",
       "new_chat": "Nouveau chat",
       "new_chat_in_folder": "Nouveau chat dans le dossier",
+      "new_chat_on_crew": "Nouveau chat sur un Crew",
       "new_chat_in_name": "Nouveau chat dans {{name}}",
       "new_chat_session": "Nouvelle session de chat",
       "new_folder": "Nouveau dossier",
@@ -13148,6 +13149,8 @@
       "remoteCrewPanel": {
         "your_crews": "Tes instances",
         "set_up_a_new_one": "Set up a new one",
+        "chat_on_a_crew": "Discuter sur un Crew",
+        "chat_on_a_crew_desc": "Ajoute « New chat on crew » au menu de création, qui démarre une session exécutée sur un Crew connecté. Inachevé : elle s’ouvre dans le panneau propre à ce Crew, et les sessions exécutées sur un Crew ne sont pas encore listées ici.",
         "crews_you_can_switch_to": "Instances vers lesquelles tu peux basculer",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "no_crews": "Aucune instance pour le moment. Configure-en une, ou ajoute une machine que tu possèdes déjà.",

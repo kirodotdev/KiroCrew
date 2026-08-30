@@ -3360,6 +3360,7 @@
       "session_source": "Session",
       "new": "New",
       "new_chat": "New chat",
+      "new_chat_on_crew": "New chat on crew",
       "no_inactive_sessions_to_archive": "No inactive sessions to archive.",
       "older": "Older",
       "show": "Show",
@@ -4679,6 +4680,10 @@
         "token_left": "· token {{time}} left",
         "unknown_error": "unknown error",
         "update_setting_failed": "Failed to update setting: {{error}}"
+      },
+      "remoteCrewPanel": {
+        "chat_on_a_crew": "Chat on a crew",
+        "chat_on_a_crew_desc": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Record metrics",

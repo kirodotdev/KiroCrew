@@ -9556,6 +9556,7 @@
       "new_autopilot_chat": "Новый чат с автопилотом",
       "new_chat": "Новый чат",
       "new_chat_in_folder": "Новый чат в папке",
+      "new_chat_on_crew": "Новый чат на Crew",
       "new_chat_in_name": "Новый чат в {{name}}",
       "new_chat_session": "Новая сессия чата",
       "new_folder": "Новая папка",
@@ -13316,6 +13317,8 @@
       "remoteCrewPanel": {
         "your_crews": "Ваши экземпляры",
         "set_up_a_new_one": "Set up a new one",
+        "chat_on_a_crew": "Чат на Crew",
+        "chat_on_a_crew_desc": "Добавляет «New chat on crew» в меню создания: запускает сессию, которая выполняется на подключённом Crew. Не завершено: она открывается в собственной панели этого Crew, а сессии, выполняемые на Crew, здесь пока не отображаются.",
         "crews_you_can_switch_to": "Экземпляры, на которые можно переключиться",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "no_crews": "Экземпляров пока нет. Настройте новый или добавьте машину, которая у вас уже есть.",

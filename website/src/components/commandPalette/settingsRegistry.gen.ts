@@ -1372,6 +1372,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "instances.chat-on-a-crew",
+    "label": "Chat on a crew",
+    "labelKey": "pages.settings.remoteCrewPanel.chat_on_a_crew",
+    "description": "Adds “New chat on crew” to the create menu, which starts a session that runs on a connected crew. Unfinished: it opens in that crew’s own pane, and sessions running on a crew are not listed here yet.",
+    "tab": "instances",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "instances.enable-remote-crew-management",
     "labelKey": "pages.settings.instancesPanel.enable_remote_crew_management",
     "tab": "instances",

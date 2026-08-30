@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat } from 'lucide-react'
+import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
@@ -43,7 +43,7 @@ import useMoveUndo from '../hooks/useMoveUndo'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
-import { PREVIEW_CREW } from '../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
@@ -89,7 +89,7 @@ import type { SortKey } from './chat/sessionOrder'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 import { i18nT } from '../i18n/t'
-import { fmtDateFields, fmtList } from '../i18n/format'
+import { compareText, fmtDateFields, fmtList } from '../i18n/format'
 
 /** Max height (px) of the inline session-rename <textarea> before it scrolls.
  *  ~6 lines at the row's `ROW_TITLE_CLS` type. Shared by the auto-grow hook
@@ -2408,6 +2408,26 @@ function ChatSidebar({
   const instancesData = instancesQuery.data?.instances
   const instancesList = useMemo(() => instancesData ?? [], [instancesData])
   const { selectInstance } = useSelectInstance(instancesList)
+  // Connected crews, for the "New chat on crew" entry. `warm` is the authority
+  // on which peers hold a live tunnel (it holds the loopback port + minted
+  // token); `instancesList` only supplies the display name, so a crew missing
+  // from the query still offers its id rather than vanishing from the menu.
+  //
+  // Select the `warm` OBJECT, never a derived array. react-redux compares a
+  // selector's result by reference, so returning `Object.keys(...)` allocates a
+  // fresh array on every call, never equals the previous one, and re-renders the
+  // sidebar in a loop until the heap dies. That is why the read above selects a
+  // primitive (`.length > 0`) instead. Deriving happens in the memo.
+  const warmMap = useAppSelector(s => s.instances?.warm)
+  const warmCrews = useMemo(
+    () => Object.keys(warmMap ?? {})
+      .map(id => ({ id, name: instancesList.find(i => i.id === id)?.name || id }))
+      // compareText, not `localeCompare`: a bare localeCompare collates in the
+      // HOST locale and ignores the app language entirely, so the crew list
+      // would order itself differently from every other list on the page.
+      .sort((a, b) => compareText(a.name, b.name)),
+    [warmMap, instancesList],
+  )
   // Which folder groups are collapsed in the grouped search-results view.
   // Ephemeral: reset on every query change so a fresh search shows all groups.
   const [collapsedHistoryGroups, setCollapsedHistoryGroups] = useState<Set<string>>(() => new Set())
@@ -4426,6 +4446,11 @@ function ChatSidebar({
   // opts in at Developer > Feature Previews. `usePreviewFlag` rather than a bare
   // read because the sidebar does not remount when that toggle flips.
   const crewPreview = usePreviewFlag(PREVIEW_CREW)
+  // Separate flag, separate feature: this one holds "New chat on crew", which
+  // dispatches a session to another MACHINE. Its toggle is in Settings > Remote
+  // crews rather than Developer > Feature Previews, because it only means
+  // anything to someone who already has a crew connected.
+  const remoteCrewChatPreview = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
   const createCrewMutation = useMutation({
     mutationFn: () => {
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'crew' })).unwrap()
@@ -4449,6 +4474,21 @@ function ChatSidebar({
   // default on — the one case where they picked the non-default on purpose.
   // The button's main segment keeps honouring the preference; only this explicit
   // entry pins the mode.
+  // Create a session that RUNS ON A PEER. Deliberately not `createSlot`: that
+  // thunk builds a local slot, and the whole point here is that the peer owns
+  // the conversation. `agent` is left to the peer's own default — this crew has
+  // its own roster, and forcing the local default names a crew that may not
+  // exist over there.
+  //
+  // Landing is the honest weak spot: there is no native remote chat view yet, so
+  // the new session is opened by switching to that crew's pane. The alternative
+  // — create it and stay put — is worse, because the local list does not show
+  // live remote sessions, so the session would have nowhere to appear at all.
+  const createRemoteChatMutation = useMutation({
+    mutationFn: (instanceId: string) => api.instancesCreateRemoteSlot(instanceId),
+    onSuccess: (_data, instanceId) => { selectInstance(instanceId) },
+  })
+
   const createPlainChatMutation = useMutation({
     mutationFn: () => dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '' })).unwrap(),
     onSuccess: focusComposer,
@@ -5247,6 +5287,50 @@ function ChatSidebar({
                       {folderRows}
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>
+                  )
+                })()}
+                {/* "New chat on crew" — the same shape as "New chat in folder"
+                 *  above (dynamic rows behind one submenu, listed inline at phone
+                 *  width where a Radix flyout has nowhere to open), because it
+                 *  answers the same kind of question. The row is absent, not
+                 *  disabled, when no crew holds a live tunnel: a disabled row
+                 *  would advertise a capability the install may never have. It
+                 *  sits AFTER the folder rows so the local ways to create keep
+                 *  their position.
+                 *
+                 *  Preview-gated on its OWN flag (`utils/previewFlags.ts`), not
+                 *  Crew Mode's: the landing is what is unfinished, since the
+                 *  created session opens in that crew's pane and the local list
+                 *  does not yet show live remote sessions. Toggle lives in
+                 *  Settings > Remote crews. */}
+                {remoteCrewChatPreview && warmCrews.length > 0 && (() => {
+                  const crewRows = warmCrews.map(c => (
+                    <DropdownMenuItem key={c.id} data-testid={`new-chat-on-crew-${c.id}`}
+                      disabled={createRemoteChatMutation.isPending}
+                      onClick={() => { createRemoteChatMutation.mutate(c.id) }}>
+                      <Server size={14} className="text-info" /> {c.name}
+                    </DropdownMenuItem>
+                  ))
+                  if (isMobile) {
+                    return (
+                      <>
+                        <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2">
+                          <Server size={13} className="text-info" /> {i18nT('pages.chatSidebar.new_chat_on_crew')}
+                        </DropdownMenuLabel>
+                        <div className="max-h-[240px] overflow-y-auto">{crewRows}</div>
+                      </>
+                    )
+                  }
+                  return (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger data-testid="new-chat-on-crew" className="data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                        <Server size={14} className="text-info" /> {i18nT('pages.chatSidebar.new_chat_on_crew')}
+                        <ChevronRight size={13} className="ml-auto text-muted" />
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="max-h-[300px] overflow-y-auto">
+                        {crewRows}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
                   )
                 })()}
               </DropdownMenuContent>
@@ -6492,7 +6576,15 @@ function ChatSidebar({
                       <div className="flex-1 min-w-0 overflow-hidden">
                         <div className={`session-agent-label text-[11px] font-semibold truncate leading-tight flex items-center gap-1 ${agentColor}`}>
                           <span className="truncate">{agentName || '\u00A0'}</span>
-                          {remoteInstanceName && <span className="shrink-0 text-[10px] px-1 rounded bg-bg-elevated text-muted border border-border" title={remoteInstanceName}>{remoteInstanceName}</span>}
+                          {/* Remote-crew marker. Tinted `info` + a server glyph rather
+                              than the neutral chip styling every other meta chip uses:
+                              this row's transcript lives on ANOTHER MACHINE, which is a
+                              different claim from "has this tag" and the one the user
+                              must not misread. The glyph is the non-colour half of the
+                              cue, so the distinction survives a colour-vision
+                              deficiency; it is aria-hidden because the crew name beside
+                              it already names the target. */}
+                          {remoteInstanceName && <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1 rounded bg-info-subtle text-info border border-info/40" title={remoteInstanceName}><Server size={9} aria-hidden="true" />{remoteInstanceName}</span>}
                           {s.clean_mode
                             ? <span className="text-accent" title={i18nT('pages.chatSidebar.clean_agent_only_no_kirocrew_context_or_mcp')}><Droplet size={10} /></span>
                             : <>

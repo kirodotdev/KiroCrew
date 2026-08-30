@@ -67,6 +67,32 @@ export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
 
 /**
+ * Creating a chat that RUNS ON a connected remote crew — the "New chat on crew"
+ * entry in the sidebar's create menu.
+ *
+ * Its own flag, deliberately NOT {@link PREVIEW_CREW}. The word "crew" carries
+ * two unrelated meanings here: `PREVIEW_CREW` holds Crew Mode (parallel
+ * sub-sessions) and the Crew Members page, while this holds sessions dispatched
+ * to another MACHINE over the instances tunnel. Sharing one key would release or
+ * hold both at once, which is the same half-ship failure `PREVIEW_CREW`'s own
+ * one-flag-two-doors reasoning exists to prevent — in the opposite direction.
+ *
+ * Held because the LANDING is unfinished, not the dispatch: the session really is
+ * created on the peer, but there is no native remote chat view yet, so it opens
+ * by switching to that crew's pane, and the local session list does not show
+ * live remote sessions — so the session is hard to return to afterwards.
+ *
+ * Its toggle lives in Settings > Remote crews, not Developer > Feature Previews:
+ * the flag is only meaningful to someone who already has a crew connected, and
+ * that is the page where crews are managed.
+ *
+ * Gating the INGRESS only. A session already created on a peer keeps running
+ * there and stays reachable through that crew's own dashboard; turning the flag
+ * off only stops offering the menu entry.
+ */
+export const PREVIEW_REMOTE_CREW_CHAT = `${PREVIEW_FLAG_PREFIX}remote-crew-chat`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

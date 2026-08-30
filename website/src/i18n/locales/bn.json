@@ -9280,6 +9280,7 @@
       "new_autopilot_chat": "নতুন অটোপাইলট চ্যাট",
       "new_chat": "নতুন চ্যাট",
       "new_chat_in_folder": "ফোল্ডারে নতুন চ্যাট",
+      "new_chat_on_crew": "Crew-এ নতুন চ্যাট",
       "new_chat_in_name": "{{name}}-এ নতুন চ্যাট",
       "new_chat_session": "নতুন চ্যাট সেশন",
       "new_folder": "নতুন ফোল্ডার",
@@ -12980,6 +12981,8 @@
       "remoteCrewPanel": {
         "your_crews": "আপনার ইনস্ট্যান্স",
         "set_up_a_new_one": "Set up a new one",
+        "chat_on_a_crew": "কোনো crew-এ চ্যাট",
+        "chat_on_a_crew_desc": "তৈরির মেনুতে “New chat on crew” যোগ করে, যা একটি সংযুক্ত crew-এ চলা সেশন শুরু করে। অসম্পূর্ণ: এটি সেই crew-এর নিজস্ব প্যানেলে খোলে, এবং crew-এ চলা সেশনগুলি এখনও এখানে তালিকাভুক্ত হয় না।",
         "crews_you_can_switch_to": "আপনি যেসব ইনস্ট্যান্সে বদল করতে পারেন",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "no_crews": "এখনও কোনো ইনস্ট্যান্স নেই। একটি সেট আপ করুন, অথবা আপনার কাছে থাকা একটি মেশিন যোগ করুন।",

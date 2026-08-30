@@ -2901,6 +2901,17 @@ export const api = {
   // instance (backend rank-interleaves; remote rows carry instance_id/_name).
   // 403 = instances feature disabled — callers fall back to sessionsSearch.
   instancesSearchSessions: (q: string, limit = 50) => fetch('/api/instances/search-sessions?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
+  /** Create a chat slot ON A CONNECTED PEER, through the instances chat proxy.
+   *  The peer owns the session end to end — its context, memory, skills and
+   *  kiro-cli run the turn, and nothing is written to local history. `api/chat`
+   *  is inside the proxy's path allowlist, so this needs no new backend route;
+   *  the returned `key` is the slot key in the PEER's namespace and is only
+   *  meaningful in a request routed back through the same instance.
+   *  No `agent` is sent: the peer picks its own default, which is the whole
+   *  point of the session running there rather than here. */
+  instancesCreateRemoteSlot: (instanceId: string) =>
+    post('/api/instances/' + encodeURIComponent(instanceId) + '/proxy/api/chat/slots',
+      {}).then(j) as Promise<{ key?: string }>,
   sessionDetail: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key)).then(j),
   deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
   clearSessions: () => del('/api/sessions').then(j),

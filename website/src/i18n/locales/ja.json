@@ -9142,6 +9142,7 @@
       "new_autopilot_chat": "新しいオートパイロットチャット",
       "new_chat": "新しいチャット",
       "new_chat_in_folder": "フォルダー内に新しいチャット",
+      "new_chat_on_crew": "Crew で新しいチャット",
       "new_chat_in_name": "「{{name}}」で新しいチャットを開始",
       "new_chat_session": "新しいチャットセッション",
       "new_folder": "新しいフォルダー",
@@ -12811,6 +12812,8 @@
       "remoteCrewPanel": {
         "your_crews": "あなたのインスタンス",
         "set_up_a_new_one": "Set up a new one",
+        "chat_on_a_crew": "crew 上でチャット",
+        "chat_on_a_crew_desc": "作成メニューに「New chat on crew」を追加します。接続済みの crew 上で実行されるセッションを開始します。未完成です: その crew 自身のペインで開き、crew 上で実行中のセッションはまだここに表示されません。",
         "crews_you_can_switch_to": "切り替えできるインスタンス",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "no_crews": "インスタンスはまだありません。新しく用意するか、すでにあるマシンを追加してください。",

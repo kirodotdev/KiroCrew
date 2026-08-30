@@ -9142,6 +9142,7 @@
       "new_autopilot_chat": "새 오토파일럿 채팅",
       "new_chat": "새 채팅",
       "new_chat_in_folder": "폴더에 새 채팅",
+      "new_chat_on_crew": "Crew에서 새 채팅",
       "new_chat_in_name": "‘{{name}}’에 새 채팅",
       "new_chat_session": "새 채팅 세션",
       "new_folder": "새 폴더",
@@ -12811,6 +12812,8 @@
       "remoteCrewPanel": {
         "your_crews": "내 인스턴스",
         "set_up_a_new_one": "Set up a new one",
+        "chat_on_a_crew": "crew에서 채팅",
+        "chat_on_a_crew_desc": "만들기 메뉴에 “New chat on crew”를 추가합니다. 연결된 crew에서 실행되는 세션을 시작합니다. 미완성입니다: 해당 crew의 자체 창에서 열리며, crew에서 실행 중인 세션은 아직 여기에 표시되지 않습니다.",
         "crews_you_can_switch_to": "전환할 수 있는 인스턴스",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "no_crews": "아직 인스턴스가 없습니다. 새로 설정하거나, 이미 보유한 머신을 추가하세요.",

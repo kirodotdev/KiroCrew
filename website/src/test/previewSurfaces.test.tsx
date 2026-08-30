@@ -47,6 +47,7 @@ import {
   PREVIEW_CREW,
   PREVIEW_FLAG_EVENT,
   PREVIEW_FLAG_PREFIX,
+  PREVIEW_REMOTE_CREW_CHAT,
   PREVIEW_WEBHOOKS,
   readPreviewFlag,
   setPreviewFlag,
@@ -122,7 +123,7 @@ describe('preview flag storage', () => {
   it('keeps every flag under the shared prefix', () => {
     // Cross-tab listeners match on the prefix rather than a list of known flags,
     // so a flag named outside it would silently stop updating other tabs.
-    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_CREW]) {
+    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT]) {
       expect(flag.startsWith(PREVIEW_FLAG_PREFIX)).toBe(true)
     }
   })

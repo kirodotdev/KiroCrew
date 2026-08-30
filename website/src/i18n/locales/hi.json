@@ -9280,6 +9280,7 @@
       "new_autopilot_chat": "नई ऑटोपायलट चैट",
       "new_chat": "नई चैट",
       "new_chat_in_folder": "फ़ोल्डर में नई चैट",
+      "new_chat_on_crew": "Crew पर नई चैट",
       "new_chat_in_name": "{{name}} में नई चैट",
       "new_chat_session": "नया चैट सत्र",
       "new_folder": "नया फ़ोल्डर",
@@ -12980,6 +12981,8 @@
       "remoteCrewPanel": {
         "your_crews": "तुम्हारे इंस्टेंस",
         "set_up_a_new_one": "Set up a new one",
+        "chat_on_a_crew": "किसी crew पर चैट करें",
+        "chat_on_a_crew_desc": "बनाने के मेनू में “New chat on crew” जोड़ता है, जो किसी जुड़े हुए crew पर चलने वाला सत्र शुरू करता है। अपूर्ण: यह उसी crew के अपने पैनल में खुलता है, और crew पर चल रहे सत्र अभी यहाँ सूचीबद्ध नहीं होते।",
         "crews_you_can_switch_to": "वे इंस्टेंस जिन पर तुम स्विच कर सकते हो",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "no_crews": "अभी कोई इंस्टेंस नहीं। कोई सेट करें, या पहले से मौजूद कोई मशीन जोड़ें।",
