@@ -7063,6 +7063,8 @@
       "raw_yaml_and_markdown": "YAML y Markdown sin formato",
       "raw_yaml_markdown": "YAML + Markdown sin formato",
       "skill_tool_aws": "skill, tool, aws",
+      "structured_editing_unavailable": "La edición estructurada no está disponible: este frontmatter solo puede editarse de forma segura como texto sin formato.",
+      "structured_editing_unavailable_comment": "La edición estructurada no está disponible: un comentario comparte una línea con un campo que edita este formulario. Mueva el comentario a su propia línea para editar estos campos de forma estructurada.",
       "switch_to_structured_editor": "Cambiar al editor estructurado",
       "tags": "Etiquetas",
       "triggers": "Activadores",

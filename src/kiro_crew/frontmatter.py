@@ -18,6 +18,21 @@ preview (``dashboard/handlers/discover.py``) deliberately shares
 :data:`SKILL_LOADER` rather than owning a dialect: what the preview shows
 must match what the skills loader computes after install.
 
+A FIFTH consumer lives outside Python and cannot be reached from this list by
+import: the skill editor's frontmatter splicer
+(``website/src/components/SkillForm.tsx``) MIRRORS :data:`SKILL_LOADER`'s
+grammar in TypeScript, because it must never write a value this reader would
+decode differently than it wrote it. ``readerCannotDecode`` and
+``backendReadsValue`` there encode this dialect's two quirks that matter to a
+writer -- quote characters are stripped off both ends rather than unquoted,
+and nothing is unescaped -- and its refusal rules are derived from them. That
+mirror was measured against this module, not inferred, but nothing in the
+build enforces it: change the quote handling, the block-scalar folding, or the
+unescaping here and the editor will keep writing for the old dialect, which is
+silent corruption of a user's skill file. Update that file in the same change,
+and see https://github.com/kirodotdev/KiroCrew/issues/7097 for the shared
+fixture corpus that would turn this comment into a failing test.
+
 This is deliberately NOT a YAML parser and must not grow into one: values are
 single-line strings apart from the minimal block-scalar folding below, and no
 YAML library is involved. Swapping the parsing technology would change every

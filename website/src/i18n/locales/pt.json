@@ -7063,6 +7063,8 @@
       "raw_yaml_and_markdown": "YAML e Markdown brutos",
       "raw_yaml_markdown": "YAML + Markdown brutos",
       "skill_tool_aws": "habilidade, ferramenta, aws",
+      "structured_editing_unavailable": "A edição estruturada não está disponível: este frontmatter só pode ser editado com segurança como texto bruto.",
+      "structured_editing_unavailable_comment": "A edição estruturada não está disponível: um comentário compartilha uma linha com um campo que este formulário edita. Mova o comentário para uma linha própria para editar esses campos de forma estruturada.",
       "switch_to_structured_editor": "Mudar para o editor estruturado",
       "tags": "Etiquetas",
       "triggers": "Gatilhos",

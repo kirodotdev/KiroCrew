@@ -111,7 +111,8 @@
     "unified": "^11.0.5",
     "vis-data": "^8.0.3",
     "vis-network": "^10.0.2",
-    "vscode-jsonrpc": "8.2.0"
+    "vscode-jsonrpc": "8.2.0",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@axe-core/react": "^4.10.1",

@@ -6958,6 +6958,8 @@
       "raw_yaml_and_markdown": "মূল YAML এবং Markdown",
       "raw_yaml_markdown": "মূল YAML + Markdown",
       "skill_tool_aws": "স্কিল, টুল, aws",
+      "structured_editing_unavailable": "কাঠামোগত সম্পাদনা উপলব্ধ নয়: এই ফ্রন্টম্যাটার কেবল কাঁচা টেক্সট হিসেবে নিরাপদে সম্পাদনা করা যায়।",
+      "structured_editing_unavailable_comment": "কাঠামোগত সম্পাদনা উপলব্ধ নয়: এই ফরমের সম্পাদনা করা কোনও ফিল্ডের সাথে একই লাইনে একটি মন্তব্য রয়েছে। মন্তব্যটি পৃথক লাইনে সরালে এই ফিল্ডগুলি কাঠামোগতভাবে সম্পাদনা করা যাবে।",
       "switch_to_structured_editor": "স্ট্রাকচার্ড এডিটরে যান",
       "tags": "ট্যাগ",
       "triggers": "ট্রিগার",

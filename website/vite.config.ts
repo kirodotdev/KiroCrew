@@ -779,6 +779,17 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/](katex|highlight\.js|lowlight|refractor|react-markdown|remark-[^\\/]+|rehype-[^\\/]+|mdast-[^\\/]+|hast-[^\\/]+|micromark[^\\/]*|unified|unist-[^\\/]+)[\\/]/.test(id)) {
             return 'vendor-markdown'
           }
+          // The YAML document parser, reached only by the skill editor's
+          // frontmatter round-trip (`SkillForm.tsx`). Bucketed like every other
+          // vendor library here because the App chunk is meant to hold FIRST-PARTY
+          // code -- its budget comment in scripts/check-bundle-size.mjs says as
+          // much -- and it is the ceiling that ordinary feature PRs trip. Measured
+          // 93.7 KB raw / 29 KB gzip, far under the gate's 500 KB default, so it
+          // needs no CHUNK_BUDGETS entry of its own. The leading separator keeps
+          // this off `js-yaml`, which is mermaid's and belongs in mermaid's chunk.
+          if (/[\\/]node_modules[\\/]yaml[\\/]/.test(id)) {
+            return 'vendor-yaml'
+          }
         },
       },
     },

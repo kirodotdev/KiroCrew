@@ -6853,6 +6853,8 @@
       "raw_yaml_and_markdown": "生の YAML と Markdown",
       "raw_yaml_markdown": "生の YAML + Markdown",
       "skill_tool_aws": "skill, tool, aws",
+      "structured_editing_unavailable": "構造化エディタは使用できません。このフロントマターは生のテキストとしてのみ安全に編集できます。",
+      "structured_editing_unavailable_comment": "構造化エディタは使用できません。このフォームが編集するフィールドと同じ行にコメントがあります。コメントを別の行に移動すると、これらのフィールドを構造化して編集できます。",
       "switch_to_structured_editor": "構造化エディタに切り替える",
       "tags": "タグ",
       "triggers": "トリガー",

@@ -1144,22 +1144,133 @@ enumeration, and a stat would initiate the outbound connection before confinemen
 Its size and content-digest cache token instead come from bytes admitted by the
 descriptor-pinned no-link reader.
 
-The dashboard's structured skill editor rebuilds the frontmatter block from its
-own fields, so it must carry every key it does not model. It re-emits those keys'
-**original source lines verbatim** rather than reserializing a parsed value: the
-form does not know a field's YAML type, so any value it invents can change the
-type (a list or nested map becomes a block scalar, a folded `>` becomes literal
-`|`). A field's block is defined as everything from its key line up to the next
-top-level key — the inverse of the key test, not a list of accepted continuation
-shapes, so indented lines, interior blank lines, indentless `- item` entries and
-comments are all covered without enumerating them. That verbatim rule applies to
-PRESERVATION only: the scalar view the form reads its own five fields from keeps
-the narrower "indented lines continue a value" rule, because a top-level comment
-after `always: true` is part of the block but not part of the value — folding it
-in made the flag read as unset and the form dropped the pin. A comment attached to
-one of the five modelled keys is not preserved, for the same reason their original
-spacing is not: the form owns those and re-emits them from its own state. The
-invariant to preserve when touching this code: editing a modelled field leaves
+The dashboard's structured skill editor owns five frontmatter fields (`name`,
+`description`, `always`, `triggers`, `tags`) and must leave every other byte of the
+block alone. It does that by parsing the block with a real YAML parser (the `yaml`
+package, `parseDocument`), replacing the **source range** of each field it owns, and
+copying every other byte through unchanged.
+
+Two properties of that design are load-bearing, and both were paid for:
+
+- **The parser decides structure, not a line matcher.** What counts as a key, as a
+  continuation of a value, or as a comment comes from the YAML grammar. `#1790`
+  spent four review rounds proving the alternative cannot be finished — each
+  accepted continuation shape revealed another valid one (indented lines → block
+  scalars → indented keys → blank lines → indentless `- item` entries) — and the
+  case it still left open (`#1825`) was a top-level line that is not a recognized
+  `key:` and follows a modelled key. A line-based walk can only attach such a line
+  to the preceding key, so re-emitting that key from form state destroyed it: a
+  `# comment`, a quoted `"my.key"`, or a dotted key silently vanished during an
+  unrelated edit. Source ranges have no such gap — those lines are not
+  inside any modelled key's range, so they are copied where they stand.
+- **Untouched bytes are COPIED, never re-serialized.** `Document.toString()`
+  normalizes: an indentless list comes back indented, a folded `>` scalar comes
+  back re-folded. Both are byte changes to a field the form does not own. Splicing
+  ranges is what makes the invariant exact rather than approximate. A field the
+  form DOES own is copied too when its value was not edited, so its original
+  quoting, block-scalar style and inline comment survive as well.
+
+A block the parser does not fully accept — a duplicate key, a tab used as
+indentation, an unclosed quote, a non-mapping or flow-mapping root — is **not
+spliced at all**, and neither is a block using **anchors or aliases**: a managed
+field can carry the anchor an unmodelled field aliases, so re-rendering it would
+drop the anchor and leave the alias dangling in a file that no longer parses. The
+same applies to any mapping layout whose **top-level keys are not at column 0** —
+an explicit key (`? name` then `: value`) puts a marker before the key that
+replacing the key's own range would leave behind, and a root-indented mapping would
+receive an appended field at a different indentation from its siblings, which is a
+YAML error rather than a cosmetic difference. One column check covers both.
+
+A block is also refused when any **managed field shares its line with a comment**.
+Four review rounds each found a different way that weaving a new value into such a
+line goes wrong (an inline comment lost on drop, a block-scalar header comment lost
+on replace and on drop, a trailing comment absorbed into the value once an edit made
+it multi-line), and the last of those fixes emitted `description: |- # note`, a form
+the BACKEND reader takes as literal text while discarding the content. Every
+arrangement of value and comment on one line is its own case, which is the same
+unfinishable enumeration this design exists to replace, so the splice declines and
+the block is edited raw. A comment on the line ABOVE a key is `commentBefore`, which
+the splice never touches, so it does not trigger the refusal.
+
+One refusal is detected in the SOURCE rather than the AST: a YAML document-end marker
+(`...` at column 0). The parser drops it, and anything after it belongs to a second
+document `parseDocument` never returns, so no AST rule can see it -- while an append,
+the path a MISSING managed field takes, would land after the marker where the reader
+never looks. Teaching the splice to insert before it would mean re-deriving a position
+from a construct the AST does not carry, which is the line arithmetic this design
+removes, so the block is edited raw instead.
+
+One more refusal comes from the FORM's own representation rather than from YAML:
+`triggers` and `tags` are a single-line input holding a comma-separated list, and YAML
+gives that field two legitimate shapes. The requirement is the same for both -- come back
+unchanged from what that input can carry -- but it lands differently on each. As a
+SCALAR (the `alpha, beta` form the editor itself writes) only a carriage return or
+newline is fatal: the input cannot hold one, so the browser strips it and a block-literal
+list merges into a single entry; commas there are the field's own separator and
+round-trip by design. As a SEQUENCE, read joins the items with `', '` and save splits on
+`,`, trims each piece and drops the empties, so an item must additionally be a non-empty
+string scalar, equal to its own trimmed text, and free of commas. Anything else is edited
+raw. The rule DEFAULTS TO DENY, which is its substance rather than a detail: five earlier
+versions were "allow unless a problem is recognised" and each shipped a hole where an
+unrecognised node kind fell through -- non-scalar items, empty items, multiline items,
+multiline scalars, then a mapping value. The kinds this field can represent are exactly
+three (absent, a single-line scalar, a sequence of single-line scalars), so those are
+named and everything else is refused, including node kinds a future YAML version adds.
+Note that a FOLDED value is fine either
+way: folding turns its breaks into spaces, so it is genuinely single-line.
+
+**The reader has the mirror of that rule.** Reading frontmatter with a real YAML parser
+is what lets the frontend and the backend DISAGREE about what a file already means:
+`description: "first\nsecond"` is one newline to the parser and the two characters
+backslash-n to `SKILL_LOADER`, which never unescapes. Main could not diverge this way,
+because it read with the same line dialect it wrote with. So a managed scalar whose
+backend reading differs from its YAML decoding is not spliceable at all -- adopting one
+reading and saving it would silently redefine the file for the code that loads skills.
+The comparison skips fields carrying a comment on their line (the comment rule's case,
+and the backend does not strip a trailing comment) and block scalars, where both sides
+fold identically. This is the READ direction only: a boundary-quoted value TYPED into the
+form is still written, as a block literal, because there the author's intent is
+unambiguous.
+
+**The writer is bound by the reader's dialect, not by YAML.** `SKILL_LOADER` strips
+quote characters and resolves bare `|` / `>` block scalars, and does nothing else --
+no unescaping, no explicit indentation indicators. So a managed value is only ever
+emitted in a form that dialect decodes: a plain or quoted scalar with no backslash
+escape, or a bare block scalar. A value whose OWN TEXT begins or ends with a quote
+character also goes to a block scalar: the reader unquotes with `value.strip("\"'")`,
+which cannot tell a wrapping quote from one belonging to the text, so
+`description: Runs "build"` would read back as `Runs "build`. That rule tests the value,
+not the rendered line -- a correctly wrapper-quoted scalar begins and ends with a quote
+by construction, and routing those to a block scalar costs a value its leading
+whitespace for nothing. A value whose first line begins with whitespace would
+force YAML to emit `|2-`, which the reader would take as the literal value, so the
+leading whitespace is dropped instead -- the same bounded loss the previous
+line-based assembler had, preferred over losing the whole value.
+`parseSkillContent` returns such a block with `raw` set, which opens the raw editor
+with the real file text and surfaces the parser's own message where there is one;
+the structured form would otherwise have to guess where its fields live in bytes it
+could not parse, and a wrong guess rewrites the file. Reading is deliberately more
+tolerant than writing: `parseFrontmatter` renders whatever pairs it can from a
+malformed block, because a meta strip cannot corrupt anything.
+
+Two ordering rules inside the splice are load-bearing, and both were review
+findings rather than foresight:
+
+- **The unchanged check runs before the drop branch.** A managed field whose value
+  is legitimately empty in the file (`tags: []`, a bare `triggers:`,
+  `always: false`) renders as "absent", so consulting the writer first deleted a
+  line the user never edited. `always` also needs its own comparison, because the
+  form models it as a boolean: a file saying `false` and a file omitting the key
+  are the same form state, and comparing rendered text would read the former as an
+  edit.
+- **A block value's source range ends past its terminating newline**, unlike a
+  plain scalar's or a flow collection's. The end is normalized before use, or
+  rewriting a multiline field concatenates the following key onto the new value and
+  dropping one deletes the following line. Appending a field likewise inserts
+  before any trailing whitespace, so a blank line before the closing fence
+  survives.
+
+The invariant to preserve when touching this code: editing a modelled field leaves
 every unmodelled field byte-identical.
 
 The auto-skill (`auto/*`) write paths rebuild frontmatter from the generator's
