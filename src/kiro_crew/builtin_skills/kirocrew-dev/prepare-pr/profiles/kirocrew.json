@@ -21,6 +21,8 @@
     "BASE=\"$(git merge-base HEAD origin/main)\" && HARNESS_BASE_REF=\"$BASE\" python3 scripts/check_harness_parity.py",
     "python3 scripts/check_loop_bound_locks.py --test",
     "python3 scripts/check_loop_bound_locks.py",
+    "python3 scripts/check_builtin_skill_scope.py --test",
+    "python3 scripts/check_builtin_skill_scope.py",
     "python3 scripts/check_testpaths_coverage.py --test",
     "python3 scripts/check_testpaths_coverage.py",
     "python3 scripts/check_changelog_history.py --test",

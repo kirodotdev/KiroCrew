@@ -8,8 +8,8 @@ triggers: theme pack, custom theme, theme.json, variables.json, overrides.css, i
 
 House rules for building theme packs. The authoritative contract is
 [`website/docs/theming-contract.md`](https://github.com/kirodotdev/KiroCrew/blob/main/website/docs/theming-contract.md);
-this skill is the task-oriented digest, plus the traps that cost real
-debugging time.
+this skill is the self-contained task-oriented digest, plus the traps that cost
+real debugging time.
 
 ## Pack anatomy
 
@@ -74,7 +74,7 @@ a level-0 pack shipping a font is refused.
 Two blocks, `dark` and `light`, each holding up to **54 allowlisted variables**.
 Required minimum per block: `--bg`, `--text`, `--accent`. Unknown keys are
 REJECTED (install fails), so do not invent variables; the allowlist is
-`_THEME_CSS_VARS` in `src/kiro_crew/dashboard/theme_validate.py`.
+`_THEME_CSS_VARS` in `kiro_crew/dashboard/theme_validate.py`.
 
 - To clone a built-in theme's palette, transcribe its block from
   `website/src/index.css` (e.g. `[data-theme="kiro-dark"]`), keeping only

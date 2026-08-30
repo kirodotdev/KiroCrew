@@ -312,6 +312,38 @@ jobs:
           python3 scripts/check_changelog_history.py --test
           python3 scripts/check_changelog_history.py
 
+  builtin-skill-scope:
+    name: Builtin Skill Scope Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check for this repository's markers in shipped skill bodies
+        # Everything under src/kiro_crew/builtin_skills/ installs on every
+        # machine that installs Kiro Crew, so a skill body naming THIS
+        # repository -- its GitHub slug, a src/ checkout path, a test file, a
+        # workflow file -- is an instruction that resolves for one user and
+        # points an agent at a path that does not exist for everyone else.
+        # prepare-pr already solved it properly: repository specifics live in a
+        # profile keyed by repository, so the body stays portable. The
+        # kirocrew-dev/ family is exempt by directory (matched directly beneath
+        # builtin_skills/, so a nested or look-alike name cannot inherit it),
+        # because this repository is its subject matter rather than a leak.
+        # Product surface (the kirocrew CLI, ~/.kiro/crew paths, config keys) is
+        # deliberately NOT a marker -- see the script docstring for why the set
+        # is narrow, and for the repository paths it knowingly does not cover.
+        # No baseline: the tree's only two markers were fixed here, so the rule
+        # is absolute and no marker is exempted by record.
+        run: |
+          # Self-test first: one probe per marker class, both sides of the
+          # exemption, and the undecodable-file path, so a rule that silently
+          # stops matching fails here instead of shipping green.
+          python3 scripts/check_builtin_skill_scope.py --test
+          python3 scripts/check_builtin_skill_scope.py
+
   loop-bound-locks:
     name: Loop-Bound Locks Gate
     runs-on: ubuntu-latest
