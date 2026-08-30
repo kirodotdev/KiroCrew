@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 
 
@@ -93,6 +94,32 @@ class TestAcpPerAgentModel:
                 session_key="cron:job:run", agent="pinned-agent"
             )
         assert provider.client._model == "gpt-5.6-sol"
+
+    def test_docker_config_opt_in_reaches_agent_client(self):
+        cfg = self._acp_cfg()
+        with patch("kiro_crew.config.loader.docker_registry_access_enabled", return_value=True):
+            provider = cfg.create_provider_factory()(session_key="chat:test", agent="kirocrew")
+
+        assert provider.client._sandbox_expose_docker_config is True
+
+    def test_docker_config_opt_in_also_reaches_adapted_codex_harness(self):
+        """Credential exposure is an ACP spawn property, not a Kiro tool-hook exception."""
+        cfg = self._acp_cfg()
+        with (
+            patch("kiro_crew.config.loader.docker_registry_access_enabled", return_value=True),
+            patch(
+                "kiro_crew.members.select_provider_backend",
+                return_value=ACP_BACKEND_CODEX,
+            ),
+        ):
+            provider = cfg.create_provider_factory()(
+                session_key="chat:test",
+                agent="kirocrew",
+                acp_backend=ACP_BACKEND_CODEX,
+            )
+
+        assert provider.client.backend == ACP_BACKEND_CODEX
+        assert provider.client._sandbox_expose_docker_config is True
 
     def test_kiro_agent_ignores_cc_model_sidecar(self, tmp_path):
         # The acp factory calls _resolve_named_agent_model, which returns the

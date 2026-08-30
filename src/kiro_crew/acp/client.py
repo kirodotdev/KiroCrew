@@ -2579,6 +2579,7 @@ class AcpClient:
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
+        sandbox_expose_docker_config: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -2595,6 +2596,7 @@ class AcpClient:
         self._model = model or DEFAULT_MODEL
         self._agent = agent
         self._sandbox_mode = sandbox_mode
+        self._sandbox_expose_docker_config = sandbox_expose_docker_config
         self._acp_backend = acp_backend
         # Claude backend permission mode (Auto-mode / permission-UI parity).
         # Inert on the kiro-cli path. None = the backend's own default
@@ -3998,6 +4000,7 @@ class AcpClient:
             # that an enforced adapter has no claim on. Empty for every harness
             # this core does not enforce, so their spawn arguments are unchanged.
             extra_hidden_dirs=adapter_hidden_dirs,
+            expose_docker_config=self._sandbox_expose_docker_config,
             is_kiro_cli=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
             _prepare=wrap_argv,
         )

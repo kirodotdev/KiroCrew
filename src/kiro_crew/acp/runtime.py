@@ -702,6 +702,7 @@ class AcpRuntime:
         expect_mcp_reports: bool = True,
         acp_backend: str = ACP_BACKEND_KIRO,
         crew_agent: str = "",
+        sandbox_expose_docker_config: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -727,6 +728,7 @@ class AcpRuntime:
                 )
         self._model = model
         self._sandbox_mode = sandbox_mode
+        self._sandbox_expose_docker_config = sandbox_expose_docker_config
         self._extra_env = extra_env or {}
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
@@ -1222,6 +1224,7 @@ class AcpRuntime:
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
+            expose_docker_config=self._sandbox_expose_docker_config,
             is_kiro_cli=self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX,
             _prepare=wrap_argv,
         )

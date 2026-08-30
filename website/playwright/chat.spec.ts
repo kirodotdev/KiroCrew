@@ -52,14 +52,23 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
     await expect(messageInput).toHaveValue('', { timeout: 2000 })
   })
 
-  test('displays streaming response', async ({ page }) => {
-    // Send a message first
-    const messageInput = page.getByPlaceholder(/message/i)
-    await messageInput.fill('Hello')
-    await page.keyboard.press('Enter')
-    
-    // Check if messages are visible
-    await expect(page.locator('.msg-content').first()).toBeVisible({ timeout: 5000 })
+  test('displays streaming response', async ({ page, request }) => {
+    // An isolated slot keeps collapsed history and another turn's queue out of
+    // the assertion: the visible assistant response must belong to this send.
+    const response = await request.post('/api/chat/slots', { data: { agent: 'default' } })
+    expect(response.ok()).toBeTruthy()
+    const { key } = await response.json() as { key: string }
+    try {
+      await page.goto(`/chat?sid=${encodeURIComponent(key)}`)
+      const messageInput = page.getByPlaceholder(/message/i)
+      await messageInput.fill('Hello')
+      await page.keyboard.press('Enter')
+      const reply = page.locator('[data-role="assistant"] .msg-content').last()
+      await expect(reply).toBeVisible({ timeout: 15000 })
+      await expect(reply).not.toHaveText('')
+    } finally {
+      await request.delete(`/api/chat/slots/${encodeURIComponent(key)}`)
+    }
   })
 
   test('clears message input after sending', async ({ page }) => {

@@ -20,6 +20,7 @@ import re as _re
 import shutil
 import stat as _stat
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import asdict, dataclass, field
@@ -828,6 +829,39 @@ def computer_use_state_path() -> Path:
     turned on and it is not one the agent can reach.
     """
     return config_dir() / "computer_use.json"
+
+
+def docker_registry_access_state_path() -> Path:
+    """Return the operator-only Docker registry credential grant path.
+
+    This authorization is deliberately separate from ``config.json``. An
+    auto-approved agent can write ordinary config through ``kirocrew config
+    set``; letting that file carry the grant would allow a prompt-injected
+    session to enable access to the operator's Docker registry credentials for
+    its next process. The keystone leaf is protected by ``security.py`` and is
+    written only by the authenticated dashboard handler.
+    """
+
+    return config_dir() / "docker_registry_access.json"
+
+
+def docker_registry_access_enabled() -> bool:
+    """Return true only for an explicit, unexpired Docker credential grant."""
+
+    try:
+        state = json.loads(docker_registry_access_state_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(state, dict) or state.get("enabled") is not True:
+        return False
+    if state.get("permanent") is True:
+        return True
+    expires_at = state.get("expires_at")
+    return (
+        isinstance(expires_at, (int, float))
+        and not isinstance(expires_at, bool)
+        and expires_at > time.time()
+    )
 
 
 def oauth_endpoints_path() -> Path:
@@ -4202,6 +4236,11 @@ class KiroCrewConfig:
                 agent=agent,
                 crew_agent=crew_agent,
                 sandbox_mode=sandbox,
+                # The grant is a protected keystone, not a config field. Read it
+                # when constructing each provider so a refreshed warm pool sees
+                # the latest owner decision without advertising an inert
+                # ``kirocrew config`` key that the agent could appear to set.
+                sandbox_expose_docker_config=docker_registry_access_enabled(),
                 session_key=session_key,
                 channel_id=channel_id,
                 extra_env=extra_env,

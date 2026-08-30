@@ -79,6 +79,7 @@ class _Req:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
         self._body = body if body is not None else {}
+        self.can_read_body = body is not None
 
     def get(self, key: str, default: str = "") -> str:
         del key

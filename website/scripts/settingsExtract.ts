@@ -111,6 +111,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ComputerUsePanel.tsx': 'computer-use',
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
+  'DockerRegistryAccessCard.tsx': {
+    tab: 'security',
+    params: { section: 'docker' },
+  },
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
@@ -350,7 +354,7 @@ export function extractFromSource(
           label: displayLabel,
           ...(labelKey ? { labelKey } : {}),
           ...(suffix && labelKey ? { labelSuffix: suffix } : {}),
-          description: description || undefined,
+          ...(description ? { description } : {}),
           tab,
           type: PRIMITIVE_MAP[primitiveName],
           occurrence: 1,

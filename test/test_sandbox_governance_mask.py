@@ -89,6 +89,7 @@ class TestKeystonesAreSealedInEveryMode:
         "profiles",
         "denied_commands.json",
         "computer_use.json",
+        "docker_registry_access.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
         # The app dev-mode authorization record (#6907): sealing it is what

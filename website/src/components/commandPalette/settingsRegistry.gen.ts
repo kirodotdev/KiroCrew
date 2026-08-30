@@ -1535,6 +1535,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Denied Commands"
   },
   {
+    "id": "security.docker-registry-credentials",
+    "label": "Docker registry credentials",
+    "labelKey": "pages.settings.securityPanel.docker_access",
+    "description": "Lets new Linux agent sessions sign in to private Docker registries, for example to pull private images.",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "docker"
+    }
+  },
+  {
     "id": "security.governance-policy",
     "labelKey": "pages.settings.securityPanel.governance_policy",
     "tab": "security",

@@ -307,6 +307,7 @@ class AcpProvider(LLMProvider):
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
         crew_agent: str | None = None,
+        sandbox_expose_docker_config: bool = False,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -320,6 +321,7 @@ class AcpProvider(LLMProvider):
             "work_dir": work_dir,
             "model": model,
             "sandbox_mode": sandbox_mode,
+            "sandbox_expose_docker_config": sandbox_expose_docker_config,
             "session_key": session_key,
             "channel_id": channel_id,
             "extra_env": extra_env,
@@ -788,6 +790,7 @@ class AcpProvider(LLMProvider):
         work_dir = self._client._work_dir
         agent = getattr(self._client, "_agent", None) or ""
         sandbox_mode = getattr(self._client, "_sandbox_mode", "auto")
+        sandbox_expose_docker_config = getattr(self._client, "_sandbox_expose_docker_config", False)
         extra_env = getattr(self._client, "_extra_env", None) or {}
         mcp_gateway_overlay = getattr(self._client, "_mcp_gateway_overlay", None)
         mcp_gateway_socket = getattr(self._client, "_mcp_gateway_socket", None)
@@ -805,6 +808,7 @@ class AcpProvider(LLMProvider):
             work_dir=work_dir,
             agent=agent or "kirocrew",
             sandbox_mode=sandbox_mode,
+            sandbox_expose_docker_config=sandbox_expose_docker_config,
             extra_env=extra_env,
             mcp_gateway_overlay=mcp_gateway_overlay,
             mcp_gateway_socket=mcp_gateway_socket,
@@ -905,6 +909,7 @@ class AcpProvider(LLMProvider):
                         work_dir=work_dir,
                         agent=agent or "kirocrew",
                         sandbox_mode=sandbox_mode,
+                        sandbox_expose_docker_config=sandbox_expose_docker_config,
                         extra_env=extra_env,
                         mcp_gateway_overlay=mcp_gateway_overlay,
                         mcp_gateway_socket=mcp_gateway_socket,

@@ -379,6 +379,14 @@ export interface ComputerUseConfigSave {
   extra_denied_apps: string[]
 }
 
+/** Owner-only Docker registry credential grant state. */
+export interface DockerRegistryAccessData {
+  /** Effective owner decision. Expired grants are reported as false. */
+  enabled: boolean
+  /** True only where the Linux namespace snapshot mechanism exists. */
+  supported: boolean
+}
+
 /** Slack config as returned by GET /api/slack/config (secrets masked). */
 export interface SlackConfigData {
   connected: boolean
@@ -3696,6 +3704,10 @@ export const api = {
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,
   saveComputerUseConfig: (body: Partial<ComputerUseConfigSave>) =>
     put('/api/computer-use/config', body).then(j) as Promise<ComputerUseConfigData>,
+  getDockerRegistryAccess: () =>
+    get('/api/security/docker-registry-access').then(j) as Promise<DockerRegistryAccessData>,
+  saveDockerRegistryAccess: (enabled: boolean, permanent = false) =>
+    put('/api/security/docker-registry-access', { enabled, permanent }).then(j) as Promise<DockerRegistryAccessData>,
   // Slack integration config
   getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
   getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string }>,

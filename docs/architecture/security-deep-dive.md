@@ -137,6 +137,23 @@ Two properties are load-bearing at the architecture level:
   the audit cannot be written, the delegation is refused. Kiro Crew's own Seatbelt
   takes the spawn on macOS; Windows returns to its no-backend fail-closed policy.
 
+The one operator-controlled credential carve-out is disabled by default and
+stored in the protected `docker_registry_access.json` keystone. On Linux
+namespace agent spawns, opting in through Settings bind-mounts a read-only snapshot of
+`~/.docker/config.json` into the already-masked `.docker` mount. The temporary
+snapshot is held in anonymous memory, so the credential bytes do not persist in
+a host-visible backing file. It never exposes the host inode or the rest of
+`.docker`, and it is not propagated to generic sandbox callers. The owner selects
+either a six-hour grant or an explicit persistent grant; the latter is the
+credential-access analogue of declared permanent YOLO and remains active until
+the owner turns it off. The grant is deliberately independent of
+`sandbox.min_level`, which governs confinement strength rather than owner-supplied
+credentials. This preserves the filesystem boundary but intentionally
+grants the untrusted agent access to Docker registry authentication material;
+the threat model therefore treats disclosure or misuse of that credential as
+accepted residual risk while the flag is enabled. The option has no effect on
+macOS delegation/Seatbelt or when Kiro Crew's sandbox is off.
+
 **Launcher shims are deliberately not bypassed on the delegated path.** On that
 path the shim is part of `kiro-cli`'s own sandbox mechanism, so resolving past it
 would defeat the delegated layer. Where an edition needs a managed launcher

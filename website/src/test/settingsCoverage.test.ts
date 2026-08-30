@@ -165,6 +165,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { SimpleSelect: 1, Input: 1 },
     reason: 'theme-install form (source picker + location) — transient install flow, not settings',
   },
+  'DockerRegistryAccessCard.tsx': {
+    counts: { Checkbox: 1 },
+    reason: 'grant-confirmation acknowledgement — transient safety check, not a persistent setting',
+  },
   'InstanceFormFields.tsx': {
     counts: { SimpleSelect: 1, input: 9 },
     reason: 'per-instance add/edit CRUD form fields, not global settings',

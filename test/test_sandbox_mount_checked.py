@@ -176,6 +176,12 @@ def _run(
         "_src_prefix": "kirocrew_sb_%d_" % os.getpid(),
         "expose_data": {},
         "EXPOSE_FILES": [],
+        # The extracted hiding region now also contains the separate Docker
+        # restore block. Keep it inert here: this suite counts the six existing
+        # mandatory hiding mounts, while Docker's two opt-in mounts have their
+        # own focused tests.
+        "docker_config_data": None,
+        "DOCKER_CONFIG_PATH": None,
         "SENSITIVE_DIRS": [str(aws)],
         "READONLY_DIRS": [str(cache)],
         "SENSITIVE_FILES": [str(lone)],
@@ -282,7 +288,7 @@ def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     assert "sandbox_level" in refusal
 
 
-def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
+def test_every_tier_routes_all_mounts_through_the_guard() -> None:
     """No tier may keep a raw, unchecked ``_libc.mount`` call site.
 
     Break-arm: ``reintroduce_raw`` (one site reverted to the raw call).
@@ -296,7 +302,7 @@ def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
             if "_libc.mount(" in line and "source, target, None, flags, None" not in line
         ]
         assert raw == [], f"{level}: unchecked mount call(s): {raw}"
-        assert script.count("_mount_or_die(") == 7  # 1 def + 6 call sites
+        assert script.count("_mount_or_die(") == 9  # 1 def + 8 call sites
 
 
 # --------------------------------------------------------------------------

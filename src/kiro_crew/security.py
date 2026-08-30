@@ -6686,6 +6686,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # handler is the only writer and it opens the path directly, not through this
     # gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Operator authorization for exposing a sealed snapshot of Docker registry
+    # credentials to new Linux sandbox sessions.  This must not live in ordinary
+    # config.json: an auto-approved agent can change that file through the CLI
+    # and would otherwise grant its next process access to ~/.docker/config.json.
+    # The authenticated dashboard is the only writer and opens this keystone
+    # directly, while this leaf blocks both file tools and shell redirections.
+    "docker_registry_access.json",
     # Browser Mode's durable ENABLE gate. Same class of control as
     # ``computer_use.json`` directly above: while it is present the browse proxy
     # is registered and the ``browser_*`` tools are in the agent's tool list,
