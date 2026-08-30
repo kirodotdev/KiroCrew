@@ -636,7 +636,6 @@ class TestRelayWsHandshakeSanitization:
             b"\r\n"
         )
 
-        up_a, up_b = socket.socketpair()
         down_a, down_b = socket.socketpair()
 
         p = _make_probe(
@@ -644,37 +643,25 @@ class TestRelayWsHandshakeSanitization:
             connection=down_a,
         )
 
-        def feed_upstream():
-            # Feed the handshake response, then close to end the pump.
-            up_b.sendall(handshake_response)
-            time.sleep(0.05)
-            up_b.close()
+        # The whole upstream side is written BEFORE the relay runs, then the write
+        # half is shut down. A socket delivers buffered bytes ahead of the EOF that
+        # follows them, so the pump is guaranteed to read the full handshake and
+        # then see the close that ends it -- no feeder thread, and nothing for the
+        # relay to race against.
+        #
+        # This replaces a `sendall` + `time.sleep(0.05)` + `close()` on a daemon
+        # thread. That ordering held on an idle machine and lost on a loaded CI
+        # runner, where the close could land first and the assertion read back an
+        # empty relay ("assert '101 Switching Protocols' in ''"). A sleep cannot
+        # order two sockets; shutting the write half can.
+        up_local, up_relay = socket.socketpair()
+        up_local.sendall(handshake_response)
+        up_local.shutdown(socket.SHUT_WR)
 
-        feeder = threading.Thread(target=feed_upstream, daemon=True)
-        feeder.start()
-
-        with patch.object(server.socket, "create_connection", return_value=up_b):
-            # Cannot use up_b for both create_connection and the feeder.
-            # Instead, use a wrapper that separates the send side.
-            pass
-
-        # Redo: create_connection returns up_b, which the relay reads from.
-        # We write into up_a (the other end of the pair).
-        up_c, up_d = socket.socketpair()
-
-        def feed_up():
-            up_c.sendall(handshake_response)
-            time.sleep(0.05)
-            up_c.close()
-
-        # up_d is what relay sees as the upstream socket.
-        t_feed = threading.Thread(target=feed_up, daemon=True)
-        t_feed.start()
-
-        with patch.object(server.socket, "create_connection", return_value=up_d):
+        with patch.object(server.socket, "create_connection", return_value=up_relay):
             p._relay_ws()
 
-        t_feed.join(timeout=2)
+        up_local.close()
 
         # Read what was sent to the downstream (client) side.
         down_a.close()

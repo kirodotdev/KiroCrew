@@ -15,11 +15,14 @@ from typing import Any
 # unchanged — see the "ACP Backend Identifiers" section below for why they moved.
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_CONFIG_OPTION_TUNING,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
@@ -139,13 +142,12 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # snapshot here would be read before boot registration and silently miss it.
 
 # ── Capability membership ──
-# The five ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
+# The ``ACP_BACKENDS_*`` capability sets are DEFINED in the leaf module
 # ``kiro_crew.acp_backends`` and re-exported by the import above, so
 # ``from kiro_crew.acp.types import ACP_BACKENDS_STEER`` still resolves. They moved
 # for the same reason the backend identifiers did: a consumer outside this package
 # must be able to ask a capability question without importing ``kiro_crew.acp``,
 # whose ``__init__`` pulls in the client and runtime.
-
 
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
@@ -158,6 +160,7 @@ ACP_CLIENT_CAPABILITIES: dict = {
 PROVIDER_LABEL_DEFAULT = "acp"
 PROVIDER_LABEL_CLAUDE = "claude_code"
 PROVIDER_LABEL_KAS = "kas"
+PROVIDER_LABEL_CODEX = "codex"
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under

@@ -22,6 +22,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
+from kiro_crew.dashboard import create_rate_limit as rl
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -51,6 +52,29 @@ def _fresh_stop_windows():
     stop_retry.reset_for_tests()
     yield
     stop_retry.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_create_budget():
+    """The session-create rate budget is process-wide module state too.
+
+    ``create_rate_limit._buckets`` is a module global keyed ``(verb, caller_key)``
+    holding timestamps for a five-minute window, and nothing here consumed it
+    deliberately — so the budget spent by every OTHER session-creating test that
+    shares this worker is what a test in this file inherits. Once it is exhausted
+    the create path refuses before reaching the behaviour under test, and the
+    failure reads as ``too many sessions created recently`` from an assertion that
+    never ran.
+
+    Left implicit, whether this file passes depends on which tests pytest-split
+    happened to place in the same worker: no ``.test_durations`` is committed, so
+    the split is by test COUNT, and adding tests anywhere earlier in collection
+    order reshuffles that. Same reasoning as ``_fresh_stop_windows`` above; this is
+    the sibling that was missed.
+    """
+    rl.reset_for_tests()
+    yield
+    rl.reset_for_tests()
 
 
 def _slot(state, name: str, **kwargs):

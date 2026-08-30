@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 ACP_BACKEND_CLAUDE = "claude"
 ACP_BACKEND_KAS = "kas"
+# The Codex ACP adapter: a Node stdio server that boots the Codex app server and
+# translates ACP onto its operations. Known so that an edition shipping a provider
+# for it can register the id; absent from BASELINE_SELECTABLE_BACKENDS below, so no
+# build offers it until something registers it.
+ACP_BACKEND_CODEX = "codex"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -51,6 +56,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
+        ACP_BACKEND_CODEX,
     }
 )
 
@@ -70,6 +76,12 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 #: Whether it is USABLE on a given machine is a separate question with its own answer:
 #: :mod:`kiro_crew.agent_sdk.backend_install` probes for the two binaries and the
 #: dashboard reports what is absent plus the command that installs it.
+#:
+#: ``ACP_BACKEND_CODEX`` is absent for a narrower reason than claude's exclusion was:
+#: the spawn path lands here, but ``backend_install`` has no probe for its adapter, so
+#: a build offering the option could not tell an operator what is missing when a
+#: session failed to start. :func:`register_selectable_backend` is the way in until
+#: that probe lands.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS}
 )
@@ -88,6 +100,10 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_KIRO: POLICY_ID_KIRO,
     ACP_BACKEND_KAS: ACP_BACKEND_KAS,
     ACP_BACKEND_CLAUDE: ACP_BACKEND_CLAUDE,
+    # Present even though no build ships codex as selectable: a policy author has to
+    # be able to deny an id BEFORE an edition registers it, and the mapping is what
+    # makes the id nameable in a rule at all.
+    ACP_BACKEND_CODEX: ACP_BACKEND_CODEX,
 }
 
 #: The backend a deployment policy may never deny.
@@ -265,10 +281,13 @@ def resolve_selected_backend(value: object) -> str:
 # spawn_continue (conversation_gone). KAS therefore opts in only once a
 # keep-aware teardown lands (native subagent work); until then its subagents get
 # dedicated sessions. claude-agent-acp runs through AcpClient (one process per
-# session) and is not a member.
+# session) and is not a member. codex-acp is not either, for the same reason: one
+# adapter process serves one session, so there is nothing to share.
 ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 
-# Backends implementing the ``_session/steer`` extension (mid-turn steer).
+# Backends implementing the ``_session/steer`` extension (mid-turn steer). Neither
+# claude-agent-acp nor codex-acp implements it, so a steer sent to either would be
+# answered with method-not-found rather than reaching the turn.
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -284,6 +303,11 @@ ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # sandbox factory resolves an absent config to its no-op backend, so no OS
 # sandbox starts inside — adding KAS here would skip Crew's seatbelt in favour of
 # a layer that does not exist. See :mod:`kiro_crew.acp.kas_transport`.
+#
+# codex-acp is excluded on the same rule: it is a Node adapter, so Crew's own layer
+# is the only OS confinement a codex session gets. The Codex sandbox modes the
+# adapter can apply are in-process policy, not an OS sandbox that Crew's would
+# nest inside.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
@@ -297,7 +321,9 @@ ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 # ``not is_claude_backend`` — an inference that silently captures every harness
 # added later. This is a SUPERSET of ACP_BACKENDS_SESSION_SHARING: running on
 # AcpRuntime is necessary for session sharing but not sufficient (KAS runs here
-# yet is excluded from sharing until keep-aware teardown lands).
+# yet is excluded from sharing until keep-aware teardown lands). codex-acp is not a
+# member: it is spawned per session and reads none of the kiro-family cli.json
+# overlay, so it takes the AcpClient path.
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends whose sign-in lives in kiro-cli's OWN identity store, so an external
@@ -313,4 +339,35 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # Excluding it would let a KAS session keep serving turns on the previous
 # account's credentials. Positive membership rather than "not claude"
 # (harness-parity H5).
+#
+# codex-acp is excluded: it signs in through its own credentials file, so a
+# kiro-cli logout says nothing about whether a running codex session is still
+# authenticated, and retiring its child on that signal would end a live turn for
+# no reason.
 ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Backends tuned through ``session/set_config_option`` rather than kiro's own
+# verbs: the model instead of ``session/set_model``, and reasoning effort instead
+# of the ``/effort`` slash command. Opt-in for the same reason as every set above —
+# a change sent down a channel the adapter does not implement is answered with
+# method-not-found, and the session keeps serving turns on the value the operator
+# thought they had just left.
+#
+# ONE set covers both options rather than one per option. Whether a given adapter
+# build actually advertises a specific option is asked at runtime through
+# ``AcpClient.supports_config_option``, which is what refuses a build that ships
+# the model option without effort; a second frozenset with identical membership
+# would only restate that check statically and less accurately. Split it the day a
+# harness genuinely takes one option and not the other.
+ACP_BACKENDS_CONFIG_OPTION_TUNING = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+
+# Backends implementing ``_kiro.dev/commands/execute`` — the kiro extension that
+# runs a slash command as an RPC. Non-members have no equivalent verb, so their
+# slash commands go through ``session/prompt`` and are interpreted by the adapter
+# (or degrade to prompt text) instead of returning -32601 for the whole call.
+#
+# The same membership decides who reads the workspace ``cli.json`` overlay: the
+# kiro-family harnesses take effort and Tool Search from that file at spawn, and
+# writing it for a harness that never reads it leaves a stale file in the user's
+# workspace that no later clear can reach.
+ACP_BACKENDS_KIRO_SLASH_COMMANDS = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})

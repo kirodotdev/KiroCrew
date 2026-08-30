@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Bot, Sparkles, Terminal } from 'lucide-react'
+import { Bot, Boxes, Sparkles, Terminal } from 'lucide-react'
 
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
@@ -20,6 +20,14 @@ const CONFIG_KEY = 'agent.acp_backend'
 const KIRO = ''
 const CLAUDE = 'claude'
 const KAS = 'kas'
+
+/**
+ * The agents this frontend has a translated name and an icon for.
+ *
+ * A floor for what the panel renders, never a ceiling — see `candidates`. An agent
+ * absent here still gets a row once a server answer names it, under its `policy_id`.
+ */
+const NAMED = [KIRO, CLAUDE, KAS]
 
 /**
  * DOM id of the row that states a backend's status.
@@ -63,9 +71,11 @@ const PROBE_REFRESH_MS = 30_000
  * values the wire accepts cannot disagree, and a build that ships another agent
  * lights it up here with no frontend change.
  *
- * Claude Code is the case that makes this worth doing: this build does not include
- * it. Hiding it would imply it does not exist; enabling it would produce a 400 from
- * a control that looked live. It is listed, disabled, and says which it is.
+ * That last clause is why `candidates` is a union of server answers rather than a
+ * list of ids written here: filtering a literal by the schema narrows correctly and
+ * can never widen, so an agent an edition registered would be selectable on the wire
+ * and invisible in the only control that sets it. Ids this frontend has no
+ * translated name for render under their `policy_id`.
  *
  * ## Why there is a SECOND gate, and why it is allowed to say nothing
  *
@@ -223,6 +233,42 @@ export function AgentBackendTab() {
     (selectable ? !selectable.includes(value) : false) || probe(value)?.selectable === false
 
   /**
+   * Every agent id this panel could render, from the SERVER rather than a literal.
+   *
+   * The schema enum and the probe payload answer different questions and either can
+   * be in flight, so both are unioned: the enum is what PATCH accepts, the probe is
+   * every id the core knows — including ones this build cannot select, which
+   * `unavailable` then drops.
+   *
+   * `NAMED` and `current` are a FLOOR, not a ceiling. As a ceiling the panel could
+   * never render an id this file does not list; as a floor it only guarantees the
+   * core agents and the saved value keep rows while both queries are unanswered,
+   * since hiding a row on absent information is the same mistake as disabling one.
+   *
+   * Sorted, not left in arrival order: KIRO first as the default, then by
+   * `policy_id` to match the probe endpoint's own order. Set iteration order would
+   * follow whichever query resolved first and reshuffle the control between renders.
+   */
+  const candidates = Array.from(
+    new Set<string>([
+      ...NAMED,
+      current,
+      ...(selectable ?? []),
+      ...(probeQ.data?.backends ?? []).map(b => b.id),
+    ]),
+  ).sort((a, b) => {
+    if (a === KIRO) return -1
+    if (b === KIRO) return 1
+    // Byte order, not `localeCompare`: these are identifiers, not display copy
+    // (`nameOf` supplies the text a reader sees). The probe endpoint sorts its rows
+    // with Python's `sorted()` — codepoint order — so a locale-aware collation here
+    // would reorder the control by browser language while the payload stayed fixed.
+    const ka = probe(a)?.policy_id || a
+    const kb = probe(b)?.policy_id || b
+    return ka < kb ? -1 : ka > kb ? 1 : 0
+  })
+
+  /**
    * The agents this panel renders at all.
    *
    * An agent the deployment may not select is HIDDEN, not shown disabled. A greyed
@@ -234,7 +280,7 @@ export function AgentBackendTab() {
    * persisted value to the floor on load, so this should not arise; if it ever does,
    * a control rendering no selected chip is a worse failure than one extra row.
    */
-  const visible = [KIRO, CLAUDE, KAS].filter(value => value === current || !unavailable(value))
+  const visible = candidates.filter(value => value === current || !unavailable(value))
 
   /**
    * Installed === 'missing' is the only verdict that disables. `'unknown'` and an
@@ -275,6 +321,12 @@ export function AgentBackendTab() {
   const caveat = (value: string): string =>
     value === CLAUDE ? i18nT('pages.developer.agentBackendTab.claude_uses_its_own_permissions') : ''
 
+  /**
+   * Translated display names for the agents this frontend knows by name.
+   *
+   * Deliberately NOT the list of agents the panel renders — see `candidates`. An id
+   * absent here still gets a row; `nameOf` falls back to the server's `policy_id`.
+   */
   const NAME: Record<string, string> = {
     [KIRO]: i18nT('pages.developer.agentBackendTab.kiro_cli'),
     [CLAUDE]: i18nT('pages.developer.agentBackendTab.claude_code'),
@@ -286,6 +338,23 @@ export function AgentBackendTab() {
     [CLAUDE]: <Sparkles size={14} />,
     [KAS]: <Bot size={14} />,
   }
+
+  /**
+   * A label for any selectable id, known to this frontend or not.
+   *
+   * The fallback is the server's `policy_id` (`acp_backends.POLICY_ID_BY_BACKEND`) —
+   * the name a governance rule spells, so already a word rather than a token. It is
+   * untranslated; the alternative is `NAME[value]` returning `undefined` and a chip
+   * with no text. A core agent that ships selectable earns a translated entry above.
+   *
+   * NAME is consulted first because KIRO is the empty string: it is always a key
+   * there, and the `||` chain must not read it as absent.
+   */
+  const nameOf = (value: string): string => NAME[value] || probe(value)?.policy_id || value
+
+  /** Generic mark for an agent this frontend has no icon for. */
+  const iconOf = (value: string): React.ReactNode => ICON[value] ?? <Boxes size={14} />
+
 
   /**
    * The one status line a row carries, derived rather than authored per agent.
@@ -332,8 +401,8 @@ export function AgentBackendTab() {
           disabled={patchMut.isPending}
           options={visible.map(value => ({
             value,
-            label: NAME[value],
-            icon: ICON[value],
+            label: nameOf(value),
+            icon: iconOf(value),
             disabled: disabledOption(value),
             describedById: statusId(value),
           }))}
@@ -347,7 +416,7 @@ export function AgentBackendTab() {
           {visible.map(value => (
             <div key={value} className="flex gap-2 text-[11px] leading-relaxed">
               <dt className={`shrink-0 font-semibold ${value === current ? 'text-text-strong' : 'text-muted'}`}>
-                {NAME[value]}
+                {nameOf(value)}
               </dt>
               <dd
                 id={statusId(value)}

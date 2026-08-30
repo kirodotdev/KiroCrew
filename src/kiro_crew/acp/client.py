@@ -56,7 +56,9 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_CONFIG_OPTION_TUNING,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
@@ -162,6 +164,11 @@ _T = TypeVar("_T")
 # upstream ACP SDK (numeric integer, currently 1).  See acp.types.
 PROTOCOL_VERSION = "2025-08-22"
 PROTOCOL_VERSION_CLAUDE = 1
+# codex-acp speaks the same numeric ACP version as the claude adapter today.
+# Kept as its OWN literal rather than folded into the claude one: harness-parity
+# H10 wants the handshake stated per harness, so a divergence is a one-line edit
+# here instead of a silent downgrade of whichever harness moved first.
+PROTOCOL_VERSION_CODEX = 1
 DEFAULT_MODEL = "auto"
 
 KIRO_CLI_BIN = "kiro-cli"
@@ -197,6 +204,26 @@ _CLAUDE_ACP_PKG_ENTRY = Path(CLAUDE_ACP_NPM_PKG) / "dist" / "index.js"
 # ``ERR_MODULE_NOT_FOUND: @agentclientprotocol/sdk``, so we reject such an
 # incomplete root and fall through to the next candidate.
 _CLAUDE_ACP_DEP_MARKER = Path("@agentclientprotocol") / "sdk"
+
+# ── codex-acp (ACP_BACKEND_CODEX) ──
+# A Node stdio server that boots the Codex app server and translates ACP onto its
+# operations.  The ``codex`` CLI does not serve ACP itself -- it reads ``acp`` as a
+# prompt -- so the adapter is the transport, not an optimization.  It takes no argv
+# beyond its own path: any invocation enters stdio-server mode and blocks on stdin.
+CODEX_ACP_BIN = "codex-acp"
+CODEX_ACP_NPM_PKG = "@agentclientprotocol/codex-acp"
+_CODEX_ACP_PKG_ENTRY = Path(CODEX_ACP_NPM_PKG) / "dist" / "index.js"
+# Same hoisted-dependency completeness check as the claude adapter, and the same
+# dependency: codex-acp imports @agentclientprotocol/sdk, so a root carrying the
+# entry script without it dies at ESM import time -- after the child is spawned.
+_CODEX_ACP_DEP_MARKER = _CLAUDE_ACP_DEP_MARKER
+# Explicit override, spelled the way the adapter's own documentation spells it.
+_ENV_CODEX_ACP_BIN = "CODEX_ACP_BIN"
+# No CODEX_PATH constant: the adapter ships a compatible Codex binary as an npm
+# dependency and reads CODEX_PATH itself only to run a DIFFERENT one. An operator
+# who sets it reaches the child through the ambient environment copy, so naming it
+# here would imply a wiring that does not exist (its claude counterpart,
+# CLAUDE_CODE_EXECUTABLE, IS explicitly forwarded — the asymmetry is deliberate).
 
 # High-frequency, content-free adapter stderr diagnostics that _drain_stderr()
 # drops instead of forwarding as per-line WARNINGs.  The driving case is the
@@ -455,15 +482,18 @@ _UNRESOLVED: object = object()  # sentinel for "not yet resolved"
 _claude_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
 
 
-def _vendored_claude_acp_roots(pkg_dir: Path | None = None) -> list[Path]:
-    """Directories that may contain a project-local ``node_modules`` copy of
-    the claude-agent-acp adapter.
+def _vendored_acp_roots(pkg_dir: Path | None = None) -> list[Path]:
+    """Directories that may contain a project-local ``node_modules`` copy of a
+    Node ACP adapter.
 
-    A project-local install (``npm i @agentclientprotocol/claude-agent-acp`` in
-    the repo, or a copy bundled next to the installed package) lets the gateway
-    run without a global npm install — useful in non-login launchd/systemd
-    contexts with a minimal PATH.  Resolution still falls back to global / PATH
-    installs in ``_resolve_claude_acp_bin``; these roots are just preferred.
+    Harness-neutral: the roots are plain ``node_modules`` directories and each
+    adapter resolver joins its own package path onto them.
+
+    A project-local install (``npm i @agentclientprotocol/<adapter>`` in the
+    repo, or a copy bundled next to the installed package) lets the gateway run
+    without a global npm install — useful in non-login launchd/systemd contexts
+    with a minimal PATH.  Resolution still falls back to global / PATH installs
+    in each ``_resolve_*_acp_bin``; these roots are just preferred.
 
     *pkg_dir* (the installed ``kiro_crew`` package directory) defaults to this
     module's location; it is a parameter so tests can inject a fake layout.
@@ -496,7 +526,7 @@ def _resolve_vendored_claude_acp(pkg_dir: Path | None = None) -> str | None:
     copy (entry script but missing deps) is skipped in favour of a complete
     one rather than picked and crashed at ESM import time.
     """
-    for root in _vendored_claude_acp_roots(pkg_dir):
+    for root in _vendored_acp_roots(pkg_dir):
         entry = root / _CLAUDE_ACP_PKG_ENTRY
         if entry.is_file() and (root / _CLAUDE_ACP_DEP_MARKER).is_dir():
             return str(entry)
@@ -569,6 +599,61 @@ def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
         # wrapped with node below — matching the POSIX no-x-bit behavior.
         # Casing-normalize (Windows): a `which`-resolved .EXE must reach a
         # launcher-style shim with its true on-disk name (see _normalize_exe_casing).
+        if platform_compat.is_executable_file(script):
+            return [_normalize_exe_casing(script) or script], search_path
+        node_on_path = shutil.which("node", path=search_path)
+        if node_on_path:
+            return [node_on_path, resolved], search_path
+
+    return None, search_path
+
+
+_codex_acp_argv_cache: tuple[list[str] | None, str] | object = _UNRESOLVED
+
+
+def _resolve_codex_acp_bin() -> tuple[list[str] | None, str]:
+    """Find the codex-acp Node entry script and the PATH searched for it.
+
+    Same contract, order and node-resolution rules as
+    :func:`_resolve_claude_acp_bin` — deliberately, so an operator debugging one
+    adapter is debugging both: explicit override, then a project-local
+    ``node_modules`` copy (accepted only with the dependency marker beside it),
+    then mise, then the augmented PATH; and node is resolved explicitly rather
+    than left to a shebang that daemon contexts cannot follow.
+    """
+    candidates: list[str] = []
+
+    override = os.environ.get(_ENV_CODEX_ACP_BIN)
+    if override and Path(override).is_file():
+        candidates.append(override)
+
+    for root in _vendored_acp_roots():
+        entry = root / _CODEX_ACP_PKG_ENTRY
+        if entry.is_file() and (root / _CODEX_ACP_DEP_MARKER).is_dir():
+            candidates.append(str(entry))
+            break
+
+    mise_resolved = _mise_which(CODEX_ACP_BIN)
+    if mise_resolved:
+        candidates.append(mise_resolved)
+
+    mise_installs = _mise_node_installs_dir()
+    if mise_installs.is_dir():
+        for bin_path in sorted(mise_installs.glob("*/bin/" + CODEX_ACP_BIN), reverse=True):
+            if bin_path.is_file():
+                candidates.append(str(bin_path))
+                break
+
+    search_path = augmented_path(os.environ.get("PATH", ""))
+    on_path = shutil.which(CODEX_ACP_BIN, path=search_path)
+    if on_path:
+        candidates.append(on_path)
+
+    for script in candidates:
+        resolved = str(Path(script).resolve())
+        node = _resolve_node_for_script(resolved)
+        if node:
+            return [node, resolved], search_path
         if platform_compat.is_executable_file(script):
             return [_normalize_exe_casing(script) or script], search_path
         node_on_path = shutil.which("node", path=search_path)
@@ -2466,11 +2551,15 @@ class AcpClient:
         return self.backend == ACP_BACKEND_CLAUDE
 
     @property
+    def _is_codex(self) -> bool:
+        return self.backend == ACP_BACKEND_CODEX
+
+    @property
     def _is_kiro(self) -> bool:
         """True when this client drives kiro-cli (the AcpClient default).
 
-        AcpClient serves exactly two backends — kiro-cli and claude-agent-acp —
-        so this is the positive spelling of the sites that used to read
+        AcpClient serves kiro-cli, claude-agent-acp and the dormant codex seam, so
+        this is the positive spelling of the sites that used to read
         ``not self._is_claude`` (harness-parity H5). KAS runs on AcpRuntime, not
         AcpClient, so it never reaches this property.
         """
@@ -2497,6 +2586,20 @@ class AcpClient:
         own tools are absent. An edition overrides this to inject the
         kirocrew-core/cron + user MCP servers; closing it for the public build means
         translating ``kirocrew.mcp.json`` into this array here.
+        """
+        return []
+
+    def _codex_session_mcp_servers(self) -> list:
+        """MCP server array passed to a codex ``session/new`` / ``session/load``.
+
+        The codex twin of :meth:`_claude_session_mcp_servers`, and ``[]`` for the
+        same reason: kiro-cli receives its servers through ``--agent``, so the
+        public core sends nothing here and stays byte-identical.
+
+        An edition overriding this must drop any entry whose transport the adapter
+        does not advertise. codex-acp answers ``session/new`` with ``-32602`` for
+        an unsupported transport rather than skipping that one server, so a single
+        bad entry costs the whole session.
         """
         return []
 
@@ -2593,7 +2696,7 @@ class AcpClient:
             _rejected_log, _ = redact_exfiltration_urls(str(model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
             raise AcpModelUnavailable(_rejected_log, self._advertised_model_ids())
-        if self._is_claude:
+        if self.backend in ACP_BACKENDS_CONFIG_OPTION_TUNING:
             await self.set_config_option("model", model_id)
         else:
             await self._send_request(
@@ -2721,7 +2824,7 @@ class AcpClient:
             # unusable id here would re-offer it on every claim.
             self._model = DEFAULT_MODEL
             return
-        if self._is_claude:
+        if self.backend in ACP_BACKENDS_CONFIG_OPTION_TUNING:
             await self.set_config_option("model", self._model)
         else:
             await self._send_request(
@@ -2967,6 +3070,30 @@ class AcpClient:
                     f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
                 )
             argv: list[str] = claude_argv
+        elif self._is_codex:
+            # Dormant seam — see method docstring. codex-acp takes no argv of its
+            # own: the adapter is spawned bare and driven entirely over the pipe,
+            # so unlike the kiro branch there is nothing to append. CODEX_PATH is
+            # left exactly as the operator set it (the adapter ships its own Codex
+            # binary; overriding it is an explicit choice, never a default).
+            global _codex_acp_argv_cache  # noqa: PLW0603
+            if _codex_acp_argv_cache is _UNRESOLVED:
+                _codex_acp_argv_cache = await asyncio.to_thread(_resolve_codex_acp_bin)
+            cached_codex_resolution = _codex_acp_argv_cache
+            codex_argv, codex_search_path = (
+                cached_codex_resolution
+                if isinstance(cached_codex_resolution, tuple)
+                else (None, "")
+            )
+            if not isinstance(codex_argv, list) or not codex_argv:
+                raise AcpError(
+                    f"{CODEX_ACP_BIN} not found "
+                    f"({describe_search_path(codex_search_path)}). Install it with "
+                    f"'npm i -g {CODEX_ACP_NPM_PKG}' (or add it as a project "
+                    f"dependency), or set {_ENV_CODEX_ACP_BIN} to its entry script. "
+                    f"The 'codex' CLI alone does not serve ACP."
+                )
+            argv = codex_argv
         else:
             # Pin ONE reading of the environment for both the search and the
             # message that reports it. The previous code resolved against the live
@@ -3162,7 +3289,9 @@ class AcpClient:
             raise
         self._pid = self._process.pid
         _spawn_label = (
-            "claude-agent-acp" if self._is_claude else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
+            CLAUDE_ACP_BIN
+            if self._is_claude
+            else CODEX_ACP_BIN if self._is_codex else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         )
         # Everything from here to the end of _spawn runs with a LIVE subprocess
         # that nothing has recorded yet, so every step must be guarded. Without
@@ -3291,7 +3420,11 @@ class AcpClient:
             self._stderr_lines.append(text)
             redacted, _ = redact_exfiltration_urls(text)
             redacted, _ = redact_credentials(redacted)
-            _bin_label = "claude-acp" if self._is_claude else KIRO_CLI_BIN
+            _bin_label = (
+                "claude-acp"
+                if self._is_claude
+                else CODEX_ACP_BIN if self._is_codex else KIRO_CLI_BIN
+            )
             logger.warning("%s stderr: %s", _bin_label, redacted)
         if suppressed:
             # Flush the residual count once the stream closes so the final burst
@@ -3559,8 +3692,14 @@ class AcpClient:
             # Pooled broker stubs are appended for kiro-cli: a session-injected
             # server outranks the same-named entry in the agent spec, which is
             # how pooling takes effect without writing a spec anywhere.
+            # Each per-harness hook is spliced only for ITS OWN backend. Both
+            # defaults return [] so an ungated splice is inert in this tree, but an
+            # edition overriding both would hand a claude session codex's entries
+            # and vice versa -- and one entry whose transport the adapter does not
+            # advertise fails the whole session/new, not just that server.
             "mcpServers": [
-                *self._claude_session_mcp_servers(),
+                *(self._claude_session_mcp_servers() if self._is_claude else []),
+                *(self._codex_session_mcp_servers() if self._is_codex else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -3628,7 +3767,9 @@ class AcpClient:
         """Handshake: initialize → session/load or session/new → set_mode → set_model."""
         # 1. Initialize
         protocol_version: int | str = (
-            PROTOCOL_VERSION_CLAUDE if self._is_claude else PROTOCOL_VERSION
+            PROTOCOL_VERSION_CLAUDE
+            if self._is_claude
+            else PROTOCOL_VERSION_CODEX if self._is_codex else PROTOCOL_VERSION
         )
         init_id = await self._send_request(
             METHOD_INITIALIZE,
@@ -3665,6 +3806,15 @@ class AcpClient:
                 # simply attempts the load.
                 session_file = ""
                 file_ok = True
+            elif self._is_codex:
+                # Same shape as claude, and for the same reason: the adapter keeps
+                # its own session records and resolves them from the sessionId, so
+                # there is no Crew-side file to name. Gating on the kiro transcript
+                # here would make file_ok always False — a codex session could
+                # never resume, it would silently start fresh every time — which is
+                # why the _meta block below gives codex no session_file either.
+                session_file = ""
+                file_ok = True
             else:
                 session_file = str(kiro_sessions_dir() / f"{resume_sid}.json")
                 file_ok = Path(session_file).exists()
@@ -3679,13 +3829,20 @@ class AcpClient:
                         # unchanged; a companion overrides the hook (see
                         # session/new above). Pooled stubs are re-declared so a
                         # resumed session keeps talking to the broker.
+                        # Gated per backend for the same reason as session/new above.
                         "mcpServers": [
-                            *self._claude_session_mcp_servers(),
+                            *(self._claude_session_mcp_servers() if self._is_claude else []),
+                            *(self._codex_session_mcp_servers() if self._is_codex else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }
                     if self._is_claude:
                         load_params["_meta"] = {"claudeCode": {"options": {}}}
+                    elif self._is_codex:
+                        # codex-acp carries no Crew-side session file and reads no
+                        # _meta of ours, so it gets neither key rather than the
+                        # kiro session_file it would not know what to do with.
+                        pass
                     else:
                         load_params["_meta"] = {"_kiro.dev/session_file": session_file}
                     load_id = await self._send_request(METHOD_SESSION_LOAD, load_params)

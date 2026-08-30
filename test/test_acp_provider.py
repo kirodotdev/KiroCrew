@@ -584,7 +584,7 @@ class TestEffortControl:
             )
         )
         # Must not raise.
-        await provider._set_claude_effort("max")
+        await provider._set_effort_config_option("max")
 
     @pytest.mark.asyncio
     async def test_kiro_clear_effort_no_default_returns_false_for_reset(self):

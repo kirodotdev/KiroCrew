@@ -48,20 +48,26 @@ from kiro_crew.platform.interfaces import (
 
 
 class DefaultProviderRegistry:
-    """Registers nothing: every KNOWN backend is already in the baseline."""
+    """Registers nothing: the public edition already ships every backend it serves."""
 
     def create_factory(self, cfg: Any) -> Callable[..., Any]:
         return cfg.create_provider_factory()
 
     def register_acp_backends(self) -> None:
-        # Nothing to register, and nothing this seam could register: the baseline now
-        # covers every id in ``ACP_BACKENDS_KNOWN``, and
-        # ``register_selectable_backend`` rejects an id outside that set, so there is
-        # no id it accepts that is not already selectable. The seam stays because the
-        # ProviderRegistry protocol declares it and an edition overrides this method;
-        # an edition adding a genuinely new harness has to widen
-        # ``ACP_BACKENDS_KNOWN`` as well, which is a core change, not an extension
-        # point this hook opens on its own.
+        # Nothing for the PUBLIC edition to register: every id it can serve a session
+        # with is already in ``BASELINE_SELECTABLE_BACKENDS``.
+        #
+        # The seam is not inert, though, and an earlier revision of this comment said
+        # it was -- it read "the baseline covers every id in ACP_BACKENDS_KNOWN, so
+        # there is no id it accepts that is not already selectable". That stopped being
+        # true with the first known-but-unshipped id: ``ACP_BACKEND_CODEX`` is known
+        # and absent from the baseline (its install probe does not exist yet), so
+        # ``register_selectable_backend`` now does accept an id that is not already
+        # selectable, and calling it is exactly how an edition activates one.
+        #
+        # An edition adding a genuinely NEW harness still has to widen
+        # ``ACP_BACKENDS_KNOWN`` as well, which is a core change rather than an
+        # extension point this hook opens on its own.
         return None
 
 
