@@ -1870,6 +1870,18 @@ class TaskRunner:
                         "tokens_used": run.tokens_used,
                         "replan_count": run.replan_count,
                         "work_dir": run.work_dir,
+                        # Git-workspace identity. `work_dir` alone is NOT enough:
+                        # init_workspace() OVERWRITES it with the worktree path,
+                        # so a restored run pointed at a worktree while every
+                        # field that says which worktree it is -- and whether git
+                        # coordination is even on -- came back at its default.
+                        # git_coord reads all six after a restart.
+                        "branch_name": run.branch_name,
+                        "base_branch": run.base_branch,
+                        "worktree_path": run.worktree_path,
+                        "repo_root": run.repo_root,
+                        "git_enabled": run.git_enabled,
+                        "commit_hashes": run.commit_hashes,
                         "original_input": run.original_input,
                         "source": run.source,
                         "spec_content": run.spec_content,
@@ -1999,6 +2011,7 @@ class TaskRunner:
                     )
                     for t in item.get("task_details", item.get("tasks", []))
                 ]
+                _worktree_path = item.get("worktree_path", "")
                 run = Project(
                     spec_path=item["spec_path"],
                     spec_content=item.get("spec_content", ""),
@@ -2011,6 +2024,21 @@ class TaskRunner:
                     tokens_used=item.get("tokens_used", 0),
                     replan_count=item.get("replan_count", 0),
                     work_dir=item.get("work_dir", ""),
+                    branch_name=item.get("branch_name", ""),
+                    base_branch=item.get("base_branch", ""),
+                    worktree_path=_worktree_path,
+                    repo_root=item.get("repo_root", ""),
+                    # An entry written before the git identity was persisted
+                    # carries none of these, and `git_enabled` defaults to True
+                    # -- the one combination that must not survive: git ops
+                    # enabled while nothing records WHICH worktree they target.
+                    # Absent an explicit value, enable git coordination only
+                    # when the worktree location is actually known; otherwise
+                    # fall back to the documented "task continues without git
+                    # coordination" behaviour instead of committing into a path
+                    # no longer identified.
+                    git_enabled=bool(item.get("git_enabled", bool(_worktree_path))),
+                    commit_hashes=list(item.get("commit_hashes", [])),
                     original_input=item.get("original_input", ""),
                     source=item.get("source", ""),
                     tasks=tasks,
