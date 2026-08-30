@@ -692,8 +692,3 @@ def dump_replay_lines(
         result.append(ln)
         total += len(ln)
     return result, False
-
-
-def get_active_dump_file() -> DumpFile | None:
-    """Return the currently active dump file (for passing to faulthandler)."""
-    return _active_dump_file

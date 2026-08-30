@@ -6623,10 +6623,6 @@ class DashboardState:
         except ValueError:
             pass
 
-    def mark_notifications_read(self) -> None:
-        """Reset unread counter (called when client opens notification panel)."""
-        self._unread_count = 0
-
     async def _rewrite_notifications_async(self) -> None:
         """Rewrite the notifications file on the I/O executor and await it.
 

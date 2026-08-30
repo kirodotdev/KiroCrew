@@ -1600,7 +1600,3 @@ def _resolve_theme_asset(slug: str, subpath: str) -> tuple[Path | None, str | No
     if not target.is_file() or target.is_symlink():
         return None, "not found"
     return target, None
-
-
-def _read_theme_text(target: Path) -> str:
-    return target.read_text(encoding="utf-8", errors="replace")
