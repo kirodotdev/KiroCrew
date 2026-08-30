@@ -5,19 +5,23 @@ approval URL: ~7.5s per card. `kiro_crew.connections.warm` serves the whole gall
 process, and every rule below answers an observed failure.
 
 **Placement.** All warm code is in `src/kiro_crew/connections/warm.py`; the dashboard handler
-adds only endpoint wiring and a function-local `expire_dead_mints` import on the status path,
-keeping the mint engine off the gateway's boot path.
+adds only endpoint wiring and function-local engine imports -- `expire_dead_mints` on the status
+path, `mintable_providers` plus `warm_mint_all` on the premint path -- keeping the mint engine
+off the gateway's boot path.
 
-**Scope boundary: the TABLE, the SPECS and the PROCESS LIFECYCLE have landed; the ENDPOINT
-WIRING has not.** Shipped now: the shared row shape (`shared`/`generation`/`activation`), the
+**Scope boundary: the TABLE, the SPECS, the PROCESS LIFECYCLE and the ENDPOINT WIRING have
+landed.** Shipped: the shared row shape (`shared`/`generation`/`activation`), the
 liveness registry those stamps are read against, `expire_dead_mints()` on the status path, the
 spec side -- the registry-derived universe, the plan and its servability test, the tool-alias key
 shape, the spec files the plan writes, and the filesystem-drift guard covering their synchronous
-helpers -- and the lifecycle: spawn/respawn, activation, park-or-kill, the reaper, and
-`warm_mint_all`, which is what gives the spec planner a caller. Still deferred: the dashboard
-endpoint that premints a gallery, so `warm_mint_all` itself has NO CALLER yet and no request
-path reaches any of this. That is the last seam, and it is deliberately thin -- the endpoint adds
-a handler, not a rule.
+helpers -- the lifecycle: spawn/respawn, activation, park-or-kill, the reaper, and
+`warm_mint_all`, which is what gives the spec planner a caller; and the request path,
+`POST /api/connections/premint`, which the Connections page fires once on mount. The endpoint
+adds a handler, not a rule: it scans the mintable candidates off the loop, hands that same list
+to `warm_mint_all` so the slugs it reports and the rows the engine claims come from ONE registry
+read, and answers without awaiting the activation -- warming costs seconds, and the card's
+verdict is its own mint state rather than this list. Still deferred: proactive refresh, which
+attaches to the reaper in its own slice.
 
 ## Measured facts
 

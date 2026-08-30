@@ -78,6 +78,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/mcp/oauth/relay", handlers.api_mcp_oauth_relay)
     app.router.add_post("/api/connections/mint", handlers.api_connections_mint)
     app.router.add_get("/api/connections/mint", handlers.api_connections_mint_state)
+    app.router.add_post("/api/connections/premint", handlers.api_connections_premint)
     app.router.add_get("/api/connections/status", handlers.api_connections_status)
     app.router.add_post("/api/connections/cancel", handlers.api_connections_cancel)
     # REST-style MCP server registration (App Kit)

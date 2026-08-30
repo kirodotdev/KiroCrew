@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit
 
 from aiohttp import web
 
+from kiro_crew import hooks
 from kiro_crew.connections import get_provider
 from kiro_crew.connections.registry import Provider
 from kiro_crew.dashboard.handlers.mcp import _is_valid_mcp_name
 from kiro_crew.sel import sel
+
+logger = logging.getLogger(__name__)
 
 _MAX_RETURN_ADDRESS_BYTES = 8192
 _MAX_REQUEST_TARGET_BYTES = 6144
@@ -257,6 +261,16 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
 # Fire-and-forget mint tasks, held so the loop cannot collect one mid-flight.
 _mint_tasks: set[asyncio.Task] = set()
 
+# The same keepalive for the premint activation, kept separate so a page open cannot
+# be mistaken for a card-initiated mint when either set is inspected.
+_premint_tasks: set[asyncio.Task] = set()
+
+#: SEL read-id for the grant observation the premint endpoint acts on. Distinct from
+#: the mint engine's and the status module's ids so the trail says which surface
+#: looked; registered in ``hooks._AUDIT_ONLY_READ_IDS``, which fail-closes on an
+#: unregistered id and would record nothing.
+_GRANT_PRESENCE_READ_ID = "connections_premint.oauth_grant_presence"
+
 
 def _requested_provider(slug: str) -> Provider | None:
     """The registry provider ``slug`` names, or None."""
@@ -456,3 +470,91 @@ async def api_connections_cancel(request: web.Request) -> web.Response:
         )
     )
     return web.json_response({"ok": True, "slug": slug, "dropped": dropped})
+
+
+async def api_connections_premint(request: web.Request) -> web.Response:
+    """POST /api/connections/premint — warm every mintable provider's URL in one activation.
+
+    The page fires this once on mount, ahead of any click, so that a Connect
+    serves a URL the warm table already holds instead of paying a cold spawn.
+    Takes no body: what is mintable is a fact about the user's registry and grant
+    state, never a caller's choice, and the bound on what may be spawned has to
+    stay on this side of the wire.
+
+    ``preminting`` names the providers warming was STARTED for, which is why the
+    response can precede any of them holding a URL. Warming one provider costs
+    seconds and the whole activation is a single shared process, so awaiting it
+    would stall the page's first paint for the sake of a report the card already
+    gets from its own mint feed. A slug reported here can still end up without a
+    URL -- the activation snapshot is the engine's to compute -- so the card's
+    verdict remains the mint state, not this list.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    # Owner-gated for the same reason as the mint POST: warming spawns a kiro-cli
+    # process, so the caller has to be the owner rather than merely authenticated.
+    owner_denied = await require_owner_dashboard_request(request, "connections_premint")
+    if owner_denied is not None:
+        return owner_denied
+
+    # Function-local by DESIGN, not for a cycle: the handlers package is imported on
+    # the gateway boot path, and the warm engine imports the cold mint at module
+    # scope then adds the ACP runtime and the MCP inventory on top -- the heaviest
+    # half of Connections. test_the_handlers_package_does_not_import_the_warm_engine
+    # enforces it in a subprocess; hoisting this to module scope turns that red.
+    from kiro_crew.connections.warm import mintable_providers, warm_mint_all
+
+    # Off the loop: the scan reads the user's MCP config and stats kiro-cli's OAuth
+    # artifact directory, either of which can sit on a network mount where a stat is
+    # unbounded. warm.py routes the same call through a thread for this reason and
+    # pins it with a drift guard.
+    candidates = await asyncio.to_thread(mintable_providers)
+    slugs = [str(provider["slug"]) for provider in candidates]
+    if not slugs:
+        # Nothing to warm: an activation with an empty claim set would spawn a
+        # process, pay the fixed activation cost and hold nothing. Nothing was acted
+        # on either, so the scan owes no audit -- see below.
+        return web.json_response({"ok": True, "preminting": []})
+
+    # The credential-store observation this endpoint ACTS on: the scan above stats
+    # kiro-cli's OAuth artifacts per provider, and reaching this line means the answer
+    # is about to spawn a warm activation. ONE event for the whole sweep, matching
+    # ``connections.status``: a single scan pass yields N answers but exactly one act
+    # decision, so per-candidate events would over-count one observation, and the
+    # per-URL ``mcp_grant.grant_observed`` wrapper would additionally have to break the
+    # scan's synchronous shape that warm.py pins with a drift guard.
+    #
+    # Off the loop because the entry point marks its events critical, which drains the
+    # SEL queue synchronously -- the same reason the log_api_access calls here are
+    # threaded. Best-effort, NOT fail-closed: the artifacts are stat-ed and never
+    # opened, so no credential material crosses this boundary, and refusing to warm on
+    # an SEL outage would make every Connect pay a cold spawn instead. An unaudited
+    # boolean is the lesser failure, and it leaves a warning behind.
+    if not await asyncio.to_thread(
+        hooks.emit_internal_read_audit, _GRANT_PRESENCE_READ_ID, "success"
+    ):
+        logger.warning(
+            "grant-presence audit for the premint scan could not be recorded; "
+            "proceeding unaudited"
+        )
+
+    # The candidates are PASSED rather than re-derived inside the engine, so the
+    # claim set and this response come from one scan. Two independent scans can
+    # disagree -- a consent completing between them drops a provider -- and the
+    # response would then name a slug nothing ever claimed.
+    task = asyncio.create_task(warm_mint_all(candidates))
+    _premint_tasks.add(task)
+    task.add_done_callback(_premint_tasks.discard)
+
+    # Off the loop for the same reason as api_connections_mint: this handler can be
+    # the first state-changing request a fresh gateway serves, and the FIRST sel()
+    # of a process constructs the log.
+    await asyncio.to_thread(
+        lambda: sel().log_api_access(
+            caller="dashboard",
+            operation="connections_premint",
+            outcome="started",
+            resources=f"providers:{len(slugs)}",
+        )
+    )
+    return web.json_response({"ok": True, "preminting": slugs})

@@ -2990,6 +2990,23 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # ``status.reconcile_connected_since`` for why that boundary is
     # best-effort rather than fail-closed (stats only, no bytes returned).
     "connections_status.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
+    # Class 2, same artifacts and same posture again: the premint endpoint
+    # (``dashboard.handlers.connections.api_connections_premint``) reaches the warm
+    # engine's candidate scan, which STATS the paired grant artifacts for every
+    # registry provider to decide which ones still need a URL minted.
+    #
+    # A separate id from the mint's and the status module's, so the trail names the
+    # surface that looked. ONE event per activation rather than one per candidate:
+    # the scan is a single pass whose N answers feed exactly one act decision (spawn
+    # the shared warm process, or do not), so per-candidate events would over-count
+    # one observation and, because this entry point marks its events critical, drain
+    # the queue N times for a single page mount. Audited only when the endpoint ACTS
+    # -- an empty candidate set returns early without spawning, persisting, or
+    # reporting any grant answer, so a page mounted against a fully-authorized
+    # gallery writes nothing. Best-effort rather than fail-closed for the same reason
+    # as the two entries above (stats only, no bytes returned); see
+    # ``api_connections_premint`` for why refusing would be the worse failure.
+    "connections_premint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
 }
 
 

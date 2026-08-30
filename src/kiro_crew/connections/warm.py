@@ -98,9 +98,10 @@ where a stat is unbounded -- so they are synchronous, and a coroutine reaches th
 ``asyncio.to_thread``. Enforced by a fixed-point drift guard in
 ``test/test_connections_warm.py``, not merely described here.
 
-SEAM left open: :func:`warm_mint_all` has NO CALLER yet. The dashboard endpoint that
-premints a whole gallery is its own slice, so nothing here is reachable from a request
-today. Proactive refresh attaches in :func:`_warm_mint_reaper` when slice N3 lands.
+REQUEST PATH: :func:`warm_mint_all` is driven by ``POST /api/connections/premint``, which the
+Connections page fires once on mount. The endpoint scans the candidates and hands them over,
+so the slugs it reports and the rows the engine claims come from one registry read. Proactive
+refresh attaches in :func:`_warm_mint_reaper` when slice N3 lands.
 """
 
 from __future__ import annotations
@@ -1481,7 +1482,9 @@ async def warm_mint_all(providers: list[Provider] | None = None) -> list[str]:
     lock holder computes, so a claim the activation did not cover is released rather than
     left minting forever.
 
-    NO CALLER YET: the premint endpoint that drives this lands in its own slice.
+    ``POST /api/connections/premint`` passes the candidates it scanned, so an explicit
+    ``providers`` is the ordinary call shape; ``None`` re-scans for a caller that has no
+    list of its own.
     """
     candidates = (
         await asyncio.to_thread(mintable_providers) if providers is None else list(providers)
