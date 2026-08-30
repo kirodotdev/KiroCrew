@@ -1,4 +1,4 @@
-const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen, crashReporter } = require("electron");
+const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen, crashReporter, contentTracing } = require("electron");
 const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
@@ -83,8 +83,8 @@ const {
 } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
 const { createMetricsRecorder, profilingEnabled } = require("./perf-metrics");
-const { createPierrePerfLog } = require("./pierre-perf-log");
-const { createBigAllocLog } = require("./big-alloc-log");
+const { createMemoryWatchLog } = require("./memory-watch-log");
+const { createCageTrace } = require("./cage-trace");
 const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
 const { initMochi, shutdownMochi } = require("./mochi/index");
 const { borrowSessionToken } = require("./mochi-session-token");
@@ -433,19 +433,37 @@ function glog(line) {
   console.log(`[gateway-launch] ${line}`);
 }
 
-// Highlight-churn history for the renderer-crash post-mortem. Module scope
-// because the reports arrive on an ipcMain channel while the flush happens in
-// the window's render-process-gone handler. Holds only plain numbers, bounded to
-// its capacity, and writes nothing until a crash.
-const pierrePerfLog = createPierrePerfLog();
+// Renderer memory trajectory for the crash post-mortem. Module scope because the
+// samples arrive on an ipcMain channel while the flush happens in the window's
+// render-process-gone handler. Holds only plain numbers, bounded to its capacity,
+// and writes nothing until a crash.
+//
+// This one buffer replaces the two identical ones that preceded it
+// (pierre-perf-log + big-alloc-log). They measured allocation PATHS in committed
+// bytes; the renderer dies on the V8 cage's ADDRESS SPACE at 0.5% object-heap
+// occupancy, so both were reading a quantity that can stay flat through the
+// failure. See memory-watch-log.js for the full reasoning.
+const memoryWatchLog = createMemoryWatchLog();
 
-// Sibling of pierrePerfLog for large binary allocations (src/lib/allocWatch.ts):
-// the native log shows the renderer OOMs on the V8 cage with a near-empty JS
-// heap, i.e. on a big ArrayBuffer/TypedArray backing store whose stack V8 could
-// not capture. This buffers the allocation sites reported before each large
-// allocation and flushes them on render-process-gone. Bounded, writes nothing
-// until a crash.
-const bigAllocLog = createBigAllocLog();
+// The authoritative cage figure, armed by the trajectory above rather than run
+// continuously. `external` growth is committed bytes and can miss a cage
+// exhausted purely by RESERVATION (a wasm guard region, a resizable
+// ArrayBuffer's maxByteLength), so when growth appears this records
+// memory-infra's `partition_alloc/partitions/array_buffer` virtual_size — the one
+// figure that is reserved address space. Bounded, cooled down, and capped per
+// run; see cage-trace.js.
+//
+// The path is keyed by the capture's ordinal, NOT by a timestamp: a timestamped
+// name is unique per launch, so repeated capture-triggering runs would pile up
+// multi-MB traces in the logs directory forever. Reusing a fixed set of slots
+// caps the traces on disk at `maxCaptures` files for the lifetime of the install,
+// and the `[cage-trace] capture N written` line in gateway-launch.log carries the
+// timestamp that correlates a slot back to the crash it belongs to.
+const cageTrace = createCageTrace({
+  contentTracing,
+  tracePath: (slot) => path.join(app.getPath("logs"), `cage-trace-${slot}.json`),
+  log: (msg) => glog(msg),
+});
 
 // ── Cross-app gateway ownership (shared ~/.kiro/crew, shared port) ─────────
 // The nightly app and the production app are different bundles sharing one
@@ -2376,22 +2394,27 @@ function createWindow() {
     },
   });
   mainWindow.webContents.on("render-process-gone", (_e, details) => {
-    // Flush the highlight history FIRST so the log reads in causal order: what
-    // the highlighter was doing, then the death and what the processes had grown
-    // to. Unconditional -- this is the moment the buffer was kept for, and it is
-    // also the one moment the write cost is justified. An empty flush is itself
-    // informative: no highlighting in the last two minutes points away from the
-    // Pierre worker pool as the cause.
-    for (const line of pierrePerfLog.flush()) glog(line);
-    // Then the large-allocation history: on a cage OOM the last entries name the
-    // binary buffer that pierre-perf's near-empty heap numbers cannot. Also
-    // unconditional. An empty flush rules out only LARGE JS-CONSTRUCTED buffers
-    // IN THE MAIN FRAME: the watcher sees JS constructor calls at or above its
-    // threshold in the top-level document, so a cage exhausted by host-API
-    // backing stores, cumulative sub-threshold buffers, a grown resizable
-    // ArrayBuffer, or allocations made off the main frame (workers, subframes,
-    // WASM memory) flushes empty too.
-    for (const line of bigAllocLog.flush()) glog(line);
+    // Flush the memory trajectory FIRST so the log reads in causal order: how
+    // memory was moving, then the death and what the processes had grown to.
+    // Unconditional -- this is the moment the buffer was kept for, and it is also
+    // the one moment the write cost is justified.
+    //
+    // How to read the summary. `externalDelta` climbing into the hundreds of MB
+    // while `peakJsHeap` stays flat is backing-store growth, and the culprit is a
+    // cage resident: the trace file (if one armed) names the partition.
+    // `externalDelta` near zero does NOT exonerate buffers on its own -- external
+    // memory is COMMITTED bytes, and a cage can be exhausted by RESERVATION alone
+    // (a wasm32 guard region, a resizable ArrayBuffer's maxByteLength), which only
+    // the cage trace's virtual_size can see. And `externalMoved=NO-FROZEN-VALUE`
+    // means the instrument itself is not measuring: performance.memory is
+    // bucketized and cached for 20 minutes unless precise memory info is on, so
+    // treat that verdict as a broken probe, not as a flat trend.
+    for (const line of memoryWatchLog.flush()) glog(line);
+    // Then land any capture that was in flight. A renderer dying mid-capture is
+    // the most valuable trace there is, and an unstopped recording is never
+    // written to disk at all -- so this must run even though the process is
+    // already gone.
+    void cageTrace.stopForCrash();
     rendererRecovery.handleGone(details || {});
   });
 
@@ -4105,48 +4128,41 @@ app.whenReady().then(async () => {
     }
   });
 
-  // Pierre highlight-churn reports (src/lib/pierrePerf.ts). Buffered in memory
-  // and flushed to the log only when the renderer dies -- see pierre-perf-log.js
-  // for why nothing is written in steady state (glog has no rotation, so a line
-  // every few seconds would grow the user's log without bound).
+  // Renderer memory-trajectory samples (src/lib/memoryWatch.ts). Buffered in
+  // memory and flushed to the log only when the renderer dies -- see
+  // memory-watch-log.js for why nothing is written in steady state (glog has no
+  // rotation, so a line every few seconds would grow the user's log without
+  // bound).
   //
-  // The payoff: every future renderer crash carries the two minutes of
-  // highlighter activity that preceded it, on a normal install, with no env var
-  // set ahead of time.
+  // The payoff over the two probes this replaces: every future renderer crash
+  // carries the five minutes of MEMORY MOVEMENT that preceded it, measured on the
+  // resource that actually runs out. The previous instruments recorded allocation
+  // paths in committed bytes, and the crash is a cage ADDRESS-SPACE exhaustion at
+  // 0.5% object-heap occupancy -- so they could report healthy right up to the
+  // abort, which is what they did across 11 consecutive crashes.
   //
-  // KIROCREW_DEBUG additionally logs each window as it arrives, for watching a
+  // KIROCREW_DEBUG additionally logs each sample as it arrives, for watching a
   // live reproduction instead of reading a post-mortem. Checked per message so
   // toggling the variable needs no rebuild.
-  ipcMain.on("pierre-perf", (_event, w) => {
-    // Only the primary renderer's activity belongs in this buffer. The channel is
-    // reachable from any window that loads the shared preload (companion panels,
-    // secondary dashboards), but the flush is triggered by THIS window's
-    // render-process-gone -- so accepting a sibling's reports would file its
-    // highlighting under the primary renderer's crash history and point the
+  ipcMain.on("memory-sample", (_event, s) => {
+    // Only the primary renderer's trajectory belongs in this buffer. The channel
+    // is reachable from any window that loads the shared preload (companion
+    // panels, secondary dashboards), but the flush is triggered by THIS window's
+    // render-process-gone -- so accepting a sibling's samples would file its
+    // memory growth under the primary renderer's crash history and point the
     // post-mortem at the wrong process. Mis-attributed evidence is worse than
     // none, because it is acted upon.
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (_event.sender !== mainWindow.webContents) return;
-    if (!pierrePerfLog.record(w)) return;
+    if (!memoryWatchLog.record(s)) return;
+    // Let the cheap always-on series decide when the expensive authoritative one
+    // runs. A detailed memory-infra dump walks every allocator in every process,
+    // so it is not something to hold on continuously for a crash that happens a
+    // few times a week -- but the run-up to this crash IS growth, which is exactly
+    // the signal available here.
+    void cageTrace.considerArming(memoryWatchLog.oldestExternalKB(), memoryWatchLog.latestExternalKB());
     if (!profilingEnabled(process.env)) return;
-    const line = pierrePerfLog.lastLine();
-    if (line) glog(line);
-  });
-
-  // Large binary-allocation reports (src/lib/allocWatch.ts). Buffered in memory
-  // and flushed on render-process-gone next to the crash line — the last entries
-  // name the ArrayBuffer/TypedArray behind a V8 cage OOM, which pierre-perf's
-  // heap numbers show but cannot attribute. Steady state writes nothing (glog has
-  // no rotation); KIROCREW_DEBUG logs each event as it arrives for a live repro.
-  ipcMain.on("big-alloc", (_event, ev) => {
-    // Same primary-renderer discipline as pierre-perf: the flush is triggered by
-    // THIS window's death, so a sibling window's report would be filed under the
-    // wrong process's crash history. Mis-attributed evidence is worse than none.
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (_event.sender !== mainWindow.webContents) return;
-    if (!bigAllocLog.record(ev)) return;
-    if (!profilingEnabled(process.env)) return;
-    const line = bigAllocLog.lastLine();
+    const line = memoryWatchLog.lastLine();
     if (line) glog(line);
   });
 
@@ -4358,6 +4374,14 @@ app.on("before-quit", () => {
   isQuitting = true;
   // Flush the final metrics window before the gateway teardown begins.
   try { if (desktopMetricsRecorder) desktopMetricsRecorder.stop(); } catch { /* best effort */ }
+  // Land an armed cage capture before teardown. Its window timer is unref'd so it
+  // will never fire during shutdown, and stopRecording is the only thing that
+  // writes the trace -- without this call the capture still running when the
+  // session ended, often the most interesting one, is discarded outright.
+  // Best-effort by design: before-quit cannot await, and we deliberately do NOT
+  // preventDefault to buy time, because a diagnostic that can stall a user's quit
+  // is worse than a trace that occasionally loses the race.
+  void cageTrace.stopForQuit();
   shutdownMochi();
   try { shutdownCrewCompanion(); } catch { /* best effort */ }
   stopGateway();

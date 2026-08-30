@@ -2,7 +2,7 @@
 // FIRST (before store/providers/App) so seam registrations run before render.
 // Empty in the stock build. See website/src/extensions.ts.
 import './extensions'
-import { installAllocWatch } from './lib/allocWatch'
+import { startMemoryWatch } from './lib/memoryWatch'
 import React, { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import { withCommitProfiler, installCommitProfilerConsoleApi } from './lib/commitProfiler'
@@ -125,12 +125,13 @@ if (!isEmbeddedPane()) {
 
 const WorldsPopout = lazy(() => import('./pages/WorldsPopout'))
 
-// Patch the buffer-allocating constructors before app code allocates, so a large
-// ArrayBuffer/TypedArray that precedes a V8 cage OOM is reported to the main
-// process (and flushed next to the crash line) instead of dying unnamed with the
-// renderer. Cheap, idempotent, and no-ops when there is no main process to
-// report to (a plain-browser dashboard).
-installAllocWatch()
+// Sample this renderer's memory trajectory so a V8 cage OOM has a before, not
+// just an after. Reports V8 external memory (backing stores + external strings),
+// which is where EVERY ArrayBuffer lands regardless of which API created it --
+// unlike the constructor wrap this replaces, which saw one of ~25 allocation
+// paths in one realm. Cheap (four integers per 5s), and no-ops when there is no
+// main process to report to (a plain-browser dashboard).
+startMemoryWatch('main')
 
 // Debug-only, and inert unless explicitly armed with ?profile=commits. When
 // disarmed withCommitProfiler returns the children untouched, so no Profiler

@@ -88,6 +88,16 @@ function nativeLoggingSwitches(logPath) {
     // GUI launch we are compensating for would throw away again.
     ["enable-logging", "file"],
     ["log-file", String(logPath)],
+    // Makes `performance.memory` exact and uncached. Without it Chromium
+    // BUCKETIZES those values and caches them for 20 MINUTES unless the renderer
+    // happens to be locked to a site -- so a memory probe reading it can return a
+    // plausible-looking constant forever and be misread as "flat and healthy".
+    // The renderer-memory trajectory (src/lib/memoryWatch.ts) derives V8 external
+    // memory from that reading, so this switch is what makes its series real; its
+    // flush reports `externalMoved=NO-FROZEN-VALUE` if the number never changes,
+    // which is the check that this switch actually took effect. Value-less switch,
+    // so the empty string is the whole argument.
+    ["enable-precise-memory-info", ""],
   ];
 }
 

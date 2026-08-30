@@ -59,6 +59,11 @@ describe("nativeLoggingSwitches", () => {
     assert.deepEqual(nativeLoggingSwitches("/tmp/c.log"), [
       ["enable-logging", "file"],
       ["log-file", "/tmp/c.log"],
+      // Value-less switch, so the empty string is the whole argument. It makes
+      // performance.memory exact and uncached, which is what the renderer memory
+      // trajectory reads -- without it those values are bucketized and cached for
+      // 20 minutes, and a memory probe reading them returns a plausible constant.
+      ["enable-precise-memory-info", ""],
     ]);
   });
 
@@ -135,17 +140,18 @@ describe("initNativeLogging", () => {
     return { applied, started, lines, result, fs };
   }
 
-  it("applies both switches and starts the crash reporter", () => {
+  it("applies every switch and starts the crash reporter", () => {
     const { applied, started, result } = harness();
     assert.deepEqual(applied, [
       ["enable-logging", "file"],
       ["log-file", LIVE],
+      ["enable-precise-memory-info", ""],
     ]);
     assert.equal(started.length, 1);
     assert.equal(result.crashReporter, true);
     assert.equal(result.rotated, true);
     assert.equal(result.previousPath, PREV);
-    assert.deepEqual(result.switches, ["enable-logging", "log-file"]);
+    assert.deepEqual(result.switches, ["enable-logging", "log-file", "enable-precise-memory-info"]);
   });
 
   // The one non-negotiable option: this app does not phone home, so a minidump
@@ -170,7 +176,7 @@ describe("initNativeLogging", () => {
         if (n === "enable-logging") throw new Error("refused");
       },
     });
-    assert.deepEqual(result.switches, ["log-file"]);
+    assert.deepEqual(result.switches, ["log-file", "enable-precise-memory-info"]);
     assert.ok(lines.some((l) => /refused/.test(l)));
   });
 
@@ -181,7 +187,7 @@ describe("initNativeLogging", () => {
       },
     });
     assert.equal(result.crashReporter, false);
-    assert.deepEqual(result.switches, ["enable-logging", "log-file"]);
+    assert.deepEqual(result.switches, ["enable-logging", "log-file", "enable-precise-memory-info"]);
     assert.ok(lines.some((l) => /no dump dir/.test(l)));
   });
 
@@ -189,7 +195,7 @@ describe("initNativeLogging", () => {
     const { result, started } = harness({ startCrashReporter: undefined });
     assert.equal(result.crashReporter, false);
     assert.equal(started.length, 0);
-    assert.deepEqual(result.switches, ["enable-logging", "log-file"]);
+    assert.deepEqual(result.switches, ["enable-logging", "log-file", "enable-precise-memory-info"]);
   });
 
   it("skips rotation when no fs is supplied", () => {
@@ -197,7 +203,7 @@ describe("initNativeLogging", () => {
     assert.equal(result.rotated, false);
     assert.equal(result.blocked, false);
     assert.equal(result.previousPath, null);
-    assert.deepEqual(result.switches, ["enable-logging", "log-file"]);
+    assert.deepEqual(result.switches, ["enable-logging", "log-file", "enable-precise-memory-info"]);
   });
 
   // THE fail-safe. A blocked rotation leaves the un-rotated live log holding the
