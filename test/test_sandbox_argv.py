@@ -415,8 +415,87 @@ class TestBuildSeatbeltProfile:
 
         path, descriptor = sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace")
 
-        assert (path, descriptor) == ("/dev/fd/41", 41)
+        # The pathname comes back UNCHANGED, with the descriptor beside it. The
+        # earlier spelling returned "/dev/fd/41" as the spawn's cwd, which only
+        # Linux can chdir -- on macOS, the one platform that binds, every spawn
+        # died with EACCES. The descriptor now travels as create_subprocess_limited's
+        # ``chdir_fd`` and is entered with fchdir instead.
+        assert (path, descriptor) == ("/mutable/workspace", 41)
+        assert "/dev/fd" not in path
         assert closed == [42]
+
+    def test_bound_session_target_is_read_off_the_descriptor(self, monkeypatch, tmp_path):
+        """A peer that can only take a pathname gets the DESCRIPTOR's own name.
+
+        Handing back the caller's spelling would leave a same-UID retarget between
+        this check and the peer's own resolution, which is the window the binding
+        exists to close.
+        """
+        monkeypatch.setattr(
+            sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
+        )
+        monkeypatch.setattr(
+            "kiro_crew.hooks._fd_real_path", lambda _fd: "/canonical/workspace"
+        )
+
+        assert (
+            sandbox_mod.bound_agent_workspace_target(41, "/mutable/workspace")
+            == "/canonical/workspace"
+        )
+
+    def test_bound_session_target_is_none_for_a_workspace_that_is_not_bound(self, monkeypatch):
+        monkeypatch.setattr(
+            sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: False
+        )
+
+        assert sandbox_mod.bound_agent_workspace_target(41, "/other/workspace") is None
+
+    def test_bound_session_target_fails_closed_when_the_name_cannot_be_read(self, monkeypatch):
+        """No fallback to the mutable pathname: that is the string under attack."""
+        monkeypatch.setattr(
+            sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
+        )
+        monkeypatch.setattr("kiro_crew.hooks._fd_real_path", lambda _fd: None)
+
+        with pytest.raises(OSError):
+            sandbox_mod.bound_agent_workspace_target(41, "/mutable/workspace")
+
+    @pytest.mark.asyncio
+    async def test_shared_session_resolver_substitutes_the_descriptor_name(self, monkeypatch):
+        """One rule for both ACP front ends, so the two halves cannot drift."""
+        monkeypatch.setattr(
+            sandbox_mod, "bound_agent_workspace_target", lambda *_args: "/canonical/workspace"
+        )
+
+        resolved = await sandbox_mod.resolve_bound_session_workspace(41, "/mutable/workspace")
+
+        assert resolved == "/canonical/workspace"
+
+    @pytest.mark.asyncio
+    async def test_shared_session_resolver_raises_on_a_workspace_that_is_not_bound(
+        self, monkeypatch
+    ):
+        """A distinct error, so each caller maps it to its own type without restating it."""
+        monkeypatch.setattr(sandbox_mod, "bound_agent_workspace_target", lambda *_args: None)
+
+        with pytest.raises(sandbox_mod.BoundWorkspaceMismatch):
+            await sandbox_mod.resolve_bound_session_workspace(41, "/other/workspace")
+
+    @pytest.mark.asyncio
+    async def test_shared_session_resolver_runs_off_the_event_loop(self, monkeypatch):
+        """It opens a directory and reads a descriptor's name on every session start."""
+        loop_thread = threading.get_ident()
+        ran_on: list[int] = []
+
+        def record(_descriptor, _workspace):
+            ran_on.append(threading.get_ident())
+            return "/canonical/workspace"
+
+        monkeypatch.setattr(sandbox_mod, "bound_agent_workspace_target", record)
+
+        await sandbox_mod.resolve_bound_session_workspace(41, "/mutable/workspace")
+
+        assert ran_on and ran_on[0] != loop_thread
 
     def test_macos_workspace_binding_rejects_opened_runtime_ancestor(self, monkeypatch):
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")

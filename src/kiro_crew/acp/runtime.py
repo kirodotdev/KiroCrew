@@ -99,12 +99,13 @@ from kiro_crew.metrics.events import (
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
+    BoundWorkspaceMismatch,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
-    bound_agent_workspace_matches,
     cgroup_scope_argv,
     create_subprocess_limited,
     release_bound_agent_workspace,
+    resolve_bound_session_workspace,
     scrub_agent_subprocess_env,
     wrap_argv,
     wrap_argv_async,
@@ -995,25 +996,34 @@ class AcpRuntime:
         if self._bound_workspace_fd is None:
             return cwd if cwd else self._work_dir
         requested = cwd if cwd else self._work_dir
+        # The shared rule lives in sandbox.resolve_bound_session_workspace; only the
+        # error mapping is this front end's. What the peer receives is the BOUND
+        # DESCRIPTOR's own name, not the caller's spelling -- that one is what a
+        # symlink swap controls, and it can name a descendant this check never
+        # covered.
+        #
+        # What no string here can do is bind the PEER's own resolution.
+        # ``session/new`` carries a cwd STRING that a separate process re-resolves
+        # after this returns, so a same-UID rename of the canonical directory in that
+        # window remains open; that is a property of the protocol boundary, not of the
+        # spelling. ``/dev/fd/<n>`` is not the alternative: the binding is darwin-only
+        # (see bind_voice_safe_agent_workspace, which returns no descriptor off
+        # macOS), and macOS cannot resolve those entries at all -- the very bug this
+        # change exists to fix, i.e. that spelling never delivered a working session
+        # cwd, let alone a safer one. The agent PROCESS's own cwd is pinned by
+        # descriptor at spawn (create_subprocess_limited's chdir_fd), which is the
+        # part that does not go through a name.
         try:
-            matches = await asyncio.to_thread(
-                bound_agent_workspace_matches,
-                self._bound_workspace_fd,
-                requested,
-            )
+            return await resolve_bound_session_workspace(self._bound_workspace_fd, requested)
+        except BoundWorkspaceMismatch as exc:
+            raise AcpWorkspaceBindingError(
+                "A delegated macOS Kiro runtime is bound to one exact workspace; "
+                "create a runtime bound to the requested workspace"
+            ) from exc
         except OSError as exc:
             raise AcpWorkspaceBindingError(
                 "Cannot verify the requested macOS session workspace"
             ) from exc
-        if not matches:
-            raise AcpWorkspaceBindingError(
-                "A delegated macOS Kiro runtime is bound to one exact workspace; "
-                "create a runtime bound to the requested workspace"
-            )
-        # Return only the inherited descriptor.  Appending a descendant suffix
-        # would perform mutable pathname lookup in the child after this check,
-        # reopening the same-UID symlink-retarget window the binding closes.
-        return f"/dev/fd/{self._bound_workspace_fd}"
 
     async def _to_thread_guarding_sandbox(
         self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
@@ -1263,43 +1273,34 @@ class AcpRuntime:
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
-            if self._bound_workspace_fd is not None:
-                self._process = await create_subprocess_limited(
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=self._spawn_work_dir,
-                    limit=_STDOUT_BUFFER_LIMIT,
-                    start_new_session=platform_compat.IS_POSIX,
-                    creationflags=0,
-                    pass_fds=(self._bound_workspace_fd,),
-                    env=env,
-                    profile=RLIMIT_PROFILE_SESSION_HOST,
-                )
-            else:
-                self._process = await create_subprocess_limited(
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=self._spawn_work_dir,
-                    limit=_STDOUT_BUFFER_LIMIT,
-                    # POSIX: setsid so kill() can killpg the whole tree. Windows:
-                    # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
-                    # makes the child tree taskkill /T-reapable (see platform_compat
-                    # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
-                    # window Windows would otherwise pop for this console child spawned
-                    # from the windowless gateway (0 on POSIX, so no effect there).
-                    start_new_session=platform_compat.IS_POSIX,
-                    creationflags=(
-                        platform_compat.CREATE_NEW_PROCESS_GROUP
-                        | platform_compat._SUBPROCESS_NO_WINDOW
-                        | platform_compat.CREATE_SUSPENDED
-                    ),
-                    env=env,
-                    profile=RLIMIT_PROFILE_SESSION_HOST,
-                )
+            self._process = await create_subprocess_limited(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._spawn_work_dir,
+                limit=_STDOUT_BUFFER_LIMIT,
+                # POSIX: setsid so kill() can killpg the whole tree. Windows:
+                # start_new_session is silently ignored; CREATE_NEW_PROCESS_GROUP
+                # makes the child tree taskkill /T-reapable (see platform_compat
+                # spawn-isolation note). CREATE_NO_WINDOW suppresses the console
+                # window Windows would otherwise pop for this console child spawned
+                # from the windowless gateway (0 on POSIX, so no effect there).
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=(
+                    platform_compat.CREATE_NEW_PROCESS_GROUP
+                    | platform_compat._SUBPROCESS_NO_WINDOW
+                    | platform_compat.CREATE_SUSPENDED
+                ),
+                # None off macOS, where nothing binds. When set, the child enters
+                # the workspace through this verified descriptor instead of
+                # resolving ``cwd``'s pathname, which a same-UID symlink retarget
+                # could aim elsewhere in between; ``cwd`` stays the same directory
+                # by name so the spawn keeps reporting a real path.
+                chdir_fd=self._bound_workspace_fd,
+                env=env,
+                profile=RLIMIT_PROFILE_SESSION_HOST,
+            )
         except BaseException:
             await self._discard_bound_workspace()
             self._discard_sandbox_cleanup()

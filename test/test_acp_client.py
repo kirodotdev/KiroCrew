@@ -901,6 +901,67 @@ class TestSpawnStderrDrainCleanup:
 
 
 @pytest.mark.asyncio
+async def test_unbound_client_session_cwd_is_the_spawn_pathname(tmp_path):
+    """Off macOS nothing binds, so there is no descriptor to re-verify."""
+    client = AcpClient(work_dir=tmp_path)
+
+    assert client._bound_workspace_fd is None
+    assert await client._session_work_dir() == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_bound_client_session_cwd_is_read_off_the_descriptor(tmp_path, monkeypatch):
+    """The sibling of AcpRuntime._session_work_dir: same rule, same reason.
+
+    session/new and session/load carry a cwd STRING the peer re-resolves, so the
+    bind-time spelling -- the one a symlink swap controls -- is re-verified and
+    replaced with the descriptor's own name before it is handed over.
+    """
+    client = AcpClient(work_dir=tmp_path)
+    client._bound_workspace_fd = 81
+    client._spawn_work_dir = str(tmp_path)
+    target = AsyncMock(return_value="/canonical/workspace")
+    monkeypatch.setattr(acp_client, "resolve_bound_session_workspace", target)
+
+    assert await client._session_work_dir() == "/canonical/workspace"
+    target.assert_awaited_once_with(81, str(tmp_path))
+
+
+@pytest.mark.asyncio
+async def test_bound_client_session_cwd_fails_rather_than_handing_over_the_spelling(
+    tmp_path, monkeypatch
+):
+    """A workspace that no longer names the bound identity is not a fallback."""
+    client = AcpClient(work_dir=tmp_path)
+    client._bound_workspace_fd = 82
+    client._spawn_work_dir = str(tmp_path)
+    monkeypatch.setattr(
+        acp_client,
+        "resolve_bound_session_workspace",
+        AsyncMock(side_effect=acp_client.BoundWorkspaceMismatch("not-bound")),
+    )
+
+    with pytest.raises(AcpError, match="exact workspace"):
+        await client._session_work_dir()
+
+
+@pytest.mark.asyncio
+async def test_bound_client_session_cwd_fails_when_the_name_cannot_be_read(tmp_path, monkeypatch):
+    """Fail closed, for the same reason bound_agent_workspace_target raises."""
+    client = AcpClient(work_dir=tmp_path)
+    client._bound_workspace_fd = 83
+    client._spawn_work_dir = str(tmp_path)
+    monkeypatch.setattr(
+        acp_client,
+        "resolve_bound_session_workspace",
+        AsyncMock(side_effect=OSError("no F_GETPATH here")),
+    )
+
+    with pytest.raises(AcpError, match="Cannot verify"):
+        await client._session_work_dir()
+
+
+@pytest.mark.asyncio
 async def test_failed_live_spawn_cleanup_releases_workspace_when_kill_is_cancelled(tmp_path):
     client = AcpClient(work_dir=tmp_path)
     client._bound_workspace_fd = 74

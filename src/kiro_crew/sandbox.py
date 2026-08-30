@@ -451,9 +451,21 @@ def bind_voice_safe_agent_workspace(
 
     A pathname-only overlap check has an unavoidable check/use window: another
     sandboxed process can retarget a workspace symlink after ``stat`` and before
-    Kiro initializes its own sandbox. On macOS, open the workspace first, compare
-    directory ancestry entirely through descriptors, and make the child chdir via
-    that descriptor. The returned descriptor must stay open until the child exits.
+    Kiro initializes its own sandbox. On macOS, open the workspace first and
+    compare directory ancestry entirely through descriptors.
+
+    The descriptor is returned ALONGSIDE the pathname, never baked into it. The
+    child enters it with ``fchdir`` (see ``create_subprocess_limited``'s
+    ``chdir_fd``), so nothing re-resolves the name. Handing the spawn a
+    ``cwd="/dev/fd/<n>"`` pathname instead does not work: only Linux publishes
+    those entries as symlinks to the target, and on macOS -- the only platform
+    that binds here at all -- ``chdir()`` on one is refused (``EACCES`` on one
+    reporting host, ``ENOTDIR`` on macOS 26), which is every delegated spawn on a
+    packaged build.
+
+    The returned descriptor must stay open as long as the caller re-verifies the
+    binding through :func:`bound_agent_workspace_target`. The child's copy is
+    independent, so closing this one does not disturb a running agent.
 
     Other platforms keep their original pathname and do not inherit a descriptor.
     """
@@ -481,7 +493,7 @@ def bind_voice_safe_agent_workspace(
                     "runtime; keep the workspace and Kiro Crew data home disjoint"
                 )
 
-        return f"/dev/fd/{workspace_fd}", workspace_fd
+        return workspace_path, workspace_fd
     except OSError as exc:
         if workspace_fd >= 0:
             os.close(workspace_fd)
@@ -558,7 +570,7 @@ async def bind_voice_safe_agent_workspace_async(
     raise cancellation
 
 
-def bound_agent_workspace_matches(descriptor: int, workspace: str | os.PathLike[str]) -> bool:
+def _bound_agent_workspace_matches(descriptor: int, workspace: str | os.PathLike[str]) -> bool:
     """Whether *workspace* currently names an already-bound directory identity.
 
     The caller uses the bound identity after this comparison, never the supplied
@@ -571,6 +583,72 @@ def bound_agent_workspace_matches(descriptor: int, workspace: str | os.PathLike[
         return (expected.st_dev, expected.st_ino) == (actual.st_dev, actual.st_ino)
     finally:
         os.close(candidate)
+
+
+def bound_agent_workspace_target(descriptor: int, workspace: str | os.PathLike[str]) -> str | None:
+    """The bound directory's OWN pathname, or None when *workspace* is not it.
+
+    The identity check and the name read are one call because a caller needs both
+    in the same worker hop, and because returning the caller's own pathname would
+    defeat the check: that string is exactly what a same-UID retarget controls,
+    and a peer handed it re-resolves it after this returns.
+
+    What comes back is the kernel's name for the descriptor that was verified
+    (``/proc/self/fd`` on Linux, ``F_GETPATH`` on macOS), so it carries no symlink
+    component left to swap and it cannot name a descendant the check never covered.
+
+    It does NOT make a peer's own resolution descriptor-bound, and nothing can: a
+    pathname handed to another process is re-resolved by that process, and macOS has
+    no descriptor-addressable path namespace to hand instead (``/dev/fd/<n>`` is
+    exactly what it cannot resolve). A same-UID rename of the canonical directory
+    between this call and that resolution therefore stays open. Callers that own the
+    child's cwd should pin it with ``create_subprocess_limited``'s ``chdir_fd``,
+    which does not go through a name at all; this is for the ACP ``session/new`` cwd,
+    where a string is the only thing the protocol carries.
+
+    Raises OSError when this platform exposes no way to ask, so the caller fails
+    closed instead of falling back to the mutable spelling.
+    """
+    if not _bound_agent_workspace_matches(descriptor, workspace):
+        return None
+    # Local import: hooks imports sandbox at call time, so a module-level
+    # dependency would be circular. `_fd_real_path` is private but already
+    # borrowed this way by apps/builtins/spec_builder/backend/routes.py; issue
+    # #6907 tracks promoting it to a shared home.
+    from kiro_crew.hooks import _fd_real_path
+
+    resolved = _fd_real_path(descriptor)
+    if resolved is None:
+        raise OSError(
+            errno.ENOSYS,
+            "cannot read a bound workspace descriptor's own path on this platform",
+        )
+    return resolved
+
+
+class BoundWorkspaceMismatch(Exception):
+    """A requested session workspace is not the bound directory identity."""
+
+
+async def resolve_bound_session_workspace(
+    descriptor: int, workspace: str | os.PathLike[str]
+) -> str:
+    """Off-loop verify-then-substitute for an ACP session cwd on a bound runtime.
+
+    Both ACP front ends enforce one rule -- prove the requested path still names the
+    bound identity, then hand the peer the DESCRIPTOR's own name instead of the
+    caller's spelling -- so the rule lives here once rather than in two places that
+    can drift apart. Each caller keeps only the mapping to its own error type:
+    :class:`BoundWorkspaceMismatch` when the path is not the bound identity, OSError
+    when the binding cannot be verified at all.
+
+    Off-loop because it opens a directory and reads a descriptor's name; on the loop
+    that is filesystem IO in front of every session start.
+    """
+    resolved = await asyncio.to_thread(bound_agent_workspace_target, descriptor, workspace)
+    if resolved is None:
+        raise BoundWorkspaceMismatch(os.fspath(workspace))
+    return resolved
 
 
 def _is_policy_cache_dir(path: str) -> bool:
@@ -6328,6 +6406,13 @@ _PROFILE_OOM_BIAS = {
     RLIMIT_PROFILE_NONE: False,
 }
 
+# The shim's own argv contract, mirrored here so a cached prefix can be extended
+# for one spawn. Kept as literals rather than imported from the shim module: the
+# shim is consumed as a source string captured at import time, never imported from
+# the (agent-writable) package directory at spawn time.
+_SHIM_ARGV_SEPARATOR = "--"
+_SHIM_CHDIR_FD_FLAG = "--chdir-fd="
+
 _SHIM_ARGV_CACHE: dict[str, tuple[str, ...]] = {}
 _SHIM_UNAVAILABLE_LOGGED = False
 
@@ -6410,10 +6495,36 @@ def spawn_shim_argv(profile: str = RLIMIT_PROFILE_TOOL) -> tuple[str, ...]:
         argv.append(f"--rlimits={spec}")
     if bias:
         argv.append("--oom-bias")
-    argv.append("--")
+    argv.append(_SHIM_ARGV_SEPARATOR)
     resolved = tuple(argv)
     _SHIM_ARGV_CACHE[key] = resolved
     return resolved
+
+
+def _shim_prefix_entering_fd(prefix: "tuple[str, ...]", descriptor: int) -> "tuple[str, ...]":
+    """Return *prefix* with ``--chdir-fd`` inserted ahead of its argv separator.
+
+    Copied rather than mutated: the prefix is cached per profile, while the
+    descriptor belongs to a single spawn.
+    """
+    if not prefix or prefix[-1] != _SHIM_ARGV_SEPARATOR:
+        raise RuntimeError("spawn shim prefix is missing its argv separator")
+    return prefix[:-1] + (f"{_SHIM_CHDIR_FD_FLAG}{descriptor}", _SHIM_ARGV_SEPARATOR)
+
+
+def _pass_fds_including(passed: Any, descriptor: int) -> "tuple[int, ...]":
+    """Return *passed* with *descriptor* inherited, leaving its order alone.
+
+    The shim can only ``fchdir`` a descriptor the child actually holds, and
+    ``pass_fds`` is what carries it there: it exempts the fd from
+    ``_close_open_fds`` and clears the ``O_CLOEXEC`` the binder opens with. Owned
+    here rather than left to each caller so the flag and the inheritance cannot
+    drift apart.
+    """
+    existing = tuple(passed or ())
+    if descriptor in existing:
+        return existing
+    return existing + (descriptor,)
 
 
 def _preexec_for_profile(profile: str) -> "Callable[[], None] | None":
@@ -6469,6 +6580,24 @@ def _resolve_spawn_target(
     return found
 
 
+def _absolutely_rooted_path(env: "Mapping[str, str] | None") -> "dict[str, str]":
+    """A copy of *env* whose ``PATH`` keeps only its absolute entries.
+
+    For resolving a command when the child's working directory is pinned by
+    descriptor: a relative entry (``''``, ``.``, ``tools``) is resolved against that
+    directory, which is the one place the pin says not to trust by name. Dropping
+    them can leave ``PATH`` empty, and that is the intended outcome -- the resolve
+    then raises ``FileNotFoundError`` exactly as an unresolvable command already
+    did, rather than silently searching somewhere else.
+    """
+    source = dict(env if env is not None else os.environ)
+    raw = source.get("PATH") or os.defpath
+    source["PATH"] = os.pathsep.join(
+        entry for entry in raw.split(os.pathsep) if entry and os.path.isabs(entry)
+    )
+    return source
+
+
 def _needs_path_search(argv: "Sequence[str]") -> bool:
     """Whether ``argv[0]`` is a bare name, i.e. whether resolution touches disk."""
     name = argv[0]
@@ -6478,6 +6607,7 @@ def _needs_path_search(argv: "Sequence[str]") -> bool:
 async def create_subprocess_limited(
     *argv: str,
     profile: str = RLIMIT_PROFILE_TOOL,
+    chdir_fd: int | None = None,
     **kwargs: Any,
 ) -> asyncio.subprocess.Process:
     """``asyncio.create_subprocess_exec`` with resource limits applied post-exec.
@@ -6490,6 +6620,26 @@ async def create_subprocess_limited(
     The returned ``Process`` describes the command itself, not a wrapper -- the
     shim ``exec``s in place -- so ``pid``, ``returncode``, signal delivery, and
     ``platform_compat.kill_process_tree`` all behave as they did before.
+
+    ``chdir_fd`` pins the child's working directory to a directory IDENTITY
+    rather than to a name: the descriptor is inherited, the shim ``fchdir``s into
+    it and closes it, and only then is the command exec'd. Callers pass it when a
+    pathname re-resolved in the child could be retargeted between the check and
+    the chdir. It is deliberately not spelled ``cwd="/dev/fd/<n>"`` -- that is a
+    Linux-only trick, and macOS refuses ``chdir()`` on those entries (``EACCES`` or
+    ``ENOTDIR`` depending on the OS version). It needs the shim, and is refused rather than quietly downgraded
+    to ``cwd``'s pathname when the shim is missing: entering a name nobody
+    re-verified would reopen the window the descriptor exists to close.
+
+    Setting it also DROPS ``cwd`` from the spawn, since ``Popen`` would otherwise
+    chdir that pathname in the fork child before the shim ever runs, and narrows
+    ``PATH`` to its ABSOLUTE entries -- for the search that resolves a bare command
+    name here AND for the child's own environment. ``execvpe`` resolved a relative
+    entry against the child's cwd, the directory this descriptor exists to distrust,
+    and resolving ``argv[0]`` is not the last lookup that happens: the wrapper this
+    spawns looks its own target up on ``PATH`` after the shim has entered that
+    directory. ``PATH=.:/usr/bin`` would otherwise exec a binary out of the agent's
+    own workspace, ahead of the sandbox meant to contain it.
     """
     if "preexec_fn" in kwargs:
         raise TypeError(
@@ -6500,12 +6650,53 @@ async def create_subprocess_limited(
         raise ValueError("create_subprocess_limited requires a command")
     prefix = spawn_shim_argv(profile)
     if not prefix:
+        if chdir_fd is not None:
+            raise RuntimeError(
+                "a descriptor-pinned working directory requires the post-exec "
+                "spawn shim; refusing to enter an unverified pathname instead"
+            )
         # No shim (Windows, a no-op profile, or a truncated install): keep
         # whatever policy the profile carries on the legacy fork path. Dropping
         # the caps silently would be worse than the fork hazard.
         return await asyncio.create_subprocess_exec(
             *argv, preexec_fn=_preexec_for_profile(profile), **kwargs
         )
+    search_cwd = kwargs.get("cwd")
+    search_env = kwargs.get("env")
+    if chdir_fd is not None:
+        prefix = _shim_prefix_entering_fd(prefix, chdir_fd)
+        kwargs["pass_fds"] = _pass_fds_including(kwargs.get("pass_fds"), chdir_fd)
+        # THE INVARIANT: while the cwd is pinned by descriptor, NO resolution of a
+        # program name -- not the one below, and not one the child performs later --
+        # may consult a relative PATH entry or the pinned directory. Three things
+        # enforce it together, and each was a hole on its own:
+        #
+        # (a) `cwd` leaves the spawn. ``Popen`` chdirs it in the fork child BEFORE it
+        #     execs the shim, so leaving it in place would resolve the very pathname
+        #     the descriptor exists to bypass -- and fail the spawn outright
+        #     (EACCES/ENOENT/ENOTDIR) if that name was removed or retargeted since the
+        #     bind, with the pinned descriptor never reached.
+        # (b) The search below gets no cwd and an absolute-only PATH. A bare name IS
+        #     the normal shape here -- the macOS sandbox wrapper hands back "env" as
+        #     argv[0] and the Linux cgroup wrapper hands back "systemd-run" -- so the
+        #     search cannot simply be refused, and `execvpe` resolved a relative entry
+        #     against the child's cwd, i.e. the pinned workspace.
+        # (c) The CHILD gets that same absolute-only PATH. Resolving argv[0] here is
+        #     not the last resolution that happens: `env` looks `sandbox-exec` up on
+        #     PATH itself, inside the child, after the shim has already entered the
+        #     workspace. Narrowing only (b) left `PATH=.:/usr/bin` exec'ing a
+        #     `sandbox-exec` the agent dropped in its own workspace -- ahead of the
+        #     sandbox that was supposed to contain it. One sanitized PATH, used for
+        #     both, is what makes the invariant hold rather than move down a level.
+        #
+        # Those two wrapper names are spelled in prose on purpose: test_spawn_audit
+        # matches its routed-through-the-sandbox tokens against this function's raw
+        # source, comments included, so writing either identifier here would make the
+        # spawn chokepoint read as if it routed on its own behalf.
+        kwargs.pop("cwd", None)
+        search_cwd = None
+        search_env = _absolutely_rooted_path(search_env)
+        kwargs["env"] = search_env
     if not _needs_path_search(argv):
         # Explicit path: nothing to resolve, so no filesystem access and no
         # thread hop -- exec does the work.
@@ -6514,9 +6705,7 @@ async def create_subprocess_limited(
         # A PATH search stats every entry, so it runs off the loop. One stalled
         # NFS/autofs entry would otherwise freeze the gateway -- and the search it
         # replaces used to happen in the child, never in this process.
-        resolved = await asyncio.to_thread(
-            _resolve_spawn_target, argv, kwargs.get("env"), kwargs.get("cwd")
-        )
+        resolved = await asyncio.to_thread(_resolve_spawn_target, argv, search_env, search_cwd)
     return await asyncio.create_subprocess_exec(
         *prefix, resolved, *argv[1:], preexec_fn=None, **kwargs
     )

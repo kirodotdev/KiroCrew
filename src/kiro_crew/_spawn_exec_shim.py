@@ -49,6 +49,7 @@ except ImportError:  # pragma: no cover - Windows has no POSIX rlimits
 
 _RLIMIT_FLAG = "--rlimits="
 _OOM_BIAS_FLAG = "--oom-bias"
+_CHDIR_FD_FLAG = "--chdir-fd="
 _ARGV_SEPARATOR = "--"
 # Shell convention for "command found but could not be executed", so a caller
 # that only sees the exit status can still tell an exec failure from the
@@ -141,6 +142,34 @@ def _bias_oom_score() -> None:
         pass
 
 
+def _enter_bound_directory(fd: int) -> bool:
+    """``fchdir`` into an inherited directory descriptor, then close it.
+
+    The caller verified that directory's IDENTITY, not its name, so entering it
+    by descriptor is the whole point: a pathname re-resolved here could have been
+    retargeted since the check. Handing the spawn ``cwd="/dev/fd/<n>"`` instead
+    only works on Linux, where those entries are symlinks to the target; macOS
+    refuses ``chdir()`` on them outright -- reported as ``EACCES`` on one host and
+    ``ENOTDIR`` on macOS 26, so the errno is not the thing to key on.
+
+    The descriptor is closed once this process stands in the directory, so the
+    command and its descendants do not inherit a handle that outlives the check.
+
+    Returns False rather than exec'ing from the inherited cwd: a silent fallback
+    would run the command in a workspace nobody authorized.
+    """
+    try:
+        os.fchdir(fd)
+    except OSError as exc:
+        sys.stderr.write(f"spawn shim: cannot enter bound directory fd {fd}: {exc.strerror}\n")
+        return False
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse the shim's own options, then ``exec`` the command after ``--``.
 
@@ -150,12 +179,25 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     spec = ""
     want_oom_bias = False
+    chdir_fd: int | None = None
     while args and args[0] != _ARGV_SEPARATOR:
         item = args.pop(0)
         if item.startswith(_RLIMIT_FLAG):
             spec = item[len(_RLIMIT_FLAG) :]
         elif item == _OOM_BIAS_FLAG:
             want_oom_bias = True
+        elif item.startswith(_CHDIR_FD_FLAG):
+            raw_fd = item[len(_CHDIR_FD_FLAG) :]
+            try:
+                chdir_fd = int(raw_fd)
+            except ValueError:
+                chdir_fd = -1
+            if chdir_fd < 0:
+                # Fail closed for the same reason an unknown option does: the
+                # caller asked for one exact directory, and running in whatever
+                # cwd was inherited would substitute a different one silently.
+                sys.stderr.write(f"spawn shim: bad {_CHDIR_FD_FLAG}{raw_fd!r}\n")
+                return _EXEC_FAILED
         else:
             # Fail closed. A stray token here means the caller and this shim
             # disagree about the argv contract, and guessing which side the
@@ -178,6 +220,11 @@ def main(argv: list[str] | None = None) -> int:
         encoded = [os.fsencode(item) for item in args]
     except (UnicodeEncodeError, ValueError):
         sys.stderr.write("spawn shim: command argv is not encodable\n")
+        return _EXEC_FAILED
+
+    # Ahead of the limits, like every other allocating step: the failure path
+    # here writes to stderr, and a tight RLIMIT_AS must not be what breaks it.
+    if chdir_fd is not None and not _enter_bound_directory(chdir_fd):
         return _EXEC_FAILED
 
     _apply_rlimits(pairs)

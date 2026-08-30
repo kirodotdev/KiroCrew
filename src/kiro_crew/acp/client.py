@@ -137,12 +137,14 @@ from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
+    BoundWorkspaceMismatch,
     apply_windows_resource_ceiling,
     assert_voice_runtime_outside_agent_workspace,
     bind_voice_safe_agent_workspace_async,
     cgroup_scope_argv,
     create_subprocess_limited,
     release_bound_agent_workspace,
+    resolve_bound_session_workspace,
     scrub_agent_subprocess_env,
     wrap_argv,
     wrap_argv_async,
@@ -2737,9 +2739,32 @@ class AcpClient:
         if descriptor is not None:
             await release_bound_agent_workspace(descriptor)
 
-    def _session_work_dir(self) -> str:
-        """Return the ACP cwd backed by the process's bound directory identity."""
-        return self._spawn_work_dir
+    async def _session_work_dir(self) -> str:
+        """Return the ACP cwd backed by the process's bound directory identity.
+
+        Unbound -- every platform but macOS, where nothing binds -- this is the
+        spawn's own pathname and there is nothing to re-check.
+
+        Bound, the descriptor is re-verified and the peer receives the DESCRIPTOR's
+        own name. The rule itself is ``sandbox.resolve_bound_session_workspace``,
+        shared with ``AcpRuntime._session_work_dir`` so the two halves of this
+        boundary cannot drift; only the error type is this front end's. Fails the
+        session rather than falling back to the bind-time spelling; see the runtime's
+        method for the residual limit a string cannot close.
+        """
+        if self._bound_workspace_fd is None:
+            return self._spawn_work_dir
+        try:
+            return await resolve_bound_session_workspace(
+                self._bound_workspace_fd, self._spawn_work_dir
+            )
+        except BoundWorkspaceMismatch as exc:
+            raise AcpError(
+                "A delegated macOS Kiro process is bound to one exact workspace; "
+                "respawn it bound to the requested workspace"
+            ) from exc
+        except OSError as exc:
+            raise AcpError("Cannot verify the macOS session workspace binding") from exc
 
     async def _cleanup_failed_live_spawn(self) -> None:
         """Kill a failed live child and always release its workspace binding."""
@@ -2992,37 +3017,27 @@ class AcpClient:
                 await bind_voice_safe_agent_workspace_async(self._work_dir)
             )
         try:
-            if self._bound_workspace_fd is not None:
-                self._process = await create_subprocess_limited(
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=self._spawn_work_dir,
-                    limit=_STDOUT_BUFFER_LIMIT,
-                    env=env,
-                    start_new_session=platform_compat.IS_POSIX,
-                    creationflags=0,
-                    pass_fds=(self._bound_workspace_fd,),
-                    profile=RLIMIT_PROFILE_SESSION_HOST,
-                )
-            else:
-                self._process = await create_subprocess_limited(
-                    *argv,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=self._spawn_work_dir,
-                    limit=_STDOUT_BUFFER_LIMIT,
-                    env=env,
-                    start_new_session=platform_compat.IS_POSIX,
-                    creationflags=(
-                        platform_compat.CREATE_NEW_PROCESS_GROUP
-                        | platform_compat._SUBPROCESS_NO_WINDOW
-                        | platform_compat.CREATE_SUSPENDED
-                    ),
-                    profile=RLIMIT_PROFILE_SESSION_HOST,
-                )
+            self._process = await create_subprocess_limited(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._spawn_work_dir,
+                limit=_STDOUT_BUFFER_LIMIT,
+                env=env,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=(
+                    platform_compat.CREATE_NEW_PROCESS_GROUP
+                    | platform_compat._SUBPROCESS_NO_WINDOW
+                    | platform_compat.CREATE_SUSPENDED
+                ),
+                # None off macOS, where nothing binds. When set, the child enters
+                # the workspace through this verified descriptor instead of
+                # resolving ``cwd``'s pathname, which a same-UID symlink retarget
+                # could aim elsewhere in between.
+                chdir_fd=self._bound_workspace_fd,
+                profile=RLIMIT_PROFILE_SESSION_HOST,
+            )
         except BaseException:
             await self._discard_bound_workspace()
             self._discard_sandbox_cleanup()
@@ -3417,7 +3432,7 @@ class AcpClient:
         the internal companion, not the public core.
         """
         new_params: dict = {
-            "cwd": self._session_work_dir(),
+            "cwd": await self._session_work_dir(),
             # kiro-cli loads servers from --agent; claude-agent-acp must be
             # told here -- it does not read kirocrew.mcp.json on its own. The
             # Default hook returns [] (kiro-cli path unchanged); an internal
@@ -3540,7 +3555,7 @@ class AcpClient:
                 try:
                     load_params: dict = {
                         "sessionId": resume_sid,
-                        "cwd": self._session_work_dir(),
+                        "cwd": await self._session_work_dir(),
                         # kiro-cli gets its servers via --agent; the claude
                         # backend must receive them here (it does not read
                         # kirocrew.mcp.json itself). Default [] leaves kiro-cli

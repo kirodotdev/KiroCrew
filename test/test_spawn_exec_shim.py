@@ -138,6 +138,58 @@ class TestShimArgvContract:
             shim.main(["--rlimits=RLIMIT_NOFILE:1024", "--oom-bias", "--", "/bin/true"])
         assert order == ["limits", "oom", "exec"]
 
+    def test_a_malformed_chdir_fd_is_refused_rather_than_ignored(self, capsys):
+        # Ignoring it would exec in whatever cwd was inherited -- a directory the
+        # caller never authorized -- which is exactly what the pin exists to stop.
+        assert shim.main(["--chdir-fd=not-a-number", "--", "/bin/true"]) == 127
+        assert "bad --chdir-fd=" in capsys.readouterr().err
+        assert shim.main(["--chdir-fd=-1", "--", "/bin/true"]) == 127
+        assert "bad --chdir-fd=" in capsys.readouterr().err
+
+    def test_an_unenterable_chdir_fd_never_reaches_exec(self, capsys):
+        """Fail the spawn rather than run the command in the wrong directory."""
+        not_a_directory = os.open(os.devnull, os.O_RDONLY)
+        execs: list[tuple] = []
+        try:
+            with patch.object(shim.os, "execv", lambda *args: execs.append(args)):
+                rc = shim.main([f"--chdir-fd={not_a_directory}", "--", "/bin/true"])
+        finally:
+            os.close(not_a_directory)
+        assert rc == 127
+        assert execs == []
+        assert "cannot enter bound directory" in capsys.readouterr().err
+
+    def test_the_bound_directory_is_entered_before_the_limits(self):
+        """A tight RLIMIT_AS must not be able to break the fchdir's error path."""
+        order: list[str] = []
+        with (
+            patch.object(shim, "_enter_bound_directory", lambda _fd: order.append("chdir") or True),
+            patch.object(shim, "_apply_rlimits", lambda _p: order.append("limits")),
+            patch.object(
+                shim.os,
+                "execv",
+                lambda *_a: order.append("exec") or (_ for _ in ()).throw(OSError(2, "x")),
+            ),
+        ):
+            shim.main(["--rlimits=RLIMIT_NOFILE:1024", "--chdir-fd=9", "--", "/bin/true"])
+        assert order == ["chdir", "limits", "exec"]
+
+    def test_entering_a_bound_directory_closes_the_descriptor(self, tmp_path, monkeypatch):
+        """The command must not inherit a handle that outlives the parent's check."""
+        # monkeypatch.chdir, not a bare os.chdir with a manual restore: the cwd is
+        # process-wide state shared with every other test on this worker, and only
+        # the fixture guarantees it reverts when the assertion below fails.
+        monkeypatch.chdir(tmp_path)
+        descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        closed: list[int] = []
+        try:
+            with patch.object(shim.os, "close", closed.append):
+                assert shim._enter_bound_directory(descriptor) is True
+            assert os.path.realpath(os.getcwd()) == os.path.realpath(str(tmp_path))
+            assert closed == [descriptor]
+        finally:
+            os.close(descriptor)
+
     def test_oom_bias_only_when_requested(self):
         biased: list[bool] = []
         with (
@@ -300,6 +352,123 @@ class TestCreateSubprocessLimited:
         assert spawn.await_args.args == ("/bin/true",)
 
     @pytest.mark.asyncio
+    async def test_chdir_fd_rides_the_shim_and_is_inherited_by_it(self):
+        spawn = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await create_subprocess_limited("/bin/true", cwd="/tmp", chdir_fd=9, pass_fds=(7,))
+        args = spawn.await_args.args
+        # Ahead of the separator, so the shim reads it as its own option.
+        assert args.index("--chdir-fd=9") < args.index("--")
+        assert strip_spawn_shim(args) == ("/bin/true",)
+        # The shim can only fchdir a descriptor the child actually holds, and
+        # pass_fds is what carries it past _close_open_fds.
+        assert spawn.await_args.kwargs["pass_fds"] == (7, 9)
+        # cwd is DROPPED from the spawn: Popen would chdir it in the fork child
+        # before the shim runs, resolving the very name the descriptor bypasses.
+        assert "cwd" not in spawn.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_chdir_fd_never_resolves_a_command_inside_the_pinned_directory(self, tmp_path):
+        """A bare name is the NORMAL shape here, so the search is narrowed, not refused.
+
+        wrap_argv hands back "env" on macOS and cgroup_scope_argv hands back
+        "systemd-run", so a pinned spawn does search PATH. ``execvpe`` resolved a
+        relative entry against the child's cwd -- the pinned workspace -- so a planted
+        copy there must lose to the absolute entry.
+        """
+        planted = tmp_path / "tools"
+        planted.mkdir()
+        (planted / "mytool").write_text("#!/bin/sh\nexit 9\n")
+        (planted / "mytool").chmod(0o755)
+        real_dir = tmp_path / "real-bin"
+        real_dir.mkdir()
+        real = real_dir / "mytool"
+        real.write_text("#!/bin/sh\n")
+        real.chmod(0o755)
+
+        spawn = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await create_subprocess_limited(
+                "mytool",
+                cwd=str(tmp_path),
+                chdir_fd=9,
+                env={"PATH": os.pathsep.join(["tools", "", ".", str(real_dir)])},
+            )
+        assert strip_spawn_shim(spawn.await_args.args) == (str(real),)
+        assert "cwd" not in spawn.await_args.kwargs
+        # The CHILD gets the same absolute-only PATH. Resolving argv[0] here is not
+        # the last lookup: the wrapper this spawns looks its own target up on PATH
+        # after the shim has entered the pinned workspace, so a relative entry left
+        # in the child's environment would exec out of that directory one level down.
+        assert spawn.await_args.kwargs["env"]["PATH"] == str(real_dir)
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_spawn_keeps_its_env_untouched(self):
+        """The PATH narrowing is scoped to a pinned spawn, environment included."""
+        spawn = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await create_subprocess_limited("/bin/true", env={"PATH": "tools:/usr/bin"})
+        assert spawn.await_args.kwargs["env"]["PATH"] == "tools:/usr/bin"
+
+    @pytest.mark.asyncio
+    async def test_chdir_fd_narrows_the_child_path_even_with_no_env_passed(self, monkeypatch):
+        """A caller that passes no env still must not hand the child a relative entry."""
+        monkeypatch.setenv("PATH", os.pathsep.join([".", "/usr/bin"]))
+        spawn = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await create_subprocess_limited("/bin/true", chdir_fd=9)
+        assert spawn.await_args.kwargs["env"]["PATH"] == "/usr/bin"
+
+    @pytest.mark.asyncio
+    async def test_chdir_fd_with_only_relative_path_entries_resolves_nothing(self, tmp_path):
+        """Dropping every entry is the intended fail-closed outcome, not a fallback."""
+        planted = tmp_path / "tools"
+        planted.mkdir()
+        (planted / "mytool").write_text("#!/bin/sh\n")
+        (planted / "mytool").chmod(0o755)
+        with patch("asyncio.create_subprocess_exec", AsyncMock()):
+            with pytest.raises(FileNotFoundError):
+                await create_subprocess_limited(
+                    "mytool", cwd=str(tmp_path), chdir_fd=9, env={"PATH": "tools:.:"}
+                )
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_spawn_still_resolves_a_relative_path_entry(self, tmp_path):
+        """The refusal is scoped to a pinned spawn; ordinary callers are unchanged."""
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        tool = tools / "mytool"
+        tool.write_text("#!/bin/sh\n")
+        tool.chmod(0o755)
+        spawn = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await create_subprocess_limited("mytool", cwd=str(tmp_path), env={"PATH": "tools"})
+        assert strip_spawn_shim(spawn.await_args.args) == (str(tool),)
+        assert spawn.await_args.kwargs["cwd"] == str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_chdir_fd_is_refused_when_no_shim_can_carry_it(self):
+        """Downgrading to cwd's pathname would reopen the window the pin closes."""
+        with (
+            patch.object(sandbox, "_SPAWN_SHIM_CODE", ""),
+            patch("asyncio.create_subprocess_exec", AsyncMock()),
+        ):
+            with pytest.raises(RuntimeError, match="descriptor-pinned"):
+                await create_subprocess_limited("/bin/true", chdir_fd=9)
+
+    @pytest.mark.asyncio
+    async def test_chdir_fd_does_not_leak_into_the_cached_profile_prefix(self):
+        """The prefix is cached per profile; a descriptor belongs to one spawn."""
+        spawn = AsyncMock()
+        with patch("asyncio.create_subprocess_exec", spawn):
+            await create_subprocess_limited("/bin/true", chdir_fd=9)
+            first = spawn.await_args.args
+            await create_subprocess_limited("/bin/true")
+            second = spawn.await_args.args
+        assert "--chdir-fd=9" in first
+        assert not any(item.startswith("--chdir-fd=") for item in second)
+
+    @pytest.mark.asyncio
     async def test_forwards_every_other_keyword_untouched(self):
         spawn = AsyncMock()
         with patch("asyncio.create_subprocess_exec", spawn):
@@ -310,6 +479,123 @@ class TestCreateSubprocessLimited:
         assert kwargs["cwd"] == "/tmp"
         assert kwargs["env"] == {"A": "1"}
         assert kwargs["start_new_session"] is True
+
+
+# --------------------------------------------------------------------------
+# Descriptor-pinned working directory (macOS workspace binding)
+# --------------------------------------------------------------------------
+
+
+@posix_only
+class TestDescriptorPinnedWorkingDirectory:
+    """The child lands in the directory the parent VERIFIED, not in a name.
+
+    The regression this pins reached a packaged build: the verified descriptor was
+    handed to the spawn as ``cwd="/dev/fd/<n>"``. Linux publishes those entries as
+    symlinks to the target, so it happened to work there; macOS -- the only
+    platform that binds a workspace at all -- fails ``chdir()`` on them with
+    EACCES, so every agent spawn died with
+    ``PermissionError: [Errno 13] Permission denied: '/dev/fd/25'``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_child_enters_the_pinned_directory_even_after_a_retarget(self, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        decoy = tmp_path / "decoy"
+        decoy.mkdir()
+        name = tmp_path / "workspace"
+        name.symlink_to(real)
+
+        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            # The same-UID retarget the binding exists to survive: it lands
+            # between the parent's check and the child's own resolution.
+            name.unlink()
+            name.symlink_to(decoy)
+            proc = await create_subprocess_limited(
+                sys.executable,
+                "-I",
+                "-S",
+                "-c",
+                "import os; print(os.getcwd())",
+                stdout=asyncio.subprocess.PIPE,
+                cwd=str(name),
+                chdir_fd=descriptor,
+                profile=RLIMIT_PROFILE_SESSION_HOST,
+            )
+            stdout, _ = await proc.communicate()
+        finally:
+            os.close(descriptor)
+
+        assert proc.returncode == 0
+        assert stdout.decode().strip() == os.path.realpath(str(real))
+
+    @pytest.mark.asyncio
+    async def test_child_still_starts_when_the_name_is_gone_after_the_bind(self, tmp_path):
+        """The pinned descriptor must be the ONLY thing that decides the cwd.
+
+        Popen chdirs to ``cwd`` before exec'ing the shim, so a pathname that stopped
+        naming a directory after the bind used to fail the spawn outright -- the
+        descriptor was never reached.
+        """
+        real = tmp_path / "real"
+        real.mkdir()
+        name = tmp_path / "workspace"
+        name.symlink_to(real)
+
+        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            # Not merely retargeted: gone. A pathname-based chdir has nothing left
+            # to resolve, while the descriptor still names the same directory.
+            name.unlink()
+            proc = await create_subprocess_limited(
+                sys.executable,
+                "-I",
+                "-S",
+                "-c",
+                "import os; print(os.getcwd())",
+                stdout=asyncio.subprocess.PIPE,
+                cwd=str(name),
+                chdir_fd=descriptor,
+                profile=RLIMIT_PROFILE_SESSION_HOST,
+            )
+            stdout, _ = await proc.communicate()
+        finally:
+            os.close(descriptor)
+
+        assert proc.returncode == 0
+        assert stdout.decode().strip() == os.path.realpath(str(real))
+
+    @pytest.mark.asyncio
+    async def test_the_pinned_descriptor_is_not_inherited_by_the_command(self, tmp_path):
+        """The shim closes it once it stands in the directory."""
+        descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        probe = (
+            "import os\n"
+            "try:\n"
+            f"    os.fstat({descriptor})\n"
+            "except OSError:\n"
+            "    print('closed')\n"
+            "else:\n"
+            "    print('inherited')\n"
+        )
+        try:
+            proc = await create_subprocess_limited(
+                sys.executable,
+                "-I",
+                "-S",
+                "-c",
+                probe,
+                stdout=asyncio.subprocess.PIPE,
+                chdir_fd=descriptor,
+                profile=RLIMIT_PROFILE_SESSION_HOST,
+            )
+            stdout, _ = await proc.communicate()
+        finally:
+            os.close(descriptor)
+
+        assert stdout.decode().strip() == "closed"
 
 
 # --------------------------------------------------------------------------

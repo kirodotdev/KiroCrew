@@ -1086,17 +1086,26 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
 
 
 @pytest.mark.asyncio
-async def test_bound_macos_runtime_reuses_descriptor_cwd_for_sessions(monkeypatch, tmp_path):
+async def test_bound_macos_runtime_hands_sessions_the_verified_pathname(monkeypatch, tmp_path):
+    """The ACP peer resolves this name itself, so it must be a name it can resolve.
+
+    It is returned only after the descriptor proves it still names the bound
+    identity. The earlier "/dev/fd/<n>" spelling is not resolvable on macOS -- the
+    only platform that binds -- so it reached the peer as an unusable cwd.
+    """
     import kiro_crew.acp.runtime as runtime_mod
 
     runtime = AcpRuntime(work_dir=tmp_path)
     runtime._bound_workspace_fd = 71
-    runtime._spawn_work_dir = "/dev/fd/71"
-    matches = MagicMock(return_value=True)
-    monkeypatch.setattr(runtime_mod, "bound_agent_workspace_matches", matches)
+    runtime._spawn_work_dir = str(tmp_path)
+    target = AsyncMock(return_value="/canonical/workspace")
+    monkeypatch.setattr(runtime_mod, "resolve_bound_session_workspace", target)
 
-    assert await runtime._session_work_dir(tmp_path) == "/dev/fd/71"
-    matches.assert_called_once_with(71, tmp_path)
+    # The DESCRIPTOR's own name, not the pathname the caller asked with: the peer
+    # re-resolves what it is handed, so the caller's spelling would leave the
+    # retarget window open.
+    assert await runtime._session_work_dir(tmp_path) == "/canonical/workspace"
+    target.assert_called_once_with(71, tmp_path)
 
 
 @pytest.mark.asyncio
@@ -1105,14 +1114,14 @@ async def test_bound_macos_runtime_rejects_descendant_session_workspace(monkeypa
 
     runtime = AcpRuntime(work_dir=tmp_path)
     runtime._bound_workspace_fd = 71
-    runtime._spawn_work_dir = "/dev/fd/71"
+    runtime._spawn_work_dir = str(tmp_path)
     descendant = tmp_path / "packages" / "app"
-    matches = MagicMock(return_value=False)
-    monkeypatch.setattr(runtime_mod, "bound_agent_workspace_matches", matches)
+    target = AsyncMock(side_effect=runtime_mod.BoundWorkspaceMismatch(str(descendant)))
+    monkeypatch.setattr(runtime_mod, "resolve_bound_session_workspace", target)
 
     with pytest.raises(AcpRuntimeError, match="exact workspace"):
         await runtime._session_work_dir(descendant)
-    matches.assert_called_once_with(71, descendant)
+    target.assert_awaited_once_with(71, descendant)
 
 
 @pytest.mark.asyncio
@@ -1121,8 +1130,12 @@ async def test_bound_macos_runtime_rejects_different_session_workspace(monkeypat
 
     runtime = AcpRuntime(work_dir=tmp_path)
     runtime._bound_workspace_fd = 72
-    runtime._spawn_work_dir = "/dev/fd/72"
-    monkeypatch.setattr(runtime_mod, "bound_agent_workspace_matches", MagicMock(return_value=False))
+    runtime._spawn_work_dir = str(tmp_path)
+    monkeypatch.setattr(
+        runtime_mod,
+        "resolve_bound_session_workspace",
+        AsyncMock(side_effect=runtime_mod.BoundWorkspaceMismatch("retargeted")),
+    )
 
     with pytest.raises(AcpRuntimeError, match="exact workspace"):
         await runtime._session_work_dir(tmp_path / "retargeted")
@@ -1134,7 +1147,7 @@ async def test_kill_cancellation_still_releases_bound_workspace(monkeypatch, tmp
 
     runtime = AcpRuntime(work_dir=tmp_path)
     runtime._bound_workspace_fd = 73
-    runtime._spawn_work_dir = "/dev/fd/73"
+    runtime._spawn_work_dir = str(tmp_path)
     entered = asyncio.Event()
     closed: list[int] = []
 
