@@ -7,6 +7,10 @@
  * re-bases the window so it stays mounted, then corrects scrollTop by how far
  * that row actually travelled.
  *
+ * A tail APPEND lands on the same path (issue #4352): it inserts nothing above
+ * the reader, but it re-syncs the offset tree, which re-prices every unmeasured
+ * row from the running mean and so changes the height credited above them.
+ *
  * jsdom has no layout, so this installs the same deterministic layout engine the
  * integration suite uses: getBoundingClientRect walks the scroller's children
  * summing heights minus scrollTop. That makes the jump reproducible — the rows
@@ -189,6 +193,33 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     return { el, view, scrollerRef, readScrollTop: () => scrollTop }
   }
 
+  /** Mounts 30 rows and leaves the reader PINNED to the bottom — the primary
+   *  reading mode, where an append must follow the new message down rather than
+   *  hold the old position. `scrollHeight` is derived from the live children
+   *  here (not the fixed constant) so growing the transcript really does move
+   *  the bottom, which is what the follow pin is asserted against. */
+  function mountAtBottom() {
+    const scrollerRef: RefObject<HTMLDivElement | null> = { current: null }
+    let scrollTop = 0
+    const view = rtlRender(<Harness items={mkItems(30)} scrollerRef={scrollerRef} />)
+    const el = scrollerRef.current!
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true, get: () => scrollTop, set: (v: number) => { scrollTop = v },
+    })
+    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => CLIENT })
+    Object.defineProperty(el, 'scrollHeight', {
+      configurable: true,
+      get: () => Array.from(el.children).reduce((h, c) => {
+        const node = c as HTMLElement
+        if (node.getAttribute('data-index') !== null) return h + REAL_H
+        return h + (parseFloat(node.style?.height || '0') || 0)
+      }, 0),
+    })
+    installFakeLayout(el, CLIENT)
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+    return { el, view, scrollerRef, readScrollTop: () => scrollTop }
+  }
+
   it('holds the reading position when older history is prepended', () => {
     const { el, view, scrollerRef, readScrollTop } = mountScrolledUp()
 
@@ -241,34 +272,84 @@ describe('useVirtualChat: prepend compensation (load older history)', () => {
     expect(readScrollTop()).toBeGreaterThan(beforeTop)
   })
 
-  it('does not compensate when items are APPENDED, only prepended', () => {
+  it('holds the reading position when a message is APPENDED at the tail', () => {
     const { el, view, scrollerRef, readScrollTop } = mountScrolledUp()
 
     const before = topVisible(el)
     expect(before).not.toBeNull()
     const beforeTop = readScrollTop()
 
-    // Growth alone must not trigger it. Index 0 is unchanged, so nothing was
-    // inserted above the reader and a scroll correction here would be the bug.
+    // Nothing is inserted ABOVE the reader here, which is why this case looks
+    // like it should need no correction. It does: growing the list re-syncs the
+    // offset tree, and every row that has never been measured is re-priced from
+    // the running mean of the measured ones — so the height credited above the
+    // reader changes and the transcript slides under them anyway (the row went
+    // from screen offset 0 to 500 before this trigger existed).
     act(() => {
       view.rerender(
         <Harness items={[...mkItems(30), ...mkItems(10, 'z')]} scrollerRef={scrollerRef} />,
       )
     })
 
-    expect(readScrollTop()).toBe(beforeTop)
-    // Row position is NOT asserted: an append drifts it identically on an
-    // unmodified hook (verified), so that drift is not this path's to fix.
-    expect(screenTopOf(el, before!.key)).not.toBeNull()
+    const after = screenTopOf(el, before!.key)
+    expect(after).not.toBeNull()
+    expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
+    // Held the same way the prepend trigger holds it: by moving the viewport
+    // down over the re-priced content, not by touching the estimator.
+    expect(readScrollTop()).toBeGreaterThan(beforeTop)
   })
 
-  // ---- Reader-row immobility: ONE invariant, both compensation triggers ----
+  it('holds the reading position when a SINGLE streaming message is appended', () => {
+    const { el, view, scrollerRef } = mountScrolledUp()
+
+    const before = topVisible(el)
+    expect(before).not.toBeNull()
+
+    // The shape a streaming agent actually produces: one row at a time.
+    act(() => {
+      view.rerender(
+        <Harness items={[...mkItems(30), { id: 'z0' }]} scrollerRef={scrollerRef} />,
+      )
+    })
+
+    const after = screenTopOf(el, before!.key)
+    expect(after).not.toBeNull()
+    expect(Math.abs(after! - before!.top)).toBeLessThanOrEqual(1)
+  })
+
+  it('still follows an append to the bottom while the reader is PINNED', () => {
+    const { el, view, scrollerRef, readScrollTop } = mountAtBottom()
+
+    const beforeTop = readScrollTop()
+
+    // Stick is armed, so the append trigger must stand down: following the new
+    // message is the primary reading mode, and holding position here would be
+    // the regression.
+    act(() => {
+      view.rerender(
+        <Harness items={[...mkItems(30), { id: 'z0' }]} scrollerRef={scrollerRef} />,
+      )
+    })
+    act(() => { frames.forEach((cb) => cb(0)); frames.length = 0 })
+
+    // Followed down and landed exactly on the new bottom...
+    expect(readScrollTop()).toBeGreaterThan(beforeTop)
+    expect(readScrollTop()).toBe(el.scrollHeight - CLIENT)
+    // ...so the appended message is what the reader is looking at.
+    const appended = screenTopOf(el, 'z0')
+    expect(appended).not.toBeNull()
+    expect(appended!).toBeGreaterThanOrEqual(0)
+    expect(appended!).toBeLessThan(CLIENT)
+  })
+
+  // ---- Reader-row immobility: ONE invariant, every compensation trigger ----
   //
-  // A prepend and an upward window shift are two ways the content above the
-  // reader grows. The user-visible contract is identical for both: the row
-  // being read does not move. These cases pin that contract per TRIGGER,
-  // independent of which internal slot carries the anchor, so collapsing the
-  // capture paths cannot silently drop one of them.
+  // A prepend, an upward window shift and a tail append are three ways the
+  // height credited above the reader grows. The user-visible contract is
+  // identical for all of them: the row being read does not move. These cases
+  // pin that contract per TRIGGER, independent of which internal slot carries
+  // the anchor, so collapsing the capture paths cannot silently drop one of
+  // them.
 
   it('INVARIANT holds the reader row across the PREPEND trigger', () => {
     const { el, view, scrollerRef } = mountScrolledUp()

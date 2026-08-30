@@ -469,18 +469,26 @@ export function useVirtualChat<T>(
   const heightAnchorPendingRef = useRef<{ key: string; top: number } | null>(null)
 
   /**
-   * ONE compensation routine, TWO triggers, ONE capture point.
+   * ONE compensation routine, THREE triggers, ONE capture point.
    *
    *   TRIGGER 1 — prepend (load-older history): every index shifts up, so
    *     pre-existing rows move down by the inserted height.
    *   TRIGGER 2 — upward window shift (scroll recompute / top-sentinel
    *     expansion): rows mount above the viewport, and they are re-measured
    *     from the flat estimate, so the content above the reader changes height.
+   *   TRIGGER 3 — tail append (a new message arrives while the reader is
+   *     scrolled up): nothing is inserted above them, but the growth re-syncs
+   *     the offset tree, and every row that has never been measured is
+   *     re-priced from the running MEAN of the measured ones — so the height
+   *     credited above the reader changes anyway and the transcript slides
+   *     (measured in the harness: a row at screen offset 0 landed at 500).
    *
-   * Both are "content above the reader grew"; the correction is identical, so
-   * they share this slot and the single consumer below.
+   * All three are "the height above the reader grew"; the correction is
+   * identical, so they share this slot and the single consumer below. A parallel
+   * path would fight this one for `scrollTop`, which is why append folds in here
+   * rather than getting an anchor slot of its own.
    *
-   * The capture is in the RENDER phase (getSnapshotBeforeUpdate idiom) for BOTH.
+   * The capture is in the RENDER phase (getSnapshotBeforeUpdate idiom) for ALL.
    * That point is canonical rather than merely convenient: a post-commit read
    * cannot recover a pre-shift position — the row has already moved and the
    * delta reads zero — while a pre-shift capture is valid for the window shift
@@ -505,6 +513,11 @@ export function useVirtualChat<T>(
   const shiftAnchorRef = useRef<{ key: string; top: number } | null>(null)
   const shiftStageRef = useRef<'awaiting-rebase' | 'rebased' | 'ready' | null>(null)
   const prependCountRef = useRef(0)
+  /** Set by part 1 in the commit it schedules a re-base in, cleared by part 2 in
+   *  that same commit. Part 2 now also watches `itemCount` (for trigger 3), so
+   *  it shares a commit with part 1 and would otherwise consume a prepend anchor
+   *  before the re-base kept its row mounted — see part 2. */
+  const rebaseScheduledRef = useRef(false)
   /** Previous render's identity. `items` is held because `itemsRef` has already
    *  advanced by the time the capture runs, while the mounted nodes still carry
    *  the PREVIOUS commit's indices. */
@@ -545,6 +558,14 @@ export function useVirtualChat<T>(
       anchorCapturedThisRender = true
     }
   }
+  // TRIGGER 3's predicate, read BEFORE the mirror below advances: the count grew
+  // while index 0 kept its key, which is a TAIL append (a front insert renames
+  // index 0 and is trigger 1's; a slot switch changes the session).
+  const tailAppended =
+    itemCount > prependPrev.count &&
+    prependPrev.session === sessionId &&
+    prependPrev.firstKey !== null &&
+    prependFirstKey === prependPrev.firstKey
   prependPrevRef.current = { session: sessionId, count: itemCount, firstKey: prependFirstKey, items }
 
   // Window range for what is currently mounted. Initial state is the TAIL of
@@ -572,6 +593,31 @@ export function useVirtualChat<T>(
       : null
     if (shiftAnchor) {
       shiftAnchorRef.current = shiftAnchor
+      shiftStageRef.current = 'ready'
+      anchorCapturedThisRender = true
+    }
+  }
+  // TRIGGER 3 capture. Same slot, same stage as trigger 2: an append needs the
+  // correction only, never a re-base — existing indices do not move, so the
+  // anchor row is already mounted. Keyed on the window start having stayed put,
+  // which is what separates this from trigger 2 (an upward shift) and keeps the
+  // two from double-capturing in one render.
+  //
+  // This capture is what makes the correction possible at all: the DOM read here
+  // is the PREVIOUS commit's geometry, so it records where the reader's row was
+  // BEFORE the re-pricing lands. The offset tree is re-synced later in this same
+  // render (see the `offsetIndex` memo), and after that commit the row has
+  // already moved — a post-commit read would measure zero drift.
+  if (!anchorCapturedThisRender && tailAppended && windowRange.start === windowRangeRef.current.start && !stickRef.current) {
+    const appendEl = scrollerRef.current
+    const appendAnchor = appendEl
+      ? captureTopAnchorFrom(appendEl, elIndexRef.current.entries(), (idx) => {
+          const it = items[idx]
+          return it ? getKey(it, idx) : null
+        })
+      : null
+    if (appendAnchor) {
+      shiftAnchorRef.current = appendAnchor
       shiftStageRef.current = 'ready'
     }
   }
@@ -1469,6 +1515,7 @@ export function useVirtualChat<T>(
       return
     }
     shiftStageRef.current = 'rebased'
+    rebaseScheduledRef.current = true
     setWindowRange((r) => ({
       start: Math.min(itemCount, r.start + inserted),
       end: Math.min(itemCount, r.end + inserted),
@@ -1476,7 +1523,7 @@ export function useVirtualChat<T>(
   }, [itemCount])
 
   /**
-   * Part 2 — the single consumer for BOTH triggers: re-read the anchor row in
+   * Part 2 — the single consumer for ALL THREE triggers: re-read the anchor row in
    * the shifted DOM and move scrollTop by however far it travelled, which holds
    * the user's place whatever mix of inserted rows and re-estimated heights
    * caused the shift.
@@ -1499,6 +1546,13 @@ export function useVirtualChat<T>(
    * window's own decision, and recomputing it here would fight the scroll.
    */
   useLayoutEffect(() => {
+    // Part 1 just scheduled the re-base in THIS commit (both effects watch
+    // itemCount). Its anchor row may not be mounted yet, so stand down once and
+    // leave the slot intact for the re-based commit that follows.
+    if (rebaseScheduledRef.current) {
+      rebaseScheduledRef.current = false
+      return
+    }
     const stage = shiftStageRef.current
     if (stage !== 'rebased' && stage !== 'ready') return
     shiftStageRef.current = null
@@ -1518,7 +1572,11 @@ export function useVirtualChat<T>(
     // cannot be forgotten here (see writeScrollTop).
     if (Math.abs(delta) > 0.5) writeScrollTop(el, el.scrollTop + delta, 'auto', 'pin')
     if (stage === 'rebased') recomputeWindow()
-  }, [windowRange, scrollerRef, writeScrollTop, recomputeWindow])
+    // `itemCount` is an invalidation key, not a value this body reads: TRIGGER 3
+    // captures in a render that changes no windowRange, so without it the
+    // correction would wait for an unrelated window commit and be applied to
+    // geometry that had already drifted.
+  }, [windowRange, itemCount, scrollerRef, writeScrollTop, recomputeWindow])
 
   // Same correction for a HEIGHT-SYNC commit (spacer repricing), keyed on the
   // owner's announced version. See heightAnchorPendingRef for why this cannot
