@@ -6013,7 +6013,13 @@
       "searching_ctrl_enter_held": "Buscando…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
       "searching_enter_held": "Buscando…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
       "type_2_chars_to_search_files_ctrl_enter_held": "Escribe 2+ caracteres para buscar archivos y carpetas…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
-      "type_2_chars_to_search_files_enter_held": "Escribe 2+ caracteres para buscar archivos y carpetas…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje"
+      "type_2_chars_to_search_files_enter_held": "Escribe 2+ caracteres para buscar archivos y carpetas…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
+      "search_failed": "La búsqueda de archivos falló",
+      "search_timed_out": "La búsqueda de archivos expiró",
+      "search_failed_ctrl_enter_sends": "La búsqueda de archivos falló: Ctrl+Enter envía el mensaje",
+      "search_timed_out_ctrl_enter_sends": "La búsqueda de archivos expiró: Ctrl+Enter envía el mensaje",
+      "search_failed_enter_sends": "La búsqueda de archivos falló: Enter envía el mensaje",
+      "search_timed_out_enter_sends": "La búsqueda de archivos expiró: Enter envía el mensaje"
     },
     "fileRenderers": {
       "download": "Descargar",
@@ -6796,7 +6802,8 @@
       "search_recent_projects": "Buscar proyectos recientes",
       "search_recent_projects_2": "Buscar proyectos recientes…",
       "select": "Seleccionar",
-      "subdirectories": "Subdirectorios"
+      "subdirectories": "Subdirectorios",
+      "recent_unavailable": "Proyectos recientes no disponibles"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Lo entiendo, publicar públicamente",
@@ -9058,10 +9065,14 @@
         "parent_folder": "Carpeta superior",
         "refresh": "Actualizar",
         "search_failed": "La búsqueda falló",
+        "search_timed_out": "La búsqueda expiró",
         "search_files": "Buscar archivos",
         "searching": "Buscando…",
         "showing_first_matches": "Mostrando las primeras {{shown}} coincidencias",
-        "unable_to_list_folder": "No se puede listar la carpeta"
+        "unable_to_list_folder": "No se puede listar la carpeta",
+        "listing_timed_out": "La lista de la carpeta expiró",
+        "search_denied": "Sin acceso a esta carpeta",
+        "search_root_missing": "Carpeta no encontrada"
       },
       "knowledgePicker": {
         "cancel": "Cancelar",

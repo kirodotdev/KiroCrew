@@ -32,6 +32,7 @@ import {
   attemptSilentRefresh,
   __resetAuthRecoveryStateForTests,
   SEARCH_MIN_CHARS,
+  BROWSE_FILES_TIMEOUT_MS,
 } from '../api/client'
 import { recentErrors, __resetErrorJournalForTests } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
@@ -716,14 +717,22 @@ describe('query-string builders', () => {
     expect(call(4).url).toBe('/api/file-diff?path=%2Frepo%2Fa%20b.ts')
   })
 
-  it('fileSearch scopes to a project and forwards the abort signal', async () => {
+  it('scopes fileSearch to a project and relays the abort signal under its deadline', async () => {
     const ctl = new AbortController()
     await api.fileSearch('cli', 'kirocrew', ctl.signal)
     expect(call().url).toBe('/api/file-search?q=cli&project=kirocrew')
-    expect(call().init?.signal).toBe(ctl.signal)
+    // The fetch gets the DEADLINE's signal, not the caller's: the bound lives in
+    // the client, so a caller cannot opt out of it by handing over its own.
+    const relayed = call().init?.signal as AbortSignal
+    expect(relayed).toBeInstanceOf(AbortSignal)
+    expect(relayed).not.toBe(ctl.signal)
+    // Relay is asserted where observable -- on a request still in flight; this one
+    // has settled, so its timer and listener are already released.
+
+    // A caller that passes no signal is bounded all the same.
     await api.fileSearch('cli')
     expect(call(1).url).toBe('/api/file-search?q=cli')
-    expect(call(1).init).toBeUndefined()
+    expect(call(1).init?.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('artifactSessionDocs can scope to one session', async () => {
@@ -1105,6 +1114,74 @@ describe('sendChat theme consent', () => {
 
 /* ─────────────── 3. the non-trivial method implementations ─────────────── */
 
+describe('deadline-bound endpoints', () => {
+  // Exercised against a stubbed `fetch`, the only layer where the bound is
+  // observable -- the component harnesses stub `api.*` and would bypass it.
+
+  const realTimeout = globalThis.setTimeout
+
+  /** Shrink the deadline without touching the production composition, and record the
+   *  value it asked for, so the assertion costs milliseconds rather than a real 10s
+   *  wait. Same shape the base's other client-deadline suites use. */
+  function shrinkDeadline(ms: number, record?: (asked: number) => void) {
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, asked?: number) => {
+      record?.(asked ?? 0)
+      return realTimeout(fn, ms)
+    }) as unknown as typeof globalThis.setTimeout)
+  }
+
+  const wedged = () => fetchMock.mockImplementation(
+    (_u: string, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const s = init?.signal
+        if (s?.aborted) return reject(s.reason)
+        s?.addEventListener('abort', () => reject(s.reason), { once: true })
+      }),
+  )
+
+  it('bounds api.recentProjects, the picker sibling that shares the wedged loop', async () => {
+    // Fail-first: unbounded, the Recent tab sat empty for as long as the gateway hung.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    await expect(api.recentProjects()).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(asked).toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('bounds api.browseDirs too, the sibling both directory pickers spin on', async () => {
+    // Fail-first: unbounded, this promise never settled and the Project/Workspace
+    // pickers sat on an empty browse list for as long as they stayed open.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    await expect(api.browseDirs('/p')).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(asked).toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('bounds api.browseFiles, so a wedged gateway stops the folder listing spinning', async () => {
+    // Fail-first: unbounded, this promise never settled and FolderPanel showed its
+    // loading state for as long as the panel stayed open.
+    const asked: number[] = []
+    wedged()
+    shrinkDeadline(20, ms => asked.push(ms))
+    await expect(api.browseFiles('/p')).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(asked).toContain(BROWSE_FILES_TIMEOUT_MS)
+  })
+
+  it('passes the caller signal through browseFiles, so a superseded listing is cancelled', async () => {
+    const ac = new AbortController()
+    fetchMock.mockImplementation(
+      (_u: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        }),
+    )
+    const p = api.browseFiles('/p', ac.signal)
+    ac.abort(new Error('superseded'))
+    await expect(p).rejects.toBeTruthy()
+  })
+})
+
 describe('revealPath', () => {
   // The transport is side-effect-free: it posts the action and returns the wire
   // shape. When the host is headless it hands back a `copy` path for the caller
@@ -1428,7 +1505,7 @@ describe('every api method issues one well-formed /api request', () => {
   // ReadableStream, a File list, an object-URL download).
   // `skills` and `slashCommands` join them because each wraps its fetch in a
   // deadline, so it USES the signal argument rather than forwarding it.
-  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'uploadCrewAvatar', 'installFromRegistryStream', 'exportPlanYaml', 'skills', 'slashCommands'])
+  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'uploadCrewAvatar', 'installFromRegistryStream', 'exportPlanYaml', 'skills', 'slashCommands', 'fileSearch', 'browseFiles', 'browseDirs', 'recentProjects'])
 
   type AnyFn = (...args: unknown[]) => unknown
   const methods = Object.entries(api as unknown as Record<string, AnyFn>)

@@ -5918,7 +5918,13 @@
       "searching_ctrl_enter_held": "খোঁজা হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
       "searching_enter_held": "খোঁজা হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
       "type_2_chars_to_search_files_ctrl_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
-      "type_2_chars_to_search_files_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে"
+      "type_2_chars_to_search_files_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
+      "search_failed": "ফাইল অনুসন্ধান ব্যর্থ হয়েছে",
+      "search_timed_out": "ফাইল অনুসন্ধানের সময় শেষ",
+      "search_failed_ctrl_enter_sends": "ফাইল অনুসন্ধান ব্যর্থ হয়েছে — Ctrl+Enter বার্তা পাঠাবে",
+      "search_timed_out_ctrl_enter_sends": "ফাইল অনুসন্ধানের সময় শেষ — Ctrl+Enter বার্তা পাঠাবে",
+      "search_failed_enter_sends": "ফাইল অনুসন্ধান ব্যর্থ হয়েছে — Enter বার্তা পাঠাবে",
+      "search_timed_out_enter_sends": "ফাইল অনুসন্ধানের সময় শেষ — Enter বার্তা পাঠাবে"
     },
     "fileRenderers": {
       "download": "ডাউনলোড",
@@ -6696,7 +6702,8 @@
       "search_recent_projects": "সাম্প্রতিক প্রকল্প খুঁজুন",
       "search_recent_projects_2": "সাম্প্রতিক প্রকল্প খুঁজুন…",
       "select": "নির্বাচন করুন",
-      "subdirectories": "সাবডিরেক্টরি"
+      "subdirectories": "সাবডিরেক্টরি",
+      "recent_unavailable": "সাম্প্রতিক প্রকল্প অনুপলব্ধ"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "আমি বুঝেছি, প্রকাশ্যে প্রকাশ করুন",
@@ -8934,10 +8941,14 @@
         "parent_folder": "প্যারেন্ট ফোল্ডার",
         "refresh": "রিফ্রেশ",
         "search_failed": "অনুসন্ধান ব্যর্থ",
+        "search_timed_out": "অনুসন্ধানের সময় শেষ",
         "search_files": "ফাইল খুঁজুন",
         "searching": "খোঁজা হচ্ছে…",
         "showing_first_matches": "প্রথম {{shown}}টি মিল দেখানো হচ্ছে",
-        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি"
+        "unable_to_list_folder": "ফোল্ডারের তালিকা করা যায়নি",
+        "listing_timed_out": "ফোল্ডার তালিকার সময় শেষ",
+        "search_denied": "এই ফোল্ডারে অ্যাক্সেস নেই",
+        "search_root_missing": "ফোল্ডার পাওয়া যায়নি"
       },
       "knowledgePicker": {
         "cancel": "বাতিল",

@@ -3,7 +3,9 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { createPortal } from 'react-dom'
 import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-react'
 import { api } from '../api/client'
+import { useBrowseDirs } from './useBrowseDirs'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import ErrorNotice from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 interface Props {
@@ -24,6 +26,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const [recentDirs, setRecentDirs] = useState<string[]>([])
   const [recentQuery, setRecentQuery] = useState('')
   const [browseSel, setBrowseSel] = useState(0)
+  const [recentError, setRecentError] = useState(false)
   const btnRef = anchorRef
   const dropRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -38,36 +41,32 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     return anchorRectRef.current
   }, [btnRef])
 
-  const browse = useCallback((path?: string, preserveInput = false) => {
-    api.browseDirs(path).then(d => {
-      setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0)
-      // Append the path delimiter after a browse/drill so the user can start
-      // typing the next segment immediately (#1196). Derive the separator from
-      // the returned path so a native Windows path (C:\Users\me) stays all-`\`
-      // instead of rendering the mixed C:\Users\me/ . A path already ending in
-      // its separator (e.g. a drive/filesystem root) is left as-is; the trailing
-      // separator is a no-op for the auto-drill effect below (which keys on `/`).
-      if (!preserveInput) {
-        // `\` is a separator ONLY on a Windows-shaped path (drive-letter `C:...`
-        // or UNC `\\...`); on POSIX it is a legal filename character, so always
-        // append `/` there (GPT 5.6: never treat a trailing `\` as a separator on
-        // a POSIX path). A path already ending in its separator is left as-is.
-        const isWin = /^[A-Za-z]:/.test(d.path) || d.path.startsWith('\\\\')
-        const sep = isWin ? '\\' : '/'
-        setInput(d.path.endsWith(sep) ? d.path : d.path + sep)
-      }
-      // Keep the combobox input focused so arrow/Enter nav continues after a drill.
-      requestAnimationFrame(() => inputRef.current?.focus())
-    }).catch(() => {})
-  }, [])
+  const { listError, browse } = useBrowseDirs<boolean>((d, preserveInput) => {
+    setBrowsePath(d.path); setBrowseParent(d.parent); setBrowseDirs(d.dirs); setBrowseSel(0)
+    // A trailing separator lets the user type the next segment immediately (#1196),
+    // and `\` counts as one ONLY on a Windows-shaped path -- on POSIX it is a filename.
+    if (!preserveInput) {
+      const isWin = /^[A-Za-z]:/.test(d.path) || d.path.startsWith('\\\\')
+      const sep = isWin ? '\\' : '/'
+      setInput(d.path.endsWith(sep) ? d.path : d.path + sep)
+    }
+    // Keep the combobox input focused so arrow/Enter nav continues after a drill.
+    requestAnimationFrame(() => inputRef.current?.focus())
+  })
 
   useEffect(() => {
     if (!open) return
     setRecentQuery('')
     api.recentProjects().then(d => {
+      setRecentError(false)
       setRecentDirs(d.dirs || [])
       setTab(d.dirs?.length ? 'recent' : 'browse')
-    }).catch(() => setTab('browse'))
+    }).catch(() => {
+      // Landing on Browse is the fallback, not the report: without this the deadline
+      // reads as "you have no recent projects", which is a claim about the user's data.
+      setRecentError(true)
+      setTab('browse')
+    })
     browse()
   }, [open, browse])
 
@@ -219,6 +218,13 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
         </button>
       </div>
 
+      {recentError && (
+        <div className="px-3 py-2 border-b border-border">
+          {/* No hand-off: the path typed into this picker's combobox is unsaved. */}
+          <ErrorNotice variant="inline" message={i18nT('components.projectPicker.recent_unavailable')} />
+        </div>
+      )}
+
       {tab === 'recent' ? (
         <>
           {recentDirs.length > 0 && (
@@ -318,7 +324,12 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
             <button disabled={!input.trim() && !browsePath} onMouseDown={e => { e.preventDefault(); select(input.trim() || browsePath) }} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed shrink-0">{i18nT('components.projectPicker.select')}</button>
           </div>
           <div id="pp-browse-list" role="listbox" aria-label={i18nT('components.projectPicker.subdirectories')} className="overflow-y-auto flex-1 min-h-0">
-            {filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
+            {/* No hand-off: the path typed into this picker's combobox is unsaved, so a
+                navigation would discard the partial path the user is mid-way through. */}
+            {listError && <div className="px-3 py-4"><ErrorNotice variant="inline" message={i18nT(listError === 'timeout'
+              ? 'pages.chat.folderPanel.listing_timed_out'
+              : 'pages.chat.folderPanel.unable_to_list_folder')} /></div>}
+            {!listError && filteredBrowse.length === 0 && <div className="px-3 py-4 text-[12px] text-muted text-center">{i18nT('components.projectPicker.no_subdirectories')}</div>}
             {filteredBrowse.map((d, i) => (
               <button
                 key={d.path}

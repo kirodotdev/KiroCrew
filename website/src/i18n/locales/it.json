@@ -6013,7 +6013,13 @@
       "searching_ctrl_enter_held": "Ricerca in corso… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
       "searching_enter_held": "Ricerca in corso… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
       "type_2_chars_to_search_files_ctrl_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
-      "type_2_chars_to_search_files_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio"
+      "type_2_chars_to_search_files_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
+      "search_failed": "Ricerca file non riuscita",
+      "search_timed_out": "Ricerca file scaduta",
+      "search_failed_ctrl_enter_sends": "Ricerca file non riuscita — Ctrl+Invio invia il messaggio",
+      "search_timed_out_ctrl_enter_sends": "Ricerca file scaduta — Ctrl+Invio invia il messaggio",
+      "search_failed_enter_sends": "Ricerca file non riuscita — Invio invia il messaggio",
+      "search_timed_out_enter_sends": "Ricerca file scaduta — Invio invia il messaggio"
     },
     "fileRenderers": {
       "download": "Scarica",
@@ -6796,7 +6802,8 @@
       "search_recent_projects": "Cerca tra i progetti recenti",
       "search_recent_projects_2": "Cerca tra i progetti recenti…",
       "select": "Seleziona",
-      "subdirectories": "Sottodirectory"
+      "subdirectories": "Sottodirectory",
+      "recent_unavailable": "Progetti recenti non disponibili"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "Ho capito, pubblica pubblicamente",
@@ -9058,10 +9065,14 @@
         "parent_folder": "Cartella superiore",
         "refresh": "Aggiorna",
         "search_failed": "Ricerca non riuscita",
+        "search_timed_out": "Ricerca scaduta",
         "search_files": "Cerca file",
         "searching": "Ricerca…",
         "showing_first_matches": "Mostrando le prime {{shown}} corrispondenze",
-        "unable_to_list_folder": "Impossibile elencare la cartella"
+        "unable_to_list_folder": "Impossibile elencare la cartella",
+        "listing_timed_out": "Elenco della cartella scaduto",
+        "search_denied": "Accesso negato a questa cartella",
+        "search_root_missing": "Cartella non trovata"
       },
       "knowledgePicker": {
         "cancel": "Annulla",

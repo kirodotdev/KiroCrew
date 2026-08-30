@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
+import { isDeadlineError } from '../api/queryClient'
 import { FileText, Folder, Eye } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
+import ErrorNotice from './ErrorNotice'
 import type { SendMode } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
@@ -106,10 +108,12 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // which already use useQuery). `enabled` gates on 2+ chars; the queryFn `signal`
   // aborts stale requests; `placeholderData` keeps the prior results on screen
   // while the next query resolves so the list doesn't flicker to empty.
-  const { data, isFetching, isError } = useQuery<FileSearchResponse>({
+  const { data, isFetching, isError, error } = useQuery<FileSearchResponse>({
     queryKey: ['file-search', debounced, project],
     queryFn: ({ signal }) => api.fileSearch(debounced, project, signal),
     enabled: open && debounced.length >= 2,
+    // No `retry` override: the shared `retryPolicy` refuses to retry a deadline we
+    // set ourselves, so the bound holds without one.
     placeholderData: prev => prev,
     staleTime: 10_000,
   })
@@ -119,11 +123,13 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // `query` length (not the debounced one) so results clear immediately when the
   // user drops below 2 chars; `data` is keyed on `debounced`, so it lags by up to
   // one debounce tick — the intended debounce behavior.
+  // Gated on `isError` HERE, not at the render: keyboard nav counts this list too,
+  // so a row merely hidden stays selectable via Arrow+Enter.
   const { ordered: results, initialIndex } = useMemo(() => {
-    const raw = (open && query.length >= 2 ? data?.results : []) || []
+    const raw = (open && !isError && query.length >= 2 ? data?.results : []) || []
     const above = anchorRef.current ? menuGeometry(anchorRef.current, raw.length, 48).above : false
     return bottomUpOrder(raw, above)
-  }, [data, open, query, anchorRef])
+  }, [data, isError, open, query, anchorRef])
 
   // Open the highlighted file in the viewer (the eye/preview action) instead of
   // inserting an @-mention. Shared by the Cmd/Ctrl+Enter path (via onChoose's
@@ -198,6 +204,21 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // held or releasing — would be false there.
   const ctrl = sendOnEnter === 'ctrl-enter'
 
+  // A failed search is not an empty one: "no matching files" for a request that never
+  // completed tells the user the file does not exist. The timeout arm names the cause.
+  const timedOut = isDeadlineError(error)
+  const failedKey = !releaseKeysWhenEmpty
+    ? (timedOut
+        ? 'components.filePickerMenu.search_timed_out'
+        : 'components.filePickerMenu.search_failed')
+    : ctrl
+    ? (timedOut
+        ? 'components.filePickerMenu.search_timed_out_ctrl_enter_sends'
+        : 'components.filePickerMenu.search_failed_ctrl_enter_sends')
+    : (timedOut
+        ? 'components.filePickerMenu.search_timed_out_enter_sends'
+        : 'components.filePickerMenu.search_failed_enter_sends')
+
   // Enter AND Tab are swallowed while the gate is closed, so Send is not
   // keyboard-reachable — the copy names Escape, whose branch runs before them.
   const emptyKey = query.length < 2
@@ -218,7 +239,16 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
 
   // One region for every empty state, so a transition is a text change inside a
   // live region rather than a mount — what screen readers announce least well.
-  const empty = <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>
+  // A failure leaves that region: an empty result is not an error.
+  const empty = isError
+    ? (
+      <div className="px-3 py-3">
+        {/* No hand-off: the composer's unsent message lives in this tree, so a
+            navigation would discard the draft this picker was opened to complete. */}
+        <ErrorNotice variant="inline" message={i18nT(failedKey)} />
+      </div>
+    )
+    : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>
 
   return createPortal(
     <div
@@ -226,7 +256,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
       role="listbox"
       style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 420), maxHeight }}
     >
-      {results.length === 0 ? empty : results.map((f, i) => {
+      {isError || results.length === 0 ? empty : results.map((f, i) => {
         const kind = resultKind(f)
         const isDir = kind === 'dir'
         return (

@@ -41,6 +41,25 @@ export const SKILLS_TIMEOUT_MS = 15_000
  *  whose fetch blocks Enter while it is unsettled, so a divergent bound here
  *  would only be a second number to explain. Rationale in the CR description. */
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
+
+/** Deadline for `api.fileSearch`. Type-ahead behind a 200ms debounce, so a reply
+ *  arriving this late answers a query several keystrokes stale and has no value
+ *  even on arrival — the bound is set by when the answer stops being useful, not
+ *  by when the server is provably broken.
+ *
+ *  One constant rather than one per surface: the `limit` a caller passes only
+ *  caps how many rows the server returns (it truncates before responding), so a
+ *  wider page is not a longer walk and does not earn a longer bound.
+ *  Rationale and bounds are in the PR description. */
+export const FILE_SEARCH_TIMEOUT_MS = 5_000
+
+/** Deadline for the picker/panel listing endpoints (`api.browseFiles`, `api.browseDirs`,
+ *  `api.recentProjects`). Its own constant rather than the composer menus' 15s: a listing
+ *  is a different endpoint on the same wedged gateway, so retuning the skills menu must
+ *  not silently retune folder listings. 10s rather than the search's 5s because a listing
+ *  has no keystroke behind it going stale. */
+export const BROWSE_FILES_TIMEOUT_MS = 10_000
+
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
 import { queryClient } from './queryClient'
@@ -2577,13 +2596,17 @@ export const api = {
       base?: string
       error?: string
     }>,
-  recentProjects: () => fetch('/api/recent-projects').then(j) as Promise<{ dirs: string[] }>,
-  browseDirs: (path?: string) => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
-  browseFiles: (path?: string) => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : '')).then(j) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
+  recentProjects: () => withDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, s => fetch('/api/recent-projects', { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
+  // Bounded HERE, not per initiator: react-query dedupes on the key, so the weakest
+  // initiator would decide the bound.
+  browseDirs: (path?: string) => withDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
+  browseFiles: (path?: string, signal?: AbortSignal) => withDeadline(BROWSE_FILES_TIMEOUT_MS, signal, s => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
   projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
-  projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
+  projectGitStatus: (path: string) => withDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, s =>
+    fetch('/api/project/git/status?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
   projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
-  projectTree: (path: string) => fetch('/api/project/tree?path=' + encodeURIComponent(path)).then(j) as Promise<{ root: string; paths: string[]; repo: boolean; truncated?: boolean }>,
+  projectTree: (path: string) => withDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, s =>
+    fetch('/api/project/tree?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; repo: boolean; truncated?: boolean }>,
   workspaces: () => fetch('/api/workspaces').then(j),
   createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
   updateWorkspace: (name: string, body: object) =>
@@ -3330,13 +3353,18 @@ export const api = {
    *  Filtering server-side rather than dropping unwanted hits here matters because the
    *  backend caps results BEFORE the response, so a client-side filter would silently
    *  shrink an already-capped list. `limit` raises the server's result cap (default 15);
-   *  the server clamps it to a fixed ceiling, so a large value cannot amplify the walk. */
+   *  the server clamps it to a fixed ceiling, so a large value cannot amplify the walk.
+   *
+   *  Bounded HERE, not per initiator: react-query dedupes on the key, so the
+   *  weakest initiator would otherwise decide whether the promise is bounded —
+   *  and a future caller would arrive unbounded by default. */
   fileSearch: (q: string, project?: string, signal?: AbortSignal, kinds?: 'files' | 'dirs', limit?: number) => {
     const p = new URLSearchParams({ q })
     if (project) p.set('project', project)
     if (kinds) p.set('kinds', kinds)
     if (limit) p.set('limit', String(limit))
-    return fetch(`/api/file-search?${p}`, signal ? { signal } : undefined).then(j) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
+    return withDeadline(FILE_SEARCH_TIMEOUT_MS, signal, s =>
+      fetch(`/api/file-search?${p}`, { signal: s }).then(j)) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
   },
   /** Upload files via browser File API (cross-platform) */
   uploadFiles: async (files: File[]) => {

@@ -3,17 +3,49 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
+import ErrorNotice from '../../components/ErrorNotice'
 import { revealOrOpen, useRevealLabel } from '../../components/FilePathMenu'
 import { useBranding } from '../../hooks/useBranding'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
-import { api } from '../../api/client'
+import { api, ApiError } from '../../api/client'
+import { isDeadlineError } from '../../api/queryClient'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
+import { parseErrorCode } from '../../utils/errorReport'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 import { useTreeState } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
   return p.replace(/\/+$/, '').split('/').pop() || p
+}
+
+/** Catalog keys for the causes /api/file-search reports a `code` for. Anything
+ *  else — a timeout, a network drop, an unrecognised code — takes the fallback. */
+const SEARCH_ERROR_BY_CODE: Record<string, string> = {
+  access_denied: 'pages.chat.folderPanel.search_denied',
+  project_not_found: 'pages.chat.folderPanel.search_root_missing',
+}
+
+/**
+ * Pick the catalog key that names WHY a file search failed.
+ *
+ * Keyed on the machine-readable `code` the handler sends, never on the human
+ * `error` string: that string is untranslated server text, and rendering it is
+ * what the i18n invariant forbids. A cause we have no copy for degrades to the
+ * generic key rather than leaking the raw reason.
+ *
+ * A 403 carrying `authRequired` is a dashboard-session expiry, not a refusal of
+ * this path, so it must NOT claim the folder is off limits — it has no `code`
+ * and so falls through here by construction.
+ */
+function searchErrorKey(err: unknown): string {
+  const fallback = 'pages.chat.folderPanel.search_failed'
+  // A deadline rejection is the one cause the client can name on its own: the walk was
+  // still running, which is a different remedy from a gateway that answered with an error.
+  if (isDeadlineError(err)) return 'pages.chat.folderPanel.search_timed_out'
+  if (!(err instanceof ApiError) || err.authRequired) return fallback
+  const code = parseErrorCode(err.body)
+  return code && SEARCH_ERROR_BY_CODE[code] ? SEARCH_ERROR_BY_CODE[code] : fallback
 }
 
 /**
@@ -173,9 +205,11 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
     return () => clearTimeout(id)
   }, [query])
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+  const { data, isLoading, isError, error: listErr, refetch, isFetching } = useQuery({
     queryKey: ['browse-files', cwd],
-    queryFn: () => api.browseFiles(cwd),
+    queryFn: ({ signal }) => api.browseFiles(cwd, signal),
+    // Kept: each outer attempt re-enters `withDeadline` for a fresh 10s, so one
+    // retry would spend a second full bound past the first.
     retry: false,
     staleTime: 5_000,
   })
@@ -195,6 +229,8 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
     queryKey: ['folder-file-search', cwd, debouncedQuery, searchLimit],
     queryFn: ({ signal }) => api.fileSearch(debouncedQuery, cwd, signal, 'files', searchLimit),
     enabled: searching,
+    // Kept, unlike the picker's query on this endpoint: this panel prefers a single
+    // bounded attempt, so it forgoes the shared policy's retry rungs entirely.
     retry: false,
     staleTime: 5_000,
     // Keep the current rows on screen while a wider (or new) page is fetched:
@@ -217,7 +253,12 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   const qc = useQueryClient()
   const [refreshingTree, setRefreshingTree] = useState(false)
   const refresh = async () => {
-    if (!treeMode) { await refetch(); return }
+    if (!treeMode) {
+      // Refresh is the obvious retry beside a failed search, so it has to refetch the
+      // search as well as the listing behind it. A prefix key matches the active one.
+      await Promise.all([refetch(), qc.refetchQueries({ queryKey: ['folder-file-search', cwd] })])
+      return
+    }
     setRefreshingTree(true)
     try {
       await Promise.all([
@@ -363,15 +404,17 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
               </span>
             </div>
             {isSearchError && (
-              <div className="px-2 py-2 text-[12px] text-danger">
-                {(searchError as Error)?.message || t('pages.chat.folderPanel.search_failed')}
+              <div className="px-2 py-2">
+                {/* No hand-off: the chat composer's unsent message shares this
+                    page tree, and navigating away would discard it. */}
+                <ErrorNotice variant="inline" message={t(searchErrorKey(searchError))} />
               </div>
             )}
             {!isSearchError && isSearching && matches.length === 0 && (
-              <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
             )}
             {!isSearchError && !isSearching && matches.length === 0 && (
-              <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
             )}
             {matches.map(m => {
               const Icon = fileIcon(m.path)
@@ -433,8 +476,11 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
             )}
             {isLoading && <div className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.loading')}</div>}
             {isError && (
-              <div className="px-2 py-2 text-[12px] text-danger">
-                {(error as Error)?.message || t('pages.chat.folderPanel.unable_to_list_folder')}
+              <div className="px-2 py-2">
+                {/* No hand-off: same page tree as the composer's unsent message. */}
+                <ErrorNotice variant="inline" message={t(isDeadlineError(listErr)
+                  ? 'pages.chat.folderPanel.listing_timed_out'
+                  : 'pages.chat.folderPanel.unable_to_list_folder')} />
               </div>
             )}
             {!isLoading && !isError && isEmpty && (
