@@ -31,11 +31,13 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     async with slot._lock:
         if slot.running:
-            return web.json_response({"error": "slot is running"}, status=409)
+            return web.json_response(
+                {"error": "slot is running", "code": "slot_running"}, status=409
+            )
 
         msgs = slot.messages
         ai_idx = -1
@@ -44,18 +46,25 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 ai_idx = i
                 break
         if ai_idx < 0:
-            return web.json_response({"error": "no assistant message to regenerate"}, status=400)
+            return web.json_response(
+                {"error": "no assistant message to regenerate", "code": "no_assistant_message"},
+                status=400,
+            )
         u_idx = -1
         for i in range(ai_idx - 1, -1, -1):
             if msgs[i].get("role") == "user":
                 u_idx = i
                 break
         if u_idx < 0:
-            return web.json_response({"error": "no preceding user message"}, status=400)
+            return web.json_response(
+                {"error": "no preceding user message", "code": "no_user_message"}, status=400
+            )
 
         user_msg = msgs[u_idx].get("content", "")
         if not user_msg:
-            return web.json_response({"error": "empty user message"}, status=400)
+            return web.json_response(
+                {"error": "empty user message", "code": "empty_user_message"}, status=400
+            )
 
         ai_msg = msgs[ai_idx]
         _rv = ai_msg.get("variants")
@@ -126,22 +135,24 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     try:
         idx = int(body.get("index"))  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return web.json_response({"error": "invalid index"}, status=400)
+        return web.json_response({"error": "invalid index", "code": "index_invalid"}, status=400)
 
     async with slot._lock:
         if slot.running:
-            return web.json_response({"error": "slot is running"}, status=409)
+            return web.json_response(
+                {"error": "slot is running", "code": "slot_running"}, status=409
+            )
 
         target = None
         for m in reversed(slot.messages):
@@ -149,7 +160,7 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
                 target = m
                 break
         if target is None:
-            return web.json_response({"error": "no variants"}, status=400)
+            return web.json_response({"error": "no variants", "code": "no_variants"}, status=400)
         raw_target_variants = target.get("variants")
         variants: list[dict] = (
             list(raw_target_variants)  # type: ignore[arg-type]
@@ -157,11 +168,15 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
             else []
         )
         if idx < 0 or idx >= len(variants):
-            return web.json_response({"error": "index out of range"}, status=400)
+            return web.json_response(
+                {"error": "index out of range", "code": "index_out_of_range"}, status=400
+            )
 
         chosen = variants[idx]
         if not isinstance(chosen, dict):
-            return web.json_response({"error": "corrupt variant entry"}, status=400)
+            return web.json_response(
+                {"error": "corrupt variant entry", "code": "variant_corrupt"}, status=400
+            )
         target_dict: dict = target
         target_dict["content"] = chosen.get("content", "")
         slot.invalidate_source_links()
@@ -202,27 +217,31 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     # A valid-JSON but non-object body (array/scalar) has no .get(), so
     # body.get("index") would raise AttributeError -> 500. Reject it as a 400,
     # matching the guard in api_chat_slot_switch_variant above.
     if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     index = body.get("index")
     ts = body.get("ts")
     content = (body.get("content") or "").strip()
     if not content:
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
 
     async with slot._lock:
         if slot.running:
-            return web.json_response({"error": "slot is running"}, status=409)
+            return web.json_response(
+                {"error": "slot is running", "code": "slot_running"}, status=409
+            )
 
         msgs = slot.messages
 
@@ -232,12 +251,20 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 -1,
             )
             if not isinstance(index, int) or index < 0:
-                return web.json_response({"error": "user message not found for ts"}, status=400)
+                return web.json_response(
+                    {"error": "user message not found for ts", "code": "user_message_not_found"},
+                    status=400,
+                )
         elif isinstance(index, int) and 0 <= index < len(msgs):
             if msgs[index].get("role") != "user":
-                return web.json_response({"error": "index is not a user message"}, status=400)
+                return web.json_response(
+                    {"error": "index is not a user message", "code": "index_not_user_message"},
+                    status=400,
+                )
         else:
-            return web.json_response({"error": "index or ts required"}, status=400)
+            return web.json_response(
+                {"error": "index or ts required", "code": "index_or_ts_required"}, status=400
+            )
 
         del slot.messages[index:]
         slot._dirty = True

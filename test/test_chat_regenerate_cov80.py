@@ -527,3 +527,71 @@ async def test_edit_resend_logs_a_failing_background_turn(state, caplog) -> None
                 await asyncio.sleep(0)
 
     assert "edit-resend _run_chat failed" in caplog.text
+
+
+# ── machine-readable refusal codes ──
+# The tests above pin each refusal's human sentence. These pin the `code`
+# beside it, which is the half a caller can branch on: "slot is running" is a
+# developer sentence that a client must not string-match to tell a BUSY slot
+# (retry once the turn ends) from a MISSING one (stop and refresh).
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("regenerate", None),
+        ("switch-variant", {"index": 0}),
+        ("edit-resend", {"index": 0, "content": "edited"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_every_endpoint_refuses_a_busy_slot_with_slot_running(state, path, body) -> None:
+    """All three endpoints share one busy-slot refusal, so they must share one
+    code -- a client that special-cases the retryable case cannot be asked to
+    learn a different spelling per endpoint."""
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "hello v1")
+    await _busy(slot)
+    try:
+        async with _client(state) as client:
+            resp = await client.post(f"/api/chat/slots/s1/{path}", json=body)
+            assert resp.status == 409
+            payload = await resp.json()
+            assert payload["code"] == "slot_running"
+            # The human sentence is unchanged: the code is additive, so an
+            # existing client that renders `error` keeps working.
+            assert payload["error"] == "slot is running"
+    finally:
+        slot.task.cancel()
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "status", "code"),
+    [
+        ("regenerate", None, 404, "slot_not_found"),
+        ("switch-variant", {"index": 0}, 404, "slot_not_found"),
+        ("edit-resend", {"index": 0, "content": "x"}, 404, "slot_not_found"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_unknown_slot_refusals_carry_slot_not_found(state, path, body, status, code) -> None:
+    async with _client(state) as client:
+        resp = await client.post(f"/api/chat/slots/nope/{path}", json=body)
+        assert resp.status == status
+        assert (await resp.json())["code"] == code
+
+
+@pytest.mark.asyncio
+async def test_no_variants_refusal_carries_its_own_code(state) -> None:
+    """Distinct from a busy slot: nothing to switch to is permanent for this
+    row, so a client must not offer a retry."""
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "hi")
+    slot.append("assistant", "only reply")
+    async with _client(state) as client:
+        resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+        assert resp.status == 400
+        payload = await resp.json()
+        assert payload["code"] == "no_variants"
+        assert payload["error"] == "no variants"

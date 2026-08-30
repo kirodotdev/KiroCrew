@@ -1,11 +1,11 @@
 {
   "_comment": "Error responses without a machine-readable `code`, per file. Generated - regenerate with `python test/test_error_code_contract.py --update`. This is both the CI ratchet and the Track B worklist: drive `missing_code` to zero, one PR per file or per directory, moving each frontend consumer in the same PR. Never raise a number to make CI pass. See test/test_error_code_contract.py for what each bucket means and which false negatives it accepts.",
   "_totals": {
-    "missing_code": 1262,
+    "missing_code": 1241,
     "opaque_body": 18,
     "dynamic_status": 43
   },
-  "_compliant": 1410,
+  "_compliant": 1438,
   "files": {
     "apps/builtins/auto_research/handlers.py": {
       "dynamic_status": 1,
@@ -47,9 +47,6 @@
     },
     "dashboard/chat_orchestrator.py": {
       "missing_code": 4
-    },
-    "dashboard/chat_regenerate.py": {
-      "missing_code": 21
     },
     "dashboard/chat_rewind.py": {
       "missing_code": 15
