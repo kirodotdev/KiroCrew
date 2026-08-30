@@ -241,11 +241,13 @@ class _BlockingRegistry(_RecordingRegistry):
 
     def __init__(self) -> None:
         super().__init__()
+        self.started = threading.Event()
         self.release = threading.Event()
         self.completed = False
 
     def update(self, instance_id: str, **changes: object) -> Any:
-        self.release.wait(timeout=10)
+        self.started.set()
+        assert self.release.wait(timeout=10), "test never released the registry write"
         self.completed = True
         return super().update(instance_id, **changes)
 
@@ -264,14 +266,22 @@ async def test_cancelled_persist_waits_for_the_worker_write(
     # Pin the forwarder-identity branch UNREACHABLE: the subject here is the
     # cancellation window around the BLOCKED registry write, so this wants the
     # shortest deterministic route to it. Taking the identity branch instead
-    # would add two more to_thread hops ahead of that write, narrowing the
-    # sleep window below for no gain — test 1 above covers that branch.
+    # would add two more to_thread hops ahead of that write for no gain — test
+    # 1 above covers that branch.
     _pin_forwarder_identity(monkeypatch, reachable=False)
 
     task = asyncio.create_task(mgr._mark_recovered("inst"))
-    await asyncio.sleep(0.05)  # the worker write is submitted and blocked
+    assert await asyncio.to_thread(
+        registry.started.wait, 10
+    ), "registry write never reached its deterministic blocking point"
     task.cancel()
-    await asyncio.sleep(0.05)  # cancellation delivered
+
+    # Task.cancel() queues the cancelled task before this sentinel. Awaiting the
+    # sentinel therefore observes the state after cancellation was delivered,
+    # without guessing how long the scheduler or worker pool might take.
+    cancellation_delivered = asyncio.get_running_loop().create_future()
+    asyncio.get_running_loop().call_soon(cancellation_delivered.set_result, None)
+    await cancellation_delivered
 
     # The frame must still be waiting on the in-flight worker write.
     assert not task.done(), (
@@ -462,7 +472,15 @@ def test_no_direct_registry_call_in_instances_handler_async_frames() -> None:
 async def test_registries_config_write_runs_off_the_loop_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The real PUT handler hands the locked config mutation to a worker."""
+    """The real PUT handler hands the locked config mutation to a worker.
+
+    The per-host trust audit is deliberately NOT asserted here any more: it is
+    emitted by ``_write_registries_config`` itself, on the thread that commits
+    the write, so that a cancellation drained by ``run_config_write`` cannot
+    persist a grant with no record. This stub replaces that function, so the
+    handler must not be the one emitting -- which is what the last assertion
+    pins. See ``test_cancelled_registries_write_still_audits_the_trust_grant``.
+    """
     loop_thread = threading.current_thread()
     write_threads: list[threading.Thread] = []
     audits: list[dict[str, Any]] = []
@@ -488,7 +506,10 @@ async def test_registries_config_write_runs_off_the_loop_thread(
     assert response.status == 200
     assert write_threads, "the registry config write was never invoked"
     assert all(thread is not loop_thread for thread in write_threads)
-    assert any(event.get("operation") == "registries.host_trust_granted" for event in audits)
+    assert response.text is not None
+    assert json.loads(response.text)["newlyTrustedHosts"] == ["github.com"]
+    assert any(event.get("operation") == "registries.update" for event in audits)
+    assert all(event.get("operation") != "registries.host_trust_granted" for event in audits)
 
 
 @pytest.mark.asyncio
@@ -516,8 +537,141 @@ async def test_failed_registries_config_write_does_not_audit_a_trust_grant(
     response = await routes_mod.handle_registries(request)
 
     assert response.status == 500
+    assert response.text is not None
     assert json.loads(response.text)["code"] == "registries_config_write_failed"
     assert all(event.get("operation") != "registries.host_trust_granted" for event in audits)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_registries_write_still_audits_the_trust_grant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A cancellation between commit and audit must not lose the grant record.
+
+    ``run_config_write`` shields its worker and drains it, so a cancellation
+    arriving while the write is in flight still commits the config -- and then
+    re-raises ``CancelledError``, discarding the return value. An audit emitted
+    by the async caller is therefore skipped on exactly the path where the trust
+    grant DID land, leaving persisted trust with no ``host_trust_granted``
+    event. Gateway shutdown and a client disconnect mid-PUT both reach it.
+
+    Red-before with the audit in the handler: config contains the registry and
+    ``grants == []``.
+    """
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    validated = [
+        {
+            "name": "example",
+            "repo": "https://github.com/example/apps.git",
+            "branch": "main",
+            "trust": "",
+        }
+    ]
+
+    audits: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        routes_mod,
+        "sel",
+        lambda: SimpleNamespace(log_api_access=lambda **kwargs: audits.append(kwargs)),
+    )
+
+    inside_write = threading.Event()
+    may_finish = threading.Event()
+    real_update = routes_mod.update_config_locked
+
+    def _blocking_update(path: Path, *, mutate: Callable[[dict], dict | None]) -> dict:
+        # Park the worker INSIDE the locked write so the cancellation is
+        # delivered at the one moment that matters, with no sleeps.
+        inside_write.set()
+        assert may_finish.wait(10), "test never released the worker"
+        return real_update(path, mutate=mutate)
+
+    monkeypatch.setattr(routes_mod, "update_config_locked", _blocking_update)
+
+    from kiro_crew.dashboard.chat_utils import run_config_write
+
+    task = asyncio.ensure_future(
+        run_config_write(routes_mod._write_registries_config, cfg, validated)
+    )
+    await asyncio.to_thread(inside_write.wait, 10)
+    task.cancel()
+    may_finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # 1. the write committed despite the cancellation
+    written = json.loads(cfg.read_text(encoding="utf-8"))
+    assert [row["repo"] for row in written["registries"]] == [
+        "https://github.com/example/apps.git"
+    ]
+    # 2. and every host it newly trusted was audited
+    grants = [e for e in audits if e.get("operation") == "registries.host_trust_granted"]
+    assert len(grants) == 1
+    assert "host=github.com" in grants[0]["resources"]
+
+
+def test_registries_write_audits_each_new_host_exactly_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No duplicate on the normal path, and nothing for an already-trusted host."""
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps({"registries": [{"repo": "https://github.com/old/apps.git"}]}),
+        encoding="utf-8",
+    )
+    audits: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        routes_mod,
+        "sel",
+        lambda: SimpleNamespace(log_api_access=lambda **kwargs: audits.append(kwargs)),
+    )
+
+    validated = [
+        {"name": "old", "repo": "https://github.com/old/apps.git", "branch": "", "trust": ""},
+        {"name": "new", "repo": "https://gitlab.com/new/apps.git", "branch": "", "trust": ""},
+        # A second path on the SAME new host must not double-audit it.
+        {"name": "new2", "repo": "https://gitlab.com/new/other.git", "branch": "", "trust": ""},
+    ]
+    granted = routes_mod._write_registries_config(cfg, validated)
+
+    assert granted == [("gitlab.com", "https://gitlab.com/new/apps.git")]
+    grants = [e for e in audits if e.get("operation") == "registries.host_trust_granted"]
+    assert len(grants) == 1
+    assert "host=gitlab.com" in grants[0]["resources"]
+
+
+def test_failed_registries_write_audits_no_trust_grant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The audit stays strictly after the commit, so a failed write announces nothing.
+
+    Guards the ordering the fix depends on: the emission moved into the worker,
+    but it must not move ahead of ``update_config_locked``.
+    """
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    audits: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        routes_mod,
+        "sel",
+        lambda: SimpleNamespace(log_api_access=lambda **kwargs: audits.append(kwargs)),
+    )
+
+    def _boom(path: Path, *, mutate: Callable[[dict], dict | None]) -> dict:
+        mutate({})  # host discovery runs, exactly as it does on the happy path
+        raise OSError("sharing violation")
+
+    monkeypatch.setattr(routes_mod, "update_config_locked", _boom)
+
+    validated = [
+        {"name": "x", "repo": "https://github.com/example/apps.git", "branch": "", "trust": ""}
+    ]
+    with pytest.raises(OSError):
+        routes_mod._write_registries_config(cfg, validated)
+
+    assert [e for e in audits if e.get("operation") == "registries.host_trust_granted"] == []
 
 
 def test_registries_config_write_uses_the_locked_update(

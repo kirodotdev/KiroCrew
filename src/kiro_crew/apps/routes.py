@@ -3584,10 +3584,25 @@ async def handle_registries(request: web.Request) -> web.Response:
     # ``run_config_write`` is the one entry point that holds both, and it still
     # hands the blocking work to a worker, so the loop never stalls.
     #
-    # Imported at call time rather than module scope for the same layering reason
-    # ``handle_app_uninstall`` imports ``_get_config_lock`` lazily: ``apps`` sits
-    # below ``dashboard`` in the package tree, and a load-time import would invert
-    # that direction.
+    # Call-time import, deliberately, and NOT under AUTOSDE ``top-level-imports``'
+    # circular-import exception -- there is no cycle on this edge today; every
+    # import order was checked.  The reason is layering and load cost, both
+    # checkable:
+    #
+    #   * No module in ``src/kiro_crew/apps/`` imports ``kiro_crew.dashboard`` at
+    #     module scope.  Not one.  ``apps`` sits below ``dashboard``, and hoisting
+    #     this would create the package's first load-time edge in the wrong
+    #     direction -- into a package that already imports back into this one
+    #     (``dashboard/routes/system.py``, ``dashboard/handlers/security.py``).
+    #     ``apps.manager`` already defers its ``apps.routes`` import for a cycle
+    #     that IS real; widening the graph here makes that worse, not better.
+    #   * Measured: hoisting pulls 117 additional modules into every importer of
+    #     ``apps.routes`` (479 -> 596), and loads the whole ``dashboard.chat_utils``
+    #     tree on paths that today never touch it.
+    #
+    # Same reasoning, same file, as ``handle_app_uninstall``'s lazy
+    # ``_get_config_lock`` import; ``run_config_write`` itself defers that import
+    # for an outright cycle.
     from kiro_crew.dashboard.chat_utils import run_config_write
 
     cfg = Path(config_path())
@@ -3627,17 +3642,12 @@ async def handle_registries(request: web.Request) -> web.Response:
             status=500,
         )
 
-    # Audit trust grants only after the locked update succeeds.  This keeps the
-    # event stream aligned with the persisted trust set when a Windows sharing
-    # violation or another write failure prevents the config change.
+    # The per-host trust grants are audited by ``_write_registries_config`` itself,
+    # on the worker thread that committed them -- see the comment there for why
+    # this cannot be done here.  What remains is the API-outcome event, which
+    # correctly belongs to the request: if the caller was cancelled it never runs,
+    # because the request did not succeed.
     newly_trusted_hosts = [host for host, _repo in newly_trusted]
-    for host, public_repo in newly_trusted:
-        sel().log_api_access(
-            caller="dashboard",
-            operation="registries.host_trust_granted",
-            outcome="success",
-            resources=f"host={host} repo={public_repo}",
-        )
 
     sel().log_api_access(
         caller="dashboard",
@@ -3663,19 +3673,20 @@ async def handle_registries(request: web.Request) -> web.Response:
 def _write_registries_config(cfg: Path, validated: list[dict[str, str]]) -> list[tuple[str, str]]:
     """Replace the registry trust set under the config lock, off the loop.
 
-    Returns each newly trusted ``(host, public_repo)`` pair so the async handler
-    can emit SEL events after, and only after, the write commits.  Host discovery
-    belongs inside the locked mutation: comparing with a pre-lock snapshot would
-    race a concurrent config writer and could report a grant that was not new.
+    Emits a per-host ``registries.host_trust_granted`` SEL event after, and only
+    after, the write commits, and returns each newly trusted ``(host, repo)`` pair
+    for the response body.  Host discovery belongs inside the locked mutation:
+    comparing with a pre-lock snapshot would race a concurrent config writer and
+    could report a grant that was not new.
 
     Why the returned hosts are audited at all: a configured registry host is fed
     into the loosened-sandbox / SSH-clone trust set (see
     ``registry._configured_registry_hosts``) AND its apps become installable with
     gateway privileges, so admitting a host is a genuine trust grant, not just a
     config edit.  The generic ``registries.update`` event does not record WHICH
-    host gained trust, leaving an unreconstructable audit gap; the caller emits a
-    distinct per-host ``registries.host_trust_granted`` event so incident response
-    can always establish when and how a host entered the trust set.  Comparison is
+    host gained trust, leaving an unreconstructable audit gap; a distinct per-host
+    ``registries.host_trust_granted`` event lets incident response always establish
+    when and how a host entered the trust set.  Comparison is
     against the PRIOR on-disk config rather than the freshly validated list, so
     re-saving an unchanged list emits nothing.
     """
@@ -3700,6 +3711,29 @@ def _write_registries_config(cfg: Path, validated: list[dict[str, str]]) -> list
         return data
 
     update_config_locked(cfg, mutate=_mutate)
+
+    # Audit HERE, in the worker, and not in the async caller.  ``run_config_write``
+    # shields this thread and drains it across cancellation, then re-raises
+    # ``CancelledError`` and DISCARDS the return value.  A gateway shutdown or a
+    # client disconnect landing in that window therefore commits the trust grant
+    # and never reaches an audit emitted by the caller -- persisted trust with no
+    # ``host_trust_granted`` record, which is precisely the reconstruction gap
+    # this event exists to close.  Emitting on the thread that completed the write
+    # binds the event to the commit: the two cannot disagree, because nothing can
+    # interrupt a thread between these two statements.
+    #
+    # Still strictly after ``update_config_locked`` returns, so a failed write
+    # raises before any grant is announced.  SEL is thread-safe and adapts to an
+    # off-loop caller (``_on_event_loop``), and a non-critical event swallows
+    # filesystem errors rather than raising, so this cannot turn a committed
+    # write into a 500.
+    for host, public_repo in newly_trusted:
+        sel().log_api_access(
+            caller="dashboard",
+            operation="registries.host_trust_granted",
+            outcome="success",
+            resources=f"host={host} repo={public_repo}",
+        )
     return newly_trusted
 
 
