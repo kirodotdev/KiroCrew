@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 
 
@@ -93,6 +94,32 @@ class TestAcpPerAgentModel:
                 session_key="cron:job:run", agent="pinned-agent"
             )
         assert provider.client._model == "gpt-5.6-sol"
+
+    def test_agent_factory_does_not_capture_docker_authorization(self):
+        cfg = self._acp_cfg()
+        with patch("kiro_crew.config.loader.docker_registry_access_enabled") as grant:
+            cfg.create_provider_factory()(session_key="chat:test", agent="kirocrew")
+
+        grant.assert_not_called()
+
+    def test_adapted_harness_factory_does_not_capture_docker_authorization(self):
+        """Both harnesses defer authorization until their actual spawn wrapper."""
+        cfg = self._acp_cfg()
+        with (
+            patch("kiro_crew.config.loader.docker_registry_access_enabled") as grant,
+            patch(
+                "kiro_crew.members.select_provider_backend",
+                return_value=ACP_BACKEND_CODEX,
+            ),
+        ):
+            provider = cfg.create_provider_factory()(
+                session_key="chat:test",
+                agent="kirocrew",
+                acp_backend=ACP_BACKEND_CODEX,
+            )
+
+        assert provider.client.backend == ACP_BACKEND_CODEX
+        grant.assert_not_called()
 
     def test_kiro_agent_ignores_cc_model_sidecar(self, tmp_path):
         # The acp factory calls _resolve_named_agent_model, which returns the
