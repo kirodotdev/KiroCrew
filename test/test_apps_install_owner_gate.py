@@ -54,14 +54,16 @@ def reached(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
     monkeypatch.setattr(routes, "config_path", lambda: str(cfg))
     monkeypatch.setattr(routes, "_pinned_registries", lambda: [])
 
-    real_write = routes.atomic_write
+    # The registry PUT commits through the locked config writer (run off the
+    # loop by ``run_config_write``), so that call is the side effect to observe.
+    real_update = routes.update_config_locked
 
-    def _write(path: Any, *a: Any, **k: Any) -> Any:
-        if Path(path) == cfg:
+    def _update(path: Any = None, *a: Any, **k: Any) -> Any:
+        if path is not None and Path(path) == cfg:
             hits.append("registries_saved")
-        return real_write(path, *a, **k)
+        return real_update(path, *a, **k)
 
-    monkeypatch.setattr(routes, "atomic_write", _write)
+    monkeypatch.setattr(routes, "update_config_locked", _update)
 
     async def _hooks_stopped(*a: Any, **k: Any) -> bool:
         return True
