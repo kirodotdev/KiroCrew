@@ -51,7 +51,17 @@ class TestMutateFolders:
         assert value == "a"
         assert [f["id"] for f in _on_disk(dashboard_state)] == ["a"]
 
-    def test_unchanged_writes_nothing(self, dashboard_state: Any) -> None:
+    def test_persisted_bytes_keep_the_existing_json_shape(self, dashboard_state: Any) -> None:
+        def _append_non_ascii(folders: list[dict[str, Any]]) -> tuple[bool, None]:
+            folders.append({"id": "a", "name": "项目", "order": 0})
+            return True, None
+
+        asyncio.run(dashboard_state.mutate_folders(_append_non_ascii))
+
+        path = config_dir() / dashboard_state._FOLDERS_FILE
+        assert path.read_bytes() == b'[{"id": "a", "name": "\\u9879\\u76ee", "order": 0}]'
+
+    def test_unchanged_writes_nothing(self, dashboard_state: Any, monkeypatch: Any) -> None:
         """A no-op mutation must not cost a write.
 
         The unhide path calls this on every session move; writing each time would
@@ -63,6 +73,11 @@ class TestMutateFolders:
             writes.append(1),
             real(p, d),
         )
+
+        def unexpected_path_lookup() -> Any:
+            raise AssertionError("a no-op transaction must not resolve the store path")
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", unexpected_path_lookup)
 
         def _noop(folders: list[dict[str, Any]]) -> tuple[bool, str]:
             return False, "untouched"
@@ -146,6 +161,38 @@ class TestMutateFolders:
         # And both survive: the second transaction reads the first's mutation.
         assert sorted(f["id"] for f in _on_disk(dashboard_state)) == ["a", "b"]
         assert sorted(f["id"] for f in dashboard_state._folders) == ["a", "b"]
+
+    def test_read_waits_until_an_in_flight_mutation_commits(self, dashboard_state: Any) -> None:
+        write_started = threading.Event()
+        release_write = threading.Event()
+        observed: list[list[str]] = []
+        real = dashboard_state._write_folders_confirmed
+
+        def blocked_write(path: Any, snapshot: Any) -> None:
+            write_started.set()
+            release_write.wait(timeout=5)
+            real(path, snapshot)
+
+        dashboard_state._write_folders_confirmed = blocked_write  # type: ignore[method-assign]
+
+        def _read(folders: list[dict[str, Any]]) -> list[str]:
+            ids = [folder["id"] for folder in folders]
+            observed.append(ids)
+            return ids
+
+        async def _run() -> list[str]:
+            mutation = asyncio.create_task(dashboard_state.mutate_folders(_append("a")))
+            await asyncio.to_thread(write_started.wait, 5)
+            read = asyncio.create_task(dashboard_state.read_folders(_read))
+            for _ in range(50):
+                await asyncio.sleep(0)
+            assert observed == []
+            release_write.set()
+            await mutation
+            return await read
+
+        assert asyncio.run(_run()) == ["a"]
+        assert observed == [["a"]]
 
     def test_a_mutation_seen_by_the_next_transaction(self, dashboard_state: Any) -> None:
         """Each transaction reads the live list, so ``order`` keeps counting up."""

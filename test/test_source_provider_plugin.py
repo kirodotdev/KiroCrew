@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew.dashboard.handlers import source_providers as source
+from kiro_crew.dashboard.slot_projection import SlotProjection
 
 CR_URL = "https://review.acme.example/cr/123"
 
@@ -363,6 +364,11 @@ def test_sidebar_source_links_include_the_plugin_chip(plugin) -> None:
     slot.messages = [{"role": "assistant", "content": f"Raised {CR_URL} for review."}]
     slot._source_links_revision = 1
     slot._source_links_cache = None
+    # This test builds the slot with ``object.__new__`` to skip ``__init__``, so it
+    # must hand-supply what the scanner reaches for. The scan body now lives on
+    # SlotProjection, which is stateless (every method is a staticmethod taking the
+    # slot), so a bare instance is the whole dependency.
+    slot._projection = SlotProjection()
 
     links = state_mod._ChatSlot._pr_source_links(slot)
     assert links == [

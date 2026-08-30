@@ -1,15 +1,8 @@
 """A hand-edited folders.json cannot take out the folder routes.
 
-``folders.json`` is editable by hand and loaded with a bare ``json.loads``, so it
-can hold a non-list document, a non-dict entry, or a row with no ``id``. Every
-consumer matches rows by id, and ``mutate_folders`` snapshots the store with
-``dict(row)``, which RAISES on a non-dict and surfaces as a 500 because no
-middleware maps handler exceptions.
-
-These tests drive the REAL ``DashboardState.load_folders`` and the REAL
-``mutate_folders``. That matters: the ownership tests use a fake
-``mutate_folders`` that does not snapshot, so they can show the handler logic
-tolerating a bad row while proving nothing about whether the request survives.
+The loader admits only usable folder rows and retains existing state when the
+whole store cannot be trusted. These tests exercise that real boundary and the
+snapshot shape consumed by ``mutate_folders``.
 """
 
 from __future__ import annotations
@@ -78,9 +71,38 @@ class TestLoadFoldersDropsWhatNothingCanUse:
         value rather than becoming a dict the consumers would iterate as keys."""
         assert _load_with(tmp_path, {"id": "f1"}) == []
 
+    def test_load_warning_uses_the_current_state_logger(self, tmp_path: Any) -> None:
+        (tmp_path / "folders.json").write_text('{"id": "f1"}', encoding="utf-8")
+        state = DashboardState.__new__(DashboardState)
+        state._folders = []
+
+        with patch("kiro_crew.dashboard.state.config_dir", return_value=tmp_path):
+            with patch("kiro_crew.dashboard.state.logger") as current_logger:
+                DashboardState.load_folders(state)
+
+        current_logger.warning.assert_called_once_with(
+            "folders.json is a %s, not a list — ignoring it", "dict"
+        )
+
     def test_a_healthy_file_is_unchanged(self, tmp_path: Any) -> None:
         good = [{"id": "f1", "name": "Work", "parent_id": ""}, {"id": "f2", "name": "Home"}]
         assert _load_with(tmp_path, good) == good
+
+    @pytest.mark.parametrize("content", [None, "{not json", '{"id": "not-a-list"}'])
+    def test_an_unusable_store_retains_existing_state(
+        self, tmp_path: Any, content: str | None
+    ) -> None:
+        if content is not None:
+            (tmp_path / "folders.json").write_text(content, encoding="utf-8")
+        existing = [{"id": "live", "name": "Keep", "order": 0}]
+        state = DashboardState.__new__(DashboardState)
+        state._folders = existing
+
+        with patch("kiro_crew.dashboard.state.config_dir", return_value=tmp_path):
+            DashboardState.load_folders(state)
+
+        assert state._folders is existing
+        assert state._folders == [{"id": "live", "name": "Keep", "order": 0}]
 
 
 class TestTheRealSnapshotSurvivesWhatLoadAdmits:

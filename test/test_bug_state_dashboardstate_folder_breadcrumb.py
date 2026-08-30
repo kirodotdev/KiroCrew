@@ -1,11 +1,4 @@
-"""RED test: DashboardState.folder_breadcrumb must tolerate folders lacking 'id'.
-
-load_folders() (unlike load_tags) does no id-filtering, so a legacy/corrupt
-folders.json can yield folder dicts with no 'id' key. The breadcrumb walk builds
-``by_id = {f["id"]: f for f in self._folders}`` with a hard index, which raises
-KeyError('id') on such an entry — violating the docstring's "tolerant of dangling
-references" / "Returns '' for an empty or unknown folder id" contract.
-"""
+"""DashboardState.folder_breadcrumb tolerates a manually built malformed state."""
 
 from __future__ import annotations
 

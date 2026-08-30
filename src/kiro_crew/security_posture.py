@@ -1351,6 +1351,18 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_title.py",
         "dashboard/chat_utils.py",
         "dashboard/chat_voice.py",
+        # Owner-driven components extracted from dashboard/state.py.  They
+        # redact while staging or dispatching through the facade, but they do
+        # not introduce new logical egress paths: the same DashboardState
+        # boundaries were already represented by the facade's registered sink
+        # rows.  Classifying the implementation files separately would make a
+        # behavior-preserving decomposition change the public posture items and
+        # count even though no new value crosses a process or persistence
+        # boundary.
+        "dashboard/interaction_coordinator.py",
+        "dashboard/notification_coordinator.py",
+        "dashboard/slot_projection.py",
+        "dashboard/websocket_hub.py",
         # Pre-redacts follow-up items before handing to state.py's WS egress
         # (the registered sink); its own return string is re-redacted by
         # chat_runner before broadcast. Not itself an egress boundary.

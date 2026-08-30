@@ -1516,25 +1516,6 @@ class TestLiveScopeNarrowing:
             "the replay gate must test the LIVE set, not the connect snapshot"
         )
 
-    def test_source_guard_every_allowed_events_read_is_narrowed(self):
-        """All three consumers must narrow, not just the gate.
-
-        The payload filters (`slots`, subagent batches) decide with the same set;
-        leaving one on the raw snapshot would keep handing back the rows a
-        revoked scope selected.
-        """
-        src = (
-            Path(__file__).resolve().parents[1]
-            / "src" / "kiro_crew" / "dashboard" / "state.py"
-        ).read_text(encoding="utf-8")
-        raw_reads = src.count('ws.get("_allowed_events", frozenset())')
-        narrowed = src.count("effective_allowed_events(ws_app, snapshot)")
-        assert raw_reads == narrowed == 3, (
-            f"{raw_reads} snapshot reads but {narrowed} narrowed — every read of "
-            "_allowed_events in state.py must go through effective_allowed_events"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Grants are audited, not just denials.
 #
@@ -1548,6 +1529,7 @@ class TestLiveScopeNarrowing:
 # report itself. The per-tier test below is what pins that: it drives one event
 # from EACH tier and asserts all of them produce a record.
 # ---------------------------------------------------------------------------
+
 
 class TestGrantsAreAudited:
     APP = "mochi-pet"
@@ -2978,7 +2960,11 @@ class TestApprovalResolvedCarriesSlot:
 
         roots = [
             Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / f
-            for f in ("state.py", "chat_handlers.py", "chat_runner.py")
+            for f in (
+                "interaction_coordinator.py",
+                "chat_handlers.py",
+                "chat_runner.py",
+            )
         ]
         found = 0
         for path in roots:

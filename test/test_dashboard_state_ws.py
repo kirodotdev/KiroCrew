@@ -254,6 +254,29 @@ class TestSlotsBroadcastCarriesFolders:
 
         assert state.folders_generation() == before
 
+    @pytest.mark.asyncio
+    async def test_a_failed_folder_transaction_does_not_advance_the_generation(
+        self, state: DashboardState
+    ) -> None:
+        before = state.folders_generation()
+        state._folders = [{"id": "f1", "name": "Existing", "order": 0}]
+
+        def fail_write(*_args: object) -> None:
+            raise OSError("disk full")
+
+        state._write_folders_confirmed = fail_write  # type: ignore[method-assign]
+
+        with pytest.raises(OSError, match="disk full"):
+            await state.mutate_folders(
+                lambda folders: (
+                    True,
+                    folders.append({"id": "f2", "name": "Rolled back", "order": 1}),
+                )
+            )
+
+        assert state.folders_generation() == before
+        assert state._folders == [{"id": "f1", "name": "Existing", "order": 0}]
+
 
 class TestOwnerScopedBroadcast:
     """Owner-only typed broadcast + its delivery count (PR #461)."""
