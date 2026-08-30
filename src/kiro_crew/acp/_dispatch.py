@@ -1396,8 +1396,12 @@ def parse_usage_cost(update: dict[str, Any]) -> float | None:
     ``parse_usage_update`` (the other consumer of this frame): the value comes
     straight from the agent process, so a malformed shape (non-dict cost,
     str/list/bool amount, NaN/Infinity, negative) must degrade to "absent",
-    never raise inside the prompt-turn dispatch path. Flat-primary with a
-    nested ``update.usage.cost`` fallback, mirroring ``parse_usage_update``.
+    never raise inside the prompt-turn dispatch path. Both consumers store
+    the result in USD-denominated fields, so a present ``currency`` other
+    than exact ``"USD"`` (ISO 4217 uppercase; an absent currency is accepted
+    for adapters that omit it) also degrades the whole cost to absent rather
+    than mislabeling a non-USD amount as USD. Flat-primary with a nested
+    ``update.usage.cost`` fallback, mirroring ``parse_usage_update``.
     """
     if not isinstance(update, dict):
         return None
@@ -1407,6 +1411,10 @@ def parse_usage_cost(update: dict[str, Any]) -> float | None:
         if isinstance(nested, dict):
             cost = nested.get("cost")
     if not isinstance(cost, dict):
+        return None
+    currency = cost.get("currency")
+    if currency is not None and currency != "USD":
+        logger.debug("acp usage cost: non-USD currency %s, dropping cost", repr(currency)[:40])
         return None
     amount = _token_count(cost.get("amount"))
     if amount is None or amount < 0:

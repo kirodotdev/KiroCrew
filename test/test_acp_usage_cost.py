@@ -69,6 +69,39 @@ class TestParseUsageCost:
     def test_zero_amount_is_valid(self):
         assert parse_usage_cost({"cost": {"amount": 0}}) == 0.0
 
+    def test_non_usd_currency_drops_cost(self):
+        # Consumers store the result in cost_usd fields — a non-USD amount
+        # must degrade to absent, never be mislabeled as USD.
+        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": "EUR"}}) is None
+
+    def test_absent_currency_is_lenient(self):
+        # Adapters that omit currency keep working; USD is assumed.
+        assert parse_usage_cost({"cost": {"amount": 0.42}}) == 0.42
+
+    def test_explicit_usd_currency_accepted(self):
+        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": "USD"}}) == 0.42
+
+    def test_currency_match_is_case_sensitive_exact_usd(self):
+        # ISO 4217 codes are uppercase; a lowercase "usd" is treated as
+        # not-USD and drops the cost (exact-match posture, pinned).
+        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": "usd"}}) is None
+
+    def test_non_string_currency_drops_cost(self):
+        # A non-string currency value is present-and-not-"USD" → absent.
+        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": 42}}) is None
+
+    def test_explicit_null_currency_treated_as_absent(self):
+        # Issue #6761's prescribed policy: "present (not None)" — an explicit
+        # JSON null reads as the adapter omitting currency, so lenience applies.
+        # Pinned so a refactor to `"currency" in cost` can't silently flip it.
+        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": None}}) == 0.42
+
+    def test_nested_shape_currency_guard_applies(self):
+        # The guard runs after the flat/nested resolution, so the nested
+        # update.usage.cost shape gets the same currency policy.
+        update = {"usage": {"cost": {"amount": 0.42, "currency": "EUR"}}}
+        assert parse_usage_cost(update) is None
+
 
 # ── parse_prompt_token_usage ─────────────────────────────────────────────
 
