@@ -1265,6 +1265,17 @@ async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeyp
     )
 
     assert data["provider"] == "github"
+    # The plugin contract (`SourceChangePayload`) is defined as "what the
+    # built-in fetchers produce", so the two must not drift: a key added to or
+    # removed from `_fetch_github` without the schema (or vice versa) breaks
+    # every downstream plugin silently. Exact equality, both directions (the
+    # GitHub fetcher emits none of the `total=False` extras).
+    assert set(data) == set(source.SourceChangePayload.__required_keys__)
+    assert set(data["commits"][0]) == set(source.SourceChangeCommit.__annotations__)
+    assert set(data["files"][0]) == set(source.SourceChangeFile.__annotations__)
+    assert {frozenset(comment) for comment in data["comments"]} == {
+        frozenset(source.SourceChangeComment.__annotations__)
+    }
     assert data["mergeable"] == "conflicting"
     assert data["mergeStateStatus"] == "dirty"
     assert data["commits"][0]["sha"] == "abc123"

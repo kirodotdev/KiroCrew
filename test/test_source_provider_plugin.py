@@ -138,12 +138,15 @@ def test_builtin_parsing_is_unchanged(plugin) -> None:
 def test_source_ref_label_uses_the_plugin_chip_label(plugin) -> None:
     assert source.source_ref_label(source.parse_source_url(CR_URL)) == "CR-123"
     # Built-in conventions untouched.
-    assert source.source_ref_label(
-        source.parse_source_url("https://github.com/o/r/pull/12")
-    ) == "#12"
-    assert source.source_ref_label(
-        source.parse_source_url("https://gitlab.com/g/p/-/merge_requests/5")
-    ) == "!5"
+    assert (
+        source.source_ref_label(source.parse_source_url("https://github.com/o/r/pull/12")) == "#12"
+    )
+    assert (
+        source.source_ref_label(
+            source.parse_source_url("https://gitlab.com/g/p/-/merge_requests/5")
+        )
+        == "!5"
+    )
 
 
 def test_path_markers_include_the_plugin_contribution(plugin) -> None:
@@ -187,6 +190,86 @@ async def test_chip_status_projects_only_ci_and_state(plugin) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plugin_error_text_is_redacted_before_it_reaches_the_client(plugin) -> None:
+    """A plugin's EXCEPTION goes through the scrubber its payload goes through.
+
+    `_redact_provider_data` covers the returned dict, but an exception took a
+    second route to the client that skipped every scrubber: the message lands
+    verbatim in the 503 (`SourceProviderError`) or 400 (`ValueError`) body. A
+    built-in cannot leak this way because every built-in failure path runs its
+    provider's stderr through `_safe_error` first.
+    """
+    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+
+    async def fetch_full(ref, *, refresh: bool = False):
+        raise source.SourceProviderError(f"acme said: token={secret}")
+
+    plugin.fetch_full = fetch_full
+    with pytest.raises(source.SourceProviderError) as read_exc:
+        await source.fetch_pull_request(CR_URL)
+    assert secret not in str(read_exc.value)
+    # The surrounding prose survives, so the operator still learns what failed.
+    assert "acme said" in str(read_exc.value)
+
+    async def comment(ref, body: str) -> None:
+        raise ValueError(f"acme refused: token={secret}")
+
+    plugin.comment = comment
+    with pytest.raises(ValueError) as write_exc:
+        await source.comment_on_pull_request(CR_URL, "hello")
+    assert secret not in str(write_exc.value)
+    assert "acme refused" in str(write_exc.value)
+
+
+@pytest.mark.asyncio
+async def test_plugin_setup_message_is_redacted_too(plugin) -> None:
+    # `setup_message()` is edition-authored guidance, but it is still provider
+    # text on the same 503 route, so it gets the same treatment.
+    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    plugin.not_configured = True
+    plugin.setup_message = lambda: f"Set ACME_TOKEN (currently token={secret})"
+    with pytest.raises(source.SourceProviderError) as exc:
+        await source.fetch_pull_request(CR_URL)
+    assert secret not in str(exc.value)
+    assert "ACME_TOKEN" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_not_configured_from_a_mutation_hook_is_redacted(plugin) -> None:
+    """`SourceProviderNotConfigured` from a WRITE is scrubbed, type intact.
+
+    The fetch callers substitute the plugin's setup guidance for this signal,
+    but the mutation hooks have no such substitution: the exception's own
+    message is what reaches the 503 body. It must go through the same scrubber
+    as every other plugin exception, while keeping its subclass so the caller's
+    handling is unchanged.
+    """
+    secret = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+
+    async def comment(ref, body: str) -> None:
+        raise source.SourceProviderNotConfigured(f"acme not configured: token={secret}")
+
+    plugin.comment = comment
+    with pytest.raises(source.SourceProviderNotConfigured) as exc:
+        await source.comment_on_pull_request(CR_URL, "hello")
+    assert secret not in str(exc.value)
+    assert "acme not configured" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_capacity_error_from_a_plugin_keeps_its_retryable_type(plugin) -> None:
+    # The HTTP layer maps `SourceCapacityError` to a retryable response, so the
+    # redaction boundary must preserve the subclass rather than flatten it to
+    # the parent and silently change the status code a plugin's caller sees.
+    async def fetch_full(ref, *, refresh: bool = False):
+        raise source.SourceCapacityError("acme is busy")
+
+    plugin.fetch_full = fetch_full
+    with pytest.raises(source.SourceCapacityError):
+        await source.fetch_pull_request(CR_URL)
+
+
+@pytest.mark.asyncio
 async def test_unsupported_mutations_name_the_provider(plugin) -> None:
     # The fake plugin implements no mutation hooks, so every write must refuse
     # with a reason that names this provider rather than mentioning GitHub.
@@ -212,6 +295,64 @@ async def test_supported_mutation_hook_is_dispatched(plugin) -> None:
     plugin.comment = comment  # type: ignore[attr-defined]
     await source.comment_on_pull_request(CR_URL, "looks good")
     assert seen == [(CR_URL, "looks good")]
+
+
+@pytest.mark.asyncio
+async def test_thread_write_hooks_are_dispatched(plugin) -> None:
+    """resolveThreads is one capability: resolve, reopen, and reply all dispatch.
+
+    Reopen rides the same `resolve_thread` hook with `resolved=False`, and reply
+    rides `reply_to_thread` -- the affordances the frontend renders for
+    `capabilities.resolveThreads` must all reach the plugin instead of falling
+    into the GitHub-only GraphQL path and 400ing.
+    """
+    calls: list[tuple[str, ...]] = []
+
+    async def resolve_thread(ref, thread_id: str, *, resolved: bool) -> None:
+        calls.append(("resolve", ref.url, thread_id, str(resolved)))
+
+    async def reply_to_thread(ref, thread_id: str, body: str) -> None:
+        calls.append(("reply", ref.url, thread_id, body))
+
+    plugin.resolve_thread = resolve_thread  # type: ignore[attr-defined]
+    plugin.reply_to_thread = reply_to_thread  # type: ignore[attr-defined]
+    await source.resolve_pull_request_thread(CR_URL, "acme-thread-9")
+    await source.unresolve_pull_request_thread(CR_URL, "acme-thread-9")
+    await source.reply_to_review_thread(CR_URL, "acme-thread-9", "done in r2")
+    assert calls == [
+        ("resolve", CR_URL, "acme-thread-9", "True"),
+        ("resolve", CR_URL, "acme-thread-9", "False"),
+        ("reply", CR_URL, "acme-thread-9", "done in r2"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reopen_refusal_names_reopening_not_replies(plugin) -> None:
+    # The fake plugin has no resolve_thread hook: the reopen refusal must say so
+    # in reopen's own words, not borrow the reply wording.
+    with pytest.raises(ValueError, match="Reopening review threads"):
+        await source.unresolve_pull_request_thread(CR_URL, "thread-1")
+
+
+def test_plugin_issue_refs_are_refused_at_admission(plugin) -> None:
+    """No plugin fetch path serves an issue, so an issue ref must never admit.
+
+    An admitted issue ref would become a sidebar chip whose panel can only 400;
+    refusing at parse keeps the two layers agreeing that a plugin provider is
+    change-only.
+    """
+
+    def parse_issue(raw_url: str):
+        ref = FakeAcmePlugin.parse(plugin, raw_url)
+        if ref is None:
+            return None
+        return source.SourceRef(
+            ref.provider, ref.url, ref.host, ref.owner, ref.repo, ref.number, kind="issue"
+        )
+
+    plugin.parse = parse_issue  # type: ignore[attr-defined]
+    with pytest.raises(ValueError):
+        source.parse_source_url(CR_URL)
 
 
 def test_sidebar_source_links_include_the_plugin_chip(plugin) -> None:

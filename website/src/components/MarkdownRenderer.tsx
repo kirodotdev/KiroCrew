@@ -564,6 +564,8 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   }
   const forgeLabel = source ? forgeChipLabel(source) : null
   if (source && forgeLabel) {
+    const forgeMeta = sourceProviderMeta(source.provider)
+    const ForgeIcon = forgeMeta.icon
     return (
       <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">
         <a
@@ -573,13 +575,16 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
           title={href}
           className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
         >
-          {sourceProviderMeta(source.provider).logo === 'github'
+          {forgeMeta.logo === 'github'
             ? <GithubLogo size={12} className="shrink-0" />
-            : sourceProviderMeta(source.provider).logo === 'gitlab'
+            : forgeMeta.logo === 'gitlab'
               ? <GitlabLogo size={12} className="shrink-0" />
-              // A registered provider ships no bundled logo, so the chip uses the
-              // neutral glyph rather than borrowing GitLab's mark.
-              : <GitPullRequest className="lucide-inline shrink-0" />}
+              : ForgeIcon
+                // A registered provider's own mark, when its descriptor ships one.
+                ? <ForgeIcon size={12} className="shrink-0" />
+                // A registered provider with no bundled logo uses the neutral
+                // glyph rather than borrowing GitLab's mark.
+                : <GitPullRequest className="lucide-inline shrink-0" />}
           <span className="truncate max-w-[32ch]">{forgeLabel}</span>
         </a>
       </span>

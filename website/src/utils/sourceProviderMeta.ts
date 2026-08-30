@@ -16,11 +16,19 @@
  *
  * Deliberately free of JSX so it stays a util: a logo is named
  * (`'github' | 'gitlab' | null`) and the component is chosen by the renderer.
+ *
+ * `refLabel` resolves through the catalog rather than a template literal. `PR` and
+ * `MR` are abbreviated WORDS, not punctuation, so they are copy: `#` and `!` are
+ * the provider's own sigils and stay literal. The strings were untranslated
+ * literals in `PullRequestPanel` before they were collected here, where the strict
+ * i18n rule reaches inside module constants and surfaced them.
  */
+import { i18nT } from '../i18n/t'
 import {
   sourceProviderDescriptor,
   type PullRequestProvider,
   type SourceProviderCapabilities,
+  type SourceProviderIcon,
 } from './pullRequestLinks'
 
 export interface SourceProviderMeta {
@@ -35,6 +43,11 @@ export interface SourceProviderMeta {
   numberLabel: (n: number) => string
   /** Which bundled logo to draw, or null for a provider that ships none. */
   logo: 'github' | 'gitlab' | null
+  /** A registered provider's own glyph component, carried verbatim from its
+   *  descriptor. Checked by renderers BEFORE the `logo` name so an edition mark
+   *  wins over the neutral fallback; built-ins never set it. Still "no JSX in
+   *  this util": it is a component reference the renderer instantiates. */
+  icon?: SourceProviderIcon
   /** True when this provider's objects are "pull requests" rather than "merge
    *  requests". Selects between the EXISTING catalog key pairs rather than
    *  introducing new strings; an unknown provider takes the pull-request
@@ -46,7 +59,7 @@ export interface SourceProviderMeta {
 const GITHUB_META: SourceProviderMeta = {
   id: 'github',
   displayName: 'GitHub',
-  refLabel: n => `PR #${n}`,
+  refLabel: n => i18nT('components.pullRequestPanel.pr_number', { number: n }),
   numberLabel: n => `#${n}`,
   logo: 'github',
   pullRequestWording: true,
@@ -56,7 +69,7 @@ const GITHUB_META: SourceProviderMeta = {
 const GITLAB_META: SourceProviderMeta = {
   id: 'gitlab',
   displayName: 'GitLab',
-  refLabel: n => `MR !${n}`,
+  refLabel: n => i18nT('components.pullRequestPanel.mr_number', { number: n }),
   numberLabel: n => `!${n}`,
   logo: 'gitlab',
   pullRequestWording: false,
@@ -113,6 +126,10 @@ export function sourceProviderMeta(provider: PullRequestProvider): SourceProvide
     refLabel: label,
     numberLabel: label,
     logo: null,
+    // A non-function `icon` is dropped rather than passed through: the sites
+    // render `<meta.icon />`, and a bad value would throw at render — far from
+    // the descriptor that supplied it.
+    icon: typeof descriptor.icon === 'function' ? descriptor.icon : undefined,
     pullRequestWording: true,
     capabilities: descriptor.capabilities,
   }

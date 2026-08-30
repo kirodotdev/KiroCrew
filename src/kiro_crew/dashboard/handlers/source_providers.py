@@ -20,9 +20,9 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypedDict, TypeVar
 from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
@@ -146,8 +146,7 @@ _PROVIDER_AUTH_ENV_KEYS = {
     # cannot drift to a configured enterprise default — and for the same
     # reason the enterprise tokens are withheld: a github.com-pinned child can
     # never use them, so forwarding them is pure surplus credential surface.
-    "gh": frozenset(_GH_ENV_PASSTHROUGH)
-    - {"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"},
+    "gh": frozenset(_GH_ENV_PASSTHROUGH) - {"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"},
     "glab": frozenset({"GLAB_CONFIG_DIR", "GITLAB_TOKEN"}),
 }
 # url -> (stored_at, serialized_size_bytes, normalized_payload)
@@ -408,7 +407,117 @@ _PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _BUILTIN_PROVIDER_IDS = frozenset({"github", "gitlab", "jira"})
 
 
-@runtime_checkable
+class SourceChangeCommit(TypedDict):
+    """One commit row in the panel's Commits tab."""
+
+    sha: str
+    title: str
+    body: str
+    #: Author login/display name. A plain string, not a user object.
+    author: str
+    #: ISO-8601 timestamp, ``""`` when the provider does not report one.
+    date: str
+    #: Web URL for the commit, ``""`` when the provider has no per-commit page.
+    url: str
+
+
+class SourceChangeFile(TypedDict):
+    """One changed file in the panel's Files tab."""
+
+    path: str
+    #: Provider-vocabulary status: ``added`` / ``modified`` / ``removed`` / ...
+    status: str
+    additions: int
+    deletions: int
+    #: Unified-diff hunks for this file, ``""`` when the provider cannot serve
+    #: per-file patches (the panel then renders the row without a diff body).
+    patch: str
+
+
+class SourceChangeComment(TypedDict):
+    """One comment row: a top-level comment, a review verdict, or an inline
+    review comment. ``kind`` says which; the thread fields are only ever
+    populated on inline comments."""
+
+    id: str
+    #: ``"comment"`` (top-level) | ``"review"`` (verdict) | ``"inline"``.
+    kind: str
+    author: str
+    body: str
+    #: Review verdict state (``APPROVED`` / ``CHANGES_REQUESTED`` / ...),
+    #: ``""`` for non-review comments.
+    state: str
+    createdAt: str
+    url: str
+    #: File path an inline comment anchors to, ``""`` otherwise.
+    path: str
+    line: int | None
+    #: Provider thread id, ``""`` when the comment is not part of a resolvable
+    #: thread. This is the id handed back to ``resolve_thread`` /
+    #: ``reply_to_thread``, so it must be self-contained.
+    threadId: str
+    resolvable: bool
+    resolved: bool
+
+
+class _SourceChangePayloadExtras(TypedDict, total=False):
+    """Optional keys a change payload MAY carry on top of the required set."""
+
+    #: Authoritative aggregate CI for the sidebar chip glyph (``running`` /
+    #: ``passed`` / ``failed``), consumed by ``status_from_full_payload`` when
+    #: present. The GitLab fetcher emits it; a plugin usually should not --
+    #: the optional ``fetch_check_status`` hook is the cheaper way to feed the
+    #: chip without a full-payload fetch.
+    ciStatus: str
+
+
+class SourceChangePayload(_SourceChangePayloadExtras):
+    """The full-change payload contract: what :meth:`SourceProviderPlugin.fetch_full`
+    returns and what the built-in GitHub/GitLab fetchers already produce.
+
+    Every key declared on this class is required -- a provider without a
+    concept fills the neutral value (``""``, ``0``, ``[]``) rather than
+    omitting the key, so the frontend never distinguishes "provider lacks it"
+    from "fetch went wrong". Optional extras live on the ``total=False`` base.
+    String enums stay provider vocabulary (the frontend renders them mostly
+    verbatim); the two the panel *branches* on are ``state`` (``OPEN``/
+    ``MERGED``/``CLOSED``-style, upper-cased) and ``mergeable``/
+    ``mergeStateStatus`` (GitHub vocabulary; a provider without merge-state
+    detail fills ``""`` and sets its frontend descriptor's
+    ``capabilities.mergeState`` to false so the banner never reads them).
+    """
+
+    provider: str
+    #: The canonical URL from the validated ref -- never a provider echo.
+    url: str
+    number: int
+    title: str
+    description: str
+    state: str
+    draft: bool
+    mergedAt: str
+    mergeable: str
+    mergeStateStatus: str
+    autoMerge: bool
+    updatedAt: str
+    headBranch: str
+    baseBranch: str
+    headSha: str
+    author: str
+    additions: int
+    deletions: int
+    changedFiles: int
+    commits: list[SourceChangeCommit]
+    #: Same normalized check dicts :meth:`fetch_checks` returns; ``[]`` when
+    #: checks ride the separate degradable read or the provider has no CI.
+    checks: list[dict[str, Any]]
+    comments: list[SourceChangeComment]
+    files: list[SourceChangeFile]
+    #: Names of sections known to be truncated by pagination caps, surfaced as
+    #: a "partial data" note in the panel. ``[]`` when complete.
+    partialSections: list[str]
+
+
 class SourceProviderPlugin(Protocol):
     """What a downstream edition implements to add a source provider.
 
@@ -428,11 +537,16 @@ class SourceProviderPlugin(Protocol):
         within ``_MAX_URL_LENGTH``. The returned ``url`` must be the canonical
         form -- it becomes the cache key, the audit subject, and the string the
         dashboard persists and re-parses.
+
+        The ref must have ``kind="change"``. Issue refs are refused at
+        admission: no plugin fetch path serves them (``fetch_full`` is a
+        change-payload contract and the issue pipeline is built-in-only), so an
+        admitted issue ref could only ever produce a chip whose panel 400s.
         """
         ...
 
-    async def fetch_full(self, ref: SourceRef, *, refresh: bool = False) -> dict[str, Any]:
-        """Fetch the full change payload, in the shape ``_fetch_github`` returns.
+    async def fetch_full(self, ref: SourceRef, *, refresh: bool = False) -> SourceChangePayload:
+        """Fetch the full change payload -- the :class:`SourceChangePayload` schema.
 
         Called inside the shared cache and admission layer, so it must not add
         caching of its own. Raise :class:`SourceProviderNotConfigured` when the
@@ -492,9 +606,7 @@ def register_source_provider(plugin: SourceProviderPlugin) -> None:
     """
     provider_id = getattr(plugin, "id", None)
     if not isinstance(provider_id, str) or not _PROVIDER_ID_RE.match(provider_id):
-        raise ValueError(
-            f"source provider id {provider_id!r} must match {_PROVIDER_ID_RE.pattern}"
-        )
+        raise ValueError(f"source provider id {provider_id!r} must match {_PROVIDER_ID_RE.pattern}")
     if provider_id in _BUILTIN_PROVIDER_IDS:
         raise ValueError(f"source provider id {provider_id!r} is a built-in and cannot be replaced")
     if provider_id in _SOURCE_PROVIDER_PLUGINS:
@@ -509,11 +621,6 @@ def register_source_provider(plugin: SourceProviderPlugin) -> None:
 def registered_source_provider(provider_id: str) -> SourceProviderPlugin | None:
     """The plugin owning a provider id, or None for a built-in / unknown one."""
     return _SOURCE_PROVIDER_PLUGINS.get(provider_id)
-
-
-def registered_source_providers() -> list[SourceProviderPlugin]:
-    """Every registered plugin, in registration order."""
-    return list(_SOURCE_PROVIDER_PLUGINS.values())
 
 
 def reset_source_providers_for_tests() -> None:
@@ -575,7 +682,57 @@ def _plugin_setup_error(
     except Exception:
         logger.debug("source provider %s setup_message failed", plugin.id, exc_info=True)
         message = ""
-    return SourceProviderError(message or str(exc) or f"{plugin.id} is not configured.")
+    if not isinstance(message, str):
+        message = ""
+    # `setup_message()` is edition-authored operator guidance, but the `str(exc)`
+    # fallback is plugin RUNTIME text, so the whole message goes through the same
+    # redaction a built-in's stderr does rather than only the fallback branch.
+    return SourceProviderError(
+        _safe_error_text(
+            message or str(exc),
+            fallback=f"{plugin.id} is not configured.",
+        )
+    )
+
+
+@contextlib.contextmanager
+def _plugin_errors(plugin_id: str) -> Iterator[None]:
+    """Redact the message of any exception a plugin raises out of a dispatch.
+
+    The seam's whole claim is that a plugin "cannot opt out" of the shared
+    hardening because it is dispatched from inside it. `_redact_provider_data`
+    delivers that for the RETURNED payload, but an exception took a second route
+    to the client that skipped every scrubber: `SourceProviderError` reaches the
+    503 body verbatim and `ValueError` reaches the 400 body verbatim, so a
+    plugin whose backend embedded a token or a presigned URL in its failure text
+    published it. A built-in never could — every built-in failure path already
+    runs its provider's stderr through `_safe_error`.
+
+    `SourceProviderNotConfigured` is redacted here too, keeping its own type:
+    the fetch callers catch it and substitute the plugin's setup guidance (see
+    `_plugin_setup_error`), but the mutation hooks have no such substitution, so
+    an unredacted pass-through published the raw not-configured message in the
+    503 body on exactly that path.
+
+    The exception TYPE is preserved so each caller's own handling, and the
+    status code each maps to, are unchanged; only the message is scrubbed.
+    """
+    try:
+        yield
+    except SourceProviderNotConfigured as exc:
+        raise SourceProviderNotConfigured(
+            _safe_error_text(str(exc), fallback=f"{plugin_id} is not configured")
+        ) from exc
+    except SourceCapacityError as exc:
+        raise SourceCapacityError(_safe_error_text(str(exc), fallback="provider is busy")) from exc
+    except SourceProviderError as exc:
+        raise SourceProviderError(
+            _safe_error_text(str(exc), fallback=f"the {plugin_id} source provider failed")
+        ) from exc
+    except ValueError as exc:
+        raise ValueError(
+            _safe_error_text(str(exc), fallback=f"the {plugin_id} source provider refused")
+        ) from exc
 
 
 def _require_plugin_hook(ref: SourceRef, name: str, action: str) -> Any:
@@ -618,12 +775,14 @@ def _parse_registered_source_url(raw_url: str) -> SourceRef | None:
         if not ref.url.startswith("https://") or len(ref.url) > _MAX_URL_LENGTH:
             logger.warning("source provider %s returned a non-https ref; ignoring", plugin.id)
             continue
-        if ref.kind not in {"change", "issue"} or not isinstance(ref.number, int):
+        # Change refs only: the issue fetch pipeline is built-in-only, so an
+        # admitted plugin issue ref would render a chip whose panel can only
+        # 400. Widening this is additive if a plugin issue path ever exists.
+        if ref.kind != "change" or not isinstance(ref.number, int):
             logger.warning("source provider %s returned a malformed ref; ignoring", plugin.id)
             continue
         return ref
     return None
-
 
 
 _GITLAB_HOSTS_TTL_SECS = 30.0
@@ -781,9 +940,7 @@ def _gitlab_ref(host: str, path: str) -> SourceRef:
     normalized = urlunparse(("https", host, path, "", "", ""))
     repo = project.rsplit("/", 1)[-1]
     owner = project.rsplit("/", 1)[0] if "/" in project else ""
-    return SourceRef(
-        "gitlab", normalized, host, owner, repo, number, project=project, kind=kind
-    )
+    return SourceRef("gitlab", normalized, host, owner, repo, number, project=project, kind=kind)
 
 
 # A Jira issue key: PROJECT-NUMBER where the project part starts with a letter,
@@ -806,24 +963,18 @@ def _jira_ref(host: str, path: str) -> SourceRef:
     marker = "/browse/"
     browse_idx = path.find(marker)
     if browse_idx < 0:
-        raise ValueError(
-            "Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123."
-        )
+        raise ValueError("Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123.")
     # The key is the first segment after /browse/; deeper segments are Jira UI
     # state, not identity. Uppercase before validating -- Jira treats keys
     # case-insensitively and canonicalizing here keeps the dedup map in
     # state.py from splitting one issue across case variants.
     key = path[browse_idx + len(marker) :].split("/", 1)[0].upper()
     if not _JIRA_KEY_RE.fullmatch(key):
-        raise ValueError(
-            "Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123."
-        )
+        raise ValueError("Expected a Jira URL like https://org.atlassian.net/browse/PROJ-123.")
     project_key, number_text = key.rsplit("-", 1)
     prefix = path[:browse_idx]
     normalized = urlunparse(("https", host, f"{prefix}{marker}{key}", "", "", ""))
-    return SourceRef(
-        "jira", normalized, host, "", project_key, int(number_text), kind="issue"
-    )
+    return SourceRef("jira", normalized, host, "", project_key, int(number_text), kind="issue")
 
 
 def parse_source_url(raw_url: str) -> SourceRef:
@@ -930,12 +1081,22 @@ def _require_change_ref(ref: SourceRef) -> SourceRef:
     return ref
 
 
-def _safe_error(stderr: bytes) -> str:
-    text = stderr.decode("utf-8", errors="replace").strip()
+def _safe_error_text(text: str, *, fallback: str = "provider command failed") -> str:
+    """Strip credentials and exfiltration URLs from provider error prose.
+
+    Split out from :func:`_safe_error` so a plugin-raised EXCEPTION gets the
+    identical treatment a built-in's stderr gets. The two paths must not
+    diverge: both end up verbatim in a client-visible response body.
+    """
+    text = text.strip()
     text = redact_exfiltration_urls(text)[0]
     text = redact_credentials(text)[0]
     text = _SAFE_ERROR_RE.sub(" ", text)
-    return text[:600] or "provider command failed"
+    return text[:600] or fallback
+
+
+def _safe_error(stderr: bytes) -> str:
+    return _safe_error_text(stderr.decode("utf-8", errors="replace"))
 
 
 class _ProviderOutputTooLarge(RuntimeError):
@@ -1886,9 +2047,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         )
 
     github_mergeable, github_merge_state = (
-        merge_state_raw
-        if isinstance(merge_state_raw, tuple)
-        else _github_merge_state(details)
+        merge_state_raw if isinstance(merge_state_raw, tuple) else _github_merge_state(details)
     )
     return {
         "provider": "github",
@@ -1984,7 +2143,11 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
                 host=ref.host,
             ),
             _run_json(
-                "glab", "api", f"{mr_api}/changes", max_output_bytes=_DIFF_OUTPUT_BYTES, host=ref.host
+                "glab",
+                "api",
+                f"{mr_api}/changes",
+                max_output_bytes=_DIFF_OUTPUT_BYTES,
+                host=ref.host,
             ),
             _run_json("glab", "api", f"{mr_api}/pipelines?per_page=20", host=ref.host),
             # Runs alongside the secondary calls so its re-read wait overlaps
@@ -2094,9 +2257,7 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
             )
 
     gitlab_mergeable, gitlab_merge_state = (
-        merge_state_raw
-        if isinstance(merge_state_raw, tuple)
-        else _gitlab_merge_state(details)
+        merge_state_raw if isinstance(merge_state_raw, tuple) else _gitlab_merge_state(details)
     )
     gitlab_checks = [_gitlab_check(item) for item in _as_list(jobs)]
     # The single CI glyph is projected from the pipeline AGGREGATE (authoritative
@@ -2235,7 +2396,8 @@ async def _fetch_pull_request_checks_uncached(ref: SourceRef) -> list[dict[str, 
     plugin = _plugin_for_change(ref)
     if plugin is not None:
         try:
-            fetched = await plugin.fetch_checks(ref)
+            with _plugin_errors(plugin.id):
+                fetched = await plugin.fetch_checks(ref)
         except SourceProviderNotConfigured as exc:
             raise _plugin_setup_error(plugin, exc) from exc
     else:
@@ -2511,9 +2673,7 @@ async def _fetch_gitlab_issue(ref: SourceRef) -> dict[str, Any]:
     issue_api = f"projects/{project}/issues/{ref.number}"
     # with_labels_details upgrades `labels` from bare names to objects carrying
     # the colour the panel renders; without it every label would be colourless.
-    details = await _run_json(
-        "glab", "api", f"{issue_api}?with_labels_details=true", host=ref.host
-    )
+    details = await _run_json("glab", "api", f"{issue_api}?with_labels_details=true", host=ref.host)
     if not isinstance(details, dict):
         raise SourceProviderError("GitLab returned an invalid issue payload")
 
@@ -2635,9 +2795,7 @@ def _get_jira_auth(host: str) -> tuple[str, str] | None:
         # Token is resolved from .env / environment, not config.json
         creds = cfg.load_credentials()
     except Exception as exc:
-        raise ValueError(
-            f"jira_config_error: Could not load Jira configuration: {exc}"
-        ) from exc
+        raise ValueError(f"jira_config_error: Could not load Jira configuration: {exc}") from exc
     normalized = host.lower().removesuffix(":443")
     for entry in entries:
         entry_host = entry.host.strip().lower().removesuffix(":443")
@@ -2784,8 +2942,19 @@ def _adf_to_plain_text(node: Any, *, _depth: int = 0) -> str:
         parts.append(_adf_to_plain_text(child, _depth=_depth + 1))
     text = "".join(parts)
     # Block-level nodes get a trailing newline for readability.
-    block_types = {"paragraph", "heading", "bulletList", "orderedList", "listItem",
-                   "blockquote", "codeBlock", "rule", "table", "tableRow", "tableCell"}
+    block_types = {
+        "paragraph",
+        "heading",
+        "bulletList",
+        "orderedList",
+        "listItem",
+        "blockquote",
+        "codeBlock",
+        "rule",
+        "table",
+        "tableRow",
+        "tableCell",
+    }
     if node_type in block_types and text and not text.endswith("\n"):
         text += "\n"
     return text
@@ -2822,7 +2991,11 @@ def _jira_linked_changes(fields: dict[str, Any], base_url: str) -> list[dict[str
         # Derive browse URL from base_url
         url = f"{base_url}/browse/{issue_key}"
         # Extract state from statusCategory
-        status_obj = _as_dict(linked_issue.get("fields", {}).get("status") if isinstance(linked_issue.get("fields"), dict) else {})
+        status_obj = _as_dict(
+            linked_issue.get("fields", {}).get("status")
+            if isinstance(linked_issue.get("fields"), dict)
+            else {}
+        )
         status_cat = _as_dict(status_obj.get("statusCategory"))
         cat_key = str(status_cat.get("key") or "").lower()
         state = "closed" if cat_key == "done" else "open"
@@ -2830,17 +3003,21 @@ def _jira_linked_changes(fields: dict[str, Any], base_url: str) -> list[dict[str
         parts = issue_key.rsplit("-", 1)
         number = int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
         # Summary for title
-        linked_fields = linked_issue.get("fields") if isinstance(linked_issue.get("fields"), dict) else {}
+        linked_fields = (
+            linked_issue.get("fields") if isinstance(linked_issue.get("fields"), dict) else {}
+        )
         title = str(linked_fields.get("summary") or "") if isinstance(linked_fields, dict) else ""
-        changes.append({
-            "provider": "jira",
-            "url": url,
-            "number": number,
-            "title": title or issue_key,
-            "state": state,
-            "relation": relation,
-            "issueKey": issue_key,
-        })
+        changes.append(
+            {
+                "provider": "jira",
+                "url": url,
+                "number": number,
+                "title": title or issue_key,
+                "state": state,
+                "relation": relation,
+                "issueKey": issue_key,
+            }
+        )
     return changes
 
 
@@ -2906,13 +3083,9 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
                         "permission to read this issue."
                     )
                 if resp.status == 404:
-                    raise SourceProviderError(
-                        f"Jira issue {issue_key} not found on {ref.host}."
-                    )
+                    raise SourceProviderError(f"Jira issue {issue_key} not found on {ref.host}.")
                 if resp.status != 200:
-                    raise SourceProviderError(
-                        f"Jira returned HTTP {resp.status} for {issue_key}."
-                    )
+                    raise SourceProviderError(f"Jira returned HTTP {resp.status} for {issue_key}.")
                 # Bound response size to prevent memory exhaustion from an
                 # oversized or malicious payload before JSON decoding. Streamed
                 # to EOF: a single read(n) resolves on the first buffered chunk
@@ -3024,13 +3197,15 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
             c_body = c_body_raw
         else:
             c_body = ""
-        comments.append({
-            "id": str(c.get("id") or ""),
-            "author": str(c_author.get("displayName") or c_author.get("name") or ""),
-            "body": c_body,
-            "createdAt": str(c.get("created") or ""),
-            "url": "",  # Jira comments have no standalone permalink
-        })
+        comments.append(
+            {
+                "id": str(c.get("id") or ""),
+                "author": str(c_author.get("displayName") or c_author.get("name") or ""),
+                "body": c_body,
+                "createdAt": str(c.get("created") or ""),
+                "url": "",  # Jira comments have no standalone permalink
+            }
+        )
 
     return {
         "provider": "jira",
@@ -3193,7 +3368,8 @@ async def _fetch_pull_request_uncached(
     fetched: SourceChangePayload | dict[str, Any]
     if plugin is not None:
         try:
-            fetched = await plugin.fetch_full(ref, refresh=refresh)
+            with _plugin_errors(plugin.id):
+                fetched = await plugin.fetch_full(ref, refresh=refresh)
         except SourceProviderNotConfigured as exc:
             raise _plugin_setup_error(plugin, exc) from exc
     elif ref.provider == "github":
@@ -3258,7 +3434,9 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
                 break
             if _direct_fetch_capacity_free(_FULL_FETCH_RESERVATION_BYTES):
                 generation = _FULL_FETCH_GENERATIONS.get(ref.url, 0)
-                task = asyncio.create_task(_fetch_pull_request_uncached(ref, generation, refresh=refresh))
+                task = asyncio.create_task(
+                    _fetch_pull_request_uncached(ref, generation, refresh=refresh)
+                )
                 _FULL_FETCH_INFLIGHT[ref.url] = task
                 _FULL_FETCH_TASKS.setdefault(ref.url, set()).add(task)
                 _reserve_direct_fetch(task, _FULL_FETCH_RESERVATION_BYTES)
@@ -3611,8 +3789,7 @@ def _validated_comment_body(body: str) -> str:
     if not text:
         raise ValueError("A comment body is required.")
     if len(text) > _MAX_COMMENT_CHARS:
-        raise ValueError(
-            f"A comment body must be at most {_MAX_COMMENT_CHARS} characters.")
+        raise ValueError(f"A comment body must be at most {_MAX_COMMENT_CHARS} characters.")
     return text
 
 
@@ -3742,32 +3919,37 @@ async def _github_thread_ref(raw_url: str, thread_id: str) -> SourceRef:
 
     The ownership check is the security control: the thread id arrives from the
     browser, and without it an owner-authenticated mutation could be steered at a
-    thread on an unrelated pull request. Shared by reply/resolve/unresolve so no
-    future call site can skip it.
+    thread on an unrelated pull request. Shared by reply/unresolve so no future
+    call site can skip it. Registered providers never reach it -- both callers
+    dispatch a plugin ref to its own hook first -- so the plugin branch below is
+    a fail-closed backstop for a future call site that forgets that dispatch,
+    not a live path.
     """
     await ensure_gitlab_hosts_loaded()
-    # The docstring above promises this is the one place reply/resolve/unresolve
+    # The docstring above promises this is the one place reply/unresolve
     # cannot skip, so the kind check belongs here too — not only in the callers
     # that happen to repeat it.
     ref = _require_change_ref(parse_source_url(raw_url))
-    # A registered provider never reaches the GitHub-specific GraphQL ownership
-    # probe below, so its refusal belongs here -- the one place this docstring
-    # promises reply/resolve/unresolve cannot skip.
     if _plugin_for_change(ref) is not None:
         raise ValueError(
-            f"Review-thread replies are not supported by the '{ref.provider}' source provider."
+            f"Review-thread operations are not supported by the '{ref.provider}' source provider."
         )
     if ref.provider != "github":
-        raise ValueError(
-            "Replying to review threads is only supported on GitHub so far.")
+        raise ValueError("Replying to review threads is only supported on GitHub so far.")
     if not _GITHUB_THREAD_ID_RE.fullmatch(thread_id or ""):
         raise ValueError("A valid thread id is required.")
     threads = await _run_json(
-        "gh", "api", "graphql",
-        "-f", f"query={_GITHUB_REVIEW_THREADS_QUERY}",
-        "-f", f"owner={ref.owner}",
-        "-f", f"repo={ref.repo}",
-        "-F", f"number={ref.number}",
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={_GITHUB_REVIEW_THREADS_QUERY}",
+        "-f",
+        f"owner={ref.owner}",
+        "-f",
+        f"repo={ref.repo}",
+        "-F",
+        f"number={ref.number}",
     )
     if thread_id not in _github_thread_ids(threads):
         raise ValueError("Review thread does not belong to this pull request.")
@@ -3777,28 +3959,62 @@ async def _github_thread_ref(raw_url: str, thread_id: str) -> SourceRef:
 async def reply_to_review_thread(raw_url: str, thread_id: str, body: str) -> None:
     """Post a reply into an existing review thread."""
     text = _validated_comment_body(body)
+    # Refresh the self-managed GitLab allowlist off the event loop before any
+    # URL validation reads the cached snapshot.
+    await ensure_gitlab_hosts_loaded()
+    ref = _require_change_ref(parse_source_url(raw_url))
+    hook = _require_plugin_hook(ref, "reply_to_thread", "Replying to review threads")
+    if hook is not None:
+        # The thread id is the plugin's own vocabulary: ownership and shape
+        # validation are the hook's job, exactly as on the resolve path.
+        await _invalidate_pull_request_cache(ref.url)
+        with _plugin_errors(ref.provider):
+            await hook(ref, thread_id, text)
+        return
     ref = await _github_thread_ref(raw_url, thread_id)
     # Invalidate before dispatch, matching resolve: once the provider call
     # starts its remote result is uncertain under cancellation, so a stale
     # generation must already be unable to satisfy the post-write refresh.
     await _invalidate_pull_request_cache(ref.url)
     payload = await _run_json(
-        "gh", "api", "graphql",
-        "-f", f"query={_GITHUB_THREAD_REPLY_MUTATION}",
-        "-f", f"threadId={thread_id}",
-        "-f", f"body={text}",
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={_GITHUB_THREAD_REPLY_MUTATION}",
+        "-f",
+        f"threadId={thread_id}",
+        "-f",
+        f"body={text}",
     )
     _raise_on_graphql_errors(payload, "could not post the reply")
 
 
 async def unresolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
     """Reopen a resolved review thread."""
+    # Refresh the self-managed GitLab allowlist off the event loop before any
+    # URL validation reads the cached snapshot.
+    await ensure_gitlab_hosts_loaded()
+    ref = _require_change_ref(parse_source_url(raw_url))
+    # Reopen is the same provider capability as resolve, so it dispatches to the
+    # same hook with `resolved=False` -- one hook, one capability flag
+    # (`resolveThreads`), no way for a plugin to support one direction only.
+    hook = _require_plugin_hook(ref, "resolve_thread", "Reopening review threads")
+    if hook is not None:
+        await _invalidate_pull_request_cache(ref.url)
+        with _plugin_errors(ref.provider):
+            await hook(ref, thread_id, resolved=False)
+        return
     ref = await _github_thread_ref(raw_url, thread_id)
     await _invalidate_pull_request_cache(ref.url)
     payload = await _run_json(
-        "gh", "api", "graphql",
-        "-f", f"query={_GITHUB_UNRESOLVE_MUTATION}",
-        "-f", f"threadId={thread_id}",
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={_GITHUB_UNRESOLVE_MUTATION}",
+        "-f",
+        f"threadId={thread_id}",
     )
     _raise_on_graphql_errors(payload, "could not reopen the thread")
 
@@ -3815,7 +4031,8 @@ async def comment_on_pull_request(raw_url: str, body: str) -> None:
     hook = _require_plugin_hook(ref, "comment", "Commenting")
     if hook is not None:
         await _invalidate_pull_request_cache(ref.url)
-        await hook(ref, text)
+        with _plugin_errors(ref.provider):
+            await hook(ref, text)
         return
     if ref.provider != "github":
         raise ValueError("Commenting is only supported on GitHub so far.")
@@ -3823,9 +4040,13 @@ async def comment_on_pull_request(raw_url: str, body: str) -> None:
     # Issue comments, because a pull request's conversation timeline IS its issue
     # timeline; the review-comment endpoints require a diff position.
     await _run_json(
-        "gh", "api", "-X", "POST",
+        "gh",
+        "api",
+        "-X",
+        "POST",
         f"repos/{ref.owner}/{ref.repo}/issues/{ref.number}/comments",
-        "-f", f"body={text}",
+        "-f",
+        f"body={text}",
     )
 
 
@@ -3838,7 +4059,8 @@ async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
     hook = _require_plugin_hook(ref, "resolve_thread", "Resolving review threads")
     if hook is not None:
         await _invalidate_pull_request_cache(ref.url)
-        await hook(ref, thread_id, resolved=True)
+        with _plugin_errors(ref.provider):
+            await hook(ref, thread_id, resolved=True)
         return
     thread_pattern = _GITHUB_THREAD_ID_RE if ref.provider == "github" else _GITLAB_THREAD_ID_RE
     if not thread_pattern.fullmatch(thread_id or ""):
@@ -3955,7 +4177,8 @@ async def enable_pull_request_auto_merge(
     hook = _require_plugin_hook(ref, "enable_auto_merge", "Auto-merge")
     if hook is not None:
         await _invalidate_pull_request_cache(ref.url)
-        method = await hook(ref, confirm_immediate_merge=confirm_immediate_merge)
+        with _plugin_errors(ref.provider):
+            method = await hook(ref, confirm_immediate_merge=confirm_immediate_merge)
         # The contract is the merge METHOD as a string; a plugin returning
         # anything else degrades to "" rather than leaking a foreign shape into
         # the response the dashboard renders.
@@ -4000,9 +4223,7 @@ async def enable_pull_request_auto_merge(
         return method.lower()
     details = await _gitlab_merge_request(ref)
     if _gitlab_is_draft(details):
-        raise ValueError(
-            "GitLab cannot arm a draft merge request. Mark it ready for review first."
-        )
+        raise ValueError("GitLab cannot arm a draft merge request. Mark it ready for review first.")
     if details.get("merge_when_pipeline_succeeds"):
         raise ValueError("Auto-merge is already enabled for this merge request.")
     if not _gitlab_has_pending_pipeline(details) and not confirm_immediate_merge:
@@ -4040,7 +4261,8 @@ async def mark_pull_request_ready(raw_url: str) -> None:
     hook = _require_plugin_hook(ref, "mark_ready", "Marking a change ready for review")
     if hook is not None:
         await _invalidate_pull_request_cache(ref.url)
-        await hook(ref)
+        with _plugin_errors(ref.provider):
+            await hook(ref)
         return
     if ref.provider == "github":
         node_id, repository = await _github_pull_request_node(ref)
@@ -4136,7 +4358,10 @@ async def _github_pending_review(ref: SourceRef) -> dict[str, Any]:
     publish path can refuse rather than silently leak.
     """
     raw = await _run_json(
-        "gh", "api", "--paginate", "--slurp",
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
         f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews",
     )
     if not isinstance(raw, list):
@@ -4193,9 +4418,16 @@ async def _github_pending_review(ref: SourceRef) -> dict[str, Any]:
             ),
         }
     return {
-        "reviewId": "", "body": "", "comments": [], "commitId": "", "headSha": "",
-        "stale": False, "contentRedacted": False, "autoMergeArmed": False,
-        "contentDigest": "", "staleDismissalEnabled": False,
+        "reviewId": "",
+        "body": "",
+        "comments": [],
+        "commitId": "",
+        "headSha": "",
+        "stale": False,
+        "contentRedacted": False,
+        "autoMergeArmed": False,
+        "contentDigest": "",
+        "staleDismissalEnabled": False,
     }
 
 
@@ -4211,7 +4443,9 @@ async def _github_pull_request_state(ref: SourceRef) -> dict[str, Any]:
     jq form turned every read of this value into a 503.
     """
     payload = await _run_json(
-        "gh", "api", f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}",
+        "gh",
+        "api",
+        f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}",
     )
     if not isinstance(payload, dict):
         raise SourceProviderError("GitHub returned an invalid pull-request payload")
@@ -4259,7 +4493,8 @@ async def _github_rest_dismisses_stale(ref: SourceRef, base_ref: str) -> bool:
     """The admin-only REST read of the base branch's protection block."""
     try:
         payload = await _run_json(
-            "gh", "api",
+            "gh",
+            "api",
             f"repos/{ref.owner}/{ref.repo}/branches/{quote(base_ref, safe='')}/protection",
         )
     except Exception:
@@ -4289,23 +4524,29 @@ async def _github_graphql_dismisses_stale(ref: SourceRef, base_ref: str) -> bool
     )
     try:
         payload = await _run_json(
-            "gh", "api", "graphql", "-f", f"query={query}",
-            "-F", f"owner={ref.owner}", "-F", f"name={ref.repo}",
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            f"owner={ref.owner}",
+            "-F",
+            f"name={ref.repo}",
         )
     except Exception:
-        logger.debug("branch protection unreadable via GraphQL for %s", ref.url,
-                     exc_info=True)
+        logger.debug("branch protection unreadable via GraphQL for %s", ref.url, exc_info=True)
         return False
-    nodes = (((payload or {}).get("data") or {}).get("repository") or {}) \
-        .get("branchProtectionRules") or {}
+    nodes = (((payload or {}).get("data") or {}).get("repository") or {}).get(
+        "branchProtectionRules"
+    ) or {}
     for rule in nodes.get("nodes") or []:
         if not isinstance(rule, dict):
             continue
         pattern = rule.get("pattern")
         if not isinstance(pattern, str) or not pattern:
             continue
-        if (_branch_pattern_matches(pattern, base_ref)
-                and rule.get("dismissesStaleReviews") is True):
+        if _branch_pattern_matches(pattern, base_ref) and rule.get("dismissesStaleReviews") is True:
             return True
     return False
 
@@ -4361,7 +4602,10 @@ async def _github_pending_review_comments(ref: SourceRef, review_id: str) -> lis
     the credential and then publishes it.
     """
     raw = await _run_json(
-        "gh", "api", "--paginate", "--slurp",
+        "gh",
+        "api",
+        "--paginate",
+        "--slurp",
         f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/comments",
     )
     return _flatten_paginated(raw)
@@ -4381,12 +4625,15 @@ def _review_content_digest(body: str, comments: list[dict[str, Any]]) -> str:
     added/removed comment all change it. Hashes the RAW text, because raw text is
     what GitHub publishes.
     """
-    payload: list[dict[str, Any]] = [{
-        "id": str(c.get("id") or ""),
-        "path": str(c.get("path") or ""),
-        "line": c.get("line"),
-        "body": str(c.get("body") or ""),
-    } for c in comments]
+    payload: list[dict[str, Any]] = [
+        {
+            "id": str(c.get("id") or ""),
+            "path": str(c.get("path") or ""),
+            "line": c.get("line"),
+            "body": str(c.get("body") or ""),
+        }
+        for c in comments
+    ]
     payload.sort(key=lambda c: str(c["id"]))
     blob = json.dumps({"body": body, "comments": payload}, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -4499,8 +4746,8 @@ async def submit_pull_request_review(
             "Approve is unavailable because this pull request's base branch does not "
             "dismiss approvals when new commits are pushed (or its protection is not "
             "readable from here). Without that, an approval published now could "
-            "outlive the commit it reviewed. Enable \"Dismiss stale pull request "
-            "approvals when new commits are pushed\" on the base branch, or approve "
+            'outlive the commit it reviewed. Enable "Dismiss stale pull request '
+            'approvals when new commits are pushed" on the base branch, or approve '
             "on GitHub."
         )
     if normalized == "APPROVE" and pending.get("autoMergeArmed"):
@@ -4559,12 +4806,16 @@ async def _github_dismiss_review(ref: SourceRef, review_id: str) -> bool:
     """
     try:
         await _run_json(
-            "gh", "api", "-X", "PUT",
+            "gh",
+            "api",
+            "-X",
+            "PUT",
             f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/dismissals",
             "-f",
             "message=Dismissed automatically: the pull request head changed while "
             "this review was being published, so it applied to unreviewed code.",
-            "-f", "event=DISMISS",
+            "-f",
+            "event=DISMISS",
         )
         return True
     except Exception:
@@ -4672,9 +4923,7 @@ def _authorize_owner_request(
     owner_id = str(getattr(state, "owner_id", "") or "")
     caller = str(request.get("user") or "")
     if not owner_id:
-        is_local_dashboard = (
-            request.get("app") == "" and caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
-        )
+        is_local_dashboard = request.get("app") == "" and caller in _LOCAL_DASHBOARD_OWNER_SUBJECTS
         if allow_local_no_owner and is_local_dashboard:
             return None
         _audit_source_api(request, operation, "denied", "owner_not_configured")
@@ -4748,8 +4997,7 @@ async def api_pull_request_unresolve(request: web.Request) -> web.Response:
         )
         return {"resolved": False}
 
-    return await _owner_mutation_response(
-        request, "source.pull_request.unresolve", action)
+    return await _owner_mutation_response(request, "source.pull_request.unresolve", action)
 
 
 async def api_pull_request_reply(request: web.Request) -> web.Response:
@@ -4769,8 +5017,7 @@ async def api_pull_request_reply(request: web.Request) -> web.Response:
         )
         return {"posted": True}
 
-    return await _owner_mutation_response(
-        request, "source.pull_request.reply", action)
+    return await _owner_mutation_response(request, "source.pull_request.reply", action)
 
 
 async def api_pull_request_comment(request: web.Request) -> web.Response:
@@ -4781,13 +5028,10 @@ async def api_pull_request_comment(request: web.Request) -> web.Response:
     """
 
     async def action(body: dict[str, Any]) -> dict[str, Any]:
-        await comment_on_pull_request(
-            str(body.get("url") or ""), str(body.get("body") or "")
-        )
+        await comment_on_pull_request(str(body.get("url") or ""), str(body.get("body") or ""))
         return {"posted": True}
 
-    return await _owner_mutation_response(
-        request, "source.pull_request.comment", action)
+    return await _owner_mutation_response(request, "source.pull_request.comment", action)
 
 
 async def _owner_mutation_response(
@@ -5016,9 +5260,7 @@ def _status_sig(status: dict[str, str] | None) -> str:
     return "|".join(f"{key}={status[key]}" for key in sorted(status))
 
 
-def _note_check_flap(
-    url: str, previous: dict[str, str] | None, status: dict[str, str]
-) -> bool:
+def _note_check_flap(url: str, previous: dict[str, str] | None, status: dict[str, str]) -> bool:
     """Track repeated identical changed-transitions; return True to damp the loop.
 
     See ``_check_flap`` above. The chip refresh calls this on every *changed*
@@ -5194,10 +5436,7 @@ def status_from_full_payload(payload: dict[str, Any]) -> dict[str, str] | None:
     if isinstance(ci_status, str) and ci_status:
         result["ci"] = ci_status
     else:
-        buckets = [
-            str(check.get("bucket") or "")
-            for check in _as_list(payload.get("checks"))
-        ]
+        buckets = [str(check.get("bucket") or "") for check in _as_list(payload.get("checks"))]
         ci = _rollup_ci(buckets)
         if ci is not None:
             result["ci"] = ci
@@ -5510,7 +5749,8 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
         if not callable(hook):
             return None
         try:
-            status = await hook(ref)
+            with _plugin_errors(plugin.id):
+                status = await hook(ref)
         except SourceProviderNotConfigured as exc:
             raise _plugin_setup_error(plugin, exc) from exc
         if not isinstance(status, dict):

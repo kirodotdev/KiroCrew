@@ -933,6 +933,9 @@ export interface PullRequestSource {
 
 export interface ChatFolder {
   id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** Tag ids (from the tag vocabulary) copied onto every NEW chat filed into
+   *  this folder. Absent = no tags, mirroring the optional `color`. */
+  tags?: string[]
   /** Channel namespace when this folder was created by per-channel session filing (e.g. 'discord'). */
   channel?: string
 }

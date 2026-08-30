@@ -229,7 +229,6 @@ src/kiro_crew/dashboard/handlers/memory.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/side.py
-src/kiro_crew/dashboard/handlers/source_providers.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
 src/kiro_crew/dashboard/handlers/terminal.py

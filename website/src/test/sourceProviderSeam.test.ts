@@ -16,7 +16,6 @@ import {
   loadSourceSelections,
   parseSourceLinkUrl,
   registerSourceProvider,
-  registeredSourceProviders,
   resetSourceProvidersForTests,
   sourceProviderDescriptor,
   type PullRequestLink,
@@ -60,7 +59,17 @@ describe('registerSourceProvider', () => {
   it('registers a provider and exposes its descriptor', () => {
     registerSourceProvider(acmeProvider)
     expect(sourceProviderDescriptor('acme')).toBe(acmeProvider)
-    expect(registeredSourceProviders()).toEqual([acmeProvider])
+  })
+
+  it("drops a descriptor link with kind 'issue' — the issue pipeline is built-in-only", () => {
+    registerSourceProvider({
+      ...acmeProvider,
+      parse: url => {
+        const link = acmeProvider.parse(url)
+        return link ? { ...link, kind: 'issue' } : null
+      },
+    })
+    expect(parseSourceLinkUrl(CR_URL)).toBeNull()
   })
 
   it('refuses a built-in id, a duplicate, and a malformed id', () => {
@@ -178,5 +187,22 @@ describe('sourceProviderMeta', () => {
     expect(meta.logo).toBeNull()
     expect(meta.capabilities)
       .toEqual({ checks: false, mergeState: false, resolveThreads: false, comment: false })
+  })
+
+  it('carries a descriptor icon component through to meta, and drops a non-function one', () => {
+    const AcmeGlyph = () => null
+    registerSourceProvider({ ...acmeProvider, icon: AcmeGlyph })
+    expect(sourceProviderMeta('acme').icon).toBe(AcmeGlyph)
+    resetSourceProvidersForTests()
+    // A descriptor with no icon (and the fail-closed fallback) yields undefined —
+    // the renderers read that as "draw the neutral glyph", never another brand.
+    registerSourceProvider(acmeProvider)
+    expect(sourceProviderMeta('acme').icon).toBeUndefined()
+    expect(sourceProviderMeta('mystery').icon).toBeUndefined()
+    resetSourceProvidersForTests()
+    // A malformed icon value is dropped at the meta boundary rather than thrown
+    // at render time, far from the descriptor that supplied it.
+    registerSourceProvider({ ...acmeProvider, icon: 'not-a-component' as never })
+    expect(sourceProviderMeta('acme').icon).toBeUndefined()
   })
 })

@@ -1,6 +1,13 @@
+import type { ComponentType } from 'react'
 import type { ChatMessage, SourceProviderId } from '../types'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from './safeStorage'
+
+/** A provider brand glyph. Rendered by the chip / tab sites at THEIR size, so a
+ *  descriptor supplies a component rather than an element: the same mark draws
+ *  at 10px in a sidebar chip and 13px in a panel tab. Kept as a component
+ *  REFERENCE (no JSX in this util) — the renderer instantiates it. */
+export type SourceProviderIcon = ComponentType<{ size?: number; className?: string }>
 
 /** Which source system a link belongs to.
  *
@@ -59,14 +66,20 @@ export function partitionSourceLinks(
  *  Read as "this provider can serve it", never as "the user may do it": owner
  *  gating and every other authorization check stay entirely server-side. */
 export interface SourceProviderCapabilities {
-  /** CI checks are fetchable — gates the Checks tab and its poll. */
+  /** CI checks are fetchable — gates the Checks tab and its poll. Backend
+   *  hooks: `fetch_checks` (required anyway) plus `fetch_check_status` for the
+   *  sidebar chip badge. */
   checks: boolean
   /** Mergeability / merge-state detail is reported — gates the merge-blocker
-   *  banner and the ready-for-review + auto-merge actions. */
+   *  banner and the ready-for-review + auto-merge actions. Backend hooks:
+   *  `mark_ready` and `enable_auto_merge`. */
   mergeState: boolean
-  /** Review threads can be resolved / unresolved / replied to. */
+  /** Review threads can be resolved / reopened / replied to. One flag for all
+   *  three: the backend plugin must implement `resolve_thread` (dispatched with
+   *  `resolved=True` and `False`) AND `reply_to_thread`, because this flag is
+   *  what renders the reply box and the reopen toggle. */
   resolveThreads: boolean
-  /** A top-level comment can be posted. */
+  /** A top-level comment can be posted. Backend hook: `comment`. */
   comment: boolean
 }
 
@@ -81,13 +94,18 @@ export interface SourceProviderDescriptor {
   /** Recognize one URL, or return null. Receives a defensive COPY of the parsed
    *  `URL`, so mutating it cannot affect the built-in parse or another
    *  descriptor. Must return an already-canonical `url` (the exact string the
-   *  panel will persist and re-parse) or its tabs will not survive a reload. */
+   *  panel will persist and re-parse) or its tabs will not survive a reload,
+   *  and a `kind` of `'change'` — issue refs are refused at admission because
+   *  the issue pipeline is built-in-only (see `validRegisteredLink`). */
   parse(url: URL): PullRequestLink | null
   /** Sidebar chip label, or null to fall back to the provider-neutral form. */
   chipLabel(link: PullRequestLink): string | null
   /** The provider's own short reference for an object (`'CR-123'`), used in tab
    *  strips, titles, and agent handoffs. */
   refLabel(number: number): string
+  /** Optional brand glyph for chips and tab strips. Absent → the renderer's
+   *  provider-neutral fallback glyph (never another provider's mark). */
+  icon?: SourceProviderIcon
   capabilities: SourceProviderCapabilities
 }
 
@@ -152,11 +170,6 @@ export function sourceProviderDescriptor(
   return SOURCE_PROVIDERS.get(provider)
 }
 
-/** Every registered descriptor, in registration order. */
-export function registeredSourceProviders(): readonly SourceProviderDescriptor[] {
-  return [...SOURCE_PROVIDERS.values()]
-}
-
 /** Drop every registration. Test-only — the registry is module state, so a test
  *  that registers a fake provider must not leak it into the next file. */
 export function resetSourceProvidersForTests(): void {
@@ -177,7 +190,11 @@ function validRegisteredLink(
   if (typeof link.url !== 'string' || !link.url.startsWith('https://')) return false
   if (link.url.length > MAX_PERSISTED_SOURCE_URL_LENGTH) return false
   if (!Number.isInteger(link.number) || link.number <= 0) return false
-  if (link.kind !== 'change' && link.kind !== 'issue') return false
+  // Change refs only. The issue pipeline (fetch, panel, chip status) is
+  // built-in-only, so an admitted `kind: 'issue'` link from a descriptor would
+  // render a chip whose panel can only fail. The backend admission check
+  // mirrors this; widening both is additive if a plugin issue path ever exists.
+  if (link.kind !== 'change') return false
   return typeof link.repo === 'string'
 }
 

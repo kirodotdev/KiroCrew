@@ -9,11 +9,12 @@ The backend has the sibling mechanism, Composed Platform Providers: see
 [`docs/system-specs/modules/platform-context.md`](../../docs/system-specs/modules/platform-context.md).
 The two are independent. Nothing here reads `CONTRACT_VERSION`.
 
-## The eleven registry seams
+## The twelve registry seams
 
 Each entry is one registrar the edition may call, paired with the reader the core
-already calls. `src/extensions.ts` names exactly these eleven in its header, and
-`src/test/extensionSeams.test.tsx` exercises each one.
+already calls. `src/extensions.ts` names exactly these twelve in its header.
+`src/test/extensionSeams.test.tsx` exercises each one except the source-provider
+seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`.
 
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
@@ -28,17 +29,18 @@ already calls. `src/extensions.ts` names exactly these eleven in its header, and
 | Overview built-in suppression (subtractive) | `pages/overviewBuiltins.ts` | `suppressOverviewBuiltin()` to `isOverviewBuiltinSuppressed()` |
 | Panel-navigation chords | `hooks/useKeyboardShortcuts.ts` | `registerPanelShortcut()`, read by the shortcut handler and `DEFAULT_SHORTCUTS` |
 | Non-app route prefixes | `components/MigrationCheck.tsx` | `registerNonAppPrefix()`, read by `MigrationCheck` |
+| Source providers (Changes panel + sidebar chips) | `utils/pullRequestLinks.ts` | `registerSourceProvider()` to `sourceProviderDescriptor()` |
 
 Plus one **exported-transport** seam for edition-owned API methods. It is not a
 registry; see "API methods" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets, highlight.js languages) are core-internal
-wiring, not edition seams. Only the eleven above are called from the composition
+wiring, not edition seams. Only the twelve above are called from the composition
 root.
 
-Ten of the eleven are **additive** — the edition contributes a surface. The
-eleventh is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
+Eleven of the twelve are **additive** — the edition contributes a surface. The
+remaining one is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
 Overview surface for a distribution whose environment makes it permanently
 inapplicable, which no additive seam can express. It is named `suppress*` rather
 than `register*` precisely so a call site cannot be misread as a contribution.
@@ -429,6 +431,35 @@ suppressed build emits no element at all rather than an empty, still-spaced one.
 **Non-app route prefixes.** `registerNonAppPrefix(prefix)` tells `MigrationCheck`
 that a route can never host a migratable app, so the migration banner does not
 probe it. A duplicate prefix is a no-op.
+
+**Source providers.** `registerSourceProvider(descriptor)` adds a code-review
+forge to link extraction, sidebar chips, and the Changes panel. It is the one
+seam whose registration is HALF a provider: the descriptor covers parsing and
+rendering (`parse`, `chipLabel`, `refLabel`, an optional `icon` glyph, and the
+`capabilities` flags gating each write affordance), while fetching and every
+mutation are served by a backend plugin the edition registers with
+`register_source_provider()` in
+`src/kiro_crew/dashboard/handlers/source_providers.py`, under the same id. The
+two registries validate the same id grammar (`/^[a-z][a-z0-9_-]{0,31}$/`) and
+both refuse the built-in ids (`github`, `gitlab`, `jira`), so a descriptor can
+never restyle a core provider and a payload provider id round-trips through both
+layers. A descriptor missing `parse`/`chipLabel`/`refLabel`/`capabilities`
+routes through `reportSeamCollision`.
+
+Every capability flag names the backend hooks it commits the plugin to (see
+`SourceProviderCapabilities` in `utils/pullRequestLinks.ts`): a flag set without
+its hooks renders a button whose call can only fail, which is exactly what the
+flags exist to prevent. Descriptor-returned links are re-validated
+(`validRegisteredLink`): the link must carry the descriptor's own id, an
+`https://` canonical URL that survives persist-and-reparse, and `kind: 'change'`
+— issue refs are refused at admission because the issue pipeline is
+built-in-only. A provider id the frontend has no descriptor for renders through
+fail-closed fallback meta (`utils/sourceProviderMeta.ts`): neutral labels, no
+logo, no write affordances. The backend plugin contract — payload schema
+(`SourceChangePayload`), shared caches, redaction, byte caps, and the optional
+mutation hooks — is documented on `SourceProviderPlugin` in
+`source_providers.py`; this seam's suite is `src/test/sourceProviderSeam.test.ts`
+plus `test/test_source_provider_plugin.py` on the backend.
 
 ## Reactivity
 

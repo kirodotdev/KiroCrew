@@ -5,6 +5,7 @@ import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, Folde
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import JiraLogo from '../components/icons/JiraLogo'
+import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import FolderGlyph from '../components/FolderGlyph'
 import { DndContext, closestCenter, pointerWithin, useDroppable, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent, type DragOverEvent, type CollisionDetection } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
@@ -722,6 +723,13 @@ function chipLabel(link: SidebarSourceLink): string {
  * provider rendered GitLab's brand mark on someone else's review system --
  * a wrong attribution is worse than an anonymous one, and this is the one
  * failure mode a chip must not have.
+ *
+ * A REGISTERED provider sits between those two cases: it is not a built-in, so
+ * it has no bundled mark here, but its descriptor may have supplied one. That
+ * icon is consulted before the neutral glyph, which is what lets an edition
+ * wear its own brand without any provider being able to wear another's. Mirrors
+ * the fallback order in `MarkdownRenderer`'s forge chip and
+ * `PullRequestPanel`'s tab strip.
  */
 function SourceLinkIcon({ provider }: { provider: SidebarSourceLink['provider'] }) {
   switch (provider) {
@@ -731,8 +739,11 @@ function SourceLinkIcon({ provider }: { provider: SidebarSourceLink['provider'] 
       return <GitlabLogo size={10} className="shrink-0" />
     case 'jira':
       return <JiraLogo size={10} className="shrink-0" />
-    default:
+    default: {
+      const Icon = sourceProviderMeta(provider).icon
+      if (Icon) return <Icon size={10} className="shrink-0" />
       return <Link2 className="lucide-inline shrink-0" aria-hidden="true" />
+    }
   }
 }
 

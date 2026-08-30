@@ -1074,7 +1074,12 @@ export default function PullRequestPanel({
               ? <GithubLogo size={13} className="shrink-0" />
               : itemMeta.logo === 'gitlab'
                 ? <GitlabLogo size={13} className="shrink-0" />
-                : <GitPullRequest className="lucide-inline shrink-0" />}
+                : itemMeta.icon
+                  ? <itemMeta.icon size={13} className="shrink-0" />
+                  // Explicit 13 to match its siblings: `lucide-inline` sizes at
+                  // `1em`, which is 12px in this tab strip, so the neutral glyph
+                  // rendered a pixel smaller than every branded one beside it.
+                  : <GitPullRequest size={13} className="lucide-inline shrink-0" />}
             <span>{itemMeta.refLabel(item.number)}</span>
             <SourceTabState status={statusByUrl[item.url]} />
           </Btn>

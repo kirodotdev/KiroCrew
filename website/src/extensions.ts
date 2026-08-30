@@ -18,6 +18,7 @@
  *   import { registerCapsuleSegment }    from '@/apps/capsuleSegments'
  *   import { registerOverviewStatCards } from '@/pages/overviewStatCards'
  *   import { registerOverviewPanel }     from '@/pages/overviewPanel'
+ *   import { registerSourceProvider }    from '@/utils/pullRequestLinks'
  *
  * plus one SUPPRESSOR, for a built-in surface an edition's environment makes
  * permanently inapplicable (the registrars above can only add):
