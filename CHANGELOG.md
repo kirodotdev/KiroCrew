@@ -43,6 +43,26 @@ updates itself atomically instead of asking you to re-run the installer.
 - **A release can declare a minimum supported version** — An install below the
   floor gets an update prompt that cannot be snoozed, skipped or dismissed.
 
+- **Knowledge moves into Agent Capabilities** — The standalone Knowledge page
+  leaves the sidebar; its content lives in the Knowledge & instructions tab of
+  the Agent Capabilities page, and old `/knowledge` links redirect there.
+- **The standalone Auto-Triage Pipeline app is retired** — Its boards move
+  into Issue Radar as a fourth board that follows the selected repository; the
+  separate app, its store listing and its per-app saved repository are gone.
+- **Disconnect now really disconnects** — Removing a connection also revokes
+  the locally stored OAuth grant, so reconnecting means signing in again. If
+  another agent or scope still shares the endpoint — or the survey cannot be
+  read — the grant is kept and the dialog says why.
+- **Malformed agent specs fail loudly** — Every remaining reader of an agent
+  spec goes through the hardened path: an oversized file, a symlink into a
+  sensitive location, or a non-object spec is refused with a clear error
+  instead of being silently skipped or half-applied.
+- **`kirocrew gateway --no-tunnel`** — A gateway started with the new flag
+  refuses to publish a tunnel for its whole lifetime, regardless of
+  `tunnel.enabled`. Dev Fleet pods pass the flag whenever the target checkout
+  understands it — an older checkout keeps its previous behavior — and pods
+  are reached with SSH port forwarding either way.
+
 ### Your AWS account gets a control room
 
 - **AWS Control** — A new built-in app puts your AWS accounts on one surface:
@@ -79,6 +99,10 @@ updates itself atomically instead of asking you to re-run the installer.
 - **Settings apply without leaving the panel** — Speech settings that need a
   gateway restart now offer the restart button inline.
 
+- **Watch words settle** — While you dictate, in-flight words fade in as they
+  stabilize and flash when a revision changes them, so you can see the
+  transcription firm up; the panel never mounts under reduced-motion.
+
 ### Sessions become tabs
 
 - **Session tabs** — Keep several sessions open as tabs above the transcript:
@@ -96,6 +120,13 @@ updates itself atomically instead of asking you to re-run the installer.
 - **Wide notes** — A markdown note can be lifted out of the reading column to
   full width, and the choice is remembered per device.
 
+- **Ephemeral chats from the + New menu** — The create menu gains an
+  Ephemeral submenu: Incognito (reads memory, writes none) and Temporary
+  (neither) sessions, one tap from the sidebar.
+- **Agents can color their sessions** — An agent's `session_color` tints
+  every session it starts that has no color of its own, applied at render
+  time so editing the agent re-tints them live; a manual pick always wins.
+
 ### Approvals you can steer
 
 - **Approve or reject everything at once** — When several tool calls wait on
@@ -112,6 +143,15 @@ updates itself atomically instead of asking you to re-run the installer.
 - **The approval bar teaches the modes** — It now points at the
   approval-mode picker, so Reads, Trust and YOLO are discoverable instead of
   confirming every step forever.
+
+- **Name-grants verify identity on every surface** — An "always allow" for a
+  shell command now checks, on every auto-approve path including headless
+  runs, that each program name still resolves to the program it named; a
+  shadowed or agent-writable resolution falls back to the prompt — or to the
+  headless deny — instead of inheriting the grant.
+- **Trusted Slack bots** — `slack.trusted_bot_ids` lets named bots through
+  the bot filter for multi-gateway meshes, with a per-thread turn limit so
+  two trusting gateways cannot answer each other forever.
 
 ### Agents that drive other agents
 
@@ -182,6 +222,14 @@ updates itself atomically instead of asking you to re-run the installer.
   the whole dashboard, the terminal gains a Paste soft key, and pasted text
   with trailing blank lines stops vanishing on iOS Safari.
 
+- **Copy from a touch terminal** — The terminal gains Select and Copy soft
+  keys, so a device with no mouse can select terminal output and copy it —
+  the clipboard write stays inside the tap, and an empty selection coaches
+  instead of copying the screen.
+- **Rotation recovers** — The dashboard re-reads the mobile breakpoint when
+  the device rotates, and renaming a session on a phone no longer hides the
+  input caret behind the status strip.
+
 ### Apps, members, and the store
 
 - **Discover and Library split** — The App Store becomes two pages with their
@@ -200,6 +248,14 @@ updates itself atomically instead of asking you to re-run the installer.
   own after a brief wedge; a multi-module backend can import its own sibling
   modules.
 
+- **App art works offline** — Detail hero images, screenshots and icons fall
+  back to the locally installed bytes when the registry CDN is unreachable,
+  and the detail page shows the version actually installed on this machine
+  rather than an older registry number.
+- **See who's unread** — The crew members roster marks members with unread
+  messages with a dot, orders itself by the latest message rather than file
+  mtime, and the badge drains when you actually read the thread.
+
 ### MCP servers stop degrading silently
 
 - **A failure count you can see** — A server that keeps failing its health
@@ -212,6 +268,31 @@ updates itself atomically instead of asking you to re-run the installer.
   per-client is given a private backend per connection until it is fixed, a
   broker restart reconnects sessions instead of stranding them, and a stale
   gateway daemon from an older configuration is replaced automatically.
+
+### Meetings translate themselves
+
+- **Line-by-line transcript translation** — Pick a target language and the
+  meeting transcript translates as it arrives, on a bounded queue that never
+  blocks the transcript itself; a line whose translation fails keeps its
+  original text, and nothing leaves your configured model session.
+- **No more racing the room** — Opening a meeting now holds until its agents
+  finish initializing, and lines spoken during initialization are delivered
+  to exactly the agents that were listening when they were said.
+
+### Issue Radar and Dev Fleet level up
+
+- **Triage becomes a board** — The auto-triage pipeline is now Issue Radar's
+  fourth board, following the repository you have selected instead of keeping
+  its own — so titles, sessions and quotas can no longer cross repositories.
+- **Pods wear gauges** — Every Dev Fleet pod shows its memory against the
+  cgroup ceiling, CPU, task count and disk, so a heavy pod is visible before
+  it becomes a problem.
+- **Reclaim closed-PR worktrees** — Manual cleanup gains a closed-PR group
+  (each worktree 0.7–2.2 GB) with dirty-tree refusal and unmerged-commit
+  warnings; automatic reclamation still touches only merged ones.
+- **A pinnable preview port** — `dashboard.browser_view_port` fixes the
+  browser live-preview server to one port, so an SSH-forwarded remote
+  gateway can expose it.
 
 ### Faster and lighter
 
@@ -226,6 +307,13 @@ updates itself atomically instead of asking you to re-run the installer.
   trash summary, and log writes no longer stall the gateway on a slow disk.
 - **Windows sizes itself honestly** — The concurrent sub-agent limit is
   derived from real free memory instead of being pinned at three.
+
+- **Long answers render smoothly** — Thinking output batches per animation
+  frame and long transcripts share turn-group structure between renders, so
+  a streaming reply no longer staccatos the page.
+- **A 200-session sidebar stays quick** — Session rows memoize individually
+  and subscribe per slot, so a background event repaints one row, not the
+  whole list.
 
 ### Notable fixes
 
@@ -289,15 +377,32 @@ sign-in guidance are fully translated in all 12 languages, destructive
 prompts quote the resource in your language's own quote marks, and five more
 menus gain arrow-key navigation, focus return and screen-reader announcements.
 
+**Since the last insider build.** Dialogs now contain keyboard shortcuts, so
+a chord typed into a half-filled form no longer navigates away and destroys
+the draft — Escape still dismisses, and an Escape the IME owns never does;
+Outlook and Exchange calendar invites with Windows time-zone names land at
+the right hour; the image and diagram lightboxes share one set of zoom
+controls and shortcuts; a permanently deleted session can no longer be
+resurrected by a save that was waiting on a lock; artifact stores opened
+twice on one directory share a lock instead of corrupting each other's
+writes; WhatsApp outbound messages encode again; and macOS gains a New
+Window command.
+
+**Costs and language.** Claude-backed sessions carry cost and cache-token
+fields through background consumers and drop a non-USD cost rather than
+mislabeling it; product names come from the i18n catalog in every language;
+the Simplified Chinese UI consistently says 产物 for artifacts; and unchecking
+a follow-up option removes only its generated suffix, never your edits.
+
 ### Contributors
 
-@adiarora06 @anant-kaushik @andreyaurelien @aniruddhaadak80 @billygerhard
+@adiarora06 @anant-kaushik @andreyaurelien @aniruddhaadak80 @billsbdb3 @billygerhard
 @bolichen97 @buluoray @c020627 @chenmingwei23 @cixuuz @CrysisDeu @DeryFerd
 @dwu96 @flukschander @GoZippy @helenastafford @iamwhatever @isotope14
 @jeeshofone @jingchaodev @kaizawa97 @kyleseaman @leonlaiyc @leozhad
-@LucaButBoring @mbriones98 @md-abusayeed @mrbeag @NicholasRBowers @pepmach
-@peterhieuvu @piyushrajyadav @pkot98121 @ptias @rnoack1 @robomnis @RohanK6
-@royosherove @rubencu @SebastianYuSun @shrihan-vijay @Tiger-0512
+@LucaButBoring @mbriones98 @md-abusayeed @mrbeag @NicholasRBowers @Pearcekieser @pepmach
+@peterhieuvu @piyushrajyadav @pkot98121 @psantus @ptias @rnoack1 @robomnis @RohanK6
+@royosherove @rubencu @SebastianYuSun @ShotaroKataoka @shrihan-vijay @Tiger-0512
 @unstablebrainiac @warren830 @welikoiwanenko @xuejinT
 
 ## [0.4.1] — 2026-08-28
