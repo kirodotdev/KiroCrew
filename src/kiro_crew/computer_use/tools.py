@@ -274,11 +274,6 @@ _SECURE_TARGET_TOOLS: frozenset[str] = frozenset(
         TOOL_SCROLL,
     }
 )
-# Tools that synthesize KEYSTROKES. Both are element-targeted, and both are refused
-# outright without an index (see 3b in ``_dispatch``) — including
-# ``computer_press_key``, because ``press_key('tab')`` can MOVE focus onto a
-# password box and the next keystroke would land there.
-_KEYBOARD_TOOLS: frozenset[str] = frozenset({TOOL_TYPE_TEXT, TOOL_PRESS_KEY})
 
 
 def dispatch_tool(

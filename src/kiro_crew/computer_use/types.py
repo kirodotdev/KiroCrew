@@ -334,37 +334,7 @@ OBS_SUPPRESSED_NOTE = (
     "Screenshot suppressed: your organization's security policy does not permit "
     "screen capture. The accessibility tree above is the full available detail."
 )
-OBS_VALUES_SUPPRESSED_NOTE = (
-    "Element values suppressed: your organization's security policy does not "
-    "permit reading field contents."
-)
-OBS_TITLES_SUPPRESSED_NOTE = (
-    "Window titles suppressed: your organization's security policy does not "
-    "permit reading window titles."
-)
-OBS_TREE_SUPPRESSED_NOTE = (
-    "Accessibility tree suppressed: your organization's security policy does not "
-    "permit reading window contents."
-)
-OBS_PATHS_SUPPRESSED_NOTE = (
-    "Filesystem paths in this result were replaced: your organization's security "
-    "policy does not permit disclosing file paths."
-)
 GOVERNED_VALUE_PLACEHOLDER = "<redacted:policy>"
-GOVERNED_PATH_PLACEHOLDER = "<redacted:path>"
-
-# Absolute-path shapes scrubbed when the ``file_paths`` channel is denied.
-# Deliberately broad and deliberately NOT a completeness claim: an accessibility
-# tree leaked real volume names, document paths and bundle ids in live probes, and
-# a relative path or a path split across two AX attributes is not matched. The
-# honest framing (documented in computer-use.md): denying ``file_paths`` reduces
-# disclosure, it does not prove absence — a fleet that needs a bound should also
-# narrow ``apps``. Covers POSIX absolute paths, ``~``-relative paths, and Windows
-# drive/UNC paths.
-PATH_SCRUB_PATTERNS: tuple[str, ...] = (
-    r"(?:[A-Za-z]:[\\/]|\\\\)[^\s\"'<>|]*",
-    r"~?/[A-Za-z0-9._~\-][^\s\"'<>|]*",
-)
 
 # ── Keystone primary-enable state file ──
 # NOT config.json: a primary enable for full desktop observation plus input
@@ -442,7 +412,6 @@ MAX_SCREENSHOT_MAX_PX = 2000
 SCREENSHOT_DIR_NAME = "kirocrew-computer-shots"
 SCREENSHOT_FILE_PREFIX = "shot-"
 SCREENSHOT_FILE_SUFFIX = ".jpeg"
-SCREENSHOT_MIME = "image/jpeg"
 # Ring-trim: the dir is a cache, not an archive. Bounded so a long session
 # cannot fill the temp volume.
 SCREENSHOT_KEEP = 200
@@ -632,17 +601,12 @@ REFUSAL_DISABLED = (
     "computer use is disabled. Enable it in the KiroCrew dashboard under "
     "Settings -> Computer Use; it cannot be enabled by an agent."
 )
-REFUSAL_UNATTENDED = (
-    "computer use is not available to unattended sessions ({session}). It runs "
-    "only in an interactive session where a human can see the approval prompt."
-)
 REFUSAL_DENIED_APP = "'{app}' is a blocked target for computer use ({reason})."
 REFUSAL_SECURE_TARGET = (
     "refusing to send input to a secure (password) field: element {index} of "
     "'{app}' has subrole {subrole}."
 )
 REFUSAL_TEXT_SENSITIVE = "refusing to type this text into '{app}': {reason}"
-REFUSAL_GOVERNANCE = "computer use is not permitted by the active security policy: {reason}"
 
 # ── Refusals ──
 # The real-pointer path, refused when an IN-PROCESS caller passed
