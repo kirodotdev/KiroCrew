@@ -55,6 +55,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional
 
+from kiro_crew import platform_compat
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 
 if TYPE_CHECKING:
@@ -139,45 +140,6 @@ def _resolve_spill_threshold() -> int:
 RESPONSE_SPILL_THRESHOLD_BYTES: int = _resolve_spill_threshold()
 
 
-# Upper bound on processes walked when summing a backend's subtree RSS. A
-# pooled MCP backend's real tree is tiny (parent shim + a handful of workers);
-# the cap only guards against a pathological/looping /proc graph.
-_RSS_SUBTREE_MAX_PROCS = 256
-
-
-def _single_proc_rss_kb(pid: int) -> int:
-    """RSS (KiB) of a single ``pid`` from /proc/<pid>/status, or -1."""
-    try:
-        with open(f"/proc/{pid}/status", encoding="ascii") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    return -1
-
-
-def _proc_children(pid: int) -> list[int]:
-    """Direct child PIDs of ``pid`` via /proc/<pid>/task/<tid>/children.
-
-    Uses the kernel-provided children list (CONFIG_PROC_CHILDREN), so no
-    ``pgrep``/full-table scan. Returns ``[]`` if the file is unavailable.
-    """
-    kids: list[int] = []
-    task_dir = f"/proc/{pid}/task"
-    try:
-        tids = os.listdir(task_dir)
-    except OSError:
-        return kids
-    for tid in tids:
-        try:
-            with open(f"{task_dir}/{tid}/children", encoding="ascii") as fh:
-                kids.extend(int(tok) for tok in fh.read().split())
-        except (OSError, ValueError):
-            continue
-    return kids
-
-
 def _proc_rss_kb(pid: Optional[int]) -> int:
     """Resident set size (KiB) for ``pid`` **and all its descendants**.
 
@@ -186,31 +148,18 @@ def _proc_rss_kb(pid: Optional[int]) -> int:
     memory lives in a child process. Counting only ``pid``'s own ``VmRSS``
     under-reports the true footprint by ~30x, so we sum the whole subtree.
 
+    Delegates to :func:`platform_compat.proc_subtree_sample`, the one shared
+    ``/proc`` subtree walker — this module used to carry its own line-for-line
+    copy of that BFS plus its own copy of the process ceiling (#6096). ``rss``
+    is the only reading asked for, so the pool pays no ``/proc/<pid>/stat`` read
+    per process for a CPU figure it does not surface, and an unreadable root pid
+    still returns -1 without walking anything.
+
     Returns -1 if ``pid`` is falsy or its own status cannot be read; otherwise
     the summed KiB (descendants that vanish mid-walk are simply skipped, so the
     result degrades gracefully to parent-only when ``children`` is unreadable).
     """
-    if not pid:
-        return -1
-    own = _single_proc_rss_kb(pid)
-    if own < 0:
-        return -1
-    total = own
-    seen = {pid}
-    frontier = [pid]
-    while frontier and len(seen) < _RSS_SUBTREE_MAX_PROCS:
-        nxt: list[int] = []
-        for parent in frontier:
-            for child in _proc_children(parent):
-                if child in seen:
-                    continue
-                seen.add(child)
-                kb = _single_proc_rss_kb(child)
-                if kb > 0:
-                    total += kb
-                nxt.append(child)
-        frontier = nxt
-    return total
+    return platform_compat.proc_subtree_sample(pid, jiffies=False, counts=False).rss_kb
 
 
 # --- PoolKey ----------------------------------------------------------------

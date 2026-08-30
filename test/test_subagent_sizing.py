@@ -536,26 +536,13 @@ class TestQueuedIdentityRoundTrip:
         assert info.id == announced
 
 
-class TestCpuJiffiesParser:
-    """_parse_cpu_jiffies: utime+stime from raw /proc/<pid>/stat bytes."""
-
-    def test_parses_utime_stime(self) -> None:
-        from kiro_crew.subagent import _parse_cpu_jiffies
-
-        # comm with spaces + an embedded ')' — rindex must find the real close.
-        # post-comm tokens: state(0) ... utime(11)=120 stime(12)=60
-        stat = b"1234 (kiro cli (node)) S 2 3 4 5 6 7 8 9 10 11 120 60 0 0"
-        assert _parse_cpu_jiffies(stat) == 180
-
-    def test_malformed_returns_zero(self) -> None:
-        from kiro_crew.subagent import _parse_cpu_jiffies
-
-        assert _parse_cpu_jiffies(b"garbage") == 0
-        assert _parse_cpu_jiffies(b"") == 0
-
-
 class TestSubtreeCpuJiffies:
-    """_subtree_cpu_jiffies: sums pid + descendants."""
+    """_subtree_cpu_jiffies: sums pid + descendants.
+
+    The parser and the walk itself live in ``platform_compat`` and are pinned in
+    ``test_proc_subtree_sample.py``; this covers the wrapper the Sessions rows
+    call.
+    """
 
     def test_sums_tree(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
@@ -563,8 +550,12 @@ class TestSubtreeCpuJiffies:
         # tree: 1 -> [2, 3]; 2 -> [4]
         children = {1: [2, 3], 2: [4], 3: [], 4: []}
         jiffies = {1: 100, 2: 50, 3: 25, 4: 10}
-        monkeypatch.setattr(sub, "_proc_children", lambda pid: children.get(pid, []))
-        monkeypatch.setattr(sub, "_proc_cpu_jiffies", lambda pid: jiffies.get(pid, 0))
+        monkeypatch.setattr(
+            sub.platform_compat, "_proc_children", lambda pid: children.get(pid, [])
+        )
+        monkeypatch.setattr(
+            sub.platform_compat, "_proc_cpu_jiffies", lambda pid: jiffies.get(pid, 0)
+        )
         assert sub._subtree_cpu_jiffies(1) == 185
 
 
@@ -581,9 +572,9 @@ class TestSampleLiveCosts:
     @staticmethod
     def _sample(rss_kb: int = -1, jiffies: int = 0):
         """The one subtree reading the sweep takes per agent."""
-        from kiro_crew.subagent import _SubtreeSample
+        from kiro_crew.platform_compat import SubtreeSample
 
-        return _SubtreeSample(rss_kb, jiffies, None, None)
+        return SubtreeSample(rss_kb, jiffies, None, None)
 
     def test_rss_high_water(self, monkeypatch) -> None:
         import kiro_crew.subagent as sub
@@ -973,7 +964,7 @@ class TestLastSampleAndMemoryRows:
         monkeypatch.setattr(
             sub,
             "_proc_subtree_sample",
-            lambda pid, **kw: sub._SubtreeSample(next(rss_seq), 0, None, None),
+            lambda pid, **kw: sub.platform_compat.SubtreeSample(next(rss_seq), 0, None, None),
         )
         m._sample_live_costs()
         m._sample_live_costs()
@@ -993,7 +984,7 @@ class TestLastSampleAndMemoryRows:
         monkeypatch.setattr(
             sub,
             "_proc_subtree_sample",
-            lambda pid, **kw: sub._SubtreeSample(2 * 1024 * 1024, 0, None, None),
+            lambda pid, **kw: sub.platform_compat.SubtreeSample(2 * 1024 * 1024, 0, None, None),
         )
         m._sample_live_costs()
 

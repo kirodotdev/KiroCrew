@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from kiro_crew.acp.liveness import (
     VERDICT_DEAD,
@@ -716,165 +716,38 @@ def check_memory_available(min_gb: float = 4.0, path: str = "/proc/meminfo") -> 
     return (True, -1.0)
 
 
-# Process-subtree readers (relocated from the upstream mcp_gateway pool,
-# which is absent in this fork). Pure-stdlib /proc walkers: on non-Linux hosts
-# every /proc access raises OSError and these degrade to -1 / [] gracefully.
-# ONE ceiling for every reading. RSS, CPU and the two counts used to be three
-# walks carrying two copies of the same 256, which is how they could have
-# drifted apart.
-_SUBTREE_MAX_PROCS = 256
+# Process-subtree readings come from ONE shared walker,
+# :func:`platform_compat.proc_subtree_sample`. RSS, CPU and the two counts used
+# to be three walks here carrying two copies of one 256 ceiling, and a fourth
+# copy of the same walk lived in ``mcp_gateway.pool``; the walk now has a single
+# home above both callers (#6096), so a ceiling or a sentinel can no longer
+# drift between them.
 
 
-def _single_proc_rss_kb(pid: int) -> int:
-    """RSS (KiB) of a single ``pid`` from /proc/<pid>/status, or -1."""
-    try:
-        with open(f"/proc/{pid}/status", encoding="ascii") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    return -1
+def _proc_subtree_sample(pid: Optional[int]) -> platform_compat.SubtreeSample:
+    """One walk of *pid*'s subtree, carrying all four readings the sweep needs.
 
+    Thin adapter over :func:`platform_compat.proc_subtree_sample` that supplies
+    the needle this module counts by: ``STUB_MODULE``, the module path the
+    rewriter itself puts on the stub launch line. So ``sample.matched`` is the
+    stub count here, and the shared walker stays free of gateway vocabulary
+    while this module stays free of a second walk.
 
-def _proc_children(pid: int) -> list[int]:
-    """Direct child PIDs of ``pid`` via /proc/<pid>/task/<tid>/children.
-
-    Uses the kernel-provided children list (CONFIG_PROC_CHILDREN), so no
-    ``pgrep``/full-table scan. Returns ``[]`` if the file is unavailable.
-    """
-    kids: list[int] = []
-    task_dir = f"/proc/{pid}/task"
-    try:
-        tids = os.listdir(task_dir)
-    except OSError:
-        return kids
-    for tid in tids:
-        try:
-            with open(f"{task_dir}/{tid}/children", encoding="ascii") as fh:
-                kids.extend(int(tok) for tok in fh.read().split())
-        except (OSError, ValueError):
-            continue
-    return kids
-
-
-def _parse_cpu_jiffies(stat: bytes) -> int:
-    """Sum utime+stime (clock ticks) from raw ``/proc/<pid>/stat`` bytes.
-
-    Splits after the final ``)`` so a ``comm`` containing spaces/parens is
-    handled. utime/stime are fields 14/15 (1-indexed) → indices 11/12 of the
-    post-comm tokens. Returns 0 on any parse error.
-    """
-    try:
-        rparen = stat.rindex(b")")
-        fields = stat[rparen + 2 :].split()
-        return int(fields[11]) + int(fields[12])
-    except (ValueError, IndexError):
-        return 0
-
-
-def _proc_cpu_jiffies(pid: int) -> int:
-    """utime+stime (clock ticks) for a single pid, 0 on error."""
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as fh:
-            return _parse_cpu_jiffies(fh.read())
-    except OSError:
-        return 0
-
-
-class _SubtreeSample(NamedTuple):
-    """Every subtree reading the cost sweep needs, from ONE walk.
-
-    Each field keeps the sentinel its own reader had, because the four readings
-    are unmeasurable in different ways and collapsing any of them into zero is
-    the bug class the count columns were added to fix:
-
-    * ``rss_kb`` — summed KiB, or ``-1`` when the root pid's own status is
-      unreadable (it is gone, or the host has no ``/proc``).
-    * ``jiffies`` — summed utime+stime clock ticks; an unreadable pid
-      contributes 0, since a *delta* of jiffies is what the caller consumes.
-    * ``procs`` / ``stubs`` — how many processes a runtime carries, and how many
-      of them are MCP stubs, matched on ``STUB_MODULE``, the module path the
-      rewriter itself puts on the stub launch line. ``None`` means UNMEASURABLE,
-      never zero. Rendering "0 processes" for a live runtime would be a lie; the
-      surface renders ``None`` as an em dash instead.
-    """
-
-    rss_kb: int
-    jiffies: int
-    procs: Optional[int]
-    stubs: Optional[int]
-
-
-def _proc_subtree_sample(
-    pid: Optional[int],
-    *,
-    rss: bool = True,
-    counts: bool = True,
-) -> _SubtreeSample:
-    """Walk ``pid``'s process subtree ONCE and return every reading from it.
-
-    A subagent's kiro-cli process is frequently a thin launcher whose real
-    memory lives in a child process, so all four readings describe the whole
-    subtree rather than the root pid alone.
-
-    The point of one pass is not only the ~3x fewer ``/proc`` reads: the three
-    readers this replaced ran at three different instants, so a process that
-    exited between them was counted by one and missed by another. Reading every
-    metric off a single frontier is what makes "the same set of processes" true
-    of the *result* and not merely of the walk rules.
-
-    ``rss`` / ``counts`` let a caller that only needs the CPU total skip those
-    per-process reads, so it costs what it cost before this walk was shared.
-    Skipped metrics come back as their own unmeasurable sentinel.
-
-    Blocking: reads a handful of ``/proc`` entries per process in the subtree,
-    so it belongs on an executor thread, never on the event loop (see
+    Blocking: reads a handful of ``/proc`` entries per process in the subtree, so
+    it belongs on an executor thread, never on the event loop (see
     ``_reaper_loop`` -> ``_sample_live_costs``).
     """
-    if not pid:
-        return _SubtreeSample(-1, 0, None, None)
-    # The counts share RSS's liveness probe: a root pid whose own status cannot
-    # be read has nothing to attribute, so there is nothing to count either.
-    own_rss = _single_proc_rss_kb(pid) if (rss or counts) else -1
-    countable = counts and platform_compat.IS_LINUX and own_rss >= 0
-    rss_total = own_rss if (rss and own_rss >= 0) else -1
-    needles = (STUB_MODULE,)
-    jiffies = _proc_cpu_jiffies(pid)
-    procs = 1
-    stubs = 1 if countable and platform_compat.process_matches(pid, needles) else 0
-    seen = {pid}
-    frontier = [pid]
-    while frontier and len(seen) < _SUBTREE_MAX_PROCS:
-        nxt: list[int] = []
-        for parent in frontier:
-            for child in _proc_children(parent):
-                if child in seen:
-                    continue
-                seen.add(child)
-                if rss_total >= 0:
-                    kb = _single_proc_rss_kb(child)
-                    if kb > 0:
-                        rss_total += kb
-                jiffies += _proc_cpu_jiffies(child)
-                if countable:
-                    procs += 1
-                    if platform_compat.process_matches(child, needles):
-                        stubs += 1
-                nxt.append(child)
-        frontier = nxt
-    if not countable:
-        return _SubtreeSample(rss_total, jiffies, None, None)
-    return _SubtreeSample(rss_total, jiffies, procs, stubs)
+    return platform_compat.proc_subtree_sample(pid, counts=True, needles=(STUB_MODULE,))
 
 
 def _subtree_cpu_jiffies(pid: int) -> int:
     """Sum utime+stime across ``pid`` and its descendants (clock ticks).
 
-    Thin wrapper over :func:`_proc_subtree_sample`, so the CPU subtree the
-    Sessions session rows read is the same subtree the task rows describe.
+    Asks the shared walker for the CPU reading alone, so the CPU subtree the
+    Sessions session rows read is the same subtree the task rows describe, and
+    the session rows pay no ``status`` read for an RSS figure they do not use.
     """
-    return _proc_subtree_sample(pid, rss=False, counts=False).jiffies
+    return platform_compat.proc_subtree_sample(pid, rss=False, counts=False).jiffies
 
 
 def _attributed_count(total: Optional[int], sharers: int, previous: Optional[int]) -> Optional[int]:
@@ -2117,7 +1990,7 @@ class SubagentManager:
                 if gb > info.peak_rss_gb:
                     info.peak_rss_gb = gb
             info.last_procs = _attributed_count(sample.procs, shared_n, info.last_procs)
-            info.last_stubs = _attributed_count(sample.stubs, shared_n, info.last_stubs)
+            info.last_stubs = _attributed_count(sample.matched, shared_n, info.last_stubs)
             jiffies = sample.jiffies
             if info._cpu_sample_ts > 0.0 and jiffies >= info._cpu_jiffies_prev and shared_n > 0:
                 dt = now - info._cpu_sample_ts

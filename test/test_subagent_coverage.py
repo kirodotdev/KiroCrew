@@ -17,7 +17,7 @@ import math
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -350,55 +350,6 @@ class TestCheckMemoryAvailable:
             assert sa.check_memory_available() == (True, -1.0)
 
 
-class TestProcRssReaders:
-    def test_single_proc_parses_vmrss(self) -> None:
-        with patch("builtins.open", mock_open(read_data="Name:\tx\nVmRSS:\t 2048 kB\n")):
-            assert sa._single_proc_rss_kb(1234) == 2048
-
-    def test_single_proc_missing_returns_minus_one(self) -> None:
-        with patch("builtins.open", side_effect=OSError):
-            assert sa._single_proc_rss_kb(1234) == -1
-
-    def test_children_listing_unavailable(self) -> None:
-        with patch.object(os, "listdir", side_effect=OSError):
-            assert sa._proc_children(1234) == []
-
-    def test_children_parsed_per_thread(self) -> None:
-        with (
-            patch.object(os, "listdir", return_value=["1234"]),
-            patch("builtins.open", mock_open(read_data="11 12 13")),
-        ):
-            assert sa._proc_children(1234) == [11, 12, 13]
-
-    def test_children_garbage_skipped(self) -> None:
-        with (
-            patch.object(os, "listdir", return_value=["1234"]),
-            patch("builtins.open", mock_open(read_data="not-a-pid")),
-        ):
-            assert sa._proc_children(1234) == []
-
-    def test_subtree_rss_falsy_pid(self) -> None:
-        assert sa._proc_subtree_sample(None, counts=False).rss_kb == -1
-        assert sa._proc_subtree_sample(0, counts=False).rss_kb == -1
-
-    def test_subtree_rss_unreadable_parent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda _pid: -1)
-        assert sa._proc_subtree_sample(99, counts=False).rss_kb == -1
-
-    def test_subtree_rss_sums_descendants(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        tree = {1: [2, 3], 2: [4], 3: [], 4: []}
-        monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda pid: 100 * pid)
-        monkeypatch.setattr(sa, "_proc_children", lambda pid: tree.get(pid, []))
-        assert sa._proc_subtree_sample(1, counts=False).rss_kb == 100 + 200 + 300 + 400
-
-    def test_subtree_rss_ignores_cycles_and_dead_children(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(sa, "_single_proc_rss_kb", lambda pid: 100 if pid == 1 else -1)
-        monkeypatch.setattr(sa, "_proc_children", lambda pid: [1, 2] if pid == 1 else [])
-        assert sa._proc_subtree_sample(1, counts=False).rss_kb == 100
-
-
 class TestReadIntFile:
     def test_reads_integer(self, tmp_path: Path) -> None:
         path = tmp_path / "n"
@@ -562,36 +513,25 @@ class TestMacosAvailableMemory:
 
 
 class TestCpuJiffies:
-    def test_parses_utime_plus_stime(self) -> None:
-        fields = " ".join(str(i) for i in range(3, 30))
-        raw = f"42 (weird name (x)) S {fields}".encode("ascii")
-        # After the final ')' the tokens start at 'S'; utime/stime are indices 11/12.
-        tokens = raw[raw.rindex(b")") + 2 :].split()
-        expected = int(tokens[11]) + int(tokens[12])
-        assert sa._parse_cpu_jiffies(raw) == expected
+    """``_subtree_cpu_jiffies`` — the Sessions rows' CPU reading.
 
-    @pytest.mark.parametrize("raw", [b"", b"no-parens-here", b"1 (x) S 1 2 3"])
-    def test_malformed_returns_zero(self, raw: bytes) -> None:
-        assert sa._parse_cpu_jiffies(raw) == 0
-
-    def test_proc_cpu_jiffies_missing_pid(self) -> None:
-        with patch("builtins.open", side_effect=OSError):
-            assert sa._proc_cpu_jiffies(1234) == 0
-
-    def test_proc_cpu_jiffies_reads_stat(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "_parse_cpu_jiffies", lambda _raw: 77)
-        with patch("builtins.open", mock_open(read_data=b"whatever")):
-            assert sa._proc_cpu_jiffies(1234) == 77
+    The per-process reads and the walk itself belong to
+    ``platform_compat.proc_subtree_sample`` and are pinned in
+    ``test_proc_subtree_sample.py``; what is subagent's own is that this wrapper
+    asks for the CPU column of that walk.
+    """
 
     def test_subtree_sums_descendants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         tree = {1: [2], 2: [3], 3: []}
-        monkeypatch.setattr(sa, "_proc_cpu_jiffies", lambda pid: pid * 10)
-        monkeypatch.setattr(sa, "_proc_children", lambda pid: tree.get(pid, []))
+        monkeypatch.setattr(sa.platform_compat, "_proc_cpu_jiffies", lambda pid: pid * 10)
+        monkeypatch.setattr(sa.platform_compat, "_proc_children", lambda pid: tree.get(pid, []))
         assert sa._subtree_cpu_jiffies(1) == 10 + 20 + 30
 
     def test_subtree_skips_already_seen(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sa, "_proc_cpu_jiffies", lambda pid: 5)
-        monkeypatch.setattr(sa, "_proc_children", lambda pid: [1] if pid == 1 else [])
+        monkeypatch.setattr(sa.platform_compat, "_proc_cpu_jiffies", lambda pid: 5)
+        monkeypatch.setattr(
+            sa.platform_compat, "_proc_children", lambda pid: [1] if pid == 1 else []
+        )
         assert sa._subtree_cpu_jiffies(1) == 5
 
 
@@ -801,126 +741,6 @@ class TestLiveSharedCount:
             mgr._live_shared_count(777)  # type: ignore[call-arg]
 
 
-class TestProcSubtreeSample:
-    """``_proc_subtree_sample`` — the ONE walk every reading now comes off.
-
-    The three readers it replaced ran three independent walks at three different
-    instants, so a process that exited between them was counted by one and
-    missed by another. These pin both halves of the claim: the readings are the
-    same values the separate readers produced, and they cost one walk.
-
-    This class also absorbs what ``TestProcSubtreeCounts`` used to assert for the
-    #3953 count contract, and strengthens it: no-pid, non-Linux and dead-root are
-    now checked across all four columns at once rather than the two count columns
-    alone.
-    """
-
-    #: 1 runtime + 3 children; two of the children are MCP stubs.
-    TREE = {10: [11, 12, 13], 11: [], 12: [], 13: []}
-    RSS = {10: 1000, 11: 200, 12: 30, 13: 4}
-    JIFFIES = {10: 100, 11: 50, 12: 25, 13: 10}
-    STUBS = {11, 12}
-
-    @contextlib.contextmanager
-    def _fake_tree(self):
-        with (
-            patch.object(sa.platform_compat, "IS_LINUX", True),
-            patch.object(sa, "_single_proc_rss_kb", side_effect=lambda p: self.RSS.get(p, -1)),
-            patch.object(sa, "_proc_cpu_jiffies", side_effect=lambda p: self.JIFFIES.get(p, 0)),
-            patch.object(sa, "_proc_children", side_effect=lambda p: self.TREE.get(p, [])),
-            patch.object(
-                sa.platform_compat,
-                "process_matches",
-                side_effect=lambda p, needles: p in self.STUBS and needles == (sa.STUB_MODULE,),
-            ),
-        ):
-            yield
-
-    def test_one_sample_carries_all_four_readings(self) -> None:
-        with self._fake_tree():
-            sample = sa._proc_subtree_sample(10)
-        assert sample.rss_kb == sum(self.RSS.values())
-        assert sample.jiffies == sum(self.JIFFIES.values())
-        assert (sample.procs, sample.stubs) == (4, 2)
-
-    def test_the_readings_still_report_what_they_always_did(self) -> None:
-        """Value preservation: consolidating must not move a single number, or
-        the learned-cost store and ``compute_max_subagents`` would see a step.
-
-        The expected values are what the three separate readers produced for this
-        tree: summed RSS, summed jiffies, and the count pair from #3954.
-        """
-        with self._fake_tree():
-            sample = sa._proc_subtree_sample(10)
-            assert sample.rss_kb == sum(self.RSS.values())
-            assert (sample.procs, sample.stubs) == (4, 2)
-            assert sa._subtree_cpu_jiffies(10) == sum(self.JIFFIES.values())
-
-    def test_the_subtree_is_walked_once_not_once_per_metric(self) -> None:
-        seen: list[int] = []
-        with (
-            self._fake_tree(),
-            patch.object(
-                sa,
-                "_proc_children",
-                side_effect=lambda p: (seen.append(p), self.TREE.get(p, []))[1],
-            ),
-        ):
-            sa._proc_subtree_sample(10)
-        assert sorted(seen) == [10, 11, 12, 13], "each process's children read exactly once"
-
-    def test_no_pid_is_unmeasurable_in_every_column(self) -> None:
-        assert sa._proc_subtree_sample(None) == sa._SubtreeSample(-1, 0, None, None)
-
-    def test_non_linux_loses_only_the_counts(self) -> None:
-        """Counts are ``None`` off Linux, but RSS and CPU keep their own
-        sentinels — the columns are unmeasurable in different ways."""
-        with self._fake_tree(), patch.object(sa.platform_compat, "IS_LINUX", False):
-            sample = sa._proc_subtree_sample(10)
-        assert (sample.procs, sample.stubs) == (None, None)
-        assert sample.rss_kb == sum(self.RSS.values())
-        assert sample.jiffies == sum(self.JIFFIES.values())
-
-    def test_dead_root_keeps_the_cpu_walk(self) -> None:
-        """An unreadable root status means RSS and the counts have nothing to
-        attribute, but jiffies is consumed as a *delta*, so its walk stands."""
-        with self._fake_tree(), patch.object(sa, "_single_proc_rss_kb", return_value=-1):
-            sample = sa._proc_subtree_sample(10)
-        assert sample.rss_kb == -1
-        assert (sample.procs, sample.stubs) == (None, None)
-        assert sample.jiffies == sum(self.JIFFIES.values())
-
-    def test_a_skipped_metric_costs_no_reads(self) -> None:
-        """The one CPU-only caller must not pay for RSS and the counts, or
-        sharing the walk would have made the session rows slower."""
-        with (
-            self._fake_tree(),
-            patch.object(
-                sa,
-                "_single_proc_rss_kb",
-                side_effect=AssertionError("RSS read on a CPU-only sample"),
-            ),
-            patch.object(
-                sa.platform_compat,
-                "process_matches",
-                side_effect=AssertionError("stub match on a CPU-only sample"),
-            ),
-        ):
-            assert sa._subtree_cpu_jiffies(10) == sum(self.JIFFIES.values())
-
-    def test_the_walk_is_bounded_by_one_ceiling(self) -> None:
-        with (
-            patch.object(sa.platform_compat, "IS_LINUX", True),
-            patch.object(sa, "_single_proc_rss_kb", return_value=1024),
-            patch.object(sa, "_proc_cpu_jiffies", return_value=1),
-            patch.object(sa, "_proc_children", side_effect=lambda p: [p * 10, p * 10 + 1]),
-            patch.object(sa.platform_compat, "process_matches", return_value=False),
-        ):
-            sample = sa._proc_subtree_sample(2)
-        assert sample.stubs == 0
-        assert sample.procs is not None and sample.procs < sa._SUBTREE_MAX_PROCS * 3
-
-
 class TestAttributedCount:
     def test_unmeasured_keeps_the_last_good_reading(self) -> None:
         assert sa._attributed_count(None, 1, 7) == 7
@@ -946,7 +766,7 @@ class TestSampleLiveCounts:
     """The sweep must write procs/mcp on both the shared and exclusive paths."""
 
     def _patched(self, counts: tuple[int, int]):
-        sample = sa._SubtreeSample(1024 * 1024, 0, counts[0], counts[1])
+        sample = sa.platform_compat.SubtreeSample(1024 * 1024, 0, counts[0], counts[1])
         return (patch.object(sa, "_proc_subtree_sample", return_value=sample),)
 
     def test_shared_runtime_counts_are_split_per_sharer(self) -> None:
@@ -981,7 +801,9 @@ class TestSampleLiveCounts:
         info.last_procs, info.last_stubs = 7, 6
         mgr._agents["solo"] = info
         with patch.object(
-            sa, "_proc_subtree_sample", return_value=sa._SubtreeSample(-1, 0, None, None)
+            sa,
+            "_proc_subtree_sample",
+            return_value=sa.platform_compat.SubtreeSample(-1, 0, None, None),
         ):
             mgr._sample_live_costs()
         assert (info.last_procs, info.last_stubs) == (7, 6)
@@ -1002,7 +824,7 @@ class TestSampleLiveCounts:
 
         def _sample(pid, **kwargs):  # noqa: ANN001, ANN003 — test double
             walks.append(pid)
-            return sa._SubtreeSample(1024, 0, 4, 2)
+            return sa.platform_compat.SubtreeSample(1024, 0, 4, 2)
 
         with patch.object(sa, "_proc_subtree_sample", side_effect=_sample):
             mgr._sample_live_costs()
@@ -2301,6 +2123,3 @@ class TestPlatformConstants:
         back to 100 there."""
         assert isinstance(sa._CLK_TCK, int)
         assert sa._CLK_TCK > 0
-
-    def test_subtree_walk_caps_are_bounded(self) -> None:
-        assert sa._SUBTREE_MAX_PROCS > 0
