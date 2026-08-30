@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator, Optional
 
+from kiro_crew import platform_compat
+
 logger = logging.getLogger(__name__)
 
 # Identity used for commits the app makes on the user's behalf.
@@ -404,11 +406,17 @@ async def run_git(
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        # Git may have spawned ssh, credential helpers or git-remote-* children
+        # that inherited its PIPE handles. Kill the whole isolated process tree
+        # and use the shared bounded reap, so cleanup cannot turn this timeout
+        # into an unbounded wait for a surviving helper's EOF.
+        await platform_compat.kill_and_reap(proc)
         raise GitError(f"git {args[0]} timed out after {timeout}s") from None
     stdout = out.decode("utf-8", "replace")
     stderr = err.decode("utf-8", "replace")
