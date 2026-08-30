@@ -7213,6 +7213,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "Нет навыков, сопоставленных с {{agent}} — Ctrl+Enter отправит сообщение",
       "no_skills_mapped_to_agent_enter_sends": "Нет навыков, сопоставленных с {{agent}} — Enter отправит сообщение",
       "scoped_to_agent": "Ограничено агентом {{agent}}",
+      "skills_load_failed": "Не удалось загрузить навыки",
+      "skills_load_failed_ctrl_enter_sends": "Не удалось загрузить навыки — Ctrl+Enter отправит сообщение",
+      "skills_load_failed_enter_sends": "Не удалось загрузить навыки — Enter отправит сообщение",
       "trust_needed_badge": "Нужно доверие",
       "trust_needed_hint": "Из этого проекта. Выбери его, чтобы просмотреть и доверять папке."
     },

@@ -7003,6 +7003,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "{{agent}} से कोई स्किल मैप नहीं है — Ctrl+Enter संदेश भेज देगा",
       "no_skills_mapped_to_agent_enter_sends": "{{agent}} से कोई स्किल मैप नहीं है — Enter संदेश भेज देगा",
       "scoped_to_agent": "एजेंट {{agent}} तक सीमित",
+      "skills_load_failed": "स्किल लोड नहीं हो सकीं",
+      "skills_load_failed_ctrl_enter_sends": "स्किल लोड नहीं हो सकीं — Ctrl+Enter संदेश भेज देगा",
+      "skills_load_failed_enter_sends": "स्किल लोड नहीं हो सकीं — Enter संदेश भेज देगा",
       "trust_needed_badge": "भरोसा चाहिए",
       "trust_needed_hint": "इस प्रोजेक्ट से। इसे चुनो ताकि जाँच कर फ़ोल्डर पर भरोसा कर सको।"
     },

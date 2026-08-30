@@ -1323,6 +1323,8 @@ function ChatInput({
   // cheap to call on every focus. The key and the session key must match
   // SkillPickerMenu's exactly — including the trailing agent segment — or the
   // prefetch warms a different entry and the menu still pays the fetch on open.
+  // The deadline binds HERE too, not only in the menu: react-query dedupes on that
+  // shared key, so the menu opening onto this fetch never runs its own queryFn.
   const queryClient = useQueryClient()
   const skillSlotKey = slotId ? `dashboard:${slotId}` : undefined
   const skillSlotKeyRef = useRef(skillSlotKey)
@@ -1332,7 +1334,7 @@ function ChatInput({
   const prefetchSkills = useCallback(() => {
     queryClient.prefetchQuery({
       queryKey: ['skills', skillSlotKey ?? null, project ?? null, agentName ?? null],
-      queryFn: () => api.skills(skillSlotKey, agentName),
+      queryFn: ({ signal }) => api.skills(skillSlotKey, agentName, signal),
       staleTime: skillsCacheStaleTime(project),
     })
   }, [queryClient, skillSlotKey, project, agentName])

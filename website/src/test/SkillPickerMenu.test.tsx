@@ -27,7 +27,7 @@ function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn(), client, s
   onTrustRequest?: (i: { leaf: string; key: string }) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const qc = client ?? new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const qc = client ?? new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   return (
     <QueryClientProvider client={qc}>
       <div>
@@ -65,13 +65,13 @@ describe('SkillPickerMenu', () => {
   it('forwards the active agent to api.skills() and uses an agent-scoped cache key', async () => {
     render(<Harness query="" open slotKey="dashboard:chat-1" agent="custom-template" />)
     await waitFor(() => expect(mockApi.skills)
-      .toHaveBeenLastCalledWith('dashboard:chat-1', 'custom-template'))
+      .toHaveBeenLastCalledWith('dashboard:chat-1', 'custom-template', expect.any(AbortSignal)))
   })
 
   it('omits the agent argument when none is active', async () => {
     render(<Harness query="" open slotKey="dashboard:chat-1" />)
     await waitFor(() => expect(mockApi.skills)
-      .toHaveBeenLastCalledWith('dashboard:chat-1', undefined))
+      .toHaveBeenLastCalledWith('dashboard:chat-1', undefined, expect.any(AbortSignal)))
   })
 
   it('filters by leaf-name substring', async () => {
@@ -205,7 +205,7 @@ describe('SkillPickerMenu', () => {
     // isFetching, not isLoading. Seed a stale empty cache, then mount with a
     // never-settling fetch — the mount refetch is the in-flight window.
     mockApi.skills.mockImplementation(() => new Promise(() => {}))
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
     qc.setQueryData(['skills', null, null, null], [])
     await qc.invalidateQueries({ queryKey: ['skills'], refetchType: 'none' })
     const onSelect = vi.fn()
@@ -220,13 +220,13 @@ describe('SkillPickerMenu', () => {
   })
 
   it('after the skills fetch settles in an ERROR, Enter is released (trap must not survive the error path)', async () => {
-    // A failed fetch leaves the same empty state; keeping the swallow there
-    // would recreate the trap whenever /api/skills has a transient failure.
+    // A failed fetch leaves an empty list; keeping the swallow there would recreate
+    // the trap on any transient failure. The release is what this test pins.
     mockApi.skills.mockRejectedValue(new Error('boom'))
     const onSelect = vi.fn()
     const onClose = vi.fn()
     render(<Harness query="grill" open onSelect={onSelect} onClose={onClose} />)
-    expect(await screen.findByText(/No matching skills — Enter sends the message/)).toBeInTheDocument()
+    expect(await screen.findByText(/Couldn't load skills — Enter sends the message/)).toBeInTheDocument()
     await waitFor(() => expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true))
     expect(onClose).toHaveBeenCalled()
     expect(onSelect).not.toHaveBeenCalled()
@@ -338,7 +338,7 @@ describe('SkillPickerMenu — agent scope cue', () => {
     // envelope without its own fetch — pin it by never letting the queryFn
     // settle.
     mockApi.skills.mockImplementation(() => new Promise(() => {}))
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
     qc.setQueryData(
       ['skills', 'dashboard:chat-1', '/work/project-a', 'custom-template'],
       { skills: SKILLS, agent_scoped: true, agent: 'custom-template' },
@@ -375,14 +375,14 @@ describe('SkillPickerMenu — project-skills trust', () => {
   it('sends the real slot key so the server resolves THIS chat project', async () => {
     render(<Harness query="" open slotKey="dashboard:chat-7" />)
     await waitFor(() => expect(mockApi.skills)
-      .toHaveBeenCalledWith('dashboard:chat-7', undefined))
+      .toHaveBeenCalledWith('dashboard:chat-7', undefined, expect.any(AbortSignal)))
   })
 
   it('refetches when the same slot switches projects', async () => {
     mockApi.skills
       .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a' }])
       .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b' }])
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
     const view = render(
       <Harness
         query=""
@@ -412,7 +412,7 @@ describe('SkillPickerMenu — project-skills trust', () => {
     mockApi.skills
       .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-a' }])
       .mockResolvedValueOnce([{ ...TRUSTED[0], key: 'kiro-workspace/project-b' }])
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
     const view = render(
       <Harness query="" open slotKey="dashboard:chat-7" client={client} />,
     )

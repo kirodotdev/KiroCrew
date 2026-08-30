@@ -27,6 +27,13 @@ import {
   noteStaleOwnerResponse,
 } from './staleOwnerSignal'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
+import { withDeadline } from '../lib/withDeadline'
+
+/** Deadline for `api.skills`. Measured on one host inside twenty minutes: 0.62s
+ *  healthy, then 9.76s, 41.41s, 168.71s for a byte-identical payload. 15s clears
+ *  the 9.76s case that still completed and cuts off the pathological ones.
+ *  Rationale in the CR description. */
+export const SKILLS_TIMEOUT_MS = 15_000
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
 import { queryClient } from './queryClient'
@@ -1458,8 +1465,8 @@ function trackArtifactWrite(url: string, res: Promise<Response>): Promise<Respon
 const projectHeader = (projectKey?: string): HeadersInit | undefined =>
   projectKey ? { 'X-Steering-Project': projectKey } : undefined
 
-const get = (url: string, sessionKey?: string) =>
-  fetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) } })
+const get = (url: string, sessionKey?: string, signal?: AbortSignal) =>
+  fetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) })
 const post = (url: string, body?: object, sessionKey?: string, extra?: HeadersInit) =>
   trackArtifactWrite(url, fetch(url, {
     method: 'POST',
@@ -2505,9 +2512,12 @@ export const api = {
   // {skills, agent_scoped: true, agent} instead of the bare array, so the
   // picker can cue the scope (and tell "nothing mapped" from "nothing exists").
   // Consume through lib/skillsPayload.ts unwrapSkills() rather than assuming an array.
-  skills: (sessionKey?: string, agent?: string) =>
-    get('/api/skills' + (agent ? '?agent=' + encodeURIComponent(agent) : ''),
-        sessionKey).then(j),
+  // Bounded HERE, not per initiator: react-query dedupes on the key, so the
+  // weakest initiator would otherwise decide whether the promise is bounded.
+  skills: (sessionKey?: string, agent?: string, signal?: AbortSignal) =>
+    withDeadline(SKILLS_TIMEOUT_MS, signal, s =>
+      get('/api/skills' + (agent ? '?agent=' + encodeURIComponent(agent) : ''),
+          sessionKey, s).then(j)),
   /** Project-skills trust: this chat's grant state plus every stored grant. */
   skillTrust: (sessionKey?: string) => get('/api/skills/-/trust', sessionKey).then(j),
   /** Grant trust to THIS chat's project. The server takes the directory from

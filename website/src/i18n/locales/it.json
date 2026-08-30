@@ -7108,6 +7108,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "Nessuna skill mappata a {{agent}} — Ctrl+Invio invia il messaggio",
       "no_skills_mapped_to_agent_enter_sends": "Nessuna skill mappata a {{agent}} — Invio invia il messaggio",
       "scoped_to_agent": "Limitato all’agente {{agent}}",
+      "skills_load_failed": "Impossibile caricare le skill",
+      "skills_load_failed_ctrl_enter_sends": "Impossibile caricare le skill — Ctrl+Invio invia il messaggio",
+      "skills_load_failed_enter_sends": "Impossibile caricare le skill — Invio invia il messaggio",
       "trust_needed_badge": "Richiede attendibilità",
       "trust_needed_hint": "Da questo progetto. Selezionala per esaminarla e considerare attendibile la cartella."
     },

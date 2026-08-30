@@ -6898,6 +6898,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "{{agent}} にマッピングされたスキルはありません — Ctrl+Enter でメッセージを送信します",
       "no_skills_mapped_to_agent_enter_sends": "{{agent}} にマッピングされたスキルはありません — Enter でメッセージを送信します",
       "scoped_to_agent": "エージェント {{agent}} に限定",
+      "skills_load_failed": "スキルを読み込めませんでした",
+      "skills_load_failed_ctrl_enter_sends": "スキルを読み込めませんでした — Ctrl+Enter でメッセージを送信します",
+      "skills_load_failed_enter_sends": "スキルを読み込めませんでした — Enter でメッセージを送信します",
       "trust_needed_badge": "信頼が必要",
       "trust_needed_hint": "このプロジェクトのスキルです。選択すると内容を確認してフォルダーを信頼できます。"
     },

@@ -7108,6 +7108,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "Aucune compétence mappée à {{agent}} — Ctrl+Enter envoie le message",
       "no_skills_mapped_to_agent_enter_sends": "Aucune compétence mappée à {{agent}} — Enter envoie le message",
       "scoped_to_agent": "Limité à l’agent {{agent}}",
+      "skills_load_failed": "Impossible de charger les compétences",
+      "skills_load_failed_ctrl_enter_sends": "Impossible de charger les compétences — Ctrl+Enter envoie le message",
+      "skills_load_failed_enter_sends": "Impossible de charger les compétences — Enter envoie le message",
       "trust_needed_badge": "Approbation requise",
       "trust_needed_hint": "De ce projet. Sélectionne-la pour l’examiner et approuver le dossier."
     },

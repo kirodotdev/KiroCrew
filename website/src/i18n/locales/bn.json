@@ -7003,6 +7003,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "{{agent}}-এ কোনো স্কিল ম্যাপ করা নেই — Ctrl+Enter বার্তা পাঠাবে",
       "no_skills_mapped_to_agent_enter_sends": "{{agent}}-এ কোনো স্কিল ম্যাপ করা নেই — Enter বার্তা পাঠাবে",
       "scoped_to_agent": "এজেন্ট {{agent}}-এ সীমাবদ্ধ",
+      "skills_load_failed": "স্কিল লোড করা যায়নি",
+      "skills_load_failed_ctrl_enter_sends": "স্কিল লোড করা যায়নি — Ctrl+Enter বার্তা পাঠাবে",
+      "skills_load_failed_enter_sends": "স্কিল লোড করা যায়নি — Enter বার্তা পাঠাবে",
       "trust_needed_badge": "বিশ্বাস দরকার",
       "trust_needed_hint": "এই প্রকল্প থেকে। যাচাই করে ফোল্ডার বিশ্বাস করতে এটি বেছে নাও।"
     },

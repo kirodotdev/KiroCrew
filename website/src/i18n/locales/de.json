@@ -7003,6 +7003,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "Keine Skills für {{agent}} zugeordnet — Ctrl+Enter sendet die Nachricht",
       "no_skills_mapped_to_agent_enter_sends": "Keine Skills für {{agent}} zugeordnet — Enter sendet die Nachricht",
       "scoped_to_agent": "Auf Agent {{agent}} beschränkt",
+      "skills_load_failed": "Skills konnten nicht geladen werden",
+      "skills_load_failed_ctrl_enter_sends": "Skills konnten nicht geladen werden — Ctrl+Enter sendet die Nachricht",
+      "skills_load_failed_enter_sends": "Skills konnten nicht geladen werden — Enter sendet die Nachricht",
       "trust_needed_badge": "Vertrauen nötig",
       "trust_needed_hint": "Aus diesem Projekt. Auswählen, um zu prüfen und dem Ordner zu vertrauen."
     },

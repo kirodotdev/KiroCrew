@@ -7108,6 +7108,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "No hay skills mapeadas a {{agent}}: Ctrl+Enter envía el mensaje",
       "no_skills_mapped_to_agent_enter_sends": "No hay skills mapeadas a {{agent}}: Enter envía el mensaje",
       "scoped_to_agent": "Limitado al agente {{agent}}",
+      "skills_load_failed": "No se pudieron cargar las skills",
+      "skills_load_failed_ctrl_enter_sends": "No se pudieron cargar las skills: Ctrl+Enter envía el mensaje",
+      "skills_load_failed_enter_sends": "No se pudieron cargar las skills: Enter envía el mensaje",
       "trust_needed_badge": "Requiere confianza",
       "trust_needed_hint": "De este proyecto. Selecciónala para revisarla y confiar en la carpeta."
     },

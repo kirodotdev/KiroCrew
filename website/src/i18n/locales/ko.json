@@ -6898,6 +6898,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "{{agent}}에 매핑된 스킬 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_skills_mapped_to_agent_enter_sends": "{{agent}}에 매핑된 스킬 없음 — Enter 키를 누르면 메시지가 전송됩니다",
       "scoped_to_agent": "에이전트 {{agent}}(으)로 제한됨",
+      "skills_load_failed": "스킬을 불러올 수 없습니다",
+      "skills_load_failed_ctrl_enter_sends": "스킬을 불러올 수 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "skills_load_failed_enter_sends": "스킬을 불러올 수 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
       "trust_needed_badge": "신뢰 필요",
       "trust_needed_hint": "이 프로젝트의 스킬입니다. 선택하면 내용을 확인하고 폴더를 신뢰할 수 있습니다."
     },

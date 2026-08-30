@@ -90,9 +90,11 @@ export default function SkillPickerMenu({
   // invalidateQueries({queryKey:['skills']}) call keeps working.
   // staleTime is long because skills change rarely. `enabled: open` keeps the
   // menu lazy — the focus-prefetch warms the same key separately.
+  // `loading` below is `isLoading && open` and isLoading clears only on settle,
+  // so an unbounded fetch leaves "Loading skills…" up forever.
   const { data, isLoading, isFetching, isError } = useQuery<SkillsPayload<SkillItem>>({
     queryKey: ['skills', slotKey ?? null, project ?? null, agent ?? null],
-    queryFn: () => api.skills(slotKey, agent),
+    queryFn: ({ signal }) => api.skills(slotKey, agent, signal),
     enabled: open,
     staleTime: skillsCacheStaleTime(project),
   })
@@ -210,7 +212,16 @@ export default function SkillPickerMenu({
   // catalog filtered to nothing by the query keeps the generic copy. Both
   // branches preserve the Enter/Ctrl+Enter release announcement.
   const mappedEmpty = agentScoped && items.length === 0
-  const emptyKey = mappedEmpty
+  // A settled ERROR is not an empty catalog: both release Enter, but "No matching
+  // skills" asserts something false about the user's skills.
+  const loadFailed = isError && items.length === 0
+  const emptyKey = loadFailed
+    ? (!releaseKeysWhenEmpty
+        ? 'components.skillPickerMenu.skills_load_failed'
+        : sendOnEnter === 'ctrl-enter'
+          ? 'components.skillPickerMenu.skills_load_failed_ctrl_enter_sends'
+          : 'components.skillPickerMenu.skills_load_failed_enter_sends')
+    : mappedEmpty
     ? (!releaseKeysWhenEmpty
         ? 'components.skillPickerMenu.no_skills_mapped_to_agent'
         : sendOnEnter === 'ctrl-enter'

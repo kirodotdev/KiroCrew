@@ -18,9 +18,24 @@ export const isThrottleError = (error: unknown): boolean =>
   typeof error === 'object' && error !== null
   && (error as { status?: unknown }).status === 429
 
-/** Retry up to 4 times on 429 throttles; keep the previous single retry otherwise. */
+/** True when the failure is a deadline WE set (lib/withDeadline's reason). */
+export const isDeadlineError = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null
+  && (error as { name?: unknown }).name === 'TimeoutError'
+
+/**
+ * Retry up to 4 times on 429 throttles; never retry a deadline we set ourselves;
+ * keep the previous single retry otherwise.
+ *
+ * The deadline clause binds HERE rather than per query, for the same reason the
+ * deadline itself binds inside `api.skills`: react-query dedupes on the key, so a
+ * per-initiator rule is only as strong as the weakest initiator of a shared key.
+ * Retrying a deadline also doubles the wait it exists to bound — a 15s bound
+ * settles at ~31s once the single retry and its backoff are counted.
+ */
 export const retryPolicy = (failureCount: number, error: unknown): boolean =>
-  isThrottleError(error) ? failureCount < 4 : failureCount < 1
+  isDeadlineError(error) ? false
+    : isThrottleError(error) ? failureCount < 4 : failureCount < 1
 
 /**
  * Jittered exponential backoff for throttles (1s → 2s → 4s → 8s, ±500ms so

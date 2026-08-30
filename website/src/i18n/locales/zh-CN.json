@@ -6898,6 +6898,9 @@
       "no_skills_mapped_to_agent_ctrl_enter_sends": "没有映射到 {{agent}} 的技能 —— 按 Ctrl+Enter 直接发送消息",
       "no_skills_mapped_to_agent_enter_sends": "没有映射到 {{agent}} 的技能 —— 按 Enter 直接发送消息",
       "scoped_to_agent": "已限定为代理 {{agent}}",
+      "skills_load_failed": "无法加载技能",
+      "skills_load_failed_ctrl_enter_sends": "无法加载技能 —— 按 Ctrl+Enter 直接发送消息",
+      "skills_load_failed_enter_sends": "无法加载技能 —— 按 Enter 直接发送消息",
       "trust_needed_badge": "需要信任",
       "trust_needed_hint": "来自此项目。选择它即可查看并信任此文件夹。"
     },

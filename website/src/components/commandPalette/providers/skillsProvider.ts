@@ -202,7 +202,7 @@ export function useSkillsProvider(opts?: {
         fetchSkills: () =>
           queryClient.fetchQuery<SkillItem[]>({
             queryKey: ['skills'],
-            queryFn: () => api.skills() as Promise<SkillItem[]>,
+            queryFn: ({ signal }) => api.skills(undefined, undefined, signal) as Promise<SkillItem[]>,
             staleTime: SKILLS_STALE_MS,
           }),
         hasActiveChat,

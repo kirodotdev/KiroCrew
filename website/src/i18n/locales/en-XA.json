@@ -6600,7 +6600,10 @@
       "no_skills_mapped_to_agent": "[Ñø şķìĺĺş ɱàþþèð ţø {{agent}} ··················]",
       "no_skills_mapped_to_agent_ctrl_enter_sends": "[Ñø şķìĺĺş ɱàþþèð ţø {{agent}} — Çţŕĺ+Èñţèŕ şèñðş ţĥè ɱèşşàğè ··················]",
       "no_skills_mapped_to_agent_enter_sends": "[Ñø şķìĺĺş ɱàþþèð ţø {{agent}} — Èñţèŕ şèñðş ţĥè ɱèşşàğè ·······················]",
-      "scoped_to_agent": "[Şçøþèð ţø àğèñţ {{agent}} ··············]"
+      "scoped_to_agent": "[Şçøþèð ţø àğèñţ {{agent}} ··············]",
+      "skills_load_failed": "[Çøùĺðñ'ţ ĺøàð şķìĺĺş ··················]",
+      "skills_load_failed_ctrl_enter_sends": "[Çøùĺðñ'ţ ĺøàð şķìĺĺş — Çţŕĺ+Èñţèŕ şèñðş ţĥè ɱèşşàğè ··················]",
+      "skills_load_failed_enter_sends": "[Çøùĺðñ'ţ ĺøàð şķìĺĺş — Èñţèŕ şèñðş ţĥè ɱèşşàğè ·······················]"
     },
     "slotTagPopover": {
       "assign_tags": "[Àşşìğñ ţàğş ··········]",

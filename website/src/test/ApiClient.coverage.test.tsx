@@ -1360,7 +1360,9 @@ describe('publishToProvider', () => {
 describe('every api method issues one well-formed /api request', () => {
   // Exercised individually above with the fixtures they need (a Blob, a
   // ReadableStream, a File list, an object-URL download).
-  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'installFromRegistryStream', 'exportPlanYaml'])
+  // `skills` joins them because it wraps the fetch in a deadline, so it USES the
+  // signal argument rather than forwarding it; junk there is not a URL question.
+  const HAND_TESTED = new Set(['sttTranscribe', 'uploadFiles', 'installFromRegistryStream', 'exportPlanYaml', 'skills'])
 
   type AnyFn = (...args: unknown[]) => unknown
   const methods = Object.entries(api as unknown as Record<string, AnyFn>)
