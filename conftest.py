@@ -1775,6 +1775,67 @@ def _isolate_sel_default_dir(tmp_path_factory):
         _sel.SecurityEventLog._instance = original_instance
 
 
+@pytest.fixture
+def sel_private_root(tmp_path_factory):
+    """Bind the SEL singleton to a directory PRIVATE to the requesting test.
+
+    ``_isolate_sel_default_dir`` above gives every test on a worker ONE shared
+    SEL directory, which is the right default tier: the writer is a daemon
+    thread on a process singleton, and a per-test ``tmp_path`` would be deleted
+    underneath it (see that fixture's docstring). But one shared root also
+    means one shared CHAIN LOCK, and a test whose assertion transitively
+    depends on a fail-closed critical audit WINNING that lock can be refused by
+    a concurrent writer it never created — the loop-side acquire is a single
+    non-blocking attempt by design (issue #7029, the issue-radar trust flake).
+
+    This is the per-test tier of the same seam. It rebinds the singleton to a
+    fresh directory nothing else writes, so no other test — on this worker or
+    any other — can hold this test's chain lock:
+
+    * The directory comes from ``tmp_path_factory``, whose numbered dirs are
+      never deleted mid-run (a lingering writer can never resurrect a removed
+      path) and whose basetemp is already per-xdist-worker (``popen-gwN``), so
+      the isolation holds across workers as well as across tests.
+    * The instance is built ``sync=True``: every event is written inline on its
+      caller's thread and NO background writer starts, so the only writers on
+      this root are the test's own threads — which the module-level chain-hold
+      registry already lets join one another.
+    * ``_default_dir()`` is deliberately NOT repointed: the displaced shared
+      directory stays reachable through it, which is what lets a differential
+      test hold the SHARED root's lock and prove this test no longer contends
+      for it.
+
+    Teardown restores the PRIOR singleton (not ``None``), so later tests on
+    this worker resume the session default exactly where it left off instead of
+    minting a second instance — and a second writer thread — on the same
+    directory.
+    """
+    try:
+        from kiro_crew.sel import SecurityEventLog
+    except ImportError:  # pragma: no cover - partial checkout
+        yield None
+        return
+    root = tmp_path_factory.mktemp("sel-private")
+    prior_instance = SecurityEventLog._instance
+    SecurityEventLog._instance = None
+    SecurityEventLog._initialized = False
+    try:
+        # Inside the try: ``__new__`` publishes to ``_instance`` before
+        # ``__init__`` runs, so a failing ``_init_locked`` would otherwise
+        # orphan the half-built object AND lose ``prior_instance`` — every
+        # later test on this worker would then re-init against the shared
+        # default with a second writer thread, the exact hazard the restore
+        # exists to prevent.
+        SecurityEventLog(base_dir=root, sync=True)
+        yield root
+    finally:
+        SecurityEventLog._instance = prior_instance
+        # Class attribute only (each instance shadows it in __new__); reset to
+        # the declared default for symmetry with test_sel.py's convention —
+        # the restored instance keeps its own per-instance _initialized=True.
+        SecurityEventLog._initialized = False
+
+
 #: ``~/.kiro`` paths production binds at IMPORT time, which ``KIROCREW_HOME`` cannot
 #: reach: the module captured an absolute path from ``Path.home()`` before any test
 #: set an environment variable, so the env override is read too late to matter.

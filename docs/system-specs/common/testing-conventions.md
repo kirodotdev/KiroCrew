@@ -291,6 +291,15 @@ which testpath asked for the workers.
   add a subsystem with a background worker, ask which directory its thread captured
   and whether anything deletes that directory underneath it.
 
+  One shared directory also means one shared **chain lock**, and that is the wrong
+  tier for a test whose assertion depends on a fail-closed critical SEL write
+  *winning* that lock — on the event-loop thread the acquire is a single non-blocking
+  attempt, so any sibling's writer holding the lock at the wrong moment refuses the
+  audit and fails the test with no code defect anywhere (issue #7029, the issue-radar
+  trust flake). Such tests request `sel_private_root` (rootdir conftest): it rebinds
+  the singleton to a per-test, per-xdist-worker directory built `sync=True` — no
+  background writer at all — so no concurrent writer exists to contend with.
+
 - **When you stub a lifecycle method, SPY and delegate — never replace.** A stub that
   only records the call leaves whatever that method was supposed to stop still running.
   The worked example cost 19 failures in files that contain no metrics code at all:

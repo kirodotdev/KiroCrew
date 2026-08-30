@@ -25,6 +25,7 @@ import ast
 import asyncio
 import contextlib
 import inspect
+import os
 import re
 import tempfile
 import threading
@@ -33,6 +34,10 @@ from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
+import pytest
+
+import kiro_crew.sel as sel_mod
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import provider
@@ -54,6 +59,25 @@ def _effectively_trusted(slot: Any) -> bool:
     this module must never write. So the tests below ask the real consumer.
     """
     return chat_runner._slot_is_trusted(slot)
+
+
+@pytest.fixture(autouse=True)
+def _private_sel_root_per_test(sel_private_root):
+    """Every test in this module gets its OWN SEL root (issue #7029).
+
+    The trust assertions here transitively depend on a fail-closed critical SEL
+    audit WINNING the chain lock: ``sync_trust`` → ``activate_scoped`` audits
+    before it grants, and on the event-loop thread the lock acquire is a single
+    non-blocking attempt that refuses rather than stall the loop — correct
+    product behaviour that must not be loosened. On a SHARED root that turns
+    every trust assertion into a lock race against writers this module never
+    created (another test's still-flushing events, another xdist worker on the
+    same path). ``sel_private_root`` (rootdir conftest) removes the concurrent
+    writer instead of coping with it: a fresh per-test, per-worker directory
+    that nothing else writes. ``TestSelRootIsolation`` below pins the property
+    differentially.
+    """
+    yield
 
 
 # ── fakes ───────────────────────────────────────────────────────────────────
@@ -2133,6 +2157,129 @@ class TestAutoApproveProvenance(unittest.TestCase):
         slot = _FakeSlot("chat-1")
         slot._trust = True
         self.assertEqual(chat_runner._auto_approve_reason(slot, False), "trust")
+
+
+#: SEL roots already claimed by a test in this module, on this worker. Uniqueness
+#: across workers needs no bookkeeping: the roots are ``tmp_path_factory`` dirs
+#: under per-worker basetemps, so two workers cannot mint the same path. The
+#: REUSE assertion below therefore only bites when both claim tests land on one
+#: worker (``--dist load`` may split them); the not-the-shared-default leg holds
+#: per test on every worker regardless.
+_CLAIMED_SEL_ROOTS: set[str] = set()
+
+
+class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
+    """The per-test SEL root that closes issue #7029, pinned differentially.
+
+    Every trust assertion in this file requires a fail-closed critical SEL
+    audit to WIN the chain lock, and on the event-loop thread that acquire is a
+    single non-blocking attempt (``sel.py``) with a fail-closed refusal behind
+    it (``safety_override.py``) — both correct product behaviour, pinned by
+    their own tests, and deliberately not touched here. What THESE tests pin is
+    the test-isolation property that makes depending on that lock safe: the
+    root the audit writes through belongs to this test alone, so no sibling
+    test's writer can ever hold this test's lock.
+
+    Written to FAIL on the shared-root arrangement this module had before
+    (one session-scoped SEL directory per worker), not merely to pass on the
+    private one — see each test's body for which leg is the differential.
+    """
+
+    def setUp(self):
+        if getattr(sel_mod._default_dir, "__module__", "") == "kiro_crew.sel":
+            # The rootdir conftest displaces ``_default_dir`` with a
+            # session-scoped closure; the ORIGINAL still installed means that
+            # isolation never ran (raw ``python -m unittest``, or pytest from
+            # a foreign rootdir). In that world ``_default_dir()`` — and the
+            # ``sel()`` the tests below touch — would resolve, CREATE, and
+            # initialize against the operator's REAL data home before any
+            # assertion could fail. Probe the seam by identity: even calling
+            # ``config_dir()`` to compare paths would itself create the home
+            # on first use, so the check must not invoke anything.
+            self.skipTest("requires the rootdir conftest SEL isolation")
+        reset_singleton()
+        self.addCleanup(reset_singleton)
+
+    async def test_a_holder_of_the_shared_default_root_cannot_refuse_trust(self):
+        """A concurrent writer on the SHARED root no longer reaches this module.
+
+        The holder below stands in for the writer the flake needed: it takes
+        the chain lock of the DEFAULT SEL root — the directory ``sel()`` would
+        resolve WITHOUT this module's per-test isolation, and the one a sibling
+        test's writer would actually hold — through its own file description,
+        which is how a foreign holder looks to ``flock``. On the shared-root
+        arrangement the fail-closed trust audit loses its single-shot acquire
+        against exactly this and the grant is refused (the #7029 failure
+        verbatim); with a private per-test root the holder is a stranger to the
+        audit, and trust must be granted.
+        """
+        # setUp already skipped when the isolation seam is absent, so this is
+        # the displaced session directory, never the operator's data home.
+        shared = sel_mod._default_dir()
+        lock_dir = shared / sel_mod._TRUST_SUBDIR
+        lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_file = lock_dir / sel_mod._SEL_LOCK_FILE
+        # Same flags the code under test opens the sidecar with (sel.py), so
+        # the staged holder is byte-faithful on Windows too.
+        fd = os.open(
+            lock_file,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+        try:
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")  # Windows locks a byte RANGE; give it a byte
+            # The displaced session singleton's writer may itself be flushing
+            # to this root right now (its holds span one append batch), so a
+            # single-shot acquire here would inherit the very flake this
+            # commit retires. Retry non-blocking attempts — never a blocking
+            # acquire on the event-loop thread — until the transient hold
+            # clears; the budget is generous because a miss fails the test.
+            for _ in range(200):
+                if platform_compat.try_acquire_lock(fd, exclusive=True):
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                self.fail("could not stage the foreign holder on the shared root")
+            try:
+                slot = _FakeSlot("crew-c_7029iso")
+                slot._app = cr.APP_NAME
+                granted = cr.sync_trust(
+                    slot, {"id": "c_7029iso", "unattended": True, "enabled": True}
+                )
+                self.assertTrue(
+                    granted,
+                    "trust was refused: the audit contended for the SHARED root's "
+                    "chain lock, so this test's SEL root is not private (#7029)",
+                )
+                self.assertTrue(_effectively_trusted(slot))
+            finally:
+                platform_compat.release_lock(fd)
+        finally:
+            os.close(fd)
+        # The audit went somewhere real: fail-closed was not merely bypassed.
+        body = sel_mod.sel()._path.read_text(encoding="utf-8")
+        self.assertIn("safety_override:activate_scoped", body)
+
+    async def test_this_tests_sel_root_is_private_first_claim(self):
+        self._claim_root()
+
+    async def test_this_tests_sel_root_is_private_second_claim(self):
+        """Second claimant: on the pre-#7029 arrangement both tests resolve the
+        one session directory, so whichever of the pair runs second trips the
+        reuse assertion (and both trip the shared-default one)."""
+        self._claim_root()
+
+    def _claim_root(self) -> None:
+        root = str(sel_mod.sel()._dir)
+        self.assertNotEqual(
+            Path(root),
+            sel_mod._default_dir(),
+            "sel() resolved the SHARED default root: tests on this worker would "
+            "contend for one chain lock (#7029)",
+        )
+        self.assertNotIn(root, _CLAIMED_SEL_ROOTS, "SEL root reused across tests (#7029)")
+        _CLAIMED_SEL_ROOTS.add(root)
 
 
 if __name__ == "__main__":  # pragma: no cover
