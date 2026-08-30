@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import mcp_apps_render
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -1038,7 +1039,19 @@ def _build_tool_result_event(update: dict[str, Any]) -> AcpEvent | None:
                                 output_parts.append(json.dumps(j, default=str)[:4000])
     if not output_parts:
         return None
-    final_output = _redact("\n".join(output_parts)[:8000])
+    joined = "\n".join(output_parts)
+    final_output = _redact(joined[:8000])
+    # An MCP App render marker lives at offset 0 of its own text part, but the
+    # 8000-char join cut is applied to the CONCATENATION of all parts: when the
+    # marker part is preceded by other (up to 4000-char) parts, its offset in
+    # the joined string can exceed 8000 and the slice drops it, so
+    # ``mcp_apps_render.find_marker`` never sees it and the app never mounts.
+    # If the pre-slice text carried a marker that the slice removed, re-inject
+    # it at offset 0 so it stays under any cut and remains detectable. The
+    # marker is a fixed control token, not sensitive, so it needs no redaction.
+    marker_match = mcp_apps_render.MARKER_RE.search(joined)
+    if marker_match and mcp_apps_render.find_marker(final_output) is None:
+        final_output = f"{marker_match.group(0)} {final_output}"
     return AcpEvent(
         kind=EVENT_TOOL_RESULT,
         tool_call_id=tool_use_id,

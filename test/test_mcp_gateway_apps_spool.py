@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.mcp_apps_render import find_marker
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_gateway import apps
 from kiro_crew.mcp_gateway.apps import (
@@ -108,13 +109,14 @@ class TestExtractUiResourceUri:
 # --------------------------------------------------------------------------
 
 class TestAppendMarker:
-    def test_appends_to_first_text_item(self):
+    def test_prepends_to_first_text_item(self):
         result = {"content": [
             {"type": "text", "text": "hello"},
             {"type": "text", "text": "second"},
         ]}
         out = append_marker(result, "abc123")
-        assert out["content"][0]["text"] == "hello [kirocrew-mcp-app:abc123]"
+        # Marker at offset 0 so it survives the downstream ACP 4000-char cut.
+        assert out["content"][0]["text"] == "[kirocrew-mcp-app:abc123] hello"
         # Only the FIRST text item is marked.
         assert out["content"][1]["text"] == "second"
 
@@ -124,12 +126,15 @@ class TestAppendMarker:
             {"type": "text", "text": "caption"},
         ]}
         out = append_marker(result, "id9")
-        assert out["content"][1]["text"] == "caption [kirocrew-mcp-app:id9]"
+        assert out["content"][1]["text"] == "[kirocrew-mcp-app:id9] caption"
 
-    def test_no_text_item_appends_new_item(self):
+    def test_no_text_item_prepends_new_item(self):
         result = {"content": [{"type": "image", "data": "..."}]}
         out = append_marker(result, "zz")
-        assert out["content"][-1] == {"type": "text", "text": "[kirocrew-mcp-app:zz]"}
+        # No text item to lead, so a fresh marker item is inserted at offset 0
+        # to match the prepend framing; the existing non-text item follows.
+        assert out["content"][0] == {"type": "text", "text": "[kirocrew-mcp-app:zz]"}
+        assert out["content"][1] == {"type": "image", "data": "..."}
 
     def test_empty_content_appends_new_item(self):
         out = append_marker({"content": []}, "q")
@@ -992,8 +997,9 @@ async def test_interception_end_to_end(apps_flag_on, spool_tmp):
     # Original stub id restored, marker injected on the first text item.
     assert delivered["id"] == 42
     text = delivered["result"]["content"][0]["text"]
-    assert text.startswith("drawn ")
-    assert text.startswith("drawn [kirocrew-mcp-app:")
+    # Marker is prepended (offset 0) and the original tool text is preserved.
+    assert text.startswith("[kirocrew-mcp-app:")
+    assert text.endswith(" drawn")
     # Structured content preserved.
     assert delivered["result"]["structuredContent"] == {"nodes": 3}
 
@@ -1008,8 +1014,10 @@ async def test_interception_end_to_end(apps_flag_on, spool_tmp):
     assert record["tool"] == "draw"
     assert record["session_key"] == "dashboard:sess-1"
     assert record["structured_content"] == {"nodes": 3}
-    # The spool id in the marker matches the file on disk.
-    marker_id = text.split("[kirocrew-mcp-app:")[1].rstrip("]").strip()
+    # The spool id in the marker matches the file on disk. Parsed with the real
+    # consumer (find_marker) rather than a hand-rolled slice, so the assertion
+    # stays position-agnostic and cannot drift from the marker layout again.
+    marker_id = find_marker(text)
     assert (spool_tmp / f"{marker_id}.json").exists()
 
 
@@ -1040,8 +1048,7 @@ async def test_interception_blob_base64(apps_flag_on, spool_tmp):
         "result": {"contents": [{"mimeType": MCP_APPS_MIME_TYPE, "blob": blob}]},
     }) + "\n").encode("utf-8"))
     delivered = await _drain_inbox(inbox)
-    marker_id = delivered["result"]["content"][0]["text"].split(
-        "[kirocrew-mcp-app:")[1].rstrip("]").strip()
+    marker_id = find_marker(delivered["result"]["content"][0]["text"])
     record = json.loads((spool_tmp / f"{marker_id}.json").read_text())
     assert record["html"] == "<html>blob</html>"
 
