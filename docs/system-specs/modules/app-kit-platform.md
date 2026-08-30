@@ -766,7 +766,7 @@ inventory; an unreachable one degrades the listing to the seed.
 
 That degradation is silent -- a failed fetch overwrites the on-disk cache with a
 failure sentinel and the seed listing renders with no error -- so the store
-header carries a manual refresh. `POST /api/apps/registry/refresh`
+header carries a manual refresh. `POST /api/app-store/refresh`
 (`handle_registry_refresh`) drops the on-disk caches of all three published
 documents (catalog, category order, editorial) via each module's
 `forget_cache()`, which clears a stale document and a `_fetchFailedAt` back-off
@@ -775,7 +775,18 @@ sentinel in one unlink. The handler never fetches: the follow-up
 cannot behave differently from the load it repairs. It is a POST rather than a
 query parameter on the GET because cache deletion plus outbound fetches is a
 state change, and a state-changing GET is reachable by cross-site top-level
-navigation behind the CSRF middleware's back. The dashboard's refresh button
+navigation behind the CSRF middleware's back. The path sits outside
+`/api/apps/` because that namespace grants an app token implicit ownership of
+`/api/apps/<its-own-name>/*` (`token_auth._app_owns_path`): an app named
+`registry` must not inherit the power to purge the shared catalog caches. The
+same exposure applies to the pre-existing fixed-segment siblings under
+`/api/apps/` (`registries`, `install`, `register` — e.g.
+`POST /api/apps/registries/refresh` is claimable by an app named
+`registries`); closing that class — reserving the colliding segments as app
+names versus a carve-out at the `_app_owns_path` boundary — is a one-way-door
+decision deliberately deferred to #7111 rather than folded into this
+endpoint's addition. The
+dashboard's refresh button
 also posts `/api/apps/registries/refresh` (the external-registry index sweep),
 then refetches, so both of the store's sources are rebuilt by one click.
 

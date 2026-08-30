@@ -3221,8 +3221,10 @@ export const api = {
   // category order / editorial) so the NEXT listRegistry() is rebuilt from
   // fresh fetches instead of waiting out TTLs. A POST because it is a state
   // change (cache deletion + outbound fetches) and must sit behind the CSRF
-  // boundary a GET query param would bypass.
-  refreshAppStore: () => post('/api/apps/registry/refresh').then(j) as Promise<{ ok: boolean }>,
+  // boundary a GET query param would bypass. Deliberately NOT under
+  // /api/apps/: that namespace grants an app named `registry` implicit
+  // path ownership (token_auth._app_owns_path).
+  refreshAppStore: () => post('/api/app-store/refresh').then(j) as Promise<{ ok: boolean }>,
   refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean }[]; apps: number; lastSyncedAt: string }>,
   installFromRegistry: (name: string) => post('/api/apps/registry/install', { name }).then(j),
   /**

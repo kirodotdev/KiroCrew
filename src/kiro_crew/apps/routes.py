@@ -1884,7 +1884,7 @@ async def handle_registry(request: web.Request) -> web.Response:
 
 
 async def handle_registry_refresh(request: web.Request) -> web.Response:
-    """POST /api/apps/registry/refresh — drop the published-document caches.
+    """POST /api/app-store/refresh — drop the published-document caches.
 
     Drops the on-disk caches of all three published documents (catalog,
     category order, editorial), so the NEXT ``GET /api/apps/registry`` is
@@ -1893,7 +1893,16 @@ async def handle_registry_refresh(request: web.Request) -> web.Response:
     sentinel and the store quietly falls back to the seed listing, and without
     an explicit refresh the user's only remedy is waiting out ``CACHE_TTL``.
 
-    Two deliberate shapes:
+    Deliberately OUTSIDE ``/api/apps/``: token_auth's ``_app_owns_path``
+    grants an app token implicit ownership of everything under
+    ``/api/apps/<its-own-name>/``, so a path like
+    ``/api/apps/registry/refresh`` would hand any app that names itself
+    ``registry`` the power to purge the shared catalog caches without
+    declaring the permission. Under ``/api/app-store/`` no app name can
+    collide, so an app token reaches this endpoint only through an explicit
+    ``permissions.api`` grant.
+
+    Two more deliberate shapes:
 
     - A POST, not a ``?refresh=1`` on the GET: deleting caches and triggering
       outbound fetches is a state change, and a state-changing GET is reachable
@@ -3782,7 +3791,10 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_put("/api/apps/registries", handle_registries)
     app.router.add_post("/api/apps/registries/refresh", handle_registries_refresh)
     app.router.add_get("/api/apps/blob", handle_blob_proxy)
-    app.router.add_post("/api/apps/registry/refresh", handle_registry_refresh)
+    # Outside /api/apps/ on purpose: _app_owns_path would grant an app named
+    # `registry` implicit ownership of /api/apps/registry/* -- see the
+    # handler's docstring.
+    app.router.add_post("/api/app-store/refresh", handle_registry_refresh)
     app.router.add_post("/api/apps/registry/install", handle_registry_install)
     app.router.add_post("/api/apps/registry/install-stream", handle_registry_install_stream)
     app.router.add_post("/api/apps/install", handle_install_app)

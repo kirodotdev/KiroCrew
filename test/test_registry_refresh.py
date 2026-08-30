@@ -1,4 +1,4 @@
-"""The store's manual refresh: ``POST /api/apps/registry/refresh``.
+"""The store's manual refresh: ``POST /api/app-store/refresh``.
 
 Three contracts, asserted separately because they fail differently:
 
@@ -74,7 +74,7 @@ class TestForgetCache:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/apps/registry/refresh, and the GET staying read-only
+# POST /api/app-store/refresh, and the GET staying read-only
 # ---------------------------------------------------------------------------
 
 

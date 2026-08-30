@@ -2356,6 +2356,12 @@ def test_app_owns_path_boundaries() -> None:
     # Unrelated dashboard endpoints are never owned.
     assert not _app_owns_path("foo", "/api/sessions")
     assert not _app_owns_path("foo", "/api/config/kirocrew")
+    # The store's manual refresh lives at /api/app-store/refresh precisely so
+    # an app that names itself `registry` cannot claim it: under the old
+    # /api/apps/registry/refresh spelling the first assertion here would be
+    # True, handing that app the power to purge the shared catalog caches.
+    assert not _app_owns_path("registry", "/api/app-store/refresh")
+    assert _app_owns_path("registry", "/api/apps/registry/refresh")
 
 
 def test_app_token_path_allowed_empty_name_denies() -> None:
