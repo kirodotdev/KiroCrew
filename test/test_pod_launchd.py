@@ -506,9 +506,22 @@ def test_up_pins_the_checkout_inside_the_name_mutex(cfg, monkeypatch, tmp_path):
 
     @_ctx.contextmanager
     def _tracked_mutex(c, n):
-        events.append("lock")
-        yield
-        events.append("unlock")
+        # Record only the OUTERMOST hold, because the real mutex is reentrant and
+        # this assertion is about the transaction's outer boundary. Inner
+        # re-acquisitions are legitimate and now routine: `write_env_file` takes it,
+        # and the plane lock borrows it under a reserved name. Counting those would
+        # make the first "unlock" below an inner one and the ordering meaningless.
+        depth[0] += 1
+        if depth[0] == 1:
+            events.append("lock")
+        try:
+            yield
+        finally:
+            if depth[0] == 1:
+                events.append("unlock")
+            depth[0] -= 1
+
+    depth = [0]
 
     checkout = tmp_path / "wt"
     (checkout / "website" / "static" / "dist").mkdir(parents=True)
@@ -554,11 +567,20 @@ def test_up_failure_cleanup_stops_the_pod_inside_the_mutex(cfg, monkeypatch, tmp
 
     @_ctx.contextmanager
     def _tracked_mutex(c, n):
-        events.append("lock")
+        # See the sibling test: record only the OUTERMOST hold, since the real mutex
+        # is reentrant and inner re-acquisitions (`write_env_file`, the borrowed
+        # plane lock) would otherwise supply the first "unlock".
+        depth[0] += 1
+        if depth[0] == 1:
+            events.append("lock")
         try:
             yield
         finally:
-            events.append("unlock")
+            if depth[0] == 1:
+                events.append("unlock")
+            depth[0] -= 1
+
+    depth = [0]
 
     checkout = tmp_path / "wt"
     (checkout / "website" / "static" / "dist").mkdir(parents=True)

@@ -152,25 +152,93 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         if crons:
             env_updates["CRONS"] = "1"
             boot_flags.append("--crons")
-        if env_updates:
-            rt.write_env_file(cfg, name, env_updates)
 
+        # Read the unit's state BEFORE choosing a port, and inside the mutex: the
+        # two questions are one decision. An `up` against an already-active pod is
+        # a restart, and that pod's port is legitimately busy BECAUSE IT OWNS IT --
+        # probing would find it taken and move a running pod out from under every
+        # reader. Only a pod that is not running is choosing a port at all.
         was_active = rt.is_active(cfg, name)
         if not was_active:
-            cp = rt.start_pod(cfg, name)
-            if cp.returncode != 0:
-                _audit(
-                    "pod.up", "failure", f"name={name} port={port}", error="backend start failed"
+            # Asked BEFORE allocating, because allocation records a claim that would
+            # then look like ours. An operator's deliberate `PORT=` must not acquire
+            # the PORT_AUTO marker: that marker is what licenses a later relocation,
+            # so stamping it here would silently convert a pin the operator set into
+            # one this code may move -- defeating the guarantee that a pin you set is
+            # never moved automatically.
+            operator_pin = rt.operator_pinned(cfg, name)
+            # The plane lock, INSIDE the name lock, covers choose -> start. Two
+            # DIFFERENT colliding names hold disjoint NAME locks, so without this
+            # both could probe one port free and both boot onto it. See
+            # `pod_plane_mutex` for the window this shrinks and the one it leaves.
+            with rt.pod_plane_mutex(cfg):
+                try:
+                    port, displaced_from = rt.allocate_port(cfg, name)
+                except rt.PodError as exc:
+                    _audit("pod.up", "denied", f"name={name}", error="port unavailable")
+                    _die(f"refusing: {exc}")
+                # Record the claim on EVERY allocation, not only when the port
+                # moved. A unit is `Type=simple`, so `start_pod` returns before the
+                # gateway binds; until then a bind probe reports this port free and a
+                # concurrently-starting colliding name would be handed the same one.
+                # The recorded claim is visible immediately, which is what makes the
+                # concurrent case behave like the sequential one.
+                #
+                # This makes the cksum derivation a default HINT rather than a
+                # contract: after its first `up` a pod's port comes from its
+                # recorded claim, not from the formula. That is the intended
+                # trade -- an explicit ownership claim is what the pod plane needs,
+                # and it degrades gracefully, since the formula still chooses the
+                # first-preference port for every pod that has never come up.
+                env_updates["PORT"] = str(port)
+                if operator_pin:
+                    # CLEAR any marker left from an earlier automatic allocation.
+                    # Without this the stale value outlives the pin it described, and
+                    # the trap is a natural user action rather than a coincidence:
+                    # having seen the pod moved to :7850, an operator pins :7850 --
+                    # which now MATCHES the old marker, so their deliberate pin reads
+                    # as machine-made and may be relocated out from under them.
+                    # Emptied rather than deleted because `write_env_file` merges and
+                    # has no delete; an empty value does not parse as a port, so an
+                    # empty marker reads as no marker.
+                    env_updates[rt.AUTO_PORT_KEY] = ""
+                else:
+                    env_updates[rt.AUTO_PORT_KEY] = str(port)
+                if displaced_from is not None:
+                    print(
+                        f"pod: {name!r} moved to :{port} -- :{displaced_from} is "
+                        f"already in use. Pinned PORT={port} so every reader "
+                        f"agrees; `kirocrew pod url {name}` prints it.",
+                        file=sys.stderr,
+                    )
+                if env_updates:
+                    rt.write_env_file(cfg, name, env_updates)
+                cp = rt.start_pod(cfg, name)
+                if cp.returncode != 0:
+                    _audit(
+                        "pod.up",
+                        "failure",
+                        f"name={name} port={port}",
+                        error="backend start failed",
+                    )
+                    _die(f"starting pod {name} failed: {(cp.stderr or '').strip()}")
+        else:
+            # Re-resolve INSIDE the lock. `port` above was read before we held it,
+            # so a concurrent same-name `up` that pinned a fallback in the meantime
+            # would leave us holding the OLD port -- and the health wait below
+            # stops the unit when it cannot reach `port`, which would tear down the
+            # pod that other `up` just successfully started.
+            port = rt.derive_port(cfg, name)
+            if env_updates:
+                rt.write_env_file(cfg, name, env_updates)
+            if boot_flags:
+                joined = " ".join(boot_flags)
+                print(
+                    f"pod: note: {joined} recorded for {name!r}, but that pod is already "
+                    f"running, so it applies on the next boot "
+                    f"(kirocrew pod down {name} && kirocrew pod up {name} {joined}).",
+                    file=sys.stderr,
                 )
-                _die(f"starting pod {name} failed: {(cp.stderr or '').strip()}")
-        elif boot_flags:
-            joined = " ".join(boot_flags)
-            print(
-                f"pod: note: {joined} recorded for {name!r}, but that pod is already "
-                f"running, so it applies on the next boot "
-                f"(kirocrew pod down {name} && kirocrew pod up {name} {joined}).",
-                file=sys.stderr,
-            )
         # Record boot-time settings: a pod in `yolo` auto-approves every tool and
         # one with the scheduler on runs work unattended, so the audit trail must
         # say so rather than recording only that a pod came up. Mark the

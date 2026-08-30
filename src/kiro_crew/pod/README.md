@@ -87,21 +87,54 @@ them in bulk — by default only HOMEs whose last activity is older than 3 days
 (`--all` sweeps every age; each delete still routes through the same
 stop-drain-verify path `down` uses, with liveness re-checked per name).
 
-### Port derivation
+### Port derivation and allocation
 
 `port = base + (cksum(name) % 199) + 1` (base `7810` → `7811..8009`), unless a
 `PORT=` is pinned in `~/.kiro/crew/pods/<name>.env`. `pod up` refuses if a derived
 port ever resolves to the live port.
 
-199 slots means a **collision between two pod names is ordinary**, and a pinned
-`PORT=` can land on one deliberately. Whoever binds first wins; the loser's gateway
-exits "address already in use" and its unit crash-loops behind `Restart=on-failure`.
-So reachability on the derived port is never evidence that THIS pod is up: `health`
-and the credential mint both require the process a `127.0.0.1` connect reaches to be
-the pod's own `MainPID` (`port_owner`), and `pod status` / `pod ls` print
-`foreign (port held by another instance)` when it is not. `pod up` names the
-conflict and points at `PORT=` rather than blaming the worktree build. Give a
-colliding pod its own `PORT=` to clear it.
+Derivation answers "which port does this name PREFER", and it is a **default hint,
+not a contract**. Every reader (`pod url`, `pod ls`, `pod exec`, Dev Fleet) calls it
+to agree without coordinating, but 199 slots means two names colliding is ordinary,
+and the derived port can equally be held by something that is not a pod. It does NOT
+check that the port is free.
+
+Whether the port can be had is asked once, by `pod up`, and the answer is **recorded
+as a `PORT=` claim on every allocation** — so after a pod's first `up` its port comes
+from that claim rather than from the formula. The formula still picks the
+first-preference port for any pod that has never come up, which is why the
+degradation is graceful: derivation chooses, ownership is explicit, and readers
+follow the claim.
+
+- The pod is already running → nothing is allocated, and the port is re-resolved
+  under the lock. Its port is busy because it owns it, and moving a live pod would
+  strand every reader.
+- A hand-pinned `PORT=` that is busy → refused loudly. A deliberate pin is never
+  relocated automatically. A pin outside 1–65535 is refused by name.
+- Otherwise the first port that is free, not the live plane, and **not claimed by
+  another pod** is taken — walking from just above the preferred slot and wrapping,
+  deterministically. It is recorded as `PORT=` plus `PORT_AUTO` (which marks the
+  claim as machine-made, so it stays relocatable) and a move is reported on stderr.
+- Nothing available → refused loudly, naming the band and the `PORT=` escape hatch.
+  A pod that cannot get a port must not appear to start.
+
+Reading other pods' recorded claims is what makes concurrent boots safe: a unit is
+`Type=simple`, so `start_pod` returns *before* the gateway binds, and until then a
+bind probe reports that port free. Claiming is serialized plane-wide (`pod up` holds
+a plane lock across choose → start), and the claim is written before the start, so a
+colliding name sees it immediately rather than after the bind.
+
+**A collision that still happens is detected, not mistaken for health.** Allocation
+prevents the ordinary cases above, but it cannot prevent all of them: two colliding
+names started concurrently can still race inside the window between the service
+manager accepting the start and the gateway binding. When that happens whoever binds
+first wins and the loser's gateway exits "address already in use", its unit
+crash-looping behind `Restart=on-failure`. So reachability on a port is never
+evidence that THIS pod is up: `health` and the credential mint both require the
+process a `127.0.0.1` connect reaches to be the pod's own `MainPID` (`port_owner`),
+and `pod status` / `pod ls` print `foreign (port held by another instance)` when it
+is not. `pod up` names the conflict and points at `PORT=` rather than blaming the
+worktree build, and pinning a colliding pod's own `PORT=` remains the manual way out.
 
 ## Configuration (`PodConfig`, all `KIROCREW_POD_*`-overridable)
 
