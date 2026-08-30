@@ -187,6 +187,12 @@ def _run(
         "_src_prefix": "kirocrew_sb_%d_" % os.getpid(),
         "expose_data": {},
         "EXPOSE_FILES": [],
+        # The extracted hiding region now also contains the separate Docker
+        # restore block. Keep it inert here: this suite counts the six existing
+        # mandatory hiding mounts, while Docker's two opt-in mounts have their
+        # own focused tests.
+        "docker_config_data": None,
+        "DOCKER_CONFIG_PATH": None,
         "SENSITIVE_DIRS": [str(aws)],
         # Empty by default for the same reason as WRITABLE_DIRS: a private
         # window stages its own bind, which would shift the call numbering.
@@ -299,7 +305,7 @@ def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     assert "sandbox_level" in refusal
 
 
-def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
+def test_every_tier_routes_all_eleven_mounts_through_the_guard() -> None:
     """No tier may keep a raw, unchecked ``_libc.mount`` call site.
 
     Break-arm: ``reintroduce_raw`` (one site reverted to the raw call).
@@ -310,14 +316,17 @@ def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
             line
             for line in script.splitlines()
             # the helper's own call is the one legitimate raw use
-            if "_libc.mount(" in line and "source, target, None, flags, None" not in line
+            if "_libc.mount(" in line
+            and "source, target, fs_type, flags, data" not in line
+            and "source, target, None, flags, None" not in line
         ]
         assert raw == [], f"{level}: unchecked mount call(s): {raw}"
-        # 1 def + 8 call sites: propagation, credential dirs, the read-only
+        # 1 def + 11 call sites: propagation, credential dirs, the read-only
         # bind and its sealing remount, sensitive files, ~/.ssh, and the private
         # window's two -- staging its real contents out before the parent is
-        # masked, then binding them onto the placeholder inside the stand-in.
-        assert script.count("_mount_or_die(") == 9
+        # masked, then binding them onto the placeholder inside the stand-in --
+        # plus Docker's private tmpfs, snapshot bind and read-only sealing remount.
+        assert script.count("_mount_or_die(") == 12
 
 
 # --------------------------------------------------------------------------
@@ -412,9 +421,9 @@ _ARMS: dict[str, tuple[str, str]] = {
         "_libc.mount(ssh_tmp, SSH_DIR.encode(), None, _MS_BIND, None)",
     ),
     "happy_path": (
-        "if _libc.mount(source, target, None, flags, None) != 0:\n"
+        "if _libc.mount(source, target, fs_type, flags, data) != 0:\n"
         "        _err = ctypes.get_errno()",
-        "if _libc.mount(source, target, None, flags, None) == 0:\n"
+        "if _libc.mount(source, target, fs_type, flags, data) == 0:\n"
         "        _err = ctypes.get_errno()",
     ),
     "drop_errno": (

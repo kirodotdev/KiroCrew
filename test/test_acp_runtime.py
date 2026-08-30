@@ -1865,6 +1865,7 @@ async def test_runtime_spawn_passes_installed_path_through_exact_wrappers(
     assert isinstance(extra_private, (list, tuple))
     assert wrap_kwargs == {
         "strip_python_env": True,
+        "expose_docker_config": True,
         "is_kiro_cli": True,
     }
     voice_guard.assert_called_once_with(runtime._work_dir)

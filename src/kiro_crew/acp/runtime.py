@@ -2073,6 +2073,7 @@ class AcpRuntime:
             mode=self._sandbox_mode,
             strip_python_env=True,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
+            expose_docker_config=True,
             is_kiro_cli=delegate_internal_sandbox,
             extra_hidden_dirs=plan.extra_hidden_dirs,
             extra_private_dirs=scratch_window,

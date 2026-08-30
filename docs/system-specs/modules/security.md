@@ -407,6 +407,59 @@ Hides credential paths from kiro-cli subprocess tree using platform-native isola
 
 **`SSH_AUTH_SOCK` forward opt-in (keystone consent `ssh_auth_sock_consent.json`, default OFF, issue #8104)** — with a passphrase-protected SSH signing key, git commit signing inside the sandbox fails because the only path to the key is the operator's ssh-agent, reached through `SSH_AUTH_SOCK`, which the scrub above removes. When the operator grants consent, the single `SSH_AUTH_SOCK` key is kept in the agent subprocess environment; every other credential prefix is still scrubbed, so the opt-in cannot widen into a general env passthrough. The property that makes this acceptable is that **the socket grants USE of the agent's keys, not possession**: the private key material is never forwarded, and under the **strict** tier `~/.ssh` is hidden (Linux bind-mount) / read-denied (macOS Seatbelt `(deny file-read* ~/.ssh)`, exempting only `known_hosts`), so the agent still cannot read the key files even with the socket. The trade-off is real: any code the agent runs can authenticate as the operator through the socket for the session's lifetime, not commit signing alone — which is why it is off by default and operator-declared. **Where the consent lives, and why not `config.json`:** because keeping the socket is an *authorization* (session-long USE of the operator's keys), not a preference, the enable is stored on the KEYSTONE leaf `ssh_auth_sock_consent.json` — the same placement and reasoning as `computer_use.json`, `aws_service_consent.json` and `file_delivery_consent.json`. It is on `security._CREW_SECRET_LEAVES` (agent file tools refuse it) AND `sandbox._CREW_READONLY_LEAVES` (the OS sandbox mounts it read-only for the agent's shell), so a prompt-injected agent shell cannot flip its own forwarding on and have the next subagent spawn authenticate as the operator. There is deliberately no `agent.*` config field (that would be agent-writable, the exact hole this closes) and no CLI verb; like `oauth_endpoints.json`, the operator writes the leaf (`{"enabled": true}`) out-of-band, from outside the sandbox. `ssh_auth_sock_consent` is read-only in code (`is_granted`); `_forward_ssh_auth_sock` reads it and fails closed to False on an absent, empty, unreadable, or non-`enabled: true` store. One filter (`sandbox._agent_scrub_prefixes`) applies the opt-in at the two OS-launcher scrub sites (the Linux namespace launcher and the macOS Seatbelt `env -u` renderer); the parent-side agent scrub applies it in `scrub_agent_subprocess_env` (the ACP enforcement point) rather than in the generic `scrub_env`, which also serves non-agent callers (tailscale host children, `sandboxed_spawn_argv` spawns) that must keep the socket scrubbed. The forward decision is a boolean resolved ONCE off the event loop on the agent spawn path (`_forward_ssh_auth_sock`, called inside the existing off-loop environment-prep hop in `AcpClient._spawn` / `AcpRuntime.spawn`) and threaded down as an explicit parameter -- exactly like `strip_python_env` -- so no synchronous keystone read runs on the asyncio event loop, and the generic launcher builders default the flag off. The forward's blast radius is therefore exactly the agent child: a third-party app `openCommand` or `sandboxed_spawn_argv` spawn going through the same generic launcher never re-admits the socket. The shared `_SENSITIVE_ENV_PREFIXES` constant is **never** mutated by the opt-in, so MCP declared-env forwarding (`manager.is_credential_env_key`, below) keeps refusing `SSH_AUTH_SOCK` regardless of this consent.
 
+**Narrow Docker-registry opt-in** — disabled by default and stored in the
+operator-only `docker_registry_access.json` keystone. On the Linux namespace
+backend only, enabling it in Settings pre-reads
+`~/.docker/config.json` before the normal `.docker` mask is mounted, then bind-mounts
+an initially `0444` snapshot from a namespace-private tmpfs into the otherwise-empty
+masked directory.
+No credential-bearing backing file survives outside the namespace. The host inode and
+every other file under `~/.docker` remain hidden. Private-member
+launchers retain their private memory view and credential masks alongside this snapshot.
+The owner chooses either a six-hour grant or an explicit grant that remains active
+until it is turned off. Expired grants
+fail closed on every read. Like the computer-use keystone, this operator authorization
+is deliberately independent of the sandbox ordinal: `sandbox.min_level` chooses how
+the process is confined, not which credentials the owner may deliberately supply to it.
+The grant is re-read inside `wrap_argv` for every ACP agent spawn (`AcpClient` and
+`AcpRuntime`), including crash respawns and background runtimes. Provider objects
+never cache authorization. The caller flag identifies an agent spawn only,
+including adapted harnesses whose file reads do not pass through Kiro's tool hook, but not
+unrelated sandboxed app, document, hook, or discovery processes. Existing
+sessions retain their original mount namespace, so a setting change applies to
+new processes without requiring a gateway restart. Existing process snapshots
+cannot be recalled; stop those processes to revoke their mounted copy. Revocation remains available
+on unsupported hosts so moving a data home cannot strand a stored grant.
+The keystone itself is sealed read-only inside every sandbox mode, so an agent
+cannot mint or extend its own grant through a shell command.
+
+This is a credential grant, not a redaction feature: Docker can use registry
+credentials only because code in the agent subprocess can read the snapshot.
+The normal tool/path policy still blocks straightforward attempts to print the
+file, but arbitrary code running in that namespace may recover it. Enable the
+option only when the operator accepts that prompt-injected or malicious agent
+code could use or disclose the configured registry credentials. macOS and
+non-namespace backends ignore the option rather than widening their sandbox.
+The dashboard exposes the opt-in under **Settings → Security → Docker registry
+credentials**. Its dedicated owner-only PUT handler writes the protected keystone rather
+than agent-writable `config.json`. Enabling requires an explicit boolean `permanent`
+and `acknowledged: true` in the request; revocation requires neither. This request
+acknowledgement is not proof of human presence. The card states the
+credential-disclosure and new-session consequence in place. SEL writes
+for this boundary are offloaded from the gateway event loop. Enabling access
+requires a successful critical SEL authorization event before the keystone is
+written; an audit outage refuses the grant. Revocation remains possible during
+an audit outage and records its event best-effort. Authorized reads also emit
+their own read-permission SEL event; owner denials are audited by the shared gate.
+The GET response includes `permanent` and `expires_at` (Unix seconds), and the card
+shows the active duration and refreshes its state every 30 seconds. This display
+refresh does not control enforcement: each new process reads the keystone itself.
+Malformed JSON (including decoder recursion exhaustion), invalid UTF-8 and
+non-finite expiries disable the grant.
+Only inline registry auth in `config.json` is supplied. Credential-helper binaries,
+keychains and their configuration are not exposed; helper-backed login may remain
+unavailable even with the grant enabled.
+
 **Pooled-backend declared-env forwarding (`mcp_gateway.forward_declared_env`, default ON)** — an agent spec may declare `mcpServers.<name>.env`. Under pooling one backend serves many sessions, so the rewriter expands any `${VAR}`/`${env:VAR}` placeholder the block declares — kiro-cli cannot, because the broker spawns the stub rather than the server — writes the resolved block to a `0600` sidecar, and the stub folds it into the `effective_env_hash` PoolKey dimension. Resolving once at write time keeps that sidecar the single source both the stub's hash and `gatewayd`'s coherence re-check read; an unresolved reference is left as a literal `${VAR}`, matching kiro-cli's expander. Placeholders dereference a **filtered view** of the gateway environment, not the raw one: names matching `is_secret_env_key`, `is_credential_env_key`, or the channel-credential scrub (`scrub_agent_denied_env`) are misses. Agent specs are agent-writable, so without that filter `{"TOKEN": "${env:AWS_SECRET_ACCESS_KEY}"}` would smuggle a credential *value* past the key-name filters below — the dereference view mirrors them, so a value the forwarder would refuse under its own name cannot ride in under another (and channel tokens, which the ACP spawn scrub hides from kiro-cli's own expander, are equally invisible here). With the flag ON, `gatewayd` reads the sidecar at **cold spawn only** and applies the surviving keys, filtered twice:
 
 1. `hashing.non_secret_env` drops `ENV_SCRUB_PREFIXES` (`AWS_SECRET*`, `AWS_SESSION*`, `OAUTH*`). These are excluded from `effective_env_hash` **by design** so a credential rotation does not split the pool — which makes the hash non-injective over them, so two sessions with *different* secret values share one backend and no single value is correct to apply.

@@ -1158,6 +1158,13 @@
       "route": "/settings/security/rules?highlight=security.denied-commands"
     },
     {
+      "id": "security.docker-registry-credentials",
+      "label": "Docker registry credentials",
+      "tab": "security",
+      "route": "/settings/security/docker?highlight=security.docker-registry-credentials",
+      "description": "Lets new Linux agent sessions sign in to private Docker registries, for example to pull private images."
+    },
+    {
       "id": "security.governance-policy",
       "label": "Governance Policy",
       "tab": "security",
