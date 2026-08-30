@@ -8,8 +8,8 @@ used — auth is entirely delegated to the user's own ``gh`` CLI session.
 Layout::
 
     <data_dir>/config.json                          # connected repos, no secrets
-    <data_dir>/repos/{owner}__{repo}/issues-cache.json  # last-fetched open issues
-    <data_dir>/repos/{owner}__{repo}/members-cache.json # repo members (derived)
+    <data_dir>/repos/{owner}/{repo}/issues-cache.json   # last-fetched open issues
+    <data_dir>/repos/{owner}/{repo}/members-cache.json  # repo members (derived)
 
 ``root`` is accepted on every function (mirroring code_review_sage's
 ``store.py``) so tests can point at a tmp dir instead of the real app data dir.
@@ -71,13 +71,6 @@ def _config_lock(root: Path | None = None):
     with open(lock_path, "w") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
-
-
-def repo_slug_dir_name(owner: str, repo: str) -> str:
-    # Use nested directories (owner/repo) so repos whose names contain "__"
-    # don't collide.  This helper remains for migration/test use; repo_data_dir
-    # is the canonical path builder.
-    return f"{owner}/{repo}"
 
 
 # ── provider-scoped storage ─────────────────────────────────────────────────

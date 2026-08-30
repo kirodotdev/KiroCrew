@@ -122,13 +122,6 @@ def _gh_bin() -> str:
         raise GhSetupError(str(exc), reason="not_installed") from exc
 
 
-def _gh_env() -> dict[str, str]:
-    """A minimal environment for ``gh``: the platform's safe-key base plus gh's
-    own auth + network/TLS vars when set — NOT the gateway's full environment.
-    Owned by the shared runner so every gh surface stays in lockstep."""
-    return github_runner.gh_env()
-
-
 def _stderr_tail(proc: subprocess.CompletedProcess) -> str:
     """Last few stderr lines, sanitized for display.
 
