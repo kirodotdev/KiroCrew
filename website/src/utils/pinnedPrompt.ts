@@ -1,6 +1,7 @@
 import type { DisplayItem } from '../pages/chat/types'
 import { TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
 import { mdImageDestToPath } from './fileTokens'
+import { type PasteBlock, findTokenRanges } from './pasteTokens'
 
 /**
  * Geometry + selection helpers for the pinned-prompt banner (the most recent
@@ -352,6 +353,130 @@ export function promptImages(content: string): string[] {
     }
   }
   return out
+}
+
+/**
+ * Per-block character budget applied when a pinned prompt's `[ Paste #N · M
+ * lines ]` tokens are substituted for the text they stand for.
+ *
+ * Unbounded substitution is not an option here. The store deliberately keeps a
+ * sent prompt's content in its COLLAPSED, token-bearing form (`recollapsePastes`
+ * in pasteTokens) precisely so nothing downstream measures or lays out hundreds
+ * of KB, and this module's consumer re-derives once per animation frame of a
+ * scroll. A cap keeps both properties: enough text to fill the three-line
+ * collapsed card and the scrollable expanded strip from real content, far short
+ * of the sizes that froze the tab. The rest stays one click away — the card's
+ * body IS a jump-to-turn button, and the bubble it jumps to has the paste in
+ * full behind its own chip.
+ */
+export const PINNED_PASTE_HEAD_CHARS = 12000
+
+/**
+ * Substitute every `[ Paste #N · M lines ]` token in `content` for a head-capped
+ * copy of its block's text, optionally passing that text through `mapBlock`.
+ *
+ * Ranges come from `findTokenRanges` — the same locator the bubble, the composer
+ * highlight layer and the copy handler use — so the pinned card can never
+ * disagree with them about which token belongs to which block. The splice walks
+ * right-to-left so each write leaves the earlier ranges' offsets valid.
+ *
+ * A truncated block ends in ` …` so the card never implies the paste stopped
+ * where the cap did.
+ */
+export function expandPastesCapped(
+  content: string,
+  blocks: PasteBlock[],
+  mapBlock?: (text: string) => string,
+): string {
+  const ranges = findTokenRanges(content, blocks)
+  if (!ranges.length) return content
+  let out = content
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const { start, end, block } = ranges[i]
+    const capped = block.content.length > PINNED_PASTE_HEAD_CHARS
+      ? block.content.slice(0, PINNED_PASTE_HEAD_CHARS) + ' …'
+      : block.content
+    const body = mapBlock ? mapBlock(capped) : capped
+    out = out.slice(0, start) + body + out.slice(end)
+  }
+  return out
+}
+
+/** Everything the pinned card renders, derived from one prompt in one pass. */
+export interface PinnedPromptText {
+  /** Flattened, clamp-ready preview for the COLLAPSED card. */
+  text: string
+  /** Line-preserving body for the EXPANDED card. */
+  body: string
+  /** Image sources to thumbnail. */
+  images: string[]
+}
+
+/** Collapse every whitespace run to a single space, as `promptPreview` does. */
+function flattenWhitespace(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Derive all three pinned-card values from a prompt's stored content and blocks.
+ *
+ * The store holds a sent prompt COLLAPSED, so reading `msg.content` straight
+ * gave the card the literal `[ Paste #N ]` token — the empty-card failure images
+ * already have an exemption for, and the placeholder the copy handler rejects as
+ * "worthless on the other end" (UserMessage).
+ *
+ * Substitution happens AFTER the three prose passes, never before: they rewrite
+ * markdown, and a paste is verbatim text the user is SHOWING us, so running them
+ * over it would thumbnail an image the prompt never attached and delete the
+ * pasted line that spelled it. The token holds no markdown and no newline, so it
+ * survives all three untouched and substituting into their output exempts the
+ * paste from them exactly. With no blocks this is the previous behaviour.
+ */
+export function derivePinnedPromptText(content: string, blocks: PasteBlock[]): PinnedPromptText {
+  // Computed from the ORIGINAL content on purpose: an image inside a paste is
+  // pasted text, not an attachment.
+  const images = promptImages(content)
+  if (!blocks.length) return { text: promptPreview(content), body: promptBody(content), images }
+  return {
+    text: expandPastesCapped(promptPreview(content), blocks, flattenWhitespace),
+    body: expandPastesCapped(promptBody(content), blocks),
+    images,
+  }
+}
+
+/**
+ * Cache key for a prompt's paste blocks.
+ *
+ * `id` is what makes two blocks distinguishable, and it is load-bearing rather
+ * than belt-and-braces. `seq` restarts per draft (`nextSeq` is max+1) and an
+ * equal character length is ordinary, so a seq+length pair aliases two
+ * same-shaped pastes of the same size and different text — and because the token
+ * text embeds seq and line count, such a pair ALSO yields identical collapsed
+ * content, which is the cache's other half. `id` is minted once per block
+ * (`makePasteId`) and never reused, so it separates them without hashing the
+ * text.
+ */
+export function pasteSignature(blocks: PasteBlock[]): string {
+  return blocks.map(b => `${b.id}:${b.seq}:${b.content.length}`).join(',')
+}
+
+/**
+ * Single-slot memo for `derivePinnedPromptText`, owned by the caller across
+ * renders. One slot is enough because only one prompt is pinned at a time, and
+ * the caller runs once per animation frame of a scroll — which is what the memo
+ * exists to keep the three regex walks out of.
+ */
+export function createPinnedPromptTextCache(): (content: string, pastes: PasteBlock[]) => PinnedPromptText {
+  let hit: { sig: string; content: string; value: PinnedPromptText } | null = null
+  return (content, pastes) => {
+    // Two values, not one joined key, so neither can absorb the other's
+    // characters.
+    const sig = pasteSignature(pastes)
+    if (hit && hit.sig === sig && hit.content === content) return hit.value
+    const value = derivePinnedPromptText(content, pastes)
+    hit = { sig, content, value }
+    return value
+  }
 }
 
 /**
