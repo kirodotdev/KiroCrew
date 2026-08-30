@@ -80,27 +80,9 @@ class Stats:
     def inc_tool_auto_approved(self) -> None:
         self.inc("tool_auto_approved")
 
-    def inc_input_tokens(self, n: int) -> None:
-        self.inc("input_tokens", n)
-
-    def inc_output_tokens(self, n: int) -> None:
-        self.inc("output_tokens", n)
-
-    def inc_cache_creation_tokens(self, n: int) -> None:
-        self.inc("cache_creation_tokens", n)
-
-    def inc_cache_read_tokens(self, n: int) -> None:
-        self.inc("cache_read_tokens", n)
-
     def inc_cost_usd(self, amount: float) -> None:
         with self._mu:
             self._cost_usd += amount
-
-    def inc_turns(self, n: int) -> None:
-        self.inc("total_turns", n)
-
-    def inc_duration_ms(self, n: int) -> None:
-        self.inc("total_duration_ms", n)
 
     def get_cost_usd(self) -> float:
         with self._mu:

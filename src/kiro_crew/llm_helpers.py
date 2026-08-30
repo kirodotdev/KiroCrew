@@ -896,10 +896,6 @@ class ToolApprovalPolicy(Enum):
     HOOK_BASED = "hook_based"
 
 
-# Callback type for custom tool approval logic
-OnPermissionCallback = Callable[[LLMEvent], Awaitable[bool]]
-
-
 # ── Stream and Collect ──
 
 
