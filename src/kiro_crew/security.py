@@ -9271,7 +9271,33 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
 # Catches raw credential patterns in LLM output / tool results,
 # including base64-encoded variants.  Applied on all output paths
 # alongside redact_exfiltration_urls().
-
+#
+# ⚠ THIS PATTERN HAS A DEPENDENT PRE-FILTER. `_might_contain_credential` below
+# gates the scan of this pattern on a cheap necessary condition, and
+# `redact_credentials` SKIPS the scan entirely when that gate returns False. The
+# gate is therefore part of the redaction boundary, not an optimisation detail:
+# any input a branch here accepts but the gate rejects is a silent leak.
+#
+# So EDITING A BRANCH IS A TWO-SITE CHANGE:
+#   * ADDING a branch     -> register a sample in `test_credential_prefilter.py`
+#                            and an anchor in `_might_contain_credential`.
+#                            `test_every_pattern_branch_has_a_prefilter_anchor`
+#                            fails on the branch count until you do.
+#   * WIDENING a branch   -> widen the corresponding anchor to match, because the
+#                            anchor must stay a SUPERSET of the branch. A widened
+#                            branch does NOT change the branch count, so the count
+#                            assertion cannot see it. Two tests cover this:
+#                            `test_a_widened_branch_cannot_outgrow_its_anchor`
+#                            enumerates each branch's own alternatives, so a NEW
+#                            alternative (a second token prefix) is caught; and
+#                            `test_widening_a_branch_cannot_outgrow_its_anchor`
+#                            perturbs each sample, so a case-fold or homoglyph
+#                            relaxation is caught.
+#   * Making a branch CASE-INSENSITIVE -> the anchor MUST use the same regex
+#                            engine. A case-sensitive literal cannot gate a
+#                            `(?i:…)` branch, and neither can `str.lower()` —
+#                            see `_CREDENTIAL_PREFILTER_AUTHORIZATION_RE` for the
+#                            bypass that cost.
 _CREDENTIAL_PATTERNS = re.compile(
     r"(?:"
     # ── AWS ──
@@ -9488,6 +9514,116 @@ def get_credential_patterns() -> list[re.Pattern[str]]:
     combined compiled regex, so the list has one element.
     """
     return [_CREDENTIAL_PATTERNS]
+
+
+# ── Cheap pre-filter for `_CREDENTIAL_PATTERNS` (performance only) ──
+# `_CREDENTIAL_PATTERNS` is a 23-branch alternation, so `re` retries every branch
+# at essentially every position: measured 117 ns/char, and it is the single
+# hottest line in the gateway's event loop (38.2% of all py-spy samples, reached
+# per message per dirty-slot flush). The scan cost is paid in full even though
+# real text almost never contains a credential — measured 0 matches across 1,804
+# live session-history messages (1.47 MB).
+#
+# So `_might_contain_credential` answers the cheap question "could a match exist
+# at all?" and lets `redact_credentials` skip the expensive scan when the answer
+# is no. It is a strict SUPERSET of `_CREDENTIAL_PATTERNS`, i.e. for every string
+# the pattern matches, this returns True. That direction is the security
+# property: a false POSITIVE only costs a scan we would have run anyway, while a
+# false NEGATIVE would skip redaction and leak a credential into persisted chat
+# history. Every condition below is therefore a NECESSARY condition of a branch,
+# never a restatement of it — each is deliberately looser than the branch it
+# stands in for.
+#
+# THE MAINTENANCE HAZARD this is built against: adding a 24th branch to
+# `_CREDENTIAL_PATTERNS` without adding a matching anchor here would silently
+# disable redaction for it. Nothing about the pattern edit would look wrong, and
+# the failure is invisible in output — the branch simply stops firing. So
+# `test_credential_prefilter.py` splits `_CREDENTIAL_PATTERNS.pattern` on its
+# top-level `|`, asserts the branch count equals the number of registered sample
+# credentials, and asserts the pre-filter fires for each. A new branch fails that
+# count assertion loudly instead of quietly widening the leak.
+#
+# Literals are case-sensitive because the branches they stand for are (these
+# prefixes are issued in a fixed case); the sole case-insensitive branch
+# (`Authorization: Bearer`) is handled separately below.
+_CREDENTIAL_PREFILTER_LITERALS: tuple[str, ...] = (
+    "AKIA",  # AWS access key ID
+    "ASIA",  # AWS access key ID (STS)
+    "AccessKey",  # SecretAccessKey + AccessKeyId (shared substring)
+    "aws_secret_access_key",
+    "aws_session_token",
+    "aws_access_key_id",
+    "SessionToken",
+    "PRIVATE KEY-----",  # PEM header AND footer both carry it
+    "xox",  # Slack token
+    "github_pat_",
+    "glpat-",
+    "k_live_",  # sk_live_ / rk_live_ (shared substring)
+    "k_test_",  # sk_test_ / rk_test_ (shared substring)
+    "SG.",  # SendGrid
+    "sk-proj-",  # OpenAI
+    "sk-ant-",  # Anthropic
+    "npm_",
+    "pypi-",
+    "_v1_",  # do[opr]_v1_ DigitalOcean
+    "GOCSPX-",  # Google OAuth client secret
+    "eyJ",  # JWS / JWE / 2-segment link token
+)
+
+# Branches with no usable literal anchor. Each is the branch's own leading shape
+# with its expensive tail dropped, so it stays a superset while keeping a narrow
+# first-character set that `re` can skip on.
+#   `gh[opsur]_`     — GitHub PAT family; a bare "gh" literal matches ordinary
+#                      prose ("through", "might"), so the class is kept.
+#   `[0-9]{6,}:…{30}` — Telegram bot token. The trailing 30-char run matters: a
+#                      bare `[0-9]{6,}:` matches an epoch timestamp followed by a
+#                      colon, which fired on 29 of 614 real messages.
+#   `[MNO]…\.`        — Discord bot token (first segment is base64 of a snowflake).
+#   `://…:…@`         — URI userinfo. The scheme alternation is dropped, which is
+#                      what leaves a `://` literal prefix for `re` to search on;
+#                      a bare `://` would match every ordinary URL.
+_CREDENTIAL_PREFILTER_GH_RE = re.compile(r"gh[opsur]_")
+_CREDENTIAL_PREFILTER_TELEGRAM_RE = re.compile(r"[0-9]{6,}:[A-Za-z0-9_-]{30}")
+_CREDENTIAL_PREFILTER_DISCORD_RE = re.compile(r"[MNO][A-Za-z0-9_-]{22,30}\.")
+_CREDENTIAL_PREFILTER_URI_RE = re.compile(r"://[^\s:/@]*:[^\s/]+@")
+
+# The `Authorization: Bearer` branch is the ONLY case-insensitive branch, and it is
+# spelled `(?i:Authorization)`. This anchor reuses that exact sub-pattern, so it is
+# a superset of the branch BY CONSTRUCTION — same engine, same folding rules.
+#
+# `"authorization" in text.lower()` is NOT a valid anchor for it, because
+# `str.lower()` and `re.IGNORECASE` are two DIFFERENT case-folding
+# implementations and they disagree. `re` folds via `sre_compile._equivalences`,
+# which treats U+0131 (LATIN SMALL LETTER DOTLESS I) and U+0130 (LATIN CAPITAL
+# LETTER I WITH DOT ABOVE) as equivalent to `i`/`I`; `str.lower()` leaves U+0131
+# unchanged and expands U+0130 to two code points. So the branch MATCHES
+# `Authorızation: Bearer <token>` while a `.lower()` anchor MISSES it, which skips
+# pass 1 and leaves the bearer token verbatim in persisted chat history. The same
+# disagreement holds for U+017F/`s` and U+212A/`k`, so it is a class of defect
+# rather than one homoglyph: a case-insensitive branch is only safely anchored by
+# the SAME regex engine, never by a hand-rolled fold.
+# Pinned by `test_unicode_case_folding_cannot_bypass_the_prefilter`.
+_CREDENTIAL_PREFILTER_AUTHORIZATION_RE = re.compile(r"(?i:Authorization)")
+
+
+def _might_contain_credential(text: str) -> bool:
+    """Return True if *text* could contain a `_CREDENTIAL_PATTERNS` match.
+
+    A strict superset of `_CREDENTIAL_PATTERNS.search(text) is not None`: it may
+    return True where the pattern would not match, but it MUST NOT return False
+    where the pattern would match. Callers use it only to skip a scan whose
+    result is already known to be empty, so output is unchanged either way.
+    """
+    for literal in _CREDENTIAL_PREFILTER_LITERALS:
+        if literal in text:
+            return True
+    return (
+        _CREDENTIAL_PREFILTER_GH_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_TELEGRAM_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_DISCORD_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_URI_RE.search(text) is not None
+        or _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.search(text) is not None
+    )
 
 
 # Base64 alphabet: at least 40 chars of [A-Za-z0-9+/] ending with optional =
@@ -9774,6 +9910,24 @@ def _contains_bare_secret(run: str) -> bool:
     return False
 
 
+def _decode_b64_chunk(chunk: str) -> str:
+    """Decode ONE `_B64_CHUNK_RE` match; return decoded credential text or ''.
+
+    Equivalent to `_decode_b64_safe(chunk)` when *chunk* is itself a
+    `_B64_CHUNK_RE` match, but without re-scanning it. `_decode_b64_safe` exists
+    to find chunks inside arbitrary text; re-running that scan over a string that
+    IS already one chunk can only rediscover the same single span —
+    `[A-Za-z0-9+/]{40,}` is greedy so it consumes the whole run, and `={0,2}`
+    takes the padding — so the inner `finditer` was pure duplicate work on the
+    hot path, once per base64-looking run in every redacted message.
+    """
+    try:
+        decoded = base64.b64decode(chunk, validate=True).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+    return decoded if _CREDENTIAL_PATTERNS.search(decoded) else ""
+
+
 def _decode_b64_safe(text: str) -> str:
     """Try to base64-decode chunks in text; return decoded content or ''."""
     for m in _B64_CHUNK_RE.finditer(text):
@@ -9941,24 +10095,47 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     result = text
 
     # 1. Redact plaintext credential patterns
-    for m in _CREDENTIAL_PATTERNS.finditer(result):
-        matched = m.group()
-        tag = _REDACTED_CREDENTIAL_TAG
-        result = result.replace(matched, tag, 1)
-        # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
-        # `matched` into the warning: `_CREDENTIAL_PATTERNS` matches the raw
-        # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
-        # is genuine plaintext key material — a fixed-length token prefix leaves
-        # ~12-16 secret chars in a 20-char slice. The warnings list is a
-        # redaction-subsystem output expected to be safe to log/surface, so it
-        # must carry no secret bytes. Mirrors the base64 / bare-secret branches
-        # below, which already log length only.
-        warnings.append(f"Redacted credential pattern ({len(matched)} chars)")
+    #
+    # Gated on the cheap superset pre-filter: when no branch of
+    # `_CREDENTIAL_PATTERNS` can possibly match, `finditer` would yield nothing
+    # and the loop body would not run, so skipping it cannot change the output.
+    # This is the hot path — the alternation is 23 branches retried at nearly
+    # every position, and real text almost never contains a credential.
+    if _might_contain_credential(result):
+        for m in _CREDENTIAL_PATTERNS.finditer(result):
+            matched = m.group()
+            tag = _REDACTED_CREDENTIAL_TAG
+            result = result.replace(matched, tag, 1)
+            # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
+            # `matched` into the warning: `_CREDENTIAL_PATTERNS` matches the raw
+            # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
+            # is genuine plaintext key material — a fixed-length token prefix leaves
+            # ~12-16 secret chars in a 20-char slice. The warnings list is a
+            # redaction-subsystem output expected to be safe to log/surface, so it
+            # must carry no secret bytes. Mirrors the base64 / bare-secret branches
+            # below, which already log length only.
+            warnings.append(f"Redacted credential pattern ({len(matched)} chars)")
+
+    # Passes 2 and 3 both scan the ORIGINAL `text` for runs of the base64
+    # alphabet, and they select the SAME spans: `[A-Za-z0-9+/]{40,}` is greedy and
+    # leftmost, so it yields exactly the maximal runs of length >= 40 — which is
+    # also precisely what `_BARE_SECRET_RUN_RE`'s `(?<![A-Za-z0-9+/])` /
+    # `(?![A-Za-z0-9+/])` boundaries select. The only difference is the trailing
+    # `={0,2}` padding that `_B64_CHUNK_RE` additionally consumes, and `=` is not
+    # in the run's character class, so `rstrip("=")` recovers the bare run
+    # exactly. So one scan feeds both passes instead of two.
+    #
+    # The two loops stay SEPARATE and in their original order. Fusing them into a
+    # single per-run loop would interleave the passes, which changes both the
+    # order of `warnings` and — because each pass mutates `result` via
+    # `str.replace(…, 1)` — which occurrence each replacement lands on, and
+    # whether pass 3's `run not in result` guard sees pass 2's edits. Sharing the
+    # scan while keeping the loops ordered is what makes this byte-identical.
+    b64_chunks = [m.group() for m in _B64_CHUNK_RE.finditer(text)]
 
     # 2. Detect and redact base64-encoded credentials
-    for m in _B64_CHUNK_RE.finditer(text):
-        chunk = m.group()
-        decoded = _decode_b64_safe(chunk)
+    for chunk in b64_chunks:
+        decoded = _decode_b64_chunk(chunk)
         if decoded:
             result = result.replace(chunk, "[REDACTED: encoded credential]", 1)
             warnings.append(f"Redacted base64-encoded credential ({len(chunk)} chars)")
@@ -9969,8 +10146,8 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # a standalone secret value. Scan the ORIGINAL text (not the already-mutated
     # result) so match offsets are stable; skip any run whose text has already
     # been redacted away by an earlier pass.
-    for m in _BARE_SECRET_RUN_RE.finditer(text):
-        run = m.group()
+    for chunk in b64_chunks:
+        run = chunk.rstrip("=")
         # Slide a 40-char window across the run rather than gating the whole run
         # on len == 40: a real secret glued to an adjacent base64 char (no
         # delimiter) yields a 41+ char run that the exact-40 shape check would
