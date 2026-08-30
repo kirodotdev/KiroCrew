@@ -568,6 +568,46 @@ _MAX_COMMENT_PAGES = 50
 # current head filters both.
 REVIEWED_STAMP_RE = re.compile(r"\[([A-Z][A-Z0-9_-]*)-REVIEWED\]\s+([0-9a-f]{7,40})\b")
 BLOCK_MERGE_RE = re.compile(r"\[BLOCK-MERGE\]\s+([0-9a-f]{7,40})\b")
+
+
+def sha_matches(stamp_sha, head_sha):
+    """True when a stamped SHA identifies the current head.
+
+    Two spellings count, because the stamp is not machine-written. The review
+    workflows ask the MODEL to end its prose with `[<NAME>-REVIEWED] <sha>`
+    (see the prompt in .github/workflows/design-review.yml) and then read that
+    line back, so the 40 hex characters pass through a transcription step:
+
+    * A >=7-hex PREFIX of the head is the ordinary form. Short-SHA references
+      and the full 40 both land here, and a stamp naming an OLDER commit fails,
+      which is the freshness guard the marker exists for.
+    * An ELIDED head is the transcription artifact: a stamp that drops a
+      CONTIGUOUS MIDDLE span and splices the head's own prefix to its own
+      suffix. Observed on PR 4107, where the Design lane wrote 25 characters
+      (the head's first 14 followed by its last 11) and every consumer read the
+      PR as BLOCKED while PR Readiness was green.
+
+    The elided form is verified, not merely tolerated: the token must be
+    SHORTER than the head (a full-length token that is not a prefix names a
+    different commit, and stays rejected), it must split into a >=7-hex prefix
+    of the head plus a non-empty suffix of the head, and both halves must be
+    the head's own. That keeps the guard the strict match was protecting -- a
+    well-formed reference to another commit cannot pass, because it would have
+    to begin with 7+ characters of THIS head and end with this head's tail --
+    while a mangling of the current head no longer fails closed.
+    """
+    if not stamp_sha or not head_sha:
+        return False
+    if len(stamp_sha) >= 7 and head_sha.startswith(stamp_sha):
+        return True
+    if len(stamp_sha) >= len(head_sha):
+        return False
+    for cut in range(7, len(stamp_sha)):
+        if head_sha.startswith(stamp_sha[:cut]) and head_sha.endswith(stamp_sha[cut:]):
+            return True
+    return False
+
+
 FINDING_LINE_RE = re.compile(r"^\s*FINDING\b", re.MULTILINE)
 
 # Only comments authored by the repo's own workflow actor count as marker
@@ -652,14 +692,14 @@ def extract_findings(comments, head_sha, bindings):
         if not name:
             continue
         fresh = any(
-            stamp_name == name and len(sha) >= 7 and head_sha.startswith(sha)
+            stamp_name == name and sha_matches(sha, head_sha)
             for stamp_name, sha in REVIEWED_STAMP_RE.findall(body)
         )
         if not fresh:
             continue
         reviewer = name.lower()
         block_merge = any(
-            len(sha) >= 7 and head_sha.startswith(sha) for sha in BLOCK_MERGE_RE.findall(body)
+            sha_matches(sha, head_sha) for sha in BLOCK_MERGE_RE.findall(body)
         )
         for kind, path, line, text in FINDING_RE.findall(body):
             try:
@@ -1030,11 +1070,6 @@ def resolve_marker_authors(argv, environ):
     }
 
 
-def sha_matches(stamp_sha, head_sha):
-    """True when a stamped SHA identifies the current head (>=7-hex prefix)."""
-    return bool(stamp_sha) and len(stamp_sha) >= 7 and head_sha.startswith(stamp_sha)
-
-
 def resolve_readiness_context(argv, environ):
     """Resolve the aggregate-readiness status-context name.
 
@@ -1385,10 +1420,16 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
     posted is not required, its CI gate covers absence).
     """
     if comments is None or not head_sha:
-        return {"ok": False, "stale": [], "blocking": [], "findings": {}}
+        return {"ok": False, "stale": [], "blocking": [], "findings": {}, "elided": []}
     fresh_by_name: dict = {name: False for name in (only or ())}
     findings: dict = {}
     blocking = set()
+    # Reviewers whose freshness rests on an ELIDED stamp (see sha_matches). The
+    # gate accepts those, but silently swallowing them would hide the emitter
+    # defect for good: nobody would learn a lane is mangling the SHA it was
+    # handed. Reported as an advisory note, never as a blocking reason -- and
+    # deliberately absent from progress_key, which a polling loop diffs.
+    elided = set()
     for c in comments:
         body = c.get("body") or ""
         name = bindings.get(comment_key(body))
@@ -1407,11 +1448,19 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
                 fresh_by_name[name] = fresh_by_name.get(name, False) or fresh
                 if fresh:
                     findings[name] = len(FINDING_LINE_RE.findall(body))
+                    if not any(head_sha.startswith(sha) for sha in own_stamps):
+                        elided.add(name)
         for sha in BLOCK_MERGE_RE.findall(body):
             if sha_matches(sha, head_sha):
                 blocking.add(name or "(unattributed)")
     stale = sorted(n for n, fresh in fresh_by_name.items() if not fresh)
-    return {"ok": True, "stale": stale, "blocking": sorted(blocking), "findings": findings}
+    return {
+        "ok": True,
+        "stale": stale,
+        "blocking": sorted(blocking),
+        "findings": findings,
+        "elided": sorted(elided),
+    }
 
 
 def head_run_exists(repo, head_sha):
@@ -1516,6 +1565,7 @@ def build_report(
         "advisory": {
             "blocking_reviewers": sorted(marker_eval.get("blocking") or []),
             "bot_comments_readable": bool(marker_eval.get("ok")),
+            "elided_stamp_reviewers": sorted(marker_eval.get("elided") or []),
             "findings": dict(marker_eval.get("findings") or {}),
             "stale_reviewers": sorted(marker_eval.get("stale") or []),
             "unresolved_threads": n_unresolved,
@@ -1822,11 +1872,15 @@ def main(argv):
     else:
         for name in sorted(marker_eval["findings"]):
             print(
-                "  - {}: fresh{}{}".format(
+                "  - {}: fresh{}{}{}".format(
                     sanitize(name),
                     "  [BLOCK-MERGE]" if name in marker_eval["blocking"] else "",
                     "  ({} advisory FINDING line(s))".format(marker_eval["findings"][name])
                     if marker_eval["findings"][name]
+                    else "",
+                    "  [stamp elided the head's middle - emitter transcription "
+                    "artifact, verified against this head]"
+                    if name in (marker_eval.get("elided") or ())
                     else "",
                 )
             )

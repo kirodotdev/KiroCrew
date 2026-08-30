@@ -319,6 +319,7 @@ def test_report_emits_only_the_consumed_surface(capsys) -> None:
     assert set(report["advisory"]) == {
         "blocking_reviewers",
         "bot_comments_readable",
+        "elided_stamp_reviewers",
         "findings",
         "stale_reviewers",
         "unresolved_threads",
@@ -1443,6 +1444,134 @@ def test_stale_reviewer_stamp_blocks_a_would_be_clean_pr() -> None:
     _install_fake_gh(module, _pr_payload(_clean_checks()), comments=comments)
 
     assert module.main(["pr_status.py", "42"]) == 20
+
+
+# A realistic head: the all-`f` fixture cannot exercise elision, because any
+# splice of it is also a prefix of it.
+_MIXED_HEAD = "db7c4361f0a92be5147c3d8e6b0af215934cde78"
+# The shape the Design lane actually emitted on PR 4107: the head's first 14
+# characters spliced to its last 11, middle dropped, 25 characters total.
+_ELIDED = _MIXED_HEAD[:14] + _MIXED_HEAD[-11:]
+
+
+class TestShaMatches:
+    """The stamp is model-transcribed, so the freshness test has to tell a
+    MANGLED head from a reference to a DIFFERENT commit."""
+
+    def test_exact_and_prefix_forms_match(self) -> None:
+        module = _load_script()
+        assert module.sha_matches(_MIXED_HEAD, _MIXED_HEAD)
+        assert module.sha_matches(_MIXED_HEAD[:7], _MIXED_HEAD)
+        assert module.sha_matches(_MIXED_HEAD[:12], _MIXED_HEAD)
+
+    def test_prefix_shorter_than_seven_is_not_a_reference(self) -> None:
+        module = _load_script()
+        assert not module.sha_matches(_MIXED_HEAD[:6], _MIXED_HEAD)
+
+    def test_elided_middle_matches_the_head_it_mangles(self) -> None:
+        """PR 4107's exact failure: 25 characters, prefix+suffix of this head."""
+        module = _load_script()
+        assert len(_ELIDED) == 25
+        assert not _MIXED_HEAD.startswith(_ELIDED)  # the old test rejected it
+        assert module.sha_matches(_ELIDED, _MIXED_HEAD)
+
+    def test_another_commit_is_still_rejected(self) -> None:
+        """The freshness guard survives: a well-formed reference to a different
+        commit cannot pass, in full or short form."""
+        module = _load_script()
+        other = "a" * 40
+        assert not module.sha_matches(other, _MIXED_HEAD)
+        assert not module.sha_matches(other[:12], _MIXED_HEAD)
+        # Same length as the head but not equal -- no elision can be claimed.
+        cousin = _MIXED_HEAD[:39] + ("0" if _MIXED_HEAD[39] != "0" else "1")
+        assert not module.sha_matches(cousin, _MIXED_HEAD)
+
+    def test_elision_needs_seven_head_characters_of_its_own(self) -> None:
+        """A splice whose prefix half is too short identifies nothing: it would
+        let a token borrow the head's tail with almost no head of its own."""
+        module = _load_script()
+        assert not module.sha_matches(_MIXED_HEAD[:3] + _MIXED_HEAD[-11:], _MIXED_HEAD)
+        assert not module.sha_matches(_MIXED_HEAD[-11:], _MIXED_HEAD)
+
+    def test_empty_inputs_are_not_a_match(self) -> None:
+        module = _load_script()
+        assert not module.sha_matches("", _MIXED_HEAD)
+        assert not module.sha_matches(None, _MIXED_HEAD)
+        assert not module.sha_matches(_MIXED_HEAD, "")
+
+
+def test_elided_design_stamp_no_longer_reads_as_stale() -> None:
+    """The reported harm: the Design lane mangled its own stamp and every
+    prepare-pr/babysit loop read exit 20 BLOCKED while PR Readiness was green."""
+    module = _load_script()
+    comments = json.dumps(
+        [
+            _bot_comment(f"No findings.\n[GPT-REVIEWED] {_MIXED_HEAD}"),
+            _bot_comment(
+                f"Design-Verdict: PASS\n[DESIGN-REVIEWED] {_ELIDED}",
+                key="design-review",
+            ),
+        ]
+    )
+    _install_fake_gh(
+        module,
+        _pr_payload(_clean_checks(), headRefOid=_MIXED_HEAD),
+        comments=comments,
+    )
+
+    assert module.main(["pr_status.py", "42"]) == 0
+
+
+def test_elided_stamp_is_reported_rather_than_silently_accepted(capsys) -> None:
+    """Tolerance without a trace would hide the emitter defect for good, so the
+    reviewer is named in the advisory block and in the prose line."""
+    module = _load_script()
+    comments = json.dumps(
+        [
+            _bot_comment(
+                f"Design-Verdict: PASS\n[DESIGN-REVIEWED] {_ELIDED}",
+                key="design-review",
+            ),
+        ]
+    )
+    _install_fake_gh(
+        module,
+        _pr_payload(_clean_checks(), headRefOid=_MIXED_HEAD),
+        comments=comments,
+    )
+
+    assert module.main(["pr_status.py", "42", "--json"]) == 0
+    out = capsys.readouterr().out
+    report = json.loads([ln for ln in out.strip().splitlines() if ln.strip()][-1])
+    assert report["advisory"]["elided_stamp_reviewers"] == ["DESIGN"]
+    assert "stamp elided the head's middle" in out
+    # The note is advisory only: it must not enter progress_key, which a polling
+    # loop compares byte-for-byte to tell a stalled PR from a moving one.
+    assert "elided" not in json.dumps(report["progress_key"])
+
+
+def test_an_exact_stamp_reports_no_elision(capsys) -> None:
+    """The audit line is not decoration: it appears only for a mangled stamp."""
+    module = _load_script()
+    comments = json.dumps(
+        [
+            _bot_comment(
+                f"Design-Verdict: PASS\n[DESIGN-REVIEWED] {_MIXED_HEAD}",
+                key="design-review",
+            ),
+        ]
+    )
+    _install_fake_gh(
+        module,
+        _pr_payload(_clean_checks(), headRefOid=_MIXED_HEAD),
+        comments=comments,
+    )
+
+    assert module.main(["pr_status.py", "42", "--json"]) == 0
+    out = capsys.readouterr().out
+    report = json.loads([ln for ln in out.strip().splitlines() if ln.strip()][-1])
+    assert report["advisory"]["elided_stamp_reviewers"] == []
+    assert "stamp elided" not in out
 
 
 def test_block_merge_for_current_head_blocks_even_when_readiness_passed() -> None:

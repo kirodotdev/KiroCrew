@@ -428,10 +428,17 @@ byte-for-byte instead of by eyeballing a diff of human text.
 
 Its `advisory` half is what you read when checking the exit conditions below:
 `unresolved_threads` (`null` there is the same "could not establish" as a `?`),
-`findings` per reviewer, and `stale_reviewers` / `blocking_reviewers`. Nothing
-else is emitted — ambient PR state (mergeable, merge state, review decision,
-check totals) stays in the prose above, which is where those conditions already
-read it, so there is no second copy to keep in sync.
+`findings` per reviewer, `stale_reviewers` / `blocking_reviewers`, and
+`elided_stamp_reviewers` — lanes whose freshness stamp MANGLED the head SHA
+(the workflows have the model retype it, so a lane can drop the middle and
+splice the head's prefix to its suffix). The gate verifies such a stamp against
+the current head and accepts it, which is why it is not a stale reviewer; the
+list exists so the emitter defect is still visible. Report it ONCE per head as
+a lane-quality note — it never blocks, and re-running that workflow usually
+produces a clean stamp. Nothing else is emitted — ambient PR state (mergeable,
+merge state, review decision, check totals) stays in the prose above, which is
+where those conditions already read it, so there is no second copy to keep in
+sync.
 
 Drive the cycle off the **exit code**, not off prose: `10` → report nothing and
 wait for the next cycle; `20` → drill in with `pr_findings.py` and act; `2` →

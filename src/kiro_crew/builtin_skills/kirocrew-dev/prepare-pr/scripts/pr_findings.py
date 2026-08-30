@@ -42,6 +42,46 @@ def sanitize(s):
 # (same rationale and env seam as pr_status.py: Bot-type alone is spoofable).
 REVIEWED_STAMP_RE = re.compile(r"\[([A-Z][A-Z0-9_-]*)-REVIEWED\]\s+([0-9a-f]{7,40})\b")
 BLOCK_MERGE_RE = re.compile(r"\[BLOCK-MERGE\]\s+([0-9a-f]{7,40})\b")
+
+
+def sha_matches(stamp_sha, head_sha):
+    """True when a stamped SHA identifies the current head.
+
+    Two spellings count, because the stamp is not machine-written. The review
+    workflows ask the MODEL to end its prose with `[<NAME>-REVIEWED] <sha>`
+    (see the prompt in .github/workflows/design-review.yml) and then read that
+    line back, so the 40 hex characters pass through a transcription step:
+
+    * A >=7-hex PREFIX of the head is the ordinary form. Short-SHA references
+      and the full 40 both land here, and a stamp naming an OLDER commit fails,
+      which is the freshness guard the marker exists for.
+    * An ELIDED head is the transcription artifact: a stamp that drops a
+      CONTIGUOUS MIDDLE span and splices the head's own prefix to its own
+      suffix. Observed on PR 4107, where the Design lane wrote 25 characters
+      (the head's first 14 followed by its last 11) and every consumer read the
+      PR as BLOCKED while PR Readiness was green.
+
+    The elided form is verified, not merely tolerated: the token must be
+    SHORTER than the head (a full-length token that is not a prefix names a
+    different commit, and stays rejected), it must split into a >=7-hex prefix
+    of the head plus a non-empty suffix of the head, and both halves must be
+    the head's own. That keeps the guard the strict match was protecting -- a
+    well-formed reference to another commit cannot pass, because it would have
+    to begin with 7+ characters of THIS head and end with this head's tail --
+    while a mangling of the current head no longer fails closed.
+    """
+    if not stamp_sha or not head_sha:
+        return False
+    if len(stamp_sha) >= 7 and head_sha.startswith(stamp_sha):
+        return True
+    if len(stamp_sha) >= len(head_sha):
+        return False
+    for cut in range(7, len(stamp_sha)):
+        if head_sha.startswith(stamp_sha[:cut]) and head_sha.endswith(stamp_sha[cut:]):
+            return True
+    return False
+
+
 DEFAULT_MARKER_AUTHORS = ("github-actions[bot]",)
 # Comment-key -> reviewer-name bindings, identical to pr_status.py's copy
 # (parity-pinned): reviewer identity comes from the workflow-authored leading
@@ -275,14 +315,14 @@ def extract_findings(comments, head_sha, bindings):
         if not name:
             continue
         fresh = any(
-            stamp_name == name and len(sha) >= 7 and head_sha.startswith(sha)
+            stamp_name == name and sha_matches(sha, head_sha)
             for stamp_name, sha in REVIEWED_STAMP_RE.findall(body)
         )
         if not fresh:
             continue
         reviewer = name.lower()
         block_merge = any(
-            len(sha) >= 7 and head_sha.startswith(sha) for sha in BLOCK_MERGE_RE.findall(body)
+            sha_matches(sha, head_sha) for sha in BLOCK_MERGE_RE.findall(body)
         )
         for kind, path, line, text in FINDING_RE.findall(body):
             try:

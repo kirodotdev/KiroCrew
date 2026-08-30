@@ -161,6 +161,7 @@ class TestMarkerRegexParity:
         status = _load_status()
         for helper in (
             "span_hash",
+            "sha_matches",
             "extract_findings",
             "parse_disposition_record",
             "fetch_disposition_comments",
