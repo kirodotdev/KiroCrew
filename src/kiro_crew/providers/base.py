@@ -411,3 +411,16 @@ class LLMProvider(ABC):
         """Reasoning-effort levels the provider accepts. Default empty for a
         provider with no effort control."""
         return []
+
+    def supports_effort(self) -> bool:
+        """True when the current model accepts a reasoning-effort level. Default False."""
+        return False
+
+    async def change_effort(self, level: str) -> bool:
+        """Change reasoning effort live for the current model. Returns True on success,
+        False when effort is unsupported. Default False."""
+        return False
+
+    async def clear_effort(self) -> bool:
+        """Clear the slot's reasoning-effort override for the current model. Default False."""
+        return False
