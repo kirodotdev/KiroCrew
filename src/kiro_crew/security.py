@@ -11137,28 +11137,6 @@ def normalize_shell_command(cmd: str) -> list[str]:
     return resolved
 
 
-def resolve_command_paths(tokens: list[str]) -> list[str]:
-    """Resolve path-like tokens to their canonical absolute form.
-
-    Runs os.path.realpath() on tokens that look like filesystem paths
-    (start with /, ~, ./, or ../) to resolve symlinks and directory traversal.
-    Non-path tokens are returned unchanged.
-
-    Args:
-        tokens: List of shell tokens (typically from normalize_shell_command).
-
-    Returns:
-        New list with path-like tokens resolved to their realpath.
-    """
-    resolved: list[str] = []
-    for token in tokens:
-        if _is_path_like(token):
-            resolved.append(os.path.realpath(token))
-        else:
-            resolved.append(token)
-    return resolved
-
-
 # Drive-letter absolute path (``C:\...`` or ``C:/...``). Anchored to a single
 # ASCII letter + colon + separator so ``key:value`` option tokens do not match.
 _WIN_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -11385,14 +11363,6 @@ _IMDS_IP = "169.254.169.254"
 # because canonicalize_ip returns native IPv6 unchanged; mirrors embeddings.py's
 # SSRF gate which also blocks it (CWE-918 dual-stack parity).
 _IMDS_IPV6 = "fd00:ec2::254"
-
-# HTTP tools that can fetch IMDS -- broader than just curl/wget
-_HTTP_TOOLS_RE = re.compile(
-    r"(?:curl|wget|http|https|fetch|lwp-request|lynx|links|"
-    r"python|ruby|perl|node|nc|ncat|socat|telnet|"
-    r"Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b",
-    re.IGNORECASE,
-)
 
 
 def _check_imds_access(command: str) -> str | None:
