@@ -12,7 +12,12 @@ from unittest.mock import patch
 import pytest
 
 from kiro_crew.acp.client import AcpError, _rejected_model_from_error
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_TEXT_CHUNK,
+    TurnUsage,
+)
 from kiro_crew.llm_helpers import run_bg_oneliner
 
 
@@ -460,3 +465,83 @@ async def test_the_turn_duration_reaches_the_row():
             await run_bg_oneliner(_FakeSessions(sess), "p")
 
     assert persist.await_args.kwargs["elapsed_ms"] == 250
+
+
+class _ClaudeSeamStats:
+    """Mirrors AcpPromptStats on the claude seam: ``credits`` stays 0 and the
+    billing dimensions travel through ``to_turn_usage()`` (the post-#6757
+    stats -> event contract that ``_attempt_usage`` duck-types on)."""
+
+    def __init__(self, usage: TurnUsage) -> None:
+        self.credits = 0.0
+        self._usage = usage
+
+    def to_turn_usage(self) -> TurnUsage:
+        return self._usage
+
+
+class _ClaudeSeamSession(_FakeSession):
+    """Installs claude-seam per-turn stats once the turn begins."""
+
+    def __init__(self, events, *, turn_stats: _ClaudeSeamStats) -> None:
+        super().__init__(events)
+        self._turn_stats = turn_stats
+
+    async def prompt(self, _prompt):
+        self.last_prompt_stats = self._turn_stats
+        for e in self._events:
+            yield e
+
+
+@pytest.mark.asyncio
+async def test_a_cost_only_claude_seam_turn_writes_a_row_with_cost_and_cache_intact():
+    """On the claude seam a background turn can bill ``cost_usd`` with credits
+    AND both token counts at zero -- the #6758 shape. The row must be written
+    (mutation guard on the gate's ``cost_usd`` conjunct) and must carry the
+    cost and cache fields through ``_attempt_usage``'s ``to_turn_usage`` path
+    (mutation guard on the duck-typed converter: the credits-only fallback
+    constructor would zero every field and skip the row)."""
+    stats = _ClaudeSeamStats(
+        TurnUsage(cost_usd=0.42, cache_creation_tokens=20, cache_read_tokens=30)
+    )
+    sess = _ClaudeSeamSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_stats=stats)
+
+    with patch(_USAGE_TARGET) as persist:
+        await run_bg_oneliner(_FakeSessions(sess), "p")
+
+    assert persist.await_count == 1
+    recorded = persist.await_args.args[2]
+    assert recorded.cost_usd == pytest.approx(0.42)
+    assert recorded.cache_creation_tokens == 20
+    assert recorded.cache_read_tokens == 30
+    assert recorded.credits == 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_cache_only_claude_seam_turn_still_writes_its_row():
+    """A claude-seam turn can report cache tokens with no cost (the adapter
+    fills PromptResponse token counts but sends no usage_update.cost) and zero
+    fresh input/output. The shared gate predicate must not drop it -- the
+    narrower sibling of the cost-only shape."""
+    stats = _ClaudeSeamStats(TurnUsage(cache_read_tokens=30))
+    sess = _ClaudeSeamSession([SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_stats=stats)
+
+    with patch(_USAGE_TARGET) as persist:
+        await run_bg_oneliner(_FakeSessions(sess), "p")
+
+    assert persist.await_count == 1
+    assert persist.await_args.args[2].cache_read_tokens == 30
+
+
+@pytest.mark.asyncio
+async def test_a_claude_seam_turn_that_billed_nothing_still_records_nothing():
+    """The all-zero guard survives the wider gate: a claude-seam turn whose
+    stats carried no billing at all must not land as zero-value noise."""
+    sess = _ClaudeSeamSession(
+        [SimpleNamespace(kind=EVENT_COMPLETE, text="")], turn_stats=_ClaudeSeamStats(TurnUsage())
+    )
+
+    with patch(_USAGE_TARGET) as persist:
+        await run_bg_oneliner(_FakeSessions(sess), "p")
+
+    persist.assert_not_awaited()

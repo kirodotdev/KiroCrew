@@ -351,3 +351,132 @@ class TestBilledAttemptsSurviveARetry(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _ClaudeStats:
+    """Claude-seam per-turn stats: ``credits`` stays 0 and the billing travels
+    through ``to_turn_usage()`` (the stats -> event contract from #6757)."""
+
+    def __init__(self, usage) -> None:
+        self.credits = 0.0
+        self._usage = usage
+
+    def to_turn_usage(self):
+        return self._usage
+
+
+class TestClaudeSeamBackgroundAccounting(unittest.IsolatedAsyncioTestCase):
+    async def test_a_cost_only_turn_still_writes_its_row(self):
+        """The #6758 shape: cost_usd billed with credits and both token counts
+        at zero. Dropping the gate's cost_usd conjunct, or bypassing the
+        duck-typed to_turn_usage read in _attempt_usage (whose credits-only
+        fallback zeroes every claude dimension), makes this fail."""
+        from kiro_crew.acp.types import TurnUsage
+
+        sessions = _Sessions(_Client())
+        with patch(_USAGE_TARGET) as persist:
+            async with background_turn(sessions, task="consolidation") as client:
+                client.last_prompt_stats = _ClaudeStats(
+                    TurnUsage(cost_usd=0.42, cache_creation_tokens=20, cache_read_tokens=30)
+                )
+
+        self.assertEqual(persist.await_count, 1)
+        recorded = persist.await_args.args[2]
+        self.assertAlmostEqual(recorded.cost_usd, 0.42)
+        self.assertEqual(recorded.cache_creation_tokens, 20)
+        self.assertEqual(recorded.cache_read_tokens, 30)
+        self.assertEqual(recorded.credits, 0.0)
+
+    async def test_an_all_zero_claude_turn_writes_no_row(self):
+        from kiro_crew.acp.types import TurnUsage
+
+        sessions = _Sessions(_Client())
+        with patch(_USAGE_TARGET) as persist:
+            async with background_turn(sessions, task="consolidation") as client:
+                client.last_prompt_stats = _ClaudeStats(TurnUsage())
+
+        persist.assert_not_awaited()
+
+
+class TestSumUsageCarriesTheBilledDimensions(unittest.TestCase):
+    def test_claude_seam_dimensions_survive_the_sum(self):
+        """A retried turn sums its attempts through _sum_usage; a dimension the
+        sum drops is spend an earlier billed attempt silently loses.
+
+        num_turns and duration_ms are deliberately absent: to_turn_usage never
+        fills them and every persist site passes elapsed_ms explicitly.
+        """
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.llm_helpers import _sum_usage
+
+        left = TurnUsage(
+            input_tokens=10,
+            output_tokens=20,
+            cache_creation_tokens=1,
+            cache_read_tokens=2,
+            cost_usd=0.1,
+            credits=0.5,
+        )
+        right = TurnUsage(
+            input_tokens=30,
+            output_tokens=40,
+            cache_creation_tokens=3,
+            cache_read_tokens=4,
+            cost_usd=0.2,
+            credits=1.5,
+        )
+        total = _sum_usage(left, right)
+        self.assertEqual(total.input_tokens, 40)
+        self.assertEqual(total.output_tokens, 60)
+        self.assertEqual(total.cache_creation_tokens, 4)
+        self.assertEqual(total.cache_read_tokens, 6)
+        self.assertAlmostEqual(total.cost_usd, 0.3)
+        self.assertAlmostEqual(total.credits, 2.0)
+
+
+class TestUsageHasBilling(unittest.TestCase):
+    """The single predicate behind every persist gate: each billing dimension
+    alone must open the gate, and an all-zero turn must not."""
+
+    def test_each_dimension_alone_opens_the_gate(self):
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.llm_helpers import usage_has_billing
+
+        for kwargs in (
+            {"credits": 0.5},
+            {"cost_usd": 0.42},
+            {"input_tokens": 1},
+            {"output_tokens": 1},
+            {"cache_creation_tokens": 1},
+            {"cache_read_tokens": 1},
+        ):
+            with self.subTest(**kwargs):
+                self.assertTrue(usage_has_billing(TurnUsage(**kwargs)))
+
+    def test_an_all_zero_turn_stays_out(self):
+        from kiro_crew.acp.types import TurnUsage
+        from kiro_crew.llm_helpers import usage_has_billing
+
+        self.assertFalse(usage_has_billing(TurnUsage()))
+
+
+class _FaultyConverterStats:
+    """A stats holder whose to_turn_usage exists but raises: the converter's
+    failure must degrade to the credits read, not zero the turn's billing."""
+
+    def __init__(self, credits: float) -> None:
+        self.credits = credits
+
+    def to_turn_usage(self):
+        raise RuntimeError("converter boom")
+
+
+class TestFaultyConverterFallsBackToCredits(unittest.IsolatedAsyncioTestCase):
+    async def test_credits_still_bill_when_the_converter_raises(self):
+        sessions = _Sessions(_Client())
+        with patch(_USAGE_TARGET) as persist:
+            async with background_turn(sessions, task="consolidation") as client:
+                client.last_prompt_stats = _FaultyConverterStats(credits=3.5)
+
+        self.assertEqual(persist.await_count, 1)
+        self.assertEqual(persist.await_args.args[2].credits, 3.5)

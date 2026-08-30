@@ -6301,6 +6301,59 @@ class TestTokenUsageSurface:
         assert persist.await_args.kwargs["surface"] == "slack"
 
 
+class TestCostOnlyTurnPersistGate:
+    """The chat_runner turn-end persist gate must fire on ``cost_usd`` alone.
+
+    A claude-seam turn ending via a synthetic EVENT_COMPLETE (timeout,
+    tool-stall, cancel-unacked) can carry cost with zero tokens and zero
+    credits; the footer already reads ``_u.cost_usd`` off the same event, so
+    only the gate stood between the cost and the usage store (#6758).
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_cost_only_turn_persists_its_row(self, tmp_path, monkeypatch):
+        """Mutation guard: dropping the gate's ``cost_usd`` conjunct makes the
+        persist call disappear and this fail."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage(cost_usd=0.42))]
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = TestTokenPersistenceBackfill._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        persist = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.persist_token_record_async", persist)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        assert persist.await_count == 1
+        assert persist.await_args.args[2].usage.cost_usd == pytest.approx(0.42)
+
+    @pytest.mark.asyncio
+    async def test_an_all_zero_turn_still_writes_no_row(self, tmp_path, monkeypatch):
+        """The widened gate must not have become unconditional: a turn whose
+        usage carries no billing dimension at all stays out of the store."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+
+        events = [LLMEvent(kind=EVENT_COMPLETE, usage=TurnUsage())]
+        state = TestTokenPersistenceBackfill._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = TestTokenPersistenceBackfill._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        persist = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.persist_token_record_async", persist)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "hello")
+
+        persist.assert_not_awaited()
+
+
 class TestKiroBackfillProfileGuard:
     """Regression tests for the kiro/acp backfill must NOT store a
     resolved Bedrock inference-profile id into slot.model.

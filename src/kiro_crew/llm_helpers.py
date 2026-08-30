@@ -1081,7 +1081,11 @@ async def run_bg_oneliner(
                 from kiro_crew.dashboard.handlers.usage import persist_token_record_async
 
                 usage = provider_last_turn_usage(session, since=stats_before)
-                if usage.credits or usage.input_tokens or usage.output_tokens:
+                # One shared predicate across every persist gate: a claude-seam
+                # turn recovered through the live-stats path can bill cost or
+                # cache tokens with zero credits AND zero fresh token counts;
+                # a gate testing only the kiro dimensions silently drops it.
+                if usage_has_billing(usage):
                     await persist_token_record_async(
                         sel_session_key,
                         # The model the session SERVED, never the one requested: a
@@ -1135,10 +1139,46 @@ def _attempt_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> TurnUsage:
     if since is not _NO_PRIOR_STATS and stats is since:
         return TurnUsage()
     try:
+        # Prefer the stats object's own converter: it is the single source of
+        # truth for stats -> TurnUsage and carries every billing dimension the
+        # turn filled (claude seam: token counts + cache fields + cost_usd; kiro:
+        # credits). Duck-typed so the doubles in tests (and any stats holder
+        # predating the converter) fall through to the credits-only constructor,
+        # which is byte-identical for the kiro seam. The converter's failure is
+        # contained so a faulty to_turn_usage degrades to the credits read
+        # rather than silently zeroing a turn that previously billed.
+        to_usage = getattr(stats, "to_turn_usage", None)
+        if callable(to_usage):
+            try:
+                usage = to_usage()
+            except Exception:
+                logger.debug("to_turn_usage failed; falling back to credits", exc_info=True)
+                usage = None
+            if isinstance(usage, TurnUsage):
+                return usage
         return TurnUsage(credits=float(getattr(stats, "credits", 0.0) or 0.0))
     except Exception:
         logger.debug("attempt usage read failed", exc_info=True)
     return TurnUsage()
+
+
+def usage_has_billing(usage: TurnUsage) -> bool:
+    """True when *usage* carries any billing dimension worth a row.
+
+    The single predicate behind every persist gate. Three hand-maintained
+    copies of ``credits or input_tokens or output_tokens`` is how the claude
+    seam's ``cost_usd`` (and a cost-free cache-only turn) got dropped in the
+    first place (#6758); a gate that reads this cannot drift from its siblings
+    when the next billing dimension is added.
+    """
+    return bool(
+        usage.credits
+        or usage.cost_usd
+        or usage.input_tokens
+        or usage.output_tokens
+        or usage.cache_creation_tokens
+        or usage.cache_read_tokens
+    )
 
 
 def _sum_usage(left: TurnUsage, right: TurnUsage) -> TurnUsage:
@@ -1150,6 +1190,12 @@ def _sum_usage(left: TurnUsage, right: TurnUsage) -> TurnUsage:
             + int(getattr(right, "input_tokens", 0) or 0),
             output_tokens=int(getattr(left, "output_tokens", 0) or 0)
             + int(getattr(right, "output_tokens", 0) or 0),
+            cache_creation_tokens=int(getattr(left, "cache_creation_tokens", 0) or 0)
+            + int(getattr(right, "cache_creation_tokens", 0) or 0),
+            cache_read_tokens=int(getattr(left, "cache_read_tokens", 0) or 0)
+            + int(getattr(right, "cache_read_tokens", 0) or 0),
+            cost_usd=float(getattr(left, "cost_usd", 0.0) or 0.0)
+            + float(getattr(right, "cost_usd", 0.0) or 0.0),
         )
     except Exception:
         logger.debug("usage sum failed", exc_info=True)
@@ -1186,8 +1232,10 @@ def provider_last_turn_usage(provider: Any, *, since: Any = _NO_PRIOR_STATS) -> 
     next caller preserving that pairing. A fresh turn installs fresh stats, so a
     stale total simply fails the identity check and the live read takes over.
 
-    On the ACP backend the only non-zero per-turn billing signal is ``credits``;
-    the token fields stay 0, matching the real usage record. Providers that expose
+    On the kiro (acp) seam the only non-zero per-turn billing signal is
+    ``credits``; on the claude seam the token counts, cache fields, and
+    ``cost_usd`` are filled instead. Whichever dimensions the turn's stats
+    carried come through :meth:`to_turn_usage` intact. Providers that expose
     no stats (non-ACP backends, test doubles) yield an empty ``TurnUsage``
     (credits=0). Never raises.
     """
@@ -1354,8 +1402,10 @@ async def background_turn(
 
                 # A turn that never reached the provider bills nothing and has no
                 # row to write; the same guard the chat path applies keeps
-                # acquire-time failures from landing as zero-credit noise.
-                if usage.credits or usage.input_tokens or usage.output_tokens:
+                # acquire-time failures from landing as zero-credit noise. The
+                # shared predicate covers the claude seam's cost and cache
+                # dimensions alongside the kiro credits/token signals.
+                if usage_has_billing(usage):
                     await persist_token_record_async(
                         BACKGROUND_KEY,
                         "",

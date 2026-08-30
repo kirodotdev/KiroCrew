@@ -184,6 +184,7 @@ from kiro_crew.llm_helpers import (
     record_interaction_event,
     run_bg_oneliner,
     transient_retry_delay,
+    usage_has_billing,
 )
 from kiro_crew.mcp_discovery import kirocrew_managed_names
 from kiro_crew.members import record_activity
@@ -7877,7 +7878,12 @@ async def _run_chat(
                 # with a missing measurement. Still never guesses: an
                 # unattributable turn stays "" and the footer omits the field.
                 _turn_model = read_turn_model(client)
-                if _u.input_tokens or _u.output_tokens or _u.credits:
+                # One shared predicate across every persist gate (#6758): a
+                # claude-seam turn ending via a synthetic EVENT_COMPLETE
+                # (timeout, tool-stall, cancel-unacked) can carry cost or cache
+                # tokens with zero fresh tokens and zero credits, and the
+                # footer above already reads _u.cost_usd for the same event.
+                if usage_has_billing(_u):
                     try:
                         _provider_name = cfg.agent.provider  # type: ignore[possibly-undefined]
                     except (NameError, AttributeError):
