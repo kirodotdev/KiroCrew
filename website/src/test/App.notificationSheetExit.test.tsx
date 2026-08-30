@@ -1,14 +1,16 @@
 /**
- * Notification Center sheet — exit animation.
+ * Notification Center sheet — the exit, and surviving being interrupted.
  *
- * The bell sheet plays `nc-slide-in` on open; dismissal must keep it mounted
- * long enough to play `nc-slide-out` instead of ripping the portal out on the
- * same tick (the bug: "slides in but doesn't slide out on dismiss").
+ * Dismissal must keep the sheet mounted long enough to slide back out instead of
+ * ripping the portal out on the same tick (the original bug: "slides in but
+ * doesn't slide out on dismiss"), and — the reason the slide moved off a CSS
+ * keyframe pair onto `animateDrawer` — a tap that lands DURING that exit must
+ * neither re-open the sheet nor make it jump. See the two describes below for
+ * the frame-level measurements behind each.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
-import tailwindConfig from '../../tailwind.config.js'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -55,7 +57,8 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 import App from '../App'
 
-const sheet = () => document.querySelector('.animate-nc-slide-in, .animate-nc-slide-out') as HTMLElement | null
+const sheet = () => document.querySelector('[data-nc-phase]') as HTMLElement | null
+const phase = () => sheet()?.getAttribute('data-nc-phase') ?? null
 
 /**
  * Render, resolve the bell, THEN install fake timers.
@@ -79,37 +82,60 @@ describe('Notification Center sheet — slide-out on dismiss', () => {
     const bell = await renderAndFindBell()
 
     fireEvent.click(bell)
-    expect(sheet()?.classList.contains('animate-nc-slide-in')).toBe(true)
+    expect(phase()).toBe('open')
 
     // Dismiss: still mounted, now playing the exit animation and fully inert —
     // untouchable by pointer, keyboard and assistive tech.
     fireEvent.click(bell)
     const closingSheet = sheet()
     expect(closingSheet).toBeTruthy()
-    expect(closingSheet!.classList.contains('animate-nc-slide-out')).toBe(true)
+    expect(closingSheet!.getAttribute('data-nc-phase')).toBe('closing')
     expect(closingSheet!.classList.contains('pointer-events-none')).toBe(true)
     expect(closingSheet!.hasAttribute('inert')).toBe(true)
     expect(closingSheet!.getAttribute('aria-hidden')).toBe('true')
 
-    // ...and gone once the animation has run.
-    await act(async () => { vi.advanceTimersByTime(300) })
+    // ...and gone once the settle has reported arrival.
+    await act(async () => { vi.advanceTimersByTime(1200) })
     expect(sheet()).toBeNull()
   })
 
-  it('re-opening mid-exit cancels the pending unmount', async () => {
+  /**
+   * REGRESSION — a tap during the exit must not re-open the sheet.
+   *
+   * This test asserted the OPPOSITE ("re-opening mid-exit cancels the pending
+   * unmount"), and that behaviour was the reported bug: dismissal set
+   * `closing = true` AND `open = false` in one commit while the sheet stayed on
+   * screen for the whole exit, so for those 240ms the bell's `if (open)` toggle
+   * read a tap as "it's closed" and re-entered the sheet. On a 390px phone the
+   * re-entry flung the sheet the full 410px offscreen and replayed the entire
+   * 420ms entrance — measured frame-to-frame, tx 9.97 -> 410.00 in one frame.
+   * An impatient double-tap-to-dismiss therefore left the panel OPEN and visibly
+   * re-animated, and needed a third tap to actually close.
+   *
+   * The single `phase` value is what makes that unrepresentable: anything other
+   * than `closed` means the sheet is on screen, so the tap belongs to the
+   * dismissal already in flight.
+   */
+  it('ignores a tap during the exit instead of re-opening', async () => {
     const bell = await renderAndFindBell()
 
     fireEvent.click(bell)
     fireEvent.click(bell)
-    expect(sheet()?.classList.contains('animate-nc-slide-out')).toBe(true)
+    expect(phase()).toBe('closing')
 
     fireEvent.click(bell)
-    await act(async () => { vi.advanceTimersByTime(300) })
-    const reopened = sheet()
-    expect(reopened?.classList.contains('animate-nc-slide-in')).toBe(true)
-    // Re-opening must also lift the inert/aria-hidden guard.
-    expect(reopened!.hasAttribute('inert')).toBe(false)
-    expect(reopened!.hasAttribute('aria-hidden')).toBe(false)
+    expect(phase(), 'a tap mid-exit must not re-enter the sheet').toBe('closing')
+    // The dismissal still completes on its own — the tap neither resurrects the
+    // sheet nor strands it half-open.
+    await act(async () => { vi.advanceTimersByTime(1200) })
+    expect(sheet()).toBeNull()
+
+    // And the bell is live again immediately after, so refusing the mid-exit tap
+    // costs responsiveness only for the length of the exit.
+    fireEvent.click(bell)
+    expect(phase()).toBe('open')
+    expect(sheet()!.hasAttribute('inert')).toBe(false)
+    expect(sheet()!.hasAttribute('aria-hidden')).toBe(false)
   })
 
   it('returns focus to the bell when Escape dismisses the sheet', async () => {
@@ -120,47 +146,84 @@ describe('Notification Center sheet — slide-out on dismiss', () => {
 
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(document.activeElement).toBe(bell)
-    expect(sheet()?.classList.contains('animate-nc-slide-out')).toBe(true)
+    expect(phase()).toBe('closing')
   })
 })
 
 /**
- * Compositor guards — the sheet's slide must stay off the main thread.
+ * The slide must be INTERRUPTIBLE, and that is a property of where each
+ * animation STARTS.
  *
- * The keyframes originally animated `marginRight`: a layout property, so
- * every animation frame reflowed the sheet and its whole subtree on the main
- * thread — the same jank class as the old right-panel `width` animation, and
- * exactly what makes an open/close stutter while sessions are streaming. The
- * fix animates `transform` (compositor-driven). The old margin choice was
- * justified by a claim that a transformed ancestor becomes a backdrop root
- * and breaks the cards' backdrop-filter; a Chromium pixel probe (card blur
- * measured mid-animation under a transformed ancestor) disproved that —
- * transform is not in the backdrop-root trigger list.
+ * The sheet used to slide on a pair of Tailwind keyframes whose `from` was a
+ * hardcoded endpoint (`translateX(calc(100% + 20px))` entering,
+ * `translateX(0)` leaving). CSS has no "resume from the current transform", so
+ * swapping the class mid-flight teleported the sheet to the incoming animation's
+ * origin. Measured in Chromium on a 390px sheet: dismissing 100ms into the
+ * entrance moved it tx 99.88 -> 0.00 in ONE frame (the remaining ~99px to
+ * fully-open, ~325px if interrupted at 30ms) and only then slid out; re-opening
+ * 50ms into the exit moved it tx 9.97 -> 410.00 in one frame and replayed the
+ * whole 420ms entrance. Both read to a user as the panel opening a second time.
  *
- * Percentage translateX resolves against the element's OWN width, which is
- * why one keyframe pair now covers both the desktop 400px sheet and the
- * mobile full-width sheet (the old `-full` variants are gone).
+ * `animateDrawer` keyframes from the offset the OUTGOING animation is
+ * presenting, so the test that matters is that a reversal's first keyframe is
+ * the live position rather than a fixed endpoint.
  */
-describe('Notification Center sheet — compositor-driven slide', () => {
-  const keyframes = (tailwindConfig as { theme: { extend: { keyframes: Record<string, Record<string, Record<string, string>>> } } })
-    .theme.extend.keyframes
-
-  it('animates transform only, never a layout property', () => {
-    for (const name of ['nc-slide-in', 'nc-slide-out'] as const) {
-      const frames = keyframes[name]
-      expect(frames, `${name} keyframes must exist`).toBeTruthy()
-      for (const [stop, decl] of Object.entries(frames)) {
-        expect(Object.keys(decl), `${name} @${stop} must animate transform only`).toEqual(['transform'])
-      }
+describe('Notification Center sheet — interruptible slide', () => {
+  it('keyframes a reversal from the live offset, not from a fixed endpoint', async () => {
+    const calls: { keyframes: Record<string, string>[]; timing: Record<string, unknown> }[] = []
+    const proto = HTMLElement.prototype as unknown as { animate?: unknown }
+    const hadAnimate = 'animate' in proto
+    const prevAnimate = proto.animate
+    proto.animate = function (keyframes: Record<string, string>[], timing: Record<string, unknown>) {
+      calls.push({ keyframes, timing })
+      return { cancel() {}, set onfinish(_v: unknown) {}, set oncancel(_v: unknown) {} }
     }
-  })
+    try {
+      const bell = await renderAndFindBell()
 
-  it('covers mobile via own-width percentages instead of a -full variant', () => {
-    // translateX(%) resolves against the element's own width, so the single
-    // pair covers the full-width mobile sheet; a resurrected -full variant
-    // means the margin split came back.
-    expect(keyframes['nc-slide-in-full']).toBeUndefined()
-    expect(keyframes['nc-slide-out-full']).toBeUndefined()
-    expect(keyframes['nc-slide-in'].from.transform).toContain('100%')
+      // Entrance: nothing is running yet, so it legitimately starts parked —
+      // 400px desktop sheet + the 20px its shadow needs to clear the edge.
+      //
+      // The tick matters: the settle is kicked off in the SAME tick as the
+      // setState that mounts the sheet, so there is nothing to animate yet and
+      // `animateDrawer` waits a bounded number of frames for the element to
+      // appear. Without advancing here it would degrade to the main-thread
+      // fallback and record nothing.
+      fireEvent.click(bell)
+      await act(async () => { vi.advanceTimersByTime(50) })
+      expect(calls.length, 'the entrance must reach the compositor').toBeGreaterThan(0)
+      const entrance = calls[calls.length - 1]
+      // A layout property here is the jank class this whole path exists to
+      // avoid — one reflow of the sheet AND its subtree per frame.
+      for (const frame of entrance.keyframes) {
+        expect(Object.keys(frame), 'the settle may animate transform ONLY').toEqual(['transform'])
+      }
+      expect(entrance.keyframes[0].transform).toBe('translate3d(420px, 0, 0)')
+      expect(entrance.keyframes[1].transform).toBe('translate3d(0px, 0, 0)')
+      // The 420 above is NC_SHEET_DESKTOP_W + NC_SHEET_CLEARANCE, and Tailwind
+      // cannot take an interpolated class, so the rendered width is a second
+      // spelling of that constant. Pinned together here: a parked offset that
+      // disagrees with the width either leaves a strip on screen before the
+      // entrance starts, or spends the 420ms crossing space the sheet never
+      // occupies.
+      expect(sheet()!.classList.contains('w-[400px]')).toBe(true)
+
+      // Now stand where a half-played entrance would have the sheet. A matrix,
+      // because that is the form a resolved transform is read back in.
+      const el = sheet()!
+      el.style.transform = 'matrix(1, 0, 0, 1, 120, 0)'
+
+      // Reverse. The exit must pick the sheet up at 120, NOT at the old
+      // `nc-slide-out` origin of 0 — starting at 0 IS the one-frame snap to
+      // fully-open that the measurements above recorded.
+      fireEvent.click(bell)
+      const exit = calls[calls.length - 1]
+      expect(exit, 'the exit must reach the compositor too').not.toBe(entrance)
+      expect(exit.keyframes[0].transform, 'a reversal must continue from the live offset').toBe('translate3d(120px, 0, 0)')
+      expect(exit.keyframes[1].transform).toBe('translate3d(420px, 0, 0)')
+    } finally {
+      if (hadAnimate) proto.animate = prevAnimate
+      else delete proto.animate
+    }
   })
 })

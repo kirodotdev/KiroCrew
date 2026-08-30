@@ -111,26 +111,27 @@ describe('animateDrawer — settle curves', () => {
     expect(at(ms)).toBeCloseTo(1, 2)
   })
 
-  it('shares one motion language with the Notification Center sheet', () => {
-    // Both files state the curves independently (a tailwind config cannot import
-    // a TS module), so the only thing keeping them in step is this assertion.
-    // Compared as NUMBERS: CSS spells the same control point `.16` where the TS
-    // array spells it `0.16`, and the invariant is the value, not the spelling.
-    const anim = (tailwindConfig as { theme: { extend: { animation: Record<string, string> } } })
-      .theme.extend.animation
-    const parse = (css: string) => {
-      const bezier = /cubic-bezier\(([^)]+)\)/.exec(css)
-      const secs = /(?:^|\s)(\.?\d*\.?\d+)s(?:\s|$)/.exec(css)
-      expect(bezier, `no cubic-bezier in "${css}"`).not.toBeNull()
-      expect(secs, `no duration in "${css}"`).not.toBeNull()
-      return { ease: bezier![1].split(',').map(Number), secs: Number(secs![1]) }
-    }
-
-    for (const [to, key] of [[0, 'nc-slide-in'], [-TRAVEL, 'nc-slide-out']] as const) {
-      const css = parse(anim[key])
-      const js = settle(to)
-      expect(css.ease, `${key} curve`).toEqual([...js.ease])
-      expect(css.secs, `${key} duration`).toBeCloseTo(js.duration, 5)
+  it('is the ONLY spelling of the sheet motion language — no CSS keyframe twin', () => {
+    // The Notification Center sheet used to state these curves a SECOND time, as
+    // a `nc-slide-in` / `nc-slide-out` Tailwind keyframe pair, because a tailwind
+    // config cannot import a TS module — and the test here compared the two
+    // spellings to keep them in step. The sheet now settles through
+    // `animateDrawer`, so there is one spelling and drift is impossible rather
+    // than merely detected.
+    //
+    // What is worth guarding instead is the shape those keyframes had. A CSS
+    // keyframe's `from` is an ABSOLUTE endpoint, so swapping the pair mid-flight
+    // teleported the sheet to the incoming animation's origin: measured on a
+    // 390px sheet, dismissing 100ms into the entrance jumped it the remaining
+    // ~100px to fully-open, and re-opening 50ms into the exit flung it the whole
+    // 410px offscreen and replayed the full entrance. Re-introducing either
+    // entry is re-introducing that, so their ABSENCE is the assertion.
+    const ext = (tailwindConfig as {
+      theme: { extend: { animation: Record<string, string>; keyframes: Record<string, unknown> } }
+    }).theme.extend
+    for (const key of ['nc-slide-in', 'nc-slide-out'] as const) {
+      expect(ext.animation[key], `${key} animation must not come back`).toBeUndefined()
+      expect(ext.keyframes[key], `${key} keyframes must not come back`).toBeUndefined()
     }
   })
 

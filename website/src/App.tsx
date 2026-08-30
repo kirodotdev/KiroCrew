@@ -711,9 +711,33 @@ function TasksRedirect() { const { search } = useLocation(); return <Navigate to
 function ChatRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + search} replace /> }
 function OrchestratedRedirect() { const { slug } = useParams(); const { search } = useLocation(); return <Navigate to={`/chat${slug ? '/' + slug : ''}${search}`} replace /> }
 
-/** How long the notification sheet's exit animation runs before the portal is
- *  unmounted. MUST match the `nc-slide-out` duration in tailwind.config.js. */
-const NC_CLOSE_MS = 240
+/**
+ * Desktop width of the notification sheet, in px.
+ *
+ * Stated as a constant because the PARKED offset is derived from it, and a
+ * parked offset that disagrees with the rendered width is not a cosmetic
+ * mismatch: too small leaves a strip of the sheet on screen before the
+ * entrance starts, too large stretches the entrance over travel the sheet
+ * never occupies. Tailwind cannot take an interpolated class, so the `w-[400px]`
+ * literal below is the second spelling — `App.notificationSheetExit.test.tsx`
+ * pins the two together.
+ */
+const NC_SHEET_DESKTOP_W = 400
+/** Extra travel past the sheet's own width so its shadow clears the edge too —
+ *  what `translateX(calc(100% + 20px))` used to spell. */
+const NC_SHEET_CLEARANCE = 20
+/**
+ * Backstop for the exit phase ONLY.
+ *
+ * `animateDrawer` reports arrival on every path it has — finish, browser-cancel,
+ * and the main-thread fallback it takes when there is no element or no
+ * `Element.animate` — so the unmount is normally driven by that callback and
+ * this timer never fires. It exists because a stuck `closing` phase would leave
+ * the bell inert (a tap during the exit is deliberately a no-op, see the
+ * `onClick` below), and it is deliberately far longer than the 240ms exit
+ * settle: a tight value would race the animation it is meant to outlive.
+ */
+const NC_CLOSE_BACKSTOP_MS = 1000
 
 /**
  * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
@@ -728,16 +752,73 @@ function NotificationsBellButton() {
   const dispatch = useAppDispatch()
   const items = useAppSelector(s => s.notifications.items)
   const isMobile = useIsMobile()
-  const [open, setOpen] = useState(false)
-  // Exit animation: the sheet must stay mounted long enough to slide back out,
-  // so dismissal flips `closing` (portal still rendered, sheet plays
-  // nc-slide-out) and a timer does the real unmount. Must match the
-  // animation duration in tailwind.config.js (`nc-slide-out`).
-  const [closing, setClosing] = useState(false)
+  /**
+   * ONE phase value, not an `open` + `closing` pair (mirrors the mobile nav
+   * drawer above and ChatPage's sessions drawer).
+   *
+   * The pair was the defect: dismissal set `closing = true` AND `open = false`
+   * in the same commit, while the sheet stayed on screen for the whole exit
+   * animation. For those 240ms the logical state said closed and the pixels said
+   * open, so the bell's `if (open) close() else open()` toggle read a tap as
+   * "it's closed, open it" and re-entered the sheet — the reported "tapped to
+   * dismiss and it opened again". A phase cannot disagree with itself: anything
+   * other than `closed` means the sheet is on screen.
+   */
+  const [phase, setPhase] = useState<'closed' | 'open' | 'closing'>('closed')
+  // Read by the handlers, which must see the phase this tap produced rather than
+  // the one their closure was rendered with.
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
+  const open = phase === 'open'
+  const closing = phase === 'closing'
   const [selectedTs, setSelectedTs] = useState<string | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
   const bellRef = useRef<HTMLButtonElement>(null)
+  const sheetRef = useRef<HTMLDivElement | null>(null)
+  /** Sheet offset in px: 0 at rest, +parked offscreen to the right. */
+  const sheetX = useMotionValue(0)
+  /**
+   * Where the sheet sits when parked offscreen.
+   *
+   * Measured off the mounted sheet when there is one. Before the first mount
+   * there is nothing to measure, so it is derived from the same rule the layout
+   * uses. On mobile that overshoots by the safe-area insets (0 in portrait), and
+   * overshooting is invisible — the sheet is offscreen either way and the settle
+   * still lands exactly on 0. Deriving it from `innerWidth` on DESKTOP would
+   * not be: the sheet is 400px there, so it would enter from far beyond its own
+   * edge and the 420ms would be spent crossing empty space.
+   */
+  const parkedOffset = useCallback(() => {
+    const measured = sheetRef.current?.offsetWidth
+    if (measured && measured > 0) return measured + NC_SHEET_CLEARANCE
+    const w = isMobile ? (typeof window !== 'undefined' ? window.innerWidth : 0) : NC_SHEET_DESKTOP_W
+    return w + NC_SHEET_CLEARANCE
+  }, [isMobile])
+  /**
+   * Point the settle at the real sheet so it runs on the COMPOSITOR, and — the
+   * reason this replaced the CSS keyframe pair — so a REVERSAL is continuous.
+   *
+   * `animate-nc-slide-in` / `animate-nc-slide-out` each began at a hardcoded
+   * endpoint, so swapping the class mid-flight teleported the sheet to the new
+   * animation's `from` instead of continuing from where it was. Measured on a
+   * 390px sheet: dismissing 100ms into the entrance jumped it the remaining
+   * ~100px to fully-open before sliding out (~325px at 30ms), and re-opening
+   * 50ms into the exit flung it the full 410px offscreen and replayed the entire
+   * 420ms entrance. `animateDrawer` keyframes from the offset the outgoing
+   * animation is PRESENTING, which is exactly the discontinuity those two
+   * measurements are.
+   *
+   * `scrim: null` because the sheet's column scrim is its own CHILD and travels
+   * with it; there is no separate backdrop to fade in lockstep. Safe against
+   * registerDrawerTargets' projection precondition because nothing under
+   * `components/notifications/` imports framer-motion at all.
+   */
+  useEffect(() => registerDrawerTargets(sheetX, {
+    panel: () => sheetRef.current,
+    scrim: () => null,
+    travel: parkedOffset,
+  }), [sheetX, parkedOffset])
   // Badge counts attention-worthy rows only (RFC Phase 3): passive and
   // muted-channel (silenced) rows are excluded, mirroring the backend's
   // _unread_count semantics.
@@ -752,27 +833,45 @@ function NotificationsBellButton() {
 
   // Single dismissal path: every close (bell toggle, outside click, Escape,
   // navigation, error fallback) goes through here so the sheet always gets its
-  // slide-out instead of being torn down instantly.
+  // slide-out instead of being torn down instantly. Re-entrant by design — a
+  // second dismissal while one is already running must not restart the settle.
   const closePanel = useCallback(() => {
-    if (open) setClosing(true)
-    setOpen(false)
+    if (phaseRef.current !== 'open') return
+    phaseRef.current = 'closing'
+    setPhase('closing')
     setSelectedTs(null)
-  }, [open])
+    takeOverDrawer(sheetX)
+    animateDrawer(sheetX, parkedOffset(), () => {
+      phaseRef.current = 'closed'
+      setPhase('closed')
+    })
+  }, [sheetX, parkedOffset])
 
   const openPanel = useCallback(() => {
-    setClosing(false)
-    setOpen(true)
+    if (phaseRef.current === 'open') return
+    // Seat the parked offset BEFORE the phase flips: the render below serializes
+    // `sheetX.get()` into the sheet's inline transform, so writing the value
+    // first is what makes the FIRST painted frame offscreen instead of a flash
+    // at rest followed by an entrance from nowhere.
+    if (phaseRef.current === 'closed') sheetX.set(parkedOffset())
+    phaseRef.current = 'open'
+    setPhase('open')
     setSelectedTs(null)
+    takeOverDrawer(sheetX)
+    animateDrawer(sheetX, 0)
     recordEvent('notifications_open', { source: 'topbar' })
-  }, [])
+  }, [sheetX, parkedOffset])
 
-  // Unmount the portal once the exit animation has played. Reopening mid-flight
-  // clears `closing` first, which cancels this timer via the cleanup.
+  // See NC_CLOSE_BACKSTOP_MS: `animateDrawer`'s arrival callback owns the
+  // unmount, and this only rescues a phase that never heard back at all.
   useEffect(() => {
-    if (!closing) return
-    const t = window.setTimeout(() => setClosing(false), NC_CLOSE_MS)
+    if (phase !== 'closing') return
+    const t = window.setTimeout(() => {
+      phaseRef.current = 'closed'
+      setPhase('closed')
+    }, NC_CLOSE_BACKSTOP_MS)
     return () => window.clearTimeout(t)
-  }, [closing])
+  }, [phase])
 
   // While the sheet plays its exit animation it is STILL in the DOM, so it must
   // stop being interactive in every modality — not just the pointer. `inert`
@@ -783,10 +882,6 @@ function NotificationsBellButton() {
   const leavingProps = (closing
     ? { inert: '', 'aria-hidden': true }
     : {}) as HTMLAttributes<HTMLDivElement>
-  // One transform keyframe pair covers both widths: translateX percentages
-  // resolve against the element's own width (400px desktop sheet, full-width
-  // mobile), so the old px/percent variant split is gone.
-  const sheetAnim = closing ? 'animate-nc-slide-out' : 'animate-nc-slide-in'
 
   // Close popover when navigating (e.g. detail panel's "Go to Chat" buttons)
   const lastPathRef = useRef(location.pathname)
@@ -833,7 +928,7 @@ function NotificationsBellButton() {
       <button
         ref={bellRef}
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
-        onClick={() => { if (open) closePanel(); else openPanel() }}
+        onClick={() => { if (phaseRef.current === 'closed') openPanel(); else closePanel() }}
         title={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
         aria-haspopup="dialog"
@@ -875,8 +970,17 @@ function NotificationsBellButton() {
               (header, controls, notification rows) is its own floating
               material card instead. */}
           <div
+            ref={sheetRef}
             {...leavingProps}
-            className={`absolute top-0 bottom-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} flex flex-col isolate ${sheetAnim}`}
+            data-nc-phase={phase}
+            className={`absolute top-0 bottom-0 right-0 ${closing ? 'pointer-events-none' : 'pointer-events-auto'} ${isMobile ? 'w-full' : 'w-[400px]'} flex flex-col isolate`}
+            // Serialized from the MotionValue rather than bound through framer:
+            // this element is not framer-bound, and `animateDrawer` writes the
+            // arrival into the element's own inline style for exactly that
+            // reason. A re-render mid-settle re-serializes a stale offset here,
+            // which is harmless — a running animation on `transform` wins over
+            // the inline style, and the settle publishes the final value itself.
+            style={{ transform: `translate3d(${sheetX.get()}px, 0, 0)` }}
           >
             {/* Column scrim — macOS NC dims/blurs only the strip behind the
                 cards and it travels WITH the sheet. The layer extends 80px
