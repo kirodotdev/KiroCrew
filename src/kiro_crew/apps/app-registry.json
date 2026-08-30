@@ -16,5 +16,11 @@
     "gitUrl": "https://github.com/LeTeutz/todo-txt",
     "repo": "https://github.com/LeTeutz/todo-txt",
     "branch": "main"
+  },
+  {
+    "name": "bmad-orchestrator",
+    "gitUrl": "https://github.com/hugheba/kirocrew-bmad-app",
+    "repo": "https://github.com/hugheba/kirocrew-bmad-app",
+    "branch": "main"
   }
 ]
