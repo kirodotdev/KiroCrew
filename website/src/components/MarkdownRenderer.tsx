@@ -2,8 +2,9 @@ import React, { createContext, useContext, memo, useEffect, useMemo, useRef, use
 import Clickable from './Clickable'
 import { HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
-import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Image as ImageIcon, GitPullRequest } from 'lucide-react'
+import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Image as ImageIcon, GitPullRequest, MessageSquare } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
+import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -499,6 +500,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   // canonical url drops), so a credential-smuggling `user:pass@github.com`
   // href must never be dressed up as a trusted-looking chip.
   const jiraHosts = useContext(JiraHostsCtx)
+  const sessionActions = useContext(SessionActionCtx)
   const source = useMemo(() => {
     if (!href || claimed) return null
     const link = parseSourceLinkUrl(href, [], jiraHosts)
@@ -516,6 +518,28 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       const decodedHref = decodeURIComponent(href)
       if (!decodedHref.startsWith('//')) localHref = decodedHref
     } catch { /* keep it a normal link */ }
+  }
+  // Decoded but NOT narrowed to root-relative: the app mints its own share links
+  // absolute, and the recognizer's origin check is what refuses a foreign one.
+  let sessionCandidate: string | null = null
+  if (href) {
+    try {
+      sessionCandidate = decodeURIComponent(href)
+    } catch { /* keep it a normal link */ }
+  }
+  // Same gate as the inline chip, so a link and a bare key naming one session
+  // cannot disagree about whether it is reachable.
+  const sessionLink = sessionCandidate ? resolveSessionChip(sessionKeyFromChatHref(sessionCandidate) ?? '', sessionActions) : null
+  // The attribute carries the canonical key: a modified click goes to the browser,
+  // and an authored `dashboard_…` sid would open a session `?sid=` cannot resolve.
+  const sessionHref = sessionLink && sessionCandidate ? canonicalChatHref(sessionCandidate, sessionLink.key) : null
+  const onSessionClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    // Only the PLAIN click is reinterpreted; the href stays real so Cmd+click
+    // still opens the session in its own tab.
+    const plainPrimaryClick = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+    if (!sessionLink || !plainPrimaryClick) return
+    e.preventDefault()
+    sessionActions.onSessionOpen!(sessionLink.key)
   }
   const pathResolution = usePathResolution(
     localHref ?? '',
@@ -599,11 +623,17 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
   }
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
+  // A confirmed session link is in-app navigation, so it keeps in-place semantics.
+  if (sessionLink) ext = true
   return (
     <a
       {...sp(node)}
-      href={href}
-      onClick={pathResolution.candidate ? onPathClick : undefined}
+      href={sessionHref ?? href}
+      // A `/chat?sid=` href is never a path, so the session branch wins outright.
+      onClick={sessionLink ? onSessionClick : (pathResolution.candidate ? onPathClick : undefined)}
+      title={sessionLink
+        ? `${sessionLink.title}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}`
+        : undefined}
       {...(ext ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
       className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent"
     >
@@ -633,6 +663,50 @@ const PathProbeCtx = createContext<boolean>(true)
  */
 type PathActions = { onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void }
 const PathActionCtx = createContext<PathActions>({})
+
+/**
+ * Where a session chip sends its activation, plus the roster that decides whether
+ * a chip is offered at all.
+ *
+ * `sessions` ABSENT is deliberately not the same as an empty map: a caller that
+ * never wired it (most of the ~30 call sites) does not KNOW which sessions exist,
+ * so no chip is offered. An empty map is the opposite claim — a caller that does
+ * know, and has nothing open.
+ *
+ * The value is the display title, for the tooltip only. It is never substituted
+ * for the chip's text, which would make the visible span disagree with what
+ * Ctrl+click copies.
+ */
+type SessionActions = {
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
+}
+const SessionActionCtx = createContext<SessionActions>({})
+
+/**
+ * Whether a recognised slot key may render as a chip, and what to title it with.
+ *
+ * Mirrors the path chip's rule — an affordance only once the target is CONFIRMED —
+ * with the slot roster standing in for the stat probe. Three refusals, each of
+ * which must stay plain text rather than become a chip that cannot act:
+ *
+ *   - the caller wired no handler or no roster (see `SessionActions`);
+ *   - the key names a session that is not open, so there is nothing to switch to.
+ *     A closed session's transcript may still exist on disk, but reopening it is
+ *     a History-page resume rather than a slot switch, so `onSessionOpen` could
+ *     not honour a chip here;
+ *   - the key names the session the reader is ALREADY in, where a click would be
+ *     a visible no-op.
+ */
+function resolveSessionChip(raw: string, actions: SessionActions): { key: string; title: string } | null {
+  if (!actions.onSessionOpen || !actions.sessions) return null
+  const key = sessionKeyFrom(raw)
+  if (!key || key === actions.activeSession) return null
+  const title = actions.sessions.get(key)
+  if (title === undefined) return null
+  return { key, title }
+}
 
 type PathResolution = {
   candidate: boolean
@@ -730,22 +804,37 @@ function revealHintFor(isDir: boolean, platform: GatewayPlatform): string {
  *  preserve line-wrapping. The copied state shows a small check icon inline;
  *  the icon is `pointer-events-none` and purely decorative so it cannot steal
  *  the click or affect layout reflow. */
+/**
+ * The 1.5s "Copied!" acknowledgment, shared by every chip that copies.
+ *
+ * One definition so the two chips cannot drift on how long it lasts or whether it
+ * appears at all — the session chip advertises Ctrl+click in its tooltip, so the
+ * gesture owes the same confirmation the click-to-copy chip gives.
+ */
+function useCopiedFlash(): { copied: boolean; flash: () => void } {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+  const flash = () => {
+    setCopied(true)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setCopied(false), 1500)
+  }
+  return { copied, flash }
+}
+
 function CopyableCode({ className, safeProps, text, children }: {
   className: string
   safeProps: Record<string, unknown>
   text: string
   children: React.ReactNode
 }) {
-  const [copied, setCopied] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+  const { copied, flash } = useCopiedFlash()
   const handleCopy = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.preventDefault()
     e.stopPropagation()
     copyToClipboard(text.trim())
-    setCopied(true)
-    if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => setCopied(false), 1500)
+    flash()
   }
   return (
     <code
@@ -760,6 +849,56 @@ function CopyableCode({ className, safeProps, text, children }: {
         : i18nT('components.markdownRenderer.click_to_copy')}
       {...safeProps}
     >
+      {children}
+      {copied && <Check size={12} aria-hidden="true" className="inline align-middle ml-0.5 opacity-70 pointer-events-none text-ok" />}
+    </code>
+  )
+}
+
+/**
+ * Click-to-switch inline chip for a confirmed dashboard session key.
+ *
+ * Deliberately shaped like the confirmed PATH chip rather than like the
+ * click-to-copy fallback it replaces: same `<code>` element and `CHIP_BASE`, a
+ * leading glyph so "this is actionable" is legible at rest rather than only on
+ * hover, and Ctrl/Cmd+click reserved for copying. A reader who has learned what a
+ * file chip does therefore already knows what this does.
+ *
+ * `stopPropagation` keeps the container's artifact-link delegation from also
+ * firing for a click this chip has handled.
+ */
+function SessionChip({ sessionKey, sessionTitle, safeProps, onOpen, children }: {
+  sessionKey: string
+  sessionTitle: string
+  safeProps: Record<string, unknown>
+  onOpen: (key: string) => void
+  children: React.ReactNode
+}) {
+  const { copied, flash } = useCopiedFlash()
+  const act = (e: { ctrlKey: boolean; metaKey: boolean; preventDefault: () => void; stopPropagation: () => void }) => {
+    e.preventDefault()
+    e.stopPropagation()
+    // The NORMALISED key, not the author's spelling: `?sid=` rejects a
+    // `dashboard_`-prefixed transcript filename.
+    if (e.ctrlKey || e.metaKey) { copyToClipboard(sessionKey); flash(); return }
+    onOpen(sessionKey)
+  }
+  return (
+    <code
+      className={`${CHIP_BASE} cursor-pointer hover:underline`}
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-element-to-interactive-role -- <code> is intentionally interactive (click-to-switch)
+      role="button"
+      tabIndex={0}
+      onClick={act}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') act(e) }}
+      {...safeProps}
+      data-session-key={sessionKey}
+      // Title leads: the key alone does not say which conversation this is.
+      title={copied
+        ? i18nT('components.markdownRenderer.copied')
+        : `${sessionTitle}\n${i18nT('components.markdownRenderer.click_to_switch_to_this_session')}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
+    >
+      <MessageSquare size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
       {children}
       {copied && <Check size={12} aria-hidden="true" className="inline align-middle ml-0.5 opacity-70 pointer-events-none text-ok" />}
     </code>
@@ -786,18 +925,22 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const codeStr = String(children).replace(/\n$/, '')
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
+  const sessionActions = useContext(SessionActionCtx)
   const insideLink = useContext(InsideLinkCtx)
   const gatewayPlatform = useGatewayPlatform()
   const raw = codeStr.trim()
   const pathResolution = usePathResolution(raw, probeEnabled)
 
-  // `data-path` / `data-path-kind` describe a chip THIS component rendered, so
+  // `data-path*` / `data-session-key` describe a chip THIS component rendered, so
   // only it may set them. rehypeSanitize allowlists every `data-*` attribute
   // (isAllowedAttr: `k.startsWith('data')`), so raw HTML arrives here with a
   // forged pair intact; spreading it would publish attributes claiming a
   // backend-confirmed path that was never probed. Drop any inbound copy.
   const safeProps = Object.fromEntries(
-    Object.entries(props).filter(([k]) => !k.toLowerCase().startsWith('data-path')),
+    Object.entries(props).filter(([k]) => {
+      const name = k.toLowerCase()
+      return !name.startsWith('data-path') && !name.startsWith('data-session')
+    }),
   )
 
   if (pathResolution.probePending
@@ -806,6 +949,17 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
     // before #4433 rather than cancelling the navigation to copy. Nothing is
     // lost: the browser's own "Copy link address" still reaches the URL.
     if (insideLink) return <code className={CHIP_BASE} {...safeProps}>{children}</code>
+    const session = resolveSessionChip(raw, sessionActions)
+    if (session) {
+      return (
+        <SessionChip
+          sessionKey={session.key}
+          sessionTitle={session.title}
+          safeProps={safeProps}
+          onOpen={sessionActions.onSessionOpen!}
+        >{children}</SessionChip>
+      )
+    }
     return <CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{children}</CopyableCode>
   }
   const isDir = pathResolution.kind === 'dir'
@@ -3138,7 +3292,7 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, wid
   }
 }
 
-export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean }) {
+export default memo(function MarkdownRenderer({ content, streaming = false, onFileOpen, onFolderOpen, onArtifactOpen, onSessionOpen, sessions, activeSession, rawMode = false, sourcePos = false, messageTs, slotKey, glow = false, smooth, softBreaks = false, compactImages = false, linkPreviews = false }: { content: string; streaming?: boolean; onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void; onFolderOpen?: (path: string) => void; onArtifactOpen?: (slug: string) => void; onSessionOpen?: (key: string) => void; sessions?: ReadonlyMap<string, string>; activeSession?: string; rawMode?: boolean; sourcePos?: boolean; messageTs?: string; slotKey?: string; glow?: boolean; smooth?: boolean; softBreaks?: boolean; compactImages?: boolean; linkPreviews?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const blocks = useBlockAssembler(content, streaming)
 
@@ -3165,6 +3319,10 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   /** Stable identity so every chip in a long transcript doesn't re-render when
    *  this component does. */
   const pathActions = useMemo<PathActions>(() => ({ onFileOpen, onFolderOpen }), [onFileOpen, onFolderOpen])
+  const sessionActions = useMemo<SessionActions>(
+    () => ({ onSessionOpen, sessions, activeSession }),
+    [onSessionOpen, sessions, activeSession],
+  )
 
   // Pre-compute the widget index for each widget block (0-based ordinal of
   // widgets within this message). WidgetFrame uses (messageTs, widgetIndex)
@@ -3252,6 +3410,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
           module-level, so the renderer cannot pass these down as props. */}
       <PathProbeCtx.Provider value={!streaming}>
       <PathActionCtx.Provider value={pathActions}>
+      <SessionActionCtx.Provider value={sessionActions}>
       {/* CompactImagesCtx: user-message ("sent prompt") callers pass compactImages
           so their attached images render as small previews. The provider wraps the
           blocks here (a context Provider renders no DOM node, so data-image-scope /
@@ -3288,6 +3447,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
         ))}
       </ImageVersionCtx.Provider>
       </CompactImagesCtx.Provider>
+      </SessionActionCtx.Provider>
       </PathActionCtx.Provider>
       </PathProbeCtx.Provider>
     </div>
