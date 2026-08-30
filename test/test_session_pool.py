@@ -1019,6 +1019,7 @@ class TestReloadProviderFactoryRefillsPool:
         old_provider.shutdown.assert_awaited_once()
         # Pool started was reset and start_pool ran (non-blocking task created)
         assert mgr._pool_started is True  # re-set by start_pool
+        await mgr.close_all()
 
     @pytest.mark.asyncio
     async def test_reload_cancels_old_health_task(self):
@@ -1041,6 +1042,7 @@ class TestReloadProviderFactoryRefillsPool:
             await mgr.reload_provider_factory()
 
         fake_task.cancel.assert_called_once()
+        await mgr.close_all()
 
 
 # ---------------------------------------------------------------------------
@@ -1122,6 +1124,7 @@ class TestRefreshDefaultsSparesLiveSessions:
 
         stale_pooled.shutdown.assert_awaited()
         assert mgr._warm_pool.empty()
+        await mgr.close_all()
 
     @pytest.mark.asyncio
     async def test_pool_is_restarted_after_the_drain(self):
@@ -1149,6 +1152,7 @@ class TestRefreshDefaultsSparesLiveSessions:
 
         stale_task.cancel.assert_called_once()
         assert mgr._pool_started is True, "start_pool never re-armed after the drain"
+        await mgr.close_all()
 
 
 # ---------------------------------------------------------------------------
