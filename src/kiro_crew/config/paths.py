@@ -73,18 +73,19 @@ _WORKSPACE_DIR_NAME = "kirocrew-workspace"
 # filesystem probing. ``None`` means "not yet resolved this process".
 _resolved_home: Path | None = None
 
-# Memo for ``config_dir()``: ``(raw KIROCREW_HOME, _resolved_home at the time,
-# result)``. ``config_dir()`` is called from 323 sites and each uncached call
-# does a ``Path.resolve()`` + ``mkdir`` and, on the default path, a breadcrumb
-# read/write — measured 94.9us per call. Keying
-# on the RAW env value keeps the override honoured the moment it changes
-# (``KIROCREW_HOME`` is repointed per test by the suite's isolation fixture, and
-# by pods/worktrees at runtime), and keying on ``_resolved_home`` by identity
-# ties the default-path entry to the resolution cache below — so clearing
-# ``_resolved_home`` (which the test suite does per test) invalidates this memo
-# too instead of pinning a stale home. In a real process both keys are stable
-# after the first call, which is what makes the breadcrumb write
-# effectively once-per-process rather than once-per-call.
+# Memo for ``config_dir()``: ``(raw KIROCREW_HOME, the home the entry was built
+# from, result)``. ``config_dir()`` is called from 323 sites and each uncached
+# call does a ``Path.resolve()`` + ``mkdir`` and, on the default path, a
+# breadcrumb read/write — measured 94.9us per call. Keying on the RAW env value
+# keeps the override honoured the moment it changes (``KIROCREW_HOME`` is
+# repointed per test by the suite's isolation fixture, and by pods/worktrees at
+# runtime), and keying on the resolved home by identity ties the default-path
+# entry to the resolution cache above — so clearing ``_resolved_home`` (which
+# the test suite does per test) invalidates this memo too instead of pinning a
+# stale home. For that invalidation to hold, the default path stores the home it
+# RETURNED rather than a re-read of the global; see ``config_dir``. In a real
+# process both keys are stable after the first call, which is what makes the
+# breadcrumb write effectively once-per-process rather than once-per-call.
 _config_dir_memo: tuple[str | None, Path | None, Path] | None = None
 
 
@@ -283,7 +284,18 @@ def config_dir() -> Path:
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.
     _write_recovery_breadcrumb(d)
-    _config_dir_memo = (override_raw, _resolved_home, d)
+    # Key on ``d``, the home this call actually resolved, NOT on a re-read of
+    # ``_resolved_home``. The two normally hold the same object, but not always:
+    # the global is written only by ``_resolve_default_home``, so a resolution
+    # that bypasses it (a stubbed resolver in a test, or a reset of the global
+    # landing between the resolve above and this line) leaves the global ``None``
+    # while ``d`` is a real path. Storing that ``None`` as the key records an
+    # entry whose key is satisfied by every later "no override, home not yet
+    # resolved" call — the state the suite's isolation fixture recreates per
+    # test — so the unrelated ``d`` would be served as if freshly resolved.
+    # Keying on ``d`` keeps the invariant above literal: the entry is live only
+    # while the resolution cache still holds the same home.
+    _config_dir_memo = (override_raw, d, d)
     return d
 
 

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from unittest.mock import patch
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 PATHS_MODULE = SRC / "config" / "paths.py"
@@ -555,3 +556,82 @@ class TestResolutionDoesNotRepeatStartupMaintenance:
         monkeypatch.setenv("KIROCREW_HOME", str(good))
         assert paths._valid_override_home() is not None
         assert paths.data_home().resolve() == good.resolve()
+
+
+class TestConfigDirMemoIsNotServedAfterTheHomeIsCleared:
+    """A ``config_dir()`` memo entry must not outlive the home it was built from.
+
+    The entry is keyed on ``(raw KIROCREW_HOME, resolved home)`` and the suite's
+    autouse isolation fixture clears ``_resolved_home`` per test precisely so a
+    home resolved by one test can never be served to the next. That invalidation
+    only holds if the default path keys the entry on the home it RETURNED. Keying
+    it on a re-read of the global records ``(None, None, <that test's dir>)``
+    whenever the resolution bypassed the global — a stubbed resolver, or a reset
+    of the global landing between the resolve and the store — and then every
+    later "no override, home not yet resolved" call, which is exactly the state
+    the fixture recreates, hits that entry and gets the unrelated directory.
+
+    MEASURED: with the key re-read from the global, running
+    ``test_first_resolution_still_performs_maintenance`` (it stubs the resolver)
+    before ``test/test_mcp_core.py::TestSpawnRunSessionKeyRouting::
+    test_falls_back_to_pid_file`` in one process made the latter fail — the MCP
+    session-key fallback looked for its ``session_pid_*.txt`` under the earlier
+    test's tmp dir. Under ``-n auto`` whether the two share a worker varies per
+    run, which is what made it an intermittent CI failure rather than a
+    reproducible one.
+    """
+
+    def test_entry_from_a_bypassed_resolution_is_not_served_later(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.config import paths
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        stubbed = tmp_path / "stubbed"
+        # The breadcrumb is incidental to what this test asserts, and it is the
+        # one part of the default path that writes OUTSIDE the resolved home:
+        # ``_write_recovery_breadcrumb`` targets ``Path.home()`` directly, so the
+        # first phase below -- which resolves through a stubbed resolver, before
+        # ``Path.home`` is patched -- would drop a real
+        # ``~/.kirocrew.breadcrumb`` on the machine running the suite.
+        monkeypatch.setattr(paths, "_write_recovery_breadcrumb", lambda _d: None)
+
+        # A resolution that never writes ``_resolved_home`` (what a stubbed
+        # resolver does, and what a concurrent reset of the global does).
+        with monkeypatch.context() as m:
+            m.setattr(paths, "_resolved_home", None)
+            m.setattr(paths, "_resolve_default_home", lambda: stubbed)
+            assert paths.config_dir() == stubbed
+            assert paths._resolved_home is None, "precondition: global left unset"
+
+        # The next caller's state: no override, resolution cache clear.
+        monkeypatch.setattr(paths, "_resolved_home", None)
+        real_home = tmp_path / "real-home"
+        with patch("pathlib.Path.home", return_value=real_home):
+            resolved = paths.config_dir()
+
+        assert resolved == real_home / ".kiro" / "crew", (
+            f"config_dir() served a memo entry from a foreign home: {resolved}"
+        )
+
+    def test_the_memo_still_caches_a_normal_default_resolution(
+        self, tmp_path, monkeypatch
+    ):
+        """Negative control: the fix must not turn the memo off.
+
+        Two consecutive default-path calls must hit the entry, which is what keeps
+        the breadcrumb refresh once-per-process instead of once-per-call.
+        """
+        from kiro_crew.config import paths
+
+        monkeypatch.delenv("KIROCREW_HOME", raising=False)
+        monkeypatch.setattr(paths, "_resolved_home", None)
+        calls: list[int] = []
+        monkeypatch.setattr(paths, "_write_recovery_breadcrumb", lambda d: calls.append(1))
+
+        with patch("pathlib.Path.home", return_value=tmp_path / "home"):
+            first = paths.config_dir()
+            second = paths.config_dir()
+
+        assert first == second == tmp_path / "home" / ".kiro" / "crew"
+        assert calls == [1], f"memo did not serve the second call: {calls}"
