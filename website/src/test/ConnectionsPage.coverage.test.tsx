@@ -476,7 +476,7 @@ describe('a connected provider', () => {
     // the same dishonesty class this slice exists to remove.
     const note = await screen.findByRole('status')
     expect(note).toHaveTextContent(
-      'The stored grant was removed. Your server configuration was left unchanged.',
+      'The stored grant was removed. Your server configuration was left unchanged. You can manage this entry from the MCP Servers tab.',
     )
   })
 

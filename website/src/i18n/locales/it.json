@@ -9472,7 +9472,7 @@
       "disconnect_census_incomplete": "L'autorizzazione memorizzata è stata conservata perché non è stato possibile leggere una fonte di configurazione per escludere che un altro server la utilizzi. Controlla la configurazione del server e disconnetti di nuovo.",
       "disconnect_census_incomplete_source": "L'autorizzazione memorizzata è stata conservata perché non è stato possibile leggere {{source}} per escludere che un altro server la utilizzi. Correggi o rimuovi quel file e disconnetti di nuovo.",
       "disconnect_entry_left_alone": "La configurazione del server non è stata modificata. Puoi gestire questa voce dalla scheda Server MCP.",
-      "disconnect_entry_not_ours": "L'autorizzazione memorizzata è stata rimossa. La configurazione del server non è stata modificata.",
+      "disconnect_entry_not_ours": "L'autorizzazione memorizzata è stata rimossa. La configurazione del server non è stata modificata. Puoi gestire questa voce dalla scheda Server MCP.",
       "disconnect_grant_shared": "L'autorizzazione memorizzata è stata mantenuta perché lo stesso endpoint è configurato anche da: {{names}}. Revocarla presso il provider taglierebbe anche il loro accesso.",
       "disconnect_grant_survived": "Parte dell'autorizzazione memorizzata non è stata rimossa. Revoca l'accesso presso il provider.",
       "disconnected_locally": "Disconnesso localmente. Revoca l’accesso presso il provider per annullare completamente l’autorizzazione.",

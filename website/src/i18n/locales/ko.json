@@ -9174,7 +9174,7 @@
       "disconnect_census_incomplete": "구성 소스를 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 서버 구성을 확인한 후 다시 연결 해제하세요.",
       "disconnect_census_incomplete_source": "{{source}}을(를) 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 해당 파일을 수정하거나 제거한 후 다시 연결 해제하세요.",
       "disconnect_entry_left_alone": "서버 구성은 변경되지 않았습니다. 이 항목은 MCP 서버 탭에서 관리할 수 있습니다.",
-      "disconnect_entry_not_ours": "저장된 권한을 삭제했습니다. 서버 구성은 변경되지 않았습니다.",
+      "disconnect_entry_not_ours": "저장된 권한을 삭제했습니다. 서버 구성은 변경되지 않았습니다. 이 항목은 MCP 서버 탭에서 관리할 수 있습니다.",
       "disconnect_grant_shared": "같은 엔드포인트를 다음에서도 구성하고 있으므로 저장된 권한은 유지되었습니다: {{names}}. 제공업체에서 취소하면 이들의 접근도 차단됩니다.",
       "disconnect_grant_survived": "저장된 권한의 일부를 제거할 수 없었습니다. 공급자에서 액세스를 취소하세요.",
       "disconnected_locally": "로컬에서 연결이 해제되었습니다. 권한을 완전히 취소하려면 공급자에서 액세스를 취소하세요.",
