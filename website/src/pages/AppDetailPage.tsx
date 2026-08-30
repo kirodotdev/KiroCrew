@@ -156,6 +156,36 @@ interface AppManifest {
   minKiroCrewVersion?: string
 }
 
+type ScreenshotFailureState = {
+  screensKey: string
+  fallbacksKey: string
+  primary: ReadonlySet<number>
+  fallback: ReadonlySet<number>
+}
+
+const NO_SCREENSHOT_FAILURES: ReadonlySet<number> = new Set()
+
+function recordScreenshotFailure(
+  previous: ScreenshotFailureState,
+  screensKey: string,
+  fallbacksKey: string,
+  index: number,
+  tier: 'primary' | 'fallback',
+): ScreenshotFailureState {
+  // A failure belongs to the generation that rendered the image. The URL lists
+  // are re-armed during render (below), so a handler still holding an older
+  // generation's keys is by definition superseded: drop it rather than let it
+  // resurrect a set the current generation already cleared.
+  if (previous.screensKey !== screensKey || previous.fallbacksKey !== fallbacksKey) {
+    return previous
+  }
+  const primary = new Set<number>(previous.primary)
+  const fallback = new Set<number>(previous.fallback)
+  if (tier === 'primary') primary.add(index)
+  else fallback.add(index)
+  return { screensKey, fallbacksKey, primary, fallback }
+}
+
 // Exported for tests: the per-index latch guards (self-match, '' placeholder
 // skip) are not all reachable through the page once the call site gates the
 // fallback list on a registry-supplied primary.
@@ -181,27 +211,50 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
   // #6886; the `screenshots` case pre-existed as a `.map` crash).
   const screenList: string[] = Array.isArray(screenshots) ? screenshots : []
   const fallbackList: string[] = Array.isArray(fallbacks) ? fallbacks : []
-  // Per-thumbnail failure latches, mirroring AppIcon's two-latch shape
-  // (#6804): a thumbnail whose primary errored swaps to ITS OWN fallback; one
+  // Per-thumbnail failure latches: a thumbnail whose primary errored swaps to
+  // ITS OWN fallback; one
   // whose fallback errored too is hidden — the pre-#6864 terminal state.
   // Per-index state, not one flag for the strip: one unreachable asset must
   // not blank its neighbours. `fallbacks` is optional so untouched callers
   // stay default-inert (the contract #6865 locked for AppIcon).
-  const [primaryFailed, setPrimaryFailed] = useState<ReadonlySet<number>>(new Set())
-  const [fallbackFailed, setFallbackFailed] = useState<ReadonlySet<number>>(new Set())
-  // Per-URL reset discipline (AppIcon's, list-shaped), keyed on the joined
-  // URLs rather than array identity because the caller builds these props
-  // inline, so identity changes every render. A changed primary list (theme
-  // flip, refetch) clears BOTH latch sets; a changed fallback list alone (an
-  // install completing under a mounted page) re-arms only the fallback
-  // latches. '\n' cannot appear in a URL, so the join is unambiguous.
   const screensKey = screenList.join('\n')
   const fallbacksKey = fallbackList.join('\n')
-  useEffect(() => {
-    setPrimaryFailed(new Set())
-    setFallbackFailed(new Set())
-  }, [screensKey])
-  useEffect(() => { setFallbackFailed(new Set()) }, [fallbacksKey])
+  // Re-arm the latches during render rather than in a passive effect. An image
+  // rendered for a new generation can fail BEFORE an effect would run, and the
+  // effect's reset would then erase that real failure and re-show the dead URL.
+  // Adjusting state while rendering re-arms before the new <img> is committed,
+  // and — unlike binding failures to the URL text alone — it clears on EVERY
+  // transition, so returning to an earlier list (theme flip back, refetch)
+  // retries instead of restoring a stale failure. A primary-list change re-arms
+  // both latch sets; a fallback-only change re-arms only the fallback latches.
+  const [failures, setFailures] = useState<ScreenshotFailureState>(() => ({
+    screensKey,
+    fallbacksKey,
+    primary: NO_SCREENSHOT_FAILURES,
+    fallback: NO_SCREENSHOT_FAILURES,
+  }))
+  if (failures.screensKey !== screensKey) {
+    setFailures({
+      screensKey,
+      fallbacksKey,
+      primary: NO_SCREENSHOT_FAILURES,
+      fallback: NO_SCREENSHOT_FAILURES,
+    })
+  } else if (failures.fallbacksKey !== fallbacksKey) {
+    setFailures({
+      screensKey,
+      fallbacksKey,
+      primary: failures.primary,
+      fallback: NO_SCREENSHOT_FAILURES,
+    })
+  }
+  const primaryFailed = failures.screensKey === screensKey
+    ? failures.primary
+    : NO_SCREENSHOT_FAILURES
+  const fallbackFailed = failures.screensKey === screensKey
+    && failures.fallbacksKey === fallbacksKey
+    ? failures.fallback
+    : NO_SCREENSHOT_FAILURES
 
   // ── screenshot magnification (issue #6162) ────────────────────────────────
   // This lightbox is the third full-viewport magnify overlay, bound by the same
@@ -363,8 +416,10 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
                   alt={i18nT('pages.appDetailPage.screenshot', { n: i + 1 })}
                   className="h-40 rounded-lg border border-border hover:border-accent/40 hover:shadow-md transition-all object-cover"
                   onError={() => {
-                    if (!primaryFailed.has(i)) setPrimaryFailed(prev => new Set(prev).add(i))
-                    else setFallbackFailed(prev => new Set(prev).add(i))
+                    const tier = primaryFailed.has(i) ? 'fallback' : 'primary'
+                    setFailures(previous => recordScreenshotFailure(
+                      previous, screensKey, fallbacksKey, i, tier,
+                    ))
                   }}
                 />
               </button>
@@ -457,26 +512,36 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
  */
 // Exported for tests (direct latch-discipline coverage).
 export function HeroBanner({ src, fallbackSrc, isDetail }: { src: string; fallbackSrc?: string; isDetail: boolean }) {
-  const [primaryFailed, setPrimaryFailed] = useState(false)
-  const [fallbackFailed, setFallbackFailed] = useState(false)
-  // A changed primary clears BOTH latches: a theme flip changes `src` without
-  // any prop the parent re-keys on, and an app update rewrites the local file
-  // in place, so a stale fallback latch would be a sticky failure.
-  useEffect(() => {
-    setPrimaryFailed(false)
-    setFallbackFailed(false)
-  }, [src])
-  // The same per-URL reset for the fallback latch alone: the fallback
-  // candidate moves independently of the primary (a theme flip where only the
-  // fallback pair has a dark variant, an install completing under a mounted
-  // page) and must never inherit a stale failure.
-  useEffect(() => { setFallbackFailed(false) }, [fallbackSrc])
   // Same-origin gate on the fallback, mirroring resolvedAt in the gallery:
   // the registry-only raw-row spread can deliver attacker-chosen fallback
   // keys, and an absolute URL honoured on error would leak the viewer's
   // address to a third-party host. installedArt only emits same-origin
   // routes, so real installed-app fallbacks always pass (GPT finding, #6886).
   const safeFallback = fallbackSrc && classifyManifestArt(fallbackSrc) === 'same-origin' ? fallbackSrc : ''
+  // Re-arm the latches during render rather than in a passive effect. The image
+  // for a new URL can fail BEFORE an effect would run, and the effect's reset
+  // would then erase that real failure and re-show the dead URL. Adjusting
+  // state while rendering re-arms before the new <img> is committed, and —
+  // unlike binding the failure to the URL text alone — it clears on EVERY
+  // transition, so a theme flip back to a previously failed URL retries instead
+  // of restoring a stale failure. A changed primary re-arms both latches; a
+  // fallback that moves on its own (an install completing under a mounted page)
+  // re-arms only the fallback latch.
+  const [latch, setLatch] = useState<{
+    src: string
+    fallback: string
+    primaryFailed: boolean
+    fallbackFailed: boolean
+  }>(() => ({ src, fallback: safeFallback, primaryFailed: false, fallbackFailed: false }))
+  if (latch.src !== src) {
+    setLatch({ src, fallback: safeFallback, primaryFailed: false, fallbackFailed: false })
+  } else if (latch.fallback !== safeFallback) {
+    setLatch({ src, fallback: safeFallback, primaryFailed: latch.primaryFailed, fallbackFailed: false })
+  }
+  const primaryFailed = latch.src === src && latch.primaryFailed
+  const fallbackFailed = latch.src === src
+    && latch.fallback === safeFallback
+    && latch.fallbackFailed
   const useFallback = primaryFailed && !!safeFallback && safeFallback !== src && !fallbackFailed
   if (!src || (primaryFailed && !useFallback)) return null
   return (
@@ -488,8 +553,14 @@ export function HeroBanner({ src, fallbackSrc, isDetail }: { src: string; fallba
         alt=""
         className="w-full h-full object-cover"
         onError={() => {
-          if (!primaryFailed) setPrimaryFailed(true)
-          else setFallbackFailed(true)
+          setLatch(previous => {
+            // Superseded generation: the current render already re-armed these
+            // tokens, so this error is about a URL no longer on screen.
+            if (previous.src !== src || previous.fallback !== safeFallback) return previous
+            return previous.primaryFailed
+              ? { ...previous, fallbackFailed: true }
+              : { ...previous, primaryFailed: true }
+          })
         }}
       />
     </div>

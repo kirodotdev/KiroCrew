@@ -17,6 +17,7 @@
 import { fireEvent, render, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const theme = { current: 'light' as 'light' | 'dark' }
@@ -57,6 +58,19 @@ function imgBySrc(src: string): HTMLImageElement | null {
 function heroBox(): HTMLElement | null {
   // The hero container is the page's only aspect-ratio box.
   return document.querySelector('.aspect-video, .aspect-\\[25\\/6\\]')
+}
+
+function ErrorImageInEarlierEffect({ src, enabled }: { src: string; enabled: boolean }) {
+  // This sibling is rendered before the image component, so React runs its
+  // passive effect first. It deterministically models another page effect
+  // observing a load error before later image bookkeeping effects.
+  useEffect(() => {
+    if (!enabled) return
+    const image = imgBySrc(src)
+    expect(image).not.toBeNull()
+    fireEvent.error(image!)
+  }, [enabled, src])
+  return null
 }
 
 function detailUi(name = 'demo-app') {
@@ -353,6 +367,40 @@ describe('AppDetailPage screenshots — per-thumbnail local fallback, index-alig
 })
 
 describe('ScreenshotGallery — component contract', () => {
+  it('keeps an error observed during a new screenshot generation', () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <ErrorImageInEarlierEffect src={R_S1} enabled={false} />
+        <ScreenshotGallery screenshots={[R_S1]} />
+      </MemoryRouter>,
+    )
+
+    rerender(
+      <MemoryRouter>
+        <ErrorImageInEarlierEffect src={R_S2} enabled />
+        <ScreenshotGallery screenshots={[R_S2]} />
+      </MemoryRouter>,
+    )
+
+    expect(imgBySrc(R_S2)).toBeNull()
+  })
+
+  it('retries a previously failed list when the strip returns to it (A→B→A)', () => {
+    // A theme flip swaps the strip to the dark URLs and back. The failure the
+    // light generation recorded must not be restored on the way back: the asset
+    // may exist now (an install completing, a transient network error), and the
+    // pre-fix effect reset retried on every URL change.
+    const { rerender } = render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1]} /></MemoryRouter>)
+    fireEvent.error(imgBySrc(R_S1)!)
+    expect(imgBySrc(R_S1)).toBeNull()
+
+    rerender(<MemoryRouter><ScreenshotGallery screenshots={[R_SD1]} /></MemoryRouter>)
+    expect(imgBySrc(R_SD1)).not.toBeNull()
+
+    rerender(<MemoryRouter><ScreenshotGallery screenshots={[R_S1]} /></MemoryRouter>)
+    expect(imgBySrc(R_S1)).not.toBeNull()
+  })
+
   it('stays default-inert with no fallbacks prop: error unmounts the thumbnail, no swap attempted', () => {
     render(<MemoryRouter><ScreenshotGallery screenshots={[R_S1, R_S2]} /></MemoryRouter>)
     fireEvent.error(imgBySrc(R_S1)!)
@@ -456,6 +504,40 @@ describe('ScreenshotGallery — component contract', () => {
 })
 
 describe('HeroBanner — component contract', () => {
+  it('keeps an error observed during a new hero generation', () => {
+    const { rerender } = render(
+      <>
+        <ErrorImageInEarlierEffect src={R_HERO} enabled={false} />
+        <HeroBanner src={R_HERO} fallbackSrc={LOCAL_HERO} isDetail={false} />
+      </>,
+    )
+
+    rerender(
+      <>
+        <ErrorImageInEarlierEffect src={R_HERO_DARK} enabled />
+        <HeroBanner src={R_HERO_DARK} isDetail={false} />
+      </>,
+    )
+
+    expect(imgBySrc(R_HERO_DARK)).toBeNull()
+    expect(heroBox()).toBeNull()
+  })
+
+  it('retries a previously failed hero when the page returns to it (A→B→A)', () => {
+    // Light hero fails → dark theme → back to light. The light failure belongs
+    // to the generation that recorded it and must not be restored, or the hero
+    // stays hidden without ever retrying.
+    const { rerender } = render(<HeroBanner src={R_HERO} isDetail={false} />)
+    fireEvent.error(imgBySrc(R_HERO)!)
+    expect(heroBox()).toBeNull()
+
+    rerender(<HeroBanner src={R_HERO_DARK} isDetail={false} />)
+    expect(imgBySrc(R_HERO_DARK)).not.toBeNull()
+
+    rerender(<HeroBanner src={R_HERO} isDetail={false} />)
+    expect(imgBySrc(R_HERO)).not.toBeNull()
+  })
+
   it('a fallback URL that changes independently re-arms the fallback latch alone', async () => {
     const NEXT = '/apps/demo-app/art/assets/hero-v2.png'
     const { rerender } = render(<HeroBanner src={R_HERO} fallbackSrc={LOCAL_HERO} isDetail={false} />)
