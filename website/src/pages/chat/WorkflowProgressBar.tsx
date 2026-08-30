@@ -87,7 +87,11 @@ const WorkflowProgressBar = memo(function WorkflowProgressBar({ slot }: { slot: 
   const anyExpanded = visible.some(r => expanded[r.run_id])
 
   return (
-    <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    // `relative z-[2]` clears the transcript's bottom mask (`z-[1]`), which
+    // overshoots below the scrollport edge for a composer status stack it assumes
+    // is empty. Whenever this bar is the topmost thing in that stack, an auto
+    // z-index let the mask's opaque tail shave its top border and corners.
+    <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       <div
         data-testid="workflow-progress-bar"
         className={`mb-1 rounded-md bg-accent/10 border border-accent/20 animate-slide-up ${

@@ -66,7 +66,14 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
   if (count <= 0) return null
   return (
     <div
-      className="mx-auto w-full px-4"
+      // `relative z-[2]` clears the transcript's bottom mask. That mask is
+      // `z-[1]` and deliberately overshoots COMPOSER_MASK_OVERSHOOT_PX BELOW the
+      // scrollport edge to sit flush against the composer box — an overshoot
+      // sized for an EMPTY composer status stack. This bar is the first thing in
+      // that stack, so at auto z-index the mask's opaque tail painted over its
+      // top 10px: top border, both top corners and the first line's ascenders
+      // were shaved, which reads as the card being clipped by the UI.
+      className="relative z-[2] mx-auto w-full px-4"
       style={{ maxWidth: 'var(--mc-content-width, 900px)' }}
       data-testid="subagent-delivery-progress"
     >
@@ -228,7 +235,14 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
   }
 
   return (
-    <div className="px-4 mx-auto w-full relative" style={{ maxWidth: 'var(--mc-content-width, 900px)', zIndex: 0 }}>
+    // `zIndex: 2` clears the transcript's bottom mask (`z-[1]`), whose
+    // COMPOSER_MASK_OVERSHOOT_PX tail reaches below the scrollport edge on the
+    // premise that the composer's own gap is what sits there. When this stack is
+    // the first thing under the transcript the tail lands on the front card
+    // instead and shaved its top border and corners. Still far below the
+    // composer's own `z-10`, so the collapsed card's -OVERLAP fuse keeps sliding
+    // UNDER the input box rather than over it.
+    <div className="px-4 mx-auto w-full relative" style={{ maxWidth: 'var(--mc-content-width, 900px)', zIndex: 2 }}>
       <motion.div
         className="relative cursor-pointer"
         animate={{ height: targetHeight }}

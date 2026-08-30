@@ -110,6 +110,15 @@ const TRANSCRIPT_MASK_ABOVE_PX = 16
  * pointer-only drag handle). Overshooting FURTHER is not harmless — the mask is
  * `z-[1]` and the composer sits in a later auto-z sibling, so any excess paints over
  * the box's own top border and dims it.
+ *
+ * That distance only holds while the composer status stack is EMPTY. When any status
+ * bar renders, IT is what occupies the strip, and the mask's opaque tail landed on the
+ * bar's top 10px instead — shaving its top border, both top corners and the first
+ * line's ascenders, which reads as the bar being clipped by the UI. So every child of
+ * the stack is positioned above `z-[1]` (the bars at `z-[2]`, the sub-agent wave chip
+ * already at `z-[46]`); the tail then paints harmlessly BEHIND the topmost bar, whose
+ * own box is what sits flush under the transcript. `ChatPage.statusStackAboveMask`
+ * pins that ordering, and pins the child list so a new bar cannot forget it.
  */
 const COMPOSER_MASK_OVERSHOOT_PX = 10
 // No arbitrary cap on pinned-jump page loads: the loop terminates when the

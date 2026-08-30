@@ -45,7 +45,11 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0
 
   return (
-    <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+    // `relative z-[2]` clears the transcript's bottom mask (`z-[1]`), which
+    // overshoots below the scrollport edge for a composer status stack it assumes
+    // is empty. Whenever this bar is the topmost thing in that stack, an auto
+    // z-index let the mask's opaque tail shave its top border and corners.
+    <div className="px-4 mx-auto w-full relative z-[2]" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
       {/* Collapsed = a small pill that hugs its content; expanded = a full-width
           panel. Keeping the collapsed state inline stops it reading as another
           full-width bar competing with the composer below it. */}
