@@ -529,10 +529,24 @@ class MeetingSession:
         # Translated from the DICTIONARY-CORRECTED text, and from inside the same
         # noise gate the agents get: the corrections exist because speech-to-text
         # mangles project nouns, and a mangled noun mistranslates into something
-        # unrecognisable. Enqueueing never blocks or raises, and the count below
+        # unrecognisable. The CHAT_PREFIX marker is agent context, not speech, so
+        # translating it would spend prompt tokens on it and surface the literal
+        # marker in the panel's source column. It is stripped from the RAW line,
+        # before correction and the length cap, so a max-length typed message is
+        # capped on its payload rather than losing its tail to the marker's
+        # characters. Enqueueing never blocks or raises, and the count below
         # deliberately does not include it — `dispatched` means "agents reached".
         if self.translations is not None:
-            self.translations.enqueue(text)
+            source = prepared
+            raw = text.strip()
+            if raw.startswith(k.CHAT_PREFIX):
+                rest = raw[len(k.CHAT_PREFIX) :]
+                # Anchored to a word boundary: only the bare marker or "[chat] …"
+                # is agent context. Speech that merely starts with a marker-like
+                # token (e.g. "[chat]room …") is kept verbatim.
+                if not rest or rest[:1].isspace():
+                    source = self._prepare_line(rest.lstrip())
+            self.translations.enqueue(source)
         accepted = 0
         for name in self._recipient_names():
             self.agents[name].enqueue(prepared)

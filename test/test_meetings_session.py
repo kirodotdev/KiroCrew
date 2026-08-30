@@ -433,6 +433,68 @@ class TestMeetingSession:
         session.broadcast("x" * (k.MAX_TRANSCRIPT_CHARS + 500))
         assert len(session.agents["note-taker"].queue[0]) == k.MAX_TRANSCRIPT_CHARS
 
+    def test_broadcast_strips_chat_prefix_from_the_translation_source(self, root: Path):
+        """#6763: the ``[chat]`` marker is agent context, not speech.
+
+        The agents keep the prefixed line (their prompt relies on the marker), but
+        the translation source must be the clean text — otherwise the literal
+        marker is spent as translation-prompt tokens and shows up in the
+        TranslationSidebar's source column.
+        """
+        session = self._session(root)
+        session.translations = mock.Mock()
+        session.broadcast(f"{k.CHAT_PREFIX} the deployment is done")
+        session.translations.enqueue.assert_called_once_with("the deployment is done")
+        # The agent-broadcast line is unchanged: the marker still reaches agents.
+        assert session.agents["note-taker"].queue == [f"{k.CHAT_PREFIX} the deployment is done"]
+
+    def test_broadcast_strips_only_the_anchored_marker(self, root: Path):
+        """The strip is anchored: only a leading, whitespace-bounded marker goes.
+
+        A mid-line occurrence is quoted speech, and a marker-like token glued to
+        more text (``[chat]room``) is speech too — both must reach translation
+        verbatim. A bare marker line strips to empty, which the queue's blank
+        filter then drops rather than translating nothing.
+        """
+        session = self._session(root)
+        session.translations = mock.Mock()
+        session.broadcast(f"we discussed {k.CHAT_PREFIX} yesterday")
+        session.translations.enqueue.assert_called_once_with(
+            f"we discussed {k.CHAT_PREFIX} yesterday"
+        )
+        session.translations.enqueue.reset_mock()
+        session.broadcast(f"{k.CHAT_PREFIX}room availability is limited")
+        session.translations.enqueue.assert_called_once_with(
+            f"{k.CHAT_PREFIX}room availability is limited"
+        )
+        session.translations.enqueue.reset_mock()
+        session.broadcast(k.CHAT_PREFIX)
+        session.translations.enqueue.assert_called_once_with("")
+
+    def test_a_max_length_typed_line_keeps_its_full_payload_in_translation(self, root: Path):
+        """The transcript cap is charged against the payload, not the marker.
+
+        A typed line arrives as ``[chat] <payload>``; correcting and clamping the
+        prefixed line and stripping afterwards would silently drop the payload's
+        final ``len("[chat] ")`` characters at the ceiling. The marker is stripped
+        from the raw line first, so a max-length payload survives intact.
+        """
+        session = self._session(root)
+        session.translations = mock.Mock()
+        payload = "x" * k.MAX_TRANSCRIPT_CHARS
+        session.broadcast(f"{k.CHAT_PREFIX} {payload}")
+        session.translations.enqueue.assert_called_once_with(payload)
+
+    def test_broadcast_translates_the_dictionary_corrected_speech_line(self, root: Path):
+        """A speech line's translation source is the corrected text, unprefixed."""
+        sess.shared_dictionary().load_terms(
+            [{"correct": "DynamoDB", "aliases": ["dynamo db"]}]
+        )
+        session = self._session(root)
+        session.translations = mock.Mock()
+        session.broadcast("we switched to dynamo db")
+        session.translations.enqueue.assert_called_once_with("we switched to DynamoDB")
+
     def test_expiry(self, root: Path):
         session = self._session(root)
         assert session.expired is False
