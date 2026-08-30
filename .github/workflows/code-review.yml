@@ -406,3 +406,40 @@ jobs:
             exit 1
           fi
           echo "Commit count verified ($COMMIT_COUNT of at most $MAX_COMMITS)."
+
+      # ── Pattern harvest on fix PRs ──────────────────────────────────
+      # Every fix is a chance to retire its whole defect class. Fix/revert
+      # PRs must carry a "Pattern harvest" section stating either a rule
+      # candidate (semgrep / lint / review-prompt / agents-md) or why the
+      # defect is a one-off. Presence-only: content is judged by reviewers,
+      # never by this gate. Feature/docs/chore PRs are exempt.
+      - name: Require Pattern harvest section on fix PRs
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if ! echo "$PR_TITLE" | grep -qiE '^(fix|revert)([(!:]|$)'; then
+            echo "Not a fix/revert PR; Pattern harvest section not required."
+            exit 0
+          fi
+          if ! printf '%s' "$PR_BODY" | grep -qiE '^##+ *Pattern harvest'; then
+            echo "::error::Fix/revert PRs must carry a '## Pattern harvest' section."
+            echo ""
+            echo "  State either a rule candidate or why the defect is a one-off:"
+            echo ""
+            echo "    ## Pattern harvest"
+            echo "    Rule candidate: semgrep"
+            echo "    Pattern: sentinel return value used in boolean context"
+            echo ""
+            echo "  or:"
+            echo ""
+            echo "    ## Pattern harvest"
+            echo "    Not generalizable: typo in a single format string"
+            echo ""
+            exit 1
+          fi
+          if ! printf '%s' "$PR_BODY" | grep -qiE '^ *(Rule candidate|Not generalizable) *:'; then
+            echo "::error::The Pattern harvest section must contain a 'Rule candidate:' or 'Not generalizable:' line."
+            exit 1
+          fi
+          echo "Pattern harvest section present."

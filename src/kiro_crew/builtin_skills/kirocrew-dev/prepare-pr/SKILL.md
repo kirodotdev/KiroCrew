@@ -83,7 +83,7 @@ Answering is prose work. It never needs a push and never widens the diff.
 |---|---|---|
 | `fixed` | you changed the code | the change and the SHA |
 | `rebutted` | the code stays correct as-is | the evidence it does not hold, **or** the reasoning it is disproportional |
-| `accepted-and-deferred` | the work is already decided, just out of scope here — unlike `needs-a-decision`, nothing is being asked | why, plus an issue whose body names a task someone can pick up |
+| `accepted-and-deferred` | the work is already decided, just out of scope here — unlike `needs-a-decision`, nothing is being asked | why, plus an issue whose body names a task someone can pick up. The issue MUST carry the `deferred-finding` label, an assignee (the owner), and a `Due: YYYY-MM-DD` line in its body — an untracked deferral is how flagged findings ship anyway, and the Disposition Deferral Check replies to dispositions whose issue lacks any of the three. Security, data-loss, and corruption findings are never deferrable: fix them in-PR or get a human `/ai-review` override |
 | `needs-a-decision` | the outcome depends on a maintainer ruling | the question, put to the maintainer directly — do **not** file an issue for it |
 
 **What must be answered** (none of these ever reds a check, so nothing else in the

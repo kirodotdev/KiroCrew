@@ -1,0 +1,112 @@
+# Deferred-finding discipline (RFC: closing the fix loop).
+#
+# A review finding dispositioned as `accepted-and-deferred` is a promise, and
+# 63% of this repo's traceable escaped bugs were exactly such promises: flagged
+# by a review lane, deferred to a follow-up issue, never recycled, then shipped
+# and broke. This workflow validates the promise's shape at the moment it is
+# made: a deferral must name an open follow-up issue that carries the
+# `deferred-finding` label, an assignee (the owner), and a due date (a
+# `Due: YYYY-MM-DD` line in the issue body, or a milestone with a due date).
+#
+# ADVISORY BY DESIGN: an issue_comment event cannot gate a PR that is already
+# green, so this lane replies with what is missing rather than failing a
+# required check. The teeth live elsewhere: the GPT lane's ROUND CONVERGENCE
+# rules re-raise security/data-loss findings that a deferral tries to cover,
+# and the weekly deferred-findings-audit surfaces overdue items.
+#
+# INJECTION SAFETY: the comment body is attacker-controlled on a public repo.
+# It reaches shell steps ONLY via env (never ${{ }} inside run:), and this
+# workflow takes no privileged action from its content — it reads, validates,
+# and replies.
+name: Disposition Deferral Check
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  validate-deferral:
+    # Only PR comments that are disposition records mentioning a deferral.
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '<!-- ai-review-disposition') &&
+      contains(github.event.comment.body, 'accepted-and-deferred')
+    name: Validate deferred-finding promise
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the deferral names a tracked follow-up issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+        run: |
+          set -euo pipefail
+          problems=""
+
+          # Issue references in the disposition body ("#123"), excluding the
+          # PR's own number. The deferral must point at least one of them at a
+          # properly-shaped follow-up issue.
+          refs="$(printf '%s' "$COMMENT_BODY" | grep -oE '#[0-9]+' | tr -d '#' | sort -u | grep -vx "$PR_NUMBER" || true)"
+
+          if [ -z "$refs" ]; then
+            problems="- The deferral names no follow-up issue. File one and reference it (\`#<number>\`) in the disposition."
+          else
+            valid=""
+            for n in $refs; do
+              issue_json="$(gh api "repos/$REPO/issues/$n" 2>/dev/null || true)"
+              [ -z "$issue_json" ] && continue
+              # Skip refs that are PRs, not issues.
+              if printf '%s' "$issue_json" | jq -e '.pull_request' >/dev/null 2>&1; then
+                continue
+              fi
+              state="$(printf '%s' "$issue_json" | jq -r '.state // ""')"
+              has_label="$(printf '%s' "$issue_json" | jq -r '[.labels[].name] | index("deferred-finding") != null')"
+              has_assignee="$(printf '%s' "$issue_json" | jq -r '(.assignees | length) > 0')"
+              body_due="$(printf '%s' "$issue_json" | jq -r '.body // ""' | grep -cE '^ *Due: *[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)"
+              milestone_due="$(printf '%s' "$issue_json" | jq -r '.milestone.due_on // ""')"
+              missing=""
+              [ "$state" != "open" ] && missing="$missing closed;"
+              [ "$has_label" != "true" ] && missing="$missing no deferred-finding label;"
+              [ "$has_assignee" != "true" ] && missing="$missing no assignee (owner);"
+              if [ "${body_due:-0}" -eq 0 ] && [ -z "$milestone_due" ]; then
+                missing="$missing no due date (add a 'Due: YYYY-MM-DD' line to the issue body, or a milestone with a due date);"
+              fi
+              if [ -z "$missing" ]; then
+                valid="$n"
+                break
+              fi
+              problems="$problems
+          - Issue #$n:$missing"
+            done
+            if [ -n "$valid" ]; then
+              echo "Deferral is tracked by issue #$valid (open, labeled, owned, dated)."
+              exit 0
+            fi
+            if [ -z "$problems" ]; then
+              problems="- None of the referenced numbers resolve to an issue in this repository."
+            fi
+          fi
+
+          echo "Deferral promise is incomplete — replying with requirements."
+          {
+            echo "<!-- deferred-finding-check -->"
+            echo "**This deferral is not yet tracked.** An \`accepted-and-deferred\` disposition must name an open follow-up issue that has:"
+            echo ""
+            echo "- the \`deferred-finding\` label"
+            echo "- an assignee (the owner who will recycle it)"
+            echo "- a due date: a \`Due: YYYY-MM-DD\` line in the issue body, or a milestone with a due date"
+            echo ""
+            echo "What is missing:"
+            echo "$problems"
+            echo ""
+            echo "_An untracked deferral is how flagged findings ship anyway — 63% of this repo's traceable escaped bugs were flagged and then deferred without follow-through. Checked disposition: $COMMENT_URL_"
+          } > /tmp/reply.md
+          gh api "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$(cat /tmp/reply.md)" >/dev/null

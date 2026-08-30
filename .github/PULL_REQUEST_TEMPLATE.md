@@ -55,6 +55,18 @@
 
 <!-- Link to relevant issues, e.g. Fixes #123 -->
 
+## Pattern harvest
+
+<!-- REQUIRED for fix/revert PRs (PR Hygiene checks that this section is
+     present); delete this section otherwise. Every fixed defect is a chance
+     to stop its whole class: say whether this one generalizes.
+
+     One of:
+       Rule candidate: <semgrep | lint | review-prompt | agents-md>
+       Pattern: <one line, e.g. "sentinel return value used in boolean context">
+     or:
+       Not generalizable: <one line on why this defect is a one-off> -->
+
 ## Checklist
 
 - [ ] At most two commits (one is the norm), with a Conventional Commits title (`feat|fix|docs|refactor|perf|test|chore|ci|build|revert: ...`)

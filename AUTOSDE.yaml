@@ -432,3 +432,33 @@ custom-rules:
         unexplained edit to shipped history is the defect this rule exists for.
       - Porting an already-written section verbatim between main and a release
         branch, where the diff adds a section and removes nothing.
+
+  - id: recurring-defect-patterns
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+    rule: |
+      Defect patterns harvested from this repository's own fix history (each
+      appeared as a SERIES of shipped bugs, not a one-off). Flag a changed
+      line that re-introduces one of these classes as an advisory FINDING:
+
+      - A user-supplied or config-sourced STRING used directly in a boolean
+        context, especially for a security-relevant toggle: `bool("false")`
+        is True, so `if config.get("dangerously_skip_permissions"):` passes
+        for the string "false". Require an explicit typed comparison or a
+        real bool before the branch.
+      - A docstring or comment that CONTRADICTS the code below it (an
+        allowlist entry the docstring names but the code omits, a comment
+        saying "denies by default" above a loader that permits). Either the
+        prose or the code is wrong; both shipped as bugs here. Flag the
+        contradiction itself — do not guess which side is intended.
+      - A documented allowlist/denylist whose entries have no round-trip
+        assertion: when a diff adds or edits such a list alongside prose
+        (docstring, spec, comment) enumerating its members, expect a test
+        asserting each documented member is actually in the list.
+
+      This rule is maintained by the pattern-harvest loop (fix PRs propose
+      candidates in their "Pattern harvest" section; accepted ones land
+      here or in semgrep/). Sentinel-return misuse (str.find/rfind -1 in a
+      boolean context) is deliberately NOT listed: semgrep owns it
+      (semgrep/find-sentinel-truthiness.yaml).
