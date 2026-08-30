@@ -238,7 +238,7 @@ def test_provider_duration_wins_over_local_clock(monkeypatch):
 @pytest.mark.parametrize(
     ("stop_reason", "expected_disposition"),
     [
-        (STOP_REASON_END_TURN, MonitorActionDisposition.SUCCESS),
+        (STOP_REASON_END_TURN, None),
         (STOP_REASON_CANCELLED, MonitorActionDisposition.CANCELLATION),
         ("max_tokens", MonitorActionDisposition.FAILURE),
     ],
@@ -246,7 +246,7 @@ def test_provider_duration_wins_over_local_clock(monkeypatch):
 def test_structured_monitor_fans_out_usage_only_from_raw_completion(
     monkeypatch,
     stop_reason: str,
-    expected_disposition: MonitorActionDisposition,
+    expected_disposition: MonitorActionDisposition | None,
 ):
     """One destructive usage read serves telemetry and the evidenced disposition."""
     client = _fake_client()
@@ -290,10 +290,13 @@ def test_structured_monitor_fans_out_usage_only_from_raw_completion(
     assert asyncio.run(orch._fire_slack_nudge(loop)) is True
 
     assert reads == 1
-    assert len(completions) == 1
-    assert completions[0].disposition is expected_disposition
-    assert completions[0].input_tokens == 40
-    assert completions[0].output_tokens == 10
+    if expected_disposition is None:
+        assert completions == []
+    else:
+        assert len(completions) == 1
+        assert completions[0].disposition is expected_disposition
+        assert completions[0].input_tokens == 40
+        assert completions[0].output_tokens == 10
     rows = _monitor_rows()
     assert len(rows) == 1
     assert rows[0]["input"] == 40

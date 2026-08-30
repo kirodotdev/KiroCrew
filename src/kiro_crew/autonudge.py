@@ -1442,14 +1442,19 @@ class AutoNudgeService:
                 or state.last_wake_fingerprint == fingerprint
             ):
                 return False
-            reason = monitor_budget_reason(state, now=checked_at)
+            staged = deepcopy(loop)
+            staged_state = staged.monitor
+            assert staged_state is not None
+            reason = monitor_budget_reason(staged_state, now=checked_at)
             if reason:
-                self._stop_monitor_for_budget(loop, reason, stopped_at=checked_at)
+                self._apply_monitor_budget_stop(staged, reason, stopped_at=checked_at)
             else:
-                state.last_wake_fingerprint = fingerprint
-                state.wake_in_flight = True
+                staged_state.last_wake_fingerprint = fingerprint
+                staged_state.wake_in_flight = True
                 dispatched = True
-            await self._write_monitor_snapshot_locked()
+            await self._persist_staged_monitor_locked(loop, staged)
+            if not loop.active:
+                self._cancel_timer(loop.id)
         self._emit("updated", loop)
         return dispatched
 
@@ -1508,14 +1513,14 @@ class AutoNudgeService:
                 self._cancel_timer(loop.id)
         self._emit("updated", loop)
 
-    def _stop_monitor_for_budget(
+    def _apply_monitor_budget_stop(
         self,
         loop: NudgeLoop,
         reason: str,
         *,
         stopped_at: float,
     ) -> None:
-        """Apply one structured-monitor budget stop under ``_lock``."""
+        """Apply budget-stop fields without changing the live timer registry."""
         state = loop.monitor
         if state is None:
             return
@@ -1524,7 +1529,6 @@ class AutoNudgeService:
         state.outcome = MonitorOutcome.BUDGET
         state.stopped_reason = reason
         state.stopped_at = stopped_at
-        self._cancel_timer(loop.id)
 
     async def _write_monitor_snapshot_locked(self, payload: dict | None = None) -> None:
         """Persist a monitor transition without releasing ``_lock`` mid-write."""
@@ -1562,9 +1566,12 @@ class AutoNudgeService:
                 or state.last_wake_fingerprint != fingerprint
             ):
                 return
-            state.wake_in_flight = False
-            state.last_wake_fingerprint = ""
-            await self._write_monitor_snapshot_locked()
+            staged = deepcopy(loop)
+            staged_state = staged.monitor
+            assert staged_state is not None
+            staged_state.wake_in_flight = False
+            staged_state.last_wake_fingerprint = ""
+            await self._persist_staged_monitor_locked(loop, staged)
         self._emit("updated", loop)
 
     def _find_by_slot(self, slot_key: str) -> NudgeLoop | None:

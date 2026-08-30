@@ -370,7 +370,7 @@ class TestFireSlackNudgeGuards:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("times_out", [False, True])
-    async def test_raw_completion_is_recorded_before_cancellable_usage_persistence(
+    async def test_safe_completion_is_recorded_before_cancellable_usage_persistence(
         self, monkeypatch, times_out
     ):
         """A completed turn cannot remain in flight if analytics persistence is cancelled."""
@@ -388,7 +388,7 @@ class TestFireSlackNudgeGuards:
         order: list[str] = []
 
         async def _stream(*_args, **kwargs):
-            kwargs["on_complete"](SimpleNamespace(stop_reason="end_turn"))
+            kwargs["on_complete"](SimpleNamespace(stop_reason="max_tokens"))
             if times_out:
                 await asyncio.Event().wait()
             return "reply body"

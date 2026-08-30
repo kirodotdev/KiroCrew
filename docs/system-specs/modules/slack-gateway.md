@@ -417,16 +417,18 @@ dispatcher that creates those live actions lands separately.
 
 Slack's inline nudge turn consumes `provider_last_turn_usage(client)` exactly
 once. That one `TurnUsage` object is fanned out to the existing usage-row writer
-and, when the stream observed a raw `EVENT_COMPLETE`, the monitor completion
+and, when the stream observed safe completion evidence, the monitor completion
 hook, because the provider accessor destructively consumes retry-accumulated
-usage. The raw event's stop reason determines success, cancellation, or failure.
+usage. ACP-synthesized terminals are excluded. Because stale-stream synthesis
+reuses `end_turn`, that reason remains uncharged until ACP events expose the
+completion's provenance; other safe reasons determine cancellation or failure.
 Stream exhaustion and timeout before that event still write the existing usage
 row but do not report monitor completion or charge the monitor budget. Callback
 or usage-row persistence failure does not change the Slack delivery result.
 
 Discord synthetic nudge injection passes the same hook through
-`DiscordDispatcher` to `TurnDriver`. Only the driver's raw `EVENT_COMPLETE`
-branch reports completion; a command return, dispatch exception, or renderer
+`DiscordDispatcher` to `TurnDriver`. Only a safe `EVENT_COMPLETE` reason reports
+completion; a command return, dispatch exception, or renderer
 `close()` is not completion evidence. Thus dashboard, Slack, and Discord all
 reach the same typed controller callback even though their transport lifecycles
 remain different.

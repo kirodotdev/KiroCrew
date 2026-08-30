@@ -48,6 +48,7 @@ from kiro_crew.messaging.renderer import (
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
     disposition_for_stop_reason,
+    is_monitor_completion_evidence,
 )
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -724,7 +725,9 @@ class TurnDriver:
                 # sent end_turn) and needs a session reset the driver cannot
                 # perform itself (it holds no session key).
                 self.last_stop_reason = event.stop_reason or ""
-                if self.monitor_completion is not None:
+                if self.monitor_completion is not None and is_monitor_completion_evidence(
+                    event.stop_reason
+                ):
                     try:
                         await self.monitor_completion.complete(
                             disposition_for_stop_reason(event.stop_reason),

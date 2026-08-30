@@ -98,13 +98,13 @@ class TestTurnDriverTranslation:
         assert out == "Hello world"
         assert [e[0] for e in r.events] == ["text_chunk", "text_chunk", "done"]
 
-    def test_raw_complete_reports_monitor_action_once(self):
+    def test_safe_complete_reports_monitor_action_once(self):
         r = _RecordingRenderer()
         p = _ScriptedProvider(
             [
                 AcpEvent(
                     kind=EVENT_COMPLETE,
-                    stop_reason="end_turn",
+                    stop_reason="max_tokens",
                     usage=TurnUsage(input_tokens=20, output_tokens=5),
                 )
             ]
@@ -118,11 +118,44 @@ class TestTurnDriverTranslation:
         _run(p, r, monitor_completion=hook)
 
         assert len(completions) == 1
-        assert completions[0].disposition is MonitorActionDisposition.SUCCESS
+        assert completions[0].disposition is MonitorActionDisposition.FAILURE
         assert completions[0].input_tokens == 20
         assert completions[0].output_tokens == 5
 
-    def test_raw_complete_reports_monitor_action_before_renderer_finalization(self):
+    @pytest.mark.parametrize(
+        "stop_reason",
+        [
+            "",
+            "end_turn",
+            "timeout",
+            "stale_recover",
+            "error: cancel unacked",
+            "error: tool stall",
+            "error: compaction failed",
+        ],
+    )
+    def test_synthetic_complete_does_not_report_monitor_action(self, stop_reason):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason=stop_reason,
+                    usage=TurnUsage(input_tokens=20, output_tokens=5),
+                )
+            ]
+        )
+        completions: list[MonitorActionCompletion] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        hook = MonitorCompletionHook("monitor1", "failure-a", _capture)
+        _run(p, r, monitor_completion=hook)
+
+        assert completions == []
+
+    def test_safe_complete_reports_monitor_action_before_renderer_finalization(self):
         class _CancellingDoneRenderer(_RecordingRenderer):
             async def on_done(self, stop_reason=""):
                 await super().on_done(stop_reason)
@@ -133,7 +166,7 @@ class TestTurnDriverTranslation:
             [
                 AcpEvent(
                     kind=EVENT_COMPLETE,
-                    stop_reason="end_turn",
+                    stop_reason="max_tokens",
                     usage=TurnUsage(input_tokens=20, output_tokens=5),
                 )
             ]
@@ -151,7 +184,7 @@ class TestTurnDriverTranslation:
         assert completions[0].input_tokens == 20
         assert completions[0].output_tokens == 5
 
-    def test_raw_complete_reports_monitor_action_before_buffered_rendering(self):
+    def test_safe_complete_reports_monitor_action_before_buffered_rendering(self):
         class _FailingTextRenderer(_RecordingRenderer):
             async def on_text_chunk(self, text):
                 raise RuntimeError("transport unavailable")
@@ -162,7 +195,7 @@ class TestTurnDriverTranslation:
                 AcpEvent(kind=EVENT_TEXT_CHUNK, text="✅ Conversation comp"),
                 AcpEvent(
                     kind=EVENT_COMPLETE,
-                    stop_reason="end_turn",
+                    stop_reason="max_tokens",
                     usage=TurnUsage(input_tokens=20, output_tokens=5),
                 ),
             ]

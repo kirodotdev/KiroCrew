@@ -122,6 +122,50 @@ async def test_completion_persistence_failure_leaves_live_accounting_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_claim_persistence_failure_leaves_live_monitor_unchanged(
+    tmp_path, monkeypatch
+) -> None:
+    """A claim is not live until the snapshot that suppresses duplicates is durable."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = _structured_loop()
+    service._loops[loop.id] = loop
+    before = deepcopy(loop)
+
+    async def fail_snapshot(_payload=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", fail_snapshot)
+
+    with pytest.raises(OSError, match="disk full"):
+        await service.mark_monitor_action_in_flight(loop.id, "failure-a", now=1_100.0)
+
+    assert loop == before
+
+
+@pytest.mark.asyncio
+async def test_budget_stop_persistence_failure_leaves_live_monitor_armed(
+    tmp_path, monkeypatch
+) -> None:
+    """A failed terminal write cannot stop only the in-memory monitor."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = _structured_loop()
+    assert loop.monitor is not None
+    loop.monitor.budgets = MonitorBudgets(max_runtime_secs=50)
+    service._loops[loop.id] = loop
+    before = deepcopy(loop)
+
+    async def fail_snapshot(_payload=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", fail_snapshot)
+
+    with pytest.raises(OSError, match="disk full"):
+        await service.mark_monitor_action_in_flight(loop.id, "failure-a", now=1_100.0)
+
+    assert loop == before
+
+
+@pytest.mark.asyncio
 async def test_dispatch_failure_before_turn_start_does_not_charge(tmp_path) -> None:
     """A failed handoff is not an agent turn and must remain retryable."""
     service = AutoNudgeService(base_dir=tmp_path)
@@ -136,6 +180,28 @@ async def test_dispatch_failure_before_turn_start_does_not_charge(tmp_path) -> N
     assert loop.monitor.total_tokens == 0
     assert not loop.monitor.wake_in_flight
     assert await service.mark_monitor_action_in_flight(loop.id, "failure-a", now=1_101.0)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_persistence_failure_keeps_live_claim(tmp_path, monkeypatch) -> None:
+    """A failed release write cannot expose a claim that restart still considers held."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = _structured_loop()
+    service._loops[loop.id] = loop
+    assert await service.mark_monitor_action_in_flight(loop.id, "failure-a", now=1_100.0)
+    before = deepcopy(loop)
+    persisted_before = service._path.read_bytes()
+
+    async def fail_snapshot(_payload=None):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "_write_monitor_snapshot_locked", fail_snapshot)
+
+    with pytest.raises(OSError, match="disk full"):
+        await service.record_monitor_dispatch_failure(loop.id, "failure-a")
+
+    assert loop == before
+    assert service._path.read_bytes() == persisted_before
 
 
 @pytest.mark.asyncio

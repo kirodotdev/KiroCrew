@@ -204,6 +204,7 @@ from kiro_crew.metrics.turns import emit_turn_duration, turn_outcome
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
     disposition_for_stop_reason,
+    is_monitor_completion_evidence,
 )
 from kiro_crew.name_grant import (
     Refusal,
@@ -7968,7 +7969,9 @@ async def _run_chat(
                 # so cards don't stay stuck "running".
                 _native_subagent_close_all(state, slot, _native_tracker, _native_card_output)
                 _u = event.usage
-                if monitor_completion is not None:
+                if monitor_completion is not None and is_monitor_completion_evidence(
+                    event.stop_reason
+                ):
                     try:
                         await monitor_completion.complete(
                             disposition_for_stop_reason(event.stop_reason),

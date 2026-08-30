@@ -1006,9 +1006,18 @@ on the first exhausted runtime, turn, or token bound (in that precedence), and
 the completed-turn bound is validated against the universal eight-turn ceiling
 when constructed or loaded. Approval-stall completion is terminal and budget exhaustion takes
 precedence when both apply.
+Claim, budget-stop, completion, and pre-turn dispatch-failure mutations are
+applied to a staged copy; the replacement snapshot is persisted before the live
+record or timer changes. A failed write therefore leaves runtime state aligned
+with the restart snapshot instead of suppressing or releasing a wake only in
+memory.
 
 Dashboard structured actions receive a runtime-only completion hook and report
-only from `_run_chat`'s raw `EVENT_COMPLETE` branch. That correlated completion
+only from `_run_chat`'s `EVENT_COMPLETE` branch when its reason is safe completion
+evidence. ACP-synthesized terminal reasons are excluded from accounting. The
+stale-stream compatibility path reuses `end_turn` for a synthetic completion, so
+that reason is also excluded until ACP events carry provenance that distinguishes
+it from a provider result. That correlated completion
 is persisted before cancellable token-analytics I/O, so slot cleanup cannot lose
 provider completion evidence after the event has arrived. Legacy dashboard nudge
 scheduling still returns immediately and still rearms from the existing

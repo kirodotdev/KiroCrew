@@ -17,6 +17,22 @@ from kiro_crew.monitoring.models import (
 )
 
 MonitorCompletionCallback = Callable[[MonitorActionCompletion], Awaitable[None]]
+_SYNTHETIC_STOP_REASONS = frozenset(
+    {
+        "",
+        TURN_STOP_REASON_END_TURN,
+        "timeout",
+        "stale_recover",
+        "error: cancel unacked",
+        "error: tool stall",
+        "error: compaction failed",
+    }
+)
+
+
+def is_monitor_completion_evidence(stop_reason: str) -> bool:
+    """Return whether a terminal event proves that an agent turn completed."""
+    return stop_reason not in _SYNTHETIC_STOP_REASONS
 
 
 def disposition_for_stop_reason(stop_reason: str) -> MonitorActionDisposition:

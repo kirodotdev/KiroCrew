@@ -163,13 +163,16 @@ The dashboard does **not** flow through `TurnDriver`; it remains unchanged as th
 | `EVENT_COMPLETE` | `DONE` |
 
 An optional structured-monitor completion hook is orthogonal to rendering. It
-is invoked exactly from the raw `EVENT_COMPLETE` branch, before buffered output,
-steering, redaction, or `DONE` is flushed to the renderer, with the event's
-`TurnUsage` and a disposition derived from its stop reason. Completion accounting
-therefore survives failure or cancellation during renderer finalization. A normal
-handler return, command intercept, or stream exception does not manufacture
-completion evidence. Callback failure is logged and cannot change the channel
-turn's output or error behavior. The hook is absent from ordinary inbound turns
+is invoked exactly from the `EVENT_COMPLETE` branch when its reason is safe
+completion evidence, before buffered output, steering, redaction, or `DONE` is
+flushed to the renderer, with the event's `TurnUsage` and a disposition derived
+from its stop reason. ACP's stale-stream compatibility completion reuses
+`end_turn`, so that reason remains uncharged until the event carries provenance
+that distinguishes it from a provider result. Completion accounting therefore
+survives failure or cancellation during renderer finalization. A normal handler
+return, command intercept, stream exception, or ACP-synthesized terminal does not
+manufacture completion evidence. Callback failure is logged and cannot
+change the channel turn's output or error behavior. The hook is absent from ordinary inbound turns
 and legacy AutoNudge turns. Slack reports a raw completion before its cancellable,
 best-effort analytics usage-row write, so cancellation after `EVENT_COMPLETE` cannot
 leave an accepted monitor wake in flight.
