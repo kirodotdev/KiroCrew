@@ -1625,7 +1625,7 @@ async def test_trash_does_not_overwrite_a_same_named_note(fixtures) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_refuses_rather_than_pushing_a_subset(fixtures) -> None:
+async def test_sync_refuses_rather_than_pushing_a_subset(fixtures, monkeypatch) -> None:
     """An explicit Sync must not commit only part of what the user asked for.
 
     `status()` reports a rename as TWO entries — old path deleted, new path added —
@@ -1634,6 +1634,11 @@ async def test_sync_refuses_rather_than_pushing_a_subset(fixtures) -> None:
     while the UI reports success. The autosave keeps the cap (it pushes nothing, and
     the next tick repairs a split), so it must still succeed here.
     """
+    # The production limit is an argv-safety bound, not part of this test's
+    # semantics.  Exercising all 500 paths makes a functional assertion depend
+    # on filesystem throughput under Windows CI load; a small injected limit
+    # still proves refusal and the complete two-batch autosave drain.
+    monkeypatch.setattr(git_ops, "MAX_STAGED_PATHS", 3)
     _mod, remote, _seed = fixtures
     async with signed_client(_mod) as client:
         vault = await _clone(client, remote)
