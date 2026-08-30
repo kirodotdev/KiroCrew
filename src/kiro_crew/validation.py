@@ -2562,21 +2562,12 @@ SELECT_CREW_SCHEMA = ToolSchema(
     ],
 )
 
-# ── Tool Schemas (Slack Reactions) ──
+# ── Slack reaction field patterns ──
 
 # Slack emoji names: alphanumeric, underscores, hyphens, and plus signs
 _EMOJI_NAME_RE = re.compile(r"^[a-zA-Z0-9+\-][a-zA-Z0-9_+\-]{0,98}[a-zA-Z0-9]$|^[a-zA-Z0-9+]$")
 # Slack message timestamp: digits.digits
 _SLACK_TS_RE = re.compile(r"^\d+\.\d+$")
-
-ADD_REACTION_SCHEMA = ToolSchema(
-    tool_name="add_reaction",
-    fields=[
-        FieldSpec("channel", str, required=True, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
-        FieldSpec("timestamp", str, required=True, max_len=30, pattern=_SLACK_TS_RE),
-        FieldSpec("reaction", str, required=True, max_len=100, pattern=_EMOJI_NAME_RE),
-    ],
-)
 
 LOCAL_KNOWLEDGE_SEARCH_SCHEMA = ToolSchema(
     tool_name="local_knowledge_search",
