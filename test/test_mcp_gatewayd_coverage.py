@@ -1510,17 +1510,25 @@ class TestZombieDiagnostic:
     async def test_dead_accept_loop_is_dumped_and_stops_the_daemon(self, monkeypatch, tmp_path):
         diag = tmp_path / "diag.jsonl"
         monkeypatch.setattr(gw, "_zombie_diagnostic_path", lambda: diag)
-        monkeypatch.setattr(gw, "_ZOMBIE_PROBE_INTERVAL_SECS", 0.01)
+        writes: list[tuple[Path, tuple[dict[str, Any], ...]]] = []
+
+        def capture_write(path: Path, *records: dict[str, Any]) -> None:
+            writes.append((path, records))
+
+        monkeypatch.setattr(gw, "_write_diagnostic", capture_write)
         server = MagicMock()
         server.is_serving.return_value = False
         stop = asyncio.Event()
+        monkeypatch.setattr(stop, "wait", AsyncMock(side_effect=asyncio.TimeoutError))
 
-        await asyncio.wait_for(
-            gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop),
-            timeout=5,
+        await gw._zombie_diagnostic(
+            cast(Any, server), BackendPool(max_backends=1), set(), stop
         )
 
-        records = [json.loads(line) for line in diag.read_text().strip().splitlines()]
+        assert len(writes) == 1
+        written_path, records = writes[0]
+        assert written_path == diag
+        assert [record["tag"] for record in records] == ["probe", "zombie_detected"]
         assert records[-1]["tag"] == "zombie_detected"
         assert isinstance(records[-1]["tasks"], list)
         assert isinstance(records[-1]["traceback"], list)
