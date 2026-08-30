@@ -30,7 +30,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers._shared import (
-    agent_skill_keys,
+    agent_skill_views,
     agent_unmanaged_skill_uris,
     apply_skill_mapping,
     enumerate_skill_catalog,
@@ -68,9 +68,7 @@ def fake_home(tmp_path, monkeypatch):
     # ``_KIRO_AGENTS_DIR`` is computed at import time from the real home, so the
     # Path.home patch alone does not redirect the default-argument lookups that
     # agent_skill_globs / list_agents use.
-    monkeypatch.setattr(
-        "kiro_crew.agent_discovery._KIRO_AGENTS_DIR", tmp_path / ".kiro" / "agents"
-    )
+    monkeypatch.setattr("kiro_crew.agent_discovery._KIRO_AGENTS_DIR", tmp_path / ".kiro" / "agents")
     return tmp_path
 
 
@@ -159,9 +157,9 @@ class TestExtractSkills:
 
 class TestExpandSkillUri:
     def test_home_relative(self, fake_home):
-        assert expand_skill_uri(
-            "skill://~/.kiro/skills/foo/SKILL.md", fake_home / "a.json"
-        ) == str(fake_home / ".kiro/skills/foo/SKILL.md")
+        assert expand_skill_uri("skill://~/.kiro/skills/foo/SKILL.md", fake_home / "a.json") == str(
+            fake_home / ".kiro/skills/foo/SKILL.md"
+        )
 
     def test_absolute(self, tmp_path):
         assert (
@@ -330,7 +328,7 @@ class TestApplySkillMapping:
             "skill://~/.kiro/skills/one/SKILL.md",
             "skill://~/.kiro/skills/two/SKILL.md",
         ]
-        assert agent_skill_keys(data, agent, state) == ["kiro-user/one", "kiro-user/two"]
+        assert agent_skill_views(data, agent, state)[0] == ["kiro-user/one", "kiro-user/two"]
 
     def test_unknown_key_rejects_whole_request_without_mutating(self, fake_home):
         _make_skill(fake_home / ".kiro" / "skills", "one")
@@ -346,6 +344,30 @@ class TestApplySkillMapping:
         assert applied == ["kiro-user/one"]
         # Nothing written: a typo must not partially apply.
         assert data["resources"] == ["file://keep.md"]
+
+    def test_a_write_omitting_stale_keys_keeps_their_mappings(self, fake_home):
+        """Omitting a mapping the catalog cannot resolve preserves it instead of deleting it.
+
+        This is the property the editor depends on to stay usable: submitting a list that
+        still contains an unresolvable key is refused WHOLE, so every edit on the agent is
+        blocked until it is left out -- and leaving it out must not be a silent delete.
+        """
+        _make_skill(fake_home / ".kiro" / "skills", "one")
+        state = _State()
+        agent = _agents_dir(fake_home) / "a.json"
+        stale_a = "skill://~/.kiro/skills/stale-a/SKILL.md"
+        stale_b = "skill://~/.kiro/skills/stale-b/SKILL.md"
+        data = {"resources": [stale_a, stale_b, "skill://~/.kiro/skills/one/SKILL.md"]}
+
+        applied, unknown = apply_skill_mapping(data, agent, state, ["kiro-user/one"])
+
+        assert unknown == [], "a submission carrying only resolvable keys must be accepted"
+        assert applied == ["kiro-user/one"]
+        assert stale_a in data["resources"], "an omitted unresolvable mapping was deleted"
+        assert stale_b in data["resources"], "an omitted unresolvable mapping was deleted"
+        # Non-vacuity: these are genuinely unresolvable, not merely absent from the catalog
+        # walk, so the assertions above are about the preserve path and not a no-op write.
+        assert agent_skill_views(data, agent, state)[0] == ["kiro-user/one"]
 
     def test_removal_replaces_the_managed_set(self, fake_home):
         _make_skill(fake_home / ".kiro" / "skills", "one")
@@ -401,9 +423,7 @@ class TestApplySkillMapping:
         agent = _agents_dir(fake_home) / "a.json"
         data: dict = {}
 
-        applied, _ = apply_skill_mapping(
-            data, agent, state, ["kiro-user/one", "kiro-user/one"]
-        )
+        applied, _ = apply_skill_mapping(data, agent, state, ["kiro-user/one", "kiro-user/one"])
 
         assert applied == ["kiro-user/one"]
         assert data["resources"] == ["skill://~/.kiro/skills/one/SKILL.md"]
@@ -488,6 +508,50 @@ class TestExtraSkillPathsAreAbsolute:
         )
         roots = [root for _, root in _skill_key_roots(_State())]
         assert all(r.is_absolute() for r in roots), [str(r) for r in roots]
+
+
+class _PatchState(_State):
+    """``_State`` plus the refresh hook only a SUCCEEDING write reaches.
+
+    Every other PATCH test in this file is refused before the write, so the bare stub does
+    not need it; a test asserting the success response is the one that gets there.
+    """
+
+    def push_refresh(self, *_a, **_k) -> None:
+        return None
+
+
+class TestSkillsPatchResponseCarriesBothViews:
+    def test_a_preserved_unmanaged_uri_comes_back_on_the_patch_response(
+        self, fake_home, monkeypatch
+    ):
+        """A removal must not report success over a mapping the write KEPT.
+
+        ``apply_skill_mapping`` preserves a ``skill://`` URI it cannot key — a hand-authored
+        glob is that case — so the mapping survives the PATCH while being absent from the
+        applied list. A response carrying only the applied list therefore tells the caller
+        the removal happened, and the editor renders no locked chip until an unrelated
+        refetch. Both views are recomputed from one catalog walk so they cannot disagree.
+        """
+        import asyncio
+
+        from kiro_crew.dashboard.handlers import agents as agents_handlers
+
+        d = _agents_dir(fake_home)
+        glob_uri = "skill://~/.kiro/skills/*/SKILL.md"
+        (d / "keeper.json").write_text(
+            json.dumps({"name": "keeper", "resources": [glob_uri]}), encoding="utf-8"
+        )
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", d, raising=False)
+
+        request = _FakeRequest("PATCH", {"name": "keeper"}, {"skills": []}, _PatchState())
+        resp = asyncio.run(agents_handlers.api_agent_detail(request))
+
+        assert resp.status == 200, resp.body
+        body = json.loads(resp.body)
+        assert "unmanaged_skills" in body, "the PATCH response omits the surviving-URI view"
+        assert glob_uri in body["unmanaged_skills"], body
+        assert "skills" in body, "the applied view must ship alongside it, from the same walk"
 
 
 class _FakeRequest:
@@ -670,3 +734,193 @@ class TestSessionContextGate:
             agent="kirocrew", provider_type="claude_code"
         )
         assert "alpha" in ctx and "beta" in ctx
+
+
+def test_a_named_removal_survives_a_write_that_also_maps_a_key(tmp_path, monkeypatch):
+    """Naming a URI deletes it even while the same write maps a resolvable key.
+
+    Removal and mapping travel in ONE request, so a removal must not be lost when the write
+    also has keys to apply -- that would leave the ✕ looking effective and changing nothing.
+    """
+    from kiro_crew.dashboard.handlers import _shared as _sh
+
+    gone = "skill://uninstalled-package/vanished"
+    monkeypatch.setattr(_sh, "enumerate_skill_catalog", lambda *_a, **_k: {})
+    monkeypatch.setattr(_sh, "skill_key_for_uri", lambda *_a, **_k: None)
+
+    data = {"resources": [gone]}
+    _sh.apply_skill_mapping(data, tmp_path / "a.json", None, [], "", [gone])
+    assert gone not in (data.get("resources") or []), "a named removal was preserved anyway"
+
+
+def test_a_write_that_omits_an_unmanaged_uri_leaves_it_alone(tmp_path, monkeypatch):
+    """A writer holding stale state must not delete what it has never seen.
+
+    Two owners edit one agent: the second adds an unmanaged URI, then the first writes from
+    a view predating it. Inferring removal from absence makes that write destroy the new
+    mapping silently, with manual re-add the only recovery -- so only a NAMED URI is deleted.
+    """
+    from kiro_crew.dashboard.handlers import _shared as _sh
+
+    mine = "skill://uninstalled-package/mine"
+    theirs = "skill://uninstalled-package/added-by-a-co-owner"
+
+    monkeypatch.setattr(_sh, "enumerate_skill_catalog", lambda *_a, **_k: {})
+    monkeypatch.setattr(_sh, "skill_key_for_uri", lambda *_a, **_k: None)
+
+    stale = {"resources": [mine, theirs]}
+    _sh.apply_skill_mapping(stale, tmp_path / "a.json", None, [], "", [])
+    assert theirs in (
+        stale.get("resources") or []
+    ), "a stale writer deleted a co-owner's URI it never named"
+    assert mine in (stale.get("resources") or [])
+
+    named = {"resources": [mine, theirs]}
+    _sh.apply_skill_mapping(named, tmp_path / "a.json", None, [], "", [mine])
+    assert named.get("resources") == [theirs], "a named removal did not take effect"
+
+
+def test_a_malformed_removal_list_is_refused_rather_than_coerced():
+    """A coerced element names no URI, so the request becomes a no-op read as success."""
+    from kiro_crew.dashboard.handlers.agents import (
+        _LIST_ARG_INVALID,
+        _string_list_arg,
+    )
+
+    assert _string_list_arg({}, "removed_unmanaged_skills") is None
+    assert _string_list_arg(
+        {"removed_unmanaged_skills": ["skill://a"]}, "removed_unmanaged_skills"
+    ) == ["skill://a"]
+    for bad in ([123], ["skill://a", None], [{"uri": "skill://a"}], "skill://a", {}):
+        assert (
+            _string_list_arg({"removed_unmanaged_skills": bad}, "removed_unmanaged_skills")
+            is _LIST_ARG_INVALID
+        ), f"malformed removal list was accepted: {bad!r}"
+
+
+def test_a_uri_reclassified_between_load_and_write_is_not_deleted(tmp_path, monkeypatch):
+    """Becoming catalog-resolvable is an install, not a removal.
+
+    A hand-authored ``skill://`` the editor listed as unmanaged can be recognised by the
+    catalogue before the write lands -- installing the package it already names does that.
+    Reading the new classification as a deletion loses the binding with nothing having named
+    it, and no automatic path restores it.
+    """
+    from kiro_crew.dashboard.handlers import _shared as _sh
+
+    reclassified = "skill://~/.kiro/skills/newly-installed/SKILL.md"
+
+    monkeypatch.setattr(_sh, "enumerate_skill_catalog", lambda *_a, **_k: {})
+    # Resolvable NOW, which is exactly the mid-flight install this guards.
+    monkeypatch.setattr(_sh, "skill_key_for_uri", lambda *_a, **_k: "newly-installed")
+
+    data = {"resources": [reclassified]}
+    _sh.apply_skill_mapping(data, tmp_path / "a.json", None, [], "", None, [reclassified])
+    assert reclassified in (
+        data.get("resources") or []
+    ), "a URI reclassified between load and write was deleted without being named"
+
+    # Managed all along, chip removed: the submitted keys still decide, so it goes.
+    managed = {"resources": [reclassified]}
+    _sh.apply_skill_mapping(managed, tmp_path / "a.json", None, [], "", None, [])
+    assert reclassified not in (
+        managed.get("resources") or []
+    ), "removing a managed mapping by omitting its key stopped working"
+
+
+def test_a_named_removal_outranks_a_mid_flight_reclassification(tmp_path, monkeypatch):
+    """Naming a URI for removal must delete it even if it just became resolvable.
+
+    Reclassification protects a URI the caller never asked to remove. Letting it also protect
+    one the caller DID name turns an explicit delete into a success that deleted nothing, with
+    no error surface to tell the user their removal was ignored.
+    """
+    from kiro_crew.dashboard.handlers import _shared as _sh
+
+    named = "skill://~/.kiro/skills/newly-installed/SKILL.md"
+
+    monkeypatch.setattr(_sh, "enumerate_skill_catalog", lambda *_a, **_k: {})
+    # Resolvable NOW -- the reclassification the other guard exists for.
+    monkeypatch.setattr(_sh, "skill_key_for_uri", lambda *_a, **_k: "newly-installed")
+
+    data = {"resources": [named]}
+    _sh.apply_skill_mapping(data, tmp_path / "a.json", None, [], "", [named], [named])
+    assert named not in (
+        data.get("resources") or []
+    ), "a named removal was ignored because the URI had become resolvable"
+
+    # And the protection still holds for a URI the caller did NOT name.
+    kept = {"resources": [named]}
+    _sh.apply_skill_mapping(kept, tmp_path / "a.json", None, [], "", [], [named])
+    assert named in (kept.get("resources") or []), "an unnamed reclassified URI lost its protection"
+
+
+def test_a_removal_only_write_keeps_a_mapping_a_concurrent_session_added(tmp_path, monkeypatch):
+    """A write that states no managed set must not delete one.
+
+    Removing a hand-authored URI names only what it removes. Were the client's managed keys
+    resubmitted, a co-owner could map B between that client reading them and the write landing:
+    the spec re-read under lock carries B, the submission does not, and the overwrite drops it.
+    """
+    from kiro_crew.dashboard.handlers import _shared as sh
+
+    spec = tmp_path / "agent.json"
+    spec.write_text("{}", encoding="utf-8")
+    managed_a = "skill://managed-a"
+    managed_b = "skill://managed-b"
+    hand_authored = "skill://local/hand/notes"
+
+    # As the spec reads on disk under the lock: A and B mapped, plus the hand-authored URI.
+    data = {"resources": [managed_a, managed_b, hand_authored, "file://steering/*.md"]}
+
+    # Both managed URIs resolve; the hand-authored one does not.
+    monkeypatch.setattr(
+        sh,
+        "skill_key_for_uri",
+        lambda uri, *a, **k: "key" if uri in (managed_a, managed_b) else None,
+    )
+    monkeypatch.setattr(sh, "enumerate_skill_catalog", lambda *a, **k: {})
+
+    sh.apply_skill_mapping(
+        data,
+        spec,
+        object(),
+        None,  # states no managed set: this write only removes
+        "",
+        [hand_authored],
+        [hand_authored],
+    )
+
+    resources = data.get("resources") or []
+    assert hand_authored not in resources, "the named removal did not happen"
+    assert (
+        managed_b in resources
+    ), f"a mapping the client never saw was deleted by a removal-only write: {resources}"
+    assert managed_a in resources, f"an existing mapping was dropped: {resources}"
+    assert "file://steering/*.md" in resources, f"a non-skill resource was touched: {resources}"
+
+
+def test_a_removal_only_write_keeps_a_mapping_added_after_its_own_reread(tmp_path, monkeypatch):
+    """A write may only move the URIs it named, even under the spec lock.
+
+    The managed set is read before the lock and the spec is re-read inside it, so a mapping
+    a co-owner adds in between is present in the fresh document and absent from this
+    writer's copy. Assigning that copy whole deletes it, and the response is recomputed from
+    what was written -- so nothing surfaces the loss.
+    """
+    from kiro_crew.dashboard.handlers import agents as _agents
+
+    concurrent = "skill://concurrently-added"
+    stale = {"resources": ["skill://managed-a", "skill://hand/authored"]}
+    fresh = {"resources": ["skill://managed-a", "skill://hand/authored", concurrent]}
+
+    # What the removal produced from the PRE-LOCK snapshot: the hand-authored URI gone.
+    after = {"resources": ["skill://managed-a"]}
+
+    _agents._merge_resources_delta(fresh, stale, after)
+
+    assert (
+        concurrent in fresh["resources"]
+    ), f"a mapping added after this writer's reread was deleted: {fresh['resources']}"
+    assert "skill://hand/authored" not in fresh["resources"], "the named removal did not happen"
+    assert "skill://managed-a" in fresh["resources"], "an untouched mapping was dropped"

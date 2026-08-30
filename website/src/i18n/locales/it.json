@@ -5515,9 +5515,19 @@
       "no_skills_mapped_this_agent_uses_the_default_beh": "Nessuna skill associata — questo agente usa il comportamento predefinito.",
       "remove": "Rimuovi {{name}}",
       "remove_skill": "Rimuovi la skill {{name}}",
+      "could_not_load_the_skill_catalog": "Non è stato possibile caricare il catalogo delle skill.",
       "skills": "Skill",
       "skills_this_agent_template_loads_written_as_skil": "Le skill che questo modello di agente carica. Vengono scritte come risorse skill:// nella configurazione dell’agente, così kiro-cli le carica in modo nativo all’avvio dell’agente. Un agente senza skill associate ricade sul comportamento predefinito: l’agente kirocrew vede tutto il catalogo, gli altri non vedono alcuna skill.",
-      "type_to_filter": "Digita per filtrare…"
+      "type_to_filter": "Digita per filtrare…",
+      "key_changed_repick": "{{name}} è cambiato: selezionalo di nuovo nell'elenco aggiornato.",
+      "copy_identifier_hint": "Indica quale copia installata di questa skill è associata",
+      "mapping_unresolved": "Non corrisponde più a una copia installata",
+      "key_changed_remove_blocked": "Impossibile salvare: rimuovi prima {{name}} (contrassegnata da un avviso); non corrisponde più a una copia installata.",
+      "key_changed_remove_blocked_generic": "Impossibile salvare: una competenza associata non corrisponde più a una copia installata. Rimuovi quella contrassegnata da un avviso, poi selezionala di nuovo nell'elenco aggiornato.",
+      "mapping_unresolved_count_one": "{{count}} competenza associata non corrisponde più a una copia installata: rimuovila, poi scegli una sostituzione dall'elenco se ne è installata una.",
+      "mapping_unresolved_count_other": "{{count}} competenze associate non corrispondono più a una copia installata: rimuovile, poi scegli sostituzioni dall'elenco se ne sono installate.",
+      "mapping_unresolved_count_many": "{{count}} competenze associate non corrispondono più a una copia installata: rimuovile, poi scegli sostituzioni dall'elenco se ne sono installate.",
+      "copy_identifier_label": "Si trova in {{where}}"
     },
     "appHost": {
       "agent_only_app": "App solo per agenti",

@@ -5515,9 +5515,19 @@
       "no_skills_mapped_this_agent_uses_the_default_beh": "Ninguna habilidad asignada — este agente usa el comportamiento predeterminado.",
       "remove": "Eliminar {{name}}",
       "remove_skill": "Eliminar la habilidad {{name}}",
+      "could_not_load_the_skill_catalog": "No se pudo cargar el catálogo de skills.",
       "skills": "Habilidades",
       "skills_this_agent_template_loads_written_as_skil": "Habilidades que carga esta plantilla de agente. Se escriben como recursos skill:// en la configuración del agente, de modo que kiro-cli las carga de forma nativa cuando el agente arranca. Un agente sin habilidades asignadas usa el comportamiento predeterminado: el agente kirocrew ve todo el catálogo y los demás agentes no ven ninguna.",
-      "type_to_filter": "Escribe para filtrar…"
+      "type_to_filter": "Escribe para filtrar…",
+      "key_changed_repick": "{{name}} ha cambiado: vuelve a seleccionarlo en la lista actualizada.",
+      "copy_identifier_hint": "Indica qué copia instalada de esta habilidad está asignada",
+      "mapping_unresolved": "Ya no coincide con una copia instalada",
+      "key_changed_remove_blocked": "No se pudo guardar: elimina primero {{name}} (marcada con una advertencia); ya no coincide con una copia instalada.",
+      "key_changed_remove_blocked_generic": "No se pudo guardar: una habilidad asignada ya no coincide con una copia instalada. Elimina la marcada con una advertencia y vuelve a seleccionarla en la lista actualizada.",
+      "mapping_unresolved_count_one": "{{count}} habilidad asignada ya no coincide con una copia instalada: elimínala y elige un reemplazo de la lista si hay uno instalado.",
+      "mapping_unresolved_count_other": "{{count}} habilidades asignadas ya no coinciden con una copia instalada: elimínalas y elige reemplazos de la lista si hay alguno instalado.",
+      "mapping_unresolved_count_many": "{{count}} habilidades asignadas ya no coinciden con una copia instalada: elimínalas y elige reemplazos de la lista si hay alguno instalado.",
+      "copy_identifier_label": "Ubicada en {{where}}"
     },
     "appHost": {
       "agent_only_app": "App solo de agente",

@@ -531,6 +531,71 @@ class McpToolingProvider(Protocol):
         catalog (e.g. a PromptFarm-synced tree, an internal recommendation-engine
         skill) is discoverable by trigger matching and the ``$skill`` picker. The
         public Default returns ``[]`` (no extra paths — discovery is unchanged).
+
+        **Two roots vendoring the same relative path are addressable through the skill
+        CATALOG — the tree, detail and agent-mapping surfaces that go through
+        ``enumerate_skill_catalog`` — by a qualifier DERIVED from the root, so the key is
+        not a name an edition chooses.** ``GET /api/skills`` is one of those surfaces too:
+        it lists each source catalog through unchanged, then re-keys a colliding package row
+        onto the qualified spelling that resolves, so the key a caller reads back is one the
+        write path accepts. Such a
+        collision is keyed ``package/<identity>:<rel>``, e.g.
+        ``package/05c564ec5e9e4b7a8c1d2e3f4a5b6c7d:my-skill``, where *identity* digests that
+        root's canonical path TOGETHER WITH its
+        ``st_dev``/``st_ino``/``st_ctime_ns``/``st_mtime_ns``. The
+        stat terms are load-bearing, not incidental: they are why replacing a bundle in
+        place re-spells its keys instead of silently rebinding the old one. Nothing here
+        declares it. Because it depends on that root ALONE,
+        returning one more root, dropping one, or relocating another does NOT re-spell an
+        existing qualifier. What such a change can still do is move a skill between a
+        qualified and an unqualified key, when a second returned root starts or stops
+        vendoring the same rel — so consumers are told to re-enumerate rather than
+        persist a key. The digest also guarantees a qualifier names at most ONE root
+        ever, so a stale key fails closed (404, never another bundle's skill) rather than
+        re-binding to a REPLACEMENT root — which would otherwise let the agent-config
+        write path persist a URI for a skill the user never selected.
+
+        **A qualified key is a cursor, not a name — do not persist one.** It is re-spelled
+        by anything that changes the root's own ``stat``, including a ``chmod`` or adding a
+        sibling skill directory, so a stored key becomes a 404 with no other signal. An
+        out-of-tree consumer (a script, an MCP caller) therefore has to re-enumerate before
+        every write. The durable bundle identity is the row's ``package`` field, which names
+        the bundle itself and survives every re-spelling: a consumer keys on that plus the
+        rel half and re-enumerates to recover the current qualifier. The rel half alone will
+        not do, being exactly what is NOT unique when two roots collide, and an edition that
+        leaves ``package`` unset vends no durable name at all.
+
+        Two returned-layout constraints follow from the key grammar, and both make a
+        skill INVISIBLE rather than mis-served, logging the absolute path as the only
+        remediation surface: a path component containing ``:`` (the reserved key
+        separator) or a glob metacharacter (``*``, ``?``, ``[``) is omitted, and a
+        skill directory that symlinks OUTSIDE the root advertising it is omitted too,
+        since resolution asserts canonical containment within that root.
+
+        A THIRD constraint is a read constraint rather than a layout one, and it is a
+        behaviour change for keys that already existed: a ``SKILL.md`` (or any file
+        read under a ``package/`` key) whose inode carries more than one link is
+        REFUSED, because a hardlink canonicalises to its own in-root path and so passes
+        both containment and the sensitive-name check while the bytes belong to the
+        shared inode. The endpoints answer 404, not 403: the gate reports nothing for an
+        absent or unopenable file too, so the response cannot claim a denial it is
+        unable to substantiate, and the withheld read is carried on the audit trail
+        instead. The cost lands on hardlink-DEDUPLICATING installs —
+        content-addressed package stores, store optimisation, ``cp -al`` deploys —
+        where a legitimate, non-colliding skill routinely has ``st_nlink > 1`` and now
+        stops being readable. A root advertised here must therefore hold real files,
+        not links into a shared store.
+
+        **A row keyed as something other than its root-relative path is NOT symmetric
+        across the browser endpoints, and this grammar does not make it so.** Skill
+        DETAIL answers such a key through an exact-row lookup, so it opens; ``/tree``
+        resolves only by globbing the key's remainder against these roots, so it still
+        answers 404. That asymmetry is a property of the row surface rather than of the
+        key grammar — the qualified keys above are minted by walking these roots, so both
+        endpoints agree on them — and it is bounded by the CONTAINMENT INVARIANT on
+        ``CapabilityManager.list_skills``, whose runtime warning already names any row
+        that falls outside every root returned here. An edition wanting both endpoints to
+        agree should key each row by its root-relative path.
         """
         ...
 

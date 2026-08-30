@@ -5515,9 +5515,19 @@
       "no_skills_mapped_this_agent_uses_the_default_beh": "Aucune compétence associée — cet agent utilise le comportement par défaut.",
       "remove": "Retirer {{name}}",
       "remove_skill": "Retirer la compétence {{name}}",
+      "could_not_load_the_skill_catalog": "Impossible de charger le catalogue de skills.",
       "skills": "Compétences",
       "skills_this_agent_template_loads_written_as_skil": "Compétences chargées par ce modèle d’agent. Écrites comme ressources skill:// dans la configuration de l’agent, afin que kiro-cli les charge nativement au démarrage de l’agent. Un agent sans compétence associée revient au comportement par défaut : l’agent kirocrew voit tout le catalogue, les autres agents n’en voient aucune.",
-      "type_to_filter": "Saisir pour filtrer…"
+      "type_to_filter": "Saisir pour filtrer…",
+      "key_changed_repick": "{{name}} a changé — sélectionnez-le à nouveau dans la liste actualisée.",
+      "copy_identifier_hint": "Indique quelle copie installée de cette compétence est associée",
+      "mapping_unresolved": "Ne correspond plus à une copie installée",
+      "key_changed_remove_blocked": "Enregistrement impossible — supprimez d'abord {{name}} (marquée d'un avertissement) ; elle ne correspond plus à une copie installée.",
+      "key_changed_remove_blocked_generic": "Enregistrement impossible — une compétence associée ne correspond plus à une copie installée. Supprimez celle marquée d'un avertissement, puis sélectionnez-la dans la liste actualisée.",
+      "mapping_unresolved_count_one": "{{count}} compétence associée ne correspond plus à une copie installée — supprimez-la, puis choisissez un remplacement dans la liste s'il en existe un.",
+      "mapping_unresolved_count_other": "{{count}} compétences associées ne correspondent plus à une copie installée — supprimez-les, puis choisissez des remplacements dans la liste s'il en existe.",
+      "mapping_unresolved_count_many": "{{count}} compétences associées ne correspondent plus à une copie installée — supprimez-les, puis choisissez des remplacements dans la liste s'il en existe.",
+      "copy_identifier_label": "Située dans {{where}}"
     },
     "appHost": {
       "agent_only_app": "Application pour agents uniquement",

@@ -2674,10 +2674,19 @@
       "set_default_agent": "Set <agent/> as default agent for new sessions"
     },
     "agentSkillsEditor": {
-      "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",
+      "edit_agent_config_to_change_mapping": "{{path}} — removable here; add or edit via the agent config file",
       "remove": "Remove {{name}}",
       "remove_skill": "Remove skill {{name}}",
-      "skills_this_agent_template_loads_written_as_skil": "Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none."
+      "could_not_load_the_skill_catalog": "Could not load the skill catalog.",
+      "skills_this_agent_template_loads_written_as_skil": "Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none.",
+      "key_changed_repick": "Couldn't save — {{name}} has changed; pick it again from the refreshed list.",
+      "copy_identifier_hint": "Identifies which installed copy of this skill is mapped",
+      "mapping_unresolved": "This no longer matches an installed copy",
+      "key_changed_remove_blocked": "Couldn't save — remove {{name}} (marked with a warning) first; it no longer matches an installed copy.",
+      "key_changed_remove_blocked_generic": "Couldn't save — a mapped skill no longer matches an installed copy. Remove the skill marked with a warning, then pick it again from the refreshed list.",
+      "mapping_unresolved_count_one": "{{count}} mapped skill no longer matches an installed copy — remove it, then pick a replacement from the list if one is installed.",
+      "mapping_unresolved_count_other": "{{count}} mapped skills no longer match an installed copy — remove them, then pick replacements from the list if any are installed.",
+      "copy_identifier_label": "Located in {{where}}"
     },
     "artifactFolderDeleteDialog": {
       "artifact_one": "{{count}} artifact",

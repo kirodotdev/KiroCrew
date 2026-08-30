@@ -5319,9 +5319,17 @@
       "no_skills_mapped_this_agent_uses_the_default_beh": "スキルがマップされていません—このエージェントはデフォルトの動作を使用します。",
       "remove": "{{name}} を削除",
       "remove_skill": "スキル {{name}} を削除",
+      "could_not_load_the_skill_catalog": "スキルカタログを読み込めませんでした。",
       "skills": "スキル",
       "skills_this_agent_template_loads_written_as_skil": "このエージェントテンプレートが読み込むスキル。エージェント設定で skill:// リソースとして書かれているので、kiro-cli はエージェント開始時にそれらをネイティブに読み込みます。スキルをマップしないエージェントはデフォルトの動作にフォールバックします:kirocrew エージェントはカタログ全体を表示し、他のエージェントは表示しません。",
-      "type_to_filter": "フィルターするには入力…"
+      "type_to_filter": "フィルターするには入力…",
+      "key_changed_repick": "{{name}} が変更されました。更新された一覧から選び直してください。",
+      "copy_identifier_hint": "このスキルのどのインストール済みコピーが割り当てられているかを示します",
+      "mapping_unresolved": "インストール済みのコピーと一致しません",
+      "key_changed_remove_blocked": "保存できません。先に {{name}}（警告マーク付き）を削除してください。インストール済みのコピーと一致しません。",
+      "key_changed_remove_blocked_generic": "保存できません。マップされたスキルがインストール済みのコピーと一致しません。警告マークの付いたスキルを削除し、更新された一覧から選び直してください。",
+      "mapping_unresolved_count_other": "{{count}} 件のマップされたスキルがインストール済みのコピーと一致しません。削除し、インストール済みの代わりがあれば一覧から選んでください。",
+      "copy_identifier_label": "{{where}} にあります"
     },
     "appHost": {
       "agent_only_app": "エージェント専用アプリ",

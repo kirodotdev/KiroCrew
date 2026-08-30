@@ -3570,6 +3570,42 @@ and exfiltration URLs; clean assets are copied byte-for-byte, including leading
 and trailing whitespace. No per-asset preview truncation is used for either the
 security decision or the copied content.
 
+**Skill key qualifiers are DERIVED — re-enumerate, never persist.** A
+`package/` key may carry a qualifier, `package/<qualifier>:<rel>`, which exists only to
+address one of several package bundles that vendor a skill at the same relative path.
+The qualifier is **not an identity an edition declares**: it is a `blake2b` digest of the
+holding root's canonical path plus that directory's device, inode and metadata-change time,
+so a key reads `package/05c564ec5e9e4b7a8c1d2e3f4a5b6c7d:my-skill`. The digest
+is a function of that root ALONE, so installing, removing or relocating an unrelated
+bundle does not re-spell it. The inode makes it an identity rather than an address, and the
+metadata-change time NARROWS the reuse window rather than closing it — an inode number can be
+recycled onto a replacement bundle at the same path, and `st_ctime_ns` plus `st_mtime_ns`
+make that reuse hard
+to reproduce without making it impossible: a replacement completing inside one timestamp
+granule and handed the recycled inode re-derives the replaced key. Two things therefore DO
+re-spell a key: replacing the bundle at that path, and adding or removing a skill
+directory in the root (which moves the root's own metadata-change time). What can also
+change is WHETHER a rel is qualified at all —
+a skill moves between a qualified and an unqualified key when a second bundle starts or
+stops vendoring the same relative path. **A consumer must therefore treat a key as
+valid only for the enumeration it came from**, and must not store one in a bookmark, a
+config file, an agent manifest, or a `skill://` URI expected to keep working.
+
+Re-reading `GET /api/skills` IS the recovery: that endpoint re-keys a colliding package row
+onto the qualified spelling that resolves, so a consumer following it obtains the replacement
+key. The qualification runs per request off the event loop, and nothing qualified is retained,
+so the key a consumer reads is derived from the roots as they are at that moment; a qualifier
+that goes stale between the read and the write is refused at the write rather than rebound.
+The in-repo consumer honours
+that: `AgentSkillsEditor` invalidates its cached catalog when a write is REJECTED, because
+the catalog in hand is then the stale one that minted the refused key and its `staleTime`
+would otherwise have a retry re-send exactly that key. What the identity half
+guarantees is that a qualifier names at most **one** root ever, so a stale key fails
+closed (404, never another bundle's skill) instead of silently re-binding to a
+replacement root's file — the cost of persisting one is a broken link, not a wrong file.
+Rows carry a separate `package` field for the edition-supplied identity, which is the
+stable thing to key on when you need one.
+
 **Dashboard endpoints**: GET/POST `/api/skills`, GET/PUT/DELETE `/api/skills/{name:.+}`. POST sanitizes name to lowercase + hyphens + slashes. The two open-standard territories are read-only through this endpoint (`READONLY_SKILL_KEY_PREFIXES` in `handlers/prompts.py`): PUT or DELETE on a `kiro-user/` or `kiro-workspace/` key answers 405 with `Allow: GET` and `code: readonly_skill_prefix`, and a POST whose *sanitized* name lands in either territory answers 400 with `code: reserved_skill_prefix`. Those keys resolve per-machine / per-session on read (`_resolve_skill_root`) while `create/update/delete_skill` join the key onto the core skills root, so a write would edit a different file than the reader was shown; GET is unaffected. GET `/api/skills` discovery (kirocrew `list_skills()` os.walk + frontmatter, `list_kiro_skills`, and the skill→agent annotation) is fully offloaded to the dedicated `discovery_executor` pool (`executors.py`) via `collect_skills_blocking`, so it never stalls the event loop past the loop-stall watchdog on large catalogs. The annotation is O(agents) — `annotate_skills_with_agents` parses the agent JSONs and pre-expands each agent's `skill://` globs once, then matches every skill against that in-memory set. The discovery pool is deliberately separate from the reaper-critical `maintenance_executor` so browser-triggered scans can't starve the orphan sweep. When `?agent=<name>` names an agent whose `skill://` globs are non-empty (the filter is actually applied), the response is the envelope `{"skills": [...], "agent_scoped": true, "agent": <name>}` instead of the bare array; every unscoped path keeps the bare-array shape (#6028 — see the fuller rationale in learn-cron-dashboard.md's Skills CRUD entry).
 
 **LLM tool mechanisms:**
