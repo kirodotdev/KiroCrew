@@ -7,11 +7,17 @@ fields, ``started_at`` is stamped once, ``last_opened_at`` bumps every write);
 ``status`` is constrained; ``findings`` is normalized (trimmed strings,
 de-duplicated label list, all-empty collapses to None). Records live under the
 repo cache dir, so a disconnect's ``rmtree`` removes them too.
+
+``TestInvestigationRunBoundary`` covers the one place merging is NOT the
+contract: across an investigation run boundary, where a re-run's findings
+REPLACE the previous run's rather than blending with them.
 """
+import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.apps.builtins.issue_radar.backend import store
 
@@ -184,6 +190,183 @@ class TestInvestigationStore(unittest.TestCase):
         self.assertTrue(store.investigation_path("o", "r", 7, self.tmp).is_file())
         store.remove_connected_repo("o", "r", root=self.tmp)
         self.assertIsNone(store.read_investigation("o", "r", 7, self.tmp))
+
+
+class TestInvestigationRunBoundary(unittest.TestCase):
+    """A re-run's findings REPLACE the previous run's; same-run writes merge.
+
+    Per-key merging is right within one run (the MCP tool's contract is "a
+    partial update is fine") and wrong across runs: a replacement session that
+    records a verdict but no root_cause would otherwise inherit the previous
+    run's, leaving the record — the only copy — holding a verdict assembled from
+    two investigations. The store owns the boundary because only there is it
+    atomic with the write; the session the findings were written under
+    (``findings_slot_key``) is what marks it.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        # Registered at creation, not in tearDown: an interrupt between the
+        # allocation and the end of setUp would skip tearDown and leave the
+        # directory behind.
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _stored(self) -> dict:
+        """The record as it is on disk. ``read_investigation`` returns
+        ``dict | None``, and every caller here has just written the record, so
+        this asserts it exists and hands back a plain dict."""
+        rec = store.read_investigation("o", "r", 7, self.tmp) or {}
+        self.assertTrue(rec, "the record must exist on disk")
+        return rec
+
+    def _run_one(self):
+        """Investigate: the SPA links the session, then the agent records."""
+        store.write_investigation(
+            "o", "r", 7, {"slot_key": "chat-1-100", "status": "investigating"}, root=self.tmp
+        )
+        return store.write_investigation(
+            "o", "r", 7,
+            {
+                "status": "resolved",
+                "findings": {
+                    "verdict": "bug",
+                    "root_cause": "run one's cause",
+                    "summary": "run one's summary",
+                    "suggested_labels": ["area: apps"],
+                },
+            },
+            root=self.tmp,
+        )
+
+    def test_rerun_findings_replace_rather_than_blend(self):
+        self._run_one()
+
+        # Start over: a replacement session is linked (deliberately WITHOUT
+        # clearing findings — the record is the only copy).
+        store.write_investigation(
+            "o", "r", 7, {"slot_key": "chat-2-200", "status": "investigating"}, root=self.tmp
+        )
+        self.assertEqual(
+            self._stored()["findings"]["root_cause"],
+            "run one's cause",
+            "the prior verdict must survive until a new one exists",
+        )
+
+        # The new run's first record omits root_cause and labels.
+        rec = store.write_investigation(
+            "o", "r", 7,
+            {"status": "resolved", "findings": {"verdict": "question", "summary": "run two"}},
+            root=self.tmp,
+        )
+        self.assertIsNone(rec["findings"]["root_cause"], "inherited from the previous run")
+        self.assertEqual(rec["findings"]["suggested_labels"], [], "inherited from the previous run")
+        self.assertEqual(rec["findings"]["verdict"], "question")
+        self.assertEqual(rec["findings"]["summary"], "run two")
+        self.assertEqual(rec["findings_slot_key"], "chat-2-200")
+
+    def test_same_run_partial_updates_still_merge(self):
+        self._run_one()
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "confirmed bug"}}, root=self.tmp
+        )
+        self.assertEqual(rec["findings"]["verdict"], "confirmed bug")
+        self.assertEqual(rec["findings"]["root_cause"], "run one's cause")
+        self.assertEqual(rec["findings"]["summary"], "run one's summary")
+
+    def test_second_record_of_the_new_run_merges_again(self):
+        self._run_one()
+        store.write_investigation("o", "r", 7, {"slot_key": "chat-2-200"}, root=self.tmp)
+        store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "question", "summary": "run two"}}, root=self.tmp
+        )
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"root_cause": "run two's cause"}}, root=self.tmp
+        )
+        self.assertEqual(rec["findings"]["root_cause"], "run two's cause")
+        self.assertEqual(rec["findings"]["summary"], "run two", "same run: merge, not replace")
+
+    def test_legacy_record_without_the_stamp_crosses_on_the_next_slot(self):
+        # Records written before findings_slot_key existed carry findings but no
+        # stamp. The backfill is the record's own slot_key, so a mid-run partial
+        # update still merges...
+        path = store.investigation_path("o", "r", 7, self.tmp)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({
+                "owner": "o", "repo": "r", "number": 7,
+                "slot_key": "chat-1-100", "folder_id": None, "status": "resolved",
+                "started_at": "2020-01-01T00:00:00.000000Z",
+                "last_opened_at": "2020-01-01T00:00:00.000000Z",
+                "findings": {
+                    "verdict": "bug", "root_cause": "legacy cause",
+                    "suggested_labels": [], "next_action": None, "summary": "legacy",
+                },
+            }),
+            encoding="utf-8",
+        )
+        merged = store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "still bug"}}, root=self.tmp
+        )
+        self.assertEqual(merged["findings"]["root_cause"], "legacy cause")
+
+        # ...and a replacement session still moves the boundary.
+        store.write_investigation("o", "r", 7, {"slot_key": "chat-2-200"}, root=self.tmp)
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "question"}}, root=self.tmp
+        )
+        self.assertIsNone(rec["findings"]["root_cause"])
+
+    def test_empty_and_malformed_patches_never_cross_the_boundary(self):
+        # An empty dict is a no-op and garbage is rejected upstream: neither is a
+        # new verdict, so neither may destroy the old one just because the slot
+        # changed...
+        self._run_one()
+        store.write_investigation("o", "r", 7, {"slot_key": "chat-2-200"}, root=self.tmp)
+        patch: dict[str, Any]
+        for patch in ({"findings": {}}, {"findings": "not a dict"}, {"findings": {"summary": "  "}}):
+            rec = store.write_investigation("o", "r", 7, patch, root=self.tmp)
+            self.assertEqual(
+                rec["findings"]["root_cause"], "run one's cause", f"wiped by {patch!r}"
+            )
+            # ...and neither may ADVANCE the stamp either. Re-homing the previous
+            # run's findings onto the new session would make the next real write
+            # merge into them instead of replacing them, arming the blend through
+            # a no-op.
+            self.assertEqual(rec["findings_slot_key"], "chat-1-100", f"re-homed by {patch!r}")
+
+        # The new run's real first record still replaces, after all three no-ops.
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "question", "summary": "run two"}}, root=self.tmp
+        )
+        self.assertIsNone(rec["findings"]["root_cause"], "a no-op re-armed the blend")
+        self.assertEqual(rec["findings_slot_key"], "chat-2-200")
+
+    def test_unknown_owner_and_cleared_link_fall_back_to_merging(self):
+        # Findings recorded through the MCP tool for an item with no session
+        # linked have no owning run. The store cannot tell them from ones the
+        # about-to-be-linked session just wrote, so it merges.
+        store.write_investigation(
+            "o", "r", 7, {"findings": {"root_cause": "unowned cause"}}, root=self.tmp
+        )
+        self.assertIsNone(self._stored().get("findings_slot_key"))
+        store.write_investigation("o", "r", 7, {"slot_key": "chat-1-100"}, root=self.tmp)
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"verdict": "bug"}}, root=self.tmp
+        )
+        self.assertEqual(rec["findings"]["root_cause"], "unowned cause")
+
+        # Unlinking is not a new run either.
+        store.write_investigation("o", "r", 7, {"slot_key": ""}, root=self.tmp)
+        rec = store.write_investigation(
+            "o", "r", 7, {"findings": {"summary": "s"}}, root=self.tmp
+        )
+        self.assertEqual(rec["findings"]["root_cause"], "unowned cause")
+
+    def test_clearing_findings_drops_the_stamp(self):
+        self._run_one()
+        rec = store.write_investigation("o", "r", 7, {"findings": None}, root=self.tmp)
+        self.assertIsNone(rec["findings"])
+        self.assertIsNone(rec["findings_slot_key"])
 
 
 if __name__ == "__main__":

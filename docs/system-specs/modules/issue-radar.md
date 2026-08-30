@@ -252,6 +252,23 @@ findings object (the UI's clear path); there is deliberately no per-field clear.
 `provider`/`host`/`kind` are always sent explicitly — the record is keyed on them,
 and defaulting them records a GitLab item into a same-slug GitHub repo's ledger.
 
+Per-key merging is the contract WITHIN one run and the wrong one ACROSS runs. A
+re-run ("Start over", or any path that opens a replacement session) recording a
+`verdict` and `summary` but no `root_cause` would inherit the previous run's
+`root_cause`, leaving the record — the only copy — holding a verdict assembled
+from two investigations with nothing marking which parts came from which. The
+store therefore owns the run boundary, because only there is it atomic with the
+write: the record remembers the session its findings were written under
+(`findings_slot_key`), and the FIRST findings write under a different session
+REPLACES rather than merges, while later writes from that same session keep
+merging. The prior verdict survives until a new one exists and never blends with
+it — which is why the replacement is not done by clearing at session open
+(`agentSession.ts` says so at the save site): the record is the only copy, so an
+abandoned re-run would lose the prior verdict permanently. A boundary needs BOTH
+sessions known and different; an unknown owner (findings recorded for an item
+with no session linked) or a cleared link falls back to merging, which is the
+non-destructive reading.
+
 **In the MCP tool**, every finding string and label goes through the platform
 redaction shim (`platform.redact_via_context` → exfil URLs + credentials) before the
 PUT: findings are LLM prose about an untrusted issue body, they are stored verbatim,

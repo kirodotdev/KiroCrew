@@ -789,6 +789,12 @@ export interface InvestigationRecord {
   started_at: string
   last_opened_at: string
   findings: InvestigationFindings | null
+  /** Which session's run the stored `findings` were written under. Server-owned
+   * (it is not part of `InvestigationPatch`): the store stamps it on every write
+   * and uses it to REPLACE rather than merge the first findings of a new run, so
+   * a re-run's verdict never blends with the previous one's. Null when no
+   * findings are stored. */
+  findings_slot_key?: string | null
 }
 
 /** Which sequence a number belongs to. Only load-bearing on GitLab, where issues

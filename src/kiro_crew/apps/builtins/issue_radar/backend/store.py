@@ -1809,6 +1809,11 @@ def _merge_findings(existing: Any, raw: Any) -> dict[str, Any] | None:
     There is deliberately NO per-field clear: an empty string means "leave this
     alone", which is what makes a partial patch safe for an LLM writer. Clear
     everything with an explicit null and re-write what should remain.
+
+    All of the above is the contract for writes WITHIN one investigation run.
+    Across a run boundary it is the wrong contract, and
+    :func:`write_investigation` decides that question before calling here — see
+    :func:`_findings_run_key`.
     """
     if raw is None:
         return None
@@ -1828,6 +1833,26 @@ def _merge_findings(existing: Any, raw: Any) -> dict[str, Any] | None:
     return _normalize_findings(combined)
 
 
+def _findings_run_key(existing: dict[str, Any]) -> str | None:
+    """Which run's session the STORED findings were written under, or None when
+    that is not known.
+
+    ``findings_slot_key`` is stamped by :func:`write_investigation` on every
+    write, so a record written by this build always answers for itself. A record
+    written BEFORE the field existed carries findings but no stamp, and the
+    honest backfill is the record's own ``slot_key``: those findings were
+    written by whatever session the record pointed at at the time. That reading
+    keeps a mid-run partial update on an upgraded record merging exactly as it
+    did before, and still moves the boundary when the slot later changes,
+    because this is read from the PRE-patch record — before a new ``slot_key``
+    overwrites the old one.
+    """
+    raw = existing.get("findings_slot_key") if "findings_slot_key" in existing else existing.get("slot_key")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
 def write_investigation(
     owner: str, repo: str, number: int, patch: dict[str, Any], *,
     root: Path | None = None, kind: str = "issue",
@@ -1840,7 +1865,30 @@ def write_investigation(
     ``findings`` (merged per key by :func:`_merge_findings`, so a patch carrying
     only ``verdict`` keeps the stored ``root_cause``/``summary``/labels; an
     explicit ``None`` clears them). A partial patch (even ``{}``, which just bumps
-    the open stamp) is valid. Returns the stored record."""
+    the open stamp) is valid. Returns the stored record.
+
+    Per-key merging is right WITHIN one investigation run and wrong ACROSS runs:
+    a re-run (Issue Radar's "Start over", or any path that opens a replacement
+    session) that records a ``verdict`` and ``summary`` but no ``root_cause``
+    would inherit the PREVIOUS run's ``root_cause``, leaving the record — the
+    only copy — holding a verdict assembled from two investigations with nothing
+    marking which parts came from which.
+
+    So the run boundary is owned HERE rather than by callers, because only here
+    is it atomic with the write. The record remembers the session its findings
+    were written under (``findings_slot_key``), and the FIRST findings write
+    under a different session REPLACES rather than merges; later writes from that
+    same session merge as before. The previous verdict therefore survives right
+    up until a new one exists and never blends with it — which is why the clear
+    is not done when the replacement session opens (the record is the only copy,
+    so an abandoned re-run would lose the prior verdict permanently).
+
+    A boundary is only crossed when BOTH sessions are known and differ. An
+    unknown owner (findings recorded through the MCP tool for an item with no
+    session linked) falls back to merging: the store cannot tell those findings
+    from ones the about-to-be-linked session just wrote, and merging is the
+    non-destructive reading. Clearing the link (``slot_key: ""``) is not a new
+    run either."""
     number = int(number)
     now = _now_iso()
     lock_path = investigation_path(owner, repo, number, root, kind=kind).with_suffix(".lock")
@@ -1848,6 +1896,10 @@ def write_investigation(
     with open(lock_path, "w") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             existing = read_investigation(owner, repo, number, root, kind=kind) or {}
+            # Read the findings' owning session from the PRE-patch record: the
+            # patch below may replace slot_key, and the comparison needs the old
+            # one.
+            findings_run_key = _findings_run_key(existing)
 
             record: dict[str, Any] = {
                 "owner": owner,
@@ -1859,6 +1911,9 @@ def write_investigation(
                 "started_at": existing.get("started_at") or now,
                 "last_opened_at": now,
                 "findings": existing.get("findings"),
+                # Only meaningful while findings are stored; re-stamped below
+                # whenever they change.
+                "findings_slot_key": findings_run_key if existing.get("findings") else None,
             }
 
             if "slot_key" in patch and isinstance(patch["slot_key"], str):
@@ -1870,9 +1925,41 @@ def write_investigation(
                 if st in _INVESTIGATION_STATUSES:
                     record["status"] = st
             if "findings" in patch:
-                record["findings"] = _merge_findings(
-                    existing.get("findings"), patch.get("findings")
+                # Runs AFTER slot_key is applied: a patch may carry both, and the
+                # session it names is the run this write belongs to.
+                raw = patch.get("findings")
+                # None (the explicit clear), a non-dict, and a dict with nothing
+                # in it all normalize to None — so this is "the patch carries a
+                # real verdict", which is the only thing that may cross a run
+                # boundary.
+                fresh = _normalize_findings(raw)
+                crossed_runs = bool(
+                    findings_run_key
+                    and record["slot_key"]
+                    and findings_run_key != record["slot_key"]
                 )
+                if fresh is not None:
+                    if crossed_runs:
+                        # First findings of a new run: REPLACE. Nothing from the
+                        # previous run survives into the new verdict.
+                        record["findings"] = fresh
+                    else:
+                        record["findings"] = _merge_findings(existing.get("findings"), raw)
+                    # A real verdict was written, so the current session owns it.
+                    # The merge above always keeps `fresh`, so this is never a
+                    # stamp on an empty findings object.
+                    record["findings_slot_key"] = record["slot_key"]
+                elif raw is None:
+                    # The explicit clear. No findings, so no owning run.
+                    record["findings"] = None
+                    record["findings_slot_key"] = None
+                # else: nothing to write — an empty dict, a whitespace-only value,
+                # or a malformed one. Findings AND their owning run are both left
+                # exactly as the pre-patch record had them. Advancing the stamp
+                # here would silently re-home the PREVIOUS run's findings onto the
+                # new session, so the next real write would merge into them
+                # instead of replacing them — the very blend this boundary
+                # exists to stop, reachable through a no-op.
 
             atomic_write(
                 investigation_path(owner, repo, number, root, kind=kind),
