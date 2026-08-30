@@ -146,6 +146,9 @@ class TestRunSnapshotBackup:
 
         authz.assert_called_once_with(ACCOUNT, "p", "us-west-2")
         put_file.assert_called_once()
+        # Same long-timeout contract as the sessions push: the declared
+        # `_PUSH_TIMEOUT_SECS` has to REACH the uploader, not sit unread.
+        assert put_file.call_args.kwargs["timeout"] == backup._PUSH_TIMEOUT_SECS
         pushed_key = put_file.call_args.args[4]
         assert pushed_key.startswith("snapshots/kirocrew-snapshot-")
         # Entropy suffix means the pushed key is NOT the engine's file name.
@@ -200,9 +203,12 @@ class TestRunSessionsBackup:
 
         pushed: dict[str, str] = {}
 
-        def fake_put(profile, region, bucket, section, key, local_path, *, account=None):
+        def fake_put(
+            profile, region, bucket, section, key, local_path, *, account=None, timeout=None
+        ):
             pushed["key"] = key
             pushed["local"] = local_path
+            pushed["timeout"] = timeout
             # The names inside the archive prove both halves were tarred.
             with tarfile.open(local_path) as tar:
                 pushed["names"] = sorted(tar.getnames())
@@ -214,6 +220,10 @@ class TestRunSessionsBackup:
             record = backup.run_sessions_backup(ACCOUNT, "p", "us-west-2", "bkt")
 
         assert pushed["key"].startswith("sessions/sessions-")
+        # A multi-GB sessions archive on a slow uplink needs the long timeout, not
+        # `put_file`'s own 600s default -- passing it is the whole point of
+        # `_PUSH_TIMEOUT_SECS` existing.
+        assert pushed["timeout"] == backup._PUSH_TIMEOUT_SECS
         assert pushed["names"] == ["cli/replay.log", "crew/t.jsonl"]
         assert record["key"] == pushed["key"]
         assert backup.last_runs(ACCOUNT)[backup.KIND_SESSIONS]["bytes"] > 0

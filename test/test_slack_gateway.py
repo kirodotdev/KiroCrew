@@ -758,6 +758,18 @@ class TestDeliverResult:
 class TestShutdown:
     """Graceful shutdown."""
 
+    def test_autonudge_service_has_a_declared_default(self):
+        """`_init_autonudge` returns before assigning when the flag is off.
+
+        `KIROCREW_AUTONUDGE=0` makes `_init_autonudge` return at its feature-flag
+        guard, before its only `self.autonudge_svc = ...`. Without a declaration
+        the attribute does not exist, and the seven `if self.autonudge_svc:`
+        sites in the loop-CRUD handlers raise AttributeError instead of reading
+        a default -- unlike `cron_svc` and `heartbeat_svc`, which are declared.
+        """
+        orch = _make_orchestrator()
+        assert orch.autonudge_svc is None
+
     @pytest.mark.asyncio
     async def test_shutdown_with_no_services(self):
         orch = _make_orchestrator()

@@ -89,6 +89,57 @@ class TestPetStateManager:
         mgr.finish_walking(299)  # < 300ms: no delay
         assert mgr.current == "idle"
 
+    def test_unpaired_walk_done_is_a_noop(self) -> None:
+        """`/walk-done` can arrive for a walk the server never opened.
+
+        The renderer's `useWalking` hook animates a move and then posts
+        `/walk-done`, but nothing opens the walk server-side: there is no
+        `/walk-start` route and `/pet-event` refuses `walk_start`. Unguarded,
+        `finish_walking` read the duration as `now_ms` (never instant), armed
+        `walk-restore`, and `_restore_from_walk` force-broadcast `idle` over the
+        live state -- mid-turn, while a task was still thinking.
+        """
+        mgr, broadcasts = self._mk()
+        mgr.set_pet_state("thinking", 0)
+        before = list(broadcasts)
+
+        mgr.finish_walking(5_000)
+        mgr.tick(10_000)
+
+        assert mgr.current == "thinking"
+        assert broadcasts == before, "an unpaired walk-done must not broadcast a state change"
+
+    def test_unpaired_walk_done_does_not_end_the_thinking_stat(self) -> None:
+        """The clobber also ate the `thinking -> other` edge.
+
+        `_restore_from_walk` overwrote `_pet_state` BEFORE calling
+        `set_pet_state`, so `prev_state` read as `idle` and
+        `record_thinking_end` never fired -- the thinking-time stat leaked on
+        every move.
+        """
+
+        class _Stats:
+            def __init__(self) -> None:
+                self.ends = 0
+
+            def record_thinking_start(self, now_ms: int) -> None:
+                pass
+
+            def record_thinking_end(self, now_ms: int) -> None:
+                self.ends += 1
+
+        stats = _Stats()
+        mgr = PetStateManager(lambda ch, state: None, stats=stats)
+        mgr.set_pet_state("thinking", 0)
+
+        mgr.finish_walking(5_000)
+        mgr.tick(10_000)
+        assert mgr.current == "thinking"
+
+        # The real end of thinking still records exactly once.
+        mgr.set_pet_state("idle", 11_000)
+        assert stats.ends == 1
+
     def test_error_auto_recovers_after_3s(self) -> None:
         mgr, _ = self._mk()
         mgr.set_pet_state("idle", 0)

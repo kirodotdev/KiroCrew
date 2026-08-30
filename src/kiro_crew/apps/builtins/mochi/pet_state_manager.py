@@ -121,7 +121,19 @@ class PetStateManager:
         self.clear_persistent_mood(now_ms)
 
     def finish_walking(self, now_ms: int) -> None:
-        walk_duration = now_ms - (self._walk_started_at or 0)
+        # No walk open: nothing to finish. `/walk-done` is posted by the
+        # renderer's `useWalking` hook, which animates a move the SERVER never
+        # opened as a walk -- there is no `/walk-start` route, and `/pet-event`
+        # refuses `walk_start`. The state is the discriminator, not
+        # `_walk_started_at`: 0 is a legitimate `now_ms`. Falling through would
+        # read the duration as `now_ms` (never instant), arm `walk-restore`, and let
+        # `_restore_from_walk` force-broadcast `idle` over a live
+        # thinking/working state mid-turn -- while overwriting `_pet_state`
+        # first, so the `thinking -> other` edge is missed and
+        # `record_thinking_end` never fires.
+        if self._pet_state != "walking":
+            return
+        walk_duration = now_ms - self._walk_started_at
         self._walk_started_at = 0
 
         if walk_duration < INSTANT_WALK_THRESHOLD_MS:

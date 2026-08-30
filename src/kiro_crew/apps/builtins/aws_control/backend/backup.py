@@ -264,7 +264,16 @@ def run_snapshot_backup(account: str, profile: str, region: str, bucket: str) ->
         # entropy (the _stamp shape) rather than trusting the file name.
         key = f"snapshots/kirocrew-snapshot-{_stamp()}.tar.gz"
         _authorize_upload(account, profile, region)
-        storage.put_file(profile, region, bucket, "backup", key, str(payload), account=account)
+        storage.put_file(
+            profile,
+            region,
+            bucket,
+            "backup",
+            key,
+            str(payload),
+            account=account,
+            timeout=_PUSH_TIMEOUT_SECS,
+        )
         return _record_run(account, KIND_SNAPSHOT, key, payload.stat().st_size)
 
 
@@ -444,7 +453,16 @@ def run_sessions_backup(account: str, profile: str, region: str, bucket: str) ->
             raise RuntimeError("no session files to archive")
         key = f"sessions/{archive.name}"
         _authorize_upload(account, profile, region)
-        storage.put_file(profile, region, bucket, "backup", key, str(archive), account=account)
+        storage.put_file(
+            profile,
+            region,
+            bucket,
+            "backup",
+            key,
+            str(archive),
+            account=account,
+            timeout=_PUSH_TIMEOUT_SECS,
+        )
         return _record_run(account, KIND_SESSIONS, key, archive.stat().st_size)
 
 

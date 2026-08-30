@@ -1607,6 +1607,12 @@ class GatewayOrchestrator:
         self.consolidator: HistoryConsolidator | None = None
         self.cron_svc: CronService | None = None
         self.heartbeat_svc: HeartbeatService | None = None
+        # Declared here, not just assigned in `_init_autonudge`: that method
+        # returns early when `KIROCREW_AUTONUDGE=0`, BEFORE its only assignment,
+        # so with the flag off the attribute never existed at all -- and the
+        # seven `if self.autonudge_svc:` sites in the loop-CRUD handlers below
+        # would raise AttributeError rather than read a default.
+        self.autonudge_svc: AutoNudgeService | None = None
         # Secretary runtime service removed (Amazon-internal). Attribute stays
         # as an inert None so other modules referencing it degrade gracefully.
         self.secretary_svc: object | None = None
