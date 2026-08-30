@@ -30,6 +30,8 @@ import CrewAvatar from '../../components/CrewAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { SearchInput } from '../../components/ui'
+import { AnimatePresence, motion } from 'framer-motion'
+import { sidePanelDockMotion } from '../chat/sidePanelMount'
 import ResizeHandle from '../../components/ResizeHandle'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
@@ -121,6 +123,9 @@ export default function MembersPage() {
   // members fall to the bottom alphabetically. Sorted once from the roster
   // snapshot — live re-sorting mid-session would move rows under the cursor.
   const [filter, setFilter] = useState('')
+  // The chat side panel's right-dock mount preset — module-pure, so one
+  // constant serves every render.
+  const drawerMotion = sidePanelDockMotion('right')
   const sortedMembers = useMemo(() => {
     const ordered = [...members].sort(
       (a, b) =>
@@ -358,14 +363,28 @@ export default function MembersPage() {
 
       {/* Detail drawer — read-only observation; writes live in the crew manager.
           Below md it overlays the thread instead of claiming 300px of row
-          width, and it starts closed there (the width-gated useState above). */}
-      {active && drawerOpen && (
-        <aside
-          id="member-drawer"
-          className="fixed top-safe bottom-safe right-safe z-40 w-[300px] max-w-full bg-bg-elevated border-l border-border p-4 overflow-y-auto md:static md:z-auto md:shrink-0 md:border md:rounded-xl md:shadow-sm"
-          data-testid="member-drawer"
-          aria-label={t('pages.membersPage.details')}
-        >
+          width, and it starts closed there (the width-gated useState above).
+          Mount/unmount reuses the chat page's side-panel motion preset
+          (sidePanelDockMotion + the same 0.18s ease), so the two right panels
+          open with one gesture AND one animation. On mobile the aside is
+          position:fixed (out of flow), so the width tween is inert there and
+          only the opacity fade applies — acceptable, not a defect. */}
+      <AnimatePresence>
+        {active && drawerOpen && (
+          <motion.div
+            key="member-drawer-motion"
+            initial={drawerMotion.initial}
+            animate={drawerMotion.animate}
+            exit={drawerMotion.exit}
+            transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+            className="h-full overflow-visible flex justify-end md:shrink-0"
+          >
+            <aside
+              id="member-drawer"
+              className="fixed top-safe bottom-safe right-safe z-40 w-[300px] max-w-full bg-bg-elevated border-l border-border p-4 overflow-y-auto md:static md:z-auto md:shrink-0 md:border md:rounded-xl md:shadow-sm"
+              data-testid="member-drawer"
+              aria-label={t('pages.membersPage.details')}
+            >
           <div className="flex items-center mb-2">
             <div className="text-[11px] font-semibold tracking-wide text-muted flex-1">
               {t('pages.membersPage.configuration')}
@@ -419,7 +438,9 @@ export default function MembersPage() {
             {t('pages.membersPage.edit_in_crew_manager')}
           </button>
         </aside>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

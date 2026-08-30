@@ -208,7 +208,9 @@ describe('MembersPage drawer and edit jump', () => {
     fireEvent.click(await screen.findByText('oncall'))
     expect(await screen.findByTestId('member-drawer')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /details/i }))
-    expect(screen.queryByTestId('member-drawer')).toBeNull()
+    // AnimatePresence keeps the drawer mounted for the exit tween — wait for
+    // the removal instead of asserting synchronously.
+    await waitFor(() => expect(screen.queryByTestId('member-drawer')).toBeNull())
   })
 
   it('the edit affordance lives in the drawer only and navigates to the crew manager crews tab', async () => {
