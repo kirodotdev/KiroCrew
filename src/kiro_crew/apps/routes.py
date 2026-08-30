@@ -1596,11 +1596,32 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                # to_thread: the sync helper does a file-locked read-modify-write
-                # of config.json and, on Windows, applies the owner-only lockdown
-                # (a possible SMB round-trip on a network-homed data home) —
-                # neither may run on the event loop.
-                await asyncio.to_thread(_sync_builtin_config, name, enabled=True)
+                # ``run_config_write``, not a bare ``to_thread``: the helper is a
+                # read-modify-write of the SAME ``config.json`` the legacy dashboard
+                # writers (agents endpoint, updates.py, security.py, messaging.py,
+                # mcp.py, core.py STT) mutate while holding ONLY the loop-side
+                # ``_get_config_lock``. ``update_config_locked`` inside the helper
+                # takes only the sidecar advisory flock, which excludes nothing that
+                # family respects -- so a settings PUT landing mid-write commits from
+                # a snapshot taken before it and silently reverts this app's enabled
+                # flag, or loses the user's settings. ``run_config_write`` is the one
+                # entry point that holds BOTH generations, and it still hands the
+                # blocking work (the flock wait, and on Windows the owner-only
+                # lockdown's possible SMB round-trip) to a worker, so the loop never
+                # stalls -- the property the previous ``to_thread`` was there for.
+                #
+                # Lock order is app_lifecycle_lock -> config lock, matching
+                # ``handle_app_uninstall`` above, which already nests them that way
+                # for the same reason. Verified across the tree: 14 functions take
+                # ``app_lifecycle_lock`` and none of them is reachable from inside a
+                # config-lock block, so the reverse order does not exist.
+                #
+                # Call-time import for the layering reason documented at the
+                # ``_get_config_lock`` import above: ``apps`` sits below
+                # ``dashboard`` and must not depend on it at load time.
+                from kiro_crew.dashboard.chat_utils import run_config_write
+
+                await run_config_write(_sync_builtin_config, name, enabled=True)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 resp.setdefault("warnings", []).append(
@@ -1692,11 +1713,32 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                # to_thread: the sync helper does a file-locked read-modify-write
-                # of config.json and, on Windows, applies the owner-only lockdown
-                # (a possible SMB round-trip on a network-homed data home) —
-                # neither may run on the event loop.
-                await asyncio.to_thread(_sync_builtin_config, name, enabled=False)
+                # ``run_config_write``, not a bare ``to_thread``: the helper is a
+                # read-modify-write of the SAME ``config.json`` the legacy dashboard
+                # writers (agents endpoint, updates.py, security.py, messaging.py,
+                # mcp.py, core.py STT) mutate while holding ONLY the loop-side
+                # ``_get_config_lock``. ``update_config_locked`` inside the helper
+                # takes only the sidecar advisory flock, which excludes nothing that
+                # family respects -- so a settings PUT landing mid-write commits from
+                # a snapshot taken before it and silently reverts this app's enabled
+                # flag, or loses the user's settings. ``run_config_write`` is the one
+                # entry point that holds BOTH generations, and it still hands the
+                # blocking work (the flock wait, and on Windows the owner-only
+                # lockdown's possible SMB round-trip) to a worker, so the loop never
+                # stalls -- the property the previous ``to_thread`` was there for.
+                #
+                # Lock order is app_lifecycle_lock -> config lock, matching
+                # ``handle_app_uninstall`` above, which already nests them that way
+                # for the same reason. Verified across the tree: 14 functions take
+                # ``app_lifecycle_lock`` and none of them is reachable from inside a
+                # config-lock block, so the reverse order does not exist.
+                #
+                # Call-time import for the layering reason documented at the
+                # ``_get_config_lock`` import above: ``apps`` sits below
+                # ``dashboard`` and must not depend on it at load time.
+                from kiro_crew.dashboard.chat_utils import run_config_write
+
+                await run_config_write(_sync_builtin_config, name, enabled=False)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 warnings.append(_redact_warning(f"config sync failed: {exc}"))
