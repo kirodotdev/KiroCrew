@@ -15,16 +15,25 @@ Two properties of KAS's schema drive the mapping and are easy to get wrong:
   ``agent.tools ?? []``. The list is therefore always emitted explicitly, and an
   ambiguous spec fails closed rather than guessing ``*``.
 
-Deliberately NOT projected, each for a reason a reader would otherwise have to
-rediscover:
+``mcpServers`` IS projected, minus the names that arrive as session-level broker
+stubs. It was previously omitted on the reasoning that ``@server`` entries in
+``tools`` resolve wherever the server was declared and that carrying the servers
+twice risks a double registration. The first half is true; the second described a
+case that only arises for a STUBBED server, and stubs are opt-in per server
+(``mcp_gateway.stub_servers``, empty by default). With nothing stubbed the
+session-level param is an empty array, so omitting the block left a KAS session
+holding ``tools: ["@kirocrew-core", ...]`` and no definition of what
+``kirocrew-core`` is — refs naming nothing, and every Crew tool silently absent.
+kiro-cli never had this: it reads the spec off disk itself via ``--agent``.
 
-* ``mcpServers`` — Crew injects broker stubs as the session-level ``mcpServers``
-  param, and a session-injected server outranks an agent-declared one. Carrying
-  them twice risks a double registration. ``@server`` entries in ``tools`` still
-  resolve, because KAS tags every MCP tool with ``@<server>`` from the server's
-  name regardless of where it was declared.
-* ``model`` — the model is set through its own protocol verb, so it has exactly
-  one owner rather than being pinned in two places that can disagree.
+Filtering by the stub set keeps the original reason intact (a stubbed server is
+still declared exactly once, by the injection that outranks this block) while
+removing the case where the omission left the session with nothing. Two fields
+are dropped on the way through — see :func:`_project_mcp_servers`.
+
+``model`` is still deliberately NOT projected: the model is set through its own
+protocol verb, so it has exactly one owner rather than being pinned in two places
+that can disagree.
 
 ``permissions`` IS projected, and is the one field that changes behaviour rather
 than just describing it. KAS's policy is keyed by its own capability vocabulary
@@ -46,6 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -56,6 +66,34 @@ logger = logging.getLogger(__name__)
 KAS_MAX_CUSTOM_AGENTS = 50
 
 _PROMPT_FILE_SCHEME = "file://"
+
+#: Kiro Crew's OWN managed MCP servers — the ones whose ``env`` may retain a
+#: single Crew-authored key through projection (see :func:`_project_mcp_servers`).
+#:
+#: Imported from :mod:`kiro_crew.mcp_cleanup`, which already pins this set to
+#: ``agent._MANAGED_MCP_SERVERS`` with a ratchet test and imports nothing heavier
+#: than ``config.paths`` — so this projection leaf stays off the config-loader /
+#: aiohttp import chain without spelling the four names a third time.
+MANAGED_MCP_SERVER_NAMES = frozenset(KIROCREW_BIN_MCP_SERVERS)
+
+#: Fields that carry a secret. ``env`` "routinely holds tokens and API keys"
+#: (``mcp_gateway.session_servers``) and a remote entry's ``headers`` can hold a
+#: static ``Authorization`` value, so neither crosses the wire intact.
+_CREDENTIAL_BEARING_FIELDS = ("env", "headers")
+
+#: The ONLY env key that survives for one of Crew's own managed servers. It pins
+#: the data home, so dropping it would have the shims read a different one than
+#: the gateway — that is the whole reason managed ``env`` is not simply withheld.
+#:
+#: Everything else is withheld even on a managed server. "Crew authored this
+#: server" is not "Crew authored every key now in its env": the entry lives in a
+#: user-editable agent file, so a hand-added secret is reachable under a managed
+#: name and would otherwise be the one credential path left onto the wire.
+_MANAGED_ENV_KEYS_KEPT = frozenset({"KIROCREW_HOME"})
+
+#: Crew-internal bookkeeping on a rewritten entry. Never belongs on the wire: an
+#: unknown field can fail a strict schema, and it means nothing to the backend.
+_WRAPPER_MARKERS = ("_kirocrew_mcp_gateway_wrapped", "_mc_mcp_gateway_wrapped")
 
 #: Pseudo-filesystems whose contents are process/kernel state, not documents.
 _PSEUDO_FS_ROOTS = ("/proc", "/sys", "/dev")
@@ -283,14 +321,131 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
     return permitted
 
 
+def _project_mcp_servers(
+    spec: dict[str, Any],
+    agent_id: str,
+    stub_server_names: frozenset[str],
+) -> dict[str, dict[str, Any]]:
+    """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
+
+    Three subtractions, each load-bearing:
+
+    * **stubbed names** — those arrive as the session-level ``mcpServers`` param,
+      which outranks an agent-declared entry. Emitting both is the double
+      registration this block was originally omitted to avoid.
+    * **``autoApprove``** — an auto-approved MCP tool is approved by the host and
+      emits no permission request, so ``hooks.on_tool_call`` (the always-on deny
+      floor, the sensitive-path check, the governance ceiling) never runs for it.
+      ``agent.py`` states the rule for Crew's own servers ("DELIBERATELY NO
+      ``autoApprove`` KEY, and none may ever be added"); relaying one copied from
+      a spec would grant through this path what that rule refuses on the other,
+      and on KAS there is no wire slot for hooks at all. Auto-approve reaches KAS
+      only as ``permissions``, derived from the ceiling-filtered ``allowedTools``.
+    * **``env`` and ``headers``** — projection puts these on the wire, and a
+      declared server's env routinely holds tokens. Every server is filtered; the
+      classes differ only in what survives. A server Crew did not author loses
+      both fields outright. One of Crew's OWN managed servers keeps exactly
+      ``KIROCREW_HOME`` out of its env and nothing else, because that key is the
+      only reason managed env is projected at all: without it the shims read a
+      different data home than the gateway. A managed entry still lives in a
+      user-editable agent file, so a hand-added key under a managed name is
+      withheld like any other.
+
+    A non-managed server therefore starts without its credentials and may fail to
+    authenticate — which is still strictly better than today, where it does not
+    start at all. The drop is logged with KEY NAMES ONLY so an operator can see
+    why, without the value reaching a log.
+
+    Note what this canNOT reach: ``command``, ``args`` and ``url`` are how the
+    server is launched or addressed, so a secret embedded THERE (an ``--api-key``
+    argv, a signed query string) still crosses the wire. Stripping them would not
+    withhold a credential, it would unmake the server — the exact "declared but
+    absent" state this function exists to end — so the residue is accepted and
+    stated rather than papered over.
+    """
+    servers = spec.get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for name, entry in servers.items():
+        if not isinstance(name, str) or not name or not isinstance(entry, dict):
+            continue
+        if name in stub_server_names:
+            continue
+        projected = {k: v for k, v in entry.items() if k not in _WRAPPER_MARKERS}
+        projected.pop("autoApprove", None)
+        managed = name in MANAGED_MCP_SERVER_NAMES
+        withheld = _withhold_credential_fields(projected, managed=managed)
+        if withheld:
+            logger.info(
+                "agent %r: not relaying %s for MCP server %r — the field can carry "
+                "a credential. The server is still declared; it may need its "
+                "credentials supplied another way.",
+                agent_id,
+                "/".join(withheld),
+                name,
+            )
+        out[name] = projected
+    return out
+
+
+def _withhold_credential_fields(
+    projected: dict[str, Any],
+    *,
+    managed: bool,
+) -> list[str]:
+    """Strip credential-bearing fields from one projected server entry in place.
+
+    Returns the FIELD NAMES something was withheld from, for the caller's log —
+    never a value, and never the withheld env keys, since a key name in a
+    third-party server's env is itself operator-supplied.
+
+    *managed* keeps ``_MANAGED_ENV_KEYS_KEPT`` alive in ``env``; everything else
+    goes either way, ``headers`` included. A managed server has no legitimate
+    ``headers`` (all four are local stdio processes), so retaining it would only
+    forward whatever a hand edit put there.
+    """
+    withheld: list[str] = []
+    if projected.get("headers"):
+        projected.pop("headers", None)
+        withheld.append("headers")
+
+    env = projected.get("env")
+    if not env:
+        projected.pop("env", None)
+        return withheld
+    if not managed or not isinstance(env, dict):
+        # Non-managed, or a malformed env that cannot be filtered key-by-key.
+        projected.pop("env", None)
+        withheld.append("env")
+        return withheld
+
+    kept = {k: v for k, v in env.items() if k in _MANAGED_ENV_KEYS_KEPT}
+    if len(kept) != len(env):
+        withheld.append("env")
+    if kept:
+        projected["env"] = kept
+    else:
+        projected.pop("env", None)
+    return withheld
+
+
 def to_client_custom_agent(
     agent_id: str,
     spec: dict[str, Any],
     prompt: str,
+    *,
+    stub_server_names: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
     Pure: *prompt* is already-resolved content (see :func:`resolve_prompt`).
+
+    *stub_server_names* are the servers that will arrive as the session-level
+    ``mcpServers`` param and must not also be declared here — see
+    :func:`_project_mcp_servers`. The default is empty, which is correct for a
+    caller with no shared gateway: nothing is stubbed, so nothing is subtracted.
     """
     if not agent_id:
         raise KasAgentTranslationError("agent id must be non-empty")
@@ -354,6 +509,10 @@ def to_client_custom_agent(
         if entries:
             out["resources"] = entries
 
+    mcp_servers = _project_mcp_servers(spec, agent_id, stub_server_names)
+    if mcp_servers:
+        out["mcpServers"] = mcp_servers
+
     return out
 
 
@@ -376,7 +535,12 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     return raw
 
 
-def build_kas_custom_agents(agents_dir: Path, agent_id: str) -> list[dict[str, Any]]:
+def build_kas_custom_agents(
+    agents_dir: Path,
+    agent_id: str,
+    *,
+    stub_server_names: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
     One entry: KAS registers the injected agent, it then surfaces as a mode, and
@@ -387,7 +551,11 @@ def build_kas_custom_agents(agents_dir: Path, agent_id: str) -> list[dict[str, A
     A prompt-less spec (e.g. ``kirocrew-lite``) is projected with the small
     :data:`_KAS_FALLBACK_PROMPT` so it satisfies KAS's non-empty-prompt
     requirement instead of crashing the session (see :func:`resolve_prompt`).
+
+    *stub_server_names* is forwarded to :func:`_project_mcp_servers`; the caller
+    holds the gateway overlay this session will inject from, so it is the only
+    layer that can answer which names are stubbed.
     """
     spec = load_agent_spec(agents_dir, agent_id)
     prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
-    return [to_client_custom_agent(agent_id, spec, prompt)]
+    return [to_client_custom_agent(agent_id, spec, prompt, stub_server_names=stub_server_names)]

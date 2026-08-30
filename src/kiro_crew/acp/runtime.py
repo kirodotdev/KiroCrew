@@ -89,7 +89,7 @@ from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.mcp_gateway.session_servers import injection_server_names, pooled_session_servers
 from kiro_crew.metrics.events import (
     CHILD_PERMISSION_DENIED,
     CHILD_PERMISSION_ROUTED,
@@ -2709,6 +2709,14 @@ class AcpRuntime:
         Materializes first for the same reason the kiro spawn path does: the
         managed default spec may not exist yet, and reading it is what the
         projection needs. File I/O is offloaded — this runs on the loop.
+
+        The projection needs to know which servers will ALSO arrive as
+        session-level broker stubs, because a session-injected server outranks an
+        agent-declared one and declaring both is a double registration. Only this
+        layer holds the overlay that answers it, so the set is resolved here and
+        passed down. ``injection_server_names`` is one file read with no shaping
+        (it exists to be callable on the session path) and returns an empty set
+        when nothing is stubbed, which is the default.
         """
         if self._acp_backend == ACP_BACKEND_KAS and agent:
 
@@ -2719,7 +2727,23 @@ class AcpRuntime:
                     logger.warning(
                         "pre-session agent materialization failed for %r", agent, exc_info=True
                     )
-                return build_kas_custom_agents(kiro_agents_dir(), agent)
+                try:
+                    stubbed = injection_server_names(self._mcp_gateway_overlay, agent)
+                except Exception:
+                    # An unreadable overlay must not cost the session its agent.
+                    # Empty is the SAFE direction here: it declares a stubbed
+                    # server twice (the injection still wins) rather than
+                    # withholding one that nothing else will supply.
+                    logger.debug(
+                        "stubbed-server lookup failed for %r; projecting every "
+                        "declared server",
+                        agent,
+                        exc_info=True,
+                    )
+                    stubbed = frozenset()
+                return build_kas_custom_agents(
+                    kiro_agents_dir(), agent, stub_server_names=stubbed
+                )
 
             try:
                 return await asyncio.to_thread(_build)
