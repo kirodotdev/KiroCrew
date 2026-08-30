@@ -59,8 +59,9 @@ updates itself atomically instead of asking you to re-run the installer.
   instead of being silently skipped or half-applied.
 - **`kirocrew gateway --no-tunnel`** — A gateway started with the new flag
   refuses to publish a tunnel for its whole lifetime, regardless of
-  `tunnel.enabled`; Dev Fleet pods always start this way — reach them with
-  SSH port forwarding instead.
+  `tunnel.enabled`. Dev Fleet pods pass the flag whenever the target checkout
+  understands it — an older checkout keeps its previous behavior — and pods
+  are reached with SSH port forwarding either way.
 
 ### Your AWS account gets a control room
 
@@ -399,8 +400,8 @@ a follow-up option removes only its generated suffix, never your edits.
 @bolichen97 @buluoray @c020627 @chenmingwei23 @cixuuz @CrysisDeu @DeryFerd
 @dwu96 @flukschander @GoZippy @helenastafford @iamwhatever @isotope14
 @jeeshofone @jingchaodev @kaizawa97 @kyleseaman @leonlaiyc @leozhad
-@LucaButBoring @mbriones98 @md-abusayeed @mrbeag @NicholasRBowers @pepmach
-@peterhieuvu @piyushrajyadav @pkot98121 @ptias @rnoack1 @robomnis @RohanK6
+@LucaButBoring @mbriones98 @md-abusayeed @mrbeag @NicholasRBowers @Pearcekieser @pepmach
+@peterhieuvu @piyushrajyadav @pkot98121 @psantus @ptias @rnoack1 @robomnis @RohanK6
 @royosherove @rubencu @SebastianYuSun @ShotaroKataoka @shrihan-vijay @Tiger-0512
 @unstablebrainiac @warren830 @welikoiwanenko @xuejinT
 
