@@ -1329,12 +1329,37 @@ def _strip_confirm_for_internal(request: web.Request, params: dict[str, Any]) ->
     return params
 
 
-async def _json_body(request: web.Request) -> dict[str, Any]:
+async def _json_body(
+    request: web.Request,
+) -> tuple[dict[str, Any] | None, web.Response | None]:
+    """Parse a JSON *object* body, following the ``read_bounded_json`` 400 contract.
+
+    Returns ``(body, None)`` on success, or ``(None, error_response)`` when the
+    caller should return early. Deploy has no app-specific reason to diverge from
+    the shared dashboard contract (``dashboard/handlers/_shared.py::read_bounded_json``),
+    so it answers a body-shape 400 for BOTH a malformed body and a valid-JSON body
+    that is not an object. Otherwise a bad-shape request collapses to ``{}`` and
+    surfaces as a downstream field error (e.g. ``400 invalid config: ...``) instead
+    of the body-shape mistake it actually is.
+
+    The catch spans the full client-input failure set: an unknown ``charset=`` codec
+    raises ``LookupError`` and undecodable bytes raise ``UnicodeDecodeError`` (a
+    ``ValueError``, not a ``json.JSONDecodeError``), so catching only the latter would
+    let those escape as a 500. Transport/disconnect errors are deliberately NOT caught
+    (no bare ``Exception``) so a client disconnect propagates rather than being reported
+    as a client mistake.
+    """
     try:
         body = await request.json()
-    except json.JSONDecodeError:
-        return {}
-    return body if isinstance(body, dict) else {}
+    except (LookupError, RecursionError, ValueError):
+        return None, web.json_response(
+            {"error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
+    if not isinstance(body, dict):
+        return None, web.json_response(
+            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+        )
+    return body, None
 
 
 @_internal_denied
@@ -1364,7 +1389,10 @@ async def _handle_put_config(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "config_update")
     if denied:
         return denied
-    body = await _json_body(request)
+    body, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert body is not None  # _json_body returns (dict, None) on success
     try:
         profile = validate_field(str(body.get("profile", "")), _PROFILE_SPEC)
         region = validate_field(str(body.get("region", "")), _REGION_SPEC)
@@ -1404,7 +1432,11 @@ async def _handle_deploy(request: web.Request) -> web.Response:
             },
             status=403,
         )
-    params = _strip_confirm_for_internal(request, await _json_body(request))
+    params, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert params is not None  # _json_body returns (dict, None) on success
+    params = _strip_confirm_for_internal(request, params)
     status, payload = await _do_deploy(params)
     return web.json_response(_sanitize_response(payload), status=status)
 
@@ -1414,7 +1446,10 @@ async def _handle_recall(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "recall")
     if denied:
         return denied
-    params = await _json_body(request)
+    params, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert params is not None  # _json_body returns (dict, None) on success
     status, payload = await _do_recall(params)
     return web.json_response(_sanitize_response(payload), status=status)
 
@@ -1424,7 +1459,10 @@ async def _handle_destroy(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "destroy")
     if denied:
         return denied
-    params = await _json_body(request)
+    params, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert params is not None  # _json_body returns (dict, None) on success
     status, payload = await _do_destroy(params)
     return web.json_response(_sanitize_response(payload), status=status)
 
@@ -1474,7 +1512,10 @@ async def _handle_verify(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "verify")
     if denied:
         return denied
-    body = await _json_body(request)
+    body, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert body is not None  # _json_body returns (dict, None) on success
     try:
         profile, _region = await _resolve_profile(body)
     except _ProfileResolveError as e:
@@ -1550,7 +1591,10 @@ async def _handle_profiles_post(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "profile_create")
     if denied:
         return denied
-    body = await _json_body(request)
+    body, body_err = await _json_body(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # _json_body returns (dict, None) on success
     try:
         name = validate_field(str(body.get("name", "")), _PROFILE_SPEC)
         region = validate_field(str(body.get("region", "")) or DEFAULT_REGION, _REGION_SPEC)
@@ -1618,7 +1662,10 @@ async def _handle_profiles_put(request: web.Request) -> web.Response:
     denied = _deny_restricted(request, "profile_update")
     if denied:
         return denied
-    body = await _json_body(request)
+    body, err = await _json_body(request)
+    if err is not None:
+        return err
+    assert body is not None  # _json_body returns (dict, None) on success
     # match_info name is LLM/user-influenceable — validate like the POST path
     # before it reaches the registry lookup / error strings / audit call.
     try:
@@ -2236,8 +2283,13 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
     # This handler is @_internal_denied, so the flag can only originate from a
     # cookie/token-authenticated human, never from the MCP caller.
     if entry.get("override_scan_required"):
-        body = await _json_body(request)
-        if body.get("override_scan") is True:
+        # Deliberate divergence from the _json_body 400 contract: the pending
+        # entry was already popped above, so answering a body-shape 400 here
+        # would drop it. A malformed or absent body therefore means "no
+        # override" — _do_deploy re-blocks on the same findings, which is the
+        # conservative outcome — rather than an error response.
+        body, _body_err = await _json_body(request)
+        if body is not None and body.get("override_scan") is True:
             params["override_scan"] = True
             _audit("pending_confirm", entry_id, "allowed",
                    error="human override_scan on non-credential findings")

@@ -103,10 +103,20 @@ async def _json_object(
     array parses fine as JSON but has no ``.get``, so without this check every
     handler would raise ``AttributeError`` and return a 500 to a client that
     merely sent the wrong shape.
+
+    Follows the ``dashboard/handlers/_shared.read_bounded_json`` contract on
+    Q1/Q2 (400 for a non-object, catch spanning the client-input failure set).
+    The deliberate divergence is ``_strict_loads``: ``parse_constant`` rejects
+    ``NaN``/``Infinity``/``-Infinity`` at the boundary (see ``_reject_non_finite``)
+    so a non-finite number can never be persisted into a record the browser's
+    ``JSON.parse`` would then choke on. The catch is widened past
+    ``ValueError`` to include ``LookupError`` (an unknown ``charset=`` codec) and
+    ``RecursionError`` (a deeply nested body) so those become a 400, not a 500,
+    while a mid-read transport error still propagates.
     """
     try:
         body = await request.json(loads=_strict_loads)
-    except ValueError:
+    except (LookupError, RecursionError, ValueError):
         return None, _bad_request("invalid JSON", "invalid_json")
     if not isinstance(body, dict):
         return None, _bad_request("body must be a JSON object", "body_not_object")

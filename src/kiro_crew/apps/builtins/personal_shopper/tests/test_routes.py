@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew.apps.builtins.personal_shopper.backend import routes as routes_mod
 from kiro_crew.apps.builtins.personal_shopper.backend.store import PreferenceStore
@@ -113,6 +113,42 @@ class TestBodyShapeIsAClientError(RoutesTestCase):
         )
         self.assertEqual(resp.status, 201)
         self.assertTrue((await resp.json())["id"])
+
+
+def _req_raising(exc: Exception) -> web.Request:
+    """A real ``web.Request`` whose ``.json()`` raises *exc*.
+
+    ``_json_object`` only calls ``request.json``, so overriding it on a mocked
+    request exercises the catch directly without wiring a full transport.
+    """
+    request = make_mocked_request("POST", f"{_PREFIX}/preferences")
+
+    async def _json(*_args: object, **_kwargs: object) -> object:
+        raise exc
+
+    request.json = _json  # type: ignore[method-assign]
+    return request
+
+
+class TestJsonObjectCatchWidth(unittest.IsolatedAsyncioTestCase):
+    """The catch must span the client-input failure set, not ValueError alone."""
+
+    async def test_an_unknown_charset_codec_is_a_400_not_a_500(self) -> None:
+        # An unknown ``charset=`` on the request makes aiohttp's decode step raise
+        # LookupError (not a ValueError), which used to escape ``_json_object`` as
+        # a 500. It is a client-input mistake and must answer 400.
+        body, err = await routes_mod._json_object(
+            _req_raising(LookupError("unknown encoding: bogus-codec"))
+        )
+        self.assertIsNone(body)
+        assert err is not None
+        self.assertEqual(err.status, 400)
+
+    async def test_a_recursion_error_from_a_deep_body_is_a_400(self) -> None:
+        body, err = await routes_mod._json_object(_req_raising(RecursionError()))
+        self.assertIsNone(body)
+        assert err is not None
+        self.assertEqual(err.status, 400)
 
 
 class TestSearchArgumentValidation(RoutesTestCase):

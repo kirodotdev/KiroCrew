@@ -390,10 +390,18 @@ async def _json_object(request: web.Request) -> tuple[dict, web.Response | None]
     Split out of :func:`_body_preamble` so the agent write path can read a body
     without the owner/repo gate it does not use — one implementation, so the two
     paths cannot drift on which malformed payload gets which refusal.
+
+    Follows the ``dashboard/handlers/_shared.read_bounded_json`` contract on
+    Q1/Q2 (400 for a non-object; catch spanning the client-input failure set of
+    ``LookupError``/``RecursionError``/``ValueError`` so an unknown ``charset=``
+    codec is a 400 and a mid-read transport error still propagates). The
+    deliberate divergence is the extra ``_holds_non_finite_number`` gate below:
+    ``NaN``/``Infinity`` decode fine here but are not valid JSON on the wire, so
+    they are refused rather than persisted.
     """
     try:
         raw = await request.json()
-    except Exception:
+    except (LookupError, RecursionError, ValueError):
         return {}, web.json_response(
             {"error": "request body must be JSON", "code": "invalid_json"}, status=400
         )

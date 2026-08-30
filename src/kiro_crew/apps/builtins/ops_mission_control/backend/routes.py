@@ -158,9 +158,20 @@ def _require_enabled(handler: Handler) -> Handler:
 
 
 async def _json_body(request: web.Request) -> dict[str, Any] | None:
+    """Parse a JSON object body; ``None`` when it is malformed or not an object.
+
+    Same Q1/Q2 posture as ``dashboard/handlers/_shared.read_bounded_json`` (a
+    non-object is refused, and the catch spans the client-input failure set of
+    ``LookupError``/``RecursionError``/``ValueError`` so an unknown ``charset=``
+    codec is a 400, not a 500). The deliberate divergence is the return shape:
+    this yields ``dict | None`` and lets each caller answer the 400 itself,
+    rather than the ``(body, response)`` tuple the shared helper returns. The
+    catch is narrowed from the previous ``except Exception`` so a mid-read
+    transport error propagates instead of being reported as a client mistake.
+    """
     try:
         body = await request.json()
-    except Exception:  # noqa: BLE001 — malformed body is a 400, not a 500
+    except (LookupError, RecursionError, ValueError):
         return None
     return body if isinstance(body, dict) else None
 

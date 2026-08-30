@@ -37,7 +37,7 @@ from typing import Callable
 from unittest import mock
 
 from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase
+from aiohttp.test_utils import AioHTTPTestCase, make_mocked_request
 
 from conftest import make_dir_link
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, paths, provision, routes
@@ -1346,6 +1346,45 @@ class TestWorkerResponseContract(unittest.TestCase):
         string rather than an absent key that throws in the client."""
         resp = routes._worker_response(500, {})
         self.assertEqual(json.loads(resp.body), {"error": "", "code": ""})
+
+
+def _json_req_raising(exc: Exception) -> web.Request:
+    """A real ``web.Request`` whose ``.json()`` raises *exc*.
+
+    ``_json_body`` only calls ``request.json``, so overriding it exercises the
+    catch directly without wiring a full transport.
+    """
+    request = make_mocked_request("POST", "/api/apps/pptx-maker/decks")
+
+    async def _json(*_args: object, **_kwargs: object) -> object:
+        raise exc
+
+    request.json = _json  # type: ignore[method-assign]
+    return request
+
+
+class TestJsonBodyCatchWidth(unittest.IsolatedAsyncioTestCase):
+    """The catch must span the client-input failure set.
+
+    ``UnicodeDecodeError`` is a ``ValueError`` subclass, so the old
+    ``(ValueError, UnicodeDecodeError)`` tuple never covered ``LookupError`` from an
+    unknown ``charset=`` codec — that escaped as a 500. The widened catch turns it
+    into the 400 it always was."""
+
+    async def test_an_unknown_charset_codec_is_a_400_not_a_500(self) -> None:
+        body, err = await routes._json_body(
+            _json_req_raising(LookupError("unknown encoding: bogus-codec"))
+        )
+        self.assertIsNone(body)
+        assert err is not None
+        self.assertEqual(err.status, 400)
+        self.assertEqual(json.loads(err.body)["code"], "body_not_json")
+
+    async def test_a_recursion_error_from_a_deep_body_is_a_400(self) -> None:
+        body, err = await routes._json_body(_json_req_raising(RecursionError()))
+        self.assertIsNone(body)
+        assert err is not None
+        self.assertEqual(err.status, 400)
 
 
 class TestIconProvisionedMarker(unittest.TestCase):

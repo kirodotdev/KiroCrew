@@ -478,10 +478,25 @@ async def _read_body(request: web.Request) -> bytes | None:
 
 
 async def _json_body(request: web.Request) -> tuple[dict | None, web.Response | None]:
-    """Parse a JSON object body, or return the 400 to send back."""
+    """Parse a JSON object body, or return the 400 to send back.
+
+    Same 400-for-non-object / (body, None)-tuple contract as
+    ``dashboard/handlers/_shared.read_bounded_json``; the deliberate divergence is
+    the app-specific ``code`` values (``body_not_json`` / ``body_not_object``)
+    that the dashboard switches on. Unlike ``read_bounded_json`` this helper does
+    not cap the body — the size-bounded reader ``_read_body`` guards the raw-body
+    ``styles/import`` endpoint instead, not this JSON path.
+
+    The catch spans the client-input failure set: ``LookupError`` (an unknown
+    ``charset=`` codec) previously escaped as a 500 and is now a 400, and
+    ``RecursionError`` (a deeply nested body) is caught for the same reason.
+    ``UnicodeDecodeError`` is a ``ValueError`` subclass, so ``ValueError`` alone
+    already covers undecodable bytes; it is dropped from the tuple as redundant.
+    A mid-read transport error still propagates as itself.
+    """
     try:
         body = await request.json()
-    except (ValueError, UnicodeDecodeError):
+    except (LookupError, RecursionError, ValueError):
         return None, web.json_response(
             {"error": "request body must be JSON", "code": "body_not_json"}, status=400
         )

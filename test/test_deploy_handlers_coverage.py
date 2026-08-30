@@ -70,8 +70,13 @@ class _NonRestrictedState:
 class _FakeReq:
     """Request double with a non-restricted app state installed."""
 
-    def __init__(self, body=None, *, match_info=None, query=None, headers=None):
+    def __init__(self, body=None, *, match_info=None, query=None, headers=None, json_exc=None):
         self._body = {} if body is None else body
+        # When set, ``json()`` raises this instead of decoding ``_body`` — used to
+        # exercise the widened catch set (LookupError for an unknown charset codec,
+        # UnicodeDecodeError for undecodable bytes) and to prove transport errors
+        # propagate rather than being swallowed as a 400.
+        self._json_exc = json_exc
         self.headers = headers if headers is not None else {"X-Session-Key": "dashboard:ui"}
         self.app = {"state": _NonRestrictedState()}
         self.match_info = match_info or {}
@@ -79,6 +84,8 @@ class _FakeReq:
         self.rel_url = SimpleNamespace(query=self.query)
 
     async def json(self):
+        if self._json_exc is not None:
+            raise self._json_exc
         if isinstance(self._body, str):
             raise json.JSONDecodeError("bad", self._body, 0)
         return self._body
@@ -835,12 +842,89 @@ class TestDoList:
 
 class TestAdapters:
     @pytest.mark.asyncio
-    async def test_json_body_tolerates_invalid_json(self):
-        assert await handlers._json_body(_FakeReq("not json")) == {}
+    async def test_json_body_accepts_object(self):
+        body, err = await handlers._json_body(_FakeReq({"profile": "p"}))
+        assert body == {"profile": "p"} and err is None
 
     @pytest.mark.asyncio
-    async def test_json_body_rejects_non_object(self):
-        assert await handlers._json_body(_FakeReq([1, 2])) == {}
+    async def test_json_body_rejects_malformed_with_400(self):
+        # A malformed body is a body-shape mistake, not "no arguments given":
+        # answer 400 rather than collapsing to {} (the old buggy behaviour).
+        body, err = await handlers._json_body(_FakeReq("not json"))
+        assert body is None
+        assert err is not None and err.status == 400
+        assert _payload(err)["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_json_body_rejects_non_object_with_400(self):
+        body, err = await handlers._json_body(_FakeReq([1, 2]))
+        assert body is None
+        assert err is not None and err.status == 400
+        assert _payload(err)["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    async def test_json_body_widened_catch_lookup_error(self):
+        # An unknown ``charset=`` codec raises LookupError from request.json();
+        # the old ``except json.JSONDecodeError`` let it escape as a 500.
+        body, err = await handlers._json_body(
+            _FakeReq(json_exc=LookupError("unknown encoding: bogus")))
+        assert body is None
+        assert err is not None and err.status == 400
+        assert _payload(err)["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_json_body_widened_catch_unicode_decode_error(self):
+        # Undecodable bytes raise UnicodeDecodeError — a ValueError, not a
+        # JSONDecodeError — so the widened catch must turn it into a 400.
+        exc = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        body, err = await handlers._json_body(_FakeReq(json_exc=exc))
+        assert body is None
+        assert err is not None and err.status == 400
+        assert _payload(err)["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_json_body_lets_transport_errors_propagate(self):
+        # A client disconnect must NOT be reported as a client-shape 400: the
+        # helper does not catch bare Exception, so it propagates.
+        class _Disconnect(Exception):
+            pass
+
+        with pytest.raises(_Disconnect):
+            await handlers._json_body(_FakeReq(json_exc=_Disconnect("connection reset")))
+
+    @pytest.mark.asyncio
+    async def test_put_config_non_object_body_is_body_shape_400(self):
+        # Previously reachable bug: a non-object body collapsed to {}, so
+        # validate_field ran on profile=""/region="" and answered
+        # "400 invalid config: ..." — a field error for a body-shape mistake.
+        resp = await handlers._handle_put_config(_FakeReq([]))
+        assert resp.status == 400
+        body = _payload(resp)
+        assert body["code"] == "body_not_object"
+        assert "invalid config" not in body["error"]
+
+    @pytest.mark.asyncio
+    async def test_put_config_malformed_body_is_body_shape_400(self):
+        resp = await handlers._handle_put_config(_FakeReq("not json"))
+        assert resp.status == 400
+        assert _payload(resp)["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_deploy_malformed_body_returns_400(self, monkeypatch):
+        # The body-shape 400 fires before deploy proceeds with empty params.
+        monkeypatch.setattr(handlers, "publish_denied_reason", lambda *a, **kw: "")
+        resp = await handlers._handle_deploy(_FakeReq("not json"))
+        assert resp.status == 400 and _payload(resp)["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_recall_malformed_body_returns_400(self):
+        resp = await handlers._handle_recall(_FakeReq("not json"))
+        assert resp.status == 400 and _payload(resp)["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_destroy_malformed_body_returns_400(self):
+        resp = await handlers._handle_destroy(_FakeReq("not json"))
+        assert resp.status == 400 and _payload(resp)["code"] == "invalid_json"
 
     @pytest.mark.asyncio
     async def test_get_config_returns_registry_default(self):

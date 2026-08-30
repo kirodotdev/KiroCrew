@@ -6036,13 +6036,21 @@ async def _json_body(
 ) -> tuple[dict | None, web.Response | None]:
     """Parse a JSON object body; (body, None) on success, (None, 400) otherwise.
 
-    Pass ``code`` for endpoints whose error contract promises a
-    machine-readable ``code`` on every failure response; the rejection then
-    carries it alongside the human-readable ``error``.
+    Same 400-for-non-object / (body, None)-tuple contract as
+    ``dashboard/handlers/_shared.read_bounded_json``; the one deliberate
+    divergence is the optional ``code``: pass it for endpoints whose error
+    contract promises a machine-readable ``code`` on every failure response, and
+    the rejection then carries it alongside the human-readable ``error``.
+
+    The catch covers the client-input failure set
+    (``LookupError`` from an unknown ``charset=`` codec, ``RecursionError`` from a
+    deeply nested body, ``ValueError`` from undecodable or non-JSON bytes) so a
+    bad codec is a 400 rather than an uncaught 500, while a mid-read transport
+    error still propagates as itself.
     """
     try:
         body = await request.json() if request.content_length else {}
-    except ValueError:
+    except (LookupError, RecursionError, ValueError):
         if code:
             return None, web.json_response(
                 {"error": "invalid JSON body", "code": code}, status=400

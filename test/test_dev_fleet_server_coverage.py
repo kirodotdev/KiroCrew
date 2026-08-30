@@ -1689,6 +1689,18 @@ async def test_json_body_empty_request_is_empty_dict():
 
 
 @pytest.mark.asyncio
+async def test_json_body_unknown_charset_is_400_not_500():
+    # An unknown ``charset=`` codec makes aiohttp's decode step raise LookupError,
+    # not JSONDecodeError. The catch was ValueError-only, so this used to escape as
+    # a 500; it is a client-input mistake and must answer 400. Guards the widened
+    # (LookupError, RecursionError, ValueError) catch against a regression.
+    body, err = await mod._json_body(
+        _raw_request(b"{}", json_error=LookupError("unknown encoding: bogus-codec"))
+    )
+    assert body is None and err is not None and err.status == 400
+
+
+@pytest.mark.asyncio
 async def test_worktree_remove_handler_rejects_non_bool_force(monkeypatch):
     _sel_capture(monkeypatch)
     monkeypatch.setattr(mod, "_valid_worktree_names", AsyncMock(return_value={"feat"}))
