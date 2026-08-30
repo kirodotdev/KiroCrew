@@ -1035,6 +1035,75 @@ class TestAcpClientBackendSelection:
         assert unsearched not in error
 
     @pytest.mark.asyncio
+    async def test_spawn_kiro_missing_bin_reports_the_environment_it_searched(
+        self, tmp_path, monkeypatch
+    ):
+        """The reported directories must come from the search's own environment.
+
+        The diagnostic used to recompute ``known_kiro_cli_dirs`` from a FRESH
+        read of ``os.environ`` after resolution had already failed. A PATH change
+        landing in that window -- a concurrent installer, a self-update, anything
+        editing the gateway's environment -- makes the message name directories
+        that were never searched and omit ones that were, which is the opposite
+        of what a "not found (searched ...)" line is for.
+
+        #5048 gave the Claude adapter this guarantee by caching the search path
+        with the resolution result (see
+        ``test_spawn_claude_missing_bin_reports_the_cached_search_path``); this
+        pins the same property for the Kiro sibling it left recomputing.
+        """
+        from kiro_crew.acp import client as client_mod
+
+        injected = str(tmp_path / "appeared-after-the-search")
+        resolver_env: dict[str, object] = {}
+        diagnostic_env: dict[str, object] = {}
+        real_dirs = client_mod.known_kiro_cli_dirs
+
+        def _resolve_then_change_path(*, environ=None, home=None):
+            resolver_env["mapping"] = environ
+            # A PATH mutation arriving while the resolve is in flight.
+            monkeypatch.setenv("PATH", injected + os.pathsep + os.environ.get("PATH", ""))
+            return None
+
+        def _spy_dirs(platform_name, home, environ, **kwargs):
+            diagnostic_env["mapping"] = environ
+            return real_dirs(platform_name, home, environ, **kwargs)
+
+        client = AcpClient(work_dir=tmp_path)
+        with (
+            patch(
+                "kiro_crew.acp.client._resolve_kiro_bin",
+                side_effect=_resolve_then_change_path,
+            ),
+            patch("kiro_crew.acp.client.known_kiro_cli_dirs", side_effect=_spy_dirs),
+        ):
+            with pytest.raises(AcpError, match="not found"):
+                await client._spawn()
+
+        assert injected in os.environ["PATH"], "the test never actually changed PATH"
+        # THE DEFECT: the directory set reported to the user must not be derived
+        # from an environment the search never saw. Red-before, where the
+        # diagnostic re-read the live os.environ, this is the late PATH entry.
+        assert injected not in diagnostic_env["mapping"].get("PATH", "")
+        # And the guarantee stated positively: one mapping drove both.
+        assert resolver_env.get("mapping") is not None, "resolver got no environment"
+        assert diagnostic_env["mapping"] is resolver_env["mapping"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_kiro_bin_defaults_keep_every_other_caller_unchanged(self, tmp_path):
+        """The new parameters are optional, so the four other call sites are intact.
+
+        ``_resolve_kiro_bin_for_spawn`` is also called from ``acp/runtime.py``,
+        ``handlers/agents.py`` and ``handlers/sessions.py``, none of which needs
+        the search set. Omitting the arguments must resolve exactly as before.
+        """
+        from kiro_crew.acp import client as client_mod
+
+        with patch("kiro_crew.acp.client.resolve_kiro_cli", return_value=None) as resolve:
+            assert await client_mod._resolve_kiro_bin_for_spawn() is None
+        resolve.assert_called_once_with(environ=None, home=None)
+
+    @pytest.mark.asyncio
     async def test_spawn_kiro_backend_unchanged(self, tmp_path):
         """Default (non-claude) backend still spawns `kiro-cli acp --agent <name>`."""
         client = AcpClient(work_dir=tmp_path)
@@ -10033,7 +10102,9 @@ class TestSpawnEnvScrub:
             captured["env"] = kwargs.get("env")
             raise _StopSpawn()
 
-        monkeypatch.setattr(acp_client, "_resolve_kiro_bin", lambda: "/fake/kiro")
+        # **_ absorbs the environ/home the spawn path now pins, so the search and
+        # the "not found" diagnostic cannot read different environments.
+        monkeypatch.setattr(acp_client, "_resolve_kiro_bin", lambda **_: "/fake/kiro")
         monkeypatch.setattr(
             acp_client,
             "wrap_argv",

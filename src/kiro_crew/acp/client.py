@@ -31,7 +31,7 @@ import time
 from collections import deque
 from contextlib import aclosing
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, Sequence, TypeVar
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence, TypeVar
 
 from kiro_crew import agent_scratch, model_registry, platform_compat
 from kiro_crew.acp._dispatch import (
@@ -272,16 +272,27 @@ def _normalize_exe_casing(path: str | None) -> str | None:
         return path
 
 
-def _resolve_kiro_bin() -> str | None:
+def _resolve_kiro_bin(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> str | None:
     """Resolve the user's installed Kiro CLI, to be launched in place.
 
     Returns the installed binary's own path. KiroCrew never copies the CLI and
     executes the copy: Kiro CLI 2.15+ dispatches subcommands by exec'ing a
     sibling executable resolved relative to its own path, which a copy into a
     private directory destroys.
+
+    *environ* and *home* exist so a caller that also needs to REPORT the search
+    can pin both to one reading of the environment. ``known_kiro_cli_dirs`` is a
+    pure function of ``(platform, home, environ)``, so passing the same mapping
+    here and to the diagnostic guarantees the directories named in a "not found"
+    message are the directories that were actually searched. Both default to the
+    live values, so every other caller is unchanged.
     """
 
-    executable = resolve_kiro_cli()
+    executable = resolve_kiro_cli(environ=environ, home=home)
     if not executable:
         return executable
     # Deferred to keep the low-level resolver import graph acyclic:
@@ -302,7 +313,11 @@ def _resolve_kiro_bin() -> str | None:
     return snapshot.launch_path
 
 
-async def _resolve_kiro_bin_for_spawn() -> str | None:
+async def _resolve_kiro_bin_for_spawn(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> str | None:
     """Resolve the Kiro CLI path off the event loop.
 
     Plain ``to_thread`` — deliberately NOT shielded. The shield existed only to
@@ -317,7 +332,7 @@ async def _resolve_kiro_bin_for_spawn() -> str | None:
     ASYNCIO UNHANDLED record to crash.log for an ordinary tab close.
     """
 
-    return await asyncio.to_thread(_resolve_kiro_bin)
+    return await asyncio.to_thread(_resolve_kiro_bin, environ=environ, home=home)
 
 
 def _mise_which(tool: str) -> str | None:
@@ -2807,16 +2822,31 @@ class AcpClient:
                 )
             argv: list[str] = claude_argv
         else:
+            # Pin ONE reading of the environment for both the search and the
+            # message that reports it. The previous code resolved against the live
+            # ``os.environ`` and then, on failure, recomputed the directory set
+            # from a FRESH read -- so a PATH change landing in that window (a
+            # concurrent installer, a self-update, anything editing the gateway's
+            # environment) produced a "not found" message naming directories that
+            # were never searched, while omitting ones that were. #5048 already
+            # solved this for the Claude adapter by caching the search path WITH
+            # the resolution result; this is the same guarantee for the Kiro
+            # sibling, which it left recomputing.
+            spawn_environ = dict(os.environ)
+            spawn_home = Path.home()
             try:
-                kiro_bin = await _resolve_kiro_bin_for_spawn()
+                kiro_bin = await _resolve_kiro_bin_for_spawn(environ=spawn_environ, home=spawn_home)
             except _KiroExecutableTrustError as exc:
                 raise AcpError(str(exc)) from exc
             if not kiro_bin:
+                # Pure function of the arguments, so this reproduces exactly the
+                # set the resolution above walked. Still off-loop: it expands the
+                # inherited PATH.
                 searched_dirs = await asyncio.to_thread(
                     known_kiro_cli_dirs,
                     sys.platform,
-                    Path.home(),
-                    os.environ,
+                    spawn_home,
+                    spawn_environ,
                 )
                 raise AcpError(
                     f"{KIRO_CLI_BIN} not found "
