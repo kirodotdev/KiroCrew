@@ -4,7 +4,6 @@ import {
   pruneStale,
   HEARTBEAT_MS,
   STALE_MS,
-  NAV_CLAIM_MS,
   type PopoutMap,
   type PopoutMsg,
   type NavIntent,
@@ -25,7 +24,7 @@ import {
 
 export const ARTIFACT_POPOUT_CHANNEL = 'kirocrew-artifact-popout'
 
-export { HEARTBEAT_MS, STALE_MS, NAV_CLAIM_MS, applyMessage, pruneStale }
+export { HEARTBEAT_MS, STALE_MS, applyMessage, pruneStale }
 export type { PopoutMap, PopoutMsg, NavIntent }
 
 /**

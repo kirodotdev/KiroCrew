@@ -12,8 +12,6 @@ export const COMMENT_DRAFTS_KEY = 'mc-comment-drafts'
 /** Cap stored files to prevent unbounded growth from long-term reviewers. */
 export const COMMENT_DRAFT_MAX_FILES = 20
 
-export type CommentDrafts = Record<string, InlineComment[]>
-
 /** Accept only non-empty arrays of comments carrying the required string keys;
  *  return a deep copy isolating the store from caller mutations, or null to
  *  drop. The per-comment spread is a full copy ONLY because every InlineComment

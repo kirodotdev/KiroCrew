@@ -37,8 +37,6 @@ export const PASTE_DRAFT_MAX_ENTRIES = DRAFT_MAX_ENTRIES
 /** Discard blocks not touched within this window (shared with text drafts). */
 export const PASTE_DRAFT_TTL_MS = DRAFT_TTL_MS
 
-export type PasteDrafts = Record<string, PasteBlock[]>
-
 /** A value is a valid PasteBlock iff it carries all four fields with the right
  *  primitive types. Anything else is corruption and is dropped. */
 function isPasteBlock(v: unknown): v is PasteBlock {

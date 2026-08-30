@@ -80,8 +80,6 @@ export function mergeRecoveredDraft(keep: string | null | undefined, payload: st
   return mergeIntoDraft(existing, payload)
 }
 
-export type Drafts = Record<string, string>
-
 const isNonEmptyString = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
 
 const store = createSlotDraftStore<string>({

@@ -12,8 +12,6 @@ import { createSlotDraftStore } from './slotDraftStore'
 
 export const FILE_DRAFTS_KEY = 'mc-chat-file-drafts'
 
-export type FileDrafts = Record<string, string[]>
-
 /** Coerce to a non-empty string[] (dropping non-string members), or null. The
  *  returned copy isolates the store from caller mutations and vice versa. */
 const sanitizePaths = (v: unknown): string[] | null => {

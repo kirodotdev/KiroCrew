@@ -1057,15 +1057,6 @@ export interface NotificationChannel {
   settings: { muted?: boolean; priority?: string }
 }
 
-export interface SecretaryItem {
-  id: string; channel: string; channel_name: string
-  thread_ts: string | null; message: string
-  sender_id: string; sender_name: string
-  thread_context: { sender: string; text: string }[]
-  classification: string; draft: string; confidence: string
-  status: string; created_at: number; context_summary?: string
-}
-
 export interface PendingApproval {
   tool: string
   tool_input: string
