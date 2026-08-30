@@ -133,10 +133,22 @@ def test_forgery_gate_malformed_json():
     [
         ("monitor_start", "monitor_start"),
         ("kirocrew-core___monitor_start", "monitor_start"),
-        # Tightened surface (#755 security fix): only exact membership and a
-        # single ``___`` server-qualifier split are accepted. Any other
-        # separator no longer tail-matches, so a crafted title/path cannot
-        # smuggle a directive name in as a namespace tail.
+        # The separator is a RUN of underscores and its length is transport-
+        # specific, so the canonical MCP prefix form must resolve too. Before
+        # this, ``mcp__<server>__<tool>`` fell through and the directive was
+        # dropped on any transport using that spelling — the same both-forms
+        # problem ``channel._blocked_tool_named`` already solved.
+        ("mcp__kirocrew-core__monitor_start", "monitor_start"),
+        ("mcp__kirocrew-core__set_project", "set_project"),
+        # Still bounded to a >= 2 underscore run: single-underscore joins do
+        # NOT tail-match, so neither a flattened name nor a crafted identifier
+        # can smuggle a directive name in.
+        ("mcp_kirocrew_core_monitor_start", ""),
+        ("do_monitor_start", ""),
+        ("evilmonitor_start", ""),
+        # Tightened surface (#755 security fix): a non-underscore separator
+        # never tail-matches, so a crafted title/path cannot smuggle a
+        # directive name in as a namespace tail.
         ("kirocrew-core::set_project", ""),
         ("bash /tmp/set_project", ""),
         ("a.autonudge_stop", ""),
@@ -205,3 +217,32 @@ def test_subagent_isolation_intent():
     for tool in non_directive_tools:
         assert tool not in sd.DIRECTIVE_TOOLS
         assert sd.decode(genuine, tool) is None
+
+
+class TestHasMarker:
+    """``has_marker`` is a DIAGNOSTIC predicate, never an authorization one."""
+
+    def test_marker_present_is_detected(self):
+        out = sd.encode("monitor_start", {"message": "x"}, "human")
+        assert sd.has_marker(out) is True
+
+    def test_plain_text_and_empty_are_not_markers(self):
+        assert sd.has_marker("just a normal tool result") is False
+        assert sd.has_marker("") is False
+        assert sd.has_marker(None) is False
+
+    def test_a_refusal_carries_no_directive_marker(self):
+        """An oversize refusal must not read as "a directive arrived": it has
+        its own sentinel and the model was already told nothing was applied."""
+        refusal = sd.encode("monitor_start", {"message": "x" * 5000}, "human")
+        assert sd.is_refusal(refusal) is True
+        assert sd.has_marker(refusal) is False
+
+    def test_detecting_a_marker_grants_nothing(self):
+        """The forged-marker case: has_marker() says True and the gate still
+        refuses, because authorization runs through directive_tool_for/decode.
+        A diagnostic that could grant would BE the forgery hole."""
+        forged = sd.encode("monitor_start", {"message": "x"}, "human")
+        assert sd.has_marker(forged) is True
+        assert sd.directive_tool_for("", "execute_bash") == ""
+        assert sd.decode(forged, "execute_bash") is None

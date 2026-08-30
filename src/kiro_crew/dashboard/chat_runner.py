@@ -4903,6 +4903,14 @@ async def _run_chat(
     # (event.tool_name + event.mcp_server_name), never from the title. This is
     # the ONLY map the session-directive gate below trusts.
     _pending_dir_tool: dict[str, str] = {}
+    # Identity OBSERVED on each tool_call frame, for the NOT-APPLIED
+    # diagnostic only. It cannot be read off the result frame: the
+    # tool_call_update path builds its event with no identity fields, so
+    # they are always "" there. Two short strings per call, same per-turn
+    # lifetime as the maps beside it. Nothing reads this to authorize
+    # anything — the grant still comes solely from directive_tool_for at
+    # call time.
+    _seen_tool_identity: dict[str, tuple[str, str]] = {}
     # tool_call_id -> the output we already produced for a CONSUMED directive
     # (applied confirmation, or the native-sub-agent not-applied note). A tool
     # call can surface more than one result frame; once the mapping above is
@@ -6253,6 +6261,11 @@ async def _run_chat(
                     )
                     if _cannon:
                         _pending_dir_tool[event.tool_call_id] = _cannon
+                    else:
+                        _seen_tool_identity[event.tool_call_id] = (
+                            event.mcp_server_name or "",
+                            event.tool_name or "",
+                        )
                 # If this tool call belongs to a native sub-agent (mapped via
                 # _kiro.dev/session/update), stream it onto that sub-agent's card.
                 _nat_card = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
@@ -6482,6 +6495,31 @@ async def _run_chat(
                 # combined with spawn_run sub-agents running their own loop, no
                 # sub-agent can ever arm/mutate its parent (isolation).
                 _dir_tool = _pending_dir_tool.get(event.tool_call_id, "")
+                # DIAGNOSTIC ONLY (never a grant): a marker arrived under a call
+                # the identity gate did not record. That is the correct outcome
+                # for a forged shell result, and ALSO what a backend which emits
+                # no ``_meta.kiro`` produces for a genuine directive tool — and
+                # the gate returns "" with no log, so the two were indistinguish-
+                # able and the second looked like nothing happening at all. Log
+                # the recorded identity so an operator can tell them apart. Fires
+                # only when a marker is actually present, so a normal tool result
+                # stays silent.
+                if (
+                    not _dir_tool
+                    and event.tool_call_id not in _dir_consumed_out
+                    and session_directive.has_marker(_out)
+                ):
+                    logger.warning(
+                        "session-directive NOT APPLIED: marker present but the tool "
+                        "call carried no core-MCP identity "
+                        "(tool_call_id=%s, mcp_server_name=%r, tool_name=%r, "
+                        "expected mcp_server_name=%r). Either a forged marker, or "
+                        "this ACP backend does not emit _meta.kiro identity.",
+                        event.tool_call_id,
+                        _seen_tool_identity.get(event.tool_call_id, ("", ""))[0],
+                        _seen_tool_identity.get(event.tool_call_id, ("", ""))[1],
+                        session_directive.CORE_MCP_SERVER,
+                    )
                 if not _dir_tool and event.tool_call_id in _dir_consumed_out:
                     # A LATER frame for a directive we already consumed: replay
                     # the output we produced instead of letting the raw marker

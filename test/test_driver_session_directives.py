@@ -628,3 +628,99 @@ class TestBuildDirectiveConsumer:
         assert isinstance(state, _ChannelDirectiveState)
         assert state.sessions is sessions
         assert state._slots == {} and state.channel_transports == {}
+
+
+class TestSilentDropIsDiagnosable:
+    """The identity gate refuses correctly but used to refuse SILENTLY, so an
+    ACP backend that emits no ``_meta.kiro`` was indistinguishable from nothing
+    happening. The refusal must stay a refusal AND leave a log line naming the
+    identity it saw. Diagnostic only: no test here may show an effect applying.
+    """
+
+    def test_missing_backend_identity_logs_what_it_saw(self, caplog):
+        """The KAS-shaped case: a genuine directive tool whose frame carries no
+        ``_meta.kiro`` at all. Nothing applies (unchanged), and the operator can
+        now see WHY instead of an empty log."""
+        spy = _SpyConsumer()
+        with caplog.at_level("WARNING"):
+            _run(
+                [
+                    AcpEvent(
+                        kind=EVENT_TOOL_CALL,
+                        tool_call_id="tc-kas",
+                        title="monitor_start",
+                        tool_name="",
+                        mcp_server_name="",
+                    ),
+                    _result(_directive("monitor_start"), tcid="tc-kas"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ],
+                spy,
+            )
+        assert spy.applied == []
+        assert "session-directive NOT APPLIED" in caplog.text
+        assert session_directive.CORE_MCP_SERVER in caplog.text
+
+    def test_forged_shell_marker_also_logs_and_still_does_not_apply(self, caplog):
+        spy = _SpyConsumer()
+        with caplog.at_level("WARNING"):
+            _run(
+                [
+                    AcpEvent(
+                        kind=EVENT_TOOL_CALL,
+                        tool_call_id="tc-sh",
+                        title="monitor_start",
+                        tool_name="execute_bash",
+                        mcp_server_name="",
+                        is_shell=True,
+                    ),
+                    _result(_directive("monitor_start"), tcid="tc-sh"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ],
+                spy,
+            )
+        assert spy.applied == []
+        assert "session-directive NOT APPLIED" in caplog.text
+        assert "execute_bash" in caplog.text
+
+    def test_ordinary_tool_result_stays_silent(self, caplog):
+        """No marker, no log — the diagnostic must not fire on every tool call."""
+        spy = _SpyConsumer()
+        with caplog.at_level("WARNING"):
+            _run(
+                [
+                    AcpEvent(
+                        kind=EVENT_TOOL_CALL,
+                        tool_call_id="tc-plain",
+                        title="ls",
+                        tool_name="execute_bash",
+                        mcp_server_name="",
+                        is_shell=True,
+                    ),
+                    _result("a.txt  b.txt", tcid="tc-plain"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ],
+                spy,
+            )
+        assert spy.applied == []
+        assert "session-directive NOT APPLIED" not in caplog.text
+
+    def test_an_applied_directive_does_not_log_not_applied(self, caplog):
+        """SINGLE-CONSUME pops the pending entry, so a SECOND result frame for a
+        directive that DID apply reaches the same branch. It must not be
+        reported as not-applied — that false alarm is what the consumed-id set
+        exists to prevent."""
+        spy = _SpyConsumer()
+        payload = _directive("monitor_start")
+        with caplog.at_level("WARNING"):
+            _run(
+                [
+                    _core_call(tcid="tc-ok"),
+                    _result(payload, tcid="tc-ok"),
+                    _result(payload, tcid="tc-ok"),
+                    AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+                ],
+                spy,
+            )
+        assert [k for k, _ in spy.applied] == ["monitor_start"]
+        assert "session-directive NOT APPLIED" not in caplog.text

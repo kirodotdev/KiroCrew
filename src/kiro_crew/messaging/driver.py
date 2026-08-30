@@ -388,6 +388,21 @@ class TurnDriver:
         # sub-agent isolation, mirroring the dashboard consumer's
         # ``_native_tc_card`` refusal.
         native_tool_call_ids: set[str] = set()
+        # Directive tool_call_ids this turn has ALREADY consumed. Consumption
+        # pops ``pending_directives``, so without this a later result frame for
+        # an applied directive is indistinguishable from one that never had an
+        # identity — and would log the "NOT APPLIED" diagnostic for a directive
+        # that in fact applied. Diagnostic-only bookkeeping: nothing reads it to
+        # authorize anything.
+        consumed_directives: set[str] = set()
+        # Identity OBSERVED on each tool_call frame, for the NOT-APPLIED
+        # diagnostic only. It cannot be read off the result frame: the
+        # tool_call_update path builds its event with no identity fields, so
+        # they are always "" there. Two short strings per call, same per-turn
+        # lifetime as the maps beside it. Nothing reads this to authorize
+        # anything — the grant still comes solely from directive_tool_for at
+        # call time.
+        seen_tool_identity: dict[str, tuple[str, str]] = {}
         # Purpose text from each tool_call, keyed by its tool_call_id, so a
         # permission request can be paired with the purpose of the tool IT asks
         # about. The permission payload carries the title but no purpose, and the
@@ -500,6 +515,11 @@ class TurnDriver:
                     )
                     if canonical:
                         pending_directives[event.tool_call_id] = canonical
+                    else:
+                        seen_tool_identity[event.tool_call_id] = (
+                            getattr(event, "mcp_server_name", "") or "",
+                            getattr(event, "tool_name", "") or "",
+                        )
             elif kind == EVENT_SUBAGENT_ACTIVITY:
                 # Native sub-agent lifecycle marker. Its only role in this
                 # driver is the isolation gate above: remember which
@@ -518,7 +538,13 @@ class TurnDriver:
                 # ignored. Without a consumer this event stays inert,
                 # preserving the pre-consumer behavior exactly.
                 if self.directive_consumer is not None:
-                    await self._consume_directive(event, pending_directives, native_tool_call_ids)
+                    await self._consume_directive(
+                        event,
+                        pending_directives,
+                        native_tool_call_ids,
+                        consumed_directives,
+                        seen_tool_identity,
+                    )
             elif kind == EVENT_PERMISSION_REQUEST:
                 # Untrusted sender: no tool runs, full stop. This precedes even
                 # the PreToolUse gate's auto_approve branch and the
@@ -704,7 +730,12 @@ class TurnDriver:
         return accumulated
 
     async def _consume_directive(
-        self, event: Any, pending: dict[str, str], native_tool_call_ids: set[str]
+        self,
+        event: Any,
+        pending: dict[str, str],
+        native_tool_call_ids: set[str],
+        consumed: set[str] | None = None,
+        seen_identity: dict[str, tuple[str, str]] | None = None,
     ) -> None:
         """Decode one directive-tool result and apply it via the consumer.
 
@@ -719,6 +750,27 @@ class TurnDriver:
         consumer = self.directive_consumer
         tool = pending.get(event.tool_call_id or "", "")
         if consumer is None or not tool:
+            # DIAGNOSTIC ONLY (never a grant) — mirrors the dashboard consumer.
+            # A marker with no recorded identity is the right outcome for a
+            # forged result AND what a backend emitting no ``_meta.kiro``
+            # produces for a real directive; the gate is silent, so log enough
+            # to tell those apart.
+            if (
+                consumer is not None
+                and (event.tool_call_id or "") not in (consumed or ())
+                and session_directive.has_marker(event.tool_output)
+            ):
+                logger.warning(
+                    "session-directive NOT APPLIED: marker present but the tool "
+                    "call carried no core-MCP identity "
+                    "(tool_call_id=%s, mcp_server_name=%r, tool_name=%r, "
+                    "expected mcp_server_name=%r). Either a forged marker, or "
+                    "this ACP backend does not emit _meta.kiro identity.",
+                    event.tool_call_id,
+                    (seen_identity or {}).get(event.tool_call_id or "", ("", ""))[0],
+                    (seen_identity or {}).get(event.tool_call_id or "", ("", ""))[1],
+                    session_directive.CORE_MCP_SERVER,
+                )
             return
         if event.tool_call_id in native_tool_call_ids:
             # Sub-agent ISOLATION: a native child's tool calls surface as flat
@@ -728,6 +780,8 @@ class TurnDriver:
             # (terminal for this call) and audit the refusal so the denial is
             # never a silent drop, mirroring the dashboard consumer.
             pending.pop(event.tool_call_id, None)
+            if consumed is not None and event.tool_call_id:
+                consumed.add(event.tool_call_id)
             sel().log_api_access(
                 caller="turn_driver",
                 operation="session_directive",
@@ -754,6 +808,8 @@ class TurnDriver:
                     # delivery limit): nothing was applied and the result text
                     # already told the model so. Terminal for this call.
                     pending.pop(event.tool_call_id, None)
+                    if consumed is not None and event.tool_call_id:
+                        consumed.add(event.tool_call_id)
                     logger.info(
                         "session-directive REFUSED for %r (tool_call_id=%s): "
                         "payload over the %d-char delivery limit; nothing applied",
@@ -775,6 +831,8 @@ class TurnDriver:
                     )
             return
         pending.pop(event.tool_call_id, None)
+        if consumed is not None and event.tool_call_id:
+            consumed.add(event.tool_call_id)
         try:
             await consumer(tool, args)
         except Exception:
