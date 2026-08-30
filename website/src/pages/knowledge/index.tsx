@@ -682,19 +682,26 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
 
       {/* Stats bar */}
       {stats && (
+        // Each entry is a DIV, not a SPAN, so the render-time i18n scanner reads
+        // them as separate inline runs. Its run walk treats any <span> as inline
+        // by tag name even when flex blockifies it, so span siblings grade as one
+        // run assembled from several catalog keys — the signal for a sentence
+        // spliced across keys, which a translator cannot reorder. These are four
+        // independent counts, not one sentence, and as flex items they are
+        // already block-level; the tag is what says so. Rendering is unchanged.
         <div className="border-t border-border px-4 md:px-6 py-2 flex gap-x-3 gap-y-0.5 sm:gap-4 flex-wrap text-[11px] sm:text-[12px] text-muted shrink-0">
-          <span className="whitespace-nowrap">{stats.items} {i18nT('pages.knowledge.index.items_2')}</span>
-          <span className="whitespace-nowrap">{stats.entities} {i18nT('pages.knowledge.index.entities')}</span>
-          <span className="whitespace-nowrap">{stats.relations} {i18nT('pages.knowledge.index.relations')}</span>
-          <span className="whitespace-nowrap">{stats.sources} {i18nT('pages.knowledge.index.sources')}</span>
+          <div className="whitespace-nowrap">{i18nT('pages.knowledge.index.stats_items', { count: stats.items })}</div>
+          <div className="whitespace-nowrap">{i18nT('pages.knowledge.index.stats_entities', { count: stats.entities })}</div>
+          <div className="whitespace-nowrap">{i18nT('pages.knowledge.index.stats_relations', { count: stats.relations })}</div>
+          <div className="whitespace-nowrap">{i18nT('pages.knowledge.index.stats_sources', { count: stats.sources })}</div>
           {stats.embeddings?.enabled ? (
-            <span className={`whitespace-nowrap ${stats.embeddings.available ? 'text-ok' : 'text-warn'}`} title={stats.embeddings.available ? `${stats.embeddings.model} — ${stats.embeddings.embedded_items} embedded` : i18nT('pages.knowledge.index.embedding_model_loading', { name: stats.embeddings.model })}>
+            <div className={`whitespace-nowrap ${stats.embeddings.available ? 'text-ok' : 'text-warn'}`} title={stats.embeddings.available ? `${stats.embeddings.model} — ${stats.embeddings.embedded_items} embedded` : i18nT('pages.knowledge.index.embedding_model_loading', { name: stats.embeddings.model })}>
               ● {stats.embeddings.available ? i18nT('pages.knowledge.index.embeddings_count', { value: stats.embeddings.embedded_items }) : i18nT('pages.knowledge.index.embeddings_loading')}
-            </span>
+            </div>
           ) : (
-            <span className="text-muted whitespace-nowrap" title={i18nT('pages.knowledge.index.embedding_model_is_downloading_in_the_background')}>{i18nT('pages.knowledge.index.embeddings_initializing')}</span>
+            <div className="text-muted whitespace-nowrap" title={i18nT('pages.knowledge.index.embedding_model_is_downloading_in_the_background')}>{i18nT('pages.knowledge.index.embeddings_initializing')}</div>
           )}
-          {tab === 'list' && <span className="ml-auto text-[10px] hidden sm:inline">{i18nT('pages.knowledge.index.to_search_esc_to_back_to_page')}</span>}
+          {tab === 'list' && <div className="ml-auto text-[10px] hidden sm:block">{i18nT('pages.knowledge.index.to_search_esc_to_back_to_page')}</div>}
         </div>
       )}
     </div>

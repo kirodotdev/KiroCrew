@@ -3695,7 +3695,15 @@
         "sources_tab": "Sources",
         "settings_tab": "Settings",
         "status_active": "Active",
-        "status_archived": "Archived"
+        "status_archived": "Archived",
+        "stats_items_one": "{{count}} item",
+        "stats_items_other": "{{count}} items",
+        "stats_entities_one": "{{count}} entity",
+        "stats_entities_other": "{{count}} entities",
+        "stats_relations_one": "{{count}} relation",
+        "stats_relations_other": "{{count}} relations",
+        "stats_sources_one": "{{count}} source",
+        "stats_sources_other": "{{count}} sources"
       },
       "sourceGroup": {
         "items_count": "({{count}} items)",

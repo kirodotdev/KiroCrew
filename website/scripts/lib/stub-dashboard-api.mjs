@@ -62,6 +62,44 @@ export const KIROCREW_CONFIG_FIXTURE = {
 /** The `/api/agent/config` body — the per-agent MCP view. */
 export const AGENT_CONFIG_FIXTURE = { name: 'kirocrew', mcpServers: {} }
 
+/**
+ * The `/api/knowledge/stats` body, matching `get_stats` in
+ * `src/kiro_crew/dashboard/handlers/knowledge.py`.
+ *
+ * Named ahead of the catch-all for the same reason as KIROCREW_CONFIG_FIXTURE,
+ * but with a failure mode that is intermittent rather than fatal. `stats` does
+ * not match `objectish`, so the guess is `[]` — and `[]` is TRUTHY, so the
+ * knowledge page's `{stats && (…)}` stats bar renders, with every
+ * `{stats.items}` resolving to `undefined`. React prints nothing for those, so
+ * the bar appears carrying only its labels.
+ *
+ * That makes the surface's rendered text depend on whether the query has
+ * resolved when a scanner reads the DOM: before it resolves `stats` is
+ * `undefined` and the bar is absent; after, it is present with several spans.
+ * The i18n render gate compares a surface against the same surface on the base
+ * branch, so a surface that renders two different ways reports a difference
+ * that neither branch's diff contains — a red gate on a PR that never touched
+ * the page.
+ *
+ * Widening `objectish` to match `stats` would NOT fix it: `{}` is truthy too,
+ * so the bar would still render with `undefined` counts. The shape has to be
+ * real, which is what makes this a fixture rather than a regex change.
+ *
+ * The counts are zeros because the rest of this stub serves an empty world —
+ * `/api/knowledge/sources` and `/namespaces` both fall through to `[]`. A
+ * fixture claiming items here would contradict the sources list on the same
+ * page. `embeddings.enabled` is false for the same reason: the backend sets
+ * that whenever `knowledge_embedder` is absent, and gateway-free is exactly
+ * that case.
+ */
+export const KNOWLEDGE_STATS_FIXTURE = {
+  items: 0,
+  entities: 0,
+  relations: 0,
+  sources: 0,
+  embeddings: { enabled: false },
+}
+
 /** Whether an unmapped path should be guessed as an object rather than a list. */
 const objectish = path =>
   /(config|tips|voice|autonudge|branding|status|usage-summary)/.test(path)
@@ -150,6 +188,7 @@ export async function stubDashboardApi(page, opts = {}) {
     // KIROCREW_CONFIG_FIXTURE for why).
     if (path === '/api/config/kirocrew') return json(route, KIROCREW_CONFIG_FIXTURE)
     if (path === '/api/agent/config') return json(route, AGENT_CONFIG_FIXTURE)
+    if (path === '/api/knowledge/stats') return json(route, KNOWLEDGE_STATS_FIXTURE)
     // Endpoints not worth naming individually: anything object-shaped gets {},
     // everything else gets []. Guessing wrong only costs an empty panel — in
     // the cases where it does not, the endpoint belongs above this line.
