@@ -20,9 +20,9 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
@@ -191,6 +191,17 @@ class SourceCapacityError(SourceProviderError):
     """
 
 
+class SourceProviderNotConfigured(SourceProviderError):
+    """A registered plugin cannot reach its provider until an operator sets it up.
+
+    The built-in equivalent is a missing ``gh``/``glab``, which is answered with
+    :func:`_provider_setup_message`. A plugin raises this instead of composing its
+    own guidance at every call site, and the dispatch substitutes the plugin's
+    :meth:`SourceProviderPlugin.setup_message` -- so the "here is how to fix it"
+    text is authored in ONE place per provider, exactly as it is for gh/glab.
+    """
+
+
 def _sel():
     import kiro_crew.dashboard.handlers as _pkg  # circular import: package exports this module
 
@@ -329,14 +340,290 @@ def source_ref_label(ref: SourceRef) -> str:
     Not a translated string: these are the provider's identifiers, not prose,
     and ``PROJ-123`` reads the same in every locale.
 
+    A REGISTERED provider names its own objects through the optional
+    :meth:`SourceProviderPlugin.chip_label` hook, for the same reason: an
+    internal review system whose objects are ``CR-123`` cannot be spelled with
+    any built-in's punctuation.
+
     An unrecognized provider falls to ``#number``, the most widely shared
     convention, rather than borrowing the punctuation of a specific vendor.
     """
+    plugin = registered_source_provider(ref.provider)
+    if plugin is not None:
+        hook = getattr(plugin, "chip_label", None)
+        if callable(hook):
+            try:
+                label = hook(ref)
+            except Exception:
+                logger.debug("source provider %s chip_label failed", ref.provider, exc_info=True)
+            else:
+                # A plugin label is rendered into a sidebar chip, so it is bounded
+                # and type-checked rather than trusted; an unusable one degrades to
+                # the neutral fallback instead of emitting a broken chip.
+                if isinstance(label, str) and label and len(label) <= _MAX_CHIP_LABEL_LENGTH:
+                    return label
     if ref.provider == "jira":
         return f"{ref.repo}-{ref.number}"
     if ref.provider == "gitlab" and ref.kind == "change":
         return f"!{ref.number}"
     return f"#{ref.number}"
+
+
+# --- Source-provider plugin seam --------------------------------------------
+#
+# The three built-in providers stay exactly as they are: their host checks run
+# first in `parse_source_url`, their fetchers are dispatched by name, and none of
+# the code below changes a byte of their behaviour. This registry is what lets a
+# downstream edition add a FOURTH provider -- an internal code-review system --
+# from its own composition root instead of shadowing this module on every
+# upstream sync.
+#
+# A plugin supplies only the two things it alone knows: how to recognize its URLs
+# and how to fetch them. Everything that makes a provider read SAFE is shared and
+# applies to a plugin identically, because the plugin is called from inside it:
+#
+#   * the full-payload and checks caches, their TTL, entry cap and byte cap;
+#   * the direct-fetch admission reservations (so a plugin cannot outgrow the
+#     gateway's concurrent-fetch memory ceiling);
+#   * `_redact_provider_data` over every returned payload;
+#   * `_MAX_PAYLOAD_BYTES` enforcement;
+#   * owner-only gating and the SEL audit events on every API entry point;
+#   * the coalescing of concurrent requests for one URL.
+#
+# A plugin therefore cannot opt out of redaction or the byte caps by construction
+# -- it never sees the request, only a validated `SourceRef`.
+
+# Chip labels are rendered in the sidebar and travel in the slots payload, so a
+# plugin-supplied one is length-bounded. Generous next to `#123` / `PROJ-123`
+# while ruling out a label that would blow up the payload.
+_MAX_CHIP_LABEL_LENGTH = 64
+
+# A provider id is embedded in payloads and compared across the frontend
+# boundary, so it matches the frontend's `PROVIDER_ID_RE` exactly.
+_PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+# Ids the core owns. A plugin may not claim one: `parse_source_url` checks the
+# built-in hosts first, so a shadowing plugin would be dead for parsing yet live
+# for fetching -- two layers disagreeing about one provider.
+_BUILTIN_PROVIDER_IDS = frozenset({"github", "gitlab", "jira"})
+
+
+@runtime_checkable
+class SourceProviderPlugin(Protocol):
+    """What a downstream edition implements to add a source provider.
+
+    Registration order is consultation order and built-ins always win, so a
+    plugin can only ever claim URLs no built-in recognized.
+    """
+
+    #: The ``provider`` value this plugin owns. Must equal ``SourceRef.provider``
+    #: on every ref it returns, and must match the frontend descriptor's ``id``.
+    id: str
+
+    def parse(self, raw_url: str) -> SourceRef | None:
+        """Recognize one URL and return a NORMALIZED ref, or None.
+
+        Called only after every built-in host check declined, and only with a URL
+        the shared validator already proved is ``https`` with no userinfo and
+        within ``_MAX_URL_LENGTH``. The returned ``url`` must be the canonical
+        form -- it becomes the cache key, the audit subject, and the string the
+        dashboard persists and re-parses.
+        """
+        ...
+
+    async def fetch_full(self, ref: SourceRef, *, refresh: bool = False) -> dict[str, Any]:
+        """Fetch the full change payload, in the shape ``_fetch_github`` returns.
+
+        Called inside the shared cache and admission layer, so it must not add
+        caching of its own. Raise :class:`SourceProviderNotConfigured` when the
+        provider is unreachable until an operator acts;
+        :class:`SourceProviderError` for any other provider-side failure.
+        """
+        ...
+
+    async def fetch_checks(self, ref: SourceRef) -> list[dict[str, Any]]:
+        """Fetch current CI checks, in the shape ``_fetch_github_checks`` returns.
+
+        A LIST of normalized check dicts (each with at least ``name`` and a
+        ``bucket`` of ``failed``/``pending``/``passed``/``skipped``); the gateway
+        wraps it as ``{"checks": [...]}`` for the wire. Return ``[]`` for a
+        provider with no CI concept -- and set the frontend descriptor's
+        ``capabilities.checks`` to false so the tab is not offered at all.
+        """
+        ...
+
+    def setup_message(self) -> str:
+        """Operator-facing guidance shown when the provider is not configured.
+
+        The plugin's counterpart to :func:`_provider_setup_message`, surfaced
+        verbatim when :meth:`fetch_full` or :meth:`fetch_checks` raises
+        :class:`SourceProviderNotConfigured`.
+        """
+        ...
+
+    # Optional hooks. Each is looked up with `getattr`, so a plugin implements
+    # only what its provider can do; an absent hook makes the matching endpoint
+    # answer "not supported by this provider" instead of failing obscurely
+    # inside a built-in code path.
+    #
+    #   def chip_label(self, ref: SourceRef) -> str
+    #   def path_markers(self) -> Sequence[str]
+    #   async def fetch_check_status(self, ref: SourceRef) -> dict[str, str]
+    #   async def comment(self, ref: SourceRef, body: str) -> None
+    #   async def resolve_thread(self, ref: SourceRef, thread_id: str,
+    #                            *, resolved: bool) -> None
+    #   async def reply_to_thread(self, ref: SourceRef, thread_id: str,
+    #                             body: str) -> None
+    #   async def mark_ready(self, ref: SourceRef) -> None
+    #   async def enable_auto_merge(self, ref: SourceRef, *,
+    #                              confirm_immediate_merge: bool) -> str
+
+
+_SOURCE_PROVIDER_PLUGINS: dict[str, SourceProviderPlugin] = {}
+
+
+def register_source_provider(plugin: SourceProviderPlugin) -> None:
+    """Register a source provider. Call once, at gateway start-up.
+
+    Refuses a built-in id, a duplicate, a malformed id, and a plugin missing a
+    required method -- loudly, with a ``ValueError``, because a registration that
+    silently did nothing would leave the frontend descriptor live and every URL it
+    claims answered with a 400 nobody can explain.
+    """
+    provider_id = getattr(plugin, "id", None)
+    if not isinstance(provider_id, str) or not _PROVIDER_ID_RE.match(provider_id):
+        raise ValueError(
+            f"source provider id {provider_id!r} must match {_PROVIDER_ID_RE.pattern}"
+        )
+    if provider_id in _BUILTIN_PROVIDER_IDS:
+        raise ValueError(f"source provider id {provider_id!r} is a built-in and cannot be replaced")
+    if provider_id in _SOURCE_PROVIDER_PLUGINS:
+        raise ValueError(f"source provider {provider_id!r} is already registered")
+    for method in ("parse", "fetch_full", "fetch_checks", "setup_message"):
+        if not callable(getattr(plugin, method, None)):
+            raise ValueError(f"source provider {provider_id!r} is missing {method}()")
+    _SOURCE_PROVIDER_PLUGINS[provider_id] = plugin
+    logger.info("registered source provider %s", provider_id)
+
+
+def registered_source_provider(provider_id: str) -> SourceProviderPlugin | None:
+    """The plugin owning a provider id, or None for a built-in / unknown one."""
+    return _SOURCE_PROVIDER_PLUGINS.get(provider_id)
+
+
+def registered_source_providers() -> list[SourceProviderPlugin]:
+    """Every registered plugin, in registration order."""
+    return list(_SOURCE_PROVIDER_PLUGINS.values())
+
+
+def reset_source_providers_for_tests() -> None:
+    """Drop every registration. Test-only: the registry is module state."""
+    _SOURCE_PROVIDER_PLUGINS.clear()
+
+
+def source_link_path_markers() -> tuple[str, ...]:
+    """Path substrings that make a URL worth handing to :func:`parse_source_url`.
+
+    The sidebar chip scanner walks raw message text and cannot afford to parse
+    every ``https://`` token it finds, so it prefilters on the built-in path
+    markers. A registered provider whose URLs look like ``/reviews/CR-123``
+    matches none of them, so WITHOUT this its chips would never appear -- the
+    parser is never reached, and nothing reports why.
+
+    A plugin contributes markers through the optional ``path_markers()`` hook.
+    Bounded per plugin and validated, since a marker of ``"/"`` would defeat the
+    prefilter it exists to be.
+    """
+    markers = ["/pull/", "/merge_requests/", "/issues/", "/browse/"]
+    for plugin in _SOURCE_PROVIDER_PLUGINS.values():
+        hook = getattr(plugin, "path_markers", None)
+        if not callable(hook):
+            continue
+        try:
+            extra = hook()
+        except Exception:
+            logger.debug("source provider %s path_markers failed", plugin.id, exc_info=True)
+            continue
+        if isinstance(extra, str) or not isinstance(extra, Iterable):
+            continue
+        for marker in list(extra)[:_MAX_PLUGIN_PATH_MARKERS]:
+            # At least two characters beyond the leading slash: a bare "/" (or a
+            # one-character marker) would admit essentially every URL and turn
+            # the prefilter into a full parse of the whole transcript.
+            if isinstance(marker, str) and marker.startswith("/") and len(marker) >= 3:
+                markers.append(marker)
+    return tuple(dict.fromkeys(markers))
+
+
+# Per-plugin ceiling on contributed prefilter markers -- enough for a provider
+# with several URL shapes, small enough that the scanner's per-candidate cost
+# stays bounded no matter how many providers register.
+_MAX_PLUGIN_PATH_MARKERS = 8
+
+
+def _plugin_for_change(ref: SourceRef) -> SourceProviderPlugin | None:
+    """The plugin owning this ref, or None when a built-in path should run."""
+    return _SOURCE_PROVIDER_PLUGINS.get(ref.provider)
+
+
+def _plugin_setup_error(
+    plugin: SourceProviderPlugin, exc: SourceProviderNotConfigured
+) -> SourceProviderError:
+    """Replace a plugin's not-configured signal with its own setup guidance."""
+    try:
+        message = plugin.setup_message()
+    except Exception:
+        logger.debug("source provider %s setup_message failed", plugin.id, exc_info=True)
+        message = ""
+    return SourceProviderError(message or str(exc) or f"{plugin.id} is not configured.")
+
+
+def _require_plugin_hook(ref: SourceRef, name: str, action: str) -> Any:
+    """Resolve a plugin mutation hook, or None when the caller owns the built-ins.
+
+    Returns None for a built-in provider so the existing code path continues
+    untouched. For a REGISTERED provider it either returns the hook or raises the
+    ``ValueError`` every mutation endpoint already maps to a 400 -- so an
+    unimplemented mutation reads as "this provider does not support it" rather
+    than falling into a GitHub-only branch and reporting the wrong reason.
+    """
+    plugin = _plugin_for_change(ref)
+    if plugin is None:
+        return None
+    hook = getattr(plugin, name, None)
+    if not callable(hook):
+        raise ValueError(f"{action} is not supported by the '{ref.provider}' source provider.")
+    return hook
+
+
+def _parse_registered_source_url(raw_url: str) -> SourceRef | None:
+    """Consult every registered plugin, in registration order.
+
+    A plugin that raises is skipped rather than allowed to break URL validation
+    for every provider; a ref that does not match its own plugin's id, or is not
+    a normalized ``https`` URL, is refused -- it would otherwise become a cache
+    key and an audit subject the gateway cannot re-derive.
+    """
+    for plugin in _SOURCE_PROVIDER_PLUGINS.values():
+        try:
+            ref = plugin.parse(raw_url)
+        except Exception:
+            logger.debug("source provider %s parse failed", plugin.id, exc_info=True)
+            continue
+        if ref is None:
+            continue
+        if not isinstance(ref, SourceRef) or ref.provider != plugin.id:
+            logger.warning("source provider %s returned a foreign ref; ignoring", plugin.id)
+            continue
+        if not ref.url.startswith("https://") or len(ref.url) > _MAX_URL_LENGTH:
+            logger.warning("source provider %s returned a non-https ref; ignoring", plugin.id)
+            continue
+        if ref.kind not in {"change", "issue"} or not isinstance(ref.number, int):
+            logger.warning("source provider %s returned a malformed ref; ignoring", plugin.id)
+            continue
+        return ref
+    return None
+
 
 
 _GITLAB_HOSTS_TTL_SECS = 30.0
@@ -609,6 +896,14 @@ def parse_source_url(raw_url: str) -> SourceRef:
     is_cloud_jira = host.endswith(".atlassian.net") and len(host) > len(".atlassian.net")
     if host and (is_cloud_jira or candidate in _allowed_jira_hosts()):
         return _jira_ref(candidate, path)
+
+    # Registered providers are consulted LAST, so no edition plugin can reinterpret
+    # a built-in host or an operator-allowlisted one, and the three built-in
+    # grammars keep exactly the precedence they had. The scheme/userinfo/length
+    # checks above have already run, so a plugin never sees an unvalidated URL.
+    registered = _parse_registered_source_url(raw_url)
+    if registered is not None:
+        return registered
 
     raise ValueError(
         "Only github.com pull requests and issues, gitlab.com merge requests and "
@@ -1937,9 +2232,16 @@ async def _fetch_gitlab_checks(ref: SourceRef) -> list[dict[str, Any]]:
 
 
 async def _fetch_pull_request_checks_uncached(ref: SourceRef) -> list[dict[str, Any]]:
-    fetched = await (
-        _fetch_github_checks(ref) if ref.provider == "github" else _fetch_gitlab_checks(ref)
-    )
+    plugin = _plugin_for_change(ref)
+    if plugin is not None:
+        try:
+            fetched = await plugin.fetch_checks(ref)
+        except SourceProviderNotConfigured as exc:
+            raise _plugin_setup_error(plugin, exc) from exc
+    else:
+        fetched = await (
+            _fetch_github_checks(ref) if ref.provider == "github" else _fetch_gitlab_checks(ref)
+        )
     checks = _redact_provider_data(fetched)
     if not isinstance(checks, list):
         raise SourceProviderError("provider returned an invalid checks payload")
@@ -2881,8 +3183,23 @@ async def fetch_pull_request_checks(raw_url: str) -> list[dict[str, Any]]:
     return await asyncio.shield(task)
 
 
-async def _fetch_pull_request_uncached(ref: SourceRef, generation: int) -> dict[str, Any]:
-    fetched = await (_fetch_github(ref) if ref.provider == "github" else _fetch_gitlab(ref))
+async def _fetch_pull_request_uncached(
+    ref: SourceRef, generation: int, *, refresh: bool = False
+) -> dict[str, Any]:
+    # A registered plugin is dispatched from HERE, inside the shared layer, so it
+    # inherits redaction, the byte cap, the cache write, the generation guard and
+    # the chip-status projection without being able to opt out of any of them.
+    plugin = _plugin_for_change(ref)
+    fetched: SourceChangePayload | dict[str, Any]
+    if plugin is not None:
+        try:
+            fetched = await plugin.fetch_full(ref, refresh=refresh)
+        except SourceProviderNotConfigured as exc:
+            raise _plugin_setup_error(plugin, exc) from exc
+    elif ref.provider == "github":
+        fetched = await _fetch_github(ref)
+    else:
+        fetched = await _fetch_gitlab(ref)
     data = _redact_provider_data(fetched)
     if not isinstance(data, dict):
         raise SourceProviderError("provider returned an invalid pull-request payload")
@@ -2941,7 +3258,7 @@ async def fetch_pull_request(raw_url: str, *, refresh: bool = False) -> dict[str
                 break
             if _direct_fetch_capacity_free(_FULL_FETCH_RESERVATION_BYTES):
                 generation = _FULL_FETCH_GENERATIONS.get(ref.url, 0)
-                task = asyncio.create_task(_fetch_pull_request_uncached(ref, generation))
+                task = asyncio.create_task(_fetch_pull_request_uncached(ref, generation, refresh=refresh))
                 _FULL_FETCH_INFLIGHT[ref.url] = task
                 _FULL_FETCH_TASKS.setdefault(ref.url, set()).add(task)
                 _reserve_direct_fetch(task, _FULL_FETCH_RESERVATION_BYTES)
@@ -3433,6 +3750,13 @@ async def _github_thread_ref(raw_url: str, thread_id: str) -> SourceRef:
     # cannot skip, so the kind check belongs here too — not only in the callers
     # that happen to repeat it.
     ref = _require_change_ref(parse_source_url(raw_url))
+    # A registered provider never reaches the GitHub-specific GraphQL ownership
+    # probe below, so its refusal belongs here -- the one place this docstring
+    # promises reply/resolve/unresolve cannot skip.
+    if _plugin_for_change(ref) is not None:
+        raise ValueError(
+            f"Review-thread replies are not supported by the '{ref.provider}' source provider."
+        )
     if ref.provider != "github":
         raise ValueError(
             "Replying to review threads is only supported on GitHub so far.")
@@ -3488,6 +3812,11 @@ async def comment_on_pull_request(raw_url: str, body: str) -> None:
     # requests share one number counter, so an issue URL would publish a comment
     # on an unrelated issue that happens to carry the PR's number.
     ref = _require_change_ref(parse_source_url(raw_url))
+    hook = _require_plugin_hook(ref, "comment", "Commenting")
+    if hook is not None:
+        await _invalidate_pull_request_cache(ref.url)
+        await hook(ref, text)
+        return
     if ref.provider != "github":
         raise ValueError("Commenting is only supported on GitHub so far.")
     await _invalidate_pull_request_cache(ref.url)
@@ -3506,6 +3835,11 @@ async def resolve_pull_request_thread(raw_url: str, thread_id: str) -> None:
     # URL validation reads the cached snapshot.
     await ensure_gitlab_hosts_loaded()
     ref = _require_change_ref(parse_source_url(raw_url))
+    hook = _require_plugin_hook(ref, "resolve_thread", "Resolving review threads")
+    if hook is not None:
+        await _invalidate_pull_request_cache(ref.url)
+        await hook(ref, thread_id, resolved=True)
+        return
     thread_pattern = _GITHUB_THREAD_ID_RE if ref.provider == "github" else _GITLAB_THREAD_ID_RE
     if not thread_pattern.fullmatch(thread_id or ""):
         raise ValueError("A valid thread id is required.")
@@ -3618,6 +3952,14 @@ async def enable_pull_request_auto_merge(
     # unsupported host (400) even though the operator authorized it.
     await ensure_gitlab_hosts_loaded()
     ref = _require_change_ref(parse_source_url(raw_url))
+    hook = _require_plugin_hook(ref, "enable_auto_merge", "Auto-merge")
+    if hook is not None:
+        await _invalidate_pull_request_cache(ref.url)
+        method = await hook(ref, confirm_immediate_merge=confirm_immediate_merge)
+        # The contract is the merge METHOD as a string; a plugin returning
+        # anything else degrades to "" rather than leaking a foreign shape into
+        # the response the dashboard renders.
+        return method if isinstance(method, str) else ""
     if ref.provider == "github":
         node_id, repository = await _github_pull_request_node(ref)
         pull_request = repository.get("pullRequest")
@@ -3695,6 +4037,11 @@ async def mark_pull_request_ready(raw_url: str) -> None:
     # unsupported host (400) even though the operator authorized it.
     await ensure_gitlab_hosts_loaded()
     ref = _require_change_ref(parse_source_url(raw_url))
+    hook = _require_plugin_hook(ref, "mark_ready", "Marking a change ready for review")
+    if hook is not None:
+        await _invalidate_pull_request_cache(ref.url)
+        await hook(ref)
+        return
     if ref.provider == "github":
         node_id, repository = await _github_pull_request_node(ref)
         pull_request = repository.get("pullRequest")
@@ -5153,6 +5500,31 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
     # future scheduling site remembering to filter.
     ref = _require_change_ref(parse_source_url(url))
     result: dict[str, str] = {}
+    # A registered provider projects its own chip status. Optional: a plugin
+    # without the hook simply contributes no {ci, state} glyph, which renders as a
+    # plain chip -- strictly better than falling into the GitLab branch and
+    # running `glab` against a host it knows nothing about.
+    plugin = _plugin_for_change(ref)
+    if plugin is not None:
+        hook = getattr(plugin, "fetch_check_status", None)
+        if not callable(hook):
+            return None
+        try:
+            status = await hook(ref)
+        except SourceProviderNotConfigured as exc:
+            raise _plugin_setup_error(plugin, exc) from exc
+        if not isinstance(status, dict):
+            return None
+        # Same redaction and key discipline as a built-in read: only the two
+        # fields the chip renders survive, and each must be a short string.
+        projected = _redact_provider_data(
+            {
+                key: value
+                for key, value in status.items()
+                if key in {"ci", "state"} and isinstance(value, str) and len(value) <= 32
+            }
+        )
+        return projected or None
     if ref.provider == "github":
         # The rollup is read separately from the core fields (#5115): `gh`
         # resolves a `--json` field set atomically, so bundling

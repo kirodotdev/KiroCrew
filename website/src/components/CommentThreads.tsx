@@ -21,6 +21,7 @@ import MarkdownRenderer from './MarkdownRenderer'
 import type { PullRequestComment, PullRequestSource } from '../types'
 import { platformShortcut } from '../utils/platform'
 import { OWNER_SETTINGS_PATH, pullRequestErrorDetails } from '../utils/pullRequestErrors'
+import { sourceProviderCapabilities } from '../utils/sourceProviderMeta'
 import { timeAgo } from '../utils/timeAgo'
 
 import { i18nT } from '../i18n/t'
@@ -289,7 +290,14 @@ export default function CommentThreads(
 
   const resolvedCount = threads.filter((t) => t.resolved).length
   const visible = showResolved ? threads : threads.filter((t) => !t.resolved)
-  const writable = src.provider === 'github'
+  // Which write affordances this provider's gateway plugin can actually serve.
+  // Previously a single `src.provider === 'github'` boolean, which made every
+  // non-GitHub provider read-only by construction — including one a downstream
+  // edition registers. The built-in flags reproduce that exactly (GitHub: both;
+  // GitLab: neither, hence the read-only notice below on a merge request).
+  const capabilities = sourceProviderCapabilities(src.provider)
+  const canResolve = capabilities.resolveThreads
+  const canComment = capabilities.comment
 
   return (
     <div className="flex flex-col gap-3">
@@ -350,7 +358,7 @@ export default function CommentThreads(
               )}
               {/* Resolve is only offered on real threads: standalone comments and
                   review summaries have nothing to resolve. */}
-              {writable && t.threadId && (
+              {canResolve && t.threadId && (
                 <button
                   type="button"
                   onClick={() => setResolved.mutate({
@@ -387,7 +395,7 @@ export default function CommentThreads(
               {t.replies.map((r) => (
                 <ThreadComment key={r.id} c={r} reply onAddToChat={onAddToChat} />
               ))}
-              {writable && t.threadId && (
+              {canResolve && t.threadId && (
                 <ReplyBox
                   onSubmit={(body) => reply.mutateAsync({ threadId: t.threadId, body })}
                   pending={reply.isPending
@@ -410,7 +418,7 @@ export default function CommentThreads(
       </ul>
 
       {/* A comment that answers nobody's line still needs somewhere to go. */}
-      {writable && (
+      {canComment && (
         <div className="border-t border-border pt-2.5">
           <ReplyBox
             label={i18nT('components.commentThreads.comment_on_this_pull_request')}
@@ -423,7 +431,7 @@ export default function CommentThreads(
           />
         </div>
       )}
-      {!writable && (
+      {!canResolve && !canComment && (
         <div className="text-[12px] text-muted italic">
           {i18nT('components.commentThreads.replying_is_github_only_for_now_open_the_merge_r')}
         </div>

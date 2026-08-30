@@ -33,6 +33,7 @@ import {
   MAX_PULL_REQUEST_SOURCES,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
+import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import CopyBranchButton from './CopyBranchButton'
 import { PierrePatch } from '../pierre'
 import GithubLogo from './icons/GithubLogo'
@@ -152,12 +153,15 @@ export interface PullRequestMergeBlocker {
  * avoids history rewriting (merge base into head); rebase + force-push is
  * reserved for genuine conflicts. */
 export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestMergeBlocker | null {
+  // A provider that does not report merge state has nothing to block on, and a
+  // banner derived from absent fields would read as "clean" or invent a blocker.
+  if (!sourceProviderMeta(source.provider).capabilities.mergeState) return null
   // GitLab reports open MRs as 'opened'; the full payload carries the raw
   // provider state (matching stateTone below), so accept both spellings.
   const state = source.state.toLowerCase()
   if ((state !== 'open' && state !== 'opened') || source.mergedAt || source.draft) return null
   const base = source.baseBranch || 'the base branch'
-  const label = source.provider === 'github' ? `PR #${source.number}` : `MR !${source.number}`
+  const label = sourceProviderMeta(source.provider).refLabel(source.number)
   const sourceUrl = safeExternalUrl(source.url)
   const handoffHeader = (problem: string) => [
     `${problem} on ${label} (${source.title}):`,
@@ -481,7 +485,7 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
   const checkUrl = safeExternalUrl(check.url)
   const sourceUrl = safeExternalUrl(source.url)
   const handoff = () => {
-    const label = source.provider === 'github' ? `PR #${source.number}` : `MR !${source.number}`
+    const label = sourceProviderMeta(source.provider).refLabel(source.number)
     const lines = [
       `Failing CI check on ${label} (${source.title}):`,
       '',
@@ -580,7 +584,11 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   const queryClient = useQueryClient()
   const [confirmAutoMerge, setConfirmAutoMerge] = useState(false)
   const [immediateMergeWarning, setImmediateMergeWarning] = useState('')
-  const isGitHub = source.provider === 'github'
+  const meta = sourceProviderMeta(source.provider)
+  // Selects between the existing GitHub/GitLab catalog key pairs — "pull
+  // request" vs "merge request" wording — rather than asserting the provider IS
+  // GitHub. A registered provider takes the pull-request wording.
+  const isGitHub = meta.pullRequestWording
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['pull-request-source'] })
@@ -613,6 +621,10 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   }
 
   if (!pullRequestIsLive(source)) return null
+  // Ready-for-review and auto-merge are merge-state writes. A provider whose
+  // gateway plugin does not implement them must not get buttons that can only
+  // return "unsupported by this provider".
+  if (!meta.capabilities.mergeState) return null
   const showReady = source.draft
   const showAutoMerge = !source.draft && !source.autoMerge
   const errorDetails = pullRequestErrorDetails(readyMutation.error || autoMergeMutation.error)
@@ -853,6 +865,11 @@ export default function PullRequestPanel({
   const source = query.data
   const queryError = pullRequestErrorDetails(query.error)
   const sourceUrl = safeExternalUrl(source?.url || '')
+  // One meta lookup for every provider-shaped decision in this component: the
+  // Checks tab and its poll, the merge affordances, and the labels.
+  const providerChecks = Boolean(
+    source && sourceProviderMeta(source.provider).capabilities.checks,
+  )
   const sourceHasPendingChecks = Boolean(
     source?.checks.some(check => check.bucket === 'pending'),
   )
@@ -883,7 +900,7 @@ export default function PullRequestPanel({
         throw error
       }
     },
-    enabled: Boolean(selected && sourceHasPendingChecks && !query.isFetching),
+    enabled: Boolean(selected && providerChecks && sourceHasPendingChecks && !query.isFetching),
     retry: false,
     staleTime: 0,
     refetchOnWindowFocus: false,
@@ -999,7 +1016,7 @@ export default function PullRequestPanel({
     return merged
   }, [statusQuery.data, source])
 
-  const tabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
+  const allTabs: Array<{ id: SourceTab; label: string; count?: number; tone?: string }> = source ? [
     { id: 'changes', label: i18nT('components.pullRequestPanel.changes'), count: source.files.length },
     { id: 'description', label: i18nT('components.pullRequestPanel.description') },
     { id: 'commits', label: i18nT('components.pullRequestPanel.commits'), count: source.commits.length },
@@ -1023,6 +1040,15 @@ export default function PullRequestPanel({
     },
     { id: 'reviews', label: i18nT('components.pullRequestPanel.reviews'), count: source.comments.length },
   ] : []
+  // The Checks tab is dropped for a provider that cannot report CI, rather than
+  // rendered as a permanently empty section.
+  const tabs = allTabs.filter(item => item.id !== 'checks' || providerChecks)
+  // A provider without a Checks tab must not leave the panel on a tab that no
+  // longer has a button: `tab` is component state and survives switching between
+  // source tabs, so it can name a section this provider does not have. Falling
+  // back to the first tab is derived rather than an effect, so the very first
+  // render is already correct instead of flashing an empty section.
+  const activeTab: SourceTab = tabs.some(item => item.id === tab) ? tab : 'changes'
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -1032,7 +1058,9 @@ export default function PullRequestPanel({
           exactly one tab that does nothing. */}
       {cappedSources.length > 1 && (
       <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-        {cappedSources.map(item => (
+        {cappedSources.map(item => {
+          const itemMeta = sourceProviderMeta(item.provider)
+          return (
           <Btn
             key={item.url}
             type="button"
@@ -1042,11 +1070,16 @@ export default function PullRequestPanel({
             className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
             title={item.url}
           >
-            {item.provider === 'github' ? <GithubLogo size={13} className="shrink-0" /> : <GitlabLogo size={13} className="shrink-0" />}
-            <span>{item.provider === 'github' ? 'PR' : 'MR'} {item.provider === 'github' ? '#' : '!'}{item.number}</span>
+            {itemMeta.logo === 'github'
+              ? <GithubLogo size={13} className="shrink-0" />
+              : itemMeta.logo === 'gitlab'
+                ? <GitlabLogo size={13} className="shrink-0" />
+                : <GitPullRequest className="lucide-inline shrink-0" />}
+            <span>{itemMeta.refLabel(item.number)}</span>
             <SourceTabState status={statusByUrl[item.url]} />
           </Btn>
-        ))}
+          )
+        })}
       </div>
       )}
 
@@ -1080,7 +1113,7 @@ export default function PullRequestPanel({
           <div className="shrink-0 px-4 py-3 border-b border-border">
             <div className="flex items-center gap-2 text-[11px] text-muted">
               <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>
-              <span>{source.provider === 'github' ? 'GitHub' : 'GitLab'}</span>
+              <span>{sourceProviderMeta(source.provider).displayName}</span>
               {source.headBranch && source.baseBranch && (
                 <span className="min-w-0 flex items-center gap-1 truncate"><CopyBranchButton branch={source.headBranch} /><ArrowRight className="lucide-inline shrink-0" /><span className="truncate">{source.baseBranch}</span></span>
               )}
@@ -1096,7 +1129,7 @@ export default function PullRequestPanel({
               </Btn>
               {sourceUrl && <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover" aria-label={i18nT('components.pullRequestPanel.open_pull_request')} title={i18nT('components.pullRequestPanel.open_pull_request')}><ExternalLink className="lucide-inline" /></a>}
             </div>
-            <div className="mt-2 text-[15px] font-semibold text-text-strong leading-snug">{source.title} <span className="font-normal text-muted">{source.provider === 'github' ? '#' : '!'}{source.number}</span></div>
+            <div className="mt-2 text-[15px] font-semibold text-text-strong leading-snug">{source.title} <span className="font-normal text-muted">{sourceProviderMeta(source.provider).numberLabel(source.number)}</span></div>
             <div className="mt-1 flex items-center gap-2 text-[11px] text-muted">
               {source.author && <span>{source.author}</span>}
               <span><span className="text-ok">+{source.additions}</span> <span className="text-danger">-{source.deletions}</span></span>
@@ -1127,7 +1160,7 @@ export default function PullRequestPanel({
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
               <span>
-                {source.provider === 'github'
+                {sourceProviderMeta(source.provider).pullRequestWording
                   ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: source.partialSections.join(', ') })
                   : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: source.partialSections.join(', ') })}
               </span>
@@ -1141,10 +1174,10 @@ export default function PullRequestPanel({
                 type="button"
                 role="tab"
                 id={`pr-tab-${item.id}`}
-                aria-selected={tab === item.id}
+                aria-selected={activeTab === item.id}
                 aria-controls="pr-tabpanel"
                 onClick={() => setTab(item.id)}
-                className={`shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-md border-none cursor-pointer text-[11px] transition-colors ${tab === item.id ? 'bg-bg-hover text-text' : `bg-transparent text-muted hover:text-text ${item.tone || ''}`}`}
+                className={`shrink-0 flex items-center gap-1.5 px-2 py-1.5 rounded-md border-none cursor-pointer text-[11px] transition-colors ${activeTab === item.id ? 'bg-bg-hover text-text' : `bg-transparent text-muted hover:text-text ${item.tone || ''}`}`}
               >
                 {item.id === 'checks' && checksUnavailable ? (
                   <AlertCircle className="lucide-inline text-warn" />
@@ -1159,8 +1192,8 @@ export default function PullRequestPanel({
             ))}
           </div>
 
-          <div id="pr-tabpanel" role="tabpanel" aria-labelledby={`pr-tab-${tab}`} className="flex-1 min-h-0 overflow-y-auto">
-            <PullRequestBody source={source} tab={tab} onAddToChat={onAddToChat} />
+          <div id="pr-tabpanel" role="tabpanel" aria-labelledby={`pr-tab-${activeTab}`} className="flex-1 min-h-0 overflow-y-auto">
+            <PullRequestBody source={source} tab={activeTab} onAddToChat={onAddToChat} />
           </div>
         </>
       )}

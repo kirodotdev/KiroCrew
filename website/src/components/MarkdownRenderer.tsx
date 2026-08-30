@@ -2,7 +2,7 @@ import React, { createContext, useContext, memo, useEffect, useMemo, useRef, use
 import Clickable from './Clickable'
 import { HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
 import { getImageDims, rememberImageDims } from '../utils/imageDims'
-import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Image as ImageIcon } from 'lucide-react'
+import { Paperclip, X, Download, Plus, Minus, Search, Folder, Maximize2, Check, Image as ImageIcon, GitPullRequest } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
@@ -42,6 +42,7 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import { useLinkMeta, type LinkMeta } from '../lib/linkMeta'
 import { LinkChip, LinkCard } from './LinkPreview'
 import { parseSourceLinkUrl, forgeChipLabel, type PullRequestLink } from '../utils/pullRequestLinks'
+import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 import { JiraHostsCtx } from '../lib/jiraHosts'
 import JiraLogo from './icons/JiraLogo'
 import GithubLogo from './icons/GithubLogo'
@@ -572,9 +573,13 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
           title={href}
           className="inline-flex min-w-0 items-center gap-1.5 text-text no-underline focus-ring"
         >
-          {source.provider === 'github'
+          {sourceProviderMeta(source.provider).logo === 'github'
             ? <GithubLogo size={12} className="shrink-0" />
-            : <GitlabLogo size={12} className="shrink-0" />}
+            : sourceProviderMeta(source.provider).logo === 'gitlab'
+              ? <GitlabLogo size={12} className="shrink-0" />
+              // A registered provider ships no bundled logo, so the chip uses the
+              // neutral glyph rather than borrowing GitLab's mark.
+              : <GitPullRequest className="lucide-inline shrink-0" />}
           <span className="truncate max-w-[32ch]">{forgeLabel}</span>
         </a>
       </span>

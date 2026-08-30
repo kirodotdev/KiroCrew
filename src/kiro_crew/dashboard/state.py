@@ -4434,6 +4434,7 @@ class _ChatSlot:
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
             parse_source_url,
+            source_link_path_markers,
             source_ref_label,
         )
 
@@ -4448,6 +4449,10 @@ class _ChatSlot:
             return self._source_links_cache[1]
 
         stop_chars = set(" \t\n<>()[]{}\"'")
+        # Built-in markers plus any a registered source provider contributes.
+        # Resolved ONCE per call, not per candidate: the scan is already the
+        # hottest synchronous path in `to_dict`.
+        path_markers = source_link_path_markers()
         found: dict[str, dict] = {}
         # Hard ceiling on parse attempts for the WHOLE call, not per message and not
         # only on success. `len(found)` advances only for a new valid url, so a
@@ -4506,12 +4511,14 @@ class _ChatSlot:
                 # check. Valid PR/MR URLs end in a number, so these chars can
                 # never belong to a legitimate link tail.
                 candidate = content[idx:end].rstrip(".,!?;:*_~`")
-                if (
-                    "/pull/" not in candidate
-                    and "/merge_requests/" not in candidate
-                    and "/issues/" not in candidate
-                    and "/browse/" not in candidate
-                ):
+                # Prefilter: only a candidate whose path carries a known marker is
+                # worth a parse. The built-in markers are the four below; a
+                # REGISTERED provider contributes its own through
+                # `source_link_path_markers`, because a URL shaped like
+                # `/reviews/CR-123` matches none of the built-ins and would
+                # otherwise never reach the parser -- its chip would be missing
+                # with nothing reporting why.
+                if not any(marker in candidate for marker in path_markers):
                     continue
                 # Every attempt is charged, whether it parses or not -- that is
                 # what makes the bound hold on a rejected-candidate flood.

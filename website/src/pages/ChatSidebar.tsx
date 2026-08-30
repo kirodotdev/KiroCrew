@@ -62,7 +62,7 @@ import { collectFolderSubtreeIds } from '../utils/folderTree'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
 import type { PaletteBoost } from '../utils/sessionColors'
-import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SessionLink } from '../types'
+import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SessionLink, SourceProviderId } from '../types'
 import { SESSION_LANES, inferLane } from './chat/sessionLane'
 import { decideUnreadDrain } from './unreadDrain'
 import {
@@ -606,7 +606,7 @@ interface Slot {
   tags?: string[]
   forked_from?: string | null
   source_links?: Array<{
-    provider: 'github' | 'gitlab' | 'jira'
+    provider: SourceProviderId
     number: number
     url: string
     // What the chip is called, decided by the serializer (`source_ref_label`):
