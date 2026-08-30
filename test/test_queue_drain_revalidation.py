@@ -17,7 +17,10 @@ structural orchestration entries are the runner's own machinery, exempt.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
+import textwrap
 from unittest.mock import MagicMock
 
 import pytest
@@ -596,3 +599,143 @@ async def test_drain_strips_snapshot_from_the_persisted_row(tmp_path, monkeypatc
     assert user_rows, "the drained entry must land as a user row"
     row_meta = user_rows[-1].get("meta") or {}
     assert sc.QUEUED_CONTAINMENT_META_KEY not in row_meta
+
+
+# ── Constraint-set parity with authorize_target (#5994) ──────────────────────
+#
+# The constraint set now has two hand-maintained spellings: `authorize_target`
+# refuses admission inline, and `containment_snapshot` re-derives the same
+# predicates so the drain can re-assert them. Drift between them fails OPEN --
+# a refusal added to `authorize_target` alone is enforced at enqueue and NOT at
+# delivery, silently reopening the enqueue->drain window this file exists to
+# close, with nothing red. These tests make that divergence fail CI instead.
+#
+# ADDING A REFUSAL TO `authorize_target`? Classify it in exactly one of the two
+# tables below. Either it is a per-slot containment constraint -- then it needs
+# a `containment_snapshot` key, or the drain cannot re-check it -- or it is not,
+# and it belongs in `_NON_CONTAINMENT_REFUSALS` with a reason.
+
+# Target-side containment refusals, mapped to the snapshot key that re-asserts
+# each one at drain time. `workspace_mismatch` is the seventh (see
+# `test_workspace_change_invalidates_admission`); it is an identity rather than
+# a boolean, but it is still a constraint the drain compares.
+_TARGET_CONTAINMENT_REFUSALS = {
+    "linked_session_target": "linked",
+    "mirrored_target": "mirrored",
+    "crew_mode_target": "crew",
+    "ephemeral_target": "ephemeral",
+    "app_scoped_target": "app",
+    "unattended_target": "unattended",
+    "workspace_mismatch": "workspace",
+}
+
+_NON_CONTAINMENT_REFUSALS = {
+    # Caller-side: a property of who is asking, not of the target slot. The
+    # drain has nothing to re-validate -- by then the caller's turn is over.
+    "caller_unidentified",
+    "unattended_caller",
+    "app_scoped_caller",
+    "ephemeral_caller",
+    "linked_session_caller",
+    "mirrored_caller",
+    "caller_gone",
+    # Not containment: global config state, a resolution failure, and the
+    # self-target guard. None of the three can change while an entry waits in a
+    # queue in a way the drain could act on.
+    "session_control_disabled",
+    "target_not_found",
+    "self_target",
+}
+
+# Comparison detail rather than constraints: both are set by the mirror probe to
+# tell the drain HOW to compare `mirrored`, and neither has its own refusal.
+_SNAPSHOT_NON_CONSTRAINT_KEYS = {"mirror_identity", "mirror_unverified"}
+
+
+def _authorize_target_refusal_codes() -> set[str]:
+    """Every literal ``deny(..., code)`` in :func:`authorize_target`, from source.
+
+    Parsed rather than hand-listed on purpose. A hand-listed copy would be a
+    THIRD spelling of the constraint set, free to drift from the other two --
+    which is the failure this test exists to catch, not to reproduce.
+
+    One ``deny`` call re-raises a resolution failure with ``exc.code`` rather
+    than a literal; it carries no new constraint, so a non-literal code is
+    skipped instead of failing the parse.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(sc.authorize_target)))
+    codes: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "deny"):
+            continue
+        positional = node.args[1] if len(node.args) >= 2 else None
+        keyword = next((kw.value for kw in node.keywords if kw.arg == "code"), None)
+        for candidate in (keyword, positional):
+            if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
+                codes.add(candidate.value)
+                break
+    return codes
+
+
+def _base_snapshot(tmp_path) -> dict:
+    """A snapshot of an unconstrained slot: every constraint key, no probe extras."""
+    state = _make_state(tmp_path)
+    return sc.containment_snapshot(
+        state, state.get_or_create_slot("chat-1"), on_probe_failure=False
+    )
+
+
+def test_the_parse_finds_the_refusals_it_is_asked_to_pin():
+    """Guard the guard: an empty or tiny parse would make the tests below vacuous.
+
+    If ``authorize_target``'s refusals ever stop being spelled as ``deny(...,
+    "code")`` the extraction silently returns less, and a parity test that
+    compares against nothing passes while pinning nothing.
+    """
+    codes = _authorize_target_refusal_codes()
+    assert len(codes) >= len(_TARGET_CONTAINMENT_REFUSALS) + len(_NON_CONTAINMENT_REFUSALS)
+    assert "workspace_mismatch" in codes, "the seventh refusal must be visible to the parse"
+
+
+def test_every_refusal_is_classified():
+    """A new refusal in ``authorize_target`` must be classified, not ignored."""
+    classified = set(_TARGET_CONTAINMENT_REFUSALS) | _NON_CONTAINMENT_REFUSALS
+    unclassified = _authorize_target_refusal_codes() - classified
+    assert not unclassified, (
+        f"unclassified refusal(s) in authorize_target: {sorted(unclassified)}. "
+        "Add each to _TARGET_CONTAINMENT_REFUSALS with the containment_snapshot key "
+        "that re-asserts it at drain time, or to _NON_CONTAINMENT_REFUSALS with a "
+        "reason it needs no drain-time check."
+    )
+
+
+def test_every_classified_refusal_still_exists():
+    """A removed refusal must not leave a stale mapping claiming coverage."""
+    codes = _authorize_target_refusal_codes()
+    stale = (set(_TARGET_CONTAINMENT_REFUSALS) | _NON_CONTAINMENT_REFUSALS) - codes
+    assert not stale, (
+        f"refusal(s) mapped here but no longer raised by authorize_target: {sorted(stale)}. "
+        "Drop the entry so the tables keep describing the code."
+    )
+
+
+def test_every_containment_refusal_has_a_snapshot_key(tmp_path):
+    """The fail-open direction: enforced at admission, unchecked at drain."""
+    snap = _base_snapshot(tmp_path)
+    missing = set(_TARGET_CONTAINMENT_REFUSALS.values()) - set(snap)
+    assert not missing, (
+        f"containment_snapshot does not record {sorted(missing)}, so the drain cannot "
+        "re-assert the matching refusal(s) -- a queued prompt rides past a constraint "
+        "the enqueue side enforces."
+    )
+
+
+def test_the_snapshot_carries_no_unmapped_constraint(tmp_path):
+    """The reverse drift: a snapshot key with no refusal behind it."""
+    snap = _base_snapshot(tmp_path)
+    extra = set(snap) - set(_TARGET_CONTAINMENT_REFUSALS.values()) - _SNAPSHOT_NON_CONSTRAINT_KEYS
+    assert not extra, (
+        f"containment_snapshot key(s) with no authorize_target refusal behind them: "
+        f"{sorted(extra)}. Map each to its refusal, or add it to "
+        "_SNAPSHOT_NON_CONSTRAINT_KEYS if it is comparison detail rather than a constraint."
+    )
