@@ -159,6 +159,10 @@ async function main() {
       // Written AFTER stubDashboardApi so it is not cleared by that seed's
       // localStorage.clear(); i18n reads `mc-lang` synchronously on first paint.
       await page.addInitScript(l => localStorage.setItem('mc-lang', l), lang)
+      // The crew entry is preview-gated (`utils/previewFlags.ts`), so without
+      // this opt-in the menu has no crew row and every assertion below fails on
+      // a missing element rather than on the thing it is about.
+      await page.addInitScript(() => localStorage.setItem('mc-preview-crew', '1'))
 
       await page.goto(base, { waitUntil: 'networkidle' })
       const menu = await openCreateMenu(page)

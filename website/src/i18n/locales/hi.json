@@ -9723,8 +9723,10 @@
         "retry": "पुनः प्रयास करें"
       },
       "featurePreviewsTab": {
+        "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "इनबाउंड वेबहुक टोकन, पंजीकृत संदर्भ और रन इतिहास. API काम करता है, पेज अभी पूरा नहीं हुआ है.",
         "open_webhooks": "वेबहुक खोलें",
+        "the_crew_members_page_and_crew_mode_chats_both_a": "क्रू सदस्य पेज और Crew Mode चैट. दोनों अभी बनाए जा रहे हैं, इसलिए इसे चालू करने तक कोई भी उपलब्ध नहीं होगा.",
         "webhooks": "वेबहुक"
       }
     },

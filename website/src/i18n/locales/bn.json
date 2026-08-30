@@ -9723,8 +9723,10 @@
         "retry": "আবার চেষ্টা করুন"
       },
       "featurePreviewsTab": {
+        "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "ইনবাউন্ড ওয়েবহুক টোকেন, নিবন্ধিত কনটেক্সট ও রান ইতিহাস। API কাজ করে, তবে পেজটি এখনও শেষ হয়নি।",
         "open_webhooks": "ওয়েবহুক খুলুন",
+        "the_crew_members_page_and_crew_mode_chats_both_a": "ক্রু সদস্যরা পেজ এবং Crew Mode চ্যাট। দুটোই এখনও তৈরি হচ্ছে, তাই এটি চালু না করা পর্যন্ত কোনোটিই দেখানো হবে না।",
         "webhooks": "ওয়েবহুক"
       }
     },

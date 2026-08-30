@@ -3,7 +3,7 @@ import { ArrowRight } from 'lucide-react'
 
 import { SettingsCard, SettingsToggle } from '../../components/settings'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -38,8 +38,10 @@ import { i18nT } from '../../i18n/t'
 export function FeaturePreviewsTab() {
   const navigate = useNavigate()
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
+  const crew = usePreviewFlag(PREVIEW_CREW)
 
   return (
+    <>
     <SettingsCard>
       <SettingsToggle
         label={i18nT('pages.developer.featurePreviewsTab.webhooks')}
@@ -64,5 +66,26 @@ export function FeaturePreviewsTab() {
         </div>
       )}
     </SettingsCard>
+    {/* One card, one flag, BOTH crew doors: the Crew Members rail item and the
+        sidebar's "New Crew Mode chat" entry. The toggle copy names both, because
+        a reader who only sees "Crew" cannot predict which of the two moves — and
+        the two appear in places far enough apart that discovering the second one
+        by flipping the switch is not reliable.
+
+        NO ingress button here, deliberately, unlike the webhooks card above. That
+        one needs its link because `/webhooks` is `hiddenFromNav` and the card is
+        its ONLY door. Crew is not: flipping this switch puts the Crew Members row
+        back on the rail in the same tick (`usePreviewFlagRevision`), so a link
+        here would be a second spelling of a door the user can already see — and
+        one that costs a catalog key in twelve languages permanently. */}
+    <SettingsCard>
+      <SettingsToggle
+        label={i18nT('pages.developer.featurePreviewsTab.crew')}
+        description={i18nT('pages.developer.featurePreviewsTab.the_crew_members_page_and_crew_mode_chats_both_a')}
+        checked={crew}
+        onChange={v => setPreviewFlag(PREVIEW_CREW, v)}
+      />
+    </SettingsCard>
+    </>
   )
 }

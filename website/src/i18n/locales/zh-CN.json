@@ -9573,8 +9573,10 @@
         "retry": "重试"
       },
       "featurePreviewsTab": {
+        "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "入站 Webhook 令牌、已注册的上下文和运行历史。API 可用，但页面尚未完成。",
         "open_webhooks": "打开 Webhook",
+        "the_crew_members_page_and_crew_mode_chats_both_a": "团队成员页面和 Crew Mode 聊天。两者仍在开发中，开启后才会显示。",
         "webhooks": "Webhook"
       }
     },

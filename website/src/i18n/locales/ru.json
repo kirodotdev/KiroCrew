@@ -10023,8 +10023,10 @@
         "retry": "Повторить"
       },
       "featurePreviewsTab": {
+        "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "Токены входящих вебхуков, зарегистрированные контексты и история запусков. API работает, но страница не доделана.",
         "open_webhooks": "Открыть вебхуки",
+        "the_crew_members_page_and_crew_mode_chats_both_a": "Страница «Участники команды» и чаты Crew Mode. Оба ещё в разработке, поэтому не отображаются, пока эта опция не включена.",
         "webhooks": "Вебхуки"
       }
     },

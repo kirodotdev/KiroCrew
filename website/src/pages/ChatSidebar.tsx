@@ -42,6 +42,8 @@ import { useMoveSlotToFolder } from '../hooks/useMoveSlotToFolder'
 import useMoveUndo from '../hooks/useMoveUndo'
 import { useSelectInstance } from '../hooks/useSelectInstance'
 import { useSimplifiedToolNames } from '../hooks/useSimplifiedToolNames'
+import { usePreviewFlag } from '../hooks/usePreviewFlag'
+import { PREVIEW_CREW } from '../utils/previewFlags'
 import { useLanguage } from '../i18n/LanguageProvider'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
@@ -4397,6 +4399,11 @@ function ChatSidebar({
 
   // Crew Mode: multi-topic chat — the agent runs only in sub-sessions
   // (topics); the session itself is an engineered routing pipeline.
+  //
+  // Preview-gated: the create-menu entry below only renders once the operator
+  // opts in at Developer > Feature Previews. `usePreviewFlag` rather than a bare
+  // read because the sidebar does not remount when that toggle flips.
+  const crewPreview = usePreviewFlag(PREVIEW_CREW)
   const createCrewMutation = useMutation({
     mutationFn: () => {
       return dispatch(createSlot({ agent: defaultAgent || undefined, mode: 'crew' })).unwrap()
@@ -5126,6 +5133,12 @@ function ChatSidebar({
                     <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.autopilot_desc')}</span>
                   </span>
                 </DropdownMenuItem>
+                {/* Crew Mode is preview-gated (`utils/previewFlags.ts`): the mode
+                 *  is not released, so the menu does not offer it unless the
+                 *  operator opted in at Developer > Feature Previews. The
+                 *  mutation above stays wired either way, so a session already in
+                 *  crew mode is unaffected — only this ingress disappears. */}
+                {crewPreview && (
                 <DropdownMenuItem className="items-start" data-testid="new-crew-chat" onClick={() => { createCrewMutation.mutate() }}>
                   <Users size={14} className="text-muted mt-[3px] shrink-0" />
                   <span className="flex min-w-0 flex-col gap-px">
@@ -5142,6 +5155,7 @@ function ChatSidebar({
                     <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('pages.chatSidebar.crew_desc')}</span>
                   </span>
                 </DropdownMenuItem>
+                )}
                 {/* Ephemeral session types are grouped one level down: they are two
                  *  spellings of one choice (a session that leaves no lasting memory),
                  *  so listing both at the top level would double the session-type rows

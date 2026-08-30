@@ -6383,8 +6383,10 @@
         "retry": "Retry"
       },
       "featurePreviewsTab": {
+        "crew": "Crew",
         "inbound_webhook_tokens_registered_contexts_and_r": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished.",
         "open_webhooks": "Open Webhooks",
+        "the_crew_members_page_and_crew_mode_chats_both_a": "The Crew Members page and Crew Mode chats. Both are still being built, so neither is offered until you turn this on.",
         "webhooks": "Webhooks"
       }
     },

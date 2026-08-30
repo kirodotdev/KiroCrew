@@ -141,14 +141,18 @@ export interface Surface {
   /**
    * Gate this surface behind a preview flag (a key from
    * `utils/previewFlags.ts`). While the flag is off, the surface is not
-   * advertised anywhere in the UI — no rail row, no Search Everywhere result —
-   * so an unpolished page can sit on `main` without being released.
+   * advertised anywhere in the UI — no rail row, no Search Everywhere result,
+   * and no contribution to the browser-tab attention count
+   * (`selectAllSurfacesAttention` skips it) — so an unpolished page can sit on
+   * `main` without being released.
    *
-   * Unlike `hiddenFromNav` (a permanent "rendered elsewhere" marker), this is
-   * temporary and conditional: the surface stays in `getBuiltinSurfaces()` so
-   * its label/badge wiring is still covered by tests, and consumers read
-   * `getAdvertisedSurfaces()` instead. Its route stays registered in `App.tsx`,
-   * which is what makes the surface reachable once the flag is on.
+   * Unlike `hiddenFromNav` (a permanent "rendered elsewhere" marker, which DOES
+   * still contribute to the attention count because it is advertised, just not
+   * on the rail), this is temporary and conditional: the surface stays in
+   * `getBuiltinSurfaces()` so its label/badge wiring is still covered by tests,
+   * and consumers read `getAdvertisedSurfaces()` instead. Its route stays
+   * registered in `App.tsx`, which is what makes the surface reachable once the
+   * flag is on.
    */
   previewFlag?: string
 }
@@ -342,11 +346,25 @@ export function selectSurfaceActivityCount(navId: string): (state: RootState) =>
  * selectors directly (no `.find()` per call) so it's O(surfaces) on each
  * Redux state change rather than O(surfaces²); the per-surface inner
  * selectors are themselves memoized via `selectUnreadByMode`.
+ *
+ * A preview-gated surface is skipped while its flag is off, which is a
+ * user-visible correctness point rather than tidiness: the tab title is an
+ * ADVERTISEMENT too. A gated surface has no rail row and no Search Everywhere
+ * entry, so a count it contributes shows the user a `(1)` they cannot trace to
+ * anything or clear — and slots for a hidden surface really do exist, since
+ * gating removes the ingress and deliberately leaves earlier work running.
+ * `hiddenFromNav` is the deliberate opposite: it still contributes, because it
+ * IS advertised, just somewhere other than the rail (the topbar bell).
+ *
+ * The cost is one synchronous `localStorage` read per gated surface per
+ * dispatch, the same read `getAdvertisedSurfaces()` already performs on every
+ * render, and it is paid only by surfaces that carry a flag at all.
  */
 export function selectAllSurfacesAttention(state: RootState): number {
   let total = 0
   for (const s of _builtins) {
     if (s.appOnly && !state.dashboard.enabledAppIds.includes(s.navId)) continue
+    if (!surfacePreviewEnabled(s)) continue
     if (s.unreadSelector) total += s.unreadSelector(state)
     else if (s.slotMode !== undefined) total += selectUnreadByMode(s.slotMode)(state)
   }

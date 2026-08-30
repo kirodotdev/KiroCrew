@@ -78,6 +78,9 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+// Not mocked: the gate reads real localStorage, so the fixture that turns crew
+// on is the same write the Developer > Feature Previews toggle performs.
+import { PREVIEW_CREW } from '../utils/previewFlags'
 
 function renderSidebar() {
   const store = createTestStore({
@@ -132,6 +135,10 @@ describe('create-button caret menu', () => {
     // The moment a user cannot tell Autopilot from Crew Mode is the moment this
     // menu opens. Before this, the only explanation was a native title= on the
     // sidebar badge — i.e. visible only after the session already existed.
+    //
+    // Crew is preview-gated, so the flag is part of the fixture: the contrast
+    // this test is about only exists once both modes are on offer.
+    localStorage.setItem(PREVIEW_CREW, '1')
     renderSidebar()
     openCreateMenu()
     await screen.findByText('New autopilot chat')
@@ -176,12 +183,30 @@ describe('create-button caret menu', () => {
     expect(mocks.createChatSlot.mock.calls.some(c => c.includes('orchestrator'))).toBe(true)
   })
 
+  it('hides the Crew Mode entry until the preview flag is on', async () => {
+    // Crew is unreleased, so the create menu must not offer it by default —
+    // a user who never opted in should not be able to reach the mode at all.
+    // Asserted on a plain `localStorage.clear()` (the beforeEach), which is the
+    // state a fresh install is in.
+    renderSidebar()
+    openCreateMenu()
+    // Anchor on a sibling entry first: an empty query below would also pass if
+    // the menu simply failed to open.
+    await screen.findByText('New autopilot chat')
+    expect(screen.queryByTestId('new-crew-chat')).toBeNull()
+    expect(screen.queryByText('New Crew Mode chat')).toBeNull()
+  })
+
   it('tags Crew Mode experimental where the mode is chosen, and only there', async () => {
     // Crew Mode dispatches every message to a sub-session and relays a summary
     // rather than the reply, so it does not yet read like a conversation. Until
     // that is fixed the mode has to announce itself, and the only moment that
     // helps is BEFORE the click — a warning on the resulting session's badge is
     // read once the session already exists.
+    //
+    // The entry is preview-gated, so the flag is part of the fixture: without it
+    // there is no row to carry the tag.
+    localStorage.setItem(PREVIEW_CREW, '1')
     renderSidebar()
     openCreateMenu()
     const crewItem = (await screen.findByText('New Crew Mode chat')).closest('[role="menuitem"]')

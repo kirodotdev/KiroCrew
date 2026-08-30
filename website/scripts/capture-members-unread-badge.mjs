@@ -44,7 +44,13 @@ await stubDashboardApi(page, {
   // from the slot list, so an orphan key would self-heal and prove nothing.
   slots: [{ key: MEMBER_SLOT, title: 'oncall', mode: 'member', running: false, pinned: true }],
   // Exactly what the websocket unread-marker persists.
-  localStorageEntries: { 'mc-unread-slots': JSON.stringify([MEMBER_SLOT]) },
+  localStorageEntries: {
+    'mc-unread-slots': JSON.stringify([MEMBER_SLOT]),
+    // The Crew Members surface is preview-gated (`utils/previewFlags.ts`), and
+    // the badge this harness is about rides its RAIL row — so without the
+    // opt-in there is no row to carry it and the wait below times out.
+    'mc-preview-crew': '1',
+  },
   extra: async (path, route) => {
     if (path === '/api/members') {
       await json(route, { members: MEMBERS, default_agent: 'kirocrew' })

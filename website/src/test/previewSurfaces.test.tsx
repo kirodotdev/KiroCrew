@@ -31,11 +31,20 @@ vi.mock('../pages/overview/MemoryGraphTab', () => ({ default: () => <div /> }))
 import {
   registerBuiltinSurface,
   getBuiltinSurfaces,
+  getBuiltinSurface,
   getAdvertisedSurfaces,
+  selectAllSurfacesAttention,
   surfacePreviewEnabled,
   _resetBuiltinsForTest,
 } from '../surfaces/registry'
+import dashboardReducer from '../store/dashboardSlice'
+import notificationsReducer from '../store/notificationsSlice'
+// Side-effect import: registers the real surfaces, which the crew describe
+// asserts against. Every describe that needs a clean registry already calls
+// `_resetBuiltinsForTest()` in its own `beforeEach`.
+import '../surfaces/builtins'
 import {
+  PREVIEW_CREW,
   PREVIEW_FLAG_EVENT,
   PREVIEW_FLAG_PREFIX,
   PREVIEW_WEBHOOKS,
@@ -113,7 +122,9 @@ describe('preview flag storage', () => {
   it('keeps every flag under the shared prefix', () => {
     // Cross-tab listeners match on the prefix rather than a list of known flags,
     // so a flag named outside it would silently stop updating other tabs.
-    expect(PREVIEW_WEBHOOKS.startsWith(PREVIEW_FLAG_PREFIX)).toBe(true)
+    for (const flag of [PREVIEW_WEBHOOKS, PREVIEW_CREW]) {
+      expect(flag.startsWith(PREVIEW_FLAG_PREFIX)).toBe(true)
+    }
   })
 })
 
@@ -126,6 +137,84 @@ describe('surfacePreviewEnabled', () => {
     expect(surfacePreviewEnabled({ previewFlag: GATED_FLAG })).toBe(false)
     localStorage.setItem(GATED_FLAG, '1')
     expect(surfacePreviewEnabled({ previewFlag: GATED_FLAG })).toBe(true)
+  })
+})
+
+/**
+ * Crew, asserted against the REAL registry rather than a fixture.
+ *
+ * Declared before the `registry membership` block below, which resets the
+ * registry in its `beforeEach` and would take the imported builtins with it.
+ * Vitest runs describes in declaration order, so this position is the fixture.
+ */
+describe('crew is preview-gated end to end', () => {
+  it('gates the Crew Members surface on PREVIEW_CREW', () => {
+    // A literal `'mc-preview-crew'` here would keep passing if the constant were
+    // renamed, leaving the rail reading one key and the toggle writing another.
+    expect(getBuiltinSurface('members')?.previewFlag).toBe(PREVIEW_CREW)
+  })
+
+  it('drops Crew Members from the advertised list until the flag is on', () => {
+    const advertised = () => getAdvertisedSurfaces().some(s => s.navId === 'members')
+    expect(advertised()).toBe(false)
+    // Sessions is the ungated neighbour: it proves the real registry loaded, so
+    // the `false` above cannot be an empty-registry artefact.
+    expect(getAdvertisedSurfaces().some(s => s.navId === 'chat')).toBe(true)
+    localStorage.setItem(PREVIEW_CREW, '1')
+    expect(advertised()).toBe(true)
+  })
+
+  it('keeps the route registered either way', () => {
+    // The page has to be reachable the moment the flag flips, and a bookmark
+    // must still resolve — gating removes the ADVERTISEMENT, not the surface.
+    expect(getBuiltinSurfaces().find(s => s.navId === 'members')?.route).toBe('/members')
+  })
+})
+
+describe('browser-tab attention count', () => {
+  // The tab title is an ADVERTISEMENT: a gated surface has no rail row to trace
+  // a count to, so contributing one shows the user a `(1)` they cannot clear.
+  // Pinned here rather than in `surfaces.test.tsx` because it is part of the
+  // "not advertised ANYWHERE" contract, not of the sum's arithmetic.
+  beforeEach(() => _resetBuiltinsForTest())
+
+  const buildState = (slots: unknown[], unread: string[]) => {
+    const initialDashboard = dashboardReducer(undefined, { type: '@@INIT' })
+    return {
+      dashboard: { ...initialDashboard, slots, unreadSlots: unread },
+      notifications: notificationsReducer(undefined, { type: '@@INIT' }),
+    } as unknown as Parameters<typeof selectAllSurfacesAttention>[0]
+  }
+
+  const registerPair = () => {
+    registerBuiltinSurface({
+      navId: 'open', route: '/open', label: 'Open', labelKey: 'nav.sessions',
+      icon: TEST_ICON, group: 'Main', unreadSelector: () => 2,
+    })
+    registerBuiltinSurface({
+      navId: 'gated', route: '/gated', label: 'Gated', labelKey: 'nav.webhooks',
+      icon: TEST_ICON, group: 'Main', unreadSelector: () => 5, previewFlag: GATED_FLAG,
+    })
+  }
+
+  it('omits a gated surface while its flag is off, and counts it once on', () => {
+    registerPair()
+    const state = buildState([], [])
+    // 2, not 7: the ungated neighbour is what proves the sum ran at all.
+    expect(selectAllSurfacesAttention(state)).toBe(2)
+    localStorage.setItem(GATED_FLAG, '1')
+    expect(selectAllSurfacesAttention(state)).toBe(7)
+  })
+
+  it('still counts a hiddenFromNav surface, which IS advertised elsewhere', () => {
+    // The deliberate opposite of the gate above: `hiddenFromNav` means "rendered
+    // somewhere other than the rail" (the topbar bell), so its count has an
+    // owner the user can reach and must keep reaching the tab title.
+    registerBuiltinSurface({
+      navId: 'bell', route: '/bell', label: 'Bell', labelKey: 'nav.notifications',
+      icon: TEST_ICON, group: 'Main', unreadSelector: () => 4, hiddenFromNav: true,
+    })
+    expect(selectAllSurfacesAttention(buildState([], []))).toBe(4)
   })
 })
 
@@ -278,6 +367,51 @@ describe('Developer > Feature Previews', () => {
     localStorage.setItem(PREVIEW_WEBHOOKS, '1')
     renderTab()
     expect(toggleState()).toBe('true')
+  })
+
+  it('carries a crew card that starts off', () => {
+    // One card per feature: crew's own toggle, not a row folded into the
+    // webhooks card. `{ name: /^crew$/i }` because "Crew Members" appears in
+    // this card's description and a loose /crew/ would match either.
+    renderTab()
+    expect(screen.getByRole('switch', { name: /^crew$/i }).getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('persists the crew opt-in under its own key, leaving webhooks alone', async () => {
+    renderTab()
+    await act(async () => {
+      screen.getByRole('switch', { name: /^crew$/i }).click()
+    })
+    expect(localStorage.getItem(PREVIEW_CREW)).toBe('1')
+    // Two flags, two keys: a shared write would release both features at once.
+    expect(localStorage.getItem(PREVIEW_WEBHOOKS)).not.toBe('1')
+  })
+
+  it('gives the crew card NO ingress link, on either side of the toggle', async () => {
+    // Deliberate asymmetry with the webhooks card, and the reason is `webhooks`
+    // being `hiddenFromNav`: its card is that page's ONLY door, so it needs one.
+    // Crew's rail row returns in the same tick as the click, so a link here
+    // would be a second spelling of a door already on screen — and would cost a
+    // catalog key in twelve languages forever. Pinned so it cannot drift back in
+    // by symmetry with the card above it.
+    //
+    // Counted as `<button>` ELEMENTS rather than by accessible name: the name of
+    // a link that no longer exists is not in any catalog, so a name query could
+    // never fail. `SettingsToggle`'s own row is a `div role="button"`, so it is
+    // correctly not counted here.
+    const { container } = renderTab()
+    const realButtons = () => Array.from(container.querySelectorAll('button'))
+    expect(realButtons()).toHaveLength(0)
+    await act(async () => {
+      screen.getByRole('switch', { name: /^crew$/i }).click()
+    })
+    expect(realButtons()).toHaveLength(0)
+    // The webhooks card still HAS its link, so this is an asymmetry on purpose
+    // rather than the ingress mechanism having been broken for both.
+    await act(async () => {
+      screen.getByRole('switch', { name: /webhooks/i }).click()
+    })
+    expect(realButtons().map(b => b.textContent?.trim())).toEqual(['Open Webhooks'])
   })
 
   it('is its own tab on the Developer page, not part of Config', async () => {

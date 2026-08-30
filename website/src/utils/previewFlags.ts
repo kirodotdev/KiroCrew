@@ -50,6 +50,23 @@ export interface PreviewFlagChange {
 export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
 
 /**
+ * Crew: the Crew Members page (`/members`) and the "New Crew Mode chat" entry in
+ * the sidebar's create menu.
+ *
+ * ONE flag over both, not one each: they are two doors into the same unfinished
+ * feature, and a user who reaches crew through the door that was left open hits
+ * the same rough edges either way — so a per-door flag would only let the
+ * feature half-ship. The two surfaces stay separate code; the flag is what says
+ * "crew is not released yet".
+ *
+ * Gating the INGRESS only. A session already created in crew mode keeps working,
+ * keeps its `Crew` row badge, and its route stays registered, so turning the
+ * flag off does not orphan existing work — it stops advertising the feature to
+ * someone who has not opted in.
+ */
+export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
+
+/**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.

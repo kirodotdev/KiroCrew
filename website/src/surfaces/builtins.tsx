@@ -12,7 +12,7 @@ import { createSelector } from '@reduxjs/toolkit'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { registerBuiltinSurface, surfaceMachineValue } from './registry'
 import { selectSubagentActivityCount } from '../store/chatSlice'
-import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import type { RootState } from '../store'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
@@ -49,6 +49,18 @@ registerBuiltinSurface({
 // claims the `member-<slug>` slots this page's threads live in, so their
 // unread counts ride this rail item instead of leaking into Sessions
 // (`isChatPageSurface` deliberately does not admit 'member').
+//
+// `previewFlag` because crew is not released yet: the page errors out on paths
+// that are still being built, so it is not advertised until the operator opts in
+// at Developer > Feature Previews. Unlike Webhooks below this surface is NOT
+// `hiddenFromNav` — the rail IS where it belongs once released, so dropping the
+// flag is the whole release. Two of the three advertising paths apply the gate
+// for themselves — the rail and Search Everywhere both read
+// `getAdvertisedSurfaces()` — and the third, the browser-tab attention count,
+// applies it inside `selectAllSurfacesAttention`, because that sum reads the
+// registry directly rather than the advertised list. The other door into crew
+// (the sidebar's "New Crew Mode chat" entry) reads PREVIEW_CREW directly, since
+// a create-menu item is not a surface at all.
 registerBuiltinSurface({
   navId: 'members',
   route: '/members',
@@ -58,6 +70,7 @@ registerBuiltinSurface({
   group: surfaceMachineValue('Main'),
   slotMode: 'member',
   badgeLabel: 'unread member threads',
+  previewFlag: PREVIEW_CREW,
 })
 
 registerBuiltinSurface({
