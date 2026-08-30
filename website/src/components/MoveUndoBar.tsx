@@ -9,20 +9,27 @@ import { isMac, platformShortcut } from '../utils/platform'
 /**
  * How long a drag-move stays undoable.
  *
- * Long enough to notice the bar, read where the session went, and aim for the
+ * Long enough to notice the bar, read where the item went, and aim for the
  * button; short enough that the offer never outlives the mistake it belongs to.
  *
- * The DEADLINE is enforced by the owner of the offer (ChatSidebar), not here:
- * an offer whose optimistic move never became visible has no bar to run a
+ * The DEADLINE is enforced by the owner of the offer ({@link useMoveUndo}), not
+ * here: an offer whose optimistic move never became visible has no bar to run a
  * timer, and must still die on this same clock. This component only draws the
  * remaining time.
  */
 export const MOVE_UNDO_MS = 8000
 
-/** The inverse of one drag-move, i.e. everything undo needs to put it back. */
-export type MovedSession = {
-  /** Slot that moved. */
-  slotKey: string
+/**
+ * The inverse of one drag-move, i.e. everything undo needs to put it back.
+ *
+ * Deliberately names the moved thing `item` rather than `session`: the sidebar's
+ * session drag is the first caller, not the only intended one, and a field
+ * called `slotKey` would be a lie the moment an artifact or a folder subtree
+ * arms the same offer.
+ */
+export type MovedItem = {
+  /** Item that moved — a slot key, artifact slug, or folder id. */
+  itemKey: string
   /** Folder it came FROM — where undo puts it back (`null` = unfiled root). */
   fromFolderId: string | null
   /** Folder it landed in. Compared against live state to drop a stale offer. */
@@ -31,12 +38,12 @@ export type MovedSession = {
   toFolderName: string | null
   /** Destination folder color, for the glyph tint. */
   toFolderColor?: string
-  /** Title of the moved session — the hover tooltip, since the row has no room. */
-  sessionTitle: string
+  /** Title of the moved item — the hover tooltip, since the row has no room. */
+  itemTitle: string
 }
 
 type Props = {
-  moved: MovedSession
+  moved: MovedItem
   onUndo: () => void
   /** Reports whether the pointer is over the bar or focus is inside it, so the
    *  owner can suspend the expiry deadline rather than pull the button out from
@@ -68,12 +75,17 @@ type Props = {
 }
 
 /**
- * Confirmation + undo for a session dragged into a folder.
+ * Confirmation + undo for an item dragged into a folder.
  *
- * A drag is a coarse gesture: drop a session one row off and it vanishes into a
+ * A drag is a coarse gesture: drop an item one row off and it vanishes into a
  * folder the user never sees, with nothing on screen saying where it went. This
  * bar names the destination and offers the inverse move back for
  * {@link MOVE_UNDO_MS}.
+ *
+ * The `session*` i18n keys and `session-move-undo*` test ids are retained rather
+ * than renamed with the component: the strings are translated in every locale
+ * catalogue and the ids are what the screenshot capture script selects on, so
+ * renaming them would be churn and breakage for no behavioural gain.
  *
  * ## Why it lives in the flow rather than floating
  *
@@ -90,11 +102,11 @@ type Props = {
  * ⌘C (copy). The handler stands down while focus is in a text field so the
  * composer keeps its own undo history, and ignores ⇧⌘Z (redo).
  *
- * ## The offer's lifecycle (owned by ChatSidebar, documented here)
+ * ## The offer's lifecycle (owned by {@link useMoveUndo}, documented here)
  *
- * This component only renders an offer; `ChatSidebar` decides when one exists.
- * That state machine is the part a future editor is most likely to break, so it
- * is written down once, here, rather than inferred from scattered comments:
+ * This component only renders an offer; the hook decides when one exists. That
+ * state machine is the part a future editor is most likely to break, so it is
+ * written down once, here, rather than inferred from scattered comments:
  *
  * ```
  *   drag drop ──► PENDING ──ack──► LIVE ──► (undo | expiry | mismatch) ──► gone
@@ -112,11 +124,11 @@ type Props = {
  *    latched, because by ack time live state may match the destination again
  *    (a move away and back) and nothing later could tell.
  *  - **LIVE** — the server acknowledged and nothing was latched. The bar
- *    renders; an 8s deadline owned by the sidebar retires it.
+ *    renders; an 8s deadline owned by the hook retires it.
  *  - **gone** — one-way. An offer is dropped, never re-validated, so a retired
  *    offer cannot come back and replay its inverse over a newer move.
  */
-export default function SessionMoveUndoBar({
+export default function MoveUndoBar({
   moved,
   onUndo,
   onHoldChange,
@@ -162,8 +174,8 @@ export default function SessionMoveUndoBar({
         <span
           className="flex min-w-0 flex-1 items-center gap-1 text-[12px] text-text"
           title={moved.toFolderName === null
-            ? `${i18nT('components.sessionMoveUndoBar.removed_from_folder')} — ${moved.sessionTitle}`
-            : `${i18nT('components.sessionMoveUndoBar.moved_to')} ${moved.toFolderName} — ${moved.sessionTitle}`}
+            ? `${i18nT('components.sessionMoveUndoBar.removed_from_folder')} — ${moved.itemTitle}`
+            : `${i18nT('components.sessionMoveUndoBar.moved_to')} ${moved.toFolderName} — ${moved.itemTitle}`}
         >
           {/* The root case is its own sentence, not "Moved to <noun>": the sidebar
               calls this "remove from folder" on its own drop zone, and "Unfiled"

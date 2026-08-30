@@ -76,7 +76,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
-import { MOVE_UNDO_MS } from '../components/SessionMoveUndoBar'
+import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 
 const TAG = '11111111-1111-1111-1111-111111111111'
 const COL = 'col-aaaa'

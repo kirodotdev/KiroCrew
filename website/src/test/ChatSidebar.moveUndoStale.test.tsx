@@ -51,7 +51,7 @@ vi.mock('../api/client', () => ({
 
 // Stub the bar: this suite is about the OWNER's guard, not the bar's rendering,
 // and a stub is what lets the retained callback be invoked after retirement.
-vi.mock('../components/SessionMoveUndoBar', () => ({
+vi.mock('../components/MoveUndoBar', () => ({
   MOVE_UNDO_MS: 8000,
   default: ({ onUndo }: { onUndo: () => void }) => {
     mocks.lastOnUndo.current = onUndo

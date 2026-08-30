@@ -42,23 +42,23 @@ vi.mock('framer-motion', async () => {
   return { motion: new Proxy({}, { get: (_t, tag: string) => make(tag) }) }
 })
 
-import SessionMoveUndoBar, { MOVE_UNDO_MS, type MovedSession } from '../components/SessionMoveUndoBar'
+import MoveUndoBar, { MOVE_UNDO_MS, type MovedItem } from '../components/MoveUndoBar'
 
-const moved: MovedSession = {
-  slotKey: 'chat-1',
+const moved: MovedItem = {
+  itemKey: 'chat-1',
   fromFolderId: null,
   toFolderId: 'f-archive',
   toFolderName: 'Archive',
-  sessionTitle: 'Session drag lands in the wrong folder',
+  itemTitle: 'Session drag lands in the wrong folder',
 }
 
-function renderBar(over: Partial<MovedSession> = {}, handlers: { onUndo?: () => void } = {}) {
+function renderBar(over: Partial<MovedItem> = {}, handlers: { onUndo?: () => void } = {}) {
   const onUndo = handlers.onUndo ?? vi.fn()
-  const utils = render(<SessionMoveUndoBar moved={{ ...moved, ...over }} onUndo={onUndo} />)
+  const utils = render(<MoveUndoBar moved={{ ...moved, ...over }} onUndo={onUndo} />)
   return { ...utils, onUndo }
 }
 
-describe('SessionMoveUndoBar', () => {
+describe('MoveUndoBar', () => {
   it('names the destination folder', () => {
     renderBar()
     expect(screen.getByText('Archive')).toBeTruthy()
@@ -76,7 +76,7 @@ describe('SessionMoveUndoBar', () => {
   it('reports hold state so the owner can suspend the expiry deadline', () => {
     const onHoldChange = vi.fn()
     const { container } = render(
-      <SessionMoveUndoBar moved={moved} onUndo={vi.fn()} onHoldChange={onHoldChange} />,
+      <MoveUndoBar moved={moved} onUndo={vi.fn()} onHoldChange={onHoldChange} />,
     )
     const bar = container.querySelector('[data-testid="session-move-undo"]')!
     fireEvent.mouseEnter(bar)
@@ -89,7 +89,7 @@ describe('SessionMoveUndoBar', () => {
 
   it('carries the session title as the row tooltip, since the row has no width for it', () => {
     const { container } = renderBar()
-    expect(container.querySelector(`[title*="${moved.sessionTitle}"]`)).toBeTruthy()
+    expect(container.querySelector(`[title*="${moved.itemTitle}"]`)).toBeTruthy()
   })
 
   // ── Narrow sidebar (down to SIDEBAR_MIN = 180px) ───────────────────────────
@@ -98,7 +98,7 @@ describe('SessionMoveUndoBar', () => {
 
   it('keeps the destination and drops the prefix when compact', () => {
     const { container } = render(
-      <SessionMoveUndoBar moved={moved} onUndo={vi.fn()} compact />,
+      <MoveUndoBar moved={moved} onUndo={vi.fn()} compact />,
     )
     expect(screen.getByText('Archive')).toBeTruthy()
     expect(screen.queryByText('Moved to')).toBeNull()
@@ -108,7 +108,7 @@ describe('SessionMoveUndoBar', () => {
 
   it('still fires the chord when compact', () => {
     const onUndo = vi.fn()
-    render(<SessionMoveUndoBar moved={moved} onUndo={onUndo} compact />)
+    render(<MoveUndoBar moved={moved} onUndo={onUndo} compact />)
     fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
     expect(onUndo).toHaveBeenCalledTimes(1)
   })
@@ -167,7 +167,7 @@ describe('SessionMoveUndoBar', () => {
   })
 })
 
-describe('SessionMoveUndoBar on macOS', () => {
+describe('MoveUndoBar on macOS', () => {
   beforeEach(() => vi.resetModules())
 
   it('binds ⌘Z, not Ctrl+Z', async () => {
@@ -175,7 +175,7 @@ describe('SessionMoveUndoBar on macOS', () => {
       isMac: true,
       platformShortcut: (s: string) => s.replace(/Cmd\+/g, '⌘'),
     }))
-    const { default: MacBar } = await import('../components/SessionMoveUndoBar')
+    const { default: MacBar } = await import('../components/MoveUndoBar')
     const onUndo = vi.fn()
     render(<MacBar moved={moved} onUndo={onUndo} />)
     // The Mac chord is advertised in the tooltip, not on the face…
@@ -201,7 +201,7 @@ describe('SessionMoveUndoBar on macOS', () => {
     // Running: head for empty over exactly the time the owner says is left — not
     // over a fixed MOVE_UNDO_MS measured from this component's own mount.
     const { rerender } = render(
-      <SessionMoveUndoBar moved={moved} onUndo={onUndo} remainingMs={3000} />,
+      <MoveUndoBar moved={moved} onUndo={onUndo} remainingMs={3000} />,
     )
     expect(animate().scaleX).toBe(0)
     expect(transition().duration).toBe(3)
@@ -209,13 +209,13 @@ describe('SessionMoveUndoBar on macOS', () => {
     // Paused: hold the width at the remaining FRACTION. Continuing to 0 here is
     // the defect — the bar would empty while the deadline was suspended, telling
     // the user the offer expired at the exact moment it is guaranteed alive.
-    rerender(<SessionMoveUndoBar moved={moved} onUndo={onUndo} remainingMs={3000} paused />)
+    rerender(<MoveUndoBar moved={moved} onUndo={onUndo} remainingMs={3000} paused />)
     expect(animate().scaleX).toBeCloseTo(3000 / MOVE_UNDO_MS)
     expect(transition().duration).toBe(0)
 
     // Resumed: pick up from that fraction over the same remainder, so scaleX
     // stays equal to remaining / MOVE_UNDO_MS at every instant.
-    rerender(<SessionMoveUndoBar moved={moved} onUndo={onUndo} remainingMs={3000} />)
+    rerender(<MoveUndoBar moved={moved} onUndo={onUndo} remainingMs={3000} />)
     expect(animate().scaleX).toBe(0)
     expect(transition().duration).toBe(3)
   })
