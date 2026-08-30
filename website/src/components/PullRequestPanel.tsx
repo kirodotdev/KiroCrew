@@ -260,6 +260,65 @@ export function pullRequestCiSignal(
   return 'passed'
 }
 
+/** A merge field the provider actually answered, or undefined.
+ *
+ * Both `''` and `'unknown'` are non-answers rather than values (see
+ * `PullRequestSource.mergeable`): `''` is the provider omitting the field, and
+ * `'unknown'` is GitHub reporting that it has not finished computing the merge
+ * commit yet -- a transient state every push re-enters. Neither may overwrite a
+ * value that WAS settled, or the pair would flicker off and back on through the
+ * recompute window. */
+const settledMergeField = (value: string | undefined): string | undefined =>
+  (value && value !== 'unknown' ? value : undefined)
+
+/** The status entry for the SELECTED pull request: its cached chip status with
+ * the fields the full payload can speak to layered on top.
+ *
+ * A per-FIELD preference, not a whole-record replacement. Both sides describe
+ * the same pull request, but neither is a superset of the other -- the payload
+ * is fresher and user-refreshable, while the cache is the only source for
+ * anything this panel does not recompute. Rebuilding the record from the
+ * payload alone silently dropped every field it does not mention (the settled
+ * `mergeable` / `mergeStateStatus` pair), and dropped it for the selected
+ * source ONLY, so the one tab with the most authoritative data behind it was
+ * the one carrying the least.
+ *
+ * Two rules keep the fallback from being worse than the drop it replaces:
+ *
+ *  - an UNSETTLED payload field keeps the cached one rather than erasing it,
+ *    the same keep-known rule `keptCi` applies to CI below and the backend's
+ *    `record_full_payload_status` applies on the other side of the wire;
+ *  - a TERMINAL pull request carries no merge pair at all. Mergeability is a
+ *    question about a merge that can still happen, so once merged or closed a
+ *    retained `conflicting` is not stale data, it is an answer to a question
+ *    nobody asked. `SourceTabState` suppresses CI on the same predicate and for
+ *    the same reason -- the lifecycle glyph is the terminal signal.
+ */
+export function selectedSourceStatus(
+  source: PullRequestSource,
+  cached: PullRequestStatus | undefined,
+): PullRequestStatus {
+  // A degraded payload (the provider's checks read failed or truncated, so
+  // `checks` is flagged in `partialSections`) carries nothing to recompute CI
+  // from, so fall back to the chip status the backend deliberately kept alive
+  // instead of erasing the glyph. A genuinely empty checks section (no CI
+  // configured, not flagged partial) still clears a stale glyph.
+  const keptCi = source.partialSections?.includes('checks') ? cached?.ci : undefined
+  const state = pullRequestLifecycleState(source)
+  const terminal = state === 'merged' || state === 'closed'
+  return {
+    ...cached,
+    state,
+    ci: pullRequestCiSignal(source.checks) ?? keptCi,
+    mergeable: terminal
+      ? undefined
+      : (settledMergeField(source.mergeable) ?? settledMergeField(cached?.mergeable)),
+    mergeStateStatus: terminal
+      ? undefined
+      : (settledMergeField(source.mergeStateStatus) ?? settledMergeField(cached?.mergeStateStatus)),
+  }
+}
+
 /**
  * Lifecycle glyph and tone for a pull request's state.
  *
@@ -933,22 +992,9 @@ export default function PullRequestPanel({
     const merged: Record<string, PullRequestStatus> = { ...cached }
     // The selected pull request already has a full, user-refreshable payload —
     // prefer it over the cached chip status so its own chip never lags the
-    // header badge it sits above.
+    // header badge it sits above. Field by field: see `selectedSourceStatus`.
     if (source) {
-      // A degraded payload (the provider's checks read failed or truncated, so
-      // `checks` is flagged in `partialSections`) carries nothing to recompute
-      // CI from. Mirror the backend's keep-known rule
-      // (`record_full_payload_status` in `source_providers.py`): fall back to
-      // the chip status the backend deliberately kept alive instead of erasing
-      // the glyph. A genuinely empty checks section (no CI configured, not
-      // flagged partial) still clears a stale glyph.
-      const keptCi = source.partialSections?.includes('checks')
-        ? cached[source.url]?.ci
-        : undefined
-      merged[source.url] = {
-        state: pullRequestLifecycleState(source),
-        ci: pullRequestCiSignal(source.checks) ?? keptCi,
-      }
+      merged[source.url] = selectedSourceStatus(source, cached[source.url])
     }
     return merged
   }, [statusQuery.data, source])
