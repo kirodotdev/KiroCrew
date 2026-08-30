@@ -3133,6 +3133,33 @@ async def kill_process_tree_async(pid: int, sig: int = SIGTERM) -> bool:
 REAP_TIMEOUT_SECS: float = 10
 
 
+def _shares_own_process_group(pid: int) -> bool:
+    """True when *pid* runs in the gateway's OWN process group.
+
+    Such a child was spawned without ``start_new_session``, so it has no tree
+    of its own to signal — see :func:`kill_and_reap`, whose group kill this
+    gates. Fail-closed (``False``) on every probe failure: the pid may be gone
+    or unreadable, and the tree kill it guards is itself best-effort and
+    protected by :func:`kill_process_tree`'s own broadcast/self-group guard.
+
+    This is a named seam on purpose. The probe reads the LIVE process table,
+    so a test handing :func:`kill_and_reap` a synthetic pid was at the mercy
+    of whichever real process happened to own that pid: when it landed inside
+    the runner's own group the skip fired and the expected tree kill never
+    happened. The rootdir ``conftest`` pins this one function instead of the
+    shared ``_OWN_PGID`` — pinning that would also disarm
+    :func:`kill_process_tree`'s self-group refusal, the guard that keeps a
+    test from broadcasting a signal to the whole pytest run.
+    """
+
+    if not IS_POSIX:
+        return False
+    try:
+        return os.getpgid(pid) == _OWN_PGID
+    except Exception:
+        return False
+
+
 async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | None = None) -> None:
     """Kill *proc* AND its descendants, then wait for it under a bound.
 
@@ -3167,11 +3194,9 @@ async def kill_and_reap(proc: asyncio.subprocess.Process, *, timeout: float | No
     """
 
     async def _cleanup() -> None:
-        same_group = False
-        if IS_POSIX:
-            with contextlib.suppress(Exception):
-                same_group = os.getpgid(proc.pid) == _OWN_PGID
-        if not same_group:
+        # Bare-name lookup so a test can pin the probe (see
+        # ``_shares_own_process_group``) without reaching into ``os``.
+        if not _shares_own_process_group(proc.pid):
             # Bare-name lookup resolves through this module's namespace at
             # call time, so tests patching ``kiro_crew.platform_compat.
             # kill_process_tree_async`` still intercept the tree kill.

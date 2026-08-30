@@ -31,6 +31,13 @@ import pytest
 
 from kiro_crew import platform_compat as pc
 
+#: The REAL same-group probe, bound at module import so this file can test it.
+#: The rootdir conftest pins ``pc._shares_own_process_group`` for every test
+#: (see ``_pin_kill_and_reap_group_probe``), and that pin lands after this
+#: import -- so reaching for the module attribute inside a test would exercise
+#: the stub instead of the function.
+_real_shares_own_process_group = pc._shares_own_process_group
+
 
 def _fake_windows_bins(monkeypatch):
     """Resolve Windows system binaries while ``IS_WINDOWS`` is faked on POSIX.
@@ -4131,6 +4138,64 @@ class TestKillAndReap:
         tree.assert_awaited_once()
         assert tree.await_args.args == (4242, pc.SIGKILL)
         proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_the_group_kill_for_a_same_group_child(self) -> None:
+        """A child sharing OUR group leads no tree, so the group signal is
+        skipped and the pid-scoped kill covers it -- otherwise every routine
+        timeout would trip ``kill_process_tree``'s broadcast refusal.
+
+        Also the escape hatch for the rootdir conftest's autouse pin of this
+        probe: a test that wants the skip patches the seam itself and wins.
+        """
+        from unittest import mock
+
+        proc = self._proc()
+        with (
+            mock.patch.object(pc, "_shares_own_process_group", lambda _pid: True),
+            mock.patch.object(pc, "kill_process_tree_async", mock.AsyncMock()) as tree,
+        ):
+            await pc.kill_and_reap(proc)
+        tree.assert_not_awaited()
+        proc.kill.assert_called_once()
+        proc.communicate.assert_awaited_once()
+
+    @pytest.mark.skipif(not pc.IS_POSIX, reason="POSIX only")
+    def test_group_probe_reports_our_own_group(self) -> None:
+        """Our own pid is in our own group by construction."""
+        assert _real_shares_own_process_group(os.getpid()) is True
+
+    @pytest.mark.skipif(not pc.IS_POSIX, reason="POSIX only")
+    def test_group_probe_fails_closed_for_an_unreadable_pid(self, monkeypatch) -> None:
+        """Fail-closed, so a vanished or unreadable pid still gets its tree
+        signalled rather than silently skipping the kill."""
+        monkeypatch.setattr(
+            pc.os,
+            "getpgid",
+            lambda _pid: (_ for _ in ()).throw(ProcessLookupError()),
+        )
+        assert _real_shares_own_process_group(4242) is False
+
+    def test_group_probe_is_posix_only(self, monkeypatch) -> None:
+        """Windows has no process groups to compare, so nothing is ever skipped
+        there -- and the probe must not reach a missing ``os.getpgid``.
+
+        This case runs on EVERY platform on purpose -- the non-POSIX branch is
+        what it covers -- so the tripwire is installed with ``raising=False``:
+        ``os.getpgid`` is Unix-only, and a strict ``setattr`` raises
+        ``AttributeError`` during the test's own arrangement on Windows, which
+        is where the assertion matters most. With ``raising=False`` the sentinel
+        is created where the attribute is absent, never called (that is the
+        assertion), and removed at teardown.
+        """
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(
+            pc.os,
+            "getpgid",
+            lambda _pid: (_ for _ in ()).throw(AssertionError("probed on Windows")),
+            raising=False,
+        )
+        assert _real_shares_own_process_group(os.getpid()) is False
 
     @pytest.mark.asyncio
     async def test_reaps_via_communicate_never_wait(self) -> None:

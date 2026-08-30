@@ -478,6 +478,45 @@ def _isolate_sandbox_mount_source_roots(_sandbox_mount_source_root, monkeypatch)
 
 
 @pytest.fixture(autouse=True)
+def _pin_kill_and_reap_group_probe(monkeypatch):
+    """Stop ``kill_and_reap``'s group-kill skip from reading host process state.
+
+    ``platform_compat.kill_and_reap()`` skips the process-GROUP kill when the
+    child shares the gateway's own group (spawned without
+    ``start_new_session``, so it leads no tree of its own). That decision is a
+    live ``os.getpgid()`` probe -- and almost every test of this path hands it a
+    SYNTHETIC pid (4242 is the shared convention) with the tree kill mocked. The
+    probe then resolves that fake pid against the runner's REAL process table:
+    when some genuine process happens to own it AND sits in the pytest run's own
+    process group, the skip fires, no tree kill is recorded, and the assertion
+    fails. Under xdist the runner spawns plenty of low-pid children in exactly
+    that group, which is why this flaked in batches -- four tests across three
+    files in one run -- and passed on re-run.
+
+    The pin is the child-leads-its-own-group answer, i.e. tree kill attempted,
+    which is what every one of those tests is written to assert. It is safe as a
+    floor because the skip is an optimisation, not a safety guard: it exists so
+    a routine timeout does not trip :func:`kill_process_tree`'s broadcast
+    refusal on every same-group child. That refusal is the actual protection and
+    is untouched here, so even a real same-group child reached through this
+    fixture is refused a group signal and falls through to the pid-scoped kill.
+    Pinning the shared ``_OWN_PGID`` instead WOULD disarm that refusal, which is
+    why the seam is this one function.
+
+    A test that wants the skip patches ``_shares_own_process_group`` itself -- a
+    later patch wins and reverts independently (see
+    ``TestKillAndReap::test_skips_the_group_kill_for_a_same_group_child``).
+    Tolerant of a partial checkout, and STRICT on the attribute: a silent miss
+    on a rename would quietly restore the flake this exists to remove.
+    """
+    try:
+        platform_compat = importlib.import_module("kiro_crew.platform_compat")
+    except Exception:  # pragma: no cover - a partial checkout must not break collection
+        return
+    monkeypatch.setattr(platform_compat, "_shares_own_process_group", lambda _pid: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_credential_env_residue():
     """Restore the credential env vars a test may have had INJECTED into it.
 
