@@ -1937,13 +1937,18 @@ class AcpSessionHandle:
         # taken. The idle clocks below measure BACKEND silence, so any park that
         # happens after this point must be subtracted from them.
         parked_at_data = self._parked_total
-        # SESSION-ATTRIBUTABLE twin of (last_data_ts, parked_at_data), for the
-        # post-compaction-failure budget only. On a shared runtime, ownerless
-        # global notifications are fanned out to every co-tenant queue
-        # (msg.fanout_no_owner), so another session's steady traffic would
-        # keep resetting last_data_ts and defer the budget to the multi-hour
-        # outer deadline — the exact hang this budget exists to bound. The
-        # pre-existing tool/stale clocks keep last_data_ts unchanged.
+        # SESSION-ATTRIBUTABLE twin of (last_data_ts, parked_at_data), read by
+        # the post-compaction-failure budget AND the tool-idle watchdog. On a
+        # shared runtime, ownerless global notifications are fanned out to every
+        # co-tenant queue (msg.fanout_no_owner), so another session's steady
+        # traffic would keep resetting last_data_ts and defer both clocks on
+        # work this session never produced — for the budget, out to the
+        # multi-hour outer deadline that is the exact hang it exists to bound.
+        #
+        # The STALE clock deliberately keeps reading last_data_ts: it already
+        # folds in the runtime-wide _last_activity (bumped on every stdout
+        # line), so runtime-global traffic is inside its contract by
+        # construction and narrowing its queue term would change nothing.
         last_own_data_ts = last_data_ts
         parked_at_own_data = parked_at_data
 
@@ -2050,9 +2055,11 @@ class AcpSessionHandle:
                     # stderr: AcpRuntime's stderr drain only rings the
                     # _stderr_lines buffer, so a kiro-cli reasoning burst on
                     # stderr does not move this clock); the tool clock keys off
-                    # session-queue frames only (keepalive and progress frames
-                    # for the session reset last_data_ts, so a
-                    # legitimately-streaming tool keeps the watchdog satisfied).
+                    # this session's OWN queue frames only (keepalive and
+                    # progress frames for the session reset last_own_data_ts, so
+                    # a legitimately-streaming tool keeps the watchdog
+                    # satisfied, while a co-tenant's ownerless fanned-out frame
+                    # does not defer it).
                     if self._cancelled:
                         continue
                     wd = self._watchdog
@@ -2068,7 +2075,20 @@ class AcpSessionHandle:
                     _parked = max(0.0, self._parked_total - parked_at_data)
 
                     if self._tool_dispatched:
-                        _tool_idle = max(0.0, (now - last_data_ts) - _parked)
+                        # Session-attributable clock: an ownerless fanned-out
+                        # frame is at most one co-tenant's traffic and nothing
+                        # says whose, so it must not stand in for progress on
+                        # THIS session's in-flight tool.
+                        #
+                        # Its park correction is taken from the matching
+                        # baseline. Reusing `_parked` (measured from the newer
+                        # last_data_ts) would leave a park between the two
+                        # baselines unsubtracted, inflating idle and making this
+                        # branch QUICKER to cancel a live turn — the one
+                        # direction a clock change here must never take by
+                        # accident.
+                        _own_parked = max(0.0, self._parked_total - parked_at_own_data)
+                        _tool_idle = max(0.0, (now - last_own_data_ts) - _own_parked)
                         if _tool_idle <= wd.check_after_secs:
                             continue
                         # F2 — TOCTOU guard: two complementary signals cover
@@ -2096,7 +2116,19 @@ class AcpSessionHandle:
                             self._ingress_seq != _ingress_before
                             or self._queue.qsize() > _q_depth_before
                         ):
+                            # Both clocks advance. Neither signal can name the
+                            # arriving frame's owner (it has not been dequeued),
+                            # so this deliberately keeps the guard's existing
+                            # fail-safe over-count — the same trade _ingress_seq
+                            # already documents at its increment. A co-tenant
+                            # frame landing inside the oracle await therefore
+                            # still defers the tool clock, but by ONE tick: when
+                            # it is dequeued the ownership check below leaves
+                            # last_own_data_ts alone, so the unbounded deferral
+                            # this branch used to allow cannot re-form.
                             last_data_ts = time.monotonic()
+                            last_own_data_ts = last_data_ts
+                            parked_at_own_data = self._parked_total
                             continue
                         if verdict == VERDICT_WORKING:
                             self._log_working_deferral(_tool_idle, evidence, timeout)
@@ -2260,7 +2292,11 @@ class AcpSessionHandle:
                 parked_at_data = self._parked_total
                 if not msg.fanout_no_owner:
                     # Only a frame attributable to THIS session defers the
-                    # post-compaction-failure budget (see the twin's init note).
+                    # tool-idle watchdog and the post-compaction-failure budget
+                    # (see the twin's init note). Provenance is the
+                    # discriminator, not the frame's method: the same kind can
+                    # arrive routed (this session's own progress) or fanned out
+                    # (a co-tenant's), and only the runtime knows which.
                     last_own_data_ts = last_data_ts
                     parked_at_own_data = parked_at_data
                 self.last_prompt_stats.event_count += 1
