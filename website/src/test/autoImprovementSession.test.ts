@@ -214,3 +214,40 @@ describe('openSession re-entry latch (double-click cannot orphan a conversation)
     expect(body.slice(fin)).toMatch(/inFlight\.current\.delete\(/)
   })
 })
+
+describe('the slot is titled at birth, not renamed afterwards', () => {
+  /**
+   * `createSlot` accepts `title` on its payload precisely so a caller does not have
+   * to rename afterwards: the server PINS the name (which locks the background
+   * auto-titler out) and the create broadcast already carries it. Renaming after the
+   * fact has two costs — the generated title paints first and visibly jumps, and the
+   * rename is a second request that can fail. This module's rename was
+   * fire-and-forget (`.catch(() => {})`), so a failure left the slot named by the
+   * auto-titler with nothing reporting it.
+   *
+   * Asserted structurally on the source, matching the sibling suite above: the hook
+   * needs Redux + router providers to render, and the property that matters here is
+   * WHERE the title travels, which reads exactly.
+   */
+  const TITLE_SRC = readFileSync(
+    join(__dirname, '..', 'apps', 'auto-improvement', 'lib', 'agentSession.ts'),
+    'utf-8',
+  )
+
+  it('passes the title on the createSlot payload', () => {
+    expect(TITLE_SRC).toMatch(/createSlot\(\{[^}]*\btitle\b/)
+  })
+
+  it('does not rename the slot after creating it', () => {
+    // The whole point: a second request that can fail silently. Scoped to
+    // openSession so an unrelated future rename elsewhere does not trip this.
+    const body = TITLE_SRC.slice(TITLE_SRC.indexOf('const openSession'))
+    expect(body).not.toMatch(/renameSlot\(/)
+  })
+
+  it('still bounds the title length it hands over', () => {
+    // The create payload replaced the rename, so the truncation the rename applied
+    // has to travel with it -- otherwise the fix silently lengthens every title.
+    expect(TITLE_SRC).toMatch(/createSlot\(\{[^}]*title:\s*truncate\(/)
+  })
+})

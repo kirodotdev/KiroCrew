@@ -220,17 +220,23 @@ export function useAgentSession(): UseAgentSession {
           }
         }
 
-        // Fresh session: folder -> slot (filed) -> seed and run -> link.
+        // Fresh session: folder -> slot (filed + titled) -> seed and run -> link.
         const folderId = await resolveFolderId(repo)
-        const slot = await dispatch(createSlot({ folder_id: folderId })).unwrap()
+        // Title on the CREATE payload, not a rename afterwards. `createSlot`
+        // accepts it for the reason its own comment gives: the server pins the
+        // name (locking the background auto-titler out) and the create broadcast
+        // already carries it. A follow-up rename instead paints a generated title
+        // first and, being best-effort, can fail silently -- leaving the slot with
+        // whatever the auto-titler chooses. Same shape the Issue Radar path uses.
+        const slot = await dispatch(
+          createSlot({ folder_id: folderId, title: truncate(title) }),
+        ).unwrap()
         // The slot is persisted but not yet linked, so a failure before the seed
         // would leave an empty session that the next click cannot find. Rollback
         // covers exactly that window and stops the moment the seed is in flight:
         // once the POST may have been accepted the agent is starting, and
         // deleting the slot would cancel real work over a metadata hiccup.
         createdSlotKey = slot.key
-        // Best-effort readable title; the session works regardless.
-        api.renameSlot(slot.key, truncate(title)).catch(() => {})
         const seedInFlight = api.sendChat(prompt, slot.key)
         createdSlotKey = null
         const seeded = await seedInFlight
