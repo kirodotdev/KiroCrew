@@ -956,10 +956,13 @@ hardcode was removed, so a package-installed agent is now classified
 and `"builtin"` for the rest) rather than the former `"aim"` literal. Importers
 (`subagent`, `mcp_core`, `conductor_skill`, dashboard agents) were updated to the
 new module/class names.
-- `browser/auth.py::register_browser_auth_provider(provider)` — module-level
-  registration hook (twin of `register_acp_backends`); every `browser/auth`
-  helper delegates to it when present, else the OSS default. `browser/cli.py`
-  auth subcommands now delegate through the helpers.
+- **`register_browser_auth_provider(provider)` — removed with the playwright-cli
+  migration.** The module that carried this seam is gone, so there is no
+  browser-auth provider hook to register at all: browsing runs through the
+  external `playwright-cli` binary (`kiro_crew/browser_cli/`), and a logged-in
+  session reaches that binary through the CLI's own surfaces (`state-save` /
+  `state-load`, `attach --extension`) rather than through an in-process
+  provider.
 - `hooks.register_internal_read_path(read_id, rel_path)` — guarded seam adding a
   fixed-path entry to `_INTERNAL_READ_ALLOWLIST` (rejects `..`/absolute/
   non-sensitive/repoint).

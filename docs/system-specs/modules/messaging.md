@@ -1655,7 +1655,7 @@ TTL-bounded picker registry resolves the index against the exact list it posted
 and refuses an expired, evicted or already-consumed one rather than applying a
 model from a stale advertisement.
 
-### Resume-binding expectations (`discord/resume_expectation.py`)
+### Resume-binding expectations (`messaging/resume_expectation.py`)
 
 An inbound resume binding lives on the bound session's `session_map.json` row. A recycle, restart prune, or dashboard unlink can destroy that row and the only evidence the channel was attached, so the resolver silently falls back to its DM session; the expectation record makes that loss reportable.
 

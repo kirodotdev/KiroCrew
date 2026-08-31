@@ -216,7 +216,7 @@ kinds of undeclared hole:
 | `getattr`-by-name seams whose target the core never defines — `getattr(self, "_write_claude_local_settings", None)` (`acp/client.py:2742`, `:3351`) | 2 | Silent: no permission mode, and the context window collapses from 1M to 200K |
 | Methods returning a neutral value purely so a companion can override them — `_claude_session_mcp_servers() -> []` (`acp/client.py:2335-2346`) is the type case | 6 | Silent: a CC session gets **zero MCP tools**, as the docstring itself states |
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`session.py:170`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
-| Defensive attribute probes across the provider boundary (`session.py:3356` `_proc`, `:3360` `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
+| Defensive attribute probes across the provider boundary (`session_pid.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
 | Comment clusters naming the companion or a deleted module as the supplier of behaviour | 19 | The seam's real contract lives in prose |
 | Refusal / downgrade mechanisms, including the degrade log line at `config/loader.py:4647-4652` and five capability non-memberships | 9 | — |
 | Live `_is_claude` branches inside `acp/` | 13 | — |

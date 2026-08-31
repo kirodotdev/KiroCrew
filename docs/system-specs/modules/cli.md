@@ -1252,7 +1252,8 @@ contract — its path and format are internal and may change without notice.
 ## Computer Use Commands
 
 `kirocrew computer {doctor [--json] | apps | call}` — hand-rolled dispatch
-mirroring `browser/cli.py` (see [computer-use.md](computer-use.md)).
+rather than argparse subparsers, because the parent CLI forwards `REMAINDER`
+(see [computer-use.md](computer-use.md)).
 
 **`doctor`** reports, in order: whether the platform is supported (macOS today;
 Windows and Linux report a typed refusal), whether the keystone primary enable at

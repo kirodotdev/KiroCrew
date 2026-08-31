@@ -601,7 +601,7 @@ Writers: `apps/manager.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
 `_DEFAULT_ON_BACKFILL`, `register_builtin_apps`, `backfill_default_on_builtins`),
 `agent.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
 `apps/registry.py::_apply_trust_fields`;
-consumers: `website/src/pages/AppsPage.tsx` (`pickFeatured`),
+consumers: `website/src/pages/apps/useAppsData.ts` (`pickFeatured`),
 `website/src/components/appstore/types.ts` (`isVerified`, `sourceLabel`).
 
 ## 13. An app token's WebSocket stream is scoped by its manifest, deny-by-default

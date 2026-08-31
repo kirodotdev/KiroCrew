@@ -446,8 +446,10 @@ jobs:
       - name: Lint documentation trees
         # Blocking gate: every internal link resolves, every doc is reachable from
         # its directory index, every directory holding docs has one, no code comment
-        # cites a doc that does not exist, and no doc whose filename is hardcoded in
-        # code has been renamed out from under its consumer.
+        # cites a doc that does not exist, no doc cites a source LINE past the end of
+        # the file it names, no module spec names a source file that exists nowhere,
+        # and no doc whose filename is hardcoded in code has been renamed out from
+        # under its consumer.
         # No setup-python step: ubuntu-latest ships Python 3 and the script is
         # stdlib-only.
         run: ./scripts/docs-lint.sh

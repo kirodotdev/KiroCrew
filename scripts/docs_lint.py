@@ -21,12 +21,23 @@ and a machine catches for free:
    the reference reads as authoritative while pointing at nothing. This repo
    accumulated several such citations, including a "frozen contract" module
    whose spec and conformance-gate docs were never ported.
+4. **Stale line citations.** A doc points at ``session.py:3356`` of a file that
+   now has 2520 lines. Source moves every day and the citation does not, so it
+   sends the reader to nothing while reading as precise — and when it overshoots
+   the end of the file it is usually because the code moved to another module
+   entirely, which is the part the doc most needs to say.
+5. **Phantom code.** A module spec names a source file that exists nowhere. The
+   spec claims to describe code that is there now, so an unresolvable path is
+   either a rename it missed or a dependency that left the tree — one of these
+   was still explaining why the editor uses Monaco, which had been deleted
+   outright. Checked only in ``docs/system-specs/modules/``: an RFC or a
+   migration design names files precisely BECAUSE they do not exist yet.
 
-Checks 1-3 are the structural invariants behind the repository rule that a code
+Checks 1-5 are the structural invariants behind the repository rule that a code
 change must also update the docs and the indexes. The rule is only real if a
 machine enforces it.
 
-The fourth check guards the other direction: some documentation filenames are an
+The sixth check guards the other direction: some documentation filenames are an
 API. ``src/kiro_crew/docs/*.md`` is packaged and read at runtime, and specific
 filenames are hardcoded in Python and TypeScript. Renaming one of those without
 updating its consumers breaks a shipped feature rather than a link.
@@ -196,6 +207,140 @@ _CONFLICT_MARKER_RE = re.compile(r"^(?:[<>|]{7}(?:\s|$)|={7}$)")
 # A documentation path cited from source code, e.g. ``docs/system-specs/x.md``.
 _CODE_DOC_REF_RE = re.compile(r"(?:website/)?docs/[A-Za-z0-9][A-Za-z0-9/_.-]*\.md")
 
+# A SOURCE path cited from documentation -- the opposite direction from
+# ``_CODE_DOC_REF_RE`` -- optionally with a line or line range:
+# ``acp/types.py``, ``session.py:300``, ``sandbox.py:2252-2262``, ``kiro.py:80,90``.
+# Only inside backticks: a bare path in prose is usually a sentence about a
+# directory, and the backticks are what make it a citation.
+_SOURCE_CITE_RE = re.compile(
+    r"`([A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:py|ts|tsx|js|jsx|mjs|yml|yaml|json|sh|toml|cfg))"
+    r"(?::(\d+(?:[-,]\d+)*))?`"
+)
+
+# A line number long enough to be nothing but noise. CPython caps int(str) at
+# 4300 digits and raises ValueError past it, so an absurd citation in a fork PR's
+# doc would abort the whole gate rather than be reported. A real file has fewer
+# than ten digits of lines; anything longer is not a citation to adjudicate, so it
+# is reported as malformed and never converted.
+_MAX_LINE_DIGITS = 9
+
+# Trees a cited source path may live in. Deliberately NOT a list of prefixes to
+# join the citation onto: a doc cites a source file relative to whatever root its
+# reader is standing in -- the package (``acp/types.py``), the repo
+# (``scripts/x.py``), the website bundle (``apps/builtinRegistry.ts``, really under
+# ``website/src/``), an app's own root (``providers/pagerduty.py``, really under
+# ``apps/builtins/ops_mission_control/backend/``) or a skill's
+# (``scripts/reaper.sh``). Those roots cannot be enumerated, so the citation is
+# matched as a path SUFFIX against the files that actually exist here, and only a
+# path matching NOTHING is reported.
+_SOURCE_CITE_TREES: tuple[str, ...] = (
+    "src",
+    "website",
+    "scripts",
+    "test",
+    "packaging",
+    ".github",
+    # The docs site's own tree. Its `package-lock.json` is git-tracked and was
+    # reported purely because this list did not name the tree -- the tell was its
+    # two sibling citations resolving fine under `website`. Adding the tree is the
+    # fix; allowlisting the ref would have permanently silenced rot on a live file.
+    "site",
+    # Docs cite each other's committed assets: `governance.md` names
+    # `docs/guides/assets/security-policy.example.json`, which exists and is even a
+    # working relative markdown link. Same reasoning as `site` -- a missing tree is
+    # a resolver bug, not a citation to excuse.
+    "docs",
+)
+
+# Docs where an UNRESOLVABLE source path is a finding. Scoped by GENRE, and that
+# is the whole design: what separates a stale citation from a correct
+# unresolvable one is not the path's shape but what the document is FOR.
+#
+# A module spec describes code that exists now, so a path it names and cannot be
+# found is rot. An RFC, a plan and a migration design name files precisely
+# BECAUSE they do not exist -- `browser/setup.py` sits in a "what is deleted"
+# table, `notifications/bridge.py` sits beside the words "zero implementation
+# code exists" -- and an app-kit guide names files in the READER's project
+# (`app.json`, `ui/src/App.tsx`).
+#
+# A shape-based allowlist provably cannot draw that line. Silencing those four
+# deletion-table entries needs `browser/**`, and that same pattern suppresses
+# four of the real findings. Only WHICH DOC separates them.
+#
+# Measured on the tree this shipped against: unscoped, 38 findings of which 11
+# were real (27 false). Scoped here: 19 findings, the same 11 real, and the 8
+# residuals are the three refs below.
+_PATH_CITE_DOC_PREFIXES: tuple[str, ...] = ("docs/system-specs/modules/",)
+
+# Refs that cannot resolve here and are still correct. EXACT refs, not patterns,
+# so a new unresolvable path is reported rather than absorbed by a wildcard --
+# each of these was traced to the file it really names before it was listed.
+_UNRESOLVABLE_REF_OK: frozenset[str] = frozenset(
+    {
+        # -- This crew's own RUNTIME data, under ~/.kiro/crew. Written by the code
+        #    that resolves each path; never present in a checkout.
+        #
+        # ops-mission-control's app data dir. `store.py`'s `incidents_dir()` /
+        # `index_path()` join `app_data_dir(APP_NAME)` from `apps/manager.py`.
+        "data/config.json",
+        "incidents/index.json",
+        # The same two files spelled from the home root, in security.py's
+        # write-protect table (`_CREW_HOME_PREFIXES` + the literal suffix).
+        "apps/ops-mission-control/data/rotation.yaml",
+        "apps/ops-mission-control/data/incidents/index.json",
+        # spec-builder's trust keystone: `config_dir() / "trust" / ...`.
+        "trust/spec-builder-decisions.json",
+        # Optional dev-only override read from KIROCREW_PROJECT_DIR by
+        # `agent.py`'s `_shipped_defaults()`; the shipped file is
+        # `config/defaults.json`, which resolves.
+        "agents/defaults.json",
+        #
+        # -- FOREIGN homes. `onboarding_import.py` reads other tools' config dirs
+        #    to offer an import, so naming their layout is the point.
+        #
+        # Antigravity / Gemini (`~/.gemini`, `_GEMINI_CONFIG_RELATIVE_PATHS`).
+        # All three spellings are probed, because Antigravity is closed-source and
+        # its subpath moved between releases; the first is the live one.
+        "config/mcp_config.json",
+        "antigravity/mcp_config.json",
+        "antigravity-cli/settings.json",
+        # Hermes Agent (`~/.hermes`, `_scan_hermes`), OpenClaw
+        # (`OPENCLAW_STATE_DIR`), and any registered install descended from
+        # Kiro Crew (`_scan_lineage_install`) -- all three name this relative path.
+        "cron/jobs.json",
+        #
+        #
+        # -- GENERATED or VENDORED at build/install time. Present in a wheel or a
+        #    provisioned install, never in a checkout, and each is gitignored.
+        #
+        # Stamped by `scripts/stamp-distribution.sh` during packaging; imported
+        # through a try/except ImportError precisely because a checkout lacks it.
+        "kiro_crew/_build_info.py",
+        # Bundle inside the vendored npm package @agentclientprotocol/claude-agent-acp,
+        # resolved out of the gitignored node_modules by `acp/client.py`.
+        "dist/acp-agent.js",
+        # playwright-core's own browser registry, inside the npm dependency.
+        "playwright-core/browsers.json",
+        # Relative to ENGINE_ROOT -- `engine_root()` is
+        # ~/.kiro/crew/apps/pptx-maker/data/vendor/sdpm, a checkout `provision.py`
+        # installs at runtime. Two backend comments cite it the same way.
+        "skill/sdpm/api.py",
+        #
+        # -- ANOTHER REPOSITORY.
+        #
+        # The `@kiro/agent` package's own entry point, and a sibling package in
+        # that same repo; the citing doc says "Confirmed against @kiro/agent source".
+        "src/index.ts",
+        "packages/acp-type-covenant/capabilities/auth/get-access-token.ts",
+        # A bug-repro test the auto-improvement spine tells the agent to CREATE in
+        # the external target repo under test (github.com/Zedmor/chess_test), which
+        # keeps its suite in `tests/` plural. Rewriting it to this repo's `test/`
+        # would make the sentence false.
+        "tests/test_bug_src_search_py_negamax_root.py",
+    }
+)
+
+
 # Citations that look like doc paths but are not references to THIS repo's docs:
 # upstream project paths, and test fixture data that merely contains a filename.
 _CODE_REF_IGNORE_SUBSTRINGS: tuple[str, ...] = (
@@ -242,6 +387,8 @@ class Findings:
     broken_links: list[str] = field(default_factory=list)
     unreachable: list[str] = field(default_factory=list)
     phantom_refs: list[str] = field(default_factory=list)
+    stale_line_cites: list[str] = field(default_factory=list)
+    phantom_source_paths: list[str] = field(default_factory=list)
     coupling: list[str] = field(default_factory=list)
     missing_index: list[str] = field(default_factory=list)
     changelog_preamble: list[str] = field(default_factory=list)
@@ -252,6 +399,8 @@ class Findings:
             len(self.broken_links)
             + len(self.unreachable)
             + len(self.phantom_refs)
+            + len(self.stale_line_cites)
+            + len(self.phantom_source_paths)
             + len(self.coupling)
             + len(self.missing_index)
             + len(self.changelog_preamble)
@@ -284,6 +433,26 @@ def _prune(root: Path, dirpath: str, dirnames: list[str]) -> None:
     dirnames[:] = keep
 
 
+def _is_regular_file(path: Path) -> bool:
+    """A real file in THIS tree -- never a symlink, whatever it points at.
+
+    This gate walks a tree a fork PR controls, and every file it lists is a file
+    it may later read in full. A symlink is therefore an arbitrary read primitive:
+    ``src/kiro_crew/evil.py -> /dev/zero`` plus a citation naming it makes the read
+    never finish, and a symlink into a credential path makes it exfiltration. Note
+    ``Path.is_file()`` FOLLOWS symlinks, so the symlink test must be explicit.
+
+    Applied at BOTH walks. The markdown walk has the identical hole (a symlinked
+    ``docs/evil.md``) and it feeds every other check in this file, so guarding only
+    the citation index would leave the same hazard one filename away.
+    """
+    try:
+        return path.is_file() and not path.is_symlink()
+    except OSError:
+        # A broken or recursive link raises rather than answering; that is a no.
+        return False
+
+
 def _walk_markdown(root: Path, subdir: str) -> list[Path]:
     """Every ``*.md`` under ``subdir``, skipping vendored and artifact trees."""
     base = root / subdir
@@ -293,8 +462,11 @@ def _walk_markdown(root: Path, subdir: str) -> list[Path]:
     for dirpath, dirnames, filenames in os.walk(base):
         _prune(root, dirpath, dirnames)
         for name in sorted(filenames):
-            if name.endswith(".md"):
-                out.append(Path(dirpath) / name)
+            if not name.endswith(".md"):
+                continue
+            path = Path(dirpath) / name
+            if _is_regular_file(path):
+                out.append(path)
     return out
 
 
@@ -348,6 +520,45 @@ def _resolve_link(doc: Path, target: str, root: Path) -> Path | None:
         # Root-relative links are resolved against the repo root.
         return (root / clean.lstrip("/")).resolve()
     return (doc.parent / clean).resolve()
+
+
+def _source_file_index(root: Path) -> dict[str, list[Path]]:
+    """Every source file in the scanned trees, keyed by each of its path suffixes.
+
+    Built once per run and cached on the function, because the citation check asks
+    "does any file end with this path" for a few hundred citations and walking the
+    trees per citation would make the gate the slowest thing in CI.
+    """
+    cached = getattr(_source_file_index, "_cache", None)
+    if cached is not None and cached[0] == root:
+        return cached[1]
+    index: dict[str, list[Path]] = {}
+    for tree in _SOURCE_CITE_TREES:
+        base = root / tree
+        if not base.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            _prune(root, dirpath, dirnames)
+            for name in sorted(filenames):
+                path = Path(dirpath) / name
+                if not _is_regular_file(path):
+                    continue
+                parts = _rel(path, root).split("/")
+                # Register every suffix, so a citation from any root matches.
+                for start in range(len(parts)):
+                    index.setdefault("/".join(parts[start:]), []).append(path)
+    _source_file_index._cache = (root, index)  # type: ignore[attr-defined]
+    return index
+
+
+def _resolve_source_cite(root: Path, ref: str) -> list[Path]:
+    """Files whose path ends with ``ref``. Empty means the citation names nothing.
+
+    More than one match is normal and is not a finding: ``app.json`` is a real
+    filename in several builtin apps, and a doc naming it is not wrong just
+    because it did not say which one.
+    """
+    return _source_file_index(root).get(ref.lstrip("./"), [])
 
 
 def _read(path: Path) -> str:
@@ -556,6 +767,141 @@ def check_code_citations(root: Path, findings: Findings) -> None:
                         findings.phantom_refs.append(f"{rel_path}:{lineno} -> {ref}")
 
 
+def check_source_citations(root: Path, docs: list[Path], findings: Findings) -> None:
+    """A line number a doc cites must be inside the file it names.
+
+    ``check_code_citations`` guards code -> docs. This guards docs -> code, which
+    rots faster and more quietly: source moves every day, and a doc that says
+    "see ``session.py:3356``" of a 2520-line file sends the reader to nothing while
+    reading as precise. Exactly one claim here is decidable without judgement --
+    the cited line exists -- and that is the whole check.
+
+    A citation is matched as a path SUFFIX against the files that exist, because a
+    doc cites relative to whatever root its reader stands in: the package
+    (``acp/types.py``), the repo (``scripts/x.py``), the website bundle
+    (``apps/builtinRegistry.ts``, really under ``website/src/``), an app's own root
+    (``providers/pagerduty.py``) or a skill's (``scripts/reaper.sh``). Those roots
+    cannot be enumerated. Several matches is normal and not a finding: ``app.json``
+    is a real filename in two dozen builtin apps, and the citation is wrong only
+    when the line is past the end of EVERY candidate.
+
+    Two neighbouring checks were built, measured against the real tree, and left
+    OUT -- recorded here so nobody re-adds one believing it was merely forgotten.
+
+    An unresolvable PATH is reported too, but ONLY from a module spec, and that
+    scope is the whole design rather than a convenience. Five narrowings were
+    measured against the real tree, and each one that keyed on the path's SHAPE
+    left a different family of false positives behind:
+
+    ======================================  =======  ====  =====
+    rule                                    findings real  false
+    ======================================  =======  ====  =====
+    raw                                        1960     -      -
+    + require the parent directory to exist      48     -      -
+    + suffix match from any root                637     -      -
+    + require a directory component              78     -      -
+    scoped to ``docs/system-specs/modules/``     41    20     21
+    ======================================  =======  ====  =====
+
+    What separates a stale citation from a correct unresolvable one is not the
+    path's shape but what the DOCUMENT IS FOR. An RFC, a plan and a migration
+    design name files precisely because they do not exist -- ``browser/setup.py``
+    sits in a "what is deleted" table, ``notifications/bridge.py`` beside the words
+    "zero implementation code exists" -- and an app-kit guide names files in the
+    READER's project. A module spec describes code that is there now, so a path it
+    cannot resolve is rot. A shape-based allowlist provably cannot draw that line:
+    silencing those four deletion-table entries needs ``browser/**``, and the same
+    pattern suppresses four real findings.
+
+    The 21 residuals inside the scope were each traced to the code that BUILDS the
+    path, and they are exact refs in :data:`_UNRESOLVABLE_REF_OK` rather than
+    patterns, so a new unresolvable path is reported instead of absorbed. Two of
+    them turned out to be resolver bugs rather than exemptions -- ``site/`` and
+    ``docs/`` were missing from the scanned trees, and ``site/package-lock.json``
+    is git-tracked, so an exact-ref entry there would have silenced rot on a live
+    file forever. Those became trees.
+
+    A cited SYMBOL is still not checked, and the reason is structural. A table row
+    pairs independent columns -- ``docs/architecture/mcp.md`` lists a server, its
+    entry point ``mcp_computer.py``, and its tool names, which really live in
+    ``computer_use/cli.py`` -- so same-line adjacency is not a claim about where a
+    name is defined. Dropping adjacency to ask only "does this identifier exist
+    anywhere" flags every name an RFC proposes: 572 repo-wide, ~100 in one RFC.
+
+    A check whose findings are mostly false trains a maintainer to skim past the
+    gate, which costs more than the gap it closes.
+
+    A cited SYMBOL is not checked either. A table row pairs independent columns --
+    ``docs/architecture/mcp.md`` lists a server, its entry point
+    ``mcp_computer.py``, and its tool names, which really live in
+    ``computer_use/cli.py`` -- so same-line adjacency is not a claim about where a
+    name is defined. Dropping adjacency to ask only "does this identifier exist
+    anywhere" flags every name an RFC proposes: 572 hits repo-wide, ~100 in one
+    RFC, nearly all correct writing about code that does not exist yet.
+
+    Both gaps are the same judgement: a check whose findings are mostly false
+    trains a maintainer to skim past the gate, which costs more than the gap.
+
+    The line check is honest about its own reach too -- it catches a citation
+    pointing PAST the end of a file, never one that has drifted to the wrong line
+    inside it. That is the argument for citing a symbol NAME wherever a doc can: a
+    name survives the refactor that moves the line.
+    """
+    for doc in docs:
+        rel_doc = _rel(doc, root)
+        # NOT gated on `_is_uncurated`. That exemption is about CURATION -- an
+        # archive is not required to be indexed or styled -- and it says nothing
+        # about whether a citation inside it is true. A reader who opens an
+        # archived doc still follows its line numbers. The path class needs no
+        # exemption either: its own scope is `docs/system-specs/modules/`, which
+        # no uncurated tree is inside.
+        paths_must_resolve = rel_doc.startswith(_PATH_CITE_DOC_PREFIXES)
+        try:
+            text = _read(doc)
+        except OSError:
+            continue
+        # A fenced block is sample code or terminal output, not a citation.
+        for lineno, line in enumerate(_strip_fences(text).splitlines(), start=1):
+            for match in _SOURCE_CITE_RE.finditer(line):
+                ref, lines = match.group(1), match.group(2)
+                targets = _resolve_source_cite(root, ref)
+                if not targets:
+                    if paths_must_resolve and "/" in ref and ref not in _UNRESOLVABLE_REF_OK:
+                        findings.phantom_source_paths.append(f"{rel_doc}:{lineno} -> {ref}")
+                    continue
+                if not lines:
+                    continue
+                parts = re.split(r"[-,]", lines)
+                if any(len(n) > _MAX_LINE_DIGITS for n in parts):
+                    # Never converted: `int()` raises past CPython's digit cap, and
+                    # an uncaught ValueError here would abort the gate on input a
+                    # fork PR controls.
+                    findings.stale_line_cites.append(
+                        f"{rel_doc}:{lineno} -> {ref}:{lines} names no plausible line"
+                    )
+                    continue
+                cited = max(int(n) for n in parts)
+                if cited < 1:
+                    # Files are 1-indexed, so `:0` points at nothing. Reported
+                    # rather than skipped: it reads as precise and is not.
+                    findings.stale_line_cites.append(
+                        f"{rel_doc}:{lineno} -> {ref}:{lines} is not a line number "
+                        "(files are 1-indexed)"
+                    )
+                    continue
+                # With several candidates the citation is only wrong when the line
+                # is past the end of EVERY one of them: any file that is long
+                # enough is a reading on which the citation makes sense.
+                lengths = {t: len(_read(t).splitlines()) for t in targets}
+                if any(total >= cited for total in lengths.values()):
+                    continue
+                longest = max(lengths, key=lambda t: lengths[t])
+                findings.stale_line_cites.append(
+                    f"{rel_doc}:{lineno} -> {ref}:{lines} "
+                    f"but {_rel(longest, root)} has {lengths[longest]} line(s)"
+                )
+
+
 def check_code_coupled_docs(root: Path, findings: Findings) -> None:
     """Docs whose filenames are hardcoded in code must still exist.
 
@@ -617,6 +963,7 @@ def run(root: Path) -> Findings:
     check_changelog_preambles(root, docs, findings)
     check_conflict_markers(root, docs + entry_points, findings)
     check_code_citations(root, findings)
+    check_source_citations(root, docs, findings)
     check_code_coupled_docs(root, findings)
     return findings
 
@@ -652,6 +999,16 @@ def _report(findings: Findings, doc_count: int) -> int:
         "documentation paths cited from code that do not exist",
         findings.phantom_refs,
         "write the missing doc, or correct the citation",
+    )
+    _emit(
+        "source paths cited from a module spec that do not exist",
+        findings.phantom_source_paths,
+        "correct the path, or say plainly that the code was deleted",
+    )
+    _emit(
+        "line citations pointing past the end of the file",
+        findings.stale_line_cites,
+        "cite a symbol name instead: a name survives the refactor that moves the line",
     )
     _emit(
         "code-coupled docs missing",
@@ -767,6 +1124,106 @@ def _self_test() -> int:
         )
         return "phantom_refs"
 
+    def plant_phantom_source_path(root: Path) -> str:
+        # A module spec naming a file that exists nowhere -- the case the class
+        # reports. The doc has to sit in the scoped tree to be checked at all.
+        pkg = root / "src" / "kiro_crew" / "acp"
+        pkg.mkdir(parents=True)
+        (pkg / "real.py").write_text("x = 1\n", encoding="utf-8")
+        spec_dir = root / "docs" / "system-specs" / "modules"
+        spec_dir.mkdir(parents=True)
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Spec](system-specs/modules/thing.md)\n",
+            encoding="utf-8",
+        )
+        (spec_dir / "thing.md").write_text(
+            "# Thing\n\nThe handler lives in `acp/ghost.py`.\n", encoding="utf-8"
+        )
+        return "phantom_source_paths"
+
+    def plant_citation_of_a_symlinked_file(root: Path) -> str:
+        # A symlink is an arbitrary read primitive in a tree a fork PR controls, so
+        # it is never indexed -- which makes a citation naming it UNRESOLVABLE, and
+        # in a module spec that is a finding. Pointed at a real file in-tree, so
+        # the probe proves the exclusion rather than the hazard.
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "real.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+        try:
+            (pkg / "linked.py").symlink_to(pkg / "real.py")
+        except (OSError, NotImplementedError):  # pragma: no cover - Windows
+            return "phantom_source_paths"
+        spec_dir = root / "docs" / "system-specs" / "modules"
+        spec_dir.mkdir(parents=True)
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Spec](system-specs/modules/thing.md)\n",
+            encoding="utf-8",
+        )
+        (spec_dir / "thing.md").write_text(
+            "# Thing\n\nSee `kiro_crew/linked.py:900`.\n", encoding="utf-8"
+        )
+        return "phantom_source_paths"
+
+    def plant_stale_line_cite(root: Path) -> str:
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text("# Ok\n\nSee `small.py:900`.\n", encoding="utf-8")
+        return "stale_line_cites"
+
+    def plant_absurd_line_number(root: Path) -> str:
+        # 4301 digits: past CPython's int(str) cap, so converting it raises and
+        # would abort the whole gate on input a fork PR controls.
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nSee `small.py:" + "9" * 4301 + "`.\n", encoding="utf-8"
+        )
+        return "stale_line_cites"
+
+    def plant_line_zero(root: Path) -> str:
+        # Files are 1-indexed, so `:0` reads as precise and points at nothing.
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text("# Ok\n\nSee `small.py:0`.\n", encoding="utf-8")
+        return "stale_line_cites"
+
+    def plant_stale_line_cite_in_an_uncurated_tree(root: Path) -> str:
+        # An archive is exempt from CURATION -- indexes, style -- but a reader who
+        # opens it still follows its line numbers, so the line check applies.
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+        archive = root / "docs" / "archive"
+        archive.mkdir()
+        (archive / "old.md").write_text("# Old\n\nSee `small.py:900`.\n", encoding="utf-8")
+        return "stale_line_cites"
+
+    def plant_stale_line_cite_in_an_rfc(root: Path) -> str:
+        # The path exemption above must NOT carry the line check with it: a line
+        # number is a claim about code that exists now, even inside a proposal.
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+        rfc = root / "docs" / "request-for-change"
+        rfc.mkdir()
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Rfc](request-for-change/rfc-x.md)\n", encoding="utf-8"
+        )
+        (rfc / "rfc-x.md").write_text("# Rfc\n\nToday: `small.py:900`.\n", encoding="utf-8")
+        return "stale_line_cites"
+
+    def plant_stale_line_range(root: Path) -> str:
+        # The END of a range is what must be inside the file: a range whose start
+        # is valid and whose end is past EOF is still a citation into nothing.
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text("# Ok\n\nSee `small.py:1-40`.\n", encoding="utf-8")
+        return "stale_line_cites"
+
     def plant_coupling(root: Path) -> str:
         pkg = root / "src" / "kiro_crew"
         pkg.mkdir(parents=True)
@@ -793,6 +1250,99 @@ def _self_test() -> int:
             else:
                 print(f"  ok  {label} ignored")
 
+    def source_cite_immunity_probe(label: str, build) -> None:
+        """Assert a legitimate citation shape is NOT reported.
+
+        Each shape here was MEASURED as a false positive on the real tree before
+        its exemption existed, so the probe records the evidence rather than a
+        hunch -- and pins the exemption so a later widening of the rule fails here
+        instead of burying the real findings again.
+        """
+        nonlocal failures
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir(parents=True)
+            (root / "docs" / "README.md").write_text("# Docs\n\n- [Ok](ok.md)\n", encoding="utf-8")
+            (root / "docs" / "ok.md").write_text("# Ok\n\nBody.\n", encoding="utf-8")
+            field = build(root)
+            if getattr(run(root), field):
+                print(f"  FAIL {label} was flagged")
+                failures += 1
+            else:
+                print(f"  ok  {label} ignored")
+
+    def allow_unresolvable_path_outside_a_spec(root: Path) -> str:
+        # The scope IS the rule: an RFC or a guide names files it proposes or that
+        # belong to the reader, so an unresolvable path there is correct writing.
+        # Pinned, because widening the class past module specs re-buries the real
+        # findings 27:11 (measured).
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nThis adds `acp/planned.py` and reads `cron/jobs.json`.\n",
+            encoding="utf-8",
+        )
+        return "phantom_source_paths"
+
+    def allow_allowlisted_ref_in_a_spec(root: Path) -> str:
+        # Inside the scope, an allowlisted ref stays silent -- each entry was
+        # traced to the code that builds the path before it was listed.
+        spec_dir = root / "docs" / "system-specs" / "modules"
+        spec_dir.mkdir(parents=True)
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Spec](system-specs/modules/thing.md)\n",
+            encoding="utf-8",
+        )
+        (spec_dir / "thing.md").write_text(
+            "# Thing\n\nState lives in `cron/jobs.json`.\n", encoding="utf-8"
+        )
+        return "phantom_source_paths"
+
+    def allow_bare_filename_in_a_spec(root: Path) -> str:
+        # A citation with no directory names a runtime or generated file the repo
+        # cannot adjudicate; only a path WITH a directory is a checkable claim.
+        spec_dir = root / "docs" / "system-specs" / "modules"
+        spec_dir.mkdir(parents=True)
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Spec](system-specs/modules/thing.md)\n",
+            encoding="utf-8",
+        )
+        (spec_dir / "thing.md").write_text(
+            "# Thing\n\nThe gateway rewrites `mcp.json`.\n", encoding="utf-8"
+        )
+        return "phantom_source_paths"
+
+    def allow_symlinked_doc(root: Path) -> str:
+        # The markdown walk skips symlinks for the same reason, so a symlinked doc
+        # contributes no findings of its own -- it is never opened.
+        (root / "docs" / "real-extra.md").write_text(
+            "# Extra\n\nSee `nope/ghost.py:900`.\n", encoding="utf-8"
+        )
+        try:
+            (root / "docs" / "linked.md").symlink_to(root / "docs" / "real-extra.md")
+        except (OSError, NotImplementedError):  # pragma: no cover - Windows
+            pass
+        (root / "docs" / "README.md").write_text(
+            "# Docs\n\n- [Ok](ok.md)\n- [Extra](real-extra.md)\n", encoding="utf-8"
+        )
+        return "unreachable"
+
+    def allow_fenced_sample(root: Path) -> str:
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\n```\nsee `small.py:900`\n```\n", encoding="utf-8"
+        )
+        return "stale_line_cites"
+
+    def allow_in_range_cite(root: Path) -> str:
+        pkg = root / "src" / "kiro_crew"
+        pkg.mkdir(parents=True)
+        (pkg / "small.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+        (root / "docs" / "ok.md").write_text(
+            "# Ok\n\nSee `small.py:2` and `small.py:1-3`.\n", encoding="utf-8"
+        )
+        return "stale_line_cites"
+
     print("Running docs-lint self-test...")
     clean_probe()
     probe("broken link", plant_broken_link)
@@ -803,10 +1353,26 @@ def _self_test() -> int:
     probe("conflict marker (bare separator)", plant_conflict_marker)
     probe("conflict marker (full three-way)", plant_conflict_marker_head)
     probe("conflict marker (uncurated tree)", plant_conflict_marker_uncurated)
+    probe("phantom source path in a module spec", plant_phantom_source_path)
+    probe("citation of a symlinked file", plant_citation_of_a_symlinked_file)
+    probe("line citation past EOF", plant_stale_line_cite)
+    probe("line citation past EOF inside an RFC", plant_stale_line_cite_in_an_rfc)
+    probe("line citation in an uncurated tree", plant_stale_line_cite_in_an_uncurated_tree)
+    probe("absurd line number (past the int digit cap)", plant_absurd_line_number)
+    probe("line zero", plant_line_zero)
+    probe("line RANGE ending past EOF", plant_stale_line_range)
     probe("phantom spec citation", plant_phantom_ref)
     probe("code-coupled doc missing", plant_coupling)
 
     # Code-markup immunity is an inverse assertion (nothing should fire).
+    source_cite_immunity_probe(
+        "unresolvable path outside a module spec", allow_unresolvable_path_outside_a_spec
+    )
+    source_cite_immunity_probe("allowlisted ref inside a spec", allow_allowlisted_ref_in_a_spec)
+    source_cite_immunity_probe("bare filename inside a spec", allow_bare_filename_in_a_spec)
+    source_cite_immunity_probe("symlinked doc is not walked", allow_symlinked_doc)
+    source_cite_immunity_probe("fenced sample citation", allow_fenced_sample)
+    source_cite_immunity_probe("in-range line citation", allow_in_range_cite)
     code_immunity_probe("fenced example link", "# Ok\n\n```md\n[example](does-not-exist.md)\n```\n")
     code_immunity_probe("inline-code example link", "# Ok\n\nSpoken as `[label](url)` aloud.\n")
     code_immunity_probe(

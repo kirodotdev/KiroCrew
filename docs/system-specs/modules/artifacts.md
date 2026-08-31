@@ -483,7 +483,7 @@ every write-side unit test still green — so test the round-trip
 - **Restricted sessions** — POST/PATCH/DELETE are denied when the dashboard
   classifies the session as restricted (`_is_restricted_session`).
 - **SEL audit** — every mutation emits a `log_tool_invocation` event from the
-  HTTP layer (`api/dashboard/handlers/artifacts.py`). Reads are not audited.
+  HTTP layer (`dashboard/handlers/artifacts.py`). Reads are not audited.
   `_audit` redacts caller-supplied text before it reaches the SEL writer (which
   signs bytes as-written and does NOT redact): the `error` string and every
   string leaf of `extra` metadata pass through `redact_via_context`, so an

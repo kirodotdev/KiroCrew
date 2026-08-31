@@ -1581,10 +1581,14 @@ a result.
 `computer_use/screencast.py` + `website/src/components/ComputerUseLiveView.tsx`.
 The machine being driven is often not the machine the operator is looking at (a
 cloud Mac, a session reached over the reverse SSH tunnel, or another Space), so a
-floating picture-in-picture panel mirrors what the agent sees. Same shape as the
-browse mirror (`browser/screencast.py` → `/api/browser/frame` → WS →
-`BrowserLiveView`), for the same reason: it rides an existing capture rather than
-opening a new one.
+floating picture-in-picture panel mirrors what the agent sees. It rides an
+existing capture rather than opening a new one: `emit_snapshot_frame` POSTs the
+already-encoded JPEG to the loopback `/api/computer-use/frame` ingress, which
+rebroadcasts it to OWNER websockets as a `computer_use_frame` event. The
+in-gateway browse mirror this shape was modelled on is gone — browsing now runs
+through the external `playwright-cli` binary (`kiro_crew/browser_cli/`), which
+serves its own dashboard (`playwright-cli show`, supervised by
+`browser_cli/view.py`) instead of relaying frames through the gateway.
 
 **It is a RELAY, not a capture.** `capture_snapshot_image` hands the JPEG it just
 encoded for the model to `emit_snapshot_frame`. There is no timer, no second
@@ -2313,8 +2317,9 @@ dead button that only reproduces in a packaged build.
 
 ## The CLI (`kirocrew computer`) — and what is deliberately not ported
 
-`computer_use/cli.py`. Three verbs, hand-rolled dispatch mirroring
-`browser/cli.py`. Full command reference in [cli.md](cli.md).
+`computer_use/cli.py`. Three verbs, hand-rolled dispatch rather than argparse
+subparsers (the parent CLI forwards `REMAINDER`). Full command reference in
+[cli.md](cli.md).
 
 | Verb | For | Gated on the primary enable? |
 |---|---|---|

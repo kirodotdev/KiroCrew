@@ -123,7 +123,7 @@ TaskRun = Project
 ```
 
 These files import from `kiro_crew.taskrunner` and require no changes:
-- `dashboard/handlers.py` → `StepStatus`, `TaskRun`
+- `dashboard/handlers/taskrunner.py` → `StepStatus`, `TaskRun`
 - `dashboard/server.py` → `TaskRunner`
 - `dashboard/state.py` → `TaskRunner`
 - `git_coord.py` → `Step`, `TaskRun`

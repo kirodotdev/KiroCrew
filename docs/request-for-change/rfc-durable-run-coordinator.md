@@ -58,12 +58,13 @@ in-memory run/task registries, the admission queue, batch accounting, terminal
 report tasks, follow-up watchers, conversation retention, and the periodic
 reaper (`subagent.py:1347-1478`). The public `spawn()` path then handles identity,
 admission, approval, queueing, persistence, event publication, and task creation
-(`subagent.py:3038-3547`).
+(`subagent.py`: `spawn`, `_announce_rejection`, `_drain_queue`,
+`_spawn_with_approval`, and `_log_spawned`).
 
 The lifecycle discipline inside that module is valuable and must be preserved.
 In particular, terminal reporting and slot release are independently claimed by
-`_claim_finalize()` and `_release_slot()` (`subagent.py:2358-2404` and
-`2633-2656`). The system spec documents four distinct terminal guards and why
+`_claim_finalize()` and `_release_slot()` (`subagent.py`, both methods of
+`SubagentManager`). The system spec documents four distinct terminal guards and why
 collapsing them previously caused duplicate delivery, lost outcomes, or leaked
 slots (`docs/system-specs/modules/subagent.md:175-190`). The problem is not the
 existence of those invariants; it is that their state machine is distributed
@@ -98,13 +99,14 @@ The `spawn_run` MCP tool submits wave members through separate HTTP requests
 (`src/kiro_crew/mcp_tools/spawn.py:484-598`). A response can fail after the
 gateway accepted the request, so the caller and gateway maintain extra
 submission accounting and lost-submission reconciliation. The manager exposes
-`record_lost_submission()` and a stuck-wave reaper
-(`subagent.py:4504-4600`), while the dashboard handler reconciles the roster
+`record_lost_submission()` and a stuck-wave reaper `_sweep_stuck_waves()`
+(`subagent.py`), while the dashboard handler reconciles the roster
 against accepted IDs (`src/kiro_crew/dashboard/handlers/messaging.py:90-202`).
 
 The existing preassigned run ID is an important foundation: `spawn()` assigns
 identity before every exit path and preserves it through queueing
-(`subagent.py:3107-3116`). What is missing is a durable idempotency record that
+(`subagent.py`, the `_preassigned_id` parameter of `spawn()`). What is
+missing is a durable idempotency record that
 makes a repeated submission with the same command key return the same accepted
 decision rather than opening a reconciliation side protocol.
 
@@ -115,7 +117,7 @@ re-admits a cancelled report to orphan recovery. This prevents several local
 races, but completion state and the requirement to deliver it are represented
 by separate in-memory flags plus file-marker ordering. `settle_queued_delivery()`
 must wait for teardown before writing a delivered tombstone
-(`subagent.py:4722-4759`) because that tombstone also suppresses restart
+(`subagent.py`) because that tombstone also suppresses restart
 reconciliation.
 
 A transactional outbox makes the intended contract direct: committing a

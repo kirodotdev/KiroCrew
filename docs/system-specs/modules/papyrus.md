@@ -544,13 +544,16 @@ Two views behind one route:
 
 Dependency decisions, both deliberate:
 
-- **Monaco, not CodeMirror.** Monaco is already vendored here
-  (`@monaco-editor/react` + `monaco-editor`, loaded from the local bundle by
-  `utils/monacoLocal.ts`), so the upstream CodeMirror stack is not reintroduced.
-  Monaco ships no TeX grammar, so `latexLanguage.ts` registers a small Monarch
-  tokenizer; if that registration fails, Monaco falls back to plaintext, which is
-  the correct degradation. Compiler diagnostics are pushed into Monaco's own
-  **marker store**, so squiggles survive scrolling/folding/resize for free.
+- **The Pierre editor, not CodeMirror.** Pierre is already vendored here
+  (`@pierre/diffs` + `@pierre/trees`, behind the one lazy chunk every code surface
+  shares in `website/src/pierre`), so the upstream CodeMirror stack is not
+  reintroduced. Pierre's own extension table sends `.tex` to the coarser `tex`
+  grammar, so `PIERRE_EXTENSION_OVERRIDES` in `website/src/pierre/config.ts` maps
+  `.tex`, `.ltx`, `.sty` and `.cls` to `latex`, which additionally scopes section
+  titles and cross-reference and citation keys. Until that chunk resolves the pane
+  renders plain text (`PlainCodeFallback`), which is the correct degradation.
+  Compiler diagnostics are pushed into the editor's own **marker store**, so
+  squiggles survive scrolling/folding/resize for free.
 - **The browser's PDF viewer, not `pdfjs-dist`.** Upstream shipped ~1 MB of JS
   plus a worker chunk and a hand-written text layer to reproduce what Chrome,
   Firefox, Safari and Edge all do natively (selection, find-in-page, zoom,
@@ -722,7 +725,7 @@ that host reports `supported: false` and keeps the manual install path.
 | `website/src/apps/papyrus/CoAuthorPanel.tsx` | Embedded native chat |
 | `website/src/apps/papyrus/api.ts` | Typed fetch wrapper |
 | `website/src/apps/papyrus/lib.ts` | Pure helpers (tree, word count, persistence) |
-| `website/src/apps/papyrus/latexLanguage.ts` | Monaco LaTeX tokenizer |
+| `website/src/pierre/config.ts` | LaTeX grammar override for `.tex`/`.ltx`/`.sty`/`.cls` |
 | `website/public/app-assets/papyrus/` | Icon + light/dark hero art |
 
 ## Tests

@@ -652,9 +652,9 @@ specified compatibility change.
 ### Security
 
 - **Network binding**: dashboard binds to `127.0.0.1` only (loopback), never `0.0.0.0`. Prevents unauthenticated remote access from network-adjacent attackers.
-- **Token authentication**: `dashboard/token_auth.py` validates a signed HMAC session token on every request. Pure stdlib — no external deps. Returns `401` if invalid. The enterprise SSO status surface (`dashboard/sso_status.py`) is an inert stub in the OSS build — no cookie validation is performed.
+- **Token authentication**: `dashboard/token_auth.py` validates a signed HMAC session token on every request. Pure stdlib — no external deps. Returns `401` if invalid. The enterprise SSO status surface (`sso_status.py`) is an inert stub in the OSS build — no cookie validation is performed.
 - **WebSocket origin validation**: `ws.py:_check_ws_origin()` validates the `Origin` header on every WebSocket upgrade request before accepting the connection. Rejects missing Origin (non-browser clients) and cross-origin requests. Only allows `http://127.0.0.1:{port}`, `http://localhost:{port}`, and `http://kirocrew.localhost:5476`. Prevents cross-origin WebSocket hijacking where a malicious page could connect to `ws://127.0.0.1:5476/api/ws` and passively exfiltrate conversation data.
-- **Token authentication**: `dashboard/token_auth.py` validates the signed HMAC session token on every request including WebSocket upgrades. Pure stdlib — no external deps. Returns `401` if invalid. The enterprise SSO status surface (`dashboard/sso_status.py`) is an inert stub in the OSS build — no cookie validation is performed.
+- **Token authentication**: `dashboard/token_auth.py` validates the signed HMAC session token on every request including WebSocket upgrades. Pure stdlib — no external deps. Returns `401` if invalid. The enterprise SSO status surface (`sso_status.py`) is an inert stub in the OSS build — no cookie validation is performed.
 - **CSRF protection**: `server.py` CSRF middleware validates `Origin` header on all non-safe HTTP methods (POST, PUT, DELETE). Same allowed origins as WebSocket.
 - **Source-provider mutation ownership**: GitHub/GitLab source reads may use a signed machine-local bootstrap subject (`local-app` / `local-startup`) before an owner is configured, but every provider mutation remains owner-only. When one of those signed local dashboard sessions reaches a mutation with no configured owner, the gateway still returns `403` but labels the already-denied response with `code: "owner_not_configured"`; the Changes panel, review threads, and Code Review Sage replace the server's English fallback with localized guidance and link to Settings → Channels → Slack. App tokens, unauthenticated requests, and non-local subjects retain the generic forbidden body so the response does not disclose the install's owner state.
 - **Prerequisite mutations**: agent-spec repair is the ONLY one left — there is
@@ -1341,7 +1341,7 @@ React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 
 - `.focus-ring` — unified focus outline (`border-color + box-shadow + glow`) for all inputs/textareas
 - `.card-glow`, `.stat-accent`, `.btn-sweep`, `.streaming-cursor`, `.think-bar`, `.typing-dots`
 
-**Shared UI components** (`frontend/src/components/`):
+**Shared UI components** (`website/src/components/`):
 - `ui.tsx` — `Card`, `CardTitle`, `Btn`, `SendBtn`, `Input`, `Badge`, `AimBadge`, `StatCard` (with skeleton loading), `Skeleton`, `EmptyState`, `PageHeader`
 - `AgentSelector.tsx` — reusable agent dropdown with portal positioning, ARIA roles (`listbox`/`option`/`aria-selected`), `AimBadge` source pills, outside-click-to-close
 - `ProjectAnimation.tsx` — image-based animation: KiroCrew logo (`icon-192.png`) with orbiting rings and pulsing glow. Theme-aware via `var(--accent-glow)`. Used in ProjectsPage empty state.
@@ -1364,7 +1364,7 @@ React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 
 
 **Streaming rendering** — Two-layer architecture: (1) `useBlockAssembler` hook parses raw text into `ContentBlock[]` via state machine tracking `paragraph`/`fenced_code` states; (2) `BlockRenderer` dispatches each block to specialized renderers (`MarkdownBlock`, `CodeBlock`, `DiffBlock`, `MermaidBlock`, `ExcalidrawBlock`). During streaming (`streaming=true`), unclosed code fences produce blocks with `complete: false` that render as provisional views. Diagram blocks are held at the placeholder until the fence closes — a half-streamed Mermaid graph or Excalidraw scene is not yet valid, so drawing it would only flash the fallback. On completion (`streaming=false`), full reparse from content produces clean final blocks. `ChatMessage.rawText` preserves the original unprocessed text as source of truth for reparse.
 
-**Security** — All `dangerouslySetInnerHTML` content sanitized via DOMPurify (`frontend/src/api/helpers.ts`):
+**Security** — All `dangerouslySetInnerHTML` content sanitized via DOMPurify (`website/src/api/helpers.ts`):
 - `md()` — renders markdown-like formatting (code blocks, bold, italic) + DOMPurify sanitize
 - `sanitize()` — DOMPurify wrapper for pre-escaped HTML
 - `esc()` — plain text HTML escaping
@@ -1417,7 +1417,7 @@ React 18 + TypeScript + Vite 5 + Redux Toolkit + React Router v7 + Tailwind CSS 
 
 ### Agent Selector Component
 
-Shared `AgentSelector` component (`frontend/src/components/AgentSelector.tsx`) used by Chat, Tasks, and Cron:
+Shared `AgentSelector` component (`website/src/components/AgentSelector.tsx`) used by Chat, Tasks, and Cron:
 - `createPortal` renders to `document.body` — escapes `overflow` clipping
 - `fixed` positioning with viewport-aware placement (flips up if overflows bottom, aligns right edge)
 - `z-[9999]`, `max-w-[340px]`, agent name truncation for long names
@@ -1429,7 +1429,7 @@ Shared `AgentSelector` component (`frontend/src/components/AgentSelector.tsx`) u
 
 ### InfoTip Component
 
-Reusable `?` button (`frontend/src/components/InfoTip.tsx`) for contextual help across all pages:
+Reusable `?` button (`website/src/components/InfoTip.tsx`) for contextual help across all pages:
 - Portal-rendered to `document.body` — escapes `overflow: hidden` on `card-glow` parents
 - `fixed` positioning with viewport-aware placement
 - Solid background (`var(--card)`), strong shadow, `z-[9999]`

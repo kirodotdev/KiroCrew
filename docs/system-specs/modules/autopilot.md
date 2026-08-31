@@ -369,7 +369,7 @@ however long the plan runs.
 
 | Area | Location |
 |------|----------|
-| Tracker limits, timeout, `timeout_human`, caps, stale-session cleanup | `tests/test_context_management.py` |
+| Tracker limits, timeout, `timeout_human`, caps, stale-session cleanup | `test/test_context_management.py` |
 | Stage loop guard lifetime, shrink clamp, plan-action routing, plan detection scoped to planning turns, widget-origin `go all` refusal | `test/test_dashboard_chat.py` |
 | Prompt binds the "Autopilot" name | `test/test_prompt_autopilot_binding_rule.py` |
 | `parseOptions` marker/plan parsing | `website/src/test/AssistantMessage.test.tsx` |

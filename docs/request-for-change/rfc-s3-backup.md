@@ -63,7 +63,7 @@ repository writes crew state to a remote store.
 **P1 — the bundle omits the conversations.** No component stages the transcript
 store `session_storage.py:7-10` documents (`<data home>/sessions/*.jsonl` +
 `sessions/archive/`, resolver `:277`; `<kiro home>/sessions/cli/<sid>.*`, resolver
-`config/paths.py:698`). `uploads/` is excluded outright on the dashboard path
+`config/paths.py` (`kiro_sessions_dir`)). `uploads/` is excluded outright on the dashboard path
 (`portability.py:62`) and absent from `CORE_FILES`; `artifacts/` is in neither.
 Measured on one install: 385 MB irreplaceable (322 MB transcripts, 28 MB uploads,
 22 MB memory DBs, < 2 MB config + artifacts) against a ~30 MB bundle today. Small

@@ -135,11 +135,11 @@ Both directions have to work in the UI, and one of them nearly did not. The Apps
 builds its Discover shelf from the network-fetched catalog, which carries no row for this
 app, and its Library list hides disabled builtins -- so with the app off it would have
 appeared on neither surface and could only be re-enabled over the API. Library therefore
-keeps listing a disabled builtin that declares `ui.overlays`
-(`website/src/pages/AppsPage.tsx`): an app allowed to replace a host surface is the one
-class a reader turns off and then needs to find again, and its own description tells them
-to disable it to get the old surface back. The rule is keyed on the capability, not on this
-app's name, and it changes nothing for the default-off builtins that have no overlay.
+keeps listing a disabled builtin unless its manifest sets `hidden`
+(`keepInLibrary` in `website/src/pages/apps/useAppsData.ts`): an app a reader turns off and
+then needs to find again has to stay on the one surface that carries Enable, and this app's
+own description tells them to disable it to get the old surface back. The rule is keyed on
+being installed, not on this app's name, and it lists the other default-off builtins too.
 
 ## Deliberately not here
 

@@ -123,7 +123,7 @@ None of the four can host a perpetual agent as-is:
   cadence is hours to days it is a lost day. Cron's `_is_due` compares `now`
   against the stored deadline (`cron.py:2332`), so the same restart fires
   immediately on recovery. Separately, `binding_key_for` explicitly refuses
-  `cron:` / `hook:` / `subagent:` session keys (`mcp_core.py:3148`), so an
+  `cron:` / `hook:` / `subagent:` session keys (`autonudge.py`), so an
   autonudge loop cannot be bound to a cron-hosted session anyway.
 
 - **Heartbeat** is a tick counter with two unrelated jobs bolted together —
@@ -335,8 +335,9 @@ Guards on `next_wake`:
   (`cron:{job.id}`) and may mutate **only that job**. It is refused outright
   from any non-`cron:` session, and from a subagent, using the strict env-only
   resolution `monitor_start` already uses for the same reason
-  (`mcp_core.py:5754`–`:5761`) — a child process must not be able to PID-walk
-  into its parent's identity and reschedule it.
+  (`mcp_tools/control.py` (`monitor_start`), resolving via `mcp_core.py`
+  (`_resolve_session_key_strict`)) — a child process must not be able to
+  PID-walk into its parent's identity and reschedule it.
 
 ### §4 Cadence discipline — backoff, not a liveness gate
 
@@ -816,14 +817,15 @@ docs and sharper tool descriptions — cheap, and it does not put anyone's
 by a full interval instead of firing on recovery (`autonudge.py:457`), which is
 acceptable for a 5-minute poll and not for a multi-hour cadence. It also
 requires a live nudge-able slot, and `binding_key_for` refuses `cron:` keys
-outright (`mcp_core.py:3148`).
+outright (`autonudge.py`).
 
 ### A long-lived session that loops on `wait`
 
-**Rejected.** `wait` caps at 1800s (`mcp_core.py:4521`) and holds the agent
-subprocess and full context resident for the entire duration
-(`:4525`–`:4577`). A day of "life" costs a day of resident process, and any
-restart loses the pending wake and the turn.
+**Rejected.** `wait` caps at 1800s (`mcp_tools/control.py` (`wait`)) and holds
+the agent subprocess and full context resident for the entire duration, keeping
+the sleep alive with a keepalive ping every `mcp_core.py` `WAIT_PING_SECS`. A
+day of "life" costs a day of resident process, and any restart loses the
+pending wake and the turn.
 
 ### A separate long-running daemon per agent
 
@@ -837,7 +839,8 @@ believed everything was stopped.
 - **Self-rescheduling is self-scoped.** `agent_sleep` resolves its target from
   `KIROCREW_SESSION_KEY` and may write only that job. Strict env-only
   resolution (no PID walk) prevents a subagent from assuming its parent's
-  identity, matching the reasoning already recorded at `mcp_core.py:5761`.
+  identity, matching the reasoning already recorded at `mcp_core.py`
+  (`_resolve_session_key_strict`).
 - **The goal is not agent-writable.** Writes to `LIFE.md` are refused, so an
   agent cannot widen its own mandate. Boundaries live in the same file.
 - **No self-granted authority.** A perpetual agent cannot create another
