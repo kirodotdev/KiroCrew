@@ -148,10 +148,14 @@ def register(cls: type[Event]) -> type[Event]:
     a programming error, not a runtime condition.
     """
     kind = cls.KIND
-    domain, sep, action = kind.partition("/")
-    valid = (
-        bool(sep) and bool(domain) and bool(action) and "/" not in action and kind == kind.lower()
-    )
+    # ``bool(action)`` already carries "a separator was present": with no "/"
+    # in *kind*, partition puts the whole string in domain and leaves BOTH the
+    # separator and the tail empty, so a non-empty action is only reachable
+    # once the slash was found. ``"/" not in action`` is a different and still
+    # necessary test — it is what forbids a SECOND slash, since partition
+    # splits at the first one.
+    domain, _, action = kind.partition("/")
+    valid = bool(domain) and bool(action) and "/" not in action and kind == kind.lower()
     if not valid:
         raise ValueError(f"event KIND must be lowercase 'domain/action', got {kind!r}")
     existing = REGISTRY.get(kind)
@@ -176,8 +180,8 @@ def serialize(event: Event, *, src: str) -> str:
         "src": src,
         "key": event.key,
         "ts_ms": event.ts_ms,
+        "data": event.data(),
     }
-    rec["data"] = event.data()
     return json.dumps(rec, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
@@ -222,18 +226,15 @@ def parse(line: str) -> Parsed | None:
     v_val = rec.get("v")
     v = v_val if isinstance(v_val, int) and not isinstance(v_val, bool) else 0
     # An ABSENT data key is a legitimately empty payload; a PRESENT non-dict
-    # value — explicit null included, which rec.get() cannot distinguish
-    # from absence — violates the envelope contract (the serializer always
-    # writes a dict), and substituting {} would hand consumers a typed
-    # event with invented defaults. Corrupt like a bad ts_ms.
-    if "data" not in rec:
-        data: dict[str, Any] = {}
-    else:
-        data_val = rec.get("data")
-        if isinstance(data_val, dict):
-            data = data_val
-        else:
-            return None
+    # value — explicit null included — violates the envelope contract (the
+    # serializer always writes a dict), and substituting {} would hand
+    # consumers a typed event with invented defaults. Corrupt like a bad
+    # ts_ms. The get() default fires only on absence, which is what keeps
+    # those two cases apart.
+    data_val = rec.get("data", {})
+    if not isinstance(data_val, dict):
+        return None
+    data: dict[str, Any] = data_val
     cls = REGISTRY.get(kind)
     event: Event
     if cls is not None:

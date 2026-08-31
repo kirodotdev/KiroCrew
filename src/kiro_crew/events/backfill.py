@@ -237,16 +237,12 @@ def backfill_transcripts(home: Path, limit: int | None = None) -> SourceReport:
     if not sessions.exists():
         return rep
     index = _stem_to_key_index(home)
-    paths: list[tuple[Path, str]] = []
-    for path in sorted(sessions.glob("*.jsonl")):
-        paths.append((path, path.stem))
+    paths: list[tuple[Path, str]] = [(p, p.stem) for p in sorted(sessions.glob("*.jsonl"))]
     archive = sessions / "archive"
     if archive.exists():
-        for path in sorted(archive.glob("*.jsonl")):
-            # The segment suffix is appended at rotation time, so it is the
-            # LAST __-delimited token; a session key may itself contain __.
-            stem = path.stem.rsplit("__", 1)[0]
-            paths.append((path, stem))
+        # The segment suffix is appended at rotation time, so it is the LAST
+        # __-delimited token; a session key may itself contain __.
+        paths.extend((p, p.stem.rsplit("__", 1)[0]) for p in sorted(archive.glob("*.jsonl")))
     for path, stem in paths:
         key = _resolve_session_key(stem, index)
         try:
@@ -322,7 +318,7 @@ def backfill_subagents(home: Path, limit: int | None = None) -> SourceReport:
             parent_key = parent_key[len("dashboard:") :]
         tombstone = d / "tombstone.json"
         result = d / "result.txt"
-        # Read the tombstone BEFORE emitting spawned: M0's vocabulary has no
+        # Read the tombstone BEFORE emitting spawned: kinds.py registers no
         # neutral "stopped" terminal kind, so a user-stopped run is skipped
         # whole — a spawned event with no terminal would replay forever as
         # an active run.
@@ -344,10 +340,10 @@ def backfill_subagents(home: Path, limit: int | None = None) -> SourceReport:
                 continue
             # Restart reconciliation writes cause="gateway_restart" (legacy
             # paths "interrupted") for runs the gateway itself orphaned; the
-            # run may well have delivered (recovery_action records that). M0
-            # has no interrupted terminal kind, so these are skipped whole
-            # like stopped runs — recording them as subagent/failed
-            # fabricates errors for possibly-successful work.
+            # run may well have delivered (recovery_action records that).
+            # kinds.py registers no interrupted terminal kind, so these are
+            # skipped whole like stopped runs — recording them as
+            # subagent/failed fabricates errors for possibly-successful work.
             if readable and cause in ("gateway_restart", "interrupted"):
                 continue
         rep.add(
@@ -432,7 +428,12 @@ def backfill_crons(home: Path, limit: int | None = None) -> SourceReport:
                 or bool(job.get("user_paused"))
                 or bool(job.get("auto_paused"))
             )
-        kind_label = "script" if job.get("script") else "command" if job.get("command") else "llm"
+        if job.get("script"):
+            kind_label = "script"
+        elif job.get("command"):
+            kind_label = "command"
+        else:
+            kind_label = "llm"
         rep.add(
             CronRegistered(
                 key=f"cron:{job_id}",

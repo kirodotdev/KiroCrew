@@ -250,8 +250,8 @@ def test_dashboard_transcript_key_is_normalized(tmp_path: Path) -> None:
 
 
 def test_stopped_subagent_emits_no_events_at_all(tmp_path: Path) -> None:
-    # M0 has no neutral "stopped" terminal kind, so a stopped run is skipped
-    # whole: a spawned with no terminal would replay forever as active.
+    # kinds.py registers no neutral "stopped" terminal kind, so a stopped run
+    # is skipped whole: a spawned with no terminal would replay forever as active.
     home = tmp_path / "home"
     d = home / "subagents" / "sa-stop"
     d.mkdir(parents=True)
