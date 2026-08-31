@@ -3533,9 +3533,9 @@ export const api = {
   artifactSessionDocs: (session?: string) =>
     get(`/api/artifacts/session-docs${session ? `?session=${encodeURIComponent(session)}` : ''}`).then(j) as Promise<{ docs: SessionDoc[] }>,
   /** Turn a session document path into a real, saved (pinned) file-backed artifact.
-   * `originSessionKey` records which chat session saved it (for the Source column). */
+   * `originSessionKey` records the saving session; `slug_collided_with` names the plain slug, present only when the store had to suffix it. */
   materializeArtifact: (path: string, originSessionKey?: string) =>
-    post('/api/artifacts/materialize', { path, ...(originSessionKey ? { origin_session_key: originSessionKey } : {}) }).then(j),
+    post('/api/artifacts/materialize', { path, ...(originSessionKey ? { origin_session_key: originSessionKey } : {}) }).then(j) as Promise<{ slug: string; slug_collided_with?: string }>,
   // Artifact publishing / sharing. Local publish/sharing management
   // only — remote-browse / clone / fork surfaces are not part of this edition.
   publishArtifact: (slug: string, body: { visibility?: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[]; provider?: string }) =>

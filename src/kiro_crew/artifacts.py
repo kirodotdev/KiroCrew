@@ -474,6 +474,14 @@ class Artifact:
     #: reads "in sync"). This field is the signal that the pointer is dead.
     #: Not persisted; set by ``get()`` — same contract as ``live_dirty``.
     source_missing: bool = False
+    #: Set by ``create()`` when it had to suffix the slug derived from ``name``
+    #: because that slug was taken: names the plain slug that was already in
+    #: use, and is empty otherwise. Reported by the uniquifier rather than
+    #: inferred by a caller, because only the create knows a suffix happened —
+    #: ``update()`` renames without recomputing the slug, and a reused record
+    #: read from disk would compare as collided when nothing collided.
+    #: Not persisted; a create-time fact, meaningless on a later read.
+    slug_collided_with: str = ""
     #: Structured metadata for ``kind="webapp"`` artifacts — a deployed application
     #: (deploy target, architecture, lifecycle/TTL, cost estimate, teardown handle).
     #: ``None`` for every other kind. Tolerant-loaded from meta.json.
@@ -496,6 +504,11 @@ class Artifact:
         d = asdict(self)
         if not include_content:
             d.pop("content", None)
+        # slug_collided_with is an internal create-time signal read off the
+        # attribute, never through this dict: a response that reports it composes
+        # the key itself, and serializing it here would leak it into every later
+        # GET as though the collision had just happened.
+        d.pop("slug_collided_with", None)
         if persist:
             # live_dirty is a transient, GET-time-computed
             # field. Persisting it via meta.json would create staleness
@@ -1183,8 +1196,12 @@ class ArtifactStore:
 
         with self._lock:
             if slug is None:
-                slug = self._unique_slug(slugify(name))
+                derived = slugify(name)
+                slug = self._unique_slug(derived)
+                # The uniquifier is the only place that knows it suffixed.
+                collided_with = derived if slug != derived else ""
             else:
+                collided_with = ""
                 slug = _validate_slug(slug)
                 if self._artifact_dir(slug).exists():
                     raise ArtifactAlreadyExistsError(f"artifact already exists: {slug}")
@@ -1210,6 +1227,7 @@ class ArtifactStore:
                 auto_registered=bool(auto_registered),
                 version_kinds={"1": kind},
                 webapp_metadata=webapp_metadata,
+                slug_collided_with=collided_with,
             )
             # Lifecycle: emit `created` event. New artifacts are tagged
             # `events_backfilled=True` because their history starts here —
@@ -1306,8 +1324,12 @@ class ArtifactStore:
 
         with self._lock:
             if slug is None:
-                slug = self._unique_slug(slugify(name))
+                derived = slugify(name)
+                slug = self._unique_slug(derived)
+                # The uniquifier is the only place that knows it suffixed.
+                collided_with = derived if slug != derived else ""
             else:
+                collided_with = ""
                 slug = _validate_slug(slug)
                 if self._artifact_dir(slug).exists():
                     raise ArtifactAlreadyExistsError(f"artifact already exists: {slug}")
@@ -1329,6 +1351,7 @@ class ArtifactStore:
                 auto_registered=bool(auto_registered),
                 version_kinds={"1": "image"},
                 image=image_meta,
+                slug_collided_with=collided_with,
             )
             self._append_event(
                 art,

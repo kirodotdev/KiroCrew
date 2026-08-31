@@ -55,7 +55,6 @@ from kiro_crew.artifacts import (
     get_default_store,
     has_unthemed_hardcoded_colors,
     is_document_path,
-    slugify,
     webapp_metadata_from_dict,
 )
 from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
@@ -869,10 +868,31 @@ def _recorded_doc_identities(conversation_log: Any) -> set[tuple[int, int]]:
     return out
 
 
+def _collision_report(art: Any) -> str:
+    """Name the slug ``art``'s name derives to when the store had to suffix it.
+
+    Reads ``Artifact.slug_collided_with``, which ``ArtifactStore.create`` sets
+    from its uniquifier — the one place that knows a suffix happened. Nothing is
+    inferred here, so the caveats an inference needed no longer apply: a record
+    reused rather than created, or renamed by ``update()`` without recomputing
+    its slug, carries an empty field and cannot report a phantom collision.
+    """
+    return str(getattr(art, "slug_collided_with", "") or "")
+
+
 def _materialize_and_pin(
     path: str, conversation_log: Any, source: str = "chat", session_key: str = ""
-) -> Any:
+) -> tuple[Any, str]:
     """Create (or reuse) a file-backed artifact from ``path`` and mark it saved.
+
+    Returns ``(artifact, slug_collided_with)``, where the second element names
+    the slug the artifact's name derives to when the store had to append a
+    numeric suffix because that slug was taken, and is empty otherwise. It is
+    computed here, not by the caller, because only this function knows whether a
+    create happened: the reuse branch below collides with nothing, and
+    :meth:`ArtifactStore.update` can rename an artifact without recomputing its
+    slug, so a reused record's name may derive to a slug that differs from its
+    own with no collision ever having occurred.
 
     Idempotent: if an artifact already backs this path, just pin it. Otherwise
     the file is AUTHORIZED and READ through a single ``O_NOFOLLOW`` descriptor in
@@ -896,7 +916,7 @@ def _materialize_and_pin(
     canonical = os.path.realpath(expanded)
     existing = store.find_by_source_path(path) or store.find_by_source_path(canonical)
     if existing is not None:
-        return store.set_pinned(existing.slug, True)
+        return store.set_pinned(existing.slug, True), ""
     if not is_document_path(canonical):
         raise ArtifactValidationError("only document files can be saved this way")
     # Defense in depth: a resolved target under a sensitive dir is never a chat
@@ -929,7 +949,11 @@ def _materialize_and_pin(
         source_path=canonical,
         session_key=session_key,
     )
-    return store.set_pinned(art.slug, True)
+    # No slug parameter reaches this path, so the store always derives the slug
+    # from the name and silently appends a numeric suffix when that slug is taken;
+    # the shared report therefore needs no explicit-slug argument here. The reuse
+    # branch above returns before this point, so this only ever describes a create.
+    return store.set_pinned(art.slug, True), _collision_report(art)
 
 
 # ── List / Create ─────────────────────────────────────────────────────────────
@@ -1514,19 +1538,8 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # Report a de-duplicated slug to the CLI and the MCP tool, both of which are
     # HTTP clients and so cannot see the store's log line. Create-only: the value
     # describes this call, and a GET or LIST would carry it empty forever.
-    #
-    # Derived from ``art.name`` (post-validation) rather than the raw body, so the
-    # comparison uses the exact string the store slugified. Guarded on an absent
-    # ``slug``: an explicit one legitimately differs from the name, and the store
-    # refuses it on collision rather than renaming, so comparing there would warn
-    # about a collision that never happened.
     payload = _serialize(art, include_content=True)
-    collided_with = ""
-    if not body.get("slug"):
-        requested = slugify(art.name)
-        if art.slug != requested:
-            collided_with = requested
-    payload["slug_collided_with"] = collided_with
+    payload["slug_collided_with"] = _collision_report(art)
     # Theme-contrast verdict for the clients, same relay pattern as
     # ``slug_collided_with``: computed once here at the convergence point so
     # EVERY authoring surface (MCP tool, CLI, dashboard) sees the same
@@ -3324,7 +3337,7 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
         )
         return _err("conversation log unavailable", status=500)
     try:
-        art = await _run_off_loop(
+        art, collided_with = await _run_off_loop(
             lambda: _materialize_and_pin(
                 path,
                 clog,
@@ -3356,7 +3369,14 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
         outcome="success",
         extra={"path": audit_path, "slug": art.slug},
     )
-    return _json_response(_serialize(art, include_content=True))
+    # Report a de-duplicated slug so a client promoting a corrected document
+    # learns it landed at a suffixed slug while the canonical one keeps serving
+    # the older text. This response only: the value describes this call, so the
+    # artifact record would carry it empty on every GET and LIST, and would keep
+    # naming a collision after the artifact that caused it is deleted.
+    payload = _serialize(art, include_content=True)
+    payload["slug_collided_with"] = collided_with
+    return _json_response(payload)
 
 
 # ── Comments ──────────────────────────────────────────────────────────────────

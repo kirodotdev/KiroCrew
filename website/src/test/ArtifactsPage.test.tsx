@@ -452,6 +452,117 @@ describe('ArtifactsPage', () => {
     await waitFor(() => expect(screen.queryByText(/materialize blew up/i)).not.toBeInTheDocument())
   })
 
+  // If the response carries the field and the page drops it, the user is told only the
+  // new slug -- the exact harm the report exists to prevent.
+  it('surfaces a de-duplicated slug after promoting a document', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+    vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+      docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+    })
+    vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({
+      slug: 'findings-md-2',
+      slug_collided_with: 'findings-md',
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+    await user.click(screen.getByLabelText('Star document'))
+
+    // Both slugs must appear: the one it landed at, and the one already taken.
+    // The page has other status regions, so pick the one carrying the slug.
+    const statuses = await screen.findAllByRole('status')
+    const notice = statuses.find((n) => (n.textContent ?? '').includes('findings-md-2'))
+    if (!notice) throw new Error('collision notice did not render')
+    expect(notice.textContent).toMatch(/findings-md["”']/)
+
+    // The cards render a.name only, so the notice is the only place either slug
+    // is reachable: each needs its own control.
+    const openNew = screen.getByRole('button', { name: /Open findings-md-2/ })
+    const openOld = screen.getByRole('button', { name: /Open older findings-md/ })
+    expect(notice).toContainElement(openNew)
+    expect(notice).toContainElement(openOld)
+    await user.click(openNew)
+  })
+
+  // Negative control for the test above: the notice must be driven by the FIELD,
+  // not by promoting at all, or it would fire on every successful promote.
+  it('shows no de-duplicated-slug notice when the derived slug was free', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+    vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+      docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+    })
+    const materializeSpy = vi.fn().mockResolvedValue({ slug: 'findings-md', slug_collided_with: '' })
+    vi.mocked(api).materializeArtifact = materializeSpy
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+    await user.click(screen.getByLabelText('Star document'))
+
+    // Positive control on the same render: the promote really did happen, so the
+    // absence below is a fact about the notice rather than about a dead click.
+    await waitFor(() => expect(materializeSpy).toHaveBeenCalled())
+    expect(screen.queryByText(/Saved under a different address/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Open older/ })).not.toBeInTheDocument()
+  })
+
+  // The star also lives in table/tree rows, which can sit a viewport below the
+  // notice, so it is brought into view rather than assumed to be on screen.
+  it('scrolls the de-duplicated-slug notice into view when it appears', async () => {
+    const user = userEvent.setup()
+    const scrollSpy = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollSpy
+    try {
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({
+        slug: 'findings-md-2',
+        slug_collided_with: 'findings-md',
+      })
+      renderWithProviders(<ArtifactsPage />)
+      await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+      await user.click(screen.getByLabelText('Star document'))
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /Open findings-md-2/ })).toBeInTheDocument())
+      expect(scrollSpy).toHaveBeenCalled()
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
+  })
+
+  // A later clean promote must not wipe a warning the user has not read: only a
+  // colliding promote may replace it, and only the user may dismiss it.
+  it('keeps an unread de-duplicated-slug notice when the next promote does not collide', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+    vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+      docs: [
+        mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md'),
+        mkDoc('/ws/research/NOTES.md', 'NOTES.md'),
+      ],
+    })
+    const materializeSpy = vi.fn()
+      .mockResolvedValueOnce({ slug: 'findings-md-2', slug_collided_with: 'findings-md' })
+      .mockResolvedValueOnce({ slug: 'notes-md', slug_collided_with: '' })
+    vi.mocked(api).materializeArtifact = materializeSpy
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
+
+    const stars = screen.getAllByLabelText('Star document')
+    await user.click(stars[0])
+    await waitFor(() => expect(screen.getByRole('button', { name: /Open findings-md-2/ })).toBeInTheDocument())
+
+    // Second promote lands on a free slug; the first warning is still unread.
+    await user.click(screen.getAllByLabelText('Star document')[0])
+    await waitFor(() => expect(materializeSpy).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: /Open findings-md-2/ })).toBeInTheDocument()
+  })
+
   it('hides already-saved session documents from the gallery section', async () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [mkArtifact('research-findings')] })
     vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({

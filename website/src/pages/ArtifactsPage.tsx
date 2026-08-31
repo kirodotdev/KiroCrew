@@ -1404,9 +1404,25 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     enabled: !pinnedOnly,
     staleTime: 30_000,
   })
+  // A suffixed slug means the canonical one still serves the older artifact, so without
+  // surfacing it the user cannot tell the two apart. Non-fatal, hence its own notice.
+  const [collisionNotice, setCollisionNotice] = useState<{ slug: string; collidedWith: string } | null>(null)
+  const collisionNoticeRef = useRef<HTMLDivElement | null>(null)
+  // The star lives in table/tree rows too, which can sit a viewport below this
+  // notice, so bring it into view rather than trusting it to be on screen.
+  useEffect(() => {
+    if (!collisionNotice) return
+    collisionNoticeRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+    collisionNoticeRef.current?.focus?.()
+  }, [collisionNotice])
   const materializeMut = useMutation({
     mutationFn: ({ path, sessionKey }: { path: string; sessionKey?: string }) => api.materializeArtifact(path, sessionKey),
-    onSuccess: () => {
+    onSuccess: (data) => {
+      // Only a colliding promote may replace the notice: clearing it here would
+      // wipe an unread warning when the next document promotes cleanly.
+      if (data?.slug_collided_with) {
+        setCollisionNotice({ slug: data.slug, collidedWith: data.slug_collided_with })
+      }
       qc.invalidateQueries({ queryKey: ['artifacts'] })
       qc.invalidateQueries({ queryKey: ['artifact-session-docs'] })
     },
@@ -1583,6 +1599,29 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               <div className="text-[13px] text-danger/90 mt-0.5">{errMessage || mutErr || addError}</div>
             </div>
             <Btn aria-label={i18nT('app.dismiss')} onClick={() => { deleteMut.reset(); addArtifactMut.reset(); newArtifactMut.reset(); materializeMut.reset(); setAddError(null) }} className="text-danger/60 hover:text-danger shrink-0"><X className="lucide-inline" /></Btn>
+          </div>
+        )}
+
+        {collisionNotice && (
+          <div ref={collisionNoticeRef} tabIndex={-1} className="mb-4 bg-warn-subtle border border-warn/20 rounded-lg p-3 flex items-start gap-3 animate-rise" role="status">
+            <span className="text-warn text-lg shrink-0"><AlertTriangle className="lucide-inline" aria-hidden="true" /></span>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-warn font-medium">{i18nT('pages.artifactsPage.promote_slug_taken_title')}</div>
+              <div className="text-[13px] text-warn/90 mt-0.5 break-words">
+                {i18nT('pages.artifactsPage.promote_slug_taken_body', { slug: collisionNotice.slug, taken: collisionNotice.collidedWith })}
+              </div>
+              {/* Both slugs are addresses the cards never render, so each needs
+                * its own way in. Slugs run long, so stack before overflowing. */}
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 mt-2 min-w-0">
+                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.slug)}>
+                  {i18nT('pages.artifactsPage.promote_slug_taken_open', { slug: collisionNotice.slug })}
+                </Btn>
+                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.collidedWith)}>
+                  {i18nT('pages.artifactsPage.promote_slug_taken_open_older', { taken: collisionNotice.collidedWith })}
+                </Btn>
+              </div>
+            </div>
+            <Btn aria-label={i18nT('app.dismiss')} onClick={() => setCollisionNotice(null)} className="text-warn/60 hover:text-warn shrink-0"><X className="lucide-inline" /></Btn>
           </div>
         )}
 
