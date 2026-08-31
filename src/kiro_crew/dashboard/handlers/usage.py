@@ -1797,6 +1797,7 @@ def _parse_sessions() -> dict:
     total_msgs = 0
     total_tools = 0
     all_time_sessions = 0
+    refused_transcripts = 0
     now_dt = datetime.now()
     today_str = now_dt.strftime("%Y-%m-%d")
 
@@ -1814,6 +1815,16 @@ def _parse_sessions() -> dict:
         # Validate path through hooks.py (resolves symlinks, checks sensitive)
         resolved_str = validate_file_path(str(f))
         if resolved_str is None:
+            # Counted, not swallowed (#6733): a refusal here is indistinguishable
+            # from an idle account in the rendered numbers, and on a
+            # roaming-profile (UNC) home EVERY transcript lands in this branch --
+            # so the page reports a confident zero with nothing anywhere to say
+            # why. Aggregated after the loop rather than logged per file, because
+            # that failure mode refuses all of them. Admitting the transcript dir
+            # to the UNC gate -- which is what would make the count correct
+            # rather than merely explained -- is deferred to #8079; it needs a
+            # resolution that refuses links atomically first.
+            refused_transcripts += 1
             continue
         resolved = Path(resolved_str)
         try:
@@ -1855,6 +1866,17 @@ def _parse_sessions() -> dict:
         daily_tools[day] += tools
         total_msgs += msgs
         total_tools += tools
+
+    if refused_transcripts:
+        # Server-side only: %s of a Path is a filesystem path, which the
+        # returned payload deliberately never carries (see the iterdir handler
+        # above).
+        logger.warning(
+            "usage: %d transcript(s) refused by path validation in %s; "
+            "the reported session counts exclude them",
+            refused_transcripts,
+            sessions_dir,
+        )
 
     # Build daily history sorted by date
     all_days = sorted(set(daily.keys()))

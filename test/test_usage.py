@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -76,6 +77,44 @@ class TestParseSessions:
         ):
             r = _parse_sessions()
             assert r["total_sessions"] == 0
+
+    def test_refused_transcripts_are_reported_not_swallowed(self, tmp_path, caplog):
+        """#6733: a refused transcript is skipped, and the skip must leave a
+        trace. Before this, a home whose every transcript the path validator
+        refused rendered as a legitimate "zero sessions" with nothing logged.
+
+        Asserted on the LOG, not the payload: the count is deliberately not an
+        API field while no renderer reads it (First Principles review on #7285).
+        """
+        d = tmp_path / "cli"
+        d.mkdir()
+        _write_session(d / "s1.jsonl", [{"kind": "Prompt"}])
+        _write_session(d / "s2.jsonl", [{"kind": "Prompt"}])
+        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
+            usage_mod, "validate_file_path", return_value=None
+        ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
+            r = _parse_sessions()
+        assert r["total_sessions"] == 0
+        # One aggregated record, not one per file: a UNC home refuses every
+        # transcript, and per-file logging would emit thousands.
+        refusals = [
+            rec for rec in caplog.records if "refused by path validation" in rec.getMessage()
+        ]
+        assert len(refusals) == 1
+        assert "2" in refusals[0].getMessage()
+
+    def test_no_refusal_log_when_every_transcript_validates(self, tmp_path, caplog):
+        """The counterpart: the healthy path stays quiet."""
+        d = tmp_path / "cli"
+        d.mkdir()
+        f = d / "s1.jsonl"
+        _write_session(f, [{"kind": "Prompt"}])
+        with patch.object(usage_mod, "_SESSIONS_DIR", d), patch.object(
+            usage_mod, "validate_file_path", return_value=str(f)
+        ), caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.handlers.usage"):
+            r = _parse_sessions()
+        assert r["total_sessions"] == 1
+        assert not [rec for rec in caplog.records if "refused" in rec.getMessage()]
 
     def test_stat_oserror(self, tmp_path):
         d = tmp_path / "cli"
