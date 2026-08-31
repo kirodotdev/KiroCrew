@@ -27,6 +27,7 @@ _CASES = {
     "ask_question": {"questions": [{"question": "Which approach?", "options": [{"label": "A"}]}]},
     "reset_conversation": {},
     "chat_tag": {"set_state": "review"},
+    "section_marker": {"label": "item-42"},
 }
 
 

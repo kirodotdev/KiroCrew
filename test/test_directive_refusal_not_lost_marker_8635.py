@@ -369,6 +369,9 @@ _HOSTILE_CALLS: dict[str, dict] = {
     # chat_tag: an unknown tag id is the cheapest deterministic
     # refusal — it fails validation before any grant or persistence path.
     "chat_tag": {"add": ["definitely-not-a-vocabulary-tag-xyz"]},
+    # Over the schema's 120-char label cap, mirroring the over-long `reason` rows:
+    # the marker is a one-line rule, so an unbounded label is the hostile shape.
+    "section_marker": {"label": "z" * 500},
 }
 
 

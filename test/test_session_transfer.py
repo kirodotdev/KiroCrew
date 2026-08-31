@@ -321,10 +321,11 @@ async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monke
     assert st._resolve_agent in offloaded, "agent resolution must be offloaded"
     assert slot.agent == "my-agent"
 
-    # Unhinted: no offload for AGENT RESOLUTION specifically. Redaction always
-    # offloads (``_redact_history_rows`` runs the regex pass off the loop before
-    # construction), so the invariant is that an empty hint adds no _resolve_agent
-    # hop — not that ``to_thread`` is never called at all.
+    # Unhinted: no offload for AGENT RESOLUTION specifically. Other work does
+    # offload on every request — redaction (``_redact_history_rows`` runs the regex
+    # pass off the loop before construction) and bundle validation — so the
+    # invariant is that an empty hint adds no _resolve_agent hop, not that
+    # ``to_thread`` is never called at all.
     offloaded.clear()
     created2: dict = {}
     await _run_import(st, monkeypatch, _valid(agent=""), created=created2)
@@ -3036,7 +3037,11 @@ async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
 
     state = _stub_state(st, monkeypatch)
 
-    async def _resolve_then_fill(*_a, **_k):
+    async def _resolve_then_fill(fn, *args, **_k):
+        # Bundle validation is offloaded too; only the agent resolution is the seam
+        # this race is about, so let the other hop through untouched.
+        if fn is st._validate_bundle:
+            return fn(*args)
         # A concurrent import lands while this one is awaiting.
         state._slots.update({f"s{i}": object() for i in range(500)})
         return ""
