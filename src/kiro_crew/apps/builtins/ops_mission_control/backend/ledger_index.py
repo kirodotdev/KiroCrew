@@ -173,6 +173,15 @@ def import_pending(store: Any, *, limit: int = MAX_PER_IMPORT) -> dict[str, int]
 
     if result["written"]:
         try:
+            # PACED, even though a caller blocks on this: the only caller is the
+            # ledger-hygiene CRON (`routes.py:_handle_ledger_hygiene`, "Called by
+            # the ledger-hygiene cron"; no UI path reaches it). A cron holds the
+            # response open but nobody attends it, and the PR's rule is
+            # attendance, not blocking. Left unpaced this was a side door around
+            # the whole fix: the sweep is whole-corpus, so a post-migration
+            # backlog would be re-embedded flat out — at the full interactive
+            # thread count, since `pace=False` also selects the thread class — on
+            # the next daily tick.
             result["embedded"] = int(store.backfill_missing_embeddings() or 0)
         except Exception:  # noqa: BLE001 — rows stay keyword-searchable if this fails
             logger.exception("ops-mission-control: embedding backfill failed")

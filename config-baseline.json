@@ -1407,6 +1407,8 @@
         "embedding_provider": "llama_cpp",
         "embedding_dim": 1024,
         "embedding_threads": 4,
+        "embedding_bulk_threads": 1,
+        "embedding_bulk_duty": 0.2,
         "embed_model_url": "",
         "embed_model_path": "",
         "embed_model_id": "",
@@ -1464,6 +1466,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4
+    },
+    {
+      "path": "memory.embedding_bulk_threads",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embedding Threads (bulk)",
+      "help": "CPU threads for BACKGROUND corpus embedding — the re-embed sweep that gives imported memories semantic reach, plus imports and consolidation — as opposed to a query you are waiting on. Defaults to 1: nothing waits on this work (those rows are keyword-searchable meanwhile), so it is tuned to stay invisible rather than finish early. Raise it to get through a large backlog sooner; interactive search keeps its own pool either way. 0 means inherit Embedding Threads. Clamped to the machine's core count.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1
+    },
+    {
+      "path": "memory.embedding_bulk_duty",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embedding Duty Cycle (bulk)",
+      "help": "Fraction of wall time a background embedding sweep targets for computing. At the default 0.2 it idles four times as long as it works, so a sweep over a freshly imported memory costs about a fifth of one core instead of several — the same total work, spread thin enough that fans never react. The sweep resumes across restarts, so it need not finish in one session. A target rather than a ceiling: one unusually slow row is capped at a 30-second pause and so runs hotter than the configured share. 1.0 runs flat out. Clamped to [0.05, 1.0]; a sweep a user explicitly starts from Settings is never paced.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.2
     },
     {
       "path": "memory.embed_model_url",

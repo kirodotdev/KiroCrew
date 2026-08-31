@@ -654,7 +654,13 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
             embedder.dim,
             active_embedding_space_signature(),
         )
-        embedded = store.backfill_missing_embeddings(progress=prog.advance)  # type: ignore[attr-defined]
+        # pace=False: the user just applied a model change and is watching this
+        # progress bar, and semantic search stays degraded until the sweep ends.
+        # Bulk pacing exists to keep an UNATTENDED sweep quiet — spreading a wait
+        # someone explicitly asked for only doubles it.
+        embedded = store.backfill_missing_embeddings(  # type: ignore[attr-defined]
+            progress=prog.advance, pace=False
+        )
         prog.finish(embedded)
     except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard, never crashes the app
         logger.warning("Applying the embedding model failed", exc_info=True)

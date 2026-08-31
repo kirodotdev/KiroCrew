@@ -2454,6 +2454,34 @@ class MemoryConfig:
             "Clamped to the machine's core count.",
         ),
     )
+    embedding_bulk_threads: int = field(
+        default=1,
+        metadata=_meta(
+            "Embedding Threads (bulk)",
+            "CPU threads for BACKGROUND corpus embedding — the re-embed sweep that "
+            "gives imported memories semantic reach, plus imports and consolidation — "
+            "as opposed to a query you are waiting on. Defaults to 1: nothing waits on "
+            "this work (those rows are keyword-searchable meanwhile), so it is tuned to "
+            "stay invisible rather than finish early. Raise it to get through a large "
+            "backlog sooner; interactive search keeps its own pool either way. 0 means "
+            "inherit Embedding Threads. Clamped to the machine's core count.",
+        ),
+    )
+    embedding_bulk_duty: float = field(
+        default=0.2,
+        metadata=_meta(
+            "Embedding Duty Cycle (bulk)",
+            "Fraction of wall time a background embedding sweep targets for computing. "
+            "At the default 0.2 it idles four times as long as it works, so a sweep "
+            "over a freshly imported memory costs about a fifth of one core instead of "
+            "several — the same total work, spread thin enough that fans never react. "
+            "The sweep resumes across restarts, so it need not finish in one session. "
+            "A target rather than a ceiling: one unusually slow row is capped at a "
+            "30-second pause and so runs hotter than the configured share. 1.0 runs "
+            "flat out. Clamped to [0.05, 1.0]; a sweep a user explicitly starts from "
+            "Settings is never paced.",
+        ),
+    )
     embed_model_url: str = field(
         default="",
         metadata=_meta(
@@ -8319,6 +8347,15 @@ class KiroCrewConfig:
                 ),
                 embedding_dim=memory_data.get("embedding_dim", 1024),
                 embedding_threads=_safe_int(memory_data.get("embedding_threads", 4), 4, 1, 256),
+                # 0 is the documented "inherit embedding_threads" sentinel, so the
+                # floor is 0 rather than 1 — clamping it to 1 would erase a
+                # deliberate opt-in to the interactive pool.
+                embedding_bulk_threads=_safe_int(
+                    memory_data.get("embedding_bulk_threads", 1), 1, 0, 256
+                ),
+                embedding_bulk_duty=_safe_float(
+                    memory_data.get("embedding_bulk_duty", 0.2), 0.2, 0.05, 1.0
+                ),
                 embed_model_url=memory_data.get("embed_model_url", ""),
                 embed_model_path=memory_data.get("embed_model_path", ""),
                 embed_model_id=memory_data.get("embed_model_id", ""),

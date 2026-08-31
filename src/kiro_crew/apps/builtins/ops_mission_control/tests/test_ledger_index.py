@@ -50,10 +50,11 @@ class _FakeStore:
         self.texts.add(text)
         return True
 
-    def backfill_missing_embeddings(self) -> int:
+    def backfill_missing_embeddings(self, *, pace: bool = True) -> int:
         if self._fail_backfill:
             raise RuntimeError("model unavailable")
         self.backfill_calls += 1
+        self.backfill_paced = pace
         return len(self.texts)
 
     def search_episodic(self, **kw: Any) -> list[dict]:
@@ -106,6 +107,11 @@ class TestIncrementalImport(_Env):
         first = ledger_index.import_pending(store)
         self.assertEqual(first["written"], 20)
         self.assertEqual(store.backfill_calls, 1, "one batched sweep, not 20")
+        self.assertTrue(
+            store.backfill_paced,
+            "the only caller is the ledger-hygiene cron, which blocks but is "
+            "unattended, so the whole-corpus sweep must stay paced",
+        )
 
         second = ledger_index.import_pending(store)
         self.assertEqual(second["written"], 0, "an unchanged ledger must re-embed nothing")

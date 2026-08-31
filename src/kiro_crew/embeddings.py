@@ -34,6 +34,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import math
 import os
 import platform
 import queue
@@ -126,6 +127,47 @@ _INFER_STOP_TIMEOUT_SECS = 30.0
 # suffer and cause contention. Pinned low here, overridable via
 # memory.embedding_threads.
 _DEFAULT_EMBED_THREADS = 4
+# Bulk corpus loops (the post-migration re-embed sweep above all) run for as long
+# as the corpus takes: measured 429 ms/row at 4 threads on ~500-character rows,
+# so a 3,000-row migrated memory is ~21 minutes at a SUSTAINED 3.7 cores. That is
+# indistinguishable from a runaway process to the user — laptop fans spin up and
+# stay up — even though every row is legitimate work.
+#
+# Nobody is waiting on that work. A row with a NULL embedding is still FTS5
+# keyword-searchable the moment it lands; the sweep only adds SEMANTIC reach over
+# memories the user imported from a previous install. So the sweep is optimized
+# for staying invisible, not for finishing early, and the defaults below are
+# deliberately slow: one thread at a 20% duty cycle is ~0.2 of a core, which no
+# fan reacts to. On the measured host that is ~7 s/row, so a 3,000-row backlog
+# takes hours — and that is fine. It is idempotent and resumes across restarts
+# (an unfinished row stays NULL and the next boot picks it up), so a machine that
+# is never on long enough to finish still converges over several sessions.
+#
+# Two independent dials for a deployment that wants it faster (a server, or a
+# user who wants semantic search over old memories today):
+#
+#   * ``memory.embedding_bulk_threads`` — threads for BULK jobs only, so raising
+#     it never slows a query the user is waiting on. 0 means "inherit
+#     ``embedding_threads``".
+#   * ``memory.embedding_bulk_duty`` — the fraction of wall time the loop may
+#     spend computing. 1.0 runs flat out.
+#
+# Total CPU work is unchanged either way (measured 1.39–1.57 CPU-seconds per row
+# across 1/2/4 threads); what changes is how thinly it is spread. Fans respond to
+# sustained load, so spreading it is the whole point. The one cost of spreading
+# is that the ~700MB model stays resident while the sweep runs, which is why the
+# sweep still probes for pending rows BEFORE loading anything.
+_DEFAULT_BULK_THREADS = 1
+_DEFAULT_BULK_DUTY = 0.2
+# Floor on the duty cycle. A typo of 0.001 would otherwise turn a multi-hour
+# sweep into a multi-week one, which is indistinguishable from it never running.
+_MIN_BULK_DUTY = 0.05
+# Cap on a single pace sleep. This exists ONLY so one pathological row (a
+# 6,000-character blob whose inference takes seconds) cannot park the sweep for
+# minutes; it must stay well ABOVE the delay an ordinary row produces at the
+# default duty (~5.6s at 1.39s/row and 0.2), or it would quietly override the
+# configured duty on EVERY row instead of catching the outlier it is named for.
+_MAX_BULK_PACE_SLEEP = 30.0
 # Only log an embed's queue wait at INFO once it is long enough for a waiting
 # caller to notice; below this it stays DEBUG so ordinary memory writes do not
 # emit a line each.
@@ -567,6 +609,82 @@ def _embed_threads() -> int:
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         raw = _DEFAULT_EMBED_THREADS
     return max(1, min(raw, os.cpu_count() or _DEFAULT_EMBED_THREADS))
+
+
+def bulk_embed_threads() -> int:
+    """Thread count for ``PRIORITY_BULK`` inference, from ``memory``.
+
+    Defaults to :data:`_DEFAULT_BULK_THREADS` — one thread, because nothing is
+    waiting on bulk work and a single thread is what keeps it off the fans. An
+    explicit 0 means "inherit :func:`_embed_threads`", which is how a deployment
+    opts back into the interactive pool for its sweeps. A value above the
+    interactive count is honoured (a server that wants the sweep done fast is a
+    legitimate choice) but still clamped to the machine's cores.
+    """
+    raw = _read_memory_config().get("embedding_bulk_threads")
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raw = _DEFAULT_BULK_THREADS
+    elif raw == 0:
+        return _embed_threads()
+    return max(1, min(raw, os.cpu_count() or _DEFAULT_EMBED_THREADS))
+
+
+def bulk_duty_cycle() -> float:
+    """Fraction of wall time a bulk corpus loop targets for inference.
+
+    A target rather than a ceiling: :func:`bulk_pace_delay` caps one pause at
+    :data:`_MAX_BULK_PACE_SLEEP`, so a row slow enough to ask for more idle than
+    that runs at a higher effective duty than configured.
+
+    1.0 disables pacing (the pre-existing behaviour). Anything else is clamped to
+    ``[_MIN_BULK_DUTY, 1.0]``, so a typo cannot stretch a sweep to the point
+    where it looks stalled. Bools are rejected before ``isinstance(x, int)`` can
+    accept ``True`` as 1.
+
+    Non-finite values are rejected explicitly rather than left to the clamp. This
+    reads the RAW config section — the loader's ``_safe_float`` guard is NOT in
+    the path — and ``json.load`` accepts the ``NaN`` literal, which compares
+    false against every bound and would slip through ``max()`` unchanged.
+
+    ``float()`` itself can raise: ``json.load`` yields arbitrary-precision ints,
+    and one wider than a double (a 309-digit integer) raises ``OverflowError``.
+    That would propagate out through ``bulk_pace_delay`` into the sweep and abort
+    it, leaving every pending row NULL — a config typo must degrade to the
+    default, never stop the sweep.
+    """
+    raw = _read_memory_config().get("embedding_bulk_duty")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raw = _DEFAULT_BULK_DUTY
+    try:
+        duty = float(raw)
+    except (OverflowError, ValueError):
+        duty = _DEFAULT_BULK_DUTY
+    if not math.isfinite(duty):
+        duty = _DEFAULT_BULK_DUTY
+    if duty >= 1.0:
+        return 1.0
+    return max(_MIN_BULK_DUTY, duty)
+
+
+def bulk_pace_delay(elapsed: float) -> float:
+    """Seconds a bulk loop should idle after a unit of work taking *elapsed*.
+
+    Duty *d* means work occupies ``d`` of the cycle, so the idle share is
+    ``elapsed * (1 - d) / d`` — at ``d = 0.5`` the loop sleeps for exactly as
+    long as it worked. Returns 0.0 when pacing is off, and never returns more
+    than :data:`_MAX_BULK_PACE_SLEEP`.
+
+    Callers sleep in their OWN thread and hold no model lock while doing so, so
+    an interactive embed arriving mid-pause is served at full speed rather than
+    waiting out the pause. That is why this returns a delay for the caller to
+    honour instead of sleeping inside the shared inference worker.
+    """
+    if elapsed <= 0:
+        return 0.0
+    duty = bulk_duty_cycle()
+    if duty >= 1.0:
+        return 0.0
+    return min(elapsed * (1.0 - duty) / duty, _MAX_BULK_PACE_SLEEP)
 
 
 def _chars_bucket(chars: int) -> str:
@@ -1220,6 +1338,15 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]" = queue.PriorityQueue()
         self._seq = 0
         self._seq_lock = threading.Lock()
+        # Thread count currently programmed into the loaded context, and whether
+        # this backend can reprogram it at all. Both are touched ONLY by the
+        # single inference worker, under ``_lock``, so they need no lock of their
+        # own. ``None`` means "not yet known" — the count llama.cpp got at load
+        # time is _embed_threads(), but re-deriving that here would go stale if
+        # the config changed since, so the worker programs it explicitly on the
+        # first job instead of assuming.
+        self._applied_threads: int | None = None
+        self._thread_class_unsupported = False
         # Guards the DISPATCH state — (_infer_thread, _jobs) selection, worker
         # spawn, and the enqueue — as one atomic step. Deliberately NOT _lock:
         # the worker holds _lock across inference, so enqueueing under it would
@@ -1406,6 +1533,15 @@ class LlamaCppEmbedder(EmbeddingBackend):
                     except Exception:  # noqa: BLE001 - freeing must not propagate
                         logger.debug("Freeing abandoned model failed", exc_info=True)
                 return
+            # A fresh context carries llama.cpp's load-time thread count, so the
+            # count the worker last programmed no longer describes it. Clear the
+            # record BEFORE publishing, or the first job on the new context would
+            # match the stale count and skip programming entirely — leaving a
+            # bulk sweep on the interactive pool (or the reverse) with nothing to
+            # show why. Written from the loader thread and read by the inference
+            # worker; both are single plain-attribute accesses (GIL-atomic), and
+            # the only cost of racing is one redundant set_n_threads call.
+            self._applied_threads = None
             self._llm = llm  # atomic publish (GIL)
         except Exception:
             logger.warning("Failed to load embedding model %s", self._model_path, exc_info=True)
@@ -1451,7 +1587,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
         strictly no more concurrent than a single caller holding it was.
         """
         while True:
-            _prio, _seq, job = jobs.get()
+            prio, _seq, job = jobs.get()
             if job is None:
                 # close() has already dropped the model. Anything queued behind
                 # the sentinel would otherwise wait on job.done forever, since
@@ -1460,12 +1596,53 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 return
             try:
                 with self._lock:
+                    self._apply_thread_class(job.llm, prio)
                     job.started = time.monotonic()
                     job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
             except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
                 job.error = exc
             finally:
                 job.done.set()
+
+    def _apply_thread_class(self, llm: object, priority: int) -> None:
+        """Program llama.cpp's compute pools for this job's scheduling class.
+
+        A BULK job may run on fewer threads than an interactive one
+        (``memory.embedding_bulk_threads``), so a minutes-long corpus sweep does
+        not hold most of the box while a human is typing. The count is a property
+        of the CONTEXT, not of the call, so it is resolved per job — the config
+        read is a small uncached parse and the ``llama_set_n_threads`` call just
+        stores two ints, both negligible against the ~100–400 ms inference this
+        precedes on the same thread. The native call is skipped when the class
+        did not change, which is the steady state.
+
+        Fail-soft by design: a backend without a reprogrammable context (a stub,
+        a future non-llama.cpp backend) keeps whatever it loaded with, warns
+        once, and never retries. Losing the dial must never lose the embedding.
+        """
+        if self._thread_class_unsupported:
+            return
+        want = bulk_embed_threads() if priority >= PRIORITY_BULK else _embed_threads()
+        if want == self._applied_threads:
+            return
+        ctx = getattr(llm, "_ctx", None)
+        setter = getattr(ctx, "set_n_threads", None)
+        if not callable(setter):
+            self._thread_class_unsupported = True
+            logger.debug(
+                "Embedding backend cannot reprogram its thread count; "
+                "memory.embedding_bulk_threads has no effect"
+            )
+            return
+        try:
+            setter(want, want)
+        except Exception:
+            # Leave _applied_threads alone: the context is still running whatever
+            # it had, and pretending otherwise would skip the next attempt.
+            self._thread_class_unsupported = True
+            logger.debug("Could not set embedding thread count", exc_info=True)
+            return
+        self._applied_threads = want
 
     @staticmethod
     def _drain_orphans(

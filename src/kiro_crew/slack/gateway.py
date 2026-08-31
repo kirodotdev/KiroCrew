@@ -150,6 +150,7 @@ from kiro_crew.executors import (
     CronQueueTimeout,
     configure_default_executor,
     cron_gate_budget,
+    embed_executor,
     maintenance_executor,
     run_in_cron_gate_pool,
     run_in_cron_pool,
@@ -8251,7 +8252,19 @@ class GatewayOrchestrator:
                 reconcile_store_embedding_space(store)
                 return store.backfill_missing_embeddings()
 
-            await loop.run_in_executor(maintenance_executor(), _wait_then_backfill)
+            # embed_executor(), NOT maintenance_executor(): pacing turns this
+            # from a ~72-minute worst case into a multi-hour one, and mc-maint is
+            # a 4-worker pool documented as "reserved for the FAST periodic
+            # sweeps + overlay rewrites" — parking one of its four slots
+            # (mostly asleep) for a working day is a regression the pacing
+            # introduced. mc-embed is the bulkhead built for exactly this: its
+            # rationale is that embed work "queues behind ITSELF instead of
+            # starving" everything else, it has 8 workers, and the same
+            # atexit shutdown hook already covers it. Interactive embeds are
+            # unaffected either way — LlamaCppEmbedder serializes every call
+            # onto one owned inference thread, so the model lock is the
+            # bottleneck there, not a pool slot.
+            await loop.run_in_executor(embed_executor(), _wait_then_backfill)
         except asyncio.CancelledError:
             raise
         except Exception:

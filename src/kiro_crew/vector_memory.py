@@ -37,7 +37,12 @@ from snowballstemmer import stemmer as _snowball_stemmer
 # int constants, imported rather than duplicated so the two cannot drift. Safe
 # direction: ``embeddings`` reaches the store only through a Protocol, so it does
 # not import this module and there is no cycle.
-from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_INTERACTIVE, PRIORITY_NORMAL
+from kiro_crew.embeddings import (
+    PRIORITY_BULK,
+    PRIORITY_INTERACTIVE,
+    PRIORITY_NORMAL,
+    bulk_pace_delay,
+)
 
 try:
     import pysqlite3 as sqlite3
@@ -745,9 +750,7 @@ def _sanitize_decay_rates(raw: Mapping[str, object] | None) -> dict[str, float]:
     if not raw:
         return out
     if not isinstance(raw, Mapping):
-        logger.warning(
-            "memory.decay_rates ignored: expected a mapping, got %r", type(raw).__name__
-        )
+        logger.warning("memory.decay_rates ignored: expected a mapping, got %r", type(raw).__name__)
         return out
     for key, val in raw.items():
         if not isinstance(key, str) or not key.strip():
@@ -1125,7 +1128,11 @@ class VectorMemoryStore:
         # Every stored byte is therefore either raw-measured or bounded by a
         # constant (the enum member and the key envelope).
         size_basis = vj
-        if key.startswith("lesson.") and isinstance(value, dict) and _lesson_fields(value) is not None:
+        if (
+            key.startswith("lesson.")
+            and isinstance(value, dict)
+            and _lesson_fields(value) is not None
+        ):
             cat = value.get("category")
             raw_negative = value.get("negative")
             raw_scope = value.get("repo_scope")
@@ -1425,9 +1432,7 @@ class VectorMemoryStore:
                                     exc_info=True,
                                 )
                     else:
-                        logger.debug(
-                            "Dropping a semantic embedding produced in a previous space"
-                        )
+                        logger.debug("Dropping a semantic embedding produced in a previous space")
 
         # 9. Retire conflicting episodic entries that reference the old value
         # (called outside the lock — _retire_stale_episodic does a blocking embed
@@ -2653,9 +2658,7 @@ class VectorMemoryStore:
                             # Swap landed after this blob was embedded. Leave the row
                             # NULL for the post-activation backfill rather than
                             # persisting a vector from the previous space.
-                            logger.debug(
-                                "Dropping a lazy lesson backfill from a previous space"
-                            )
+                            logger.debug("Dropping a lazy lesson backfill from a previous space")
                             continue
                         self.db.execute(
                             "UPDATE semantic_memory SET embedding = ? WHERE key = ?", (blob, bk)
@@ -2878,9 +2881,7 @@ class VectorMemoryStore:
                     )
                     if existing_emb:
                         row_blob = struct.pack(f"{len(existing_emb)}f", *existing_emb)
-                        pending_backfills.append(
-                            (row_blob, existing["key"], backfill_generation)
-                        )
+                        pending_backfills.append((row_blob, existing["key"], backfill_generation))
                     backfills_done += 1
                 if row_blob is not None:
                     sim = similarity({"embedding": row_blob})
@@ -3298,6 +3299,50 @@ class VectorMemoryStore:
             return ("pref.general", match.group(1).strip())
         return None
 
+    def _embed_bulk_row(self, text: str, *, pace: bool) -> "list[float] | None":
+        """Embed one row of a corpus sweep, then optionally pace the loop.
+
+        The sweeps below are the longest-running CPU work the gateway does
+        unattended — a migrated memory of a few thousand rows is tens of minutes
+        of continuous inference — and to a user that is indistinguishable from a
+        runaway process. ``memory.embedding_bulk_duty`` spreads the same total
+        work over more wall time by idling between rows (see
+        :func:`kiro_crew.embeddings.bulk_pace_delay`).
+
+        The sleep is HERE, on the sweep's own thread, and holds neither the DB
+        lock nor the model: an interactive embed arriving mid-pause is served
+        immediately. It also deliberately covers a row that failed to embed —
+        the delay is derived from measured elapsed time, so a no-op returns 0.0
+        and only real work is paced.
+
+        The pause falls between this row's inference and its write, which is what
+        makes it safe to interrupt: a sweep killed mid-pause leaves the row's
+        ``embedding`` NULL and the next sweep re-embeds it, exactly as it already
+        does for every row it never reached.
+
+        *pace* is False for a sweep a human explicitly asked for and is watching
+        a progress bar on; slowing that down would be paying the cost with none
+        of the benefit, since the load is expected in that case.
+
+        *pace* therefore also selects the scheduling class, because attendance —
+        not corpus size — is what both dials are really keyed on. An unattended
+        sweep embeds at ``PRIORITY_BULK``, which is what gives it the reduced
+        ``memory.embedding_bulk_threads`` pool; an attended one embeds at
+        ``PRIORITY_NORMAL`` and so keeps the full interactive pool. Without this,
+        ``pace=False`` would switch off the idling but leave the sweep on one
+        thread, making the very path this PR declares "full speed" ~3x slower
+        than before pacing existed.
+        """
+        priority = PRIORITY_BULK if pace else PRIORITY_NORMAL
+        if not pace:
+            return self._try_embed(text, priority)
+        started = time.monotonic()
+        vec = self._try_embed(text, priority)
+        delay = bulk_pace_delay(time.monotonic() - started)
+        if delay > 0:
+            time.sleep(delay)
+        return vec
+
     def _try_embed(self, text: str, priority: int = PRIORITY_NORMAL) -> list[float] | None:
         """Embed text using embed_fn if available.
 
@@ -3454,9 +3499,7 @@ class VectorMemoryStore:
         """
         return self._read_meta(_EMBED_SIG_KEY)
 
-    def reconcile_embedding_space(
-        self, signature: str, *, clear_when_unknown: bool = False
-    ) -> int:
+    def reconcile_embedding_space(self, signature: str, *, clear_when_unknown: bool = False) -> int:
         """Discard embeddings produced by a DIFFERENT model. Returns rows invalidated.
 
         Stored vectors are only comparable to each other when they came from the
@@ -3538,9 +3581,7 @@ class VectorMemoryStore:
                     # where unlink fails while another process holds the index
                     # mapped.
                     stale_removal_failed = True
-                    logger.warning(
-                        "Could not remove stale FAISS file %s", stale, exc_info=True
-                    )
+                    logger.warning("Could not remove stale FAISS file %s", stale, exc_info=True)
         invalidated = max(0, episodic) + max(0, semantic)
         if stale_removal_failed:
             # Deliberately do NOT stamp the signature. Stamping would mark the
@@ -3603,7 +3644,7 @@ class VectorMemoryStore:
         return any(self._fetch_one_locked(sql) is not None for sql in probes)
 
     def backfill_missing_embeddings(
-        self, progress: "Callable[[int, int], None] | None" = None
+        self, progress: "Callable[[int, int], None] | None" = None, *, pace: bool = True
     ) -> int:
         """Compute embeddings for episodic rows that have none, then rebuild FAISS.
 
@@ -3636,6 +3677,16 @@ class VectorMemoryStore:
         already falls back to ``_sqlite_vector_search`` (a stdlib cosine scan
         over these blobs), so the stored vectors are useful either way; the
         index rebuild below is simply skipped when faiss is absent.
+
+        *pace* (default on) idles between rows so the sweep targets
+        ``memory.embedding_bulk_duty`` of wall time — the same total CPU work
+        spread thinner, which is what keeps an unattended post-migration sweep
+        from pinning several cores for tens of minutes. It is a target rather
+        than a ceiling: a single row whose inference is slow enough to ask for
+        more than :data:`~kiro_crew.embeddings._MAX_BULK_PACE_SLEEP` of idle is
+        capped there, so that row runs at a higher effective duty. Pass
+        ``pace=False`` for a sweep a human explicitly asked for and is waiting
+        on.
         """
         if self.embed_fn is None:
             return 0
@@ -3643,18 +3694,17 @@ class VectorMemoryStore:
         # compared directly, never indexed), and they must be rebuilt even when
         # there is not a single NULL episodic row — which is exactly the state
         # after reconcile_embedding_space() on a memory that holds only lessons.
-        self._backfill_lesson_embeddings(progress)
+        self._backfill_lesson_embeddings(progress, pace=pace)
         # Same for non-lesson semantic KV rows: struct-packed, no numpy, no
         # FAISS — get_semantic_context ranks them straight from the stored blob.
         # No progress callback: the (done,total) stream belongs to the episodic
         # loop below, and a second denominator would make the dashboard bar
         # jump backward when both row types need re-embedding.
-        self._backfill_semantic_kv_embeddings()
+        self._backfill_semantic_kv_embeddings(pace=pace)
         if not _HAS_NUMPY:
             return 0
         rows = self._fetch_all_locked(
-            "SELECT id, text FROM episodic_memories "
-            "WHERE is_deleted = 0 AND embedding IS NULL"
+            "SELECT id, text FROM episodic_memories " "WHERE is_deleted = 0 AND embedding IS NULL"
         )
         if not rows:
             return 0
@@ -3665,7 +3715,14 @@ class VectorMemoryStore:
             # spin, and this loop can run for minutes on a large corpus.
             progress(0, total)
         for row in rows:
-            vec = self._try_embed(row["text"], PRIORITY_BULK)
+            # Sampled BEFORE the embed, re-checked under the lock, matching
+            # _backfill_semantic_kv_embeddings: a model swap landing across the
+            # embed must not commit a vector from the old space (reconcile has
+            # already swept past this row, so nothing would ever clear it). The
+            # window existed before pacing but was sub-second; idling between
+            # rows widens it to seconds, which makes the guard load-bearing.
+            backfill_generation = self._space_generation
+            vec = self._embed_bulk_row(row["text"], pace=pace)
             if not vec:
                 if progress is not None:
                     progress(embedded, total)
@@ -3691,8 +3748,22 @@ class VectorMemoryStore:
                 arr = arr / norm
             blob = arr.tobytes()
             with self._db_lock:
+                if backfill_generation != self._space_generation:
+                    logger.debug("Dropping an episodic backfill from a previous space")
+                    if progress is not None:
+                        progress(embedded, total)
+                    continue
+                # `embedding IS NULL` keeps this merge-only: a concurrent writer
+                # that has already filled this row's vector (in the current
+                # space) must not be overwritten by our older computation.
+                # `is_deleted = 0` keeps a vector off a row tombstoned during the
+                # pause. No text guard is needed here, unlike the semantic
+                # sweeps: `episodic_memories.text` is never rewritten in place
+                # (rows are tombstoned instead), so `id` pins the text we
+                # embedded.
                 self.db.execute(
-                    "UPDATE episodic_memories SET embedding = ? WHERE id = ?",
+                    "UPDATE episodic_memories SET embedding = ? "
+                    "WHERE id = ? AND embedding IS NULL AND is_deleted = 0",
                     (blob, row["id"]),
                 )
                 self.db.commit()
@@ -3708,7 +3779,7 @@ class VectorMemoryStore:
         return embedded
 
     def _backfill_lesson_embeddings(
-        self, progress: "Callable[[int, int], None] | None" = None
+        self, progress: "Callable[[int, int], None] | None" = None, *, pace: bool = True
     ) -> int:
         """Embed lesson rows whose vector is NULL. Returns the count embedded.
 
@@ -3754,16 +3825,33 @@ class VectorMemoryStore:
             if not text:
                 logger.debug("Skipping lesson %s with no renderable text", row["key"])
                 continue
-            vec = self._try_embed(text, PRIORITY_BULK)
+            # Same guard as the episodic and semantic-KV sweeps: sampled before
+            # the embed, re-checked under the lock, so a model swap landing
+            # across the (now paced) embed cannot commit an old-space vector.
+            lesson_generation = self._space_generation
+            vec = self._embed_bulk_row(text, pace=pace)
             if not vec:
                 continue
             # Stored un-normalized to match write_lesson(): _cosine_sim()
             # normalizes both operands itself.
             blob = struct.pack(f"{len(vec)}f", *vec)
             with self._db_lock:
+                if lesson_generation != self._space_generation:
+                    logger.debug("Dropping a lesson backfill from a previous space")
+                    continue
+                # Same three-part guard as _backfill_semantic_kv_embeddings, for
+                # the same reason: `embedding IS NULL` alone matches a row whose
+                # value was REWRITTEN during the (paced) embed — the write path
+                # clears the vector when the rule text changes — so the old
+                # rule's vector would be stamped onto the new rule and rank it by
+                # text it no longer holds. `value_json` pins the row we embedded,
+                # and `is_deleted = 0` keeps a vector off a row tombstoned in the
+                # same window.
                 self.db.execute(
-                    "UPDATE semantic_memory SET embedding = ? WHERE key = ?",
-                    (blob, row["key"]),
+                    "UPDATE semantic_memory SET embedding = ? "
+                    "WHERE key = ? AND value_json = ? AND embedding IS NULL "
+                    "AND is_deleted = 0",
+                    (blob, row["key"], row["value_json"]),
                 )
                 self.db.commit()
             embedded += 1
@@ -3774,7 +3862,7 @@ class VectorMemoryStore:
         return embedded
 
     def _backfill_semantic_kv_embeddings(
-        self, progress: "Callable[[int, int], None] | None" = None
+        self, progress: "Callable[[int, int], None] | None" = None, *, pace: bool = True
     ) -> int:
         """Embed non-lesson semantic rows whose vector is NULL. Returns the count.
 
@@ -3809,7 +3897,7 @@ class VectorMemoryStore:
             # landing across the embed must not commit a vector from the old
             # space (reconcile has already swept past this row).
             backfill_generation = self._space_generation
-            vec = self._try_embed(f"{row['key']} {row['value_json']}", PRIORITY_BULK)
+            vec = self._embed_bulk_row(f"{row['key']} {row['value_json']}", pace=pace)
             if not vec:
                 if progress is not None:
                     progress(embedded, total)
@@ -3822,9 +3910,13 @@ class VectorMemoryStore:
                 # value_json guard: a concurrent re-write of this key already
                 # cleared-and-refilled its own vector; stamping the OLD value's
                 # vector over it would rank the row by text it no longer holds.
+                # `is_deleted = 0` is the third leg, added when pacing widened
+                # this window: a row tombstoned during the pause must not come
+                # back carrying a vector.
                 self.db.execute(
                     "UPDATE semantic_memory SET embedding = ? "
-                    "WHERE key = ? AND value_json = ? AND embedding IS NULL",
+                    "WHERE key = ? AND value_json = ? AND embedding IS NULL "
+                    "AND is_deleted = 0",
                     (blob, row["key"], row["value_json"]),
                 )
                 self.db.commit()
