@@ -48,6 +48,34 @@ def _git(*args: str) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
+def _first_parent_is_base() -> bool:
+    """True when HEAD's FIRST parent is the base branch's commit.
+
+    Two checkout shapes answer "HEAD is a merge", and they need opposite diffs:
+
+    * CI's ``pull_request`` merge ref puts the BASE first, so ``HEAD^1..HEAD``
+      is exactly this change.
+    * A local ``git merge origin/main`` on a feature branch puts the FEATURE
+      tip first, so ``HEAD^1..HEAD`` is only what main brought in and the
+      branch's own commits are invisible -- every consuming ratchet then
+      under-scopes, and a local run passes a gate CI goes on to fail.
+
+    Which shape this is is decided by which parent the base branch can reach:
+    on the CI shape ``HEAD^1`` IS a commit of the base. The base refs tried
+    here are the same pair, in the same order, as the three-dot fallback's, so
+    a checkout with only a local ``main`` (a merge made ON main has its prior
+    tip as ``HEAD^1``, which ``main`` reaches) still recognises the shape. A
+    failing git -- neither ref resolvable -- answers False, so an
+    unrecognisable merge falls through to the three-dot attempts rather than
+    trusting a parent order nothing verified.
+    """
+    for base in ("origin/main", "main"):
+        code, _ = _git("merge-base", "--is-ancestor", "HEAD^1", base)
+        if code == 0:
+            return True
+    return False
+
+
 def changed_paths() -> tuple[set[str] | None, str]:
     """This change's paths plus how they were determined, for the log.
 
@@ -58,11 +86,15 @@ def changed_paths() -> tuple[set[str] | None, str]:
 
     * A ``pull_request`` checkout leaves HEAD as the MERGE commit, whose tree is
       the base tree plus this change. So ``diff HEAD^1 HEAD`` is exactly this
-      change and needs no merge base -- only HEAD and its first parent.
+      change -- but only once ``_first_parent_is_base`` confirms, against a
+      resolvable base ref, that ``HEAD^1`` really is the base: a local
+      ``git merge origin/main`` is ALSO a merge at HEAD, with the parents the
+      other way around, and taking ``HEAD^1..HEAD`` there would scope to what
+      main brought in instead of this change.
     * ``diff HEAD^1 HEAD^2`` is equivalent but needs BOTH parents' trees, which a
       shallow clone may not have.
-    * Locally HEAD is the branch tip, so the three-dot diff against the base
-      branch is the right question.
+    * Locally HEAD is the branch tip -- or an unrecognised merge -- so the
+      three-dot diff against the base branch is the right question.
 
     None means undeterminable, and the caller must then judge the whole tree
     rather than nothing: a scope that fails open disables the gate exactly when
@@ -71,7 +103,7 @@ def changed_paths() -> tuple[set[str] | None, str]:
     code, out = _git("rev-list", "--parents", "-n", "1", "HEAD")
     is_merge = code == 0 and len(out.split()) >= 3
     attempts: list[tuple[str, list[str]]] = []
-    if is_merge:
+    if is_merge and _first_parent_is_base():
         attempts.append(("merge HEAD^1..HEAD", ["diff", "--name-only", "HEAD^1", "HEAD"]))
         attempts.append(("merge parents", ["diff", "--name-only", "HEAD^1", "HEAD^2"]))
     for base in ("origin/main", "main"):

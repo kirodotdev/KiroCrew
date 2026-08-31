@@ -127,6 +127,15 @@ def test_only_this_changes_files_can_be_its_offenders() -> None:
     assert '"HEAD^1", "HEAD"' in scope_source, "the merge-vs-first-parent diff is the exact one"
     assert '"HEAD^1", "HEAD^2"' in scope_source
     assert "{base}...HEAD" in scope_source
+    # The merge diffs are only exact when HEAD^1 IS the base; a local
+    # `git merge origin/main` puts the feature tip first and the same diff
+    # would scope to what main brought in. The resolver must verify which
+    # parent the base can reach before trusting the merge shape -- and the
+    # probe must actually GATE the merge attempts, not merely exist.
+    assert (
+        '"merge-base", "--is-ancestor", "HEAD^1", base' in scope_source
+    ), "the resolver no longer verifies HEAD^1 is the base before taking the merge diff"
+    assert "if is_merge and _first_parent_is_base():" in scope_source
     # And it must fail CLOSED when the base is unresolvable: judge everything
     # rather than nothing.
     assert "new_offenders = sorted(unlisted)" in source
