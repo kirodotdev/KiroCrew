@@ -181,6 +181,32 @@ async function newPage(theme, viewport = { width: 1280, height: 820 }) {
   await page.close()
 }
 
+// 05 — wide viewport: the DM transcript carries the main chat's reading
+// measure — the user's Content width setting resolved through CONTENT_WIDTH;
+// a fresh profile is the compact default, 800px. Only visible on a wide
+// column, hence the 1920px frame; the assertion reads the computed style so
+// a silently dropped prop cannot pass.
+{
+  const page = await newPage('dark', { width: 1920, height: 900 })
+  await page.getByText('radar', { exact: true }).first().click()
+  await page.getByTestId('chat-pane-stub').waitFor().catch(() => {})
+  await page.getByText('What did you triage tonight?').waitFor()
+  const cap = await page.evaluate(() => {
+    const row = document.querySelector('[data-chat-pane] .mx-auto.w-full')
+    return row ? getComputedStyle(row).maxWidth : ''
+  })
+  check('05-wide transcript reading width', cap === '800px', `maxWidth=${cap}`)
+  // Both halves of the measure: the composer follows the setting's input
+  // width too (compact = 816px), not its 900px CSS-var fallback.
+  const inputCap = await page.evaluate(() => {
+    const el = document.querySelector('[data-chat-pane] .input-area')
+    return el ? getComputedStyle(el).maxWidth : ''
+  })
+  check('05-wide composer input width', inputCap === '816px', `maxWidth=${inputCap}`)
+  await page.screenshot({ path: `${OUT}/05-thread-wide-1920.png` })
+  await page.close()
+}
+
 await browser.close()
 if (failed) {
   console.error('CAPTURE FAILED: at least one frame did not match its asserted state')

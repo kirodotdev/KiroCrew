@@ -26,7 +26,7 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, editQueuedMessage, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
-import { loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
+import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { tryQuickSend } from '../lib/quickSend'
 import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
@@ -66,6 +66,7 @@ export default function ChatPane({
   onOpenFull,
   agentLocked,
   frameless,
+  followContentWidth,
 }: {
   slotKey: string
   focused?: boolean
@@ -86,6 +87,14 @@ export default function ChatPane({
    *  (border, rounded corners) would duplicate it. Split-view panes keep
    *  the chrome — there the bar IS the pane's identity. */
   frameless?: boolean
+  /** The pane follows the user's Content width setting (transcript AND
+   *  composer, both halves of CONTENT_WIDTH), resolved from the pane's own
+   *  live chatConfig. Defaults to false = both variables pinned to '100%':
+   *  a split-view pane is already narrow, so capping inside it wastes
+   *  width. A full-width host (the Members page's DM column) sets it so
+   *  long transcripts keep the same user-configured measure as the main
+   *  chat. */
+  followContentWidth?: boolean
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -653,7 +662,12 @@ export default function ChatPane({
             ? ''
             : `rounded-lg border transition-colors ${focused ? 'border-accent' : 'border-border'}`
         }`}
-        style={{ '--mc-content-width': '100%' } as React.CSSProperties}
+        style={{
+          '--mc-content-width': followContentWidth ? CONTENT_WIDTH[chatConfig.contentWidth].messages : '100%',
+          // Split-view panes leave --mc-input-width UNSET so ChatInput keeps
+          // its own fallback — byte-for-byte the pre-prop behavior.
+          ...(followContentWidth ? { '--mc-input-width': CONTENT_WIDTH[chatConfig.contentWidth].input } : {}),
+        } as React.CSSProperties}
       >
         {!frameless && (
         <div className="relative z-50 flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">

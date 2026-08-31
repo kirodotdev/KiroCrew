@@ -22,8 +22,8 @@ vi.mock('../../api/client', () => ({
  * contract is only "mount it with the thread's slot key", so a stub that
  * ECHOES the slot key is the strongest cheap assertion available. */
 vi.mock('../../components/ChatPane', () => ({
-  default: ({ slotKey, agentLocked }: { slotKey: string; agentLocked?: boolean }) => (
-    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'}>
+  default: ({ slotKey, agentLocked, followContentWidth }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean }) => (
+    <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'}>
       {slotKey}
     </div>
   ),
@@ -108,6 +108,11 @@ describe('MembersPage thread', () => {
     // The host declares the pin: ChatPane must not offer the agent picker
     // (every selection would 409 against the server-side pin).
     expect(pane).toHaveAttribute('data-agent-locked', '1')
+    // The DM column is the page's widest region, so the pane is told to
+    // follow the user's Content width setting (ChatPane resolves both the
+    // transcript and composer halves itself; its default stays off for
+    // split-view panes, which are already narrow).
+    expect(pane).toHaveAttribute('data-follow-content-width', '1')
     // The pin is an invariant of every member thread, so the header does NOT
     // announce it — no chip, no term for a state that cannot be otherwise.
     expect(screen.queryByTestId('member-pin-chip')).toBeNull()

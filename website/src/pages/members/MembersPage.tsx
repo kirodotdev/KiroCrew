@@ -516,7 +516,12 @@ export default function MembersPage() {
             {activeSlot ? (
               <div className="flex-1 min-h-0">
                 <ErrorBoundary>
-                  <ChatPane slotKey={activeSlot} agentLocked frameless />
+                  {/* Same reading measure as the main chat transcript — the
+                      pane resolves the user's Content width setting itself
+                      (transcript and composer both). The DM column is the
+                      page's widest region, and an uncapped line length is
+                      unreadable on wide screens. */}
+                  <ChatPane slotKey={activeSlot} agentLocked frameless followContentWidth />
                 </ErrorBoundary>
               </div>
             ) : (
