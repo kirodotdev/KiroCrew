@@ -103,12 +103,52 @@ export function isSelfScroll(
 }
 
 /**
- * Next `stick` state after a *user-initiated* scroll: follow only if the caller
- * enabled followOutput AND the user is at the bottom. (Self-scrolls must be
- * filtered out by the caller via `isSelfScroll` before calling this.)
+ * Distance (px) from the true bottom within which a user scroll RE-ENGAGES
+ * follow. Deliberately much tighter than DEFAULT_BOTTOM_THRESHOLD: that 100px
+ * band drives the jump-to-bottom pill's visibility, and reusing it for follow
+ * meant a deliberate 3-99px scroll-up kept `stick` armed — the next content
+ * change then yanked the reader back to the bottom. Re-engaging only when the
+ * user has returned essentially to the bottom keeps "scrolled up to read"
+ * positions belonging to the user.
  */
-export function stickAfterUserScroll(atBottom: boolean, followOutput: boolean): boolean {
-  return followOutput && atBottom
+export const FOLLOW_REENGAGE_PX = 16
+
+/**
+ * Direction-aware `stick` decision for a *user-initiated* scroll (self-scrolls
+ * filtered out by the caller via `isSelfScroll`):
+ *
+ *   1. At the true bottom (within the DPR-aware epsilon) → follow. This also
+ *      absorbs the layout engine's clamp: a mid-stream content SHRINK drops
+ *      scrollTop (which reads as an upward move) but lands exactly at the new
+ *      bottom — releasing there froze streaming follow for the rest of the
+ *      turn.
+ *   2. Any other upward move → release, regardless of distance from the
+ *      bottom. The scroll position now belongs to the user; only returning to
+ *      the bottom (3) re-engages.
+ *   3. Downward arrival within FOLLOW_REENGAGE_PX of the bottom → re-engage.
+ *   4. Otherwise (downward/neutral, still away from the bottom) → keep the
+ *      previous state.
+ *
+ * `prevScrollTop < 0` means "no prior observation this session". Direction is
+ * unknowable then, so the decision is position-only and CONSERVATIVE: follow
+ * only within the re-engage band. Keeping a stale `stick` on an unattributable
+ * away-from-bottom scroll is how a reader gets yanked.
+ */
+export function resolveUserScrollStick(args: {
+  stick: boolean
+  followOutput: boolean
+  scrollTop: number
+  prevScrollTop: number
+  geom: ScrollGeom
+}): boolean {
+  const { stick, followOutput, scrollTop, prevScrollTop, geom } = args
+  if (!followOutput) return false
+  const dist = distanceFromBottom(geom)
+  if (dist <= atBottomEpsilon()) return true
+  if (prevScrollTop < 0) return dist <= FOLLOW_REENGAGE_PX
+  if (scrollTop < prevScrollTop - 0.5) return false
+  if (dist <= FOLLOW_REENGAGE_PX) return true
+  return stick
 }
 
 /** Result of an automatic (RO / append) pin evaluation. */

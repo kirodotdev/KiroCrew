@@ -109,7 +109,7 @@ import {
   computeAtBottom,
   isSelfScroll,
   SELF_SCROLL_EPSILON,
-  stickAfterUserScroll,
+  resolveUserScrollStick,
   bottomTarget,
   evaluateAutoPin,
 } from './FollowController'
@@ -446,7 +446,14 @@ export function useVirtualChat<T>(
   }, [])
   // Timestamp (performance.now) of the last genuine USER scroll. Used to gate
   // RO-driven follow pins so they don't fire mid-fling — see SCROLL_SETTLE_MS.
-  const lastUserScrollAtRef = useRef<number>(0)
+  // Starts at -Infinity: "no input yet" must never read as "input just
+  // happened" (performance.now() can legitimately be near 0 early in a page's
+  // life, and is under fake timers in tests).
+  const lastUserScrollAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  // scrollTop as of the last observed scroll event (self or user). Gives the
+  // user-scroll stick decision its direction: a genuine upward move releases
+  // follow even inside the 100px at-bottom band. `-1` = no observation yet.
+  const lastObservedTopRef = useRef<number>(-1)
 
   // ---- Scroll-anchor preservation ----
   //
@@ -1067,6 +1074,13 @@ export function useVirtualChat<T>(
       if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior })
       else el.scrollTop = top
       lastWriteTopRef.current = accounting === 'pin' ? top : -1
+      // The direction reference must move WITH our own writes, synchronously.
+      // A programmatic scroll's event lands asynchronously (and a fake scroller
+      // in tests dispatches none), so leaving the reference to the scroll
+      // handler alone would measure the user's next move against a position
+      // from BEFORE our pin — an upward scroll right after a pin then reads as
+      // downward and fails to release follow.
+      lastObservedTopRef.current = top
       // A SMOOTH pin animates toward `top` over many frames, and every
       // intermediate scroll event carries a scrollTop that differs from the
       // recorded target — so the passive listener would read those frames as
@@ -1167,6 +1181,12 @@ export function useVirtualChat<T>(
     writeScrollTop(el, target, 'auto', 'pin')
   }, [followOutput, scrollerRef, writeScrollTop])
 
+  // Live follow state for consumers. A stable callback rather than state:
+  // `stick` flips inside hot paths (scroll handler, RO callback) where a
+  // setState per tick would be waste, and the consumers are effect gates that
+  // need the CURRENT value at fire time, not a render-synced snapshot.
+  const getFollow = useCallback(() => stickRef.current, [])
+
   // Keep the tracked scroller element in sync after every commit, so the
   // observer effects below re-attach the moment the node appears (or changes).
   useEffect(() => {
@@ -1230,7 +1250,13 @@ export function useVirtualChat<T>(
         prevSmoothTopRef.current = el.scrollTop
       } else if (!isSelfScroll(el.scrollTop, lastWriteTopRef.current)) {
         lastUserScrollAtRef.current = performance.now()
-        stickRef.current = stickAfterUserScroll(atBottom, followOutput)
+        stickRef.current = resolveUserScrollStick({
+          stick: stickRef.current,
+          followOutput,
+          scrollTop: el.scrollTop,
+          prevScrollTop: lastObservedTopRef.current,
+          geom,
+        })
         // A scroll we did not write that leaves us EXACTLY at the bottom was the
         // layout engine's: the browser clamps scrollTop when a shrinking
         // scrollHeight drops the maximum below it, and a spacer re-estimate does
@@ -1241,14 +1267,18 @@ export function useVirtualChat<T>(
         // re-arm it.
         //
         // The test is the CLAMP — distance within SELF_SCROLL_EPSILON — and NOT
-        // the 100px `atBottom` UI band. A real 3-100px scroll-up also keeps
-        // `stick` armed via stickAfterUserScroll, so re-baselining across that
-        // band would erase the only evidence evaluateAutoPin has of it and yank
-        // the user back to the bottom on the next append.
+        // the 100px `atBottom` UI band. resolveUserScrollStick's bottom-epsilon
+        // branch is what keeps `stick` armed across the clamp; re-baselining
+        // across the wider band would erase the only evidence evaluateAutoPin
+        // has of a real 3-100px scroll-up.
         const clampedAtBottom =
           geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
         if (stickRef.current && clampedAtBottom) lastWriteTopRef.current = el.scrollTop
       }
+      // Direction reference for the next event — updated for self-scrolls too,
+      // so a user move right after our own pin is measured against where the
+      // pin actually left the viewport.
+      lastObservedTopRef.current = el.scrollTop
       // Persist the reading position once this scroll burst settles (also
       // clears it when the burst ends at the bottom). Scheduled for self-
       // scrolls too — see scheduleAnchorSave. The context snapshot is what
@@ -1269,9 +1299,24 @@ export function useVirtualChat<T>(
       }
     }
     el.addEventListener('scroll', onScroll, { passive: true })
+    // A fresh element has no direction history — do not measure its first user
+    // scroll against a previous scroller's position.
+    lastObservedTopRef.current = -1
+    // Persistent input-intent listeners (wheel / touch / scrollbar grab /
+    // scrolling keys). They only bump the settle timestamp — the stick decision
+    // itself stays with the scroll handler above. This closes a race the scroll
+    // event cannot: input lands BEFORE its scroll event dispatches, so an RO
+    // tick between the two saw a stale "settled" timestamp and pinned against
+    // the gesture (fighting a trackpad fling frame by frame). Suppression is
+    // harmless when the input does not scroll (a click, a wheel at the bottom):
+    // follow resumes SCROLL_SETTLE_MS later.
+    const detachIntent = attachUserScrollIntent(el, () => {
+      lastUserScrollAtRef.current = performance.now()
+    })
     onScroll()
     return () => {
       el.removeEventListener('scroll', onScroll)
+      detachIntent()
       // Cancel any frame queued by the last scroll so it can't fire a
       // setWindowRange after unmount/re-run. Reset the ref too, or a re-run
       // would see it stuck true and never schedule again.
@@ -1416,7 +1461,15 @@ export function useVirtualChat<T>(
       // stick released it must never move a reading user.
       const shouldFollow =
         genuineResize || ((firstMount || viewportResized) && stickRef.current)
-      if (shouldFollow && (stickRef.current || performance.now() - lastUserScrollAtRef.current >= SCROLL_SETTLE_MS)) {
+      // The settle gate applies even while following: with `stick` armed the
+      // old bypass meant every RO tick pinned instantly DURING an active
+      // gesture — the pin write and the user's input fought over scrollTop
+      // frame by frame (visible as jitter) until the scroll event finally
+      // released `stick`. Intent listeners bump the timestamp at input time,
+      // so the gate holds pins off from the first wheel/touch/key/scrollbar
+      // event; a stationary reader at the bottom is untouched (no input →
+      // timestamp stays old → pins flow).
+      if (shouldFollow && performance.now() - lastUserScrollAtRef.current >= SCROLL_SETTLE_MS) {
         pinAuto()
       }
 
@@ -2147,6 +2200,7 @@ export function useVirtualChat<T>(
     offsetAfter,
     totalHeight,
     isAtBottom,
+    getFollow,
     scrollToIndex,
     scrollToBottom,
     mountIndex,

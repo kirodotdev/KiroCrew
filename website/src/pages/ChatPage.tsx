@@ -68,6 +68,7 @@ import McpToolsPanel from './chat/McpToolsPanel'
 import { deriveLoadedMcpTools } from '../lib/mcpLoadedTools'
 import type { McpServer } from '../types'
 import { useScrollManager } from './chat/useScrollManager'
+import { useBubbleVanishProbe } from './chat/useBubbleVanishProbe'
 import { shouldPaginateOlder, canForkAtWindow, searchScopeIsLimited } from './chat/pagination'
 import EarlierMessagesBar from './chat/EarlierMessagesBar'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
@@ -1389,7 +1390,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // (declared before `virt` in source order) to the virtualizer's API without
   // a temporal-dead-zone hazard — they are populated right after `virt` is
   // created and only read inside callbacks/effects that run post-render.
-  const isAtBottomRef = useRef(true)
+  // `vGetFollowRef` defaults to "following" so a gate that fires on the very
+  // first commit (before the mirror populates it) behaves like the fresh-slot
+  // bottom pin it accompanies.
+  const vGetFollowRef = useRef<() => boolean>(() => true)
   const vScrollToBottomRef = useRef<(behavior?: ScrollBehavior) => void>(() => {})
   const mountIndexRef = useRef<(index: number) => boolean>(() => false)
 
@@ -3322,10 +3326,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const [surveyLayoutTick, setSurveyLayoutTick] = useState(0)
   const handleSurveyLayoutChange = useCallback(() => setSurveyLayoutTick((t) => t + 1), [])
   useEffect(() => {
-    if (!isAtBottomRef.current) return
+    // Gate on FOLLOW, not the 100px at-bottom band: a reader parked a little
+    // above the bottom has released follow, and re-anchoring for a tip/survey
+    // band would yank them (and replace the mounted window under them).
+    if (!vGetFollowRef.current()) return
     const raf = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        if (isAtBottomRef.current) scrollBottom(true)
+        if (vGetFollowRef.current()) scrollBottom(true)
       })
     })
     return () => cancelAnimationFrame(raf)
@@ -4117,16 +4124,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
   }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, defaultAgent, mode, newSlotFailed])
 
-  // Slot switch: the virtualizer (keyed on sessionId = activeSlot) force-pins
-  // to the true bottom itself in a layout effect. Here we just re-arm the
-  // local at-bottom ref used by the gating effects below.
-  const prevSlotRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (activeSlot !== prevSlotRef.current) {
-      prevSlotRef.current = activeSlot
-      isAtBottomRef.current = true
-    }
-  }, [activeSlot])
+  // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
+  // placement — it force-pins to the bottom (arming follow) or restores a
+  // saved reading position (leaving follow released). The gating effects below
+  // read that live state via vGetFollowRef, so nothing here needs re-arming;
+  // forcing "at bottom" on switch used to yank a restored mid-history reader
+  // the moment a tip band or a running-state tick fired.
 
   // Auto-scroll during streaming — only when pinned to bottom
   const lastMsg = messages[messages.length - 1]
@@ -4176,7 +4179,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Scroll to show Footer when agent starts running (loading indicator appears)
   const prevRunningRef = useRef(false)
   useEffect(() => {
-    if (slotRunning && !prevRunningRef.current && isAtBottomRef.current) {
+    if (slotRunning && !prevRunningRef.current && vGetFollowRef.current()) {
       setTimeout(() => scrollBottom(), SCROLL_AFTER_RENDER_MS)
     }
     prevRunningRef.current = slotRunning
@@ -4567,7 +4570,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     window.dispatchEvent(new Event('voice-stop'))
     sendingRef.current = false
-    isAtBottomRef.current = true
     setTimeout(() => scrollBottom(), SCROLL_AFTER_RENDER_MS)
     if (slot) dispatch(startLocalTurn(slot))
     const controller = new AbortController()
@@ -4765,7 +4767,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [tabsCtl.activeTab, activeSlot, dispatch, send])
 
   // Auto-send when navigated with ?autoSend=1 or ?token= with prompt
-  useEffect(() => { if (connected && autoSendRef.current) { const txt = autoSendRef.current; autoSendRef.current = null; send(txt) } }, [send, connected, autoSendTick])  
+  useEffect(() => { if (connected && autoSendRef.current) { const txt = autoSendRef.current; autoSendRef.current = null; send(txt) } }, [send, connected, autoSendTick])
 
   // Widget interactivity: when a mcwidget iframe fires an action, PRE-FILL the
  // composer instead of auto-submitting. Auto-submitting would be a
@@ -5867,6 +5869,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // side effect, not render-body mutation, so React's rules of render hold.
   useLayoutEffect(() => { displayItemsRef.current = displayItems }, [displayItems])
 
+  // Opt-in #7045 diagnostic: log store-vs-render counts whenever the number of
+  // mounted transcript rows drops (see useBubbleVanishProbe). Off (and free)
+  // unless the localStorage flag is set.
+  const messagesLenRef = useRef(0)
+  useLayoutEffect(() => { messagesLenRef.current = messages.length }, [messages])
+  const bubbleProbeCounts = useCallback(
+    () => ({ store: messagesLenRef.current, display: displayItemsRef.current.length }),
+    [],
+  )
+  useBubbleVanishProbe(scrollerRef, bubbleProbeCounts, activeSlot)
+
   // Pinned prompt: keep the enablement ref in sync (updatePinnedPrompt is declared
   // above chatConfig and reads it through a ref), and recompute after the list
   // changes — a new turn shifts geometry with no scroll event of its own.
@@ -6025,10 +6038,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Mirror the virtualizer's follow API into the refs the early effects/handlers
   // (declared above) read. Done in a layout effect rather than the render body
   // so a concurrent render React throws away can't write stale callbacks into
-  // the refs. Layout effects run before passive effects, so the gating effect
-  // that reads isAtBottomRef.current still sees this commit's value.
+  // the refs. Layout effects run before passive effects, so the gating effects
+  // that call vGetFollowRef.current() still see this commit's callback.
   useLayoutEffect(() => {
-    isAtBottomRef.current = isAtBottom
+    vGetFollowRef.current = virt.getFollow
     vScrollToBottomRef.current = virt.scrollToBottom
     mountIndexRef.current = virt.mountIndex
   })
@@ -7936,7 +7949,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 <div className="absolute -top-10 inset-x-0 z-10 pointer-events-none flex justify-center">
                   <button
                     className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
-                    onClick={() => { isAtBottomRef.current = true; scrollBottom(true) }}
+                    onClick={() => scrollBottom(true)}
                     aria-label={i18nT('pages.chatPage.scroll_to_bottom')}
                   ><ArrowDown size={14} strokeWidth={2.5} /></button>
                 </div>

@@ -11,11 +11,12 @@ import {
   distanceFromBottom,
   bottomTarget,
   isSelfScroll,
-  stickAfterUserScroll,
+  resolveUserScrollStick,
   evaluateAutoPin,
   atBottomEpsilon,
   SELF_SCROLL_EPSILON,
   DEFAULT_BOTTOM_THRESHOLD,
+  FOLLOW_REENGAGE_PX,
 } from '../hooks/virtualizer/FollowController'
 
 describe('geometry helpers', () => {
@@ -46,14 +47,101 @@ describe('isSelfScroll', () => {
   })
 })
 
-describe('stickAfterUserScroll', () => {
-  it('follows only when followOutput AND at bottom', () => {
+describe('resolveUserScrollStick — direction-aware follow decision', () => {
+  // 1000px content in a 400px viewport → bottom target 600.
+  const geomAt = (scrollTop: number) => ({ scrollTop, scrollHeight: 1000, clientHeight: 400 })
+
+  it('releases on ANY upward move away from the true bottom, even inside the 100px band', () => {
+    for (const dist of [3, 30, 99]) {
+      expect(
+        resolveUserScrollStick({
+          stick: true,
+          followOutput: true,
+          scrollTop: 600 - dist,
+          prevScrollTop: 600,
+          geom: geomAt(600 - dist),
+        }),
+      ).toBe(false)
+    }
+  })
+
+  it('keeps following across a layout clamp (scrollTop drops but lands at the true bottom)', () => {
+    // Content shrank 227px; the browser clamped scrollTop by the same amount.
+    const geom = { scrollTop: 373, scrollHeight: 773, clientHeight: 400 }
+    expect(
+      resolveUserScrollStick({
+        stick: true, followOutput: true, scrollTop: 373, prevScrollTop: 600, geom,
+      }),
+    ).toBe(true)
+  })
+
+  it('re-engages on a downward arrival within FOLLOW_REENGAGE_PX of the bottom', () => {
+    const dist = FOLLOW_REENGAGE_PX - 1
+    expect(
+      resolveUserScrollStick({
+        stick: false, followOutput: true, scrollTop: 600 - dist, prevScrollTop: 200,
+        geom: geomAt(600 - dist),
+      }),
+    ).toBe(true)
+  })
+
+  it('does NOT re-engage on a downward move that stops short of the re-engage band', () => {
+    // 60px above the bottom: inside the old 100px band, outside the new one.
+    expect(
+      resolveUserScrollStick({
+        stick: false, followOutput: true, scrollTop: 540, prevScrollTop: 200,
+        geom: geomAt(540),
+      }),
+    ).toBe(false)
+  })
+
+  it('keeps the previous state for a mid-list downward move (no flapping)', () => {
+    for (const stick of [true, false]) {
+      expect(
+        resolveUserScrollStick({
+          stick, followOutput: true, scrollTop: 300, prevScrollTop: 200,
+          geom: geomAt(300),
+        }),
+      ).toBe(stick)
+    }
+  })
+
+  it('is position-only and conservative with no prior observation (prevScrollTop < 0)', () => {
+    // At the bottom → follow; away from it → release EVEN IF stick was armed
+    // (an unattributable scroll must not keep a stale follow).
+    expect(
+      resolveUserScrollStick({
+        stick: true, followOutput: true, scrollTop: 600, prevScrollTop: -1, geom: geomAt(600),
+      }),
+    ).toBe(true)
+    expect(
+      resolveUserScrollStick({
+        stick: true, followOutput: true, scrollTop: 300, prevScrollTop: -1, geom: geomAt(300),
+      }),
+    ).toBe(false)
+    expect(
+      resolveUserScrollStick({
+        stick: false, followOutput: true, scrollTop: 300, prevScrollTop: -1, geom: geomAt(300),
+      }),
+    ).toBe(false)
+  })
+
+  it('never follows with followOutput disabled', () => {
     fc.assert(
-      fc.property(fc.boolean(), fc.boolean(), (atBottom, followOutput) => {
-        expect(stickAfterUserScroll(atBottom, followOutput)).toBe(followOutput && atBottom)
+      fc.property(fc.boolean(), fc.integer({ min: 0, max: 600 }), (stick, top) => {
+        expect(
+          resolveUserScrollStick({
+            stick, followOutput: false, scrollTop: top, prevScrollTop: 600, geom: geomAt(top),
+          }),
+        ).toBe(false)
       }),
       { numRuns: 50 },
     )
+  })
+
+  it('the re-engage band is meaningfully tighter than the pill band', () => {
+    expect(FOLLOW_REENGAGE_PX).toBeLessThan(DEFAULT_BOTTOM_THRESHOLD / 2)
+    expect(FOLLOW_REENGAGE_PX).toBeGreaterThan(atBottomEpsilon())
   })
 })
 

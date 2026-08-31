@@ -97,10 +97,11 @@ describe('useVirtualChat: a clamp at the bottom vs a scroll away from it', () =>
     const { el, state, view, ref } = mount(mkItems(5), `small-nudge-${up}`)
     expect(el.scrollTop).toBe(BOTTOM)
 
-    // Inside the 100px `atBottom` UI band, so `stickAfterUserScroll` keeps stick
-    // armed and the only thing holding the position is evaluateAutoPin's
-    // scroll-up guard. Re-baselining on that band instead of on the clamp erases
-    // it and the next append pins to the bottom — the regression this locks out.
+    // Inside the 100px `atBottom` UI band. The upward move releases follow
+    // (direction-aware decision), and evaluateAutoPin's scroll-up guard backs
+    // it up — either way the position belongs to the user. Re-baselining on
+    // that band instead of on the clamp would erase the guard's evidence and
+    // the next append would pin to the bottom — the regression this locks out.
     // 3px is the smallest move that clears SELF_SCROLL_EPSILON and so is the
     // first that reaches this branch at all.
     act(() => { state.scrollTop = BOTTOM - up; el.dispatchEvent(new Event('scroll')) })

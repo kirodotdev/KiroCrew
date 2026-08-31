@@ -141,6 +141,12 @@ export interface UseVirtualChatReturn<T> {
   totalHeight: number
   /** Whether the scroller is at (within bottomThreshold of) the bottom. */
   isAtBottom: boolean
+  /** Live follow ("stick to bottom") state: true while the transcript is
+   * auto-following output. Stable identity; reads the live value at call
+   * time, so effect gates see flips that happened after the last render.
+   * Distinct from `isAtBottom`: the user can be inside the at-bottom band
+   * with follow released (they scrolled up a little to read). */
+  getFollow: () => boolean
   /** Scroll the scroller so item `index` is visible. */
   scrollToIndex: (index: number, opts?: ScrollToIndexOptions) => void
   /** Scroll to the bottom (latest message). */
