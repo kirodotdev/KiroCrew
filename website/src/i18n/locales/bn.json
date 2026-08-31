@@ -11111,6 +11111,8 @@
       "running": "চলছে",
       "schedule": "সময়সূচি",
       "scheduled_as_daily_cron_job": "দৈনিক cron জব হিসেবে সময়সূচি করা হয়েছে",
+      "spec_declares_auto_approval": "স্পেক approval: auto ঘোষণা করে",
+      "spec_declares_auto_approval_hint": "এই স্পেক `approval: auto` ঘোষণা করে। এটি কেবল একটি ঘোষণা — আপনি নিজে বক্সে টিক না দিলে টুল কল একটি একটি করেই অনুমোদিত হয়।",
       "task_runner": "Task Runner",
       "upload_a_file": "একটি ফাইল আপলোড করুন",
       "workspace": "ওয়ার্কস্পেস:",

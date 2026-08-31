@@ -10952,6 +10952,8 @@
       "running": "실행 중",
       "schedule": "정기 실행",
       "scheduled_as_daily_cron_job": "매일 실행되는 cron 작업으로 등록했습니다",
+      "spec_declares_auto_approval": "명세가 approval: auto를 선언함",
+      "spec_declares_auto_approval_hint": "이 명세는 `approval: auto`를 선언합니다. 선언일 뿐이며, 직접 확인란을 선택하지 않으면 도구 호출은 계속 하나씩 승인됩니다.",
       "task_runner": "Task Runner",
       "upload_a_file": "파일 업로드",
       "workspace": "워크스페이스:",

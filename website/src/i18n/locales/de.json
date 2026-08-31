@@ -11111,6 +11111,8 @@
       "running": "Läuft",
       "schedule": "Einplanen",
       "scheduled_as_daily_cron_job": "Als täglicher Cron-Job geplant",
+      "spec_declares_auto_approval": "Spezifikation deklariert approval: auto",
+      "spec_declares_auto_approval_hint": "Diese Spezifikation deklariert `approval: auto`. Das ist nur eine Deklaration — Tool-Aufrufe werden weiterhin einzeln genehmigt, sofern Sie das Kästchen nicht selbst aktivieren.",
       "task_runner": "Task Runner",
       "upload_a_file": "Eine Datei hochladen",
       "workspace": "Workspace:",

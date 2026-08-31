@@ -11429,6 +11429,8 @@
       "running": "Выполняется",
       "schedule": "Запланировать",
       "scheduled_as_daily_cron_job": "Запланировано как ежедневное cron-задание",
+      "spec_declares_auto_approval": "Спецификация объявляет approval: auto",
+      "spec_declares_auto_approval_hint": "Эта спецификация объявляет `approval: auto`. Это лишь объявление — вызовы инструментов по-прежнему утверждаются по одному, если вы сами не установите флажок.",
       "task_runner": "Task Runner",
       "upload_a_file": "Загрузить файл",
       "workspace": "Рабочая область:",

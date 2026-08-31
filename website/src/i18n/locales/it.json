@@ -11270,6 +11270,8 @@
       "running": "In esecuzione",
       "schedule": "Programma",
       "scheduled_as_daily_cron_job": "Pianificato come job cron giornaliero",
+      "spec_declares_auto_approval": "La specifica dichiara approval: auto",
+      "spec_declares_auto_approval_hint": "Questa specifica dichiara `approval: auto`. È solo una dichiarazione: le chiamate agli strumenti vengono ancora approvate una alla volta, a meno che non selezioni tu stesso la casella.",
       "task_runner": "Task Runner",
       "upload_a_file": "Carica un file",
       "workspace": "Workspace:",

@@ -10952,6 +10952,8 @@
       "running": "実行中",
       "schedule": "スケジュール",
       "scheduled_as_daily_cron_job": "日次cronジョブとしてスケジュール済み",
+      "spec_declares_auto_approval": "仕様が approval: auto を宣言",
+      "spec_declares_auto_approval_hint": "この仕様は `approval: auto` を宣言しています。これは宣言にすぎません。自分でチェックボックスをオンにしない限り、ツール呼び出しは 1 件ずつ承認されます。",
       "task_runner": "Task Runner",
       "upload_a_file": "ファイルをアップロード",
       "workspace": "ワークスペース：",

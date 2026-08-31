@@ -11111,6 +11111,8 @@
       "running": "चल रहा है",
       "schedule": "शेड्यूल",
       "scheduled_as_daily_cron_job": "दैनिक cron जॉब के रूप में शेड्यूल किया गया",
+      "spec_declares_auto_approval": "स्पेक approval: auto घोषित करता है",
+      "spec_declares_auto_approval_hint": "यह स्पेक `approval: auto` घोषित करता है। यह केवल एक घोषणा है — जब तक तुम खुद बॉक्स पर टिक नहीं करते, टूल कॉल एक-एक करके ही स्वीकृत होते हैं।",
       "task_runner": "Task Runner",
       "upload_a_file": "फ़ाइल अपलोड करें",
       "workspace": "वर्कस्पेस:",

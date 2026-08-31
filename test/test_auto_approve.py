@@ -23,6 +23,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_execute_plan,
+    api_taskrunner_plan,
     api_taskrunner_start,
 )
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
@@ -666,3 +667,166 @@ class TestInlineSpecCleanup:
         assert resp.status == 200
         payload = json.loads(resp.text)
         assert Path(payload["spec"]).is_file()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# A spec DECLARES; only the human's request body GRANTS
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestSpecDeclarationGrantsNothing:
+    """`approval: auto` in a spec must never produce auto-approval on its own.
+
+    The server derives the grant from `auto_approve` in the request body ALONE.
+    An earlier revision of this feature OR-ed the parsed declaration into the
+    grant on both launch paths, which let spec CONTENT stand in for a human's
+    explicit consent (GPT 5.6 BLOCK, PR #2129); First-Principles and Design
+    named the same target. These tests pin the OR as absent — on both paths, and
+    from a dashboard context, where a grant WOULD be honored if one were asked
+    for.
+    """
+
+    DECLARING = "---\napproval: auto\n---\n# Task: t\n## Steps\n1. do\n"
+
+    async def _start_auto_approve(self, tmp_path: Path, body: dict):
+        runner = MagicMock()
+        runner._work_dir = str(tmp_path)
+        runner.start_background = AsyncMock(return_value="tid")
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req["app"] = ""  # dashboard context: a requested grant WOULD be honored
+        req.json = AsyncMock(return_value=body)
+        resp = await api_taskrunner_start(req)
+        assert resp.status == 200, resp.text
+        return runner.start_background.call_args
+
+    @pytest.mark.asyncio
+    async def test_inline_declaring_spec_without_the_flag_gets_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        call = await self._start_auto_approve(
+            tmp_path, {"spec": "__inline__:" + self.DECLARING, "source": "dashboard"}
+        )
+        assert call.kwargs["auto_approve"] is False
+
+    @pytest.mark.asyncio
+    async def test_inline_declaring_spec_with_the_flag_false_gets_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        # An explicit `false` is the STRICT default the dashboard now sends: the
+        # checkbox is unchecked even when the spec declares auto.
+        call = await self._start_auto_approve(
+            tmp_path,
+            {
+                "spec": "__inline__:" + self.DECLARING,
+                "source": "dashboard",
+                "auto_approve": False,
+            },
+        )
+        assert call.kwargs["auto_approve"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_human_flag_is_what_grants(self, tmp_path: Path) -> None:
+        # Control: the same declaring spec DOES run unattended once the human
+        # asks for it, so the tests above are measuring the OR's absence and not
+        # a gate that simply refuses everything.
+        call = await self._start_auto_approve(
+            tmp_path,
+            {
+                "spec": "__inline__:" + self.DECLARING,
+                "source": "dashboard",
+                "auto_approve": True,
+            },
+        )
+        assert call.kwargs["auto_approve"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_file_backed_declaring_spec_executes_from_its_own_path(
+        self, tmp_path: Path
+    ) -> None:
+        # No content-derived grant means no content-derived TOCTOU to close, so
+        # the approval snapshot is gone: the run executes from the caller's own
+        # file and the work dir gains no `snap-<hex>/` directory to leak.
+        spec = tmp_path / "declaring.md"
+        spec.write_text(self.DECLARING, encoding="utf-8")
+        work = tmp_path / "work"
+        work.mkdir()
+        call = await self._start_auto_approve(
+            str(work), {"spec": str(spec), "source": "dashboard", "auto_approve": True}
+        )
+        assert call.kwargs["auto_approve"] is True
+        assert call.args[0] == str(spec.resolve())
+        assert list(work.iterdir()) == []
+
+    async def _execute_auto_approve(self, body: dict, spec_content: str):
+        runner = MagicMock()
+        runner.execute_plan = AsyncMock(return_value=None)
+        runner._runs = {
+            "t1": Project(
+                spec_path="s.md", spec_content=spec_content, status="planned", task_id="t1"
+            )
+        }
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request(
+            "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
+            headers={"Content-Length": "32"},
+        )
+        req["app"] = ""
+        req.json = AsyncMock(return_value=body)
+        await api_taskrunner_execute_plan(req)
+        return runner.execute_plan.call_args.kwargs["auto_approve"]
+
+    @pytest.mark.asyncio
+    async def test_execute_declaring_spec_without_the_flag_gets_nothing(self) -> None:
+        assert await self._execute_auto_approve({}, self.DECLARING) is False
+
+    @pytest.mark.asyncio
+    async def test_execute_declaring_spec_with_the_flag_false_gets_nothing(self) -> None:
+        assert await self._execute_auto_approve({"auto_approve": False}, self.DECLARING) is False
+
+    @pytest.mark.asyncio
+    async def test_execute_honors_the_human_flag_on_the_same_spec(self) -> None:
+        assert await self._execute_auto_approve({"auto_approve": True}, self.DECLARING) is True
+
+
+class TestPlanReportsTheDeclarationWithoutActingOnIt:
+    """`/plan` surfaces `declared_approval` so the human can decide.
+
+    This is the whole replacement for the deleted server-side OR: the
+    declaration reaches the person who owns the checkbox, and reaches nothing
+    else.
+    """
+
+    async def _plan(self, spec_content: str):
+        runner = MagicMock()
+        run = Project(
+            spec_path="s.md", spec_content=spec_content, status="planned", task_id="t1"
+        )
+        runner.plan = AsyncMock(return_value=run)
+        runner._group_parallel_tasks = MagicMock(return_value=[])
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner)
+        req = make_mocked_request("POST", "/api/taskrunner/plan", app=app)
+        req.json = AsyncMock(return_value={"input": "do the thing", "source": "text"})
+        resp = await api_taskrunner_plan(req)
+        assert resp.status == 200, resp.text
+        return json.loads(resp.text)
+
+    @pytest.mark.asyncio
+    async def test_a_declaring_spec_is_reported(self) -> None:
+        payload = await self._plan("---\napproval: auto\n---\n# Task: t\n")
+        assert payload["declared_approval"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_silent_spec_is_reported_as_false(self) -> None:
+        payload = await self._plan("# Task: t\n")
+        assert payload["declared_approval"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_empty_spec_content_is_reported_as_false(self) -> None:
+        # `plan(source="yaml")` leaves spec_content empty; the field must still
+        # serialize rather than raising on None/"".
+        payload = await self._plan("")
+        assert payload["declared_approval"] is False

@@ -13,7 +13,7 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
-from kiro_crew.task_planner import plan_to_yaml
+from kiro_crew.task_planner import plan_to_yaml, spec_declares_auto
 
 logger = logging.getLogger(__name__)
 
@@ -566,6 +566,15 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
                 [s.index for s in group]
                 for group in state.task_runner._group_parallel_tasks(run.tasks, set())
             ],
+            # READ-ONLY report of what the spec DECLARED, so the reviewing human
+            # sees it before pressing Execute and can grant unattended execution
+            # through their OWN request body (the auto-approve checkbox). The
+            # server never reads this back: `/execute` derives auto-approve from
+            # `auto_approve` alone, so a spec cannot grant itself anything.
+            #
+            # Costs no disk read — `spec_content` was captured in memory at plan
+            # time and is the same snapshot the run executes from.
+            "declared_approval": spec_declares_auto(run.spec_content or ""),
         }
     )
 

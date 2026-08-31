@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.frontmatter import TASK_SPEC, parse_frontmatter
 from kiro_crew.hooks import TOOL_DENY
 from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.platform.context import redact_log_via_context
@@ -50,6 +51,50 @@ def auto_name(spec_content: str, spec_path: str = "") -> str:
             cut = line[:60].rsplit(" ", 1)[0] or line[:60]
             return cut + "…"
     return ""
+
+
+# ── Spec-declared approval mode ──
+
+
+def spec_declares_auto(spec_content: str) -> bool:
+    """Report whether a spec's frontmatter DECLARES ``approval: auto``.
+
+    A spec may state its intended approval mode in a leading YAML frontmatter
+    fence, so a trusted plan can carry that intent in version control::
+
+        ---
+        approval: auto
+        ---
+        # Task: refactor the widget
+
+    This REPORTS a declaration and GRANTS nothing. Unattended execution is
+    granted only by the launching human's own request body — the dashboard's
+    auto-approve checkbox, routed through ``_gate_auto_approve`` — and the server
+    never derives that grant from spec bytes. The declaration is surfaced
+    pre-launch so the human can act on it; a spec obtained from an untrusted
+    source therefore cannot disable that human's approval prompts on its own
+    authority (GPT 5.6 / First-Principles / Design review, PR #2129).
+
+    That separation is also what keeps this function small. While a declaration
+    was a grant, every reading of it was an authorization decision, so the
+    scanner had to defend the whole surface a directive could hide in — code
+    fences, HTML comments, wrapper elements, a bounded top-of-file window.
+    Reporting intent carries no such burden: the reading is advisory, the region
+    is delimited, and the grammar is :data:`~kiro_crew.frontmatter.TASK_SPEC`.
+
+    ``True`` only for a literal ``auto`` under a top-level ``approval`` key.
+    Anything else is ``False``: no frontmatter, an unterminated fence, another
+    value, an indented occurrence, or TWO conflicting ``approval:`` keys
+    (rejected, never resolved by position).
+
+    The VALUE is case-insensitive; the KEY is not, so ``Approval: auto`` declares
+    nothing. That asymmetry is the whole module's behavior — no dialect folds key
+    case (:func:`~kiro_crew.frontmatter.parse_frontmatter` keeps ``Name`` verbatim
+    for ``SKILL_LOADER`` too) — and it errs toward per-action prompting, so it is
+    left as-is rather than special-cased here.
+    """
+    declared = parse_frontmatter(spec_content or "", TASK_SPEC).get("approval", "")
+    return declared.strip().lower() == "auto"
 
 
 # ── Parallel Task Grouping ──

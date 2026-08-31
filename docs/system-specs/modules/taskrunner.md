@@ -296,6 +296,56 @@ On gateway restart, any task with `status == "running"` is automatically transit
 - `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
 - The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.
 
+### Spec-declared approval mode
+
+A spec may DECLARE its intended approval mode in leading YAML frontmatter, so a
+trusted plan carries that intent in version control:
+
+```markdown
+---
+approval: auto
+---
+# Task: refactor the widget
+```
+
+**A declaration is not a grant.** The server derives auto-approval from the
+`auto_approve` field of the launching human's request body and from nothing else
+— `_gate_auto_approve` is still the only decision point, and the declaration is
+never OR-ed into it. So a spec obtained from an untrusted source (repo, chat,
+download) cannot disable the launching human's approval prompts, which is what a
+content-derived grant did: the provenance gate checks *who launched*, not
+*whether that human consented to unattended execution*, so a dashboard launch of
+someone else's spec passed the gate on the launcher's own standing.
+
+What the declaration does instead is reach the person who owns the checkbox:
+
+- `task_planner.spec_declares_auto()` reports it. `True` only for a literal
+  `auto` (case-insensitive) as a top-level frontmatter key; the grammar is
+  `frontmatter.TASK_SPEC`.
+- `POST /api/taskrunner/plan` returns it as read-only `declared_approval`, at no
+  extra disk read — `spec_content` is already in memory at plan time.
+- The project detail view renders it beside the existing auto-approve checkbox
+  and leaves that box **unchecked**. The trust decision stays a deliberate click
+  at Execute time, matching the existing rule that a planned or resumed run
+  shows unchecked because its live grant was torn down.
+
+Because the reading is advisory rather than authorizing, it needs none of the
+hardening a content-derived grant needed. Two consequences worth stating:
+
+- Only frontmatter counts. A bare top-of-file `approval:` line is not a
+  declaration, so there is no window of arbitrary document text to scan and no
+  code-fence or HTML-markup class to defend against.
+- **Duplicate keys fail closed.** `parse_frontmatter` returns a dict, so two
+  `approval:` keys would otherwise be resolved silently by position — and
+  whichever declaration a human reads first need not be the one the parser
+  honored. `TASK_SPEC` sets `reject_duplicate_keys`, so two or more occurrences
+  report "not declared".
+
+Operators who want an unattended *background* source still use the separate
+explicit opt-in `hooks.auto_approve_sources` (e.g. add `"taskrunner"`), which is
+consent scoped to a source rather than to a file's contents. `force_approval`
+gates block regardless.
+
 ## Parallel Execution
 
 Parallel groups are throttled to prevent resource exhaustion from simultaneous kiro-cli cold starts. Each kiro-cli cold start spawns MCP server child processes, so concurrent tasks multiply startup pressure.

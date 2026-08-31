@@ -23,6 +23,7 @@ from kiro_crew.frontmatter import (
     ONBOARDING_IMPORT,
     SKILL_LOADER,
     SKILL_UPDATE,
+    TASK_SPEC,
     FrontmatterDialect,
     fold_block_scalar,
     frontmatter_value,
@@ -351,14 +352,14 @@ class TestTheLiteralFoldTheSkillEditorSimulates:
 
 
 class TestDialectContracts:
-    """The three dialects stay distinct — collapsing any two axes silently
+    """The four dialects stay distinct — collapsing any two axes silently
     changes some caller's accepted-input surface."""
 
     def test_presets_are_distinct(self) -> None:
-        presets = [SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE]
+        presets = [SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE, TASK_SPEC]
         keys = {
             (p.extraction, p.indent_policy, p.strip_quotes, p.first_key_wins,
-             p.resolve_block_scalars)
+             p.resolve_block_scalars, p.reject_duplicate_keys)
             for p in presets
         }
         assert len(keys) == len(presets)
@@ -371,6 +372,33 @@ class TestDialectContracts:
         text = "---\nk: first\nk: second\n---\n"
         assert frontmatter_value(text, "k", SKILL_UPDATE) == "first"
         assert parse_frontmatter(text, SKILL_LOADER)["k"] == "second"
+
+    def test_duplicate_rejection_is_per_dialect(self) -> None:
+        # The third position on the duplicate axis: neither occurrence wins, so
+        # the key is ABSENT. A caller whose field is a security-relevant
+        # declaration reads absent as "not declared" and denies.
+        text = "---\nk: first\nk: second\n---\n"
+        assert "k" not in parse_frontmatter(text, TASK_SPEC)
+        assert frontmatter_value(text, "k", TASK_SPEC) == ""
+        # Other keys in the same block are untouched — rejection is per key.
+        mixed = "---\nk: first\nother: kept\nk: second\n---\n"
+        assert parse_frontmatter(mixed, TASK_SPEC) == {"other": "kept"}
+
+    def test_duplicate_rejection_is_decided_before_the_positional_rule(self) -> None:
+        # `first_key_wins` skips the second occurrence, which is the line that
+        # PROVES the key was declared twice. Counting first is what makes the two
+        # axes independent rather than order-dependent.
+        both = FrontmatterDialect(
+            extraction="column0_fence",
+            indent_policy="reject_indented",
+            strip_quotes=True,
+            first_key_wins=True,
+            reject_duplicate_keys=True,
+        )
+        assert parse_frontmatter("---\nk: first\nk: second\n---\n", both) == {}
+
+    def test_a_single_key_survives_a_rejecting_dialect(self) -> None:
+        assert parse_frontmatter("---\nk: only\n---\n", TASK_SPEC) == {"k": "only"}
 
     def test_quote_stripping_is_per_dialect(self) -> None:
         text = '---\nk: "v"\n---\n'
@@ -390,7 +418,7 @@ class TestDialectContracts:
         assert parse_frontmatter(text, SKILL_LOADER)["k"] == '"quoted"'
 
     def test_split_returns_text_unchanged_without_block(self) -> None:
-        for dialect in (SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE):
+        for dialect in (SKILL_LOADER, ONBOARDING_IMPORT, SKILL_UPDATE, TASK_SPEC):
             assert split_frontmatter("plain prose", dialect) == ({}, "plain prose")
 
     def test_custom_dialect_axes_compose(self) -> None:

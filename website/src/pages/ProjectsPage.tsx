@@ -87,6 +87,16 @@ export default function ProjectsPage() {
   // ref captured at click time (see `pendingAutoApproveRef`) so the sync effect
   // cannot clobber it, and it never leaks across runs.
   const [composeAutoApprove, setComposeAutoApprove] = useState(false)
+  // What the planned run's spec DECLARED (`approval: auto` in its frontmatter),
+  // as reported by /plan. Read-only: it labels the checkbox below and never sets
+  // it — the server derives the grant from `auto_approve` alone, so pre-checking
+  // here would only re-open the content-derived grant in the browser.
+  //
+  // Keyed by task_id so a stale declaration cannot describe a different run.
+  // Scope is this page's session: /plan is the only carrier of the field, so
+  // selecting an already-planned run after a reload shows no label — a missing
+  // hint, never a wrong one.
+  const [declaredApproval, setDeclaredApproval] = useState<{ taskId: string; declared: boolean } | null>(null)
   const [refineStatus, setRefineStatus] = useState<string>('idle')
   const [refineError, setRefineError] = useState('')
   const mountedRef = useRef(true)
@@ -250,6 +260,9 @@ export default function ProjectsPage() {
     try {
       const r = await api.planTask(input, source, spec, agent, workspaceDir)
       if (r.ok) {
+        // Record the spec's declaration for the label beside the Execute
+        // checkbox. `=== true` because the field is absent on an older gateway.
+        setDeclaredApproval(r.task_id ? { taskId: r.task_id, declared: r.declared_approval === true } : null)
         if (autoRun && r.task_id) {
           autoRunRef.current = r.task_id
           // Guard the ref-write with the SAME planTask-success branch as
@@ -588,6 +601,11 @@ export default function ProjectsPage() {
               <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> {i18nT('pages.projectsPage.planning')}</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> {i18nT('pages.projectsPage.running')}</> : selectedRun.status}</span>
               <div className="flex-1" />
               {selectedRun.status === 'planned' && <>
+                {declaredApproval?.taskId === selectedRun.task_id && declaredApproval.declared && (
+                  <span className="text-[12px] text-warn" title={i18nT('pages.projectsPage.spec_declares_auto_approval_hint')}>
+                    {i18nT('pages.projectsPage.spec_declares_auto_approval')}
+                  </span>
+                )}
                 <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title={i18nT('pages.projectsPage.run_unattended_auto_approve_this_run_s_tool_call')}>
                   <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
                   {i18nT('pages.projectsPage.auto_approve_tool_calls')}

@@ -7244,6 +7244,8 @@
       "running": "Running",
       "schedule": "Schedule",
       "scheduled_as_daily_cron_job": "Scheduled as daily cron job",
+      "spec_declares_auto_approval": "Spec declares approval: auto",
+      "spec_declares_auto_approval_hint": "This spec declares `approval: auto`. It is only a declaration \u2014 tool calls are still approved one at a time unless you tick the box yourself.",
       "task_runner": "Task Runner",
       "upload_a_file": "Upload a file",
       "workspace": "Workspace:",

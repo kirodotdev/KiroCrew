@@ -10952,6 +10952,8 @@
       "running": "运行中",
       "schedule": "计划",
       "scheduled_as_daily_cron_job": "已排期为每日定时任务",
+      "spec_declares_auto_approval": "规范声明 approval: auto",
+      "spec_declares_auto_approval_hint": "此规范声明了 `approval: auto`。这只是一个声明——除非你自己勾选该复选框，工具调用仍会逐个请求批准。",
       "task_runner": "Task Runner",
       "upload_a_file": "上传文件",
       "workspace": "工作区：",

@@ -1,6 +1,6 @@
 """Single home for hand-rolled SKILL.md frontmatter parsing.
 
-Four backend callers parse ``key: value`` frontmatter from markdown, and each
+Five backend callers parse ``key: value`` frontmatter from markdown, and each
 historically carried its own copy of the scanner. The copies drifted: they
 disagree on whether the opening fence may carry trailing text or leading
 whitespace, whether an indented ``key: value`` line is a field or prose,
@@ -18,7 +18,16 @@ preview (``dashboard/handlers/discover.py``) deliberately shares
 :data:`SKILL_LOADER` rather than owning a dialect: what the preview shows
 must match what the skills loader computes after install.
 
-A FIFTH consumer lives outside Python and cannot be reached from this list by
+A fifth caller — a task spec's declared approval mode
+(``task_planner.spec_declares_auto``) — arrived with its own scanner and was
+folded in as :data:`TASK_SPEC` rather than kept separate, which is what
+retired that copy's bespoke code-fence and HTML-markup machinery: a delimited
+frontmatter region needs neither. It adds no quirk the mirror below must
+track: :data:`TASK_SPEC` is a new dialect, and its one new axis
+(``reject_duplicate_keys``) is off for every pre-existing dialect, so
+:data:`SKILL_LOADER`'s grammar is byte-for-byte what it was.
+
+A SIXTH consumer lives outside Python and cannot be reached from this list by
 import: the skill editor's frontmatter splicer
 (``website/src/components/SkillForm.tsx``) MIRRORS :data:`SKILL_LOADER`'s
 grammar in TypeScript, because it must never write a value this reader would
@@ -90,6 +99,15 @@ class FrontmatterDialect:
     # True: the first occurrence of a duplicate key wins (single-value lookup
     # semantics). False: the last occurrence wins (dict-overwrite semantics).
     first_key_wins: bool = False
+    # True: a key declared TWICE OR MORE is dropped from the result entirely,
+    # so a contradiction reads as absent. Where `first_key_wins` picks a winner
+    # by position, this refuses to pick one at all — for a caller whose field
+    # is a security-relevant declaration, whichever line a human reads first
+    # need not be the line a positional rule honors, so the safe reading of two
+    # conflicting declarations is "nothing was declared" (GPT 5.6, PR #2129).
+    # Orthogonal to `first_key_wins`: rejection is decided over the raw
+    # occurrence count, so it holds under either positional rule.
+    reject_duplicate_keys: bool = False
     # Resolve a bare block-scalar indicator value (see
     # BLOCK_SCALAR_INDICATORS) from the blank-or-indented lines that follow
     # it, via fold_block_scalar. Dialects without this store the indicator
@@ -133,6 +151,23 @@ SKILL_UPDATE = FrontmatterDialect(
     strip_quotes=False,
     first_key_wins=True,
     resolve_block_scalars=True,
+)
+
+# ``task_planner.spec_declares_auto`` — a task spec's declared approval mode.
+# Leading whitespace before the opener is tolerated (specs are hand-authored, so
+# a stray blank first line must not silently mean "declared nothing"); indented
+# keys are prose, so an ``approval:`` nested under another mapping is not a
+# top-level declaration; quotes are stripped so ``approval: "auto"`` reads the
+# same as bare. Block scalars are deliberately NOT resolved: resolving them would
+# let ``approval: |`` fold an indented continuation line into a declaration, and
+# for this caller the indicator character is simply not the declared word.
+# Duplicate keys are REJECTED rather than resolved by position — see
+# `reject_duplicate_keys`.
+TASK_SPEC = FrontmatterDialect(
+    extraction="leading_ws_fence",
+    indent_policy="reject_indented",
+    strip_quotes=True,
+    reject_duplicate_keys=True,
 )
 
 
@@ -266,6 +301,10 @@ def _extract_block(
 def _parse_block_lines(lines: list[str], dialect: FrontmatterDialect) -> dict[str, str]:
     """Scan block lines into a field dict under *dialect*'s line rules."""
     fields: dict[str, str] = {}
+    # Keys seen more than once, collected only when the dialect rejects them.
+    # Recorded during the scan and applied after it, because the second
+    # occurrence is what makes the FIRST one unusable too.
+    duplicated: set[str] = set()
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -294,7 +333,13 @@ def _parse_block_lines(lines: list[str], dialect: FrontmatterDialect) -> dict[st
             value = fold_block_scalar(value, block)
         elif dialect.strip_quotes:
             value = value.strip("\"'")
+        # Checked BEFORE the positional rule below, which would otherwise skip
+        # the line that proves the key was declared twice.
+        if dialect.reject_duplicate_keys and key in fields:
+            duplicated.add(key)
         if dialect.first_key_wins and key in fields:
             continue
         fields[key] = value
+    for key in duplicated:
+        del fields[key]
     return fields
