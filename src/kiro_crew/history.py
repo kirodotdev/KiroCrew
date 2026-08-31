@@ -278,7 +278,8 @@ ROWS_ONLY_OWNED_META_KEYS: frozenset[str] = frozenset({"_type", "created_at", "l
 # holder the holder's are the true ones. Deferring them also fails CLOSED where the
 # line carries none: an absent ``created_by`` denies rather than grants, and an
 # absent ``origin`` restores to the empty sentinel the rehydrate paths already treat
-# that way.
+# that way. ``project_cleared`` is the same shape applied to the DIRECTORY: beside another
+# slot's ``project`` it resurrects a directory this holder cleared, or clears one it never set.
 #
 # What is left out is left out deliberately: ``auto_tagged``, ``human_seen``,
 # ``channel_origin`` and ``channel_folder_filed`` are MONOTONE once-flags about the
@@ -286,7 +287,7 @@ ROWS_ONLY_OWNED_META_KEYS: frozenset[str] = frozenset({"_type", "created_at", "l
 # disagree about them in a way that outlives the pair.
 ROWS_ONLY_DEFERRED_META_KEYS: frozenset[str] = (
     SLOT_OWNED_META_KEYS - ROWS_ONLY_OWNED_META_KEYS
-) | frozenset({"title_origin", "title_refresh_mark", "created_by", "origin"})
+) | frozenset({"title_origin", "title_refresh_mark", "created_by", "origin", "project_cleared"})
 
 
 def carry_unowned_metadata(

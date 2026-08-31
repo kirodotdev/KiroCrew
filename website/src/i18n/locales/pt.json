@@ -9317,6 +9317,13 @@
       "clear_all_context": "Limpar todo o contexto",
       "clear_context": "Limpar contexto",
       "clear_context_2": "Limpar contexto",
+      "clear_context_busy_error": "Contexto mantido para {{roles}} — ainda trabalhando. Tente novamente quando terminarem, ou dispense um agente para removê-lo do canal.",
+      "clear_context_cleared_roles": "Limpo para {{roles}}.",
+      "clear_context_done": "Contexto limpo.",
+      "clear_context_messages_kept": "As mensagens do canal foram mantidas.",
+      "clear_context_messages_deleted": "As mensagens do canal também foram excluídas.",
+      "clear_context_not_cleared_yet": "Contexto não limpo",
+      "clear_context_partially_cleared": "Contexto parcialmente limpo",
       "click_new_to_create_one": "Clique em + Novo para criar um.",
       "close": "Fechar",
       "close_agents_panel": "Fechar painel de agentes",
@@ -9327,7 +9334,15 @@
       "dismiss": "Dispensar",
       "e_g_investigate_gamma_deployment_failure": "ex.: Investigar falha de implantação em Gamma",
       "failed_to_add_agent": "Falha ao adicionar o agente",
+      "failed_to_clear_context": "Falha ao limpar o contexto",
+      "failed_to_close_channel": "Falha ao fechar o canal",
       "failed_to_create_channel": "Falha ao criar o canal",
+      "failed_to_dismiss_agent": "Falha ao dispensar o agente",
+      "failed_to_load_channel": "Falha ao carregar o canal",
+      "failed_to_load_channels": "Falha ao carregar os canais",
+      "failed_to_load_presets": "Falha ao carregar as predefinições de equipe",
+      "failed_to_send_message": "Falha ao enviar a mensagem",
+      "failed_to_update_agent": "Falha ao atualizar o agente",
       "is_working": "está trabalhando…",
       "listen_all": "todas",
       "listen_mention": "menção",
@@ -9348,7 +9363,8 @@
       "reply_2_many": "{{count}} respostas",
       "reply_2_one": "{{count}} resposta",
       "reply_2_other": "{{count}} respostas",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "Redefinir a sessão de LLM de {{role}}. O histórico de mensagens compartilhado do canal é preservado.",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "Limpa o contexto de {{role}}. As mensagens compartilhadas do canal são preservadas. O contexto deles é mantido se ainda estiverem a trabalhar.",
+      "retry": "Tentar novamente",
       "role": "Função",
       "role_e_g_logs_agent": "Função (ex.: Agente de logs)",
       "running_tool": "executando ferramenta…",
@@ -9363,17 +9379,9 @@
       "task": "Tarefa",
       "task_e_g_search_cloudwatch_logs": "Tarefa (ex.: Pesquisar logs do CloudWatch)",
       "team_preset": "Predefinição de equipe",
-      "this_will_reset_conversation_history_for_all_age": "Isto redefinirá o histórico de conversa de todos os agentes. As configurações são preservadas.",
+      "this_will_reset_conversation_history_for_all_age": "Isto limpa o contexto de todos os agentes e exclui as mensagens do canal. As configurações são preservadas. Se algum agente ainda estiver trabalhando, em vez disso seu contexto e as mensagens do canal são preservados.",
       "thread": "Tópico",
-      "topic": "Assunto",
-      "failed_to_load_channels": "Falha ao carregar os canais",
-      "failed_to_load_presets": "Falha ao carregar as predefinições de equipe",
-      "failed_to_load_channel": "Falha ao carregar o canal",
-      "failed_to_send_message": "Falha ao enviar a mensagem",
-      "failed_to_dismiss_agent": "Falha ao dispensar o agente",
-      "failed_to_update_agent": "Falha ao atualizar o agente",
-      "failed_to_close_channel": "Falha ao fechar o canal",
-      "failed_to_clear_context": "Falha ao limpar o contexto"
+      "topic": "Assunto"
     },
     "chat": {
       "activityViewer": {
@@ -15045,7 +15053,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "Um turno está em andamento — tente novamente quando ele terminar."
+      "turn_in_flight": "Um turno está em andamento — tente novamente quando ele terminar.",
+      "workspace_unavailable": "A pasta do projeto configurada não está disponível — verifique se ela existe e tente novamente."
     },
     "channelOrigin": {
       "direct_message": "Mensagem direta"

@@ -123,8 +123,9 @@ from kiro_crew.config.loader import (
     default_project_dir,
     normalize_agent_model,
     published_autocompact_pct,
+    resolve_agent_bindings,
 )
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, resolved_cwd
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
@@ -361,6 +362,31 @@ def _provider_effectively_alive(provider: Any) -> bool:
     ):
         alive = True
     return alive
+
+
+def _resolve_runtime_agent(alias: str, project: str | None = None) -> str:
+    """Resolve an agent ALIAS to the runtime agent it currently names.
+
+    The retirement arm records the alias, never its target, so the mapping is read
+    HERE at every consume: an alias re-pointed by a config edit during the arm window
+    would otherwise hand the retry a frozen agent and run the wrong one. Reads the
+    hot-path config cache, so no filesystem work reaches the event loop.
+
+    Degrades to the alias itself: an unresolvable name is what the dispatch sites also
+    fall back to (``kiro_agent or slot.agent``), so both sides stay consistent.
+    """
+    if not alias:
+        return ""
+    try:
+        cfg = KiroCrewConfig.load()
+        # `resolve_agent_bindings` substitutes the DEFAULT agent for an unknown name,
+        # which would answer a different identity rather than resolve this one.
+        if alias not in cfg.agents:
+            return alias
+        return resolve_agent_bindings(cfg, alias, project).kiro_agent or alias
+    except Exception:
+        logger.warning("Failed to resolve runtime agent for alias %r", alias, exc_info=True)
+        return alias
 
 
 def _provider_uses_kiro_identity_store(provider: Any) -> bool:
@@ -900,6 +926,12 @@ class _Session:
     # the caller's existing stale-provider path evicts it and cold starts. Default
     # False so every existing construction site is unaffected.
     retire_on_identity_change: bool = False
+    # True while the lease is held for a LIFETIME rather than a turn -- see
+    # ``session_lifecycle._turn_in_flight``, which is what asks.
+    lifecycle_lease: bool = False
+    # Set by a lifecycle holder for the whole of its turn, INCLUDING the setup before the
+    # provider registers one. ``has_active_turn`` cannot see that window.
+    lifecycle_turn_active: bool = False
     prompt_count: int = 0
     consecutive_failures: int = 0
     # Bounded rather than plain: a release() call that lands on this object
@@ -1066,6 +1098,7 @@ class SessionManager:
             ),
             spec_model=lambda spec: spec_model(spec),
             agent_model_cache=lambda: _get_agent_model_cache(),
+            resolve_runtime_agent=_resolve_runtime_agent,
         )
 
     def _allocation_boundary(self) -> SessionAllocationService:
@@ -1531,6 +1564,91 @@ class SessionManager:
         """Return whether a live session exists for the folded key."""
         return self._allocation_boundary().has_session(key)
 
+    async def resolve_arm_cwd(self, key: str, cwd: str) -> str:
+        """Resolve an arm's target off-thread, for the CLEARED case that touches disk.
+
+        Resolves only -- it arms nothing, so the caller's arm or transfer stays synchronous
+        and atomic in its own commit window. A cleared project resolves to the per-session
+        default, which stats, mkdirs and realpaths the workspace root; on a symlinked or
+        network root that blocks in the kernel, and every arm site is reached from an async
+        handler. A non-empty project needs no filesystem work and is handed straight back.
+        """
+        if cwd:
+            return cwd
+        return await asyncio.to_thread(resolved_cwd, cwd, self._fold_key(key))
+
+    def set_lifecycle_turn_active(self, key: str, active: bool) -> bool:
+        """Record whether a lifecycle holder is taking a turn.
+
+        A holder that keeps its lease across an idle life has to say when it is WORKING,
+        because the pre-stream setup runs before the provider registers a turn and a probe
+        reading the provider alone would tear the session down mid-setup. Returns whether a
+        registered session was updated.
+        """
+        session = self._allocation_boundary()._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.lifecycle_turn_active = active
+        return True
+
+    def mark_lifecycle_lease(self, key: str) -> bool:
+        """Declare that this key's lease is held for a LIFETIME, not for one turn.
+
+        A holder that keeps the lease across an idle listening life must say so, because a
+        busy probe reading the lease alone would otherwise refuse every teardown on the key
+        for as long as the holder exists. Returns whether a registered session was marked.
+        """
+        session = self._allocation_boundary()._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.lifecycle_lease = True
+        return True
+
+    def mark_retire_on_next_claim(
+        self, key: str, cwd: str | None, *, agent: str | None = None
+    ) -> int:
+        """Mark a live session invalid for reuse without disturbing its turn.
+
+        Synchronous by design. Pass ``cwd`` already resolved for a cleared project -- see
+        :meth:`resolve_arm_cwd` -- because resolving it here would put filesystem work on
+        the event loop. Returns the arm's generation, which a producer that later has to
+        unwind passes to :meth:`supersede_arm_for_new_slot` to retract only its own arm.
+        """
+        return self._allocation_boundary().mark_retire_on_next_claim(key, cwd, agent=agent)
+
+    async def note_project_change(self, key: str, cwd: str | None) -> None:
+        """Supersede any arm from an earlier change, and record the committed directory.
+
+        Async because the CLEARED case resolves the per-session default, which stats and
+        realpaths the workspace root -- synchronous filesystem work that would otherwise
+        run on the event loop, since every caller is an async handler. Resolving here also
+        leaves the recording itself synchronous, so no await sits between the generation
+        bump and the arm it belongs to.
+        """
+        if cwd == "":
+            folded = self._allocation_boundary()._fold_key(key)
+            cwd = await asyncio.to_thread(resolved_cwd, cwd, folded)
+        self._allocation_boundary().note_project_change(key, cwd)
+
+    def supersede_arm_for_new_slot(self, key: str, *, only_generation: int | None = None) -> None:
+        """Drop an arm left by a previous occupant of a recycled or torn-down slot key.
+
+        Synchronous by design: it resolves nothing, so no filesystem work reaches the event
+        loop and no await sits between the generation bump and the arm it supersedes.
+
+        ``only_generation`` makes this a retraction of ONE arm: pass the generation
+        :meth:`mark_retire_on_next_claim` returned, and a key another producer has armed
+        since is left alone.
+        """
+        self._allocation_boundary().supersede_arm_for_new_slot(key, only_generation=only_generation)
+
+    def transfer_retire_arm(self, from_key: str, to_key: str, cwd: str) -> None:
+        """Move an arm onto the key a rebound slot actually runs on.
+
+        Synchronous by design; pass ``cwd`` pre-resolved via :meth:`resolve_arm_cwd`.
+        """
+        self._allocation_boundary().transfer_retire_arm(from_key, to_key, cwd)
+
     def get_provider(self, key: str) -> LLMProvider | None:
         """Return the live provider for a folded key."""
         return self._allocation_boundary().get_provider(key)
@@ -1893,12 +2011,14 @@ class SessionManager:
         sess: "_Session",
         *,
         wait_if_busy: bool = True,
+        cwd: str | None = None,
     ) -> bool:
         """Acquire outside the registry lock and revalidate identity."""
         return await self._allocation_boundary()._reacquire_and_validate(
             key,
             sess,
             wait_if_busy=wait_if_busy,
+            cwd=cwd,
         )
 
     async def _evict_stale_session(self, key: str, sess: "_Session") -> None:
@@ -2345,7 +2465,12 @@ class SessionManager:
         )
 
     async def discard_conversation(
-        self, key: str, *, replay: bool = True, skip_if_busy: bool = False
+        self,
+        key: str,
+        *,
+        replay: bool = True,
+        skip_if_busy: bool = False,
+        refuse_only_on_active_turn: bool = False,
     ) -> bool:
         """Drop native conversation state while retaining channel linkage.
 
@@ -2355,7 +2480,10 @@ class SessionManager:
         atomicity contract.
         """
         return await self._lifecycle_boundary().discard_conversation(
-            key, replay=replay, skip_if_busy=skip_if_busy
+            key,
+            replay=replay,
+            skip_if_busy=skip_if_busy,
+            refuse_only_on_active_turn=refuse_only_on_active_turn,
         )
 
     async def drain_active_turns(self, timeout: float | None = None) -> int:

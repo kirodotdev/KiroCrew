@@ -9057,6 +9057,13 @@
       "clear_all_context": "清除所有上下文",
       "clear_context": "清除上下文",
       "clear_context_2": "清除上下文",
+      "clear_context_busy_error": "{{roles}} 仍在处理中，已保留上下文。完成后请重试；忽略某个代理会将其从频道中移除。",
+      "clear_context_cleared_roles": "已清除 {{roles}} 的上下文。",
+      "clear_context_done": "上下文已清除。",
+      "clear_context_messages_kept": "该频道的消息已保留。",
+      "clear_context_messages_deleted": "该频道的消息也已删除。",
+      "clear_context_not_cleared_yet": "上下文未清除",
+      "clear_context_partially_cleared": "已部分清除上下文",
       "click_new_to_create_one": "点击 + 新建来创建一个。",
       "close": "关闭",
       "close_agents_panel": "关闭代理面板",
@@ -9067,7 +9074,15 @@
       "dismiss": "忽略",
       "e_g_investigate_gamma_deployment_failure": "例如：排查 Gamma 部署失败",
       "failed_to_add_agent": "添加代理失败",
+      "failed_to_clear_context": "清除上下文失败",
+      "failed_to_close_channel": "关闭频道失败",
       "failed_to_create_channel": "创建频道失败",
+      "failed_to_dismiss_agent": "移除代理失败",
+      "failed_to_load_channel": "加载该频道失败",
+      "failed_to_load_channels": "加载频道列表失败",
+      "failed_to_load_presets": "加载团队预设失败",
+      "failed_to_send_message": "发送消息失败",
+      "failed_to_update_agent": "更新代理失败",
       "is_working": "正在工作…",
       "listen_all": "全部",
       "listen_mention": "提及",
@@ -9086,7 +9101,8 @@
       "preset_incident_response": "事件响应",
       "reply": "回复",
       "reply_2_other": "{{count}} 条回复",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "重置 {{role}} 的 LLM 会话。频道的共享消息历史会保留。",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "清除 {{role}} 的上下文。频道的共享消息会保留。如果仍在工作，其上下文将被保留。",
+      "retry": "重试",
       "role": "角色",
       "role_e_g_logs_agent": "角色（例如：日志代理）",
       "running_tool": "正在运行工具…",
@@ -9101,17 +9117,9 @@
       "task": "任务",
       "task_e_g_search_cloudwatch_logs": "任务（例如：搜索 CloudWatch 日志）",
       "team_preset": "团队预设",
-      "this_will_reset_conversation_history_for_all_age": "会重置所有代理的会话历史。配置会保留。",
+      "this_will_reset_conversation_history_for_all_age": "清除所有智能体的上下文，并删除该频道的消息。配置会保留。如果仍有智能体在工作，则其上下文和该频道的消息会保留。",
       "thread": "话题",
-      "topic": "主题",
-      "failed_to_load_channels": "加载频道列表失败",
-      "failed_to_load_presets": "加载团队预设失败",
-      "failed_to_load_channel": "加载该频道失败",
-      "failed_to_send_message": "发送消息失败",
-      "failed_to_dismiss_agent": "移除代理失败",
-      "failed_to_update_agent": "更新代理失败",
-      "failed_to_close_channel": "关闭频道失败",
-      "failed_to_clear_context": "清除上下文失败"
+      "topic": "主题"
     },
     "chat": {
       "activityViewer": {
@@ -14663,7 +14671,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "当前有一轮对话正在进行 — 等它结束后再试。"
+      "turn_in_flight": "当前有一轮对话正在进行 — 等它结束后再试。",
+      "workspace_unavailable": "配置的项目文件夹不可用 — 请确认它是否存在，然后重试。"
     },
     "channelOrigin": {
       "direct_message": "私信"

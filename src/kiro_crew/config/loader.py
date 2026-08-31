@@ -522,8 +522,14 @@ def workspace_root() -> Path:
     return _resolve_workspace_root(base / _WORKSPACE_DIR_NAME)
 
 
-def _session_work_dir(session_key: str | None) -> Path:
-    """Return a per-session subdirectory under workspace_root()."""
+def session_default_cwd(session_key: str | None) -> Path:
+    """The directory a provider for *session_key* binds when given no ``cwd``.
+
+    The provider factory binds this, and ``resolved_cwd`` has to answer the SAME directory
+    or a cleared project compares against one no provider binds -- so both go through this
+    one symbol rather than agreeing by convention, the same reason
+    :func:`default_workspace_dir` is one.
+    """
     root = workspace_root()
     if session_key:
         return root / _safe_dir_name(session_key)
@@ -5115,7 +5121,7 @@ class KiroCrewConfig:
             crew_agent: str | None = None,
             **_kwargs: object,
         ) -> AcpProvider:
-            wdir = Path(cwd) if cwd else _session_work_dir(session_key)
+            wdir = Path(cwd) if cwd else session_default_cwd(session_key)
             # Canonical crew identity for the session (keys per-agent watchdog
             # windows on the handle) — one shared resolution rule, see
             # resolve_crew_identity.

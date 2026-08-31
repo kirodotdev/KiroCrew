@@ -28,8 +28,8 @@ That is why the tool bodies phrase their own message to not over-claim an effect
 this consumer applies (and may refuse) after the fact.
 
 IMPORTS ARE DELIBERATELY FUNCTION-LOCAL here, except for the shared session and
-Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON``
-constant. ``sel`` is a genuine cycle
+Research ownership contracts plus the immutable ``AUTONUDGE_STOP_REASON`` and
+``CWD_CLEARED`` constants. ``sel`` is a genuine cycle
 (``sel`` -> config -> apps -> dashboard, and chat_runner imports this module
 before it imports sel). The rest (autonudge, autonudge_authz, chat_utils,
 security, chat_handlers) are deferred on purpose: they keep this module cheap to
@@ -56,6 +56,7 @@ from kiro_crew.autonudge import (
     MONITOR_TERMINAL_REASON,
     is_channel_key,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
 
@@ -981,9 +982,23 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     project = str(args.get("project") or "").strip()
     old_project = getattr(slot, "project", "") or ""
     if clear or not project:
-        slot.project = ""
+        armed = ""
         if old_project:
-            slot._pending_reset_history_key = effective_session_key(slot)
+            key = effective_session_key(slot)
+            # Resolved BEFORE the slot is touched: this is the only fallible step, and
+            # mutating first would leave the slot cleared but unarmed on failure.
+            try:
+                armed = await state.sessions.resolve_arm_cwd(key, CWD_CLEARED)
+            except Exception:
+                logger.debug("resolve of the cleared workspace failed", exc_info=True)
+                return "Error: the default workspace could not be resolved."
+        slot.project = ""
+        # Gated like the reset and arm below: a slot that never had a project has nothing to
+        # clear, and marking it drops its resume SID and its warm-pool hit for nothing.
+        slot.project_cleared = bool(old_project or getattr(slot, "project_cleared", False))
+        if old_project:
+            slot._pending_reset_history_key = key
+            state.sessions.mark_retire_on_next_claim(key, armed)
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
@@ -1022,8 +1037,13 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     if overlap is not None:
         return f"Error: {overlap}"
     slot.project = rp
+    slot.project_cleared = False
     if rp != old_project:
-        slot._pending_reset_history_key = effective_session_key(slot)
+        # Armed HERE, not left to the consumer: a claim carrying no cwd in the window before
+        # the deferred reset would otherwise be served the session bound to `old_project`.
+        key = effective_session_key(slot)
+        slot._pending_reset_history_key = key
+        state.sessions.mark_retire_on_next_claim(key, rp)
         try:
             from kiro_crew.dashboard.chat_handlers import _save_recent_project
 

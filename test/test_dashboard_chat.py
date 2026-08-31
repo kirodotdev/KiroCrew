@@ -7832,6 +7832,104 @@ class TestRuntimeWiring:
             assert slot.workspace == "research-ws"
 
     @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_refuses_a_switch_on_a_busy_channel_session(
+        self, tmp_path, monkeypatch
+    ):
+        """An agent switch must not tear down an in-flight CHANNEL reply.
+
+        A channel-born slot runs its turns on the channel's own session, so the
+        switch's reset addresses a session a Slack reply may be streaming on right
+        now -- and channel dispatch does not take ``slot._lock``, so the lock the
+        handler holds does not serialize against it. Forcing the teardown drops
+        that reply mid-stream with nothing to recover it.
+
+        So the reset is allowed to DECLINE, and the switch then FAILS CLOSED: a live
+        turn answers 409 ``turn_in_flight`` and the committed fields are rolled back,
+        which is the workspace handler's template. Nothing is left owed, because
+        nothing was kept: a caller is never told a switch succeeded while the
+        session it names still serves the old binding.
+
+        The provider double is ``spec=LLMProvider`` deliberately: the handler gates its
+        decline ladder on ``isinstance``, so a plain ``MagicMock`` would read as "no
+        live provider" and this test would pass while exercising nothing. It reads IDLE
+        at the pre-commit gate and declines only at the reset, which is the race the
+        guard exists for -- a provider already busy at the gate is refused there and
+        never reaches the reset, so it could not detect ``skip_if_busy`` at all.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "oncall"
+        slot.workspace = "oncall-ws"
+        slot.project = "/tmp/oncall"
+        # Channel-born: its turns run on the channel's session, not `dashboard:s1`.
+        slot.linked_session_key = "slack:1712345678.9012"
+
+        reset_calls: list = []
+
+        async def _decline_because_busy(key, **kw):
+            reset_calls.append((key, kw))
+            # What SessionManager.reset does when a turn is live and the caller
+            # allowed it to decline; forcing it is the teardown under test.
+            return not kw.get("skip_if_busy", False)
+
+        state.sessions.reset = AsyncMock(side_effect=_decline_because_busy)
+        from kiro_crew.providers.base import LLMProvider
+
+        busy = MagicMock(spec=LLMProvider)
+        busy.has_active_turn = MagicMock(return_value=False)
+        state.sessions.get_provider = MagicMock(return_value=busy)
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {"research": MagicMock(workspace="research-ws", memory_store="default")}
+        mock_cfg.workspaces = {"research-ws": MagicMock(dir="/tmp/research")}
+        mock_cfg.default_workspace = "default"
+        mock_cfg.default_memory_store = "default"
+        mock_cfg.memory_stores = {}
+        mock_cfg.memory = MagicMock()
+        mock_bindings = MagicMock()
+        mock_bindings.workspace_dir = Path("/tmp/research")
+        mock_bindings.memory_store_name = "default"
+        mock_bindings.model = ""
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
+        )
+        for mod in ("chat", "chat_handlers"):
+            monkeypatch.setattr(
+                f"kiro_crew.dashboard.{mod}.resolve_agent_bindings",
+                lambda cfg, name, project_dir=None: mock_bindings,
+            )
+            monkeypatch.setattr(
+                f"kiro_crew.dashboard.{mod}._workspace_name_for_dir",
+                lambda cfg, ws_dir: "research-ws",
+            )
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
+            data = await resp.json()
+
+        assert resp.status == 409 and data.get("code") == "turn_in_flight", (
+            "a live channel turn must fail the switch closed, not report success for a "
+            f"session that still serves the old binding; got {resp.status} {data!r}"
+        )
+        assert slot.agent == "oncall", (
+            "and the committed fields must be rolled back -- a 409 that leaves the new "
+            f"agent in place diverges the store from the session; got {slot.agent!r}"
+        )
+
+        assert reset_calls, "precondition: the switch has to attempt a reset at all"
+        key, kw = reset_calls[-1]
+        assert key == "slack:1712345678.9012", (
+            "precondition: the reset must target the channel's live session -- if it "
+            f"named a nonexistent key this test could not detect the teardown; got {key!r}"
+        )
+        assert kw.get("skip_if_busy") is True, (
+            "an agent switch on a channel-linked slot must let a live turn DECLINE the "
+            "reset: forcing it tears down a streaming channel reply with no recovery"
+        )
+
+    @pytest.mark.asyncio
     async def test_api_chat_slot_agent_failed_reset_spares_concurrent_writes(
         self, tmp_path, monkeypatch
     ):
@@ -11163,7 +11261,7 @@ class TestPythonStageLoop:
         slot.queue_append("queued during plan")
 
         async def _auth_run_chat(s, sl, msg, **kw):
-            sl._last_turn_auth_required = True  # signed-out CLI discovered this stage
+            sl._queue_held = True  # signed-out CLI discovered this stage
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _auth_run_chat)
         start_next = AsyncMock(return_value=False)
@@ -11175,6 +11273,37 @@ class TestPythonStageLoop:
 
         start_next.assert_not_awaited()  # queue held for post-login resume
         assert [i["content"] for i in slot._queue] == ["queued during plan"]
+
+    @pytest.mark.asyncio
+    async def test_stage_handoff_still_drains_when_nothing_is_held(self, tmp_path, monkeypatch):
+        """Positive control for the gate above: with no hold the end-of-plan handoff
+        must still drain the queue, so the fix narrows one branch rather than
+        stranding every queued follow-up after a plan."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = self._make_slot(max_stages=1)
+        state._slots = {slot.key: slot}
+        slot.queue_append("queued during plan")
+
+        async def _clean_run_chat(s, sl, msg, **kw):
+            sl._queue_held = False
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _clean_run_chat)
+        start_next = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn", start_next
+        )
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        start_next.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_orchestrating_slot_queues_message(self, tmp_path, monkeypatch):
@@ -15578,6 +15707,12 @@ class TestStopTurnSlotState:
         sessions = MagicMock(count=0)
         sessions.stop_turn = AsyncMock(return_value="soft")
         sessions.reset = AsyncMock()
+        # Async: it resolves a cleared project off-thread, so a plain MagicMock hands the
+        # handler a non-awaitable and the request answers 500.
+        sessions.note_project_change = AsyncMock()
+        sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/workspace/_default"
+        )
         sessions.get_pid = MagicMock(return_value=None)
         state = DashboardState(
             sessions=sessions,

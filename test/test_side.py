@@ -1221,6 +1221,71 @@ async def test_a_project_change_during_derivation_does_not_split_check_and_spawn
 
 
 @pytest.mark.asyncio
+async def test_a_cleared_project_is_not_the_directory_the_side_turn_spawns_in(
+    tmp_path, monkeypatch
+):
+    """The turn's one project reading goes through ``claim_cwd``, so a cleared project yields
+    ``CWD_CLEARED`` rather than the path still on the slot.
+
+    Both properties are load-bearing and neither implies the other. Reading the raw field would
+    spawn the side session in a directory the user cleared, whose stored binding is already
+    invalid; reading ``claim_cwd`` again at the spawn instead of reusing the snapshot would let a
+    project change between the shadow check and the spawn, which is what the test above forbids.
+    Only sourcing the single snapshot from ``claim_cwd`` satisfies both.
+
+    ``CWD_CLEARED`` is the empty string and ``None`` is not the same value: a never-scoped slot
+    states nothing and keeps the warm pool, while a cleared one must block it. So this asserts the
+    exact value, not merely falsiness.
+    """
+    from kiro_crew.config.paths import CWD_CLEARED
+
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    stale = str(tmp_path / "proj-cleared")
+    parent.project = stale
+    parent.project_cleared = True
+    parent._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    parent._side.append_user(_SIDE_QUESTION)
+    parent._side.last_run_id = "run-cleared"
+    parent._side.is_complete = False
+    derived_for: list[str | None] = []
+
+    def _publish(base_name: str, project_dir: str | None = None):
+        from kiro_crew.dashboard.side_readonly_spec import PublishedSpec
+
+        derived_for.append(project_dir)
+        return PublishedSpec(name=f"{base_name}--readonly", digest="e" * 64)
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.publish_readonly_spec", _publish)
+    created: list[dict] = []
+
+    async def _fake_get_or_create(key, **kwargs):
+        created.append(kwargs)
+        return MagicMock(), True, False
+
+    state.sessions.get_provider = MagicMock(return_value=None)
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
+        AsyncMock(return_value=_SIDE_ANSWER),
+    )
+
+    await _run_side_turn(state, parent, "run-cleared", _SIDE_QUESTION, is_first_turn=True)
+
+    assert created, "no session was created, so the spawn cwd was never stated"
+    assert created[0]["cwd"] == CWD_CLEARED, (
+        f"the side turn spawned in {created[0]['cwd']!r}; a cleared project must state "
+        f"CWD_CLEARED, never the path still on the slot"
+    )
+    assert created[0]["cwd"] != stale
+    assert derived_for == [
+        CWD_CLEARED
+    ], "the shadow check must run against the same reading the spawn uses"
+
+
+@pytest.mark.asyncio
 async def test_a_close_during_acquisition_destroys_the_acquired_session(
     tmp_path, monkeypatch, _published_readonly_spec
 ):

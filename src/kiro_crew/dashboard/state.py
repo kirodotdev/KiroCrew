@@ -33,6 +33,7 @@ from kiro_crew.config.loader import (
     config_dir,
     resolve_effective_agent,
 )
+from kiro_crew.config.paths import CWD_CLEARED
 from kiro_crew.constants import (
     OPTIONS_RE_LINE,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
@@ -3424,6 +3425,7 @@ class _ChatSlot:
         "memory_store",
         "_memory_assignment_from_history",
         "project",
+        "project_cleared",
         "created_at",
         "messages",
         "total_messages",
@@ -3477,7 +3479,7 @@ class _ChatSlot:
         "_plan_cancelled",
         "_auto_run",
         "_in_stage_execution",
-        "_last_turn_auth_required",
+        "_queue_held",
         "_recovery_chat_triggered",
         "_stage_titles",
         "_stage_descriptions",
@@ -3540,6 +3542,8 @@ class _ChatSlot:
         "_origin",
         "_pending_variants",
         "_lock",
+        "_key_settling",
+        "_key_deferred",
         "forked_from",
         "_fork_lock",
         "_model_pick_lock",
@@ -3628,6 +3632,9 @@ class _ChatSlot:
         # that admission boundary; this marker is not persisted in the transcript.
         self._memory_assignment_from_history = False
         self.project: str = ""
+        # A CLEARED project and one never set both leave ``project`` empty, but only a clear
+        # invalidates a warm pooled child's binding.
+        self.project_cleared: bool = False
         # Remote-execution binding. ``executor`` is "local" for every ordinary
         # slot; "remote" means the turn is dispatched over an instance tunnel to
         # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
@@ -3860,11 +3867,28 @@ class _ChatSlot:
         # still drain) until the plan ends — so autopilot reuses the normal-chat
         # queue/chip path without changing slot.task / slot.running semantics.
         self._in_stage_execution: bool = False
-        # Set by _run_chat's teardown to that turn's ACP auth-required outcome, so
-        # the orchestrator _stage_loop can mirror the "hold the queue for
-        # post-login resume" guard on its end-of-plan handoff (a signed-out CLI
-        # must not pop the held follow-up into another auth failure).
-        self._last_turn_auth_required: bool = False
+        # Whether the queue is HELD rather than drained; False drains. Set by
+        # _run_chat's teardown to that turn's outcome, and read by every drain gate:
+        # _run_chat's own tail, the synthesis dispatch in _finish_queue_cycle, and
+        # the orchestrator's two handoffs (_exit_cancelled_plan, _stage_loop's
+        # finally). Draining NOW serves the queue worse than leaving it: a repeat failure
+        # for two causes, a wait behind the streaming turn for the third — so they
+        # stay queued (visible, individually cancellable) and resume on the user's
+        # next send. The claim is about the QUEUE, not about this turn having run
+        # nothing: two causes are discovered before a turn runs, but a deferred
+        # project reset is discovered at the END of a turn that completed normally.
+        #
+        # ONE predicate rather than one flag per cause, deliberately. Each cause as
+        # its own boolean (base: ONE, 6 refs, 3 files, TWO gates) is hand-wired into
+        # every gate, so adding one risks MISSING one, silently dequeuing and burning
+        # prompts — which is exactly how the synthesis and stage-handoff gaps got
+        # shipped. A new cause now composes by setting this flag, and a new drain
+        # site composes by asking this one question.
+        #
+        # A BOOLEAN and not a reason string: the causes today are a signed-out CLI,
+        # a queued project change refused before the turn, and one left deferred
+        # after it — and no gate, log line or test ever asked which of them it was.
+        self._queue_held: bool = False
         self._recovery_chat_triggered: bool = False  # guard against concurrent failure recovery
         self._stage_titles: list[str] = []  # stage titles extracted from plan
         self._stage_descriptions: list[list[str]] = []  # bullet points per stage
@@ -4084,6 +4108,10 @@ class _ChatSlot:
         # Regenerate feature: variants pending attachment to next finalized assistant message
         self._pending_variants: list[dict] = []
         self._lock = asyncio.Lock()
+        # Excludes a ``linked_session_key`` rebind while an arm settles onto that key. Not
+        # ``slot._lock``: see ``chat_utils.settling_key``. A depth, because regions nest.
+        self._key_settling: int = 0
+        self._key_deferred: str | None = None
         self.forked_from: str | None = None  # parent slot key if this is a fork
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         # Serialises explicit model-pick transactions (check → mutate → live
@@ -4346,6 +4374,23 @@ class _ChatSlot:
     def cancel_close(self) -> None:
         """Release the admission fence when teardown leaves this slot live."""
         self._closing = False
+
+    @property
+    def claim_cwd(self) -> str | None:
+        """The cwd a claim must state for this slot, or ``None`` to state none.
+
+        ``CWD_CLEARED`` is reserved for a project that was actually cleared, because that is
+        when a warm pooled child's binding has been invalidated. A slot that never had a
+        project states nothing, keeping the warm pool and its stored-cwd resume override.
+
+        The cleared MARKER is read before the project, so a value that outlived its clear
+        cannot win. A persisted record is merged by an upsert that cannot delete a key, so a
+        slot cleared after `/old` was written still carries `/old` on disk; honoring that
+        resumes relative writes into the former directory with nothing to signal it.
+        """
+        if getattr(self, "project_cleared", False):
+            return CWD_CLEARED
+        return self.project or None
 
     @property
     def _dirty(self) -> bool:
@@ -6786,6 +6831,15 @@ class DashboardState:
             return existing
         assert creation is not None
         name = creation.key
+        # circular import: chat_utils imports state at module scope.
+        from kiro_crew.dashboard.chat_utils import _history_key_for
+
+        # A new slot on a recycled key inherits nothing: the close/sweep paths run
+        # ``remove``, which preserves the previous slot's retirement arm by design.
+        # Guarded like every other `self.sessions` call here -- slot creation must survive a
+        # state built without a manager, and with none there is no arm to supersede.
+        if self.sessions:
+            self.sessions.supersede_arm_for_new_slot(_history_key_for(name))
         requested_name = creation.requested_name
         minted_new = creation.minted_new
         slot = _ChatSlot(
@@ -6862,7 +6916,9 @@ class DashboardState:
             # that a channel path already claimed.
             slot.channel_origin = True
         if linked_session_key:
-            slot.linked_session_key = linked_session_key
+            from kiro_crew.dashboard.chat_utils import bind_linked_session_key
+
+            bind_linked_session_key(slot, linked_session_key)
         elif self.sessions:
             # No caller-supplied binding, but a channel-stem name means this slot
             # displays a conversation that runs on the channel's own session.
@@ -6880,7 +6936,11 @@ class DashboardState:
             if is_channel_session_key(name):
                 resolved = self.sessions.channel_key_for_stem(name)
                 if isinstance(resolved, str) and is_channel_session_key(resolved):
-                    slot.linked_session_key = resolved
+                    from kiro_crew.dashboard.chat_utils import (
+                        bind_linked_session_key,
+                    )
+
+                    bind_linked_session_key(slot, resolved)
         try:
             if self.sessions:
                 from kiro_crew.dashboard.chat_utils import effective_session_key

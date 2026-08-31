@@ -9187,6 +9187,13 @@
       "clear_all_context": "সব কনটেক্সট সাফ করুন",
       "clear_context": "কনটেক্সট সাফ করুন",
       "clear_context_2": "কনটেক্সট সাফ করুন",
+      "clear_context_busy_error": "{{roles}} এখনও কাজ করছে, তাই প্রসঙ্গ রাখা হয়েছে। শেষ হলে আবার চেষ্টা করুন, অথবা কোনো এজেন্ট খারিজ করলে সেটি চ্যানেল থেকে সরে যাবে।",
+      "clear_context_cleared_roles": "{{roles}}-এর জন্য সাফ করা হয়েছে।",
+      "clear_context_done": "প্রসঙ্গ মোছা হয়েছে।",
+      "clear_context_messages_kept": "চ্যানেলের বার্তা রাখা হয়েছে।",
+      "clear_context_messages_deleted": "চ্যানেলের বার্তাও মুছে ফেলা হয়েছে।",
+      "clear_context_not_cleared_yet": "প্রসঙ্গ মোছা হয়নি",
+      "clear_context_partially_cleared": "প্রসঙ্গ আংশিকভাবে সাফ করা হয়েছে",
       "click_new_to_create_one": "একটি তৈরি করতে + নতুন ক্লিক করুন।",
       "close": "বন্ধ করুন",
       "close_agents_panel": "এজেন্ট প্যানেল বন্ধ করুন",
@@ -9197,7 +9204,15 @@
       "dismiss": "বাদ দিন",
       "e_g_investigate_gamma_deployment_failure": "যেমন Gamma ডিপ্লয়মেন্ট ব্যর্থতা তদন্ত করুন",
       "failed_to_add_agent": "এজেন্ট যোগ করা যায়নি",
+      "failed_to_clear_context": "কনটেক্সট মুছা যায়নি",
+      "failed_to_close_channel": "চ্যানেল বন্ধ করা যায়নি",
       "failed_to_create_channel": "চ্যানেল তৈরি করা যায়নি",
+      "failed_to_dismiss_agent": "এজেন্ট সরানো যায়নি",
+      "failed_to_load_channel": "চ্যানেলটি লোড করা যায়নি",
+      "failed_to_load_channels": "চ্যানেল লোড করা যায়নি",
+      "failed_to_load_presets": "টিম প্রিসেট লোড করা যায়নি",
+      "failed_to_send_message": "বার্তা পাঠানো যায়নি",
+      "failed_to_update_agent": "এজেন্ট আপডেট করা যায়নি",
       "is_working": "কাজ করছে…",
       "listen_all": "সব",
       "listen_mention": "মেনশন",
@@ -9217,7 +9232,8 @@
       "reply": "উত্তর দিন",
       "reply_2_one": "{{count}}টি উত্তর",
       "reply_2_other": "{{count}}টি উত্তর",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}-এর LLM সেশন রিসেট করো। চ্যানেলের শেয়ার করা মেসেজ ইতিহাস অটুট থাকে।",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}-এর প্রসঙ্গ মুছে দেয়। চ্যানেলের শেয়ার করা বার্তা অটুট থাকে। তারা এখনও কাজ করলে তাদের প্রসঙ্গ ধরে রাখা হয়।",
+      "retry": "আবার চেষ্টা করুন",
       "role": "ভূমিকা",
       "role_e_g_logs_agent": "ভূমিকা (যেমন লগ এজেন্ট)",
       "running_tool": "টুল চালাচ্ছে…",
@@ -9232,17 +9248,9 @@
       "task": "টাস্ক",
       "task_e_g_search_cloudwatch_logs": "টাস্ক (যেমন CloudWatch লগ সার্চ করুন)",
       "team_preset": "টিম প্রিসেট",
-      "this_will_reset_conversation_history_for_all_age": "এটি সব এজেন্টের কথোপকথনের ইতিহাস রিসেট করবে। কনফিগ অপরিবর্তিত থাকবে।",
+      "this_will_reset_conversation_history_for_all_age": "এটি সব এজেন্টের প্রসঙ্গ মুছে দেয় এবং চ্যানেলের বার্তাগুলি মুছে ফেলে। কনফিগ সংরক্ষিত থাকে। যদি কোনো এজেন্ট এখনও কাজ করছে, তবে তার প্রসঙ্গ এবং চ্যানেলের বার্তাগুলি সংরক্ষিত থাকে।",
       "thread": "থ্রেড",
-      "topic": "টপিক",
-      "failed_to_load_channels": "চ্যানেল লোড করা যায়নি",
-      "failed_to_load_presets": "টিম প্রিসেট লোড করা যায়নি",
-      "failed_to_load_channel": "চ্যানেলটি লোড করা যায়নি",
-      "failed_to_send_message": "বার্তা পাঠানো যায়নি",
-      "failed_to_dismiss_agent": "এজেন্ট সরানো যায়নি",
-      "failed_to_update_agent": "এজেন্ট আপডেট করা যায়নি",
-      "failed_to_close_channel": "চ্যানেল বন্ধ করা যায়নি",
-      "failed_to_clear_context": "কনটেক্সট মুছা যায়নি"
+      "topic": "টপিক"
     },
     "chat": {
       "activityViewer": {
@@ -14855,7 +14863,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "একটি টার্ন এখন চলছে — সেটি শেষ হলে আবার চেষ্টা করুন।"
+      "turn_in_flight": "একটি টার্ন এখন চলছে — সেটি শেষ হলে আবার চেষ্টা করুন।",
+      "workspace_unavailable": "কনফিগার করা প্রকল্প ফোল্ডারটি উপলব্ধ নেই — এটি আছে কিনা দেখে নিয়ে আবার চেষ্টা করুন।"
     },
     "channelOrigin": {
       "direct_message": "সরাসরি মেসেজ"

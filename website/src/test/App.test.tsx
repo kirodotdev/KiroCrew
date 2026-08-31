@@ -1589,7 +1589,12 @@ describe('onCycleAgent keyboard shortcut', () => {
     const noticeText = await screen.findByText(
       REAL_FAILURE,
     )
-    expect(noticeText.closest('[role="status"]')).not.toBeNull()
+    // Through the shared ErrorNotice, so the live region is its role="alert". Exactly one:
+    // a region nested inside the notice would double-announce.
+    const live = noticeText.closest('[role="alert"]')
+    expect(live).not.toBeNull()
+    // Scoped to the notice, not the document: the page legitimately hosts other live regions.
+    expect(live!.querySelectorAll('[role="alert"], [role="status"]').length).toBe(0)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByText(
       REAL_FAILURE,

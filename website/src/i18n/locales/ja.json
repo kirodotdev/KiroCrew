@@ -9057,6 +9057,13 @@
       "clear_all_context": "すべてのコンテキストをクリア",
       "clear_context": "コンテキストをクリア",
       "clear_context_2": "コンテキストをクリア",
+      "clear_context_busy_error": "{{roles}} はまだ作業中のため、コンテキストを保持しました。完了後にもう一度お試しください。エージェントを閉じると、チャネルから削除されます。",
+      "clear_context_cleared_roles": "{{roles}} はクリアされました。",
+      "clear_context_done": "コンテキストを消去しました。",
+      "clear_context_messages_kept": "チャネルのメッセージは保持されました。",
+      "clear_context_messages_deleted": "チャネルのメッセージも削除されました。",
+      "clear_context_not_cleared_yet": "コンテキストは消去されていません",
+      "clear_context_partially_cleared": "コンテキストを一部クリアしました",
       "click_new_to_create_one": "+ 新規をクリックして作成してください。",
       "close": "閉じる",
       "close_agents_panel": "エージェントパネルを閉じる",
@@ -9067,7 +9074,15 @@
       "dismiss": "却下",
       "e_g_investigate_gamma_deployment_failure": "例: Gammaデプロイメント障害を調査",
       "failed_to_add_agent": "エージェントの追加に失敗しました",
+      "failed_to_clear_context": "コンテキストのクリアに失敗しました",
+      "failed_to_close_channel": "チャネルを閉じられませんでした",
       "failed_to_create_channel": "チャネルの作成に失敗しました",
+      "failed_to_dismiss_agent": "エージェントの却下に失敗しました",
+      "failed_to_load_channel": "このチャネルの読み込みに失敗しました",
+      "failed_to_load_channels": "チャネル一覧の読み込みに失敗しました",
+      "failed_to_load_presets": "チームプリセットの読み込みに失敗しました",
+      "failed_to_send_message": "メッセージの送信に失敗しました",
+      "failed_to_update_agent": "エージェントの更新に失敗しました",
       "is_working": "作業中…",
       "listen_all": "すべて",
       "listen_mention": "メンション",
@@ -9086,7 +9101,8 @@
       "preset_incident_response": "インシデント対応",
       "reply": "返信",
       "reply_2_other": "{{count}}個の返信",
-      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}}のLLMセッションをリセットします。チャネルの共有メッセージ履歴は保持されます。",
+      "reset_role_s_llm_session_the_channel_s_shared_me": "{{role}} のコンテキストを消去します。チャンネルの共有メッセージは保持されます。まだ作業中の場合はコンテキストが保持されます。",
+      "retry": "再試行",
       "role": "ロール",
       "role_e_g_logs_agent": "ロール（例: ログエージェント）",
       "running_tool": "ツール実行中…",
@@ -9101,17 +9117,9 @@
       "task": "タスク",
       "task_e_g_search_cloudwatch_logs": "タスク(例: CloudWatch ログを検索)",
       "team_preset": "チームプリセット",
-      "this_will_reset_conversation_history_for_all_age": "すべてのエージェントの会話履歴がリセットされます。設定は保持されます。",
+      "this_will_reset_conversation_history_for_all_age": "すべてのエージェントのコンテキストを消去し、チャネルのメッセージを削除します。設定は保持されます。作業中のエージェントがある場合は、そのコンテキストとチャネルのメッセージが保持されます。",
       "thread": "スレッド",
-      "topic": "トピック",
-      "failed_to_load_channels": "チャネル一覧の読み込みに失敗しました",
-      "failed_to_load_presets": "チームプリセットの読み込みに失敗しました",
-      "failed_to_load_channel": "このチャネルの読み込みに失敗しました",
-      "failed_to_send_message": "メッセージの送信に失敗しました",
-      "failed_to_dismiss_agent": "エージェントの却下に失敗しました",
-      "failed_to_update_agent": "エージェントの更新に失敗しました",
-      "failed_to_close_channel": "チャネルを閉じられませんでした",
-      "failed_to_clear_context": "コンテキストのクリアに失敗しました"
+      "topic": "トピック"
     },
     "chat": {
       "activityViewer": {
@@ -14663,7 +14671,8 @@
   },
   "utils": {
     "agentSwitchFeedback": {
-      "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。"
+      "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。",
+      "workspace_unavailable": "設定されたプロジェクトフォルダーが利用できません。存在するか確認してから、もう一度お試しください。"
     },
     "channelOrigin": {
       "direct_message": "ダイレクトメッセージ"

@@ -161,6 +161,9 @@ def _make_state(
     sessions.get_or_create = AsyncMock(return_value=(client, True, False))
     sessions.record_failure = AsyncMock()
     sessions.check_context_usage = MagicMock()
+    # Resolve-only, so it answers a PATH: an AsyncMock default would arm a MagicMock.
+    sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
+    sessions.note_project_change = AsyncMock()
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(
