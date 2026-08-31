@@ -4668,6 +4668,16 @@ _VALID_STT_MODELS = tuple(m.name for m in _STT_CATALOG)
 _VALID_CHANNEL_PREFIXES = ("C", "D", "G")
 
 
+# Provider values already warned about in this process. The gateway loads config
+# repeatedly, so an unusable stored provider is per-install information, not
+# per-load: without this the retirement notice repeats several times a second for
+# the whole session, which is how it was reported. Keyed on ``repr`` rather than
+# the value itself because this arrives from ``config.json`` and may be
+# unhashable (a list or dict), which must not raise on the degrade path. Exposed
+# for tests to reset.
+_WARNED_STT_PROVIDERS: set[str] = set()
+
+
 def _validated_stt_provider(value: object) -> str:
     """Return *value* if it is selectable, else degrade to ``local`` with a reason.
 
@@ -4678,6 +4688,10 @@ def _validated_stt_provider(value: object) -> str:
     """
     if value in _VALID_STT_PROVIDERS:
         return str(value)
+    seen = repr(value)
+    if seen in _WARNED_STT_PROVIDERS:
+        return STT_PROVIDER_LOCAL
+    _WARNED_STT_PROVIDERS.add(seen)
     if value in _RETIRED_STT_PROVIDERS:
         logger.warning(
             "STT provider %r is retired; using %r instead. It needed a separate "
