@@ -60,7 +60,7 @@ The other spawn tools:
 ## Limits
 
 - **Max concurrent**: auto-sized at startup by default (`agent.max_subagents = 0`; floor 3, ceiling `agent.subagent_auto_max` = 32); set a positive integer to pin a fixed cap
-- **Timeout**: 30 minutes per subagent task (`agent.subagent_timeout_secs`), 20 minutes delivery (semaphore wait + injection), 15 minutes per injection attempt (`KIROCREW_INJECTION_TIMEOUT`, clamped to the delivery cap)
+- **Timeout**: starts at 30 minutes per subagent task (`agent.subagent_timeout_secs`). By default, a timeout or a successful run using at least 80% of its deadline raises future deadlines by at least 30 minutes, up to `agent.subagent_timeout_max_secs` (default 2 hours). Set `agent.subagent_timeout_auto` to `false` to keep a fixed deadline. Learned levels contain no task text and persist across restarts. Delivery remains capped at 20 minutes (semaphore wait + injection), with 15 minutes per injection attempt (`KIROCREW_INJECTION_TIMEOUT`, clamped to the delivery cap).
 - **Turn limit**: 100 turns per subagent (configurable via `agent.subagent_max_turns`, UI max 200)
 - **Memory guard**: spawns are refused when available memory drops below 4 GB (configurable via `agent.spawn_min_memory_gb`, set to 0 to disable)
 - **No nesting**: subagents cannot spawn their own subagents

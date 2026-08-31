@@ -7786,6 +7786,8 @@ class GatewayOrchestrator:
             max_concurrent=resolve_max_subagents(self._cfg),
             default_turn_limit=self._cfg.agent.subagent_max_turns,
             default_timeout=self._cfg.agent.subagent_timeout_secs,
+            adaptive_timeout=self._cfg.agent.subagent_timeout_auto,
+            max_timeout=self._cfg.agent.subagent_timeout_max_secs,
             stall_idle_secs=self._cfg.agent.subagent_stall_idle_secs,
             on_tool_approval=_approve_subagent,
             on_spawn_approval=_spawn_approve,

@@ -2118,7 +2118,25 @@ class AgentConfig:
         default=1800,
         metadata=_meta(
             "SubAgent Timeout (seconds)",
-            "Wall-clock timeout per subagent execution. 0 uses hardcoded default (1800s).",
+            "Initial wall-clock timeout per subagent execution. "
+            "0 uses the hardcoded default (1800s).",
+        ),
+    )
+    subagent_timeout_auto: bool = field(
+        default=True,
+        metadata=_meta(
+            "Adaptive SubAgent Timeout",
+            "Raise future subagent deadlines after a timeout or a successful "
+            "near-limit run. Learned levels contain no task text and persist "
+            "across restarts.",
+        ),
+    )
+    subagent_timeout_max_secs: int = field(
+        default=7200,
+        metadata=_meta(
+            "Adaptive SubAgent Timeout Max (seconds)",
+            "Maximum automatically learned subagent deadline. A manually "
+            "configured initial timeout above this value is still honored.",
         ),
     )
     subagent_stall_idle_secs: int = field(
@@ -4487,6 +4505,8 @@ POOL_TTL_SECS_MIN = 0
 POOL_TTL_SECS_MAX = 7200
 SOFT_STOP_BUDGET_MIN = 0.5
 SOFT_STOP_BUDGET_MAX = 60.0
+SUBAGENT_TIMEOUT_MAX_MIN = 1800
+SUBAGENT_TIMEOUT_MAX_MAX = 86400
 EXTRACTION_POOL_SIZE_MIN = 1
 EXTRACTION_POOL_SIZE_MAX = 10
 # knowledge.* budgets. These share a floor of 0, but 0 is MEANINGFUL for several
@@ -4512,6 +4532,12 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     ("agent", "subagent_auto_max", 3, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "max_subagents", 0, SUBAGENT_AUTO_MAX_CEILING),
     ("agent", "subagent_max_turns", 1, SUBAGENT_MAX_TURNS_CEILING),
+    (
+        "agent",
+        "subagent_timeout_max_secs",
+        SUBAGENT_TIMEOUT_MAX_MIN,
+        SUBAGENT_TIMEOUT_MAX_MAX,
+    ),
     ("agent", "chat_turn_timeout_secs", CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX),
     (
         "agent",
@@ -8120,6 +8146,15 @@ class KiroCrewConfig:
                     agent_data.get("subagent_max_turns", 100), 100, 1, SUBAGENT_MAX_TURNS_CEILING
                 ),
                 subagent_timeout_secs=agent_data.get("subagent_timeout_secs", 1800),
+                subagent_timeout_auto=_safe_bool(
+                    agent_data.get("subagent_timeout_auto", True), True
+                ),
+                subagent_timeout_max_secs=_safe_int(
+                    agent_data.get("subagent_timeout_max_secs", 7200),
+                    7200,
+                    SUBAGENT_TIMEOUT_MAX_MIN,
+                    SUBAGENT_TIMEOUT_MAX_MAX,
+                ),
                 subagent_stall_idle_secs=_safe_int(
                     agent_data.get("subagent_stall_idle_secs", 120), 120
                 ),

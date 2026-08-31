@@ -136,6 +136,12 @@ from kiro_crew.subagent_persistence import (
     write_result_chunk,
     write_tombstone,
 )
+from kiro_crew.subagent_timeout import (
+    DEFAULT_ADAPTIVE_TIMEOUT_MAX_SECS,
+    AdaptiveTimeoutPolicy,
+    read_learned_timeout,
+    write_learned_timeout,
+)
 from kiro_crew.validation import _AGENT_NAME_RE
 
 # Standalone ClaudeCodeProvider removed (KiroACP-only). Name kept as None so the
@@ -1222,6 +1228,9 @@ class SubagentInfo:
     reaped: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
+    # Deadline captured when execution starts. Adaptive learning changes future
+    # runs only; concurrent completions must not rewrite this run's contract.
+    timeout_secs: int = 0
     _raw_task: str = ""  # unredacted task for kiro-cli execution prompt
     # CC-specific overrides (ignored for ACP)
     model: str = ""
@@ -1467,6 +1476,8 @@ class SubagentManager:
         max_concurrent: int = _MAX_CONCURRENT,
         default_turn_limit: int = _TURN_LIMIT,
         default_timeout: int = _TIMEOUT_SECS,
+        adaptive_timeout: bool = False,
+        max_timeout: int = DEFAULT_ADAPTIVE_TIMEOUT_MAX_SECS,
         startup_timeout: int = _STARTUP_TIMEOUT_SECS,
         stall_idle_secs: int = _STALL_IDLE_SECS,
         on_tool_approval: ToolApprovalCallback | None = None,
@@ -1486,7 +1497,14 @@ class SubagentManager:
         self._on_done = on_done
         self._max_concurrent = max_concurrent
         self._default_turn_limit = default_turn_limit
-        self._default_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
+        configured_timeout = default_timeout if default_timeout > 0 else _TIMEOUT_SECS
+        self._timeout_policy = AdaptiveTimeoutPolicy(
+            configured_timeout,
+            max_timeout,
+            enabled=adaptive_timeout,
+        )
+        self._default_timeout = self._timeout_policy.current_secs
+        self._timeout_history_loaded = not adaptive_timeout
         self._startup_deadline = startup_timeout if startup_timeout > 0 else _STARTUP_TIMEOUT_SECS
         self._stall_idle_secs = stall_idle_secs if stall_idle_secs > 0 else _STALL_IDLE_SECS
         self._on_tool_approval = on_tool_approval  # fallback for non-auto sessions
@@ -2128,6 +2146,42 @@ class SubagentManager:
     @property
     def count(self) -> int:
         return len(self.running)
+
+    async def _load_timeout_history(self) -> None:
+        if self._timeout_history_loaded:
+            return
+        learned = await asyncio.get_running_loop().run_in_executor(
+            maintenance_executor(),
+            read_learned_timeout,
+        )
+        self._default_timeout = self._timeout_policy.restore(learned)
+        self._timeout_history_loaded = True
+
+    async def _persist_timeout_level(self, timeout_secs: int, reason: str) -> None:
+        await asyncio.get_running_loop().run_in_executor(
+            maintenance_executor(),
+            write_learned_timeout,
+            timeout_secs,
+            reason,
+        )
+
+    def _observe_timeout_usage(self, info: SubagentInfo, *, completed: bool) -> int:
+        deadline = info.timeout_secs or self._default_timeout
+        started = info._exec_started or info.started
+        adjustment = self._timeout_policy.observe(
+            deadline,
+            time.time() - started,
+            completed=completed,
+        )
+        self._default_timeout = adjustment.timeout_secs
+        if adjustment.changed:
+            _safe_fire(
+                self._persist_timeout_level(
+                    adjustment.timeout_secs,
+                    adjustment.reason,
+                )
+            )
+        return adjustment.timeout_secs
 
     async def _teardown_run_session(self, info: SubagentInfo, session_key: str) -> None:
         return await self._run_events._teardown_run_session_impl(info, session_key)

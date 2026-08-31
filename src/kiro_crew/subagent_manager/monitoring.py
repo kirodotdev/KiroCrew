@@ -400,6 +400,11 @@ class OrphanStallMonitor(ManagerComponent):
         while True:
             await asyncio.sleep(_REAPER_INTERVAL)
             now = time.time()
+            if not self._manager._timeout_history_loaded:
+                try:
+                    await self._manager._load_timeout_history()
+                except Exception:
+                    logger.debug("Reaper: timeout-history load failed", exc_info=True)
             if not self._manager._conv_registry_rebuilt:
                 # First pass after (re)start: re-seed the conversation TTL
                 # registry from state.json so promoted conversations survive
@@ -477,12 +482,13 @@ class OrphanStallMonitor(ManagerComponent):
                 # (users close it from the UX), so we always fall through to
                 # the wall-clock check below.
                 await self._manager._maybe_flag_stall(agent_id, info, now)
-                if elapsed <= self._manager._default_timeout:
+                deadline = info.timeout_secs or self._manager._default_timeout
+                if elapsed <= deadline:
                     continue
                 logger.warning(
                     "Reaper: subagent %s exceeded %ds (ran %.0fs), force-killing",
                     agent_id,
-                    self._manager._default_timeout,
+                    deadline,
                     elapsed,
                 )
                 try:
