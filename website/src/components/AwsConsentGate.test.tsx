@@ -63,6 +63,19 @@ describe('AwsConsentGate', () => {
     await waitFor(() => expect(onConsentChange).toHaveBeenCalled())
   })
 
+  it('does not invalidate the Polly catalogue for another AWS service', async () => {
+    vi.mocked(api.awsConsent).mockResolvedValue(
+      status({ service: 's3', serviceLabel: 'Amazon S3' }),
+    )
+    const { queryClient } = renderWithProviders(<AwsConsentGate service="s3" />)
+    queryClient.setQueryData(['voiceVoices'], { voices: [{ id: 'Ruth' }] })
+
+    fireEvent.click(await screen.findByRole('button', { name: /confirm and enable/i }))
+    await waitFor(() => expect(api.grantAwsConsent).toHaveBeenCalledWith('s3', expect.any(Object)))
+
+    expect(queryClient.getQueryState(['voiceVoices'])?.isInvalidated).toBe(false)
+  })
+
   it('shows the service, region, credential source and account before confirming', async () => {
     vi.mocked(api.awsConsent).mockResolvedValue(status())
     renderWithProviders(<AwsConsentGate service="polly" />)

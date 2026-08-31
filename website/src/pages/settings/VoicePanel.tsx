@@ -150,7 +150,10 @@ export function VoicePanel() {
               <SettingsSelect label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.piper_runs_locally_and_offline_polly_uses_aws_cr')} value={voiceCfg.provider} options={PROVIDER_OPTIONS} optionLabels={PROVIDER_OPTIONS.map(p => i18nT(PROVIDER_LABEL_KEY[p]))} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
               {isPolly ? (
                 <>
-                  <AwsConsentGate service="polly" />
+                  <AwsConsentGate
+                    service="polly"
+                    onConsentChange={() => qc.invalidateQueries({ queryKey: ['voiceVoices'] })}
+                  />
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} description={i18nT('pages.settings.voicePanel.amazon_polly_voice_for_tts')} value={voiceCfg.voice} options={voiceOptions.map(o => o.value)} optionLabels={voiceOptions.map(o => o.label)} onChange={v => { const engines = voiceOptions.find(o => o.value === v)?.engines ?? ENGINE_OPTIONS; const patch: Partial<VoiceConfig> = { voice: v }; if (!engines.includes(voiceCfg.engine)) patch.engine = engines[0]; setVoice(patch) }} disabled={voiceDisabled} />
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.engine')} description={i18nT('pages.settings.voicePanel.polly_engine_type')} value={voiceCfg.engine} options={selectedVoiceEngines} onChange={v => setVoice({ engine: v })} disabled={voiceDisabled} />
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} description={i18nT('pages.settings.voicePanel.speech_rate')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled} />

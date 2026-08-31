@@ -18,8 +18,8 @@ import { i18nT } from '../i18n/t'
  * this component cannot manufacture consent by rendering a button.
  *
  * `onConsentChange` exists because a grant gates data this component cannot
- * name. It invalidates its own status and the voice catalogue, but a caller's
- * surfaces may also be reading refusals out of cache -- the AWS Control console
+ * name. It invalidates its own status, while callers invalidate only the
+ * service-specific surfaces they own. The AWS Control console, for example,
  * decides whether to show the ask from a cached 409 on the drive read and from
  * `costs.consentMissing`. Without a way to invalidate those too, withdrawing
  * leaves the operator with no receipt, no ask, and a stale drive row: nothing
@@ -42,9 +42,6 @@ export default function AwsConsentGate({
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['awsConsent', service] })
-    // The Polly voice catalogue is fetched through the same gate, so a grant
-    // change flips that request between a real catalogue and a refusal.
-    qc.invalidateQueries({ queryKey: ['voiceVoices'] })
     onConsentChange?.()
   }
 
