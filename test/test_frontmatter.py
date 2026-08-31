@@ -14,6 +14,7 @@ in ``test_skill_discover.py``).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,11 +24,15 @@ from kiro_crew.frontmatter import (
     ONBOARDING_IMPORT,
     SKILL_LOADER,
     SKILL_UPDATE,
+    STEERING_LOADER,
     FrontmatterDialect,
+    _render_frontmatter_value,
     fold_block_scalar,
     frontmatter_value,
     parse_frontmatter,
+    set_frontmatter_fields,
     split_frontmatter,
+    split_inline_comment,
 )
 from kiro_crew.onboarding_import import _column0_activation_declared, _frontmatter
 from kiro_crew.skills import SkillsLoader
@@ -428,3 +433,332 @@ class TestDialectContracts:
         junk_closer = "---\nk: v\n---junk\nbody\n"
         assert split_frontmatter(junk_closer, SKILL_LOADER)[1] == "junk\nbody\n"
         assert split_frontmatter(junk_closer, SKILL_UPDATE)[1] == "junk\nbody\n"
+
+
+def test_removing_the_last_field_keeps_the_body_blank_lines():
+    """The fence takes ONE separator newline with it. `lstrip` would eat every
+    blank line the document itself opens with — a silent reflow of text this
+    writer promises to preserve byte for byte."""
+    from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+    doc = "---\ninclusion: manual\n---\n\n\n# Title\n\nbody\n"
+    out = set_frontmatter_fields(doc, {"inclusion": None}, STEERING_LOADER)
+    assert out == "\n\n# Title\n\nbody\n"
+
+
+def test_removing_the_last_field_on_a_body_with_no_blank_line():
+    from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+    doc = "---\ninclusion: manual\n---\n# Title\n"
+    assert set_frontmatter_fields(doc, {"inclusion": None}, STEERING_LOADER) == "# Title\n"
+
+
+class TestCrlfSteeringDocuments:
+    """A steering file authored on Windows has ``---\r\n``.
+
+    The LF-only fence did not match it at all, so its declaration was invisible
+    — the tab reported the default mode — and an edit PREPENDED a second
+    front-matter block instead of rewriting the first.
+    """
+
+    CRLF = "---\r\ninclusion: manual\r\n---\r\n# Title\r\nbody\r\n"
+
+    def _d(self):
+        from kiro_crew.frontmatter import STEERING_LOADER
+
+        return STEERING_LOADER
+
+    def test_the_declaration_is_visible(self):
+        from kiro_crew.frontmatter import split_frontmatter
+
+        assert split_frontmatter(self.CRLF, self._d())[0] == {"inclusion": "manual"}
+
+    def test_an_edit_rewrites_rather_than_prepends(self):
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        out = set_frontmatter_fields(self.CRLF, {"inclusion": "always"}, self._d())
+        assert out == "---\r\ninclusion: always\r\n---\r\n# Title\r\nbody\r\n"
+
+    def test_creation_matches_the_document_newline(self):
+        """Emitting LF into a CRLF file leaves it mixed — the same class of
+        damage as reflowing the body, and as invisible in a diff viewer."""
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        out = set_frontmatter_fields("# Title\r\nbody\r\n", {"inclusion": "manual"}, self._d())
+        assert out == "---\r\ninclusion: manual\r\n---\r\n# Title\r\nbody\r\n"
+        assert "\n" not in out.replace("\r\n", "")
+
+    def test_removing_the_last_field_takes_one_crlf(self):
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        out = set_frontmatter_fields(self.CRLF, {"inclusion": None}, self._d())
+        assert out == "# Title\r\nbody\r\n"
+
+    def test_lf_documents_are_unchanged(self):
+        from kiro_crew.frontmatter import set_frontmatter_fields
+
+        lf = "---\ninclusion: manual\n---\n# Title\nbody\n"
+        out = set_frontmatter_fields(lf, {"inclusion": "always"}, self._d())
+        assert out == "---\ninclusion: always\n---\n# Title\nbody\n"
+        assert "\r" not in out
+
+
+class TestEmptyFenceIsStillAFence:
+    """An opener immediately followed by a closer (``---\n---``) has no line
+    between them, so the previous fence pattern — which required a captured
+    content line before the closer — never matched it at all. A mode edit
+    then read that as "no frontmatter yet" and PREPENDED a brand-new fence in
+    front of the empty one, duplicating the block instead of populating it.
+    """
+
+    def test_an_edit_populates_the_empty_block_in_place(self):
+        from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+        doc = "---\n---\n# Title\nbody\n"
+        out = set_frontmatter_fields(doc, {"inclusion": "manual"}, STEERING_LOADER)
+        assert out == "---\ninclusion: manual\n---\n# Title\nbody\n"
+
+    def test_an_edit_populates_the_empty_crlf_block_in_place(self):
+        from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+        doc = "---\r\n---\r\n# Title\r\nbody\r\n"
+        out = set_frontmatter_fields(doc, {"inclusion": "manual"}, STEERING_LOADER)
+        assert out == "---\r\ninclusion: manual\r\n---\r\n# Title\r\nbody\r\n"
+
+    def test_split_frontmatter_reports_no_fields_and_the_real_body(self):
+        from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
+
+        fields, body = split_frontmatter("---\n---\n# Title\nbody\n", STEERING_LOADER)
+        assert fields == {}
+        assert body == "\n# Title\nbody\n"
+
+
+def test_crlf_block_scalar_survives_a_mode_edit():
+    """The folded value's continuation lines are re-joined with the document's
+    newline, so a retained CR would be written back as ``\r\r\n``."""
+    from kiro_crew.frontmatter import STEERING_LOADER, set_frontmatter_fields
+
+    doc = (
+        "---\r\ndescription: >\r\n  folded one\r\n  folded two\r\n"
+        "inclusion: manual\r\n---\r\n# T\r\nbody\r\n"
+    )
+    out = set_frontmatter_fields(doc, {"inclusion": "always"}, STEERING_LOADER)
+    assert "\r\r\n" not in out
+    assert out.count("\r\n") == out.count("\n")
+
+
+class TestInlineComments:
+    """An inline ``# ...`` is the author's, and both readers must agree it is.
+
+    YAML starts a comment at a ``#`` preceded by whitespace. Two things went
+    wrong without that: the tab read ``manual # rationale`` as the whole string
+    and reported an unrecognized mode the agent never saw, and a mode edit
+    rebuilt the line and deleted the rationale for good.
+    """
+
+    def test_the_steering_dialect_reads_past_an_inline_comment(self) -> None:
+        yaml = pytest.importorskip("yaml")
+        doc = "---\ninclusion: manual # rationale\n---\nbody\n"
+        assert parse_frontmatter(doc, STEERING_LOADER)["inclusion"] == "manual"
+        assert yaml.safe_load(doc.split("---")[1])["inclusion"] == "manual"
+
+    def test_other_dialects_are_unchanged(self) -> None:
+        # Opt-in per dialect: shortening what the skills catalog already accepts
+        # is exactly the silent drift these dialects exist to prevent.
+        doc = "---\nname: a # b\n---\nbody\n"
+        assert parse_frontmatter(doc, SKILL_LOADER)["name"] == "a # b"
+
+    def test_a_rewrite_keeps_the_comment(self) -> None:
+        doc = "---\ninclusion: manual # rationale\n---\nbody\n"
+        out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
+        assert "# rationale" in out
+        assert parse_frontmatter(out, STEERING_LOADER)["inclusion"] == "auto"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (" manual # note", (" manual", " # note")),
+            (" a#b", (" a#b", "")),          # no whitespace before # -> value
+            (' "a # b"', (' "a # b"', "")),  # quoted -> content
+            (' "x"  # note', (' "x"', "  # note")),
+        ],
+    )
+    def test_the_split_follows_yaml_comment_rules(self, raw: str, expected: tuple) -> None:
+        assert split_inline_comment(raw) == expected
+
+
+class TestExplicitIndentBlockScalars:
+    """``|2``, ``>2-`` and friends are valid YAML block-scalar headers this
+    module's READER still does not fold (a documented, pre-existing limit).
+    The WRITE path must still know they are one, though: otherwise a `#`-shaped
+    continuation line reads as an ordinary YAML comment — the rule a plain
+    scalar's tail follows — and is left orphaned by a rewrite of the key above
+    it, detaching the author's content from the field it was written under.
+    """
+
+    @pytest.mark.parametrize("header", ["|2", ">2-", "|2+", ">3", "|-2", "|+2", ">-2"])
+    def test_a_comment_shaped_line_is_still_consumed(self, header: str) -> None:
+        yaml = pytest.importorskip("yaml")
+        doc = f"---\ninclusion: {header}\n    manual\n    # note\nname: x\n---\nbody\n"
+        out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
+        block = out.split("---")[1]
+        assert "# note" not in block
+        assert yaml.safe_load(block) == {"inclusion": "auto", "name": "x"}
+
+
+class TestMultilineFieldsAreReplacedWhole:
+    """A rewritten field must not leave its continuation lines behind.
+
+    The write follows YAML's reading, not this module's. Under
+    ``reject_indented`` an indented line is prose to the parser here, so
+    ``inclusion:`` above an indented ``manual`` reads as an EMPTY inclusion —
+    while a YAML reader folds the two together. An orphan left behind makes the
+    document and the dashboard disagree, silently, about the declared mode.
+    """
+
+    def test_a_plain_multiline_value_is_replaced_whole(self) -> None:
+        yaml = pytest.importorskip("yaml")
+        doc = "---\ninclusion:\n  manual\n---\n# T\nbody\n"
+        assert yaml.safe_load(doc.split("---")[1]) == {"inclusion": "manual"}
+        out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
+        # Both readers, because the bug was that they diverged.
+        assert yaml.safe_load(out.split("---")[1]) == {"inclusion": "auto"}
+        assert parse_frontmatter(out, STEERING_LOADER) == {"inclusion": "auto"}
+        assert "manual" not in out.split("---")[1]
+
+    def test_removing_a_multiline_value_takes_its_continuation(self) -> None:
+        yaml = pytest.importorskip("yaml")
+        doc = "---\nname: x\ninclusion:\n  manual\n---\nbody\n"
+        out = set_frontmatter_fields(doc, {"inclusion": None}, STEERING_LOADER)
+        assert yaml.safe_load(out.split("---")[1]) == {"name": "x"}
+
+    def test_an_indented_comment_is_not_consumed(self) -> None:
+        # YAML reads an indented ``#`` line as a COMMENT, not as part of the
+        # scalar, so consuming it would delete the author's own note from their
+        # document during an unrelated mode edit.
+        doc = "---\ninclusion: manual\n  # keep me\nname: x\n---\nbody\n"
+        out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
+        assert "# keep me" in out
+
+    def test_a_hash_inside_a_block_scalar_is_content_and_is_consumed(self) -> None:
+        # The exception is scoped: inside a block scalar the same line is
+        # CONTENT to YAML, so it belongs to the value being replaced.
+        doc = "---\ndesc: |\n  a\n  # content\n  b\nname: x\n---\nbody\n"
+        out = set_frontmatter_fields(doc, {"desc": "short"}, STEERING_LOADER)
+        assert "# content" not in out.split("---")[1]
+
+    def test_a_blank_line_does_not_end_a_plain_scalar(self) -> None:
+        """What FOLLOWS the blank decides, not the blank itself.
+
+        YAML keeps folding a plain scalar while an indented line follows, so
+        ``a`` + blank + ``  b`` is ONE value. Stopping at the blank left the tail
+        attached to a replaced key and the stored mode stopped matching the one
+        the author picked.
+        """
+        yaml = pytest.importorskip("yaml")
+        doc = "---\ninclusion:\n  manual\n\n  more\nname: x\n---\nbody\n"
+        assert yaml.safe_load(doc.split("---")[1])["inclusion"] == "manual\nmore"
+        out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
+        assert yaml.safe_load(out.split("---")[1]) == {"inclusion": "auto", "name": "x"}
+
+    def test_a_blank_before_a_column_zero_key_ends_it(self) -> None:
+        doc = "---\ninclusion:\n  manual\n\nname: x\n---\nbody\n"
+        out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
+        assert "name: x" in out
+        assert parse_frontmatter(out, STEERING_LOADER)["name"] == "x"
+
+    def test_a_blank_before_an_indented_comment_ends_it(self) -> None:
+        # A comment stays a comment across a blank line, so it is not swept up
+        # with the value being replaced.
+        doc = "---\ninclusion:\n  manual\n\n  # note\nname: x\n---\nbody\n"
+        out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
+        assert "# note" in out
+
+
+class TestWrittenValuesStayLoadableYaml:
+    """A written value must come back identical from a real YAML reader.
+
+    This module's own parser is line-wise and forgiving, so a round-trip through
+    it cannot catch what matters: the document is written for kiro-cli, which
+    loads it as YAML. There a bare scalar is retyped (``true`` -> bool, ``123``
+    -> int), re-cut (``a # b`` -> ``a``), or refused outright (a leading ``*``
+    opens an alias). Each case leaves the author's pattern silently not what they
+    typed — or the whole file unparseable for its only real consumer.
+    """
+
+    ROUND_TRIP = [
+        # Leading indicators: alias, flow collection, tag, anchor, directive.
+        "*.ts", "[abc].ts", "{a,b}.ts", "!x.ts", "&y.ts", "@x.ts", "%x.ts", "`x.ts",
+        # Resolver keywords and numbers — a bare one stops being a string.
+        "true", "false", "no", "on", "off", "null", "~", "123", "1.5",
+        # An unquoted ``#`` after a space opens a comment and truncates the value.
+        "src # old/*.ts",
+        # Ordinary, and deliberately boring: these must not regress.
+        "src/**/*.ts", "?.ts", "-x.ts", "a: b", "  padded  ", "", "it's ok", "日本語/*.ts",
+    ]
+
+    @pytest.mark.parametrize("value", ROUND_TRIP)
+    def test_value_survives_yaml_and_our_own_reader(self, value: str) -> None:
+        yaml = pytest.importorskip("yaml")
+        doc = set_frontmatter_fields(
+            "---\ninclusion: always\n---\n\nbody\n",
+            {"inclusion": "fileMatch", "fileMatchPattern": value},
+            STEERING_LOADER,
+        )
+        assert yaml.safe_load(doc.split("---")[1])["fileMatchPattern"] == value
+        assert parse_frontmatter(doc, STEERING_LOADER)["fileMatchPattern"] == value
+
+    @pytest.mark.parametrize("mode", ["always", "fileMatch", "manual", "auto"])
+    def test_the_mode_vocabulary_stays_unquoted(self, mode: str) -> None:
+        # Quoting is not free: it rewrites a line in the author's own document.
+        # The closed mode vocabulary is plain under every resolver, so it stays bare.
+        assert _render_frontmatter_value(mode) == mode
+
+    # Two different failures, and the quiet one is worse. A C0 control, DEL or a
+    # C1 control makes the document unloadable outright; NEL and the line and
+    # paragraph separators are LINE BREAKS to a YAML reader, so the file still
+    # parses and the author's pattern comes back as something they never wrote.
+    @pytest.mark.parametrize(
+        "value",
+        ["a\x00b", "a\x01b", "a\x0bb", "a\x0cb", "a\x1bb", "a\x7fb",
+         "a\x85b", "a\x9fb", "a\u2028b", "a\u2029b"],
+        ids=["nul", "soh", "vt", "ff", "esc", "del", "nel", "c1", "ls", "ps"],
+    )
+    def test_a_control_character_is_refused(self, value: str) -> None:
+        with pytest.raises(ValueError):
+            set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)
+
+    @pytest.mark.parametrize("escape", ['"\\ud800"', '"\\udfff"', '"a\\udc00b"'])
+    def test_a_lone_surrogate_is_refused(self, escape: str) -> None:
+        """Refused for a third reason: it is not encodable as UTF-8 at all.
+
+        A lone surrogate never reaches a YAML reader — it raises
+        ``UnicodeEncodeError`` at the first ``.encode()`` on the write path, so a
+        malformed request would answer 500 instead of a refusal. JSON hands one
+        over willingly, which is how the API can be given a character no editor
+        can type.
+        """
+        value = json.loads(escape)
+        with pytest.raises(ValueError):
+            set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)
+
+    @pytest.mark.parametrize("value", ["a\tb", "src/**/*.ts", "日本語/*.ts"])
+    def test_tab_and_non_ascii_still_round_trip(self, value: str) -> None:
+        # TAB is the one control YAML allows, and the refusal above must not
+        # widen into "anything unusual", which would reject ordinary globs.
+        yaml = pytest.importorskip("yaml")
+        doc = set_frontmatter_fields(
+            "---\ninclusion: always\n---\n\nbody\n",
+            {"fileMatchPattern": value},
+            STEERING_LOADER,
+        )
+        assert yaml.safe_load(doc.split("---")[1])["fileMatchPattern"] == value
+        assert parse_frontmatter(doc, STEERING_LOADER)["fileMatchPattern"] == value
+
+    @pytest.mark.parametrize("value", ['a"b', "a\\b", "'quoted'", "trailing'"])
+    def test_unspellable_values_are_refused_not_mangled(self, value: str) -> None:
+        # This writer emits no escape sequences and its reader understands none,
+        # so there is no spelling both agree on. Refusing beats writing a document
+        # that loads as something else.
+        with pytest.raises(ValueError):
+            set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)
