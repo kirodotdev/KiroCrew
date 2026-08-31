@@ -19,7 +19,7 @@ on:
       retention_days:
         description: "Delete temp-screenshots files older than this many days"
         required: false
-        default: "14"
+        default: "5"
 
 permissions:
   contents: write
@@ -44,7 +44,7 @@ jobs:
       - name: Remove files older than the retention window
         id: prune
         env:
-          RETENTION_DAYS: ${{ github.event.inputs.retention_days || '14' }}
+          RETENTION_DAYS: ${{ github.event.inputs.retention_days || '5' }}
         run: |
           set -euo pipefail
           cutoff=$(( $(date +%s) - RETENTION_DAYS * 24 * 3600 ))
@@ -66,7 +66,7 @@ jobs:
         if: steps.prune.outputs.removed != '0'
         env:
           GH_TOKEN: ${{ github.token }}
-          RETENTION_DAYS: ${{ github.event.inputs.retention_days || '14' }}
+          RETENTION_DAYS: ${{ github.event.inputs.retention_days || '5' }}
         run: |
           set -euo pipefail
           BRANCH=chore/cleanup-temp-screenshots
