@@ -327,6 +327,77 @@ def config_dir() -> Path:
     return d
 
 
+CWD_CLEARED = ""
+"""The ``cwd`` a caller states to say the project was CLEARED, not left unspecified.
+
+``cwd`` carries two distinguishable answers and one of them is easy to write by
+accident. ``None`` means the caller has no requirement, so a stored or inherited
+directory may still be restored over it. ``CWD_CLEARED`` is a requirement: the user
+removed the project, and the claim must bind the default workspace rather than the
+directory the session previously had. A bare ``""`` at a call site reads as the absence
+of a value, which is the one thing it does not mean -- so the requirement is named.
+"""
+
+
+def default_workspace_dir() -> Path:
+    """The directory a provider binds to when it is given no working directory.
+
+    Both providers that can be started with no cwd -- the ACP runtime and its client -- fall
+    back HERE, and session allocation compares a claim naming no directory against what such
+    a provider then reports. Expressed as a copy of ``config_dir() / "workspace"`` per call
+    site, that agreement holds only while every copy stays textually in sync: let one drift
+    and a project-less claim never matches its own binding, which either cold-starts every
+    turn or exhausts the claim retry budget and wedges the slot.
+
+    Scoped deliberately to those two: the cli, deploy, metrics and spec-builder paths resolve
+    the same directory for their own reasons and take no part in that comparison, so they keep
+    spelling it themselves rather than being swept in behind a fix that does not need them.
+    ``test_no_provider_invents_its_own_no_cwd_fallback`` is what keeps the two in step.
+    """
+    return config_dir() / "workspace"
+
+
+def resolved_cwd(cwd: str, session_key: str | None = None) -> str:
+    """Resolve a directory the way a provider resolves its own ``work_dir``.
+
+    A provider handed a falsy ``work_dir`` binds to a default, so ``provider.cwd``
+    reports that concrete path and never the empty string, and it reports it in the
+    platform's own spelling because it went through ``Path``. Comparing a raw stored
+    value against it is therefore two bugs waiting: a cleared project's ``""`` never
+    matches, and a directory differing only by separator or a trailing slash reads as a
+    DIFFERENT directory.
+
+    ``session_key`` is what makes the empty case right, and it is REQUIRED there. The
+    provider FACTORY resolves an empty ``cwd`` to a PER-SESSION directory
+    (``workspace_root()/<key>``), not to the shared :func:`default_workspace_dir` -- and
+    those are different roots, so answering the shared one for a cleared project compares a
+    claim against a directory no provider ever binds. Two harms follow: the claim never
+    matches its own binding, so the slot cold-starts every turn or exhausts its retry
+    budget; and any caller that BINDS this answer collapses sessions that are meant to be
+    isolated onto one directory, where relative writes overwrite each other. So an empty
+    ``cwd`` with no key raises rather than guessing a root.
+
+    So every comparison of a stated directory against a live ``provider.cwd`` puts both
+    sides through here -- allocation's claim gate and the switch handlers' "does the
+    live session already serve the target" checks alike. One definition rather than a
+    copy per call site, for the same reason :func:`default_workspace_dir` is one.
+
+    :raises ValueError: if ``cwd`` is empty and no ``session_key`` is given.
+    """
+    if cwd:
+        return str(Path(cwd))
+    if not session_key:
+        raise ValueError(
+            "resolved_cwd() needs a session_key to resolve an empty cwd: the per-session "
+            "default is the only directory a provider binds for a cleared project"
+        )
+    # Deferred: this module is a LEAF by design (see the module docstring) and
+    # ``config.loader`` imports it at module load, so a top-level import cycles.
+    from kiro_crew.config.loader import session_default_cwd
+
+    return str(session_default_cwd(session_key))
+
+
 def data_home() -> Path:
     """The resolved data home, WITHOUT re-running start-of-process maintenance.
 

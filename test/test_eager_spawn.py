@@ -52,6 +52,8 @@ def _mock_state(slot: _ChatSlot) -> DashboardState:
     state.sessions.remove = AsyncMock()
     state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
     state.sessions.resumable_hint = MagicMock(return_value=True)
+    # Resolve-only helper: async, and must return a real path string for the arm sites.
+    state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
     return state
 
 
@@ -395,13 +397,20 @@ class TestEagerSpawn:
 
     @pytest.mark.asyncio
     async def test_consumes_pending_reset_when_idle(self, tmp_path):
+        """An idle slot's queued reset lands, and refuses only on an ACTIVE TURN.
+
+        The eager spawn runs precisely when the slot is idle, so a strict busy answer keyed on
+        the lifetime lease would refuse every reset this path exists to consume.
+        """
         slot = _ChatSlot("t1")
         slot.project = str(tmp_path)
         slot._pending_reset_history_key = "dashboard:t1"
         state = _mock_state(slot)
         with patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)):
             await _eager_spawn(state, slot)
-        state.sessions.reset.assert_awaited_once_with("dashboard:t1", skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            "dashboard:t1", skip_if_busy=True, refuse_only_on_active_turn=True
+        )
         assert slot._pending_reset_history_key is None
         state.sessions.get_or_create.assert_awaited_once()
 
@@ -726,7 +735,14 @@ class TestProjectSetWiring:
         # instance attr spec= does not synthesize. None = no live session, so
         # the re-probe passes and the committed switch proceeds.
         state.sessions = MagicMock()
+        state.sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/w/_default"
+        )
         state.sessions.get_provider = MagicMock(return_value=None)
+        # Resolve-only helper: async, and must return a real path string for the arm sites.
+        state.sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/w/_default"
+        )
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)
@@ -744,6 +760,60 @@ class TestProjectSetWiring:
             sched.assert_called_once_with(state, slot)
 
     @pytest.mark.asyncio
+    async def test_channel_linked_switch_advances_the_linked_session(self):
+        """A channel-linked slot's turns run on the CHANNEL's session, not `dashboard:`.
+
+        `_history_key_for` prefixes unconditionally, so a slot linked to `slack:<ts>`
+        yields `dashboard:t1` -- a key nothing claims. The generation would advance there
+        while the linked session kept the arm from the previous project, so the next turn's
+        relative writes land in the directory the switch just moved away from.
+        """
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.chat import api_chat_slot_agent
+
+        slot = _ChatSlot("t1")
+        slot.linked_session_key = "slack:1700000000.000100"
+        state = MagicMock(spec=DashboardState)
+        state._slots = {slot.key: slot}
+        state.push_slots_update = MagicMock()
+        state.conversation_log = None  # instance attr; spec= does not provide it
+        state.sessions = MagicMock()  # same: set in __init__, so spec= omits it
+        state.sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/w/_default"
+        )
+        app = web.Application()
+        app["state"] = state
+        app.router.add_post("/api/chat/slots/{slot}/agent", api_chat_slot_agent)
+        with (
+            patch(
+                "kiro_crew.dashboard.chat_handlers._reset_slot_session",
+                new=AsyncMock(),
+            ) as reset,
+            patch("kiro_crew.dashboard.chat_handlers.save_slot_off_loop", new=AsyncMock()),
+            patch("kiro_crew.dashboard.chat_handlers.schedule_eager_spawn"),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post("/api/chat/slots/t1/agent", json={"agent": "kirocrew"})
+                assert resp.status == 200
+
+        # `mark_retire_on_next_claim`, not `note_project_change`: an agent switch is an
+        # IDENTITY change, so the arm alone cannot express it (see session.md).
+        state.sessions.mark_retire_on_next_claim.assert_called_once_with(
+            # No directory: this slot was never scoped, and stating the resolved default
+            # would bind it where a clear would, costing the resume the claim still expects.
+            "slack:1700000000.000100",
+            None,
+            agent="kirocrew",
+        )
+        state.sessions.note_project_change.assert_not_called()
+        assert reset.await_args.args[2] == "slack:1700000000.000100", (
+            "the teardown must target the same session the generation advanced, or the "
+            f"switch resets a key nothing runs on; got {reset.await_args.args[2]!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_project_change_schedules_eager_spawn(self, tmp_path):
         from aiohttp import web
         from aiohttp.test_utils import TestClient, TestServer
@@ -754,6 +824,12 @@ class TestProjectSetWiring:
         state = MagicMock(spec=DashboardState)
         state._slots = {slot.key: slot}
         state.push_slots_update = MagicMock()
+        # The handler now arms synchronously on a project change, so the double must
+        # carry `sessions` (as _mock_state does) or the spec'd mock answers 500.
+        state.sessions = MagicMock()
+        state.sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/w/_default"
+        )
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/chat/slots/{slot}/project", api_chat_slot_project)
@@ -1205,6 +1281,9 @@ class TestFreshSpawnPopulationCap:
         shared_sessions.remove = AsyncMock()
         shared_sessions.remove_if_unclaimed = AsyncMock(return_value=True)
         bindings = _bindings()
+        shared_sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/w/_default"
+        )
         keys: list[str] = []
         with (
             patch.object(chat_runner.KiroCrewConfig, "load", _cfg(True)),
@@ -1740,6 +1819,9 @@ class TestSlotFocusedFrame:
         state = MagicMock(spec=DashboardState)
         state.get_slot = MagicMock(return_value=slot)
         state.sessions = MagicMock()
+        state.sessions.resolve_arm_cwd = AsyncMock(
+            side_effect=lambda key, cwd: cwd or "/w/_default"
+        )
         state.sessions.has_session = MagicMock(return_value=has_session)
         state.sessions.resumable_hint = MagicMock(return_value=bool(resumable))
         return state

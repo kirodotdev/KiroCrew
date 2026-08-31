@@ -15,6 +15,7 @@ Two layers are under test:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import patch
 
@@ -246,11 +247,26 @@ class _FakeSlot:
         self._pending_reset_history_key = None
 
 
+class _FakeSessions:
+    """Records the arm calls, and YIELDS in the resolve like the real one does."""
+
+    def __init__(self):
+        self.armed: list[tuple[str, str]] = []
+
+    async def resolve_arm_cwd(self, key: str, cwd: str) -> str:
+        await asyncio.sleep(0)
+        return "/workspace/_default"
+
+    def mark_retire_on_next_claim(self, key: str, cwd: str, *, agent=None) -> None:
+        self.armed.append((key, cwd))
+
+
 class _FakeState:
     """Minimal state: the applier only calls ``push_slots_update``."""
 
     def __init__(self):
         self.pushes = 0
+        self.sessions = _FakeSessions()
 
     def push_slots_update(self) -> None:
         self.pushes += 1
@@ -277,6 +293,63 @@ class TestSetProjectApplier:
         assert slot._pending_reset_history_key is not None
         assert state.pushes == 1
         assert "Project set to" in result
+
+    @pytest.mark.asyncio
+    async def test_a_failed_arm_resolve_leaves_the_cleared_project_untouched(self, tmp_path):
+        """An unresolvable workspace root must not half-apply the clear.
+
+        Mutating first and resolving after leaves the slot on no project with no arm
+        raised when the resolve fails, so the next cwd-less channel claim reuses the
+        session still bound to the OLD project directory.
+        """
+        slot = _FakeSlot(project=str(tmp_path))
+        state = _FakeState()
+
+        async def _boom(key, cwd):
+            raise RuntimeError("workspace root unavailable")
+
+        state.sessions.resolve_arm_cwd = _boom
+        result = await apply_session_directive(
+            state,
+            slot,
+            slot.key,
+            "set_project",
+            {"project": "", "clear": True},
+            producer_is_user_facing=True,
+        )
+        assert slot.project == str(tmp_path), (
+            "the clear mutated the slot before the resolve failed, so the slot reads "
+            "cleared while no arm was ever recorded"
+        )
+        assert not slot._pending_reset_history_key
+        assert state.sessions.armed == []
+        assert "could not be resolved" in result
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_project_is_armed_before_the_producer_returns(self, tmp_path):
+        """The arm must exist by the time the turn can release the session.
+
+        Arming at the turn-end consume instead leaves a window: that path resolves the
+        cleared directory with an ``await``, and the lease is already gone, so a queued
+        channel claim acquires and is served by the session still bound to the old project.
+        Here the turn still holds it, so the same resolve yields harmlessly.
+        """
+        slot = _FakeSlot(project=str(tmp_path))
+        state = _FakeState()
+        result = await apply_session_directive(
+            state,
+            slot,
+            slot.key,
+            "set_project",
+            {"project": "", "clear": True},
+            producer_is_user_facing=True,
+        )
+        assert slot.project == ""
+        assert slot._pending_reset_history_key is not None
+        assert "Project cleared" in result
+        assert state.sessions.armed == [
+            (slot._pending_reset_history_key, "/workspace/_default")
+        ], "the clear returned without arming, so the consume-side resolve races a queued claim"
 
     @pytest.mark.asyncio
     async def test_sensitive_path_denied_without_mutating_slot(self, tmp_path, monkeypatch):

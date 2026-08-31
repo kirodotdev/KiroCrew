@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.acp.session_handle import WatchdogSettings
+from kiro_crew.config.paths import CWD_CLEARED
 
 
 @pytest.fixture(autouse=True)
@@ -512,6 +513,81 @@ class TestGetOrCreatePoolIntegration:
         # Factory called for cold start, cwd forwarded
         factory.assert_called_once()
         assert factory.call_args.kwargs.get("cwd") == "/Users/alice/workspace/proj"
+
+    @pytest.mark.asyncio
+    async def test_explicit_clear_skips_pool_while_no_preference_still_claims(self):
+        """An explicitly CLEARED project cold-starts; ``cwd=None`` still reaches the pool.
+
+        ``cwd`` is side-dependent and both spellings are falsy. ``None`` states no
+        preference, so the pool's shared binding is fine, but CWD_CLEARED says the project
+        was cleared and the factory will bind ``session_default_cwd(key)`` -- a per-session
+        directory no shared pooled child is sitting in. Folding the two together let a
+        cleared turn claim a warm provider rooted in the pool's workspace, so its relative
+        writes landed there. The second half is the positive control: a guard that bypassed
+        the pool for every caller would satisfy the first assertion on its own.
+        """
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+
+        await mgr.get_or_create("cleared-key", agent="kirocrew", cwd=CWD_CLEARED)
+        mgr._drain_and_claim.assert_not_awaited()
+
+        await mgr.get_or_create("no-pref-key", agent="kirocrew")
+        mgr._drain_and_claim.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_clear_refuses_the_stored_resume_sid(self):
+        """A cleared project must COLD-START, not ``session/load`` the conversation it dropped.
+
+        Bypassing the warm pool only stops the claim taking a shared child; the stored SID is a
+        separate path, so the turn still resumed the very conversation the clear was asked to
+        leave behind. The second half is the positive control: a slot stating no preference
+        keeps its resume, so a guard that simply refused every SID would pass the first half.
+        """
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._drain_and_claim = AsyncMock(return_value=None)
+
+        with patch.object(mgr._session_map, "get", return_value="sid-abc"):
+            with patch.object(mgr._session_map, "clear_sid") as cleared:
+                await mgr.get_or_create("cleared-key", agent="kirocrew", cwd=CWD_CLEARED)
+            cleared.assert_called_once_with("cleared-key")
+            assert factory.call_args.kwargs.get("cwd") == CWD_CLEARED
+
+            with patch.object(mgr._session_map, "clear_sid") as kept:
+                await mgr.get_or_create("no-pref-key", agent="kirocrew")
+            kept.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_discarded_conversation_stays_discarded_through_an_armed_retry(self):
+        """A discard must drop the SID even when the arm still names a real directory.
+
+        A discard bumps the generation and deliberately arms NO directory -- but it does not
+        reset one an earlier project change left resident, so the arm can name a resolved path
+        while the conversation it guards was thrown away. The stale retry then states that path
+        as its cwd, which is not ``CWD_CLEARED``, so the resume guard does not fire and the
+        discarded conversation is served again. The clear the discard performs itself is no
+        defence: it runs outside the registry lock, so this retry can read the map first.
+        """
+        mgr, _factory = _make_manager(pool_agent="kirocrew")
+        arms = mgr._allocation_boundary()
+
+        arms.note_project_change("resurrect-key", "/Users/alice/proj")
+        arms.note_conversation_discarded("resurrect-key")
+        arm = arms._arm_if_any(mgr._fold_key("resurrect-key"))
+
+        assert arm is not None and arm.cwd is not None, (
+            "the arm states no directory, so this asserts nothing: the resurrection needs a "
+            "leftover path for the retry to pass instead of the cleared sentinel"
+        )
+        assert arm.requires_sid_clear, (
+            "the discard left no provenance, so a retry reading only the directory cannot tell "
+            "this conversation was thrown away"
+        )
+
+        arm.spend()
+        assert not arm.requires_sid_clear, (
+            "provenance outliving its episode makes the NEXT conversation's SID the casualty"
+        )
 
     @pytest.mark.asyncio
     async def test_claims_pool_with_model_override_and_switches(self):
@@ -1205,6 +1281,64 @@ class TestReloadProviderFactoryRefillsPool:
 # ---------------------------------------------------------------------------
 # refresh_defaults adopts new defaults WITHOUT tearing down live sessions
 # ---------------------------------------------------------------------------
+
+
+class TestTheReuseComparisonSurvivesASymlinkedRoot:
+    """`_reacquire_and_validate` compares the claim against `provider.cwd` on EVERY reuse.
+
+    It normalizes both sides through `resolved_cwd` and deliberately does not realpath,
+    because a filesystem call would run under the registry lock. That only works if the
+    normalization is symmetric: if one side arrives raw, a directory spelled with a
+    trailing separator reads as a DIFFERENT directory, `cwd_moved` fires on every turn,
+    and the slot cold-starts each time or exhausts its retry budget -- silently, since an
+    eviction is a legitimate outcome and nothing errors.
+
+    Driven on a real symlink because that is the case the lane named: a symlinked or
+    network workspace root is where a realpath-based comparison would disagree with the
+    spelling the session was opened under. Neither side realpaths, so the link and its
+    TARGET are different directories here -- a claim naming the target must not be served
+    by the link's session, which is why that case asserts a move.
+    """
+
+    @pytest.mark.asyncio
+    async def test_restating_the_same_symlinked_directory_does_not_evict(self, tmp_path):
+        from kiro_crew.session_allocation import cwd_moved_for_reuse
+
+        real = tmp_path / "real-root"
+        real.mkdir()
+        link = tmp_path / "linked-root"
+        link.symlink_to(real, target_is_directory=True)
+        assert link.is_symlink(), "the fixture is not a symlink, so this proves nothing"
+
+        # `provider.cwd` reports the directory the session was OPENED with, so a session on a
+        # symlinked root reports the link -- not its target.
+        bound = str(link)
+        default = str(tmp_path / "per-session-default")
+
+        for spelling in (str(link), str(link) + "/", str(link) + "//"):
+            assert cwd_moved_for_reuse(bound, spelling, default) is False, (
+                f"restating the same directory as {spelling!r} read as a MOVE, so every reuse "
+                "evicts and the slot cold-starts each turn"
+            )
+
+        # The BOUND side must be normalized too, and this half is what detects an
+        # asymmetric fix: a trailing or doubled separator is the same directory.
+        for reported in (str(link) + "/", str(link) + "//", str(link) + "/."):
+            assert cwd_moved_for_reuse(reported, str(link), default) is False, (
+                f"a session bound as {reported!r} read as MOVED against the same directory, so "
+                "only one side is normalized and every reuse evicts"
+            )
+
+        # A claim stating NO requirement never moves, whatever the binding is.
+        assert cwd_moved_for_reuse(bound, None, default) is False
+
+        # Negative half: a different directory must still evict, or the assertions above
+        # pass for a comparison that can never fire. The symlink TARGET counts too.
+        assert cwd_moved_for_reuse(bound, str(tmp_path / "elsewhere"), default) is True
+        assert cwd_moved_for_reuse(bound, str(real), default) is True
+        # A provider tracking no directory string has nothing to disagree with.
+        assert cwd_moved_for_reuse("", str(link), default) is False
+        assert cwd_moved_for_reuse(None, str(link), default) is False
 
 
 class TestRefreshDefaultsSparesLiveSessions:

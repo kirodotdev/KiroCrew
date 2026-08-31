@@ -1589,7 +1589,12 @@ describe('onCycleAgent keyboard shortcut', () => {
     const noticeText = await screen.findByText(
       REAL_FAILURE,
     )
-    expect(noticeText.closest('[role="status"]')).not.toBeNull()
+    // Politeness rides `warn`: a WITHHELD switch broke nothing, so it must not cut in.
+    // Exactly one region -- one nested inside the notice would double-announce.
+    const live = noticeText.closest('[role="status"]')
+    expect(live).not.toBeNull()
+    // Scoped to the notice, not the document: the page legitimately hosts other live regions.
+    expect(live!.querySelectorAll('[role="alert"], [role="status"]').length).toBe(0)
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByText(
       REAL_FAILURE,

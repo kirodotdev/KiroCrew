@@ -30,6 +30,7 @@ import pytest
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
 from kiro_crew.channel import (
     Channel,
+    _reacquire_cleared_session,
     _recover_busy_agent,
     _reset_busy_session,
     _stream_task,
@@ -102,6 +103,8 @@ class FakeSessions:
         self.resets: list[tuple[str, Any]] = []
         self.acquires: list[str] = []
         self.released: list[str] = []
+        self.lifecycle_marked: list[str] = []
+        self.turn_active_calls: list[tuple[str, bool]] = []
         self._reset_exc = reset_exc
         # Number of resets that succeed before ``reset_exc`` starts firing.
         # 0 (the default) means the very first reset raises; 1 lets the swap
@@ -122,6 +125,37 @@ class FakeSessions:
 
     def release(self, key, **kwargs):
         self.released.append(key)
+
+    def has_session(self, key):
+        return key in self._sessions
+
+    def get_provider(self, key):
+        """The provider registered under this key, or ``None``.
+
+        Distinct from ``has_session`` on purpose: the channel member compares this against the
+        provider it cached at spawn, so a replacement registered under the same key must be
+        visible as a DIFFERENT object rather than merely as presence.
+        """
+        entry = self._sessions.get(key)
+        return entry.provider if entry is not None else None
+
+    def mark_lifecycle_lease(self, key):
+        """A lease this loop keeps for the member's life, as the real manager records it."""
+        session = self._sessions.get(key)
+        if session is None:
+            return False
+        session.lifecycle_lease = True
+        self.lifecycle_marked.append(key)
+        return True
+
+    def set_lifecycle_turn_active(self, key, active):
+        """Records the member's own turn window, as the real manager does."""
+        session = self._sessions.get(key)
+        if session is None:
+            return False
+        session.lifecycle_turn_active = active
+        self.turn_active_calls.append((key, active))
+        return True
 
 
 # ── Detection ──
@@ -403,3 +437,99 @@ async def test_the_stuck_card_still_lands_when_the_teardown_reset_fails():
     assert agent.state == "failed"
     assert len([m for m in ch.messages if "could not be recovered" in m.content]) == 1
     assert sessions.released == [agent.session_key]
+
+
+# ── a cleared member is re-acquired rather than left on a dead provider ──
+
+
+@pytest.mark.asyncio
+async def test_a_cleared_member_serves_its_next_message():
+    """Clearing an idle member must not strand its listener on the shut-down provider.
+
+    `api_channel_clear_context` discards the member's session, which pops the registry
+    entry and shuts the provider down -- and that provider is the one this member cached
+    when it spawned. Without a re-acquire the member streams a dead object for every later
+    message, and only a restart recovers it.
+    """
+    agent = _make_agent()
+    served: list[str] = []
+    fresh = _text_client("served", seen=served)
+    sessions = FakeSessions([_text_client("first"), fresh])
+
+    # Spawn: the member takes its lease and caches the provider it was handed.
+    cached = await _reacquire_cleared_session(sessions, agent)
+    assert cached is not None, "precondition: the spawn acquire failed"
+    assert sessions.has_session(agent.session_key), "precondition: no session was registered"
+
+    # The clear: exactly what `discard_conversation` leaves behind -- key popped.
+    sessions._sessions.pop(agent.session_key)
+    assert not sessions.has_session(
+        agent.session_key
+    ), "precondition: the clear did not pop the key, so nothing is being tested"
+
+    # The next message: the member must obtain a live provider rather than reuse the dead one.
+    replacement = await _reacquire_cleared_session(sessions, agent)
+    assert replacement is not None, (
+        "the member could not re-acquire after its context was cleared, so every later "
+        "message fails until it is restarted"
+    )
+    assert replacement is not cached, (
+        "the member kept the provider the clear shut down, so its next message streams a "
+        "dead session"
+    )
+    assert (
+        await _stream_task(agent, _make_channel(), replacement, "hi") is False
+    ), "the re-acquired provider did not serve the message"
+    assert served == ["hi"], f"the message never reached the fresh provider; saw {served!r}"
+    assert sessions.lifecycle_marked, (
+        "the re-acquired lease was not declared lifecycle-scoped, so the next clear on this "
+        "member is refused for as long as it lives"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_registered_under_the_same_key_is_not_streamed_through():
+    """A dequeued message must not reach the provider this member cached at spawn once the
+    registry holds a DIFFERENT one under the same key.
+
+    Presence cannot answer this. An idle clear pops the key and shuts the cached provider down;
+    a surfaced dashboard tab can then be linked to the same key and register its own provider,
+    at which point a presence probe says "a session exists" and is satisfied, while the
+    object the member still holds is the dead one. Streaming into it loses the message.
+    """
+    ch = Channel(id="c1", topic="review")
+    agent = ch.add_agent(role="dev", agent_name="dev")
+    assert agent is not None
+
+    stale_seen: list[str] = []
+    fresh_seen: list[str] = []
+    stale = _text_client("from the stale provider", seen=stale_seen)
+    fresh = _text_client("from the replacement", seen=fresh_seen)
+    sessions = FakeSessions([stale, fresh])
+
+    task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
+    try:
+        # Let the member spawn and cache `stale` under the key before anything is queued.
+        assert await _wait_for(lambda: sessions.acquires and agent.state == "listening")
+
+        # Exactly the shape the finding names: the entry is REPLACED, not removed, so the key is
+        # still present and only the identity differs.
+        key = sessions.acquires[0]
+        replacement = _text_client("from the replacement", seen=fresh_seen)
+        sessions._sessions[key] = SimpleNamespace(provider=replacement)
+        assert sessions.has_session(key), "precondition: presence must still hold"
+        assert sessions.get_provider(key) is not stale, "precondition: identity must differ"
+
+        await ch.post("human", "please review this")
+        assert await _wait_for(
+            lambda: any(m.from_id == agent.id for m in ch.messages)
+        ), "the member produced nothing at all"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert not stale_seen, (
+        "the message was streamed through the provider cached at spawn, which the registry has "
+        f"already replaced; saw {stale_seen!r}"
+    )
