@@ -21,4 +21,17 @@ export type TurnItem =
 
 export type DisplayItem =
   | TurnItem
-  | { kind: 'turn'; items: TurnItem[]; complete: boolean }
+  | {
+      kind: 'turn'
+      items: TurnItem[]
+      complete: boolean
+      /**
+       * This turn is the INTERIM work of a sub-agent fan-out: everything the
+       * agent emitted between the user's prompt and the synthesis turn that
+       * restates it. Set by `groupDisplayItems` when it sees the synthesis
+       * injection, and read by TurnBlock, which folds the whole region behind
+       * one toggle so the reader lands on the synthesis instead of on N
+       * per-completion summaries that say the same thing.
+       */
+      interim?: boolean
+    }

@@ -131,6 +131,42 @@ const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
   isWorkflowCompletionItem(it) || isMcpAppItem(it, appToolCallIds) ||
   isDiffCardItem(it)
 
+/** One ordered run of the collapse split: a contiguous run of items that hide
+ *  behind the toggle, or a single item that must render in place. */
+type Seg =
+  | { type: 'collapsed'; items: { it: TurnItem; idx: number }[] }
+  | { type: 'visible'; it: TurnItem; idx: number }
+
+/**
+ * Split items into ordered segments: contiguous "collapsed" runs interleaved
+ * with items that must render in place (widgets/images, hand-backs, crew
+ * replies, mcp_oauth/error rows, workflow_run / spawn_run / completion cards,
+ * MCP-App tool rows, diff cards — see isVisibleInline).
+ *
+ * ONE definition, shared by the collapseAll split and the interim-fan-out fold,
+ * so "what may never be hidden behind a toggle" cannot drift between them.
+ * `idx` is the item's index in the caller's list, offset by `offset` when the
+ * caller passes a slice.
+ */
+function splitSegments(items: TurnItem[], appToolCallIds: ReadonlySet<string>, offset = 0): Seg[] {
+  const segs: Seg[] = []
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (isVisibleInline(it, appToolCallIds)) {
+      segs.push({ type: 'visible', it, idx: offset + i })
+    } else {
+      const last = segs[segs.length - 1]
+      if (last?.type === 'collapsed') last.items.push({ it, idx: offset + i })
+      else segs.push({ type: 'collapsed', items: [{ it, idx: offset + i }] })
+    }
+  }
+  return segs
+}
+
+/** Steps a collapse toggle can honestly claim to be hiding. */
+const countCollapsedSteps = (segs: Seg[]): number =>
+  segs.flatMap(s => s.type === 'collapsed' ? s.items : []).filter(({ it }) => !isHiddenTool(it)).length
+
 /** Stable empty set so the mcpApps selector returns a referentially-equal
  *  value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
@@ -283,8 +319,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const { term, currentMessageIdx } = useSearchHighlight()
   const matchInCollapsedSegment = useMemo(() => {
     if (!term || currentMessageIdx < 0) return false
-    // Default mode only collapses tool calls, which are never search matches.
-    if (!collapseAll) return false
+    // Default mode only collapses tool calls, which are never search matches —
+    // but an interim fan-out turn folds its prose in BOTH modes, so it has to be
+    // checked before that bail-out or a match inside it stays height-0.
+    if (!collapseAll && !turn.interim) return false
     const msgIdxs = (it: TurnItem): number[] =>
       it.kind === 'single'
         ? [it.idx]
@@ -293,11 +331,13 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
           : []
     // Mirror the render's conclusion-finding so we know which items are the
     // (always-visible) conclusion vs the collapsible pre-conclusion reasoning.
-    const conclusionIdx = findConclusionIdx(items)
-    const beforeItems = conclusionIdx > 0 ? items.slice(0, conclusionIdx) : []
+    // An interim turn has no conclusion carve-out: every non-visible-inline
+    // item of it is collapsed.
+    const conclusionIdx = turn.interim ? -1 : findConclusionIdx(items)
+    const beforeItems = turn.interim ? items : (conclusionIdx > 0 ? items.slice(0, conclusionIdx) : [])
     // Only the non-visible-inline pre-conclusion items are actually collapsed.
     return beforeItems.some(it => !isVisibleInline(it, appToolCallIds) && msgIdxs(it).includes(currentMessageIdx))
-  }, [items, term, currentMessageIdx, collapseAll, appToolCallIds])
+  }, [items, term, currentMessageIdx, collapseAll, appToolCallIds, turn.interim])
   // Revealing a search match must win over the current disclosure state, and it
   // has to travel the SAME channel the host owns, or a controlled row would
   // stay collapsed and hide the <mark>. Held in a ref so an inline parent
@@ -313,6 +353,34 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     else setLocalExpanded(true)
   }, [matchInCollapsedSegment])
 
+  // Interim fan-out region: everything the agent emitted between the user's
+  // prompt and the synthesis turn that restates it (see `interim` in types.ts).
+  // Folded in BOTH modes and with no conclusion carve-out — the region's last
+  // assistant message is a per-completion summary, which is exactly the row the
+  // conclusion rule would have kept visible. `isVisibleInline` still holds, so
+  // the spawn_run card, the completion cards and any error stay in place: the
+  // reader keeps the record that a wave ran, without the prose.
+  if (turn.interim) {
+    const segs = splitSegments(items, appToolCallIds)
+    const stepCount = countCollapsedSteps(segs)
+    if (!turn.complete || stepCount === 0) {
+      return <>{items.map((it, i) => renderItem(it, i))}</>
+    }
+    return (
+      <>
+        <CollapseToggle expanded={expanded} onToggle={toggle}
+          label={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.turnBlock.worked_through_step', { count: stepCount })} />
+        {segs.map((seg, si) => seg.type === 'visible' ? (
+          <div key={`v-${si}`}>{renderItem(seg.it, seg.idx)}</div>
+        ) : (
+          <CollapsibleSection key={`c-${si}`} expanded={expanded}>
+            {seg.items.map(({ it, idx }) => renderItem(it, idx))}
+          </CollapsibleSection>
+        ))}
+      </>
+    )
+  }
+
   // collapseAll mode: collapse everything except the last assistant message (original behavior)
   if (collapseAll) {
     // Find last substantive assistant message as conclusion (skip weak ones like bare OPTIONS)
@@ -321,27 +389,11 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
     const after = conclusionIdx >= 0 ? items.slice(conclusionIdx + 1) : items
     const beforeItems = conclusionIdx > 0 ? items.slice(0, conclusionIdx) : []
 
-    // Split pre-conclusion items into ordered segments: contiguous "collapsed"
-    // runs (tool calls + non-renderable assistant text) interleaved with
-    // "visible" items (assistant text containing widgets/images, plus
-    // mcp_oauth/error rows). Visible items render in place; collapsed runs
-    // hide behind the reasoning toggle.
-    type Seg = { type: 'collapsed'; items: { it: TurnItem; idx: number }[] } | { type: 'visible'; it: TurnItem; idx: number }
-    const segs: Seg[] = []
-    for (let i = 0; i < beforeItems.length; i++) {
-      const it = beforeItems[i]
-      if (isVisibleInline(it, appToolCallIds)) {
-        segs.push({ type: 'visible', it, idx: i })
-      } else {
-        const last = segs[segs.length - 1]
-        if (last?.type === 'collapsed') last.items.push({ it, idx: i })
-        else segs.push({ type: 'collapsed', items: [{ it, idx: i }] })
-      }
-    }
-    const stepCount = segs
-      .flatMap(s => s.type === 'collapsed' ? s.items : [])
-      .filter(({ it }) => !isHiddenTool(it))
-      .length
+    // Split pre-conclusion items into ordered segments (see splitSegments):
+    // visible items render in place; collapsed runs hide behind the reasoning
+    // toggle.
+    const segs = splitSegments(beforeItems, appToolCallIds)
+    const stepCount = countCollapsedSteps(segs)
 
     if (!turn.complete || stepCount === 0) {
       return <>{items.map((it, i) => renderItem(it, i))}</>

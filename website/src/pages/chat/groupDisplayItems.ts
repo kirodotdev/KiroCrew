@@ -1,6 +1,7 @@
 import type { ChatMessage } from '../../types'
 import type { DisplayItem, TurnItem } from './types'
 import { isSubagentCompletionMessage } from './subagentCompletion'
+import { isNoteRow } from '../../lib/noteContract'
 
 /** Roles that fold into a collapsible group in the turn view. Thinking is NOT
  *  here: it carries real content and renders as its own standalone block (a
@@ -59,6 +60,51 @@ export const isReasoningBurst = (t: TurnItem): t is Extract<TurnItem, { kind: 's
  */
 export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
 
+/**
+ * The synthesis injection that closes a sub-agent fan-out.
+ *
+ * `_run_pending_synthesis` (chat_runner.py) appends this row before dispatching
+ * the one turn that folds every sub-agent's result into a single answer, and
+ * stamps `meta.injectKind = 'synthesis'` on it. Its presence is therefore proof
+ * that everything the agent emitted since the user's prompt was INTERIM: the
+ * per-completion summaries the synthesis turn is about to restate.
+ *
+ * Keyed on the meta, not on the prompt's text: the prose is a backend constant
+ * that may be reworded, the meta key is a wire contract.
+ */
+const isSynthesisInjection = (msg: ChatMessage): boolean =>
+  msg.role === 'inject' &&
+  (msg.meta as Record<string, unknown> | undefined)?.injectKind === 'synthesis'
+
+/**
+ * An injected row that is NOT part of the fan-out, and whose presence therefore
+ * disqualifies the region from being folded.
+ *
+ * The slot's queue is shared. While a wave is landing, the drain can deliver a
+ * CRON notification (`injectKind: 'cron'`) — an unrelated prompt with its own
+ * reply — or replay the USER'S OWN message verbatim when a turn emitted nothing
+ * (`user_replay`, see `build_recovery_requeue`). A NOTE is the third case and it
+ * carries no `injectKind` at all: notes are appended as `inject` with
+ * `meta.noteSession` (`slot_buffers.py`, `chat_handlers.py`), so they are
+ * recognised through the shared `isNoteRow` contract rather than by a kind — the
+ * same predicate every other note consumer uses, and the reason a `cls`-only
+ * check would not survive a reload.
+ *
+ * None of the three is restated by the synthesis turn, so folding them behind
+ * the fan-out toggle would hide content on the promise that something below
+ * repeats it, which nothing does.
+ *
+ * `recovery` is deliberately NOT here: a tool-stall recovery inside a fan-out is
+ * a continuation of the very work being folded.
+ */
+const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay'])
+const isForeignInjection = (msg: ChatMessage): boolean => {
+  if (msg.role !== 'inject') return false
+  if (isNoteRow(msg)) return true
+  const kind = (msg.meta as Record<string, unknown> | undefined)?.injectKind
+  return typeof kind === 'string' && FOREIGN_INJECT_KINDS.has(kind)
+}
+
 export interface GroupedTurns {
   turns: DisplayItem[]
   /** Index into `turns` of the turn object produced by the TRAILING flush, or
@@ -67,6 +113,31 @@ export interface GroupedTurns {
    *  element whose `complete` value depends on whether the slot is still
    *  running. */
   trailingTurnIdx: number
+}
+
+/**
+ * Collapse `turns[start..]` into ONE turn flagged `interim`.
+ *
+ * The region can hold both loose TurnItems (a batch too short to have been
+ * wrapped) and already-wrapped turns (a completion opener splits the region
+ * into several), so it is flattened back to a single item list. Flattening is
+ * what makes the fold reliable: a two-item reply is spread loose by `flushTurn`
+ * and would otherwise have no TurnBlock to fold it.
+ *
+ * Always `complete: true` — a region is only folded once the synthesis row that
+ * terminates it exists, which by definition is after the interim work finished.
+ * The trailing (still-running) turn is never part of a folded region.
+ */
+function foldInterimRegion(turns: DisplayItem[], start: number): void {
+  if (start >= turns.length) return
+  const region = turns.splice(start)
+  const items: TurnItem[] = []
+  for (const d of region) {
+    if (d.kind === 'turn') items.push(...d.items)
+    else items.push(d)
+  }
+  if (items.length === 0) return
+  turns.push({ kind: 'turn', items, complete: true, interim: true })
 }
 
 /**
@@ -105,16 +176,18 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
   if (group.length) raw.push({ kind: 'group', msgs: group, startIdx: groupStart })
 
   // Phase 2: group into turns (user message → next user message).
-  // Track whether the last subagent completion had synthesisPending set — if so,
-  // the assistant response in its turn is a redundant per-completion summary that
-  // synthesis will restate. Hide it from the transcript so the user only sees the
-  // completion card + the final synthesis. This check lives here (not in a
-  // pre-filter) because TurnBlock's visibility system (isVisibleInline, etc.)
-  // is the authority on what stays visible; we suppress ONLY when the backend
-  // explicitly marked the completion as having pending synthesis.
-  let _lastSubagentHadSynthesis = false
   const turns: DisplayItem[] = []
   let turnItems: TurnItem[] = []
+  // First index in `turns` after the last USER/nudge prompt — the start of the
+  // region a synthesis injection retroactively folds as interim. A sub-agent
+  // completion deliberately does NOT reset it: the completions, and the replies
+  // the agent writes to each of them, ARE the interim work being folded.
+  let regionStart = 0
+  // Set when the open region also carries an injected row that the synthesis
+  // turn will not restate (see isForeignInjection). Such a region is left
+  // UNFOLDED — degrading to the pre-fold rendering is always safe, whereas
+  // folding it would hide unrelated content behind the fan-out's toggle.
+  let regionHasForeign = false
   const hasWorkingSteps = (items: TurnItem[]) =>
     items.some(t =>
       (t.kind === 'single' && (t.msg.role === 'tool' || t.msg.role === 'assistant' || t.msg.role === 'streaming')) ||
@@ -148,6 +221,31 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     }
   }
   for (const item of raw) {
+    // The synthesis injection closes a fan-out: flush what is open, then fold
+    // everything since the user's prompt into ONE interim turn. Checked BEFORE
+    // the opener test because an `inject` row is not an opener — without this it
+    // would be swallowed into the region it is supposed to terminate, and the
+    // synthesis answer would fold away with the summaries it replaces.
+    if (item.kind === 'single' && isSynthesisInjection(item.msg)) {
+      if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
+      if (!regionHasForeign) foldInterimRegion(turns, regionStart)
+      // The synthesis row leads the turn that carries the answer, so it opens
+      // the next batch rather than joining the region behind it.
+      turnItems.push(item)
+      regionStart = turns.length
+      // ...and that batch will contain the synthesis ANSWER, which is a real
+      // answer no LATER synthesis restates. A synthesis turn can itself spawn a
+      // wave (the gateway re-arms `_pending_synthesis` whenever a wave's last
+      // agent finishes, whichever turn spawned it), putting a second synthesis
+      // row in the same user turn — and the batch opened here does not reach
+      // `turns` until that second row flushes it, so an unguarded fold would
+      // collapse round one's answer behind round two's toggle. Marking the new
+      // region foreign keeps it unfolded: a nested wave's interim work then
+      // renders as it did before this change, which is the safe direction.
+      regionHasForeign = true
+      continue
+    }
+    if (item.kind === 'single' && isForeignInjection(item.msg)) regionHasForeign = true
     // A nudge opens a new turn exactly like a user message does — it IS the
     // turn's prompt. Without this it gets swallowed into the previous turn's
     // collapsed step group and the cycle chip disappears. A sub-agent
@@ -155,23 +253,13 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // input, so the agent's reply belongs BELOW the card, not beside it.
     if (item.kind === 'single' && TURN_OPENER_ROLES.has(item.msg.role)) {
       if (turnItems.length > 0) { flushTurn(turnItems, true); turnItems = [] }
-      // Track whether this subagent completion has synthesis pending
-      _lastSubagentHadSynthesis = item.msg.role === 'subagent' &&
-        !!(item.msg.meta as Record<string, unknown> | undefined)?.synthesisPending
       turns.push(item)
-    } else if (
-      _lastSubagentHadSynthesis &&
-      item.kind === 'single' &&
-      (item.msg.role === 'assistant' || item.msg.role === 'streaming') &&
-      !isSubagentCompletionMessage(item.msg)
-    ) {
-      // Per-completion response with synthesis pending: skip it from the
-      // transcript. The synthesis turn will restate the findings.
-      _lastSubagentHadSynthesis = false
-    } else {
-      _lastSubagentHadSynthesis = false
-      turnItems.push(item)
+      // A user/nudge prompt begins a fresh interim region; a sub-agent
+      // completion belongs to the one already open.
+      if (item.msg.role !== 'subagent') { regionStart = turns.length; regionHasForeign = false }
+      continue
     }
+    turnItems.push(item)
   }
   // Flush the trailing group as complete, and remember whether that flush
   // actually produced a turn object (flushTurn spreads the items instead when
@@ -211,6 +299,10 @@ const sameDisplayItem = (a: DisplayItem, b: DisplayItem): boolean => {
   if (a.kind === 'turn') {
     if (b.kind !== 'turn') return false
     if (a.complete !== b.complete || a.items.length !== b.items.length) return false
+    // Part of the PURITY INVARIANT above: `interim` is derived from the message
+    // list (the presence of a synthesis row), so it must be compared or the
+    // substitution below would freeze a turn at a stale fold state.
+    if (!!a.interim !== !!b.interim) return false
     for (let i = 0; i < a.items.length; i++) if (!sameTurnItem(a.items[i], b.items[i])) return false
     return true
   }

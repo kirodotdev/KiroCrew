@@ -4279,11 +4279,6 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     if _drained_ids:
         _drained_meta.pop("steer_delivery_id", None)
         _drained_meta["steer_delivery_ids"] = _drained_ids
-    # When synthesis is pending, mark the completion so the frontend can collapse
-    # the per-completion assistant response that follows (it will be restated by
-    # the synthesis turn).
-    if is_subagent and slot._pending_synthesis and _drained_meta:
-        _drained_meta["synthesisPending"] = True
     # Durable provenance for every `inject` row. `cls` is NOT persisted for this
     # role (chat_persistence only keeps it for `role == "system"`), and the
     # frontend's `meta.cronLabel` exists on the wire only because parse_cls_meta

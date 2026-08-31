@@ -77,12 +77,11 @@ describe('pinned prompt in a nudge-driven session', () => {
     }
   })
 
-  it('a fan-out under synthesisPending groups as one opener run and the jump anchors at its head', () => {
-    // Four completions carrying synthesisPending: groupDisplayItems suppresses
-    // each per-completion reply, so the four subagent rows are ADJACENT display
-    // items — the run shape jumpAnchorIdx's machine-opener walk exists for.
-    // Built through the real grouping pipeline so the adjacency is a checked
-    // fact, not a hand-shaped fixture.
+  it('a run of back-to-back completions groups as adjacent openers and the jump anchors at its head', () => {
+    // Four completions drained consecutively with no reply between them: the
+    // subagent rows are ADJACENT display items — the run shape jumpAnchorIdx's
+    // machine-opener walk exists for. Built through the real grouping pipeline
+    // so the adjacency is a checked fact, not a hand-shaped fixture.
     const out: ChatMessage[] = []
     const push = (role: string, content: string, meta?: Record<string, unknown>) =>
       out.push({ role, content, ts: '2026-08-18T05:00:00Z', meta } as unknown as ChatMessage)
@@ -90,9 +89,7 @@ describe('pinned prompt in a nudge-driven session', () => {
     push('assistant', 'dispatching')
     for (let c = 1; c <= 4; c++) {
       push('subagent', `[Subagent completion event] agent-${c}\n\nfindings for ${c}`,
-        { synthesisPending: true,
-          subagentCompletion: { kind: 'single', agentId: `agent-${c}`, outcome: 'ok', task: `task ${c}` } })
-      push('assistant', `ack ${c}`)
+        { subagentCompletion: { kind: 'single', agentId: `agent-${c}`, outcome: 'ok', task: `task ${c}` } })
     }
     push('assistant', 'synthesis of all four')
     const items = applyRunningState(groupDisplayItems(out), false)
