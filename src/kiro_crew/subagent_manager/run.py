@@ -1076,9 +1076,11 @@ class RunEventCoordinator(ManagerComponent):
                 # FS must not freeze the gateway/heartbeat (#6288; same shape
                 # as the provenance and CC-refinement writes above). Drained on
                 # cancellation: cancelling a to_thread await detaches the
-                # worker, and update_state is an unlocked read-merge-replace,
-                # so a stale detached worker could overwrite newer state
-                # written by a cancel-respawn recovery run. Hold cancellation
+                # worker, and update_state's per-agent lock serializes OFF-loop
+                # writers only, so a stale detached worker's whole-file rewrite
+                # can still roll back the PID / session-id state a
+                # cancel-respawn recovery run writes ON the loop without that
+                # lock. Hold cancellation
                 # open until the worker finishes — but BOUNDED: cancel_all()
                 # gathers run tasks with no timeout, so an unbounded drain on
                 # a wedged FS would hold gateway shutdown forever, and this
@@ -1123,8 +1125,9 @@ class RunEventCoordinator(ManagerComponent):
                                 )
                                 # The abandoned worker is a live stale writer: a
                                 # cancel-respawn recovery run would write fresh
-                                # PID/session state that the zombie's read-merge-
-                                # replace could then roll back. Consume the
+                                # PID/session state ON the loop, which takes no
+                                # per-agent lock, so the zombie's read-merge-
+                                # replace can still roll it back. Consume the
                                 # one-shot recovery so this cancellation finalizes
                                 # instead of respawning — losing one best-effort
                                 # auto-continue on an FS already wedged past the
