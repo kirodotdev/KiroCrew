@@ -3409,6 +3409,7 @@ async def _eager_spawn(
                     speculative=True,
                     speculative_resume=allow_resume,
                     reasoning_effort_override=slot.reasoning_effort or None,
+                    session_mcp_servers=slot.session_mcp_servers or None,
                 )
             except SpeculativeResumeRefused:
                 # Two sources: the entry gate (resumable key, resume not
@@ -5411,6 +5412,7 @@ async def _run_chat(
             model=slot.model or agent_model or None,
             cwd=slot.project or None,
             reasoning_effort_override=slot.reasoning_effort or None,
+            session_mcp_servers=slot.session_mcp_servers or None,
         )
         _acquired = True
         # Member activity pointer — once per SESSION, not per turn: the log

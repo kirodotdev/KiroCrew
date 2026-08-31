@@ -345,6 +345,37 @@ def _provider_uses_kiro_identity_store(provider: Any) -> bool:
     return declared is True
 
 
+def _mcp_fingerprint(servers: list[dict[str, Any]] | None) -> str:
+    """Return an order-independent identity for a session's ACP MCP set."""
+    if not servers:
+        return ""
+    entries: list[tuple[Any, ...]] = []
+    for server in servers:
+        if not isinstance(server, dict):
+            entries.append(("?", repr(server)))
+            continue
+        raw_env = server.get("env")
+        env_pairs: list[tuple[str, str]] = []
+        if isinstance(raw_env, dict):
+            env_pairs = [(str(key), str(value)) for key, value in raw_env.items()]
+        elif isinstance(raw_env, list):
+            for item in raw_env:
+                if isinstance(item, dict):
+                    env_pairs.append((str(item.get("name", "")), str(item.get("value", ""))))
+        raw_args = server.get("args")
+        args = tuple(str(arg) for arg in raw_args) if isinstance(raw_args, list) else ()
+        entries.append(
+            (
+                str(server.get("name", "")),
+                str(server.get("command", "")),
+                args,
+                tuple(sorted(env_pairs)),
+            )
+        )
+    entries.sort(key=lambda entry: (str(entry[0]), repr(entry)))
+    return repr(entries)
+
+
 def detect_provider_switch(session_map: "SessionMap", session_key: str, new_provider: str) -> bool:
     """Detect if the provider for a session differs from the stored one.
 
@@ -892,6 +923,8 @@ class _Session:
     # Consumed one-shot by the next prompt builder to re-inject the skills
     # index so the model can still discover skills post-compaction.
     needs_context_reinjection: bool = False
+    # Identity of editor-supplied stdio MCP servers bound at session creation.
+    mcp_fingerprint: str = ""
 
     def adopt_provider(self, provider: LLMProvider) -> None:
         """Swap in a freshly-spawned *provider*, resetting conversation state.
@@ -999,6 +1032,7 @@ class SessionManager:
             detect_provider_switch=lambda session_map, key, provider: detect_provider_switch(
                 session_map, key, provider
             ),
+            mcp_fingerprint=lambda servers: _mcp_fingerprint(servers),
             session_factory=lambda **kwargs: _Session(**kwargs),
             first_turn_nothing_armed=FirstTurnState.NOTHING_ARMED,
             first_turn_fresh=FirstTurnState.FRESH,
@@ -1945,6 +1979,7 @@ class SessionManager:
         model: str | None = None,
         cwd: str | None = None,
         extra_env: dict[str, str] | None = None,
+        session_mcp_servers: list[dict[str, Any]] | None = None,
         speculative: bool = False,
         speculative_resume: bool = False,
         _won_race_retries: int = 0,
@@ -1959,6 +1994,7 @@ class SessionManager:
             model=model,
             cwd=cwd,
             extra_env=extra_env,
+            session_mcp_servers=session_mcp_servers,
             speculative=speculative,
             speculative_resume=speculative_resume,
             _won_race_retries=_won_race_retries,

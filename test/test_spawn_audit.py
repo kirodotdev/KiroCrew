@@ -204,6 +204,9 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
 BENIGN_SPAWNS: frozenset[str] = frozenset(
     {
         "acp/runtime.py::_get_rss_mb",
+        # asyncio.run enters an event loop; neither site spawns a subprocess.
+        "cli_acp.py::run_acp",
+        "acp_server/mcp_proxy.py::main",
         # The shadow-venv update engine's four spawns. None is agent-influenced
         # and none can route through sandboxed_spawn_argv, because the engine's
         # whole job is to build the NEXT gateway install outside the agent

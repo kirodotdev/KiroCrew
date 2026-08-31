@@ -1177,6 +1177,20 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "survives into the output.",
     ),
     (
+        "ACP editor stream",
+        "acp_server/gateway.py",
+        "Gateway session output and error text forwarded to an ACP-aware editor. "
+        "Backend-controlled strings pass through the shared credential and "
+        "exfiltration-URL redactors before crossing the stdio protocol boundary.",
+    ),
+    (
+        "ACP editor MCP child failures",
+        "acp_server/mcp_supervisor.py",
+        "Stderr and launch failures from editor-supplied MCP children can reach "
+        "the editor as ACP errors or the gateway diagnostic log. The supervisor "
+        "applies both shared redactors before retaining or surfacing that text.",
+    ),
+    (
         "AWS Control error responses",
         "apps/builtins/aws_control/backend/routes.py",
         "Error text returned by the aws-control builtin's HTTP surface. The app "

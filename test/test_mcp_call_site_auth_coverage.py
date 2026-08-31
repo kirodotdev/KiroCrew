@@ -96,6 +96,7 @@ _SOURCES = (
     _SRC / "cli_server.py",
     _SRC / "cron_script.py",
     _SRC / "cron_trigger.py",
+    _SRC / "acp_server/http_backend.py",
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
     _SRC / "computer_use/screencast.py",
     *sorted((_SRC / "mcp_tools").glob("*.py")),
