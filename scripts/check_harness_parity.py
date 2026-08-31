@@ -51,6 +51,7 @@ whole line, so a reviewer should ask why the positive form does not work.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -299,56 +300,57 @@ def tracked_files() -> list[str]:
     return [p for p in git(["ls-files"]).splitlines() if in_scope(p)]
 
 
-def diff_base(base: str) -> str:
-    """The commit to measure against.
+_SCOPE_MODULE = None
 
-    ``merge-base`` is the honest divergence point, but a shallow CI clone fetches
-    the base commit as its own tip with no shared history, so it often has none.
-    The base tip is then the fallback.
+
+def _scope():
+    """The shared diff plumbing (see ``scripts/ratchet_scope.py``).
+
+    Loaded by path, not imported: ``scripts/`` is not a package, so a plain
+    import would resolve only by accident of ``sys.path[0]`` — and not at all
+    when a test loads this gate by path. Shared so the env-base gates and the
+    merge-ref ratchets agree on what a change added; a private copy per gate
+    is how they would come to disagree. Loaded lazily so the explicit-file and
+    ``--test`` modes, which never touch git, do not require it.
     """
-    try:
-        return git(["merge-base", base, "HEAD"]).strip()
-    except subprocess.CalledProcessError:
-        return base
+    global _SCOPE_MODULE
+    if _SCOPE_MODULE is None:
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ratchet_scope.py")
+        spec = importlib.util.spec_from_file_location("ratchet_scope", script)
+        if spec is None or spec.loader is None:
+            raise SystemExit(f"cannot load {script}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _SCOPE_MODULE = module
+    return _SCOPE_MODULE
+
+
+def diff_base(base: str) -> str:
+    """The commit to measure against (see ``ratchet_scope.resolve_base``)."""
+    return _scope().resolve_base(base)
 
 
 def changed_paths(frm: str) -> list[str]:
-    """In-scope paths this change touches.
-
-    ``-z`` because git quotes any path holding an unusual byte, and a parser that
-    misses such a path is a gate that skips a changed file.
-    """
+    """In-scope paths this change touches (``ratchet_scope.changed_paths_at``)."""
     try:
-        out = git(["diff", "--name-only", "-z", "--diff-filter=d", frm])
+        paths = _scope().changed_paths_at(frm)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(
             f"::error::harness gate: cannot diff against {frm} — the base commit "
             f"is not present. Fetch it before running, or unset HARNESS_BASE_REF "
             f"to report whole-tree counts without enforcing.\n{exc.stderr}"
         )
-    return [p for p in out.split("\0") if p and in_scope(p)]
+    return [p for p in paths if in_scope(p)]
 
 
 def added_lines(frm: str, path: str) -> set[int]:
     """1-based line numbers this change adds to ``path``.
 
-    Base-to-working-tree, so a local run sees uncommitted edits; CI checks out a
-    clean tree where that equals base-to-HEAD.
+    Delegates to ``ratchet_scope.added_lines_at``: base-to-working-tree (a
+    local run sees uncommitted edits), ``--text`` so a ``-diff`` gitattribute
+    cannot hide a file, and a pure deletion contributes nothing.
     """
-    diff = git(["diff", "--unified=0", "--no-color", "--text", frm, "--", path])
-    added: set[int] = set()
-    for raw in diff.splitlines():
-        if not raw.startswith("@@"):
-            continue
-        # `@@ -old,count +new,count @@` — a missing count means exactly one
-        # line, and a pure deletion reports `+n,0` which contributes nothing.
-        m = re.search(r"\+(\d+)(?:,(\d+))?", raw)
-        if not m:
-            continue
-        start = int(m.group(1))
-        count = int(m.group(2)) if m.group(2) is not None else 1
-        added.update(range(start, start + count))
-    return added
+    return _scope().added_lines_at(frm, path)
 
 
 # ---------------------------------------------------------------------------

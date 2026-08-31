@@ -190,3 +190,148 @@ class TestMergeShapes:
 
         assert label == "main...HEAD"
         assert paths == {"feature.py"}
+
+
+class TestExplicitBase:
+    """The env-base family's entry points: an EXPLICIT ref in, shared parsing out.
+
+    ``check_brand_name.py``, ``check_harness_parity.py`` and
+    ``check_focus_cue.py`` are handed their base through ``*_BASE_REF`` (CI
+    resolves it to the PR's ``base.sha``), so unlike the resolver above they
+    never discover the checkout shape — but the diff parsing must be the same
+    code, or the same added line gets judged differently by different gates.
+    """
+
+    def test_the_entry_points_are_reachable_by_name(self) -> None:
+        # The gates call these through a path-loaded module, so a rename there
+        # must fail HERE, not as an AttributeError inside a CI run.
+        assert callable(scope.resolve_base)
+        assert callable(scope.changed_paths_at)
+        assert callable(scope.added_lines_at)
+        assert callable(scope.parse_added_lines)
+
+    def test_changed_paths_at_diffs_from_the_named_commit_only(self, repo: Path) -> None:
+        # The base.sha property: an explicit commit in, exactly the work after
+        # it out — moving any branch ref afterwards must change nothing,
+        # because a run started against base.sha must not pick up base moves
+        # landing after it started.
+        base = _git(repo, "rev-parse", "main~1")
+        _git(repo, "branch", "-f", "release", "main")  # a ref move, post-capture
+
+        assert scope.changed_paths_at(base) == ["mainline.txt"]
+
+    def test_changed_paths_at_sees_the_working_tree(self, repo: Path) -> None:
+        # Base-to-working-tree: a local run must see edits that are not
+        # committed yet, which is the only form in which a local run is useful.
+        base = _git(repo, "rev-parse", "HEAD")
+        (repo / "base.txt").write_text("edited, not committed\n", encoding="utf-8")
+
+        assert scope.changed_paths_at(base) == ["base.txt"]
+
+    def test_changed_paths_at_does_not_quote_a_non_ascii_path(self, repo: Path) -> None:
+        # `-z` output is never quoted, so a path with non-ASCII bytes comes
+        # back byte-exact — usable as a pathspec for the per-path diff. A
+        # quoted `"b/\346..."` name is how a parser silently drops a file.
+        base = _git(repo, "rev-parse", "HEAD")
+        _commit_file(repo, "日本語.md", "non-ascii name")
+
+        assert scope.changed_paths_at(base) == ["日本語.md"]
+        assert scope.added_lines_at(base, "日本語.md") == {1}
+
+    def test_changed_paths_at_fails_closed_on_an_unresolvable_base(self, repo: Path) -> None:
+        # The env-base gates refuse to pass when they cannot see their base —
+        # unlike changed_paths(), which degrades to whole-tree scope. The
+        # raised error is the seam each gate wraps in its own fail-closed
+        # message.
+        with pytest.raises(subprocess.CalledProcessError):
+            scope.changed_paths_at("no-such-ref")
+
+    def test_added_lines_at_names_the_added_lines(self, repo: Path) -> None:
+        base = _git(repo, "rev-parse", "HEAD")
+        (repo / "base.txt").write_text("base.txt\nnew two\nnew three\n", encoding="utf-8")
+
+        assert scope.added_lines_at(base, "base.txt") == {2, 3}
+
+    def test_a_pure_deletion_contributes_nothing_by_default(self, repo: Path) -> None:
+        (repo / "three.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        _git(repo, "add", "three.txt")
+        _git(repo, "commit", "-m", "three lines")
+        base = _git(repo, "rev-parse", "HEAD")
+        (repo / "three.txt").write_text("one\nthree\n", encoding="utf-8")
+
+        assert scope.added_lines_at(base, "three.txt") == set()
+
+    def test_anchor_deletions_marks_where_the_lines_were_removed(self, repo: Path) -> None:
+        # The focus-cue gate's semantics: the edit that most often removes a
+        # cue is a pure deletion, invisible to the added set, so the `+N,0`
+        # hunk is anchored at N instead of dropped.
+        (repo / "three.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        _git(repo, "add", "three.txt")
+        _git(repo, "commit", "-m", "three lines")
+        base = _git(repo, "rev-parse", "HEAD")
+        (repo / "three.txt").write_text("one\nthree\n", encoding="utf-8")
+
+        assert scope.added_lines_at(base, "three.txt", anchor_deletions=True) == {1}
+
+    def test_resolve_base_prefers_the_merge_base(self, repo: Path) -> None:
+        # main moved after feature branched off; measuring from the main TIP
+        # would charge main's own commits to the feature diff. The honest
+        # divergence point is the merge-base.
+        _git(repo, "checkout", "feature")
+
+        expected = _git(repo, "merge-base", "main", "HEAD")
+        assert scope.resolve_base("main") == expected
+        assert scope.resolve_base("main") != _git(repo, "rev-parse", "main")
+
+    def test_resolve_base_falls_back_to_the_base_tip(self, repo: Path) -> None:
+        # A shallow CI clone fetches the base as its own tip with no shared
+        # history: merge-base fails, and the ref itself has to serve.
+        _git(repo, "checkout", "--orphan", "detached")
+        _git(repo, "commit", "-m", "unrelated root")
+
+        assert scope.resolve_base("main") == "main"
+
+
+class TestParseAddedLines:
+    """The text-level parser, reachable without a repository."""
+
+    DIFF = (
+        "diff --git a/a.txt b/a.txt\n"
+        "index 000..111 100644\n"
+        "--- a/a.txt\n"
+        "+++ b/a.txt\n"
+        "@@ -1,0 +2,3 @@ some context\n"
+        "+two\n"
+        "+three\n"
+        "+four\n"
+        "@@ -9,2 +11,0 @@\n"
+        "-gone\n"
+        "-gone\n"
+        "@@ -20 +21 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    def test_added_hunks_with_and_without_counts(self) -> None:
+        # `+2,3` names three lines; a bare `+21` means exactly one; the
+        # deletion-only `+11,0` contributes nothing by default.
+        assert scope.parse_added_lines(self.DIFF) == {2, 3, 4, 21}
+
+    def test_anchor_deletions_adds_the_deletion_point(self) -> None:
+        assert scope.parse_added_lines(self.DIFF, anchor_deletions=True) == {2, 3, 4, 11, 21}
+
+
+def test_env_base_gates_delegate_to_the_shared_plumbing() -> None:
+    """Every added-line gate reads its diff through ratchet_scope.
+
+    A private hunk parser per gate is the divergence this module exists to
+    close: the same added line judged differently by different gates, and a
+    scope fix to one copy leaving the others wrong. The hunk-header regex is
+    the private parser's signature, so its absence is the pin — the focus-cue
+    self-test may still grep raw ``@@`` lines to validate its PROBE's input,
+    which is not parsing.
+    """
+    for name in ("check_brand_name.py", "check_harness_parity.py", "check_focus_cue.py"):
+        source = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "ratchet_scope.py" in source, f"{name} no longer uses the shared plumbing"
+        assert r"\+(\d+)(?:,(\d+))?" not in source, f"{name} grew a private hunk parser back"

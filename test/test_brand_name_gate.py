@@ -408,11 +408,15 @@ class TestDiffScopedRun:
         run("git", "config", "user.email", "t@example.com")
         run("git", "config", "user.name", "t")
         os.makedirs(os.path.join(root, "scripts"))
-        with open(_SCRIPT_PATH, encoding="utf-8") as src:
-            body = src.read()
-        dest = os.path.join(root, "scripts", "check_brand_name.py")
-        with open(dest, "w", encoding="utf-8") as fh:
-            fh.write(body)
+        # The gate delegates its git plumbing to scripts/ratchet_scope.py and
+        # loads it by path relative to itself, so the throwaway repo needs both
+        # files or every diff-scoped run dies at the loader instead of testing
+        # anything.
+        for name in ("check_brand_name.py", "ratchet_scope.py"):
+            with open(os.path.join(_REPO_ROOT, "scripts", name), encoding="utf-8") as src:
+                body = src.read()
+            with open(os.path.join(root, "scripts", name), "w", encoding="utf-8") as fh:
+                fh.write(body)
         return root
 
     @staticmethod

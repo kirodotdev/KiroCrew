@@ -84,6 +84,7 @@ the real cue lives.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -421,63 +422,79 @@ def in_scope(path: str) -> bool:
     return path.startswith(SCAN_ROOT) and path.endswith(".tsx")
 
 
+_SCOPE_MODULE = None
+
+
+def _scope():
+    """The shared diff plumbing (see ``scripts/ratchet_scope.py``).
+
+    Loaded by path, not imported: ``scripts/`` is not a package, so a plain
+    import would resolve only by accident of ``sys.path[0]``. Shared so the
+    env-base gates and the merge-ref ratchets agree on what a change added; a
+    private copy per gate is how they would come to disagree. Loaded lazily so
+    the ``--test`` mode's RULE probes do not require it — the deletion probe
+    does, since it exercises the real parsing chain through this loader.
+    """
+    global _SCOPE_MODULE
+    if _SCOPE_MODULE is None:
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ratchet_scope.py")
+        spec = importlib.util.spec_from_file_location("ratchet_scope", script)
+        if spec is None or spec.loader is None:
+            raise SystemExit(f"cannot load {script}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _SCOPE_MODULE = module
+    return _SCOPE_MODULE
+
+
+# One decision, made once: a deletion-only hunk is ANCHORED, not dropped. Both
+# consumers below reference this constant so the self-test's deletion probe
+# (which goes through ``hunk_touched_lines``) covers the production path
+# (``touched_lines``) — two independent keyword arguments would let the
+# production one be dropped with the probe still green, silently restoring the
+# exact failure the anchoring exists to prevent.
+_ANCHOR_DELETIONS = True
+
+
 def diff_base(base: str) -> str:
     """The commit to measure against; a shallow CI clone may have no merge-base."""
-    try:
-        return git(["merge-base", base, "HEAD"]).strip()
-    except subprocess.CalledProcessError:
-        return base
+    return _scope().resolve_base(base)
 
 
 def changed_paths(frm: str) -> list[str]:
-    """In-scope paths this change touches. ``-z`` so odd bytes cannot hide one."""
+    """In-scope paths this change touches (``ratchet_scope.changed_paths_at``)."""
     try:
-        out = git(["diff", "--name-only", "-z", "--diff-filter=d", frm])
+        paths = _scope().changed_paths_at(frm)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(
             f"::error::focus-cue gate: cannot diff against {frm} — the base commit "
             f"is not present. Fetch it before running, or unset FOCUS_CUE_BASE_REF "
             f"to report whole-tree counts without enforcing.\n{exc.stderr}"
         )
-    return [p for p in out.split("\0") if p and in_scope(p)]
+    return [p for p in paths if in_scope(p)]
 
 
 def hunk_touched_lines(diff: str) -> set[int]:
     """1-based line numbers the hunk headers in ``diff`` mark as touched.
 
-    Split out from ``touched_lines`` so the zero-count rule below is testable
-    without a repository: a probe that re-implements this parsing would pass while
-    the real parser stayed broken.
+    Delegates to ``ratchet_scope.parse_added_lines`` with
+    ``_ANCHOR_DELETIONS``, and stays a named seam so the self-test's
+    deletion-only probe exercises the REAL parsing chain without a repository.
+    The anchoring is this gate's one semantic difference from its siblings: a
+    deletion-only hunk reads ``+<start>,0`` — the change removed lines and
+    added none — and the edit that most often removes a focus cue is exactly a
+    deletion. Delete the line carrying ``focus-visible:ring-2`` from a
+    multi-line className and the element's own lines are all unchanged, so no
+    purely-added line intersects it and the gate that exists to catch a lost
+    cue would let the loss straight through. ``start`` is where the removed
+    lines sat, so the hunk is anchored there.
     """
-    touched: set[int] = set()
-    for raw in diff.splitlines():
-        if not raw.startswith("@@"):
-            continue
-        m = re.search(r"\+(\d+)(?:,(\d+))?", raw)
-        if not m:
-            continue
-        start = int(m.group(1))
-        count = int(m.group(2)) if m.group(2) is not None else 1
-        if count == 0:
-            # A deletion-only hunk reads `+<start>,0`: the change removed lines and
-            # added none. `range(start, start)` is empty, so a naive read reports
-            # NOTHING as touched -- and the edit that most often removes a focus cue
-            # is exactly a deletion. Delete the line carrying
-            # `focus-visible:ring-2` from a multi-line className and the element's
-            # own lines are all unchanged, so no touched line intersects it and the
-            # gate that exists to catch a lost cue lets the loss straight through.
-            # `start` is where the removed lines sat, so anchor the hunk there.
-            touched.add(start)
-            continue
-        touched.update(range(start, start + count))
-    return touched
+    return _scope().parse_added_lines(diff, anchor_deletions=_ANCHOR_DELETIONS)
 
 
 def touched_lines(frm: str, path: str) -> set[int]:
-    """1-based line numbers this change adds to ``path`` (base to working tree)."""
-    return hunk_touched_lines(
-        git(["diff", "--unified=0", "--no-color", "--text", frm, "--", path])
-    )
+    """1-based line numbers this change touched in ``path`` (base to working tree)."""
+    return _scope().added_lines_at(frm, path, anchor_deletions=_ANCHOR_DELETIONS)
 
 
 def global_ring_is_live() -> bool:

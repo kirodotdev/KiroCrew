@@ -10,12 +10,17 @@ a scope fix applied to one private copy and not the others would make the same
 added line red under one gate and green under another, for no reason a
 contributor could see.
 
-Scope note, so this docstring does not overclaim: the pair here is the
-MERGE-REF resolver, used by those four gates. ``check_brand_name.py``,
-``check_harness_parity.py`` and ``check_focus_cue.py`` parse added lines too, but
-against an env-provided base ref (``*_BASE_REF``, resolved inside Actions) rather
-than by discovering the checkout shape, so folding them in is a larger change
-than a move and is deliberately not attempted here.
+Two gate families share this module and differ ONLY in how the base is named.
+The merge-ref family above discovers the checkout shape itself
+(``changed_paths()`` / ``added_lines()``). ``check_brand_name.py``,
+``check_harness_parity.py`` and ``check_focus_cue.py`` are handed an explicit
+base ref instead (``*_BASE_REF``, resolved inside Actions to the PR's
+``base.sha`` so a run never picks up base moves landing after it started); they
+use the ``*_at`` entry points below (``resolve_base`` / ``changed_paths_at`` /
+``added_lines_at``), which keep that env-provided base semantics while sharing
+the diff PARSING — N private parsers meant the same added line could be judged
+differently by different gates, and a scope fix to one copy left the others
+wrong.
 
 ``changed_paths`` names each checkout shape it tries and reports the winner,
 because they fail in ways that look alike and an earlier version of the black
@@ -46,6 +51,29 @@ def _git(*args: str) -> tuple[int, str]:
         errors="replace",
     )
     return proc.returncode, proc.stdout
+
+
+def _git_strict(*args: str) -> str:
+    """Run git, returning stdout and RAISING ``CalledProcessError`` on failure.
+
+    The explicit-base entry points use this instead of :func:`_git` because
+    their callers fail CLOSED: an env-base gate that cannot see its base must
+    refuse to pass, and the exception carries git's stderr so each gate can
+    fold it into its own gate-named message. ``errors="replace"`` for the same
+    reason as everywhere else here: ``--text`` makes git emit the content of a
+    file that is not valid UTF-8, and a strict decode would raise inside
+    ``subprocess`` — a traceback instead of a verdict.
+    """
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return proc.stdout
 
 
 def _first_parent_is_base() -> bool:
@@ -155,3 +183,94 @@ def added_lines(scope_label: str) -> dict[str, set[int]] | None:
                 count = int(match.group(2)) if match.group(2) is not None else 1
                 added.setdefault(current, set()).update(range(start, start + count))
     return added
+
+
+# ---------------------------------------------------------------------------
+# Explicit-base entry points, for the env-base gate family
+# ---------------------------------------------------------------------------
+
+
+def parse_added_lines(diff_text: str, *, anchor_deletions: bool = False) -> set[int]:
+    """1-based post-image line numbers the hunk headers in ``diff_text`` mark.
+
+    For ONE file's ``--unified=0`` diff: only ``@@`` headers are read, so the
+    caller must have scoped the diff to a single path
+    (``git diff <frm> -- <path>``). There is deliberately no ``+++``
+    attribution here — git QUOTES a path holding a non-ASCII byte on those
+    lines, and a ``+++ b/`` parser silently drops that file's hunks. Path
+    discovery belongs to :func:`changed_paths_at`, whose ``-z`` output is
+    never quoted.
+
+    A deletion-only hunk reads ``+<start>,0``: the change removed lines and
+    added none, so by default it contributes nothing (``range(start, start)``
+    is empty). ``anchor_deletions=True`` records ``start`` instead, for a gate
+    that must see WHERE lines were removed — the focus-cue gate exists to
+    catch a deleted cue line, which is invisible to the pure added set.
+    """
+    lines: set[int] = set()
+    for raw in diff_text.splitlines():
+        match = _HUNK_RE.match(raw)
+        if match is None:
+            continue
+        start = int(match.group(1))
+        count = int(match.group(2)) if match.group(2) is not None else 1
+        if count == 0:
+            if anchor_deletions:
+                lines.add(start)
+            continue
+        lines.update(range(start, start + count))
+    return lines
+
+
+def resolve_base(base: str) -> str:
+    """The commit an env-provided base ref measures against.
+
+    ``merge-base`` is the honest divergence point, but a shallow CI clone
+    fetches the base commit as its own tip with no shared history, so it often
+    has none — the base tip is then the fallback. This is resolution, not
+    parsing: it is the one step the env-base family does differently from the
+    resolver above, so it stays a separate function the gates call once per
+    run.
+    """
+    code, out = _git("merge-base", base, "HEAD")
+    return out.strip() if code == 0 else base
+
+
+def changed_paths_at(frm: str) -> list[str]:
+    """Paths the diff from ``frm`` to the WORKING TREE touches, in git's order.
+
+    The explicit-base counterpart of :func:`changed_paths`: the caller names
+    the base (CI passes the PR's ``base.sha`` through ``*_BASE_REF``, so a run
+    never picks up base moves landing after it started) and applies its own
+    scope filter to the returned paths. ``-z`` is what makes the answer
+    trustworthy: without it git quotes any path holding an unusual byte, and a
+    parser reading quoted output silently drops that file — a gate that skips
+    a changed file is worse than no gate. ``--diff-filter=d`` drops deletions:
+    a removed file has no lines to judge.
+
+    A list, not a set, because git emits the names path-sorted and the
+    consuming gates' reports inherit that order — a set would make a
+    violation listing nondeterministic. A failing git raises
+    ``subprocess.CalledProcessError`` so each caller can fail CLOSED with its
+    own gate-named message; unlike :func:`changed_paths`, which degrades to
+    whole-tree scope, an env-base gate that cannot see its base must refuse to
+    pass, not widen.
+    """
+    out = _git_strict("diff", "--name-only", "-z", "--diff-filter=d", frm)
+    return [p for p in out.split("\0") if p]
+
+
+def added_lines_at(frm: str, path: str, *, anchor_deletions: bool = False) -> set[int]:
+    """1-based line numbers the diff from ``frm`` to the working tree adds.
+
+    Base-to-working-tree, so a local run sees edits that are not committed
+    yet, which is the only form in which a local run is useful; CI checks out
+    a clean tree where that equals base-to-HEAD. ``--text`` forces hunks even
+    for a path ``.gitattributes`` marks ``-diff``: git would otherwise report
+    only "Binary files differ", leaving nothing to scan and passing the file
+    silently. Per PATH rather than whole-diff, matching how the env-base gates
+    consume it — see :func:`parse_added_lines` for why single-path diffs need
+    no ``+++`` attribution.
+    """
+    diff = _git_strict("diff", "--unified=0", "--no-color", "--text", frm, "--", path)
+    return parse_added_lines(diff, anchor_deletions=anchor_deletions)
