@@ -299,6 +299,54 @@ def config_dir() -> Path:
     return d
 
 
+CWD_CLEARED = ""
+"""The ``cwd`` a caller states to say the project was CLEARED, not left unspecified.
+
+``cwd`` carries two distinguishable answers and one of them is easy to write by
+accident. ``None`` means the caller has no requirement, so a stored or inherited
+directory may still be restored over it. ``CWD_CLEARED`` is a requirement: the user
+removed the project, and the claim must bind the default workspace rather than the
+directory the session previously had. A bare ``""`` at a call site reads as the absence
+of a value, which is the one thing it does not mean -- so the requirement is named.
+"""
+
+
+def default_workspace_dir() -> Path:
+    """The directory a provider binds to when it is given no working directory.
+
+    Both the ACP runtime and its client fall back here, and session allocation has
+    to compare a claim that names no directory against what such a provider then
+    reports -- and the knowledge-db, deploy and spec-builder paths resolve the same
+    directory for their own reasons. Expressed as a copy of ``config_dir() / "workspace"``
+    per call site, that agreement holds only while every copy stays textually in
+    sync: let one drift and a project-less claim never matches its own binding,
+    which either cold-starts every turn or exhausts the claim retry budget and
+    wedges the slot. One symbol makes that an invariant rather than a convention,
+    and ``test_no_provider_invents_its_own_no_cwd_fallback`` is what keeps it one.
+    """
+    return config_dir() / "workspace"
+
+
+def resolved_cwd(cwd: str) -> str:
+    """Resolve a directory the way a provider resolves its own ``work_dir``.
+
+    A provider handed a falsy ``work_dir`` binds to the default workspace, so
+    ``provider.cwd`` reports that concrete path and never the empty string, and it
+    reports it in the platform's own spelling because it went through ``Path``.
+    Comparing a raw stored value against it is therefore two bugs waiting: a cleared
+    project's ``""`` never matches, and a directory differing only by separator or a
+    trailing slash reads as a DIFFERENT directory.
+
+    So every comparison of a stated directory against a live ``provider.cwd`` puts both
+    sides through here -- allocation's claim gate and the switch handlers' "does the
+    live session already serve the target" checks alike. One definition rather than a
+    copy per call site, for the same reason :func:`default_workspace_dir` is one.
+    """
+    if cwd:
+        return str(Path(cwd))
+    return str(default_workspace_dir())
+
+
 def data_home() -> Path:
     """The resolved data home, WITHOUT re-running start-of-process maintenance.
 

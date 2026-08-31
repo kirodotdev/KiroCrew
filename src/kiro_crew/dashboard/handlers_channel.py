@@ -623,6 +623,9 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid scope"}, status=400)
 
     cleared: list[str] = []
+    # A clear-context click is USER-COMMANDED, so a refused reset is reported rather than
+    # swallowed -- declining is right, but pretending it cleared is not.
+    busy: list[str] = []
 
     if scope == "agent":
         if not agent_id:
@@ -645,13 +648,17 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
             )
             return web.json_response({"error": "agent not found"}, status=404)
         if agent.session_key:
-            await state.sessions.reset(agent.session_key)
-            cleared.append(agent.role or agent.id)
+            if await state.sessions.reset(agent.session_key, skip_if_busy=True):
+                cleared.append(agent.role or agent.id)
+            else:
+                busy.append(agent.role or agent.id)
     else:
         for agent in ch.members.values():
             if agent.session_key:
-                await state.sessions.reset(agent.session_key)
-                cleared.append(agent.role or agent.id)
+                if await state.sessions.reset(agent.session_key, skip_if_busy=True):
+                    cleared.append(agent.role or agent.id)
+                else:
+                    busy.append(agent.role or agent.id)
         ch.messages.clear()
         ch._msg_index.clear()
         ch.exchange_counts.clear()
@@ -673,7 +680,8 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
             "scope": scope,
             "agent_id": agent_id if scope == "agent" else None,
             "cleared": cleared,
+            "busy": busy,
         },
     )
 
-    return web.json_response({"ok": True, "cleared": cleared})
+    return web.json_response({"ok": True, "cleared": cleared, "busy": busy})

@@ -267,7 +267,7 @@ async def _exit_cancelled_plan(state: "DashboardState", slot: "_ChatSlot") -> No
         slot._queue[:] = [e for e in slot._queue if not _is_plan_approval_entry(e)]
     if (
         not slot.running
-        and not slot._last_turn_auth_required
+        and not slot._queue_held
         and state._slots.get(slot.key) is slot
         and slot._queue
         and not slot._stopping
@@ -876,9 +876,20 @@ async def _stage_loop(
         # skips the handoff entirely (queue preserved for the torn-down slot).
         # ``state._slots.get(...) is slot`` guards a slot DELETED mid-plan (slot.task
         # is None between stages, so deletion isn't blocked): never launch a turn on
-        # a slot that is no longer registered. ``not slot._last_turn_auth_required``
-        # mirrors _run_chat's own guard: a signed-out CLI holds the queue for
-        # post-login resume instead of popping it into another auth failure.
+        # a slot that is no longer registered. ``not slot._queue_held``
+        # mirrors _run_chat's own guard: when a turn has proved every QUEUED prompt
+        # would fail identically, those prompts must not be popped into repeated
+        # failures. Deliberately not phrased as "the turn ran nothing" -- that holds
+        # for a signed-out CLI or a reset refused BEFORE the turn, but the third
+        # cause is a reset left deferred at the END of a turn that completed
+        # normally. What the flag asserts is about the QUEUE, not this turn. It
+        # asks only whether the flag is set, so a further cause needs no
+        # edit here. The
+        # project-reset path REACHES this finally by design -- _run_chat re-raises
+        # under a plan so an unexecuted stage is never credited -- so this is where
+        # the hold has to be honoured. Without it, the re-raise that correctly stops
+        # the plan would drain the held prompts HERE, one failure card each, which is
+        # the data loss the hold exists to prevent.
         # ``not slot.running`` defers entirely to a turn a stage's _run_chat may
         # have already started (e.g. a refusal-recovery continuation): that live
         # task owns slot.task and will drain the queue + emit chat_done itself, so
@@ -928,7 +939,7 @@ async def _stage_loop(
         if (
             not _cancelled
             and not _turn_live
-            and not slot._last_turn_auth_required
+            and not slot._queue_held
             and state._slots.get(slot.key) is slot
             and slot._queue
             and not slot._stopping

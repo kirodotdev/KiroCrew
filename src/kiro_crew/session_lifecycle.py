@@ -93,6 +93,9 @@ class SessionLifecycleOwner(Protocol):
 
     _compact_cooldown_until: MutableMapping[str, float]
     _compact_pending_verdict: MutableMapping[str, float]
+
+    def _allocation_boundary(self) -> Any: ...
+
     _cleanup_task: asyncio.Task[Any] | None
     _background_tasks: set[asyncio.Task[Any]]
 
@@ -711,6 +714,9 @@ class SessionLifecycleService:
             # a NEW conversation, and inheriting the deleted one's threshold
             # while the slot reports "following global" is silent divergence.
             owner.set_autocompact_pct(key, None)
+            # The slot itself is gone -- the session-map entry goes with it -- so no
+            # successor can arrive to pay the arm and it must not outlive them.
+            owner._allocation_boundary().spend_retire_arm(key)
             # _origin_links deliberately survives destroy; existing callers
             # rely on the historical asymmetry with reset/remove.
             if session is not None:
@@ -992,6 +998,8 @@ class SessionLifecycleService:
             owner._compact_cooldown_until.clear()
             self._suppress_replay.clear()
             owner._compact_pending_verdict.clear()
+            closing_alloc = owner._allocation_boundary()
+            closing_alloc.discard_all_retire_arms()
             # Same lock hold as the clear: the whole drained set is accounted for
             # in one call, so the awaited unlink cannot be cancelled between two
             # keys. Per-key awaits would leave every key after the cancellation

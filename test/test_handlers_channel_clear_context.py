@@ -102,9 +102,43 @@ class TestChannelClearContext:
         body = json.loads(resp.body)
         assert body["ok"] is True
         assert body["cleared"] == ["Researcher"]
-        sessions.reset.assert_called_once_with("channel:ch1:a1")
+        assert body["busy"] == []
+        # skip_if_busy: a turn can be streaming on the channel agent, so forcing the
+        # teardown would drop that reply; the refusal is reported in `busy` instead.
+        sessions.reset.assert_called_once_with("channel:ch1:a1", skip_if_busy=True)
         # Messages and exchange_counts NOT cleared for single-agent scope
         assert len(ch.messages) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_declined_reset_is_reported_not_swallowed(self):
+        """Declining is right; pretending it cleared is not.
+
+        This endpoint is user-commanded, so `skip_if_busy=True` alone would turn a click
+        into a silent no-op: the caller is told the context was cleared while the agent
+        keeps its full history. The refused agent is reported in `busy` instead, so the
+        surface can say what actually happened.
+        """
+        agents = {"a1": _make_agent("a1", "Researcher", "channel:ch1:a1")}
+        ch = _make_channel("ch1", agents)
+        sessions = AsyncMock()
+        sessions.reset = AsyncMock(return_value=False)
+
+        request = _make_request(
+            "ch1", {"scope": "agent", "agent_id": "a1"}, channel=ch, sessions=sessions
+        )
+        with patch(
+            "kiro_crew.dashboard.handlers_channel._mgr",
+            return_value=MagicMock(get=MagicMock(return_value=ch)),
+        ):
+            resp = await api_channel_clear_context(request)
+
+        body = json.loads(resp.body)
+        assert (
+            body["cleared"] == []
+        ), "a refused reset must NOT be reported as cleared -- that is the silent no-op"
+        assert body["busy"] == [
+            "Researcher"
+        ], f"and the refusal must be surfaced so the click is not lost; got {body}"
 
     @pytest.mark.asyncio
     async def test_returns_404_for_unknown_agent_id(self):

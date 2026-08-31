@@ -49,7 +49,7 @@ from kiro_crew.config.loader import (
     DASHBOARD_PORT,
     build_provider_factory,
 )
-from kiro_crew.config.paths import _default_home, _legacy_home
+from kiro_crew.config.paths import _default_home, _legacy_home, default_workspace_dir
 from kiro_crew.constants import BANNER, MIN_NODE_MAJOR, env_flag_enabled
 from kiro_crew.crash_guard import install as _install_crash_guard
 from kiro_crew.env import git_build_info
@@ -582,7 +582,7 @@ def _knowledge(args) -> None:
         print("Usage: kirocrew knowledge dedup [--apply]")
         return
     apply = bool(getattr(args, "apply", False))
-    db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
+    db_path = default_workspace_dir() / "knowledge" / "knowledge.db"
     if not db_path.exists():
         sel().log_tool_invocation(
             session_key="cli", source="cli", tool_name="knowledge_dedup", outcome="not_configured"

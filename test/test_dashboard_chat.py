@@ -7629,6 +7629,89 @@ class TestRuntimeWiring:
             assert slot.workspace == "research-ws"
 
     @pytest.mark.asyncio
+    async def test_api_chat_slot_agent_defers_reset_of_a_busy_channel_session(
+        self, tmp_path, monkeypatch
+    ):
+        """An agent switch must not tear down an in-flight CHANNEL reply.
+
+        A channel-born slot runs its turns on the channel's own session, so the
+        switch's reset addresses a session a Slack reply may be streaming on right
+        now -- and channel dispatch does not take ``slot._lock``, so the lock the
+        handler holds does not serialize against it. Forcing the teardown drops
+        that reply mid-stream with nothing to recover it.
+
+        The teardown is still OWED, so declining is not enough on its own: it is
+        queued on the slot for ``_consume_pending_reset`` to apply at the next
+        boundary. The switch itself stays committed either way, because the acting
+        tab keeps the OLD store value for anything but a success.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.agent = "oncall"
+        slot.workspace = "oncall-ws"
+        slot.project = "/tmp/oncall"
+        # Channel-born: its turns run on the channel's session, not `dashboard:s1`.
+        slot.linked_session_key = "slack:1712345678.9012"
+
+        reset_calls: list = []
+
+        async def _decline_because_busy(key, **kw):
+            reset_calls.append((key, kw))
+            # What SessionManager.reset does when a turn is live and the caller
+            # allowed it to decline; forcing it is the teardown under test.
+            return not kw.get("skip_if_busy", False)
+
+        state.sessions.reset = AsyncMock(side_effect=_decline_because_busy)
+
+        mock_cfg = MagicMock()
+        mock_cfg.agents = {"research": MagicMock(workspace="research-ws", memory_store="default")}
+        mock_cfg.workspaces = {"research-ws": MagicMock(dir="/tmp/research")}
+        mock_cfg.default_workspace = "default"
+        mock_cfg.default_memory_store = "default"
+        mock_cfg.memory_stores = {}
+        mock_cfg.memory = MagicMock()
+        mock_bindings = MagicMock()
+        mock_bindings.workspace_dir = Path("/tmp/research")
+        mock_bindings.memory_store_name = "default"
+        mock_bindings.model = ""
+        monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load", lambda: mock_cfg
+        )
+        for mod in ("chat", "chat_handlers"):
+            monkeypatch.setattr(
+                f"kiro_crew.dashboard.{mod}.resolve_agent_bindings",
+                lambda cfg, name, project_dir=None: mock_bindings,
+            )
+            monkeypatch.setattr(
+                f"kiro_crew.dashboard.{mod}._workspace_name_for_dir",
+                lambda cfg, ws_dir: "research-ws",
+            )
+
+        async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/agent", json={"agent": "research"})
+            data = await resp.json()
+
+        assert resp.status == 200 and data["ok"] is True, "the switch itself still commits"
+        assert slot.agent == "research"
+
+        assert reset_calls, "precondition: the switch has to attempt a reset at all"
+        key, kw = reset_calls[-1]
+        assert key == "slack:1712345678.9012", (
+            "precondition: the reset must target the channel's live session -- if it "
+            f"named a nonexistent key this test could not detect the teardown; got {key!r}"
+        )
+        assert kw.get("skip_if_busy") is True, (
+            "an agent switch on a channel-linked slot must let a live turn DECLINE the "
+            "reset: forcing it tears down a streaming channel reply with no recovery"
+        )
+        assert slot._pending_reset_history_key == "slack:1712345678.9012", (
+            "and the declined teardown is still owed -- it must be queued for the next "
+            f"boundary, not dropped; got {slot._pending_reset_history_key!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_api_chat_slot_agent_failed_reset_spares_concurrent_writes(
         self, tmp_path, monkeypatch
     ):
@@ -10689,7 +10772,7 @@ class TestPythonStageLoop:
         slot.queue_append("queued during plan")
 
         async def _auth_run_chat(s, sl, msg, **kw):
-            sl._last_turn_auth_required = True  # signed-out CLI discovered this stage
+            sl._queue_held = True  # signed-out CLI discovered this stage
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _auth_run_chat)
         start_next = AsyncMock(return_value=False)
@@ -10701,6 +10784,37 @@ class TestPythonStageLoop:
 
         start_next.assert_not_awaited()  # queue held for post-login resume
         assert [i["content"] for i in slot._queue] == ["queued during plan"]
+
+    @pytest.mark.asyncio
+    async def test_stage_handoff_still_drains_when_nothing_is_held(self, tmp_path, monkeypatch):
+        """Positive control for the gate above: with no hold the end-of-plan handoff
+        must still drain the queue, so the fix narrows one branch rather than
+        stranding every queued follow-up after a plan."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard.chat import _stage_loop
+
+        state = MagicMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        slot = self._make_slot(max_stages=1)
+        state._slots = {slot.key: slot}
+        slot.queue_append("queued during plan")
+
+        async def _clean_run_chat(s, sl, msg, **kw):
+            sl._queue_held = False
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _clean_run_chat)
+        start_next = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn", start_next
+        )
+
+        await _stage_loop(state, slot, auto_run=True)
+
+        start_next.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_orchestrating_slot_queues_message(self, tmp_path, monkeypatch):
