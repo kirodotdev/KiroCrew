@@ -851,6 +851,15 @@ describe('TerminalCompletion', () => {
       expect(sent).toEqual([])
     })
 
+    it('passes through the Tab that ends composition', async () => {
+      const h = await open()
+      h.compositionEnd()
+      const r = h.key({ key: 'Tab' })
+      expect(r.passedThrough).toBe(true)
+      expect(r.prevented).toBe(false)
+      expect(sent).toEqual([])
+    })
+
     it('still accepts on a plain Enter once composition is over', async () => {
       const h = await open()
       h.compositionEnd()
@@ -858,6 +867,15 @@ describe('TerminalCompletion', () => {
       vi.setSystemTime(Date.now() + 1000)
       await act(async () => { expect(pick(h).passedThrough).toBe(false) })
       expect(sent).toEqual(['s/'])
+    })
+
+    it('still completes on a plain Tab once composition is over', async () => {
+      const h = await open()
+      h.compositionEnd()
+      // Past the grace window: this Tab belongs to the menu again.
+      vi.setSystemTime(Date.now() + 1000)
+      await act(async () => { expect(h.key({ key: 'Tab' }).passedThrough).toBe(false) })
+      expect(sent).toEqual(['s'])
     })
 
     // Regression: this child's effects run BEFORE the parent's `term.open()`, so
