@@ -1083,6 +1083,79 @@ def _restore_log_record_factory():
         logging.setLogRecordFactory(before)
 
 
+# ── the CLI log queue listener goes back after every test ────────────
+
+
+@pytest.fixture(autouse=True)
+def _restore_log_queue_listener():
+    """Stop the ``QueueListener`` a test leaves running, so no later test inherits it.
+
+    ``cli._LOG_QUEUE_LISTENER`` is ONE process-global slot, per worker, and the sibling of
+    the record factory above: ``_setup_cli_logging`` installs BOTH in the same
+    ``command in _LONG_LIVED_COMMANDS`` branch, so every test that drives the real
+    ``cli.main()`` for ``serve`` / ``gateway`` / ``chat`` leaks both. The factory half has
+    been floored since it was found; this half was not, and it is the one the SHORT-LIVED
+    branch then trips over. ``_setup_cli_logging("status", ...)`` takes the ``else`` path,
+    which correctly never touches the global -- the listener a long-lived command started
+    genuinely still exists -- so a test asserting "a short-lived verb starts no listener"
+    reads the PREVIOUS test's listener and fails at its own first line.
+
+    Measured: two tests in ``test_cli_logging.py`` assert that global is ``None`` after a
+    short-lived setup -- ``TestDrainBeforeHardExit::test_no_listener_is_a_silent_no_op``
+    and ``TestQueueOffLoop::test_short_lived_command_keeps_sync_handler`` -- and both go
+    red whenever ``test_cli.py`` or ``test_cpp_seam_failclosed.py`` precede them on the
+    worker, reading ``assert <QueueListener object ...> is None``. That file's own
+    ``_pristine_logging`` cannot absorb it: it clears the global in TEARDOWN only, which
+    makes the file self-clean but leaves it defenceless against a leak that is already
+    present at its SETUP. Under ``-n auto --dist loadgroup`` which worker an ordinary test
+    lands on varies run to run, so it surfaces as an intermittent failure rather than a
+    reproducible ordering bug -- it cost upstream PR #6798 a red ``Backend Tests (3.10, 1)``
+    shard while ``(3.12, 1)`` passed at the identical commit.
+
+    STOPPING rather than only reassigning, which is where this differs from the factory:
+    the leak is a live daemon thread holding the file handler's open descriptor on a
+    ``gateway.log`` under a ``tmp_path`` the next test deletes, so dropping the reference
+    alone would clear the assertion and keep the thread and the fd. ``cli`` is reached
+    through ``sys.modules`` rather than imported, as ``_no_leaked_telemetry_exporter``
+    does: a worker that never imported it cannot hold a listener, and importing it here
+    would charge every testpath ~0.5s and ~54MB for the ratchet in
+    ``test_cli_lazy_imports.py`` to then measure in a subprocess anyway.
+
+    Restoring rather than blaming, for the same reason as ``_restore_log_record_factory``
+    above: starting the listener is what the entry point under test is FOR, and production
+    starts it once per process and never undoes it. The damage is to OTHER tests, so
+    stopping it propagating is the whole job.
+
+    HANDLERS stay untouched, the boundary ``_restore_logger_levels`` below draws and for
+    its reasons. The ``_CliLogQueueHandler`` left on the ``kiro_crew`` logger therefore
+    outlives the listener it fed, holding an unattended queue; it is the same handler
+    accumulation that fixture already records as a separate defect, and
+    ``test_cli_logging.py``'s ``_pristine_logging`` is what absorbs it today by clearing
+    both handler lists at setup.
+
+    The restore target is what the test INHERITED, so a higher-scoped fixture that starts
+    a listener for a whole class or module is not torn out from under its second test --
+    and, as there, such a fixture has to stop its own listener, because every later test
+    then inherits it and so restores to it.
+    """
+    cli = sys.modules.get("kiro_crew.cli")
+    before = getattr(cli, "_LOG_QUEUE_LISTENER", None)
+    yield
+    cli = sys.modules.get("kiro_crew.cli")
+    if cli is None:
+        return
+    after = getattr(cli, "_LOG_QUEUE_LISTENER", None)
+    if after is before:
+        return
+    if after is not None:
+        # Drains and joins the listener thread, then closes the file handler. Suppressed
+        # because a floor must not fail a test for state it is only cleaning up, and the
+        # restore below has to happen either way.
+        with contextlib.suppress(Exception):
+            cli._stop_log_queue_listener()
+    cli._LOG_QUEUE_LISTENER = before
+
+
 # ── logger levels go back after every test ──────────────────────────
 
 
