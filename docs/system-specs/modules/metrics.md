@@ -278,6 +278,64 @@ still winning after a config edit), `test/test_collection_status_endpoint.py`
 presence without the endpoint string),
 `test/metrics/test_schema.py` (redaction / namespace).
 
+### Resource attributes: what identifies a series (and what egresses)
+
+The SDK `Resource` is the payload contract for both sinks: it labels every
+series on the local JSONL line AND, when `otlp_endpoint` is set, everything
+pushed to that collector. `_resource_attributes()` in `provider.py` is the
+single place it is built, and every value there is either a closed set or an
+explicit clamp, because a resource attribute is a label on EVERY series this
+process exports — one unbounded value there multiplies every instrument.
+
+| Attribute | Value | Bound |
+|-----------|-------|-------|
+| `service.name` | `kirocrew` | constant |
+| `service.instance.id` | the persisted anonymous install id (`beacon.install_id`) | one per install |
+| `process.pid` | `os.getpid()` | one per live process |
+| `service.version` | build version, release-clamped via `beacon.release` | `major.minor.patch`, no build stamp |
+| `os.type` | `linux` / `darwin` / `windows` | CLOSED, else `other` |
+| `host.arch` | `amd64` / `arm64` / `x86` | CLOSED, else `other` |
+| `process.runtime.name` | `cpython` / `pypy` / `jython` / `ironpython` | CLOSED, else `other` |
+| `process.runtime.version` | `beacon.python_minor()` | `major.minor`, never the patch |
+| `host.cpu.logical_count` | `os.cpu_count()` | small integer |
+
+Two identities, deliberately separate. `service.instance.id` counts DEVICES: a
+random UUID persisted on disk, never derived from hostname or username (which
+on a corporate desktop routinely embed the employee's alias), and stable across
+restarts so "this install over time" survives them. `process.pid` counts
+PROCESSES: one install runs several telemetry-enabled processes at once (the
+gateway plus spawned agents/apps each build their own recorder), and with an
+install-scoped resource alone their gauges and cumulative counters would
+interleave into one corrupted series at a backend. Collapsing the two would
+report one machine's 6-8 processes as 6-8 machines.
+
+**Why the install id may egress while `kirocrew.process.start_time` may not.**
+The start-time token is a host-local process fingerprint that exists only to
+make the aggregator's cumulative-reset detection deterministic; it has no
+fleet-level question to answer, so it is stamped on the JSONL line and kept off
+the `Resource` (see `local_exporter.py` above). The install id is the opposite:
+it is the only thing that can answer "how many distinct devices", it is random
+rather than derived, and it is the SAME id the beacon already sends. Note that
+omitting the key does not yield an unlabelled resource — the SDK substitutes
+its own per-process uuid4, i.e. a fresh series set per restart — so the choice
+is between a stable anonymous id and per-restart churn, not between an id and
+no id.
+
+The id is MINTED in `_build_recorder()`'s live branch, immediately before the
+resource is assembled, so the first export already carries it and no startup
+window can leak the SDK's substitute. That branch runs only under consent True,
+so an install with telemetry off creates nothing. Consequence to know: enabling
+metrics is what creates the beacon's install-id file, even on a host that has
+the beacon itself disabled.
+
+Deliberately ABSENT: the distribution channel (the beacon's data-minimization
+pass removed its channel field, because channel sharply narrows the crowd a
+stable id hides in — stamping it on every metric payload would quietly undo
+that decision) and an install type (no reliable detection today; a guessed
+label would be confidently wrong). Both are guarded by a regression test.
+
+Tests: `test/metrics/test_resource_attrs.py`.
+
 ## Instrumented signals
 
 | Metric | Type | Attrs | Site |
