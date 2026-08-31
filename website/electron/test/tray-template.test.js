@@ -96,10 +96,10 @@ test("tray template assets are monochrome black-on-transparent at 1x and 2x", ()
 });
 
 test("createTray uses the template image on macOS and colour icons elsewhere", () => {
-  const main = fs.readFileSync(path.join(ROOT, "main.js"), "utf8");
-  const start = main.indexOf("function createTray()");
+  const windowLifecycle = fs.readFileSync(path.join(ROOT, "window-lifecycle.js"), "utf8");
+  const start = windowLifecycle.indexOf("function createTray()");
   assert.notEqual(start, -1, "createTray not found");
-  const body = main.slice(start, main.indexOf("\n}", start));
+  const body = windowLifecycle.slice(start, windowLifecycle.indexOf("\n  }", start));
 
   // Polarity matters: assert the exact guard shape, then split the two
   // branches and pin each assertion INSIDE its branch. Token-presence

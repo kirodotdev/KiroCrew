@@ -131,6 +131,9 @@
     },
     "files": [
       "main.js",
+      "gateway-supervisor.js",
+      "window-lifecycle.js",
+      "ipc-registrar.js",
       "app-menu.js",
       "windows-menu-model.js",
       "windows-titlebar.js",

@@ -4,8 +4,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 it("Linux BrowserWindows carry the packaged application icon", () => {
-  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  assert.match(main, /if \(IS_WIN \|\| IS_LINUX\) \{[\s\S]*?opts\.icon = path\.join\(__dirname, iconFile\)/);
+  const windowLifecycle = fs.readFileSync(
+    path.join(__dirname, "..", "window-lifecycle.js"),
+    "utf8",
+  );
+  assert.match(
+    windowLifecycle,
+    /if \(includeIcon && \(IS_WIN \|\| IS_LINUX\)\) \{[\s\S]*?opts\.icon = path\.join\(__dirname, iconFile\)/,
+  );
 });
 
 const ROOT = path.resolve(__dirname, "..");
@@ -113,11 +119,20 @@ describe("electron-builder files list", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const bundledFiles = pkg.build.files;
 
-  it("includes every local require() from main.js", () => {
-    const main = fs.readFileSync(path.join(ROOT, "main.js"), "utf8");
-    const localRequires = [...main.matchAll(/require\("\.\/([^"]+)"\)/g)].map(m => m[1] + ".js");
+  it("includes every local require() from main.js and its extracted owners", () => {
+    const ownerFiles = [
+      "main.js",
+      "gateway-supervisor.js",
+      "window-lifecycle.js",
+      "ipc-registrar.js",
+    ];
+    const localRequires = ownerFiles.flatMap((ownerFile) => {
+      const source = fs.readFileSync(path.join(ROOT, ownerFile), "utf8");
+      return [...source.matchAll(/require\("\.\/([^"]+)"\)/g)]
+        .map((match) => match[1] + ".js");
+    });
 
-    const missing = localRequires.filter(f => !bundledFiles.includes(f));
+    const missing = [...new Set(localRequires)].filter(f => !bundledFiles.includes(f));
     assert.deepStrictEqual(missing, [], `Missing from build.files: ${missing.join(", ")}`);
   });
 
