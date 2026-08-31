@@ -81,6 +81,7 @@ from pathlib import Path
 from typing import Callable
 
 from kiro_crew import platform_compat
+from kiro_crew.platform.context import redact_via_context
 from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 
 from ...spine import agent_discovery
@@ -971,7 +972,10 @@ class PytestBuildGate:
         tail = (proc.stdout or proc.stderr or "").strip().splitlines()[-1:] or [""]
         return GateResult(
             passed=False,
-            detail=f"suite red (exit {proc.returncode}): {tail[0][:160]}",
+            # Redact BEFORE the bound: a candidate's test run can echo a credential,
+            # and the slice can cut it mid-match into a fragment no downstream
+            # redaction pass recognises.
+            detail=f"suite red (exit {proc.returncode}): {redact_via_context(tail[0])[:160]}",
             failing_tests=failing,
         )
 

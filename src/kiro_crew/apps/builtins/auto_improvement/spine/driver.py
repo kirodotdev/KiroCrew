@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew.platform.context import redact_log_via_context, redact_via_context
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from . import ledger as L
@@ -1480,14 +1481,23 @@ class Driver:
         head_after = _git(["rev-parse", "HEAD"], self.clone)
         self.pushed_sha = (head_after.stdout or "").strip() or sha
         if push.returncode != 0:
-            self.log.error("direct-push FAILED for %s: %s", target, (push.stderr or "")[:300])
+            # Redact BEFORE the bound (here and at every stderr slice below): git
+            # echoes the authenticated remote URL on an auth failure, and slicing
+            # first can cut the credential into a fragment no later pass matches.
+            # Log lines use the companion-aware log redactor; the persisted ledger
+            # note keeps the baseline redact-then-bound helper.
+            self.log.error(
+                "direct-push FAILED for %s: %s",
+                target,
+                redact_log_via_context(push.stderr or "")[:300],
+            )
             self.ledger.record(
                 L.LedgerEntry(
                     fp=fp,
                     kind=kind,
                     target=target,
                     status=L.STATUS_ERROR,
-                    note=f"direct-push failed: {(push.stderr or '')[:150]}",
+                    note=f"direct-push failed: {redact_via_context(push.stderr or '')[:150]}",
                 )
             )
             return False
@@ -1520,7 +1530,7 @@ class Driver:
             self.log.error(
                 "could not discard the staged diff after %s: %s",
                 why,
-                (reset.stderr or "")[:200],
+                redact_log_via_context(reset.stderr or "")[:200],
             )
         for rel in paths:
             try:
@@ -1559,7 +1569,9 @@ class Driver:
             errors="surrogateescape",
         )
         if ap.returncode != 0:
-            self.log.error("winner diff did not apply: %s", ap.stderr[:200])
+            self.log.error(
+                "winner diff did not apply: %s", redact_log_via_context(ap.stderr or "")[:200]
+            )
             return False
         _git(["add", "-A"], self.clone)
         return True
@@ -1600,7 +1612,7 @@ class Driver:
             self.log.error(
                 "provisional commit failed for %s: %s",
                 winner.cand_id,
-                (commit.stderr or "")[:200],
+                redact_log_via_context(commit.stderr or "")[:200],
             )
             self._discard_staged(f"a failed provisional commit for {winner.cand_id}")
             return False
@@ -1619,7 +1631,7 @@ class Driver:
             self.log.error(
                 "could not roll back the provisional commit to %s: %s",
                 pre_sha[:10],
-                (res.stderr or "").strip()[:160],
+                redact_log_via_context((res.stderr or "").strip())[:160],
             )
 
     def _finalize_winner_commit(
@@ -1857,11 +1869,14 @@ class Driver:
         if ap.returncode != 0:
             self.log.info(
                 "bug fix plain-apply failed (%s) — retrying with --3way",
-                (ap.stderr or "").strip()[:120],
+                redact_log_via_context((ap.stderr or "").strip())[:120],
             )
             ap = _apply(["--3way"])
         if ap.returncode != 0:
-            self.log.error("bug fix diff did not apply (even --3way): %s", ap.stderr[:200])
+            self.log.error(
+                "bug fix diff did not apply (even --3way): %s",
+                redact_log_via_context(ap.stderr or "")[:200],
+            )
             return False
         _git(["add", "-A"], self.clone)
         return True
@@ -1892,7 +1907,7 @@ class Driver:
             self.log.error(
                 "provisional bug commit failed for %s: %s",
                 winner.cand_id,
-                (commit.stderr or "")[:200],
+                redact_log_via_context(commit.stderr or "")[:200],
             )
             self._discard_staged(f"a failed provisional bug commit for {winner.cand_id}")
             return False

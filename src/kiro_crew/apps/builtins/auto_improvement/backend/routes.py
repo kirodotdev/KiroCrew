@@ -1309,11 +1309,12 @@ async def _handle_commit(request: web.Request) -> web.StreamResponse:
             sha=str(result.get("sha") or ""),
         )
         return web.json_response(result, status=200)
-    # Redacted, like every sibling error response here. `commit.py` builds its `error` from
-    # `(proc.stderr or '')[:160]` — raw git stderr, which quotes the ref, the path, and
-    # anything a repository's own hook printed. Latent while nothing rendered it; D-97 started
-    # showing it at the finding row, which made it a live egress path to the browser.
-    # Raised by the GPT review.
+    # Redacted, like every sibling error response here. `commit.py` builds its `error`
+    # from git stderr — which quotes the ref, the path, and anything a repository's own
+    # hook printed — scrubbed at the source with `redact_via_context` so its bound can
+    # never cut a credential mid-match. Latent while nothing rendered it; D-97 started
+    # showing it at the finding row, which made it a live egress path to the browser, so
+    # this pass stays as the output-boundary backstop. Raised by the GPT review.
     return web.json_response(
         {"code": "request_failed", "error": _redact_for_display(str(result.get("error") or ""))},
         status=400,

@@ -6519,9 +6519,11 @@ class TestOnlyTheBugTrackMayAddTests:
 
 
 class TestCommitErrorsReachTheBrowserRedacted:
-    """The commit route returned `str(result.get("error"))` verbatim, and `commit.py` builds
-    that value from `(proc.stderr or '')[:160]` — RAW GIT STDERR, which quotes the ref, the
-    path, and whatever a repository's own hooks printed.
+    """The commit route returned `str(result.get("error"))` verbatim, and `commit.py` built
+    that value from a raw fixed-bound slice of git stderr — which quotes the ref, the
+    path, and whatever a repository's own hooks printed. (`commit.py` now scrubs its
+    stderr at the source with `redact_via_context`; this route-level pass stays as the
+    output-boundary backstop.)
 
     This was latent while nothing rendered it. D-97 (surfacing a refused commit at the finding
     row, so the operator learns WHY) turned it into a live egress path: a failing pre-commit
