@@ -176,6 +176,93 @@ class TestGitWorkspaceIdentitySurvivesRestart:
         assert reloaded._runs["g2"].git_enabled is False
 
 
+class TestLessonsLearnedSurvivesRestart:
+    """`lessons_learned` is produced once and cannot be recomputed.
+
+    ``_extract_lesson`` appends a rule to ``run.lessons_learned`` after an LLM
+    call, once per lesson-yielding step, during execution. Nothing rebuilds it
+    on load: the lesson TEXT is separately durable in the lesson/vector store,
+    but that store is a global corpus keyed by category, so the per-run
+    attribution is the part that only ``runs.json`` holds.
+
+    Two consumers read it after a restart -- the dashboard status payload
+    (``task_reporter.build_status``, which ``handlers/taskrunner.py`` then
+    redacts element-wise) and the to-chat continuation prompt's "Lessons
+    Learned" section (``handlers/taskrunner.py:473``). Both go silently empty
+    for every run that outlived a gateway restart.
+    """
+
+    def _lessons_run(self, task_id: str = "l1") -> TaskRun:
+        run = _make_run(task_id)
+        run.lessons_learned = [
+            "Run the migration before seeding fixtures",
+            "The flake was a shared tmp dir, not a race",
+        ]
+        return run
+
+    def test_lessons_learned_round_trips(self, tmp_path: Path) -> None:
+        runner = _make_runner(tmp_path)
+        runner._runs["l1"] = self._lessons_run()
+        runner._persist_runs()
+
+        reloaded = _make_runner(tmp_path)
+        reloaded._load_runs()
+
+        assert reloaded._runs["l1"].lessons_learned == [
+            "Run the migration before seeding fixtures",
+            "The flake was a shared tmp dir, not a race",
+        ]
+
+    def test_the_status_payload_still_carries_the_lessons_after_a_restart(
+        self, tmp_path: Path
+    ) -> None:
+        """The consequence that matters: `build_status` publishes
+        `lessons_learned` for every run, and `api_taskrunner_status` redacts
+        each element before it reaches the dashboard. A restart turned that
+        into an empty list, so the section the UI renders disappeared with no
+        error anywhere."""
+        runner = _make_runner(tmp_path)
+        runner._runs["l1"] = self._lessons_run()
+        runner._persist_runs()
+
+        reloaded = _make_runner(tmp_path)
+        reloaded._load_runs()
+        payload = reloaded.status()
+        entry = next(r for r in payload["runs"] if r["task_id"] == "l1")
+
+        assert entry["lessons_learned"] == [
+            "Run the migration before seeding fixtures",
+            "The flake was a shared tmp dir, not a race",
+        ]
+
+    def test_a_legacy_entry_without_the_key_loads_as_no_lessons(self, tmp_path: Path) -> None:
+        """An entry written before this field was persisted carries no key.
+        The default is the empty list -- the same thing the reader saw before,
+        so no legacy entry changes meaning."""
+        runner = _make_runner(tmp_path)
+        runner._runs["l1"] = self._lessons_run()
+        runner._persist_runs()
+
+        runs_file = tmp_path / "runs.json"
+        data = json.loads(runs_file.read_text(encoding="utf-8"))
+        data[0].pop("lessons_learned", None)
+        runs_file.write_text(json.dumps(data), encoding="utf-8")
+
+        reloaded = _make_runner(tmp_path)
+        reloaded._load_runs()
+        assert reloaded._runs["l1"].lessons_learned == []
+
+    def test_a_run_that_learned_nothing_stays_empty(self, tmp_path: Path) -> None:
+        """Negative control: persisting the field must not manufacture one."""
+        runner = _make_runner(tmp_path)
+        runner._runs["l2"] = _make_run("l2")
+        runner._persist_runs()
+
+        reloaded = _make_runner(tmp_path)
+        reloaded._load_runs()
+        assert reloaded._runs["l2"].lessons_learned == []
+
+
 class TestLoadRunsResilience:
     def test_missing_file_seeds_fresh(self, tmp_path: Path) -> None:
         runner = _make_runner(tmp_path)

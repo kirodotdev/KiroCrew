@@ -1882,6 +1882,15 @@ class TaskRunner:
                         "repo_root": run.repo_root,
                         "git_enabled": run.git_enabled,
                         "commit_hashes": run.commit_hashes,
+                        # Produced once by `_extract_lesson` during the run and
+                        # NOT recomputable: the lesson text is separately
+                        # durable in the lesson store, but that corpus is
+                        # global and keyed by category, so this per-run
+                        # attribution exists only here. Two consumers read it
+                        # after a restart -- the status payload
+                        # (task_reporter.build_status) and the to-chat
+                        # continuation prompt.
+                        "lessons_learned": run.lessons_learned,
                         "original_input": run.original_input,
                         "source": run.source,
                         "spec_content": run.spec_content,
@@ -2039,6 +2048,7 @@ class TaskRunner:
                     # no longer identified.
                     git_enabled=bool(item.get("git_enabled", bool(_worktree_path))),
                     commit_hashes=list(item.get("commit_hashes", [])),
+                    lessons_learned=list(item.get("lessons_learned", [])),
                     original_input=item.get("original_input", ""),
                     source=item.get("source", ""),
                     tasks=tasks,
