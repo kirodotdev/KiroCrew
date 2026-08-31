@@ -2824,6 +2824,43 @@ _CONTROL_OPERATOR_RE = re.compile(r"[;&|\n]+")
 # ``normalize_shell_command`` already undoes, but spelled with a substitution and
 # placed MID-WORD, where a prefix-only strip never sees it.
 _EMPTY_SUBST_RE = re.compile(r"\$\(\s*\)|`\s*`|\$\{\s*\}")
+# An OUTPUT redirect. Two small sets, enumerated from the shells' own grammars rather
+# than grown one spelling per review round, so the boundary is stated instead of implied:
+#
+#   DESCRIPTOR (optional prefix)  digits -- every shell
+#                                 ``&``    both streams (bash, zsh, ksh)
+#                                 ``{name}`` automatic descriptor (bash 4.1+, zsh)
+#                                 ``*``    all streams (PowerShell)
+#   OPERATOR                      ``>`` or ``>>``
+#   MODIFIER (optional suffix)    ``&``  duplicate (bash, zsh, ksh, csh)
+#                                 ``|``  noclobber override (bash, zsh, ksh)
+#                                 ``!``  noclobber override (zsh, csh, tcsh)
+#
+# NOT covered, deliberately and on the record: fish's historical ``^`` stderr prefix
+# (removed in fish 3.0 and this module has no fish handling), and cmd.exe's ``n>&m``
+# which the digit prefix already matches. If a shell outside that list reaches this gate,
+# this set is where it has to be added.
+#
+# ``*`` is included on the FAIL-CLOSED rule this floor states for itself ("any maybe
+# answers True -- the gate can over-trigger but never under-trigger"), because the two
+# shells disagree and only one of them is safe to be wrong about. In PowerShell ``*>`` is
+# the all-streams redirect, so the program arrives on stdin and must be scanned. In bash
+# ``*`` is a GLOB that expands to filenames, so the first becomes the script -- measured:
+# ``python *> out`` runs the globbed file, and it still does with a here-string present.
+# Reading ``*>`` as a redirect therefore over-triggers under bash, which costs a denial
+# of a command combining a glob-redirect with a payload-bearing carrier; reading it as a
+# positional under PowerShell lets a credential mint through. Recorded as an accepted
+# residual rather than left implicit.
+#
+# Matched on the RAW token because ``_normalize_operand`` leaves the descriptor behind
+# (``2>&1`` -> ``2``, ``{fd}>&1`` -> ``{fd}``), which reads as an ordinary file name.
+# The brace form requires a real identifier inside: ``{a,b}`` is a brace EXPANSION the
+# shell resolves before redirect parsing, and must not be mistaken for a descriptor.
+# No token matching this is ever a positional argument in the shell that spells it.
+#
+# No ``\A`` anchor: ``.match(raw, pos)`` anchors at *pos*, which is how a word holding a
+# chain of glued redirects is walked in one pass instead of being re-sliced per operator.
+_OUTPUT_REDIRECT_RE = re.compile(r"(?:\d+|&|\*|\{[A-Za-z_][A-Za-z0-9_]*\})?>{1,2}[&|!]?")
 # ``X=kirocrew; $X token`` assigns the program name to a variable and invokes it
 # through the expansion, so neither the literal name nor the expansion alone looks
 # dangerous.  The assignment and the use are in the SAME command text, so the
@@ -3551,6 +3588,96 @@ def _substitution_bodies(text: str) -> "list[str]":
     return bodies
 
 
+def _redirect_glue_point(word: str) -> "int | None":
+    """Index where an OUTPUT redirect glued to the END of another word begins, else None.
+
+    A redirect needs no whitespace in front of it, so it can ride on the back of any
+    word: ``python -u> /dev/null <<< '<program>'`` is the flag ``-u`` plus ``> /dev/null``,
+    and bash runs the here-string. The detector only recognised a redirect at the START of
+    a word, so ``-u>`` fell through to "an ordinary interpreter flag", the redirect target
+    in the next token became the script path, and the stdin program went unscanned. The
+    ``<`` branch has always looked for its operator ANYWHERE in the word; this is the same
+    rule for the ``>`` family, and that asymmetry was the gap.
+
+    The word is SPLIT rather than skipped, because what precedes the redirect decides the
+    answer and only the caller's own branches can classify it: ``-u`` is a flag and the
+    scan continues, but ``script.py>out`` means the script supplies the program and the
+    answer is False. Measured in bash: ``python script.py> out <<< '<program>'`` runs the
+    script, not the here-string. Splitting and re-reading both halves reuses that
+    classification instead of duplicating it, so the two cannot drift apart.
+
+    None when the word has no ``>`` at all, or already begins with a redirect -- a leading
+    file descriptor belongs to the redirect, and the shell only reads digits as one when
+    they are the whole prefix (``2>err`` is fd 2; ``x2>err`` is the word ``x2``).
+    """
+    position = word.find(">")
+    if position <= 0:
+        return None
+    if _OUTPUT_REDIRECT_RE.match(word) is not None:
+        return None
+    return position
+
+
+def _output_redirect_scan(raw: str, start: int = 0) -> "tuple[str, int] | None":
+    """``(target, end)`` for the OUTPUT redirect at *start* in *raw*, or None.
+
+    ``python 2>&1 <<< '<program>'`` runs the here-string, but the detector had no branch
+    for the ``>`` family at all: it handles ``<`` and heredocs off the raw token and let
+    everything else fall through to "this is a script path". The unnumbered glued form
+    only survived by accident, because ``_normalize_operand`` reduces ``>out.txt`` to the
+    empty string and the loop skips empties -- while ``2>&1`` reduces to ``2``, a
+    perfectly good file name, so the interpreter looked like it was running a script
+    called ``2`` and the program on its stdin went unscanned.
+
+    Every spelling is a redirect and none is ever a positional: an optional leading file
+    DESCRIPTOR -- a number, ``&`` for both streams, or a ``{name}`` automatic descriptor
+    -- then ``>`` or ``>>``, then an optional ``&`` for the duplicating form or ``|`` for
+    the noclobber override.
+
+    The target STOPS at the next redirect operator, and *end* is that position, because
+    the shell starts a new redirect there: in ``python 2>/dev/null<<EOF`` the word is one
+    token, and taking all of ``/dev/null<<EOF`` as the target swallows the heredoc marker
+    and loses the program that arrives on stdin.
+
+    Only at substitution depth ZERO, though. A redirect inside ``$(...)``, ``${...}`` or
+    backticks belongs to that inner command and is not a boundary of this word:
+    ``python 2>$(echo>/dev/null;printf /dev/null) <<< '<program>'`` really is
+    ``python 2>/dev/null`` once the shell has run the substitution, and cutting the target
+    at the inner ``>`` left the tail of the substitution to be read as a script path,
+    which put the stdin program back out of view. The whole substitution is one shell
+    WORD, and :func:`_operand_span_end` is what carries it across the tokens it spans.
+
+    Depth counts EVERY ``(`` and ``{``, not only a ``$``-prefixed one, because a subshell
+    nested inside a substitution (``$( (true); printf /dev/null)``) closes with its own
+    ``)`` -- counting the opener but not that one would drop the depth to zero early and
+    reopen exactly the hole this closes. *raw* must therefore reach here with its
+    substitution delimiters intact; see the caller.
+
+    An INDEX is returned rather than the remaining text so a word holding a chain of
+    them (``>a>a>a...``) can be walked once. Re-slicing the word per operator was
+    quadratic in its length, on a floor that runs for every command -- the same defect
+    class this module pins against elsewhere, so it is not reintroduced here.
+    """
+    match = _OUTPUT_REDIRECT_RE.match(raw, start)
+    if match is None:
+        return None
+    cut = match.end()
+    depth = 0
+    in_backtick = False
+    while cut < len(raw):
+        char = raw[cut]
+        if char == "`":
+            in_backtick = not in_backtick
+        elif char in "({":
+            depth += 1
+        elif char in ")}" and depth:
+            depth -= 1
+        elif char in "<>" and not depth and not in_backtick:
+            break
+        cut += 1
+    return raw[match.end() : cut], cut
+
+
 def _here_string_payload(raw: str) -> "str | None":
     """The operand of a HERE-STRING (``<<<WORD``), ``""`` when the word is the next token.
 
@@ -3908,6 +4035,60 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
                 heredoc_tag = marker
             else:
                 expect_tag = True  # a bare `<<` splits its tag into the next token
+            continue
+        # Scanned on a form that keeps the SUBSTITUTION delimiters. `raw` has had
+        # `_SHELL_WRAPPER_CHARS` stripped, and those include `(` and `)` -- so the word
+        # `2>$(` (the tokenizer splits on the space inside `$( (true); printf x)`) arrived
+        # here as `2>$`, with the opener gone. The scan then saw an ordinary one-character
+        # target, never entered a substitution, and the tail of the substitution was read
+        # as a script path, putting the stdin program back out of view. Quotes still come
+        # off, since a quoted redirect is still a redirect.
+        redirect_word = tok.strip("\"'")
+        glue = _redirect_glue_point(redirect_word)
+        if glue is not None:
+            # The redirect rides on the back of another word (`-u>`). Split it and let the
+            # loop read both halves, so the part BEFORE the redirect is classified by the
+            # same flag/positional branches as any other word -- `-u` continues the scan,
+            # `script.py` ends it. Once per word, since neither half can split again.
+            later_tokens = [
+                *later_tokens[:idx],
+                redirect_word[:glue],
+                redirect_word[glue:],
+                *later_tokens[idx:],
+            ]
+            continue
+        redirect = _output_redirect_scan(redirect_word)
+        if redirect is not None:
+            # An OUTPUT redirect and its target are not this command's arguments, and
+            # neither says anything about where the program comes from -- so the walk has
+            # to step over both and keep looking, exactly as it does for a stdin
+            # redirect. Falling through instead read the leftover descriptor digits of
+            # `2>&1` as a script path and answered False, so `python 2>&1 <<< '<program>'`
+            # had its stdin program go unscanned. Bash runs every one of these.
+            redirect_target, position = redirect
+            # A chain of output redirects glued into ONE word (`>a>a>a...`) is walked
+            # here, in place. Re-injecting each remainder into the token stream instead
+            # re-sliced the word per operator, which is quadratic in its length on a
+            # floor that runs for every command.
+            while position < len(redirect_word):
+                further = _output_redirect_scan(redirect_word, position)
+                if further is None:
+                    break
+                redirect_target, position = further
+            remainder = redirect_word[position:]
+            if remainder:
+                # What is left starts with a STDIN operator (`2>/dev/null<<EOF`), which
+                # the branches above know how to read. Hand it back as its own token --
+                # once per word, not once per operator -- because swallowing it loses the
+                # heredoc and with it the program on stdin.
+                later_tokens = [*later_tokens[:idx], remainder, *later_tokens[idx:]]
+            elif not redirect_target:
+                if idx >= len(later_tokens):
+                    break
+                redirect_target = later_tokens[idx].strip(_SHELL_WRAPPER_CHARS)
+                idx += 1
+            if redirect_target:
+                idx = _operand_span_end(later_tokens, idx, redirect_target)
             continue
         if "<" in raw:
             # A stdin REDIRECT and its operand are not this command's arguments either,

@@ -3918,3 +3918,318 @@ class TestSelfModuleIndexIsLinear:
 
         assert not security._self_floor_can_fire("python restart")
         assert security._self_floor_can_fire("python kirocrew")
+
+
+class TestPythonStdinDetectorStepsOverOutputRedirects:
+    """An OUTPUT redirect must not be mistaken for the interpreter's script path.
+
+    ``_python_reads_stdin`` decides whether a ``python`` invocation takes its PROGRAM
+    from stdin, and the credential-mint floor uses that to know whether to scan the
+    stdin carriers (here-string, heredoc, redirect, pipe producer) for a payload that
+    imports our CLI.  It read the raw token for ``<`` and for heredocs but had no branch
+    for the ``>`` family at all, so those tokens fell through to "a positional that is
+    not ``-`` is a script path" and the answer became False.
+
+    The unnumbered glued form survived by accident: ``_normalize_operand`` reduces
+    ``>out.txt`` to the empty string and the loop skips empties.  ``2>&1`` reduces to
+    ``2`` -- a perfectly good file name -- so the interpreter looked like it was running
+    a script called ``2``, and the program on its stdin went unscanned.  Eight spellings
+    reached the floor that way, verified against bash to actually run the here-string:
+
+        python 2>&1 <<< '<program>'          python 2>> log <<< '<program>'
+        python 1>&2 <<< '<program>'          python >& out <<< '<program>'
+        python 2> /dev/null <<< '<program>'  python 3>&1 <<< '<program>'
+        python > out.txt <<< '<program>'     python <<< '<program>' 2>&1
+
+    The last one is worth its own note: the here-string is consumed correctly there, and
+    a redirect AFTER it still flipped the verdict, because the walk continues past the
+    carrier and met the leftover ``2``.  So this was not only about redirects preceding
+    the payload.
+    """
+
+    # Program-on-stdin shapes: True. Bash was measured for each -- every one runs the
+    # here-string program.
+    READS_STDIN: "list[list[str]]" = [
+        ["2>&1", "<<<", "prog"],
+        ["1>&2", "<<<", "prog"],
+        ["2>", "/dev/null", "<<<", "prog"],
+        [">", "out.txt", "<<<", "prog"],
+        [">out.txt", "<<<", "prog"],
+        ["2>>", "log", "<<<", "prog"],
+        [">&", "out", "<<<", "prog"],
+        ["3>&1", "<<<", "prog"],
+        ["&>/dev/null", "<<<", "prog"],
+        ["&>>", "log", "<<<", "prog"],
+        ["12>&1", "<<<", "prog"],
+        ["2>&-", "<<<", "prog"],
+        ["2>&1-", "<<<", "prog"],
+        # The noclobber override and the {name} automatic descriptor (bash 4.1+), both
+        # raised in review. Measured in bash 5.2: every one runs the here-string.
+        ["2>|", "/dev/null", "<<<", "prog"],
+        ["2>|/dev/null", "<<<", "prog"],
+        [">|", "f", "<<<", "prog"],
+        ["{fd}>", "f", "<<<", "prog"],
+        ["{fd}>f", "<<<", "prog"],
+        ["{fd}>&1", "<<<", "prog"],
+        ["{fd}>>", "f", "<<<", "prog"],
+        ["{fd}>|", "f", "<<<", "prog"],
+        # A following operator glued into the SAME word starts a new redirect, so the
+        # target must stop there. Taking all of `/dev/null<<EOF` as the target swallows
+        # the heredoc marker and loses the program on stdin. Measured in bash: both run.
+        ["2>/dev/null<<EOF", "prog", "EOF"],
+        [">out<<EOF", "prog", "EOF"],
+        ["2>&1<<<prog"],
+        ["2>/dev/null<<<prog"],
+        ["2>>log<<<prog"],
+        ["&>/dev/null<<<prog"],
+        ["{fd}>f<<<prog"],
+        ["2>a>b<<<prog"],
+        # A redirect INSIDE a substitution belongs to that inner command and is not a
+        # boundary of this word: after the shell runs it, `2>$(printf /dev/null)` is just
+        # `2>/dev/null`. Measured in bash: all of these run the here-string.
+        ["2>$(echo>/dev/null;printf", "/dev/null)", "<<<", "prog"],
+        ["2>`echo>/dev/null;printf", "/dev/null`", "<<<", "prog"],
+        [">$(echo>x;printf", "out)", "<<<", "prog"],
+        ["2>${x:-/dev/null}", "<<<", "prog"],
+        ["2>$(printf", "/dev/null)", "<<<", "prog"],
+        # A subshell or brace group NESTED in the substitution closes with its own `)`
+        # or `}`. Depth must count those too, and the word must reach the scan with its
+        # delimiters intact -- the tokenizer splits on the space, so this arrives as the
+        # word `2>$(`, and `_SHELL_WRAPPER_CHARS` would otherwise strip the opener off.
+        ["2>$(", "(true);", "printf", "/dev/null)", "<<<", "prog"],
+        ["2>$(", "(true)", ";", "printf", "/dev/null", ")", "<<<", "prog"],
+        ["2>$(", "{", "true;", "printf", "/dev/null;", "}", ")", "<<<", "prog"],
+        # PowerShell's all-streams redirect. Included on the floor's fail-closed rule:
+        # under PowerShell `*>` is the operator and the program arrives on stdin, while
+        # under bash `*` is a glob whose first match becomes the script. Answering True
+        # over-triggers under bash and under-triggers under neither.
+        ["*>", "token.txt", "<<<", "prog"],
+        ["*>>", "token.txt", "<<<", "prog"],
+        ["*>token.txt", "<<<", "prog"],
+        # zsh's `!` noclobber override, the third modifier in the set. Measured with real
+        # zsh: `python >! out <<< '<program>'` runs the here-string.
+        [">!", "out", "<<<", "prog"],
+        [">>!", "out", "<<<", "prog"],
+        ["2>!", "out", "<<<", "prog"],
+        ["&>!", "out", "<<<", "prog"],
+        ["2>>!", "out", "<<<", "prog"],
+        [">!out", "<<<", "prog"],
+        # A redirect needs no whitespace in front of it, so it can ride on the back of a
+        # FLAG. Measured in bash: `python -u> out <<< '<program>'` runs the here-string.
+        ["-u>", "/dev/null", "<<<", "prog"],
+        ["-u>/dev/null", "<<<", "prog"],
+        ["-B>", "out", "<<<", "prog"],
+        ["-u2>", "err", "<<<", "prog"],
+        ["-u>>", "out", "<<<", "prog"],
+        ["-u>!", "out", "<<<", "prog"],
+        ["2>&1", "1>&2", "<<<", "prog"],
+        ["<<<", "prog", "2>&1"],
+        ["-u", "2>&1", "<<<", "prog"],
+        ["2>&1", "-u", "<<<", "prog"],
+        # No carrier at all: a bare interpreter still reads its program from stdin.
+        ["2>&1"],
+        ["2>&1", "-"],
+        # The redirect TARGET must be consumed, not run: `python 2> script.py`
+        # redirects into that file and still reads its program from stdin.
+        ["2>", "script.py"],
+        [">", "script.py"],
+        ["2>script.py"],
+    ]
+
+    # The program comes from somewhere else: False, redirect or no redirect.
+    SUPPLIES_PROGRAM_ELSEWHERE: "list[list[str]]" = [
+        ["2>&1", "script.py"],
+        ["script.py", "2>&1"],
+        ["2>", "/dev/null", "script.py"],
+        [">", "out.txt", "script.py"],
+        ["2>&1", "-c", "code"],
+        ["-c", "code", "2>&1"],
+        ["2>&1", "-m", "mod"],
+        ["-m", "mod", "2>&1"],
+        # Measured in bash: after these redirects a real script still supplies the
+        # program, so stepping over the redirect must not mean ignoring what follows.
+        ["2>|", "f", "script.py"],
+        ["{fd}>&1", "script.py"],
+        ["{fd}>", "f", "script.py"],
+        # A redirect glued to a POSITIONAL: the script still supplies the program, so the
+        # word must be split and its prefix classified rather than skipped. Measured in
+        # bash: `python script.py> out <<< '<program>'` runs the script.
+        ["script.py>", "out"],
+        ["script.py>out"],
+        ["-c>", "out", "code"],
+    ]
+
+    def test_the_glue_point_is_only_a_trailing_redirect(self):
+        """None when the word has no `>`, or already starts with one -- a leading file
+        descriptor belongs to the redirect, and the shell reads digits as an fd only when
+        they are the whole prefix (`2>err` is fd 2; `x2>err` is the word `x2`)."""
+        from kiro_crew import security
+
+        assert security._redirect_glue_point("-u>") == 2
+        assert security._redirect_glue_point("-u>/dev/null") == 2
+        assert security._redirect_glue_point("-u2>err") == 3
+        assert security._redirect_glue_point("script.py>out") == 9
+        for token in (">out", "2>err", "&>f", "*>f", "{fd}>f", "-u", "script.py", ""):
+            assert security._redirect_glue_point(token) is None, token
+
+    def test_a_brace_expansion_is_not_read_as_a_descriptor(self):
+        """``{fd}>`` is an automatic descriptor; ``{a,b}`` is a brace EXPANSION the shell
+        resolves before redirect parsing. Only an identifier may sit in the braces, or an
+        ordinary argument could be swallowed as a redirect."""
+        from kiro_crew import security
+
+        assert security._output_redirect_scan("{fd}>&1") == ("1", 7)
+        assert security._output_redirect_scan("{fd}>") == ("", 5)
+        for token in ("{a,b}>x", "{1..3}>x", "{}>x", "{a b}>x"):
+            assert security._output_redirect_scan(token) is None, token
+
+    def test_a_program_on_stdin_is_detected_through_an_output_redirect(self):
+        from kiro_crew import security
+
+        for tokens in self.READS_STDIN:
+            assert security._python_reads_stdin(list(tokens)) is True, tokens
+
+    def test_a_script_or_inline_program_still_wins(self):
+        from kiro_crew import security
+
+        for tokens in self.SUPPLIES_PROGRAM_ELSEWHERE:
+            assert security._python_reads_stdin(list(tokens)) is False, tokens
+
+    def test_the_redirect_helper_reports_target_and_end_position(self):
+        """Three distinct answers. A glued target ends at the word's end; an empty target
+        at the word's end means the target is the NEXT token; an end short of the word
+        means another operator followed and must be re-examined, not eaten."""
+        from kiro_crew import security
+
+        assert security._output_redirect_scan("2>&1") == ("1", 4)
+        assert security._output_redirect_scan(">out.txt") == ("out.txt", 8)
+        assert security._output_redirect_scan("&>/dev/null") == ("/dev/null", 11)
+        assert security._output_redirect_scan("2>") == ("", 2)
+        assert security._output_redirect_scan(">&") == ("", 2)
+        assert security._output_redirect_scan("2>>") == ("", 3)
+        # An end short of len() is where the glued-heredoc bypass lived.
+        assert security._output_redirect_scan("2>/dev/null<<EOF") == ("/dev/null", 11)
+        assert security._output_redirect_scan("2>&1<f") == ("1", 4)
+        assert security._output_redirect_scan(">a>b") == ("a", 2)
+        assert security._output_redirect_scan("2></dev/null") == ("", 2)
+        # Scanning from an offset is how a chain is walked in one pass.
+        assert security._output_redirect_scan(">a>b", 2) == ("b", 4)
+        # A redirect is a boundary only at substitution depth ZERO. Inside `$(...)`,
+        # `${...}` or backticks it belongs to the inner command, and cutting there left
+        # the tail of the substitution to be read as a script path.
+        assert security._output_redirect_scan("2>$(echo>/dev/null;printf") == (
+            "$(echo>/dev/null;printf",
+            25,
+        )
+        assert security._output_redirect_scan("2>`echo>x`") == ("`echo>x`", 10)
+        assert security._output_redirect_scan("2>${x:->}") == ("${x:->}", 9)
+        # Depth counts EVERY opener, not just a `$`-prefixed one: a nested subshell
+        # closes with its own `)`, and ignoring it drops the depth to zero early.
+        assert security._output_redirect_scan("2>$( (x)>y )") == ("$( (x)>y )", 12)
+        assert security._output_redirect_scan("2>$(") == ("$(", 4)
+        # PowerShell's all-streams descriptor, and the glob spellings it must NOT eat.
+        assert security._output_redirect_scan("*>") == ("", 2)
+        assert security._output_redirect_scan("*>>") == ("", 3)
+        assert security._output_redirect_scan("*>token.txt") == ("token.txt", 11)
+        for token in ("*", "*.py", "*.txt"):
+            assert security._output_redirect_scan(token) is None, token
+
+    def test_the_descriptor_and_modifier_sets_are_the_enumerated_ones(self):
+        """The two sets are enumerated from the shells' grammars, not grown one spelling
+        per review round. Asserted here so the boundary is a test rather than a comment:
+        descriptors are digits, ``&``, ``{name}`` and ``*``; modifiers are ``&``, ``|``
+        and ``!``."""
+        from kiro_crew import security
+
+        for descriptor in ("", "2", "12", "&", "*", "{fd}"):
+            for operator in (">", ">>"):
+                for modifier in ("", "&", "|", "!"):
+                    token = f"{descriptor}{operator}{modifier}"
+                    assert security._output_redirect_scan(token) is not None, token
+        # A modifier outside the set is part of the TARGET, not the operator.
+        assert security._output_redirect_scan(">?x") == ("?x", 3)
+        assert security._output_redirect_scan(">^x") == ("^x", 3)
+        # ...and the boundary still applies once the substitution has closed.
+        assert security._output_redirect_scan("2>$(printf x)>b") == ("$(printf x)", 13)
+        # Not output redirects, and must not be swallowed as such.
+        for token in ("script.py", "-u", "-", "<<<", "<<PY", "<f", "2", "", "-c"):
+            assert security._output_redirect_scan(token) is None, token
+
+    def test_a_chain_of_glued_redirects_is_linear(self):
+        """One word may hold many operators (``>a>a>a...``). Re-slicing the word per
+        operator was quadratic in its length -- on a floor that runs for every command,
+        and in a module that pins linearity elsewhere, so it is asserted here too."""
+        import time
+
+        from kiro_crew import security
+
+        def elapsed(k: int) -> float:
+            tokens = [">a" * k, "<<<", "prog"]
+            start = time.perf_counter()
+            assert security._python_reads_stdin(list(tokens)) is True
+            return time.perf_counter() - start
+
+        elapsed(200)
+        small, large = elapsed(800), elapsed(1600)
+        assert large < small * 3, f"{small:.5f}s -> {large:.5f}s looks super-linear"
+        assert large < 0.2, f"1600 glued redirects took {large:.4f}s"
+
+    def test_the_floor_denies_the_stdin_program_behind_a_redirect(self):
+        """The end-to-end property: these are credential-mint attempts whose program
+        rides in on stdin, and each was ALLOWED before this change."""
+        from kiro_crew import security
+
+        payload = "from kiro_crew.cli import main; main()"
+        for cmd in (
+            f"python 2>&1 <<< '{payload}'",
+            f"python 1>&2 <<< '{payload}'",
+            f"python 2> /dev/null <<< '{payload}'",
+            f"python > out.txt <<< '{payload}'",
+            f"python 2>> log <<< '{payload}'",
+            f"python >& out <<< '{payload}'",
+            f"python 3>&1 <<< '{payload}'",
+            f"python 2>&1 1>&2 <<< '{payload}'",
+            f"python <<< '{payload}' 2>&1",
+            f"echo '{payload}' | python 2>&1",
+            f"python 2>&1 << 'PY'\n{payload}\nPY",
+            # Raised in review, measured in bash 5.2.
+            f"python 2>| /dev/null <<< '{payload}'",
+            f"python >| out <<< '{payload}'",
+            f"python {{fd}}>&1 <<< '{payload}'",
+            f"python {{fd}}> out <<< '{payload}'",
+            # Glued mixed operators, measured in bash.
+            f"python 2>/dev/null<<EOF\n{payload}\nEOF",
+            f"python >out<<EOF\n{payload}\nEOF",
+            f"python 2>&1<<<'{payload}'",
+            # A redirect nested in a substitution, measured in bash.
+            f"python 2>$(echo>/dev/null;printf /dev/null) <<< '{payload}'",
+            f"python 2>`echo>/dev/null;printf /dev/null` <<< '{payload}'",
+            f"python 2>$( (true); printf /dev/null) <<< '{payload}'",
+            f"python 2>$( {{ true; printf /dev/null; }} ) <<< '{payload}'",
+            # PowerShell's all-streams redirect with the program on a pipe.
+            f"echo '{payload}' | python *> token.txt",
+            f"echo '{payload}' | python *>> token.txt",
+            # A redirect glued to a flag, measured in bash.
+            f"python -u> /dev/null <<< '{payload}'",
+            f"python -B> out <<< '{payload}'",
+        ):
+            assert security._is_credential_mint(cmd.lower()), cmd
+
+    def test_the_floor_still_allows_the_ordinary_shapes(self):
+        from kiro_crew import security
+
+        payload = "from kiro_crew.cli import main; main()"
+        for cmd in (
+            "python script.py",
+            f"python script.py <<< '{payload}'",
+            "python -m json.tool",
+            "python 2>&1 script.py",
+            "ls -la 2>&1",
+            "pytest test/test_x.py 2>&1 | tail -5",
+            # Reading `*>` as a redirect must not start denying ordinary commands: with
+            # no payload-bearing carrier there is nothing for the floor to fire on.
+            "python *> out",
+            "python *.py > out",
+            "pytest tests/ *> out",
+        ):
+            assert not security._is_credential_mint(cmd.lower()), cmd
