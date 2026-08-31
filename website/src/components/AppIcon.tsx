@@ -113,10 +113,9 @@ export default function AppIcon({
   /**
    * Let a RASTER icon bleed to the edges of its container instead of sitting
    * inset at ``size``. An app-supplied icon file is a finished tile — the
-   * publishing guide asks for a 512x512 opaque square — so on a surface that
-   * already draws a rounded plate for it (``AppIconTile``) the icon IS the
-   * plate, and rendering it inset leaves the app looking like a small sticker
-   * stuck on a dark square.
+   * publishing guide asks for a 512x512 opaque square — so on any surface that
+   * already draws a rounded plate for it the icon IS the plate, and rendering it
+   * inset leaves the app looking like a small sticker stuck on that plate.
    *
    * Deliberately scoped to the raster ``<img>`` branches, so it CANNOT change
    * the two glyph paths: a first-party ``/app-assets/`` SVG and a lucide
@@ -126,10 +125,16 @@ export default function AppIcon({
    * component rather than a size the caller raises to the container's width.
    *
    * Fills by ``object-cover``, so an off-spec non-square icon is centre-cropped
-   * rather than letterboxed — the container is ``overflow-hidden`` with its own
-   * radius, which is what makes the crop read as a tile instead of a mistake.
-   * The container must be positioned (the image is absolutely inset), which is
-   * why only ``AppIconTile`` passes it today.
+   * rather than letterboxed.
+   *
+   * CALLER CONTRACT — the plate must be BOTH ``relative`` and
+   * ``overflow-hidden``. The image is absolutely inset, so an unpositioned plate
+   * hands it to the nearest positioned ancestor instead and the icon escapes the
+   * plate entirely (on the store's spotlight that ancestor is the 16:9 art
+   * panel, so the icon would render as hero art); and the clip is what makes the
+   * bled image take the plate's own radius. A test pins both classes at every
+   * call site that passes this flag, because neither failure is visible in the
+   * diff — only in the render.
    */
   rasterFill?: boolean
   /** Lit (accent-dominant) vs idle (muted + accent highlight). */

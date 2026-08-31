@@ -1210,8 +1210,13 @@ export default function AppDetailPage() {
 
         {/* Hero */}
         <div className="flex items-start gap-5 mb-6">
-          <div className="w-24 h-24 rounded-2xl bg-accent/10 flex items-center justify-center shrink-0 overflow-hidden">
-            <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} iconUrlFallback={app.iconUrlFallback} iconUrlFallbackDark={app.iconUrlFallbackDark} size={64} />
+          {/* `relative` is load-bearing, not decoration: `rasterFill` absolutely
+              insets the image, so without a positioned plate the icon resolves
+              against the nearest positioned ancestor — there is none above this
+              hero row, so it would escape to a page-level box. `overflow-hidden`
+              is what makes the bled image take this plate's `rounded-2xl`. */}
+          <div className="w-24 h-24 rounded-2xl bg-accent/10 flex items-center justify-center shrink-0 overflow-hidden relative">
+            <AppIcon icon={app.icon} iconUrl={app.iconUrl} iconUrlDark={app.iconUrlDark} iconUrlFallback={app.iconUrlFallback} iconUrlFallbackDark={app.iconUrlFallbackDark} size={64} rasterFill />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-1 flex-wrap">
