@@ -495,6 +495,9 @@ class OrphanStallMonitor(ManagerComponent):
                     await self._manager._force_reap(agent_id, info, elapsed)
                 except Exception:
                     logger.exception("Reaper: failed to reap %s", agent_id)
+                finally:
+                    if info._exec_started is not None and not info.user_stopped:
+                        self._manager._observe_timeout_usage(info, completed=False)
 
             # Prune stale tombstoned folders (>7 days old)
             try:

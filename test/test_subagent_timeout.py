@@ -235,3 +235,75 @@ async def test_near_limit_success_raises_future_manager_deadline(timeout_state):
 
     assert manager._default_timeout == 1860
     safe_fire.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("exec_started", "user_stopped", "expected_timeout", "persistence_calls"),
+    [
+        (True, False, 1860, 1),
+        (True, True, 60, 0),
+        (False, False, 60, 0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_reaper_learns_only_from_execution_timeouts(
+    timeout_state,
+    exec_started,
+    user_stopped,
+    expected_timeout,
+    persistence_calls,
+):
+    import asyncio
+    import time
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        default_timeout=60,
+        adaptive_timeout=True,
+        max_timeout=3600,
+    )
+    manager._timeout_history_loaded = True
+    manager._conv_registry_rebuilt = True
+    info = SubagentInfo(
+        id="adaptive-reaper",
+        task="test",
+        started=time.time() - 61,
+        timeout_secs=60,
+        _pid=123,
+    )
+    info._exec_started = info.started if exec_started else None
+    manager._agents[info.id] = info
+
+    async def force_reap_side_effect(*_args):
+        info.user_stopped = user_stopped
+
+    with (
+        patch("asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError])),
+        patch("kiro_crew.subagent.compact_cost_log"),
+        patch("kiro_crew.subagent.prune_stale_tombstones", return_value=0),
+        patch(
+            "kiro_crew.subagent._safe_fire",
+            side_effect=lambda coro: coro.close(),
+        ) as safe_fire,
+        patch.object(manager, "_sample_live_costs"),
+        patch.object(manager, "_sweep_stuck_waves"),
+        patch.object(manager, "_sweep_digest_holds"),
+        patch.object(manager, "_sweep_conversations"),
+        patch.object(manager, "_maybe_flag_stall", new_callable=AsyncMock),
+        patch.object(
+            manager,
+            "_force_reap",
+            new_callable=AsyncMock,
+            side_effect=force_reap_side_effect,
+        ) as force_reap,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._reaper_loop()
+
+    force_reap.assert_awaited_once_with(info.id, info, pytest.approx(61, abs=1))
+    assert manager._default_timeout == expected_timeout
+    assert safe_fire.call_count == persistence_calls

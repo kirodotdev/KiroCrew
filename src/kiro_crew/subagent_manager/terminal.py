@@ -431,10 +431,7 @@ class TerminalCoordinator(ManagerComponent):
                 if reason == "startup_timeout":
                     info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                 else:
-                    deadline = info.timeout_secs or self._manager._default_timeout
-                    learned = self._manager._observe_timeout_usage(info, completed=False)
-                    adjustment = f"; future runs use {learned}s" if learned > deadline else ""
-                    info.error = f"Reaped after {int(elapsed)}s (exceeded {deadline}s deadline{adjustment}) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                    info.error = f"Reaped after {int(elapsed)}s (exceeded {self._manager._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
             if not info.user_stopped:
                 # A user-initiated stop is a neutral outcome, not a failure.
                 Stats().inc_subagent_failed()
