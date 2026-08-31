@@ -27,6 +27,7 @@ import kiro_crew.dashboard.handlers as _h
 from kiro_crew import session_ledger
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.session_memory import SessionMemorySampler
@@ -1488,6 +1489,72 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
     if not ok:
         return web.json_response({"error": "not found or expired"}, status=404)
     return web.json_response({"ok": True})
+
+
+async def api_session_directive(request: web.Request) -> web.Response:
+    """POST /api/session-directive — park a validated session directive.
+
+    The provider-neutral leg of the session-directive protocol. Its only caller is
+    a Kiro Crew directive tool (``mcp_tools.control._emit_directive``), which has
+    already validated the payload; this route carries that payload to the gateway
+    OUT OF BAND so the turn's consumer can apply it without having to trust the
+    model-visible marker in the tool result. See
+    :mod:`kiro_crew.dashboard.directive_queue` for why that is not weaker than the
+    marker gate it backs up.
+
+    Authenticated via X-Internal-Secret, and the session is selected by the
+    X-Session-Key header every MCP subprocess already sends — the SAME shape as
+    ``api_session_keepalive``. The header is not taken on faith: on the unix
+    socket ``token_auth`` kernel-verifies the peer and denies 403 when it resolves
+    to a session key other than the declared one, which is the check that stops a
+    caller parking a directive against somebody else's session.
+
+    Unknown ``kind`` is a 400, not a silent drop: the only legitimate callers are
+    Kiro Crew's own directive tools, so an unrecognized kind means the request did
+    not come from one and the caller should hear about it.
+    """
+    # Re-assert the caller's locality BEFORE the header is read. The route is in
+    # server.py's strict allowlist, but a ``local_only=False`` deployment
+    # reclassifies strict paths as MIXED — so the auth middleware also admits a
+    # cookie/token-authenticated browser caller here, and such a caller picks its
+    # own ``X-Session-Key``. That is somebody else's session: a parked record is
+    # applied verbatim by the next consumer frame in the named turn, so accepting
+    # it would hand a remote cookie holder a cross-session mutation (arm a loop,
+    # retarget a project). ``internal_auth`` is set only after a constant-time
+    # ``X-Internal-Secret`` match on a same-machine transport; ``peer_verified``
+    # only after the kernel-attested AF_UNIX peer resolved to the DECLARED key —
+    # either one is positive proof of a local caller, and a cookie carries
+    # neither. Same predicate as ``handlers/updates.py``'s host-locality gate.
+    if not (request.get("internal_auth") or request.get("peer_verified")):
+        return web.json_response(
+            {"error": "local caller required", "code": "not_local_caller"},
+            status=403,
+        )
+    session_key = request.headers.get("X-Session-Key", "").strip()
+    if not session_key:
+        return web.json_response(
+            {"error": "X-Session-Key required", "code": "session_key_required"},
+            status=400,
+        )
+    body: dict = {}
+    try:
+        if request.can_read_body:
+            parsed = await request.json()
+            if isinstance(parsed, dict):
+                body = parsed
+    except Exception:
+        return web.json_response(
+            {"error": "malformed JSON body", "code": "invalid_body"}, status=400
+        )
+    kind = str(body.get("kind") or "").strip()
+    args = body.get("args")
+    if not isinstance(args, dict):
+        args = {}
+    try:
+        record_id = directive_queue.publish(session_key, kind, args)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_directive"}, status=400)
+    return web.json_response({"ok": True, "id": record_id})
 
 
 async def api_session_keepalive(request: web.Request) -> web.Response:

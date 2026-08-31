@@ -375,6 +375,15 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
         "/api/session-keepalive",
+        # Session directives: the provider-neutral leg of the directive
+        # protocol. STRICT for the same reasons as its sibling above — the
+        # only legitimate caller is a Kiro Crew directive tool in an MCP
+        # subprocess, and the route's whole point is that the payload arrives
+        # somewhere the model's tool result is not trusted. A cookie
+        # fall-through would let a browser bearer park a directive against a
+        # session it merely has a tab on, bypassing the unix-socket peer check
+        # that makes the declared X-Session-Key trustworthy.
+        "/api/session-directive",
         # In-app update approval (RFC OQ7 step-up). STRICT: its only legitimate
         # caller is `kirocrew update approve` on the gateway host presenting the
         # trust/-fenced nonce plus X-Local-Secret; no browser ever posts to it —
@@ -1341,6 +1350,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     # dashboard-less state simply has no owner sockets to deliver to.
     app.router.add_post("/api/computer-use/frame", handlers.api_computer_use_frame)
     app.router.add_post("/api/session-keepalive", handlers.api_session_keepalive)
+    app.router.add_post("/api/session-directive", handlers.api_session_directive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
     app.router.add_get("/api/notifications", handlers.api_notifications)

@@ -749,6 +749,44 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
     )
 
 
+def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
+    """Encode a validated directive AND publish it out of band; return the text.
+
+    Two delivery paths, one each way round:
+
+    * The MARKER in the returned text is the original path. A consumer that can
+      verify the call's ``_meta.kiro`` identity (kiro-cli) decodes and applies it
+      from there, exactly as before — this function changes nothing for that
+      backend.
+    * The out-of-band POST is the provider-neutral path. ``_post`` already carries
+      ``X-Session-Key`` (and the gateway kernel-verifies that claim on the unix
+      socket), so the gateway parks the payload for the RIGHT session without the
+      model's tool result being trusted for anything. A backend that emits no
+      ``_meta.kiro`` identity has no other way to reach its own control plane.
+
+    Order matters: encode FIRST. ``encode`` refuses an oversized payload by
+    returning a marker-less error string, and a refused directive must NOT be
+    published — otherwise the model is told "nothing was applied" while a record
+    sits waiting to apply it.
+
+    Fail-soft on the POST, and SILENT by design. An older gateway with no such
+    route, or one that is simply down, must not turn a working tool call into an
+    error: the marker is already in hand and the kiro-cli path still works. There
+    is no log line because this module runs as a stdio MCP server, where the
+    process's own streams are the protocol channel — and because the failure that
+    matters is reported at the CONSUMER, which is the side that knows whether a
+    directive actually landed.
+    """
+    out = session_directive.encode(kind, args, human)
+    if session_directive.is_refusal(out):
+        return out
+    try:
+        mcp_core._post("/api/session-directive", {"kind": kind, "args": args})
+    except Exception:
+        pass
+    return out
+
+
 def autonudge_stop(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, AUTONUDGE_STOP_SCHEMA)
 
@@ -768,7 +806,7 @@ def autonudge_stop(name: str, args: dict[str, Any]) -> str:
             "a dashboard, Slack, or Discord session "
             f"(current session_key={sk!r})."
         )
-    return session_directive.encode(
+    return _emit_directive(
         "autonudge_stop",
         {"reason": args.get("reason", "").strip()},
         # NOT a confirmation, and worded so a model cannot read it as one: this
@@ -802,7 +840,7 @@ def ask_question(name: str, args: dict[str, Any]) -> str:
             "turn with an [OPTIONS: a | b | c] tag instead — it renders "
             "clickable buttons on every channel that supports them."
         )
-    return session_directive.encode(
+    return _emit_directive(
         "ask_question",
         # Encode the AUTHORITATIVELY-validated + normalized questions (deep
         # per-question/option checks), not the shallow-schema args: a
@@ -848,7 +886,7 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
     # the runaway backstop; the runtime budget is for callers that need a
     # hard TIME bound (e.g. "babysit this for at most 2 hours").
     max_runtime_secs = int(args.get("max_runtime_secs") or 0)
-    return session_directive.encode(
+    return _emit_directive(
         "monitor_start",
         {
             "message": message,
@@ -914,7 +952,7 @@ def monitor_update(name: str, args: dict[str, Any]) -> str:
             "monitor_update: nothing to change — pass at least one of "
             "message, interval_secs, max_cycles, max_runtime_secs."
         )
-    return session_directive.encode(
+    return _emit_directive(
         "monitor_update",
         {"patch": patch},
         f"Monitor-loop update requested for this session "
@@ -927,7 +965,7 @@ def set_project(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SET_PROJECT_SCHEMA)
     # Stateless: the session-aware consumer (chat_runner) applies the
     # project change to ITS OWN slot — no session identity resolved here.
-    return session_directive.encode(
+    return _emit_directive(
         "set_project",
         {"project": args.get("path", ""), "clear": bool(args.get("clear"))},
         "Project change requested for this session; if the path is valid "
@@ -944,7 +982,7 @@ def reset_conversation(name: str, args: dict[str, Any]) -> str:
     # empty because there is nothing to choose: a caller asking for a clean
     # context always wants a clean one, and the HTTP route carries a replay flag
     # for the rare caller that does not.
-    return session_directive.encode(
+    return _emit_directive(
         "reset_conversation",
         {},
         "Conversation reset requested for this session; if this turn is "
@@ -961,7 +999,7 @@ def suggest_followup(name: str, args: dict[str, Any]) -> str:
     # the card to ITS OWN slot; no session identity resolved here. The card
     # is broadcast-only (dropped if no client attached), so the confirmation
     # stays cautious — restate the follow-ups in reply text if they matter.
-    return session_directive.encode(
+    return _emit_directive(
         "suggest_followup",
         {"items": items},
         "Follow-up card requested for this session. It is delivered to a "

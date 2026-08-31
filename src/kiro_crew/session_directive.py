@@ -184,6 +184,41 @@ def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
     return args if isinstance(args, dict) else {}
 
 
+def peek(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Parse the marker's ``(kind, args)`` with NO identity check, or ``None``.
+
+    A SELECTOR, never a grant — and the distinction is the whole reason this is
+    separate from :func:`decode`. ``decode`` answers "may I apply what this text
+    says?" and therefore demands the trusted tool identity. This answers "which
+    parked record is this frame talking about?", and its answer is only ever used
+    to look one up: a caller matches it against a record the TOOL validated and
+    the gateway parked, then applies the RECORD's payload. Nothing read here
+    reaches an effect, so a model editing the JSON can only fail to find a record
+    — it cannot smuggle a value past the tool's validation.
+
+    Consequently ``kind`` is returned unvalidated except for being a known
+    directive tool: an unknown kind can match no record anyway, and rejecting it
+    here would only duplicate the lookup's own failure.
+    """
+    if not text:
+        return None
+    idx = text.find(_SENTINEL)
+    if idx < 0:
+        return None
+    line = text[idx + len(_SENTINEL):].split("\n", 1)[0]
+    try:
+        block = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(block, dict):
+        return None
+    kind = block.get("kind")
+    if not isinstance(kind, str) or kind not in DIRECTIVE_TOOLS:
+        return None
+    args = block.get("args")
+    return kind, (args if isinstance(args, dict) else {})
+
+
 def match_tool(raw: str) -> str:
     """Return the directive-tool name a recorded CANONICAL tool name refers to,
     or ``""``.
