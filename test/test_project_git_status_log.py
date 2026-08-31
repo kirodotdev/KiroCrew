@@ -178,6 +178,30 @@ class TestGitStatus:
         # Should have additions (2 new lines) and deletions (original line changed)
         assert "additions" in a or "deletions" in a
 
+    @pytest.mark.asyncio
+    async def test_repo_root_uses_the_path_aware_redactor(self, repo, mock_sel):
+        """``repoRoot`` is an absolute path, so it takes the same wrapper
+        ``/api/project/git`` uses rather than the bare credential detector.
+
+        Without this the two endpoints disagree: a macOS temp project root
+        survives on one and comes back ``[REDACTED: credential]`` on the other.
+        """
+        with patch(
+            "kiro_crew.dashboard.handlers.files._redact_project_path",
+            side_effect=lambda p: f"[{p}]",
+        ) as wrapper:
+            async with TestClient(TestServer(_make_app(str(repo)))) as client:
+                resp = await client.get(f"/api/project/git/status?path={repo}")
+                data = await resp.json()
+        # git reports the toplevel with forward slashes on Windows, so compare
+        # normalised paths rather than pinning a separator.
+        assert wrapper.call_count == 1
+        passed = wrapper.call_args.args[0]
+        assert os.path.normcase(os.path.normpath(passed)) == os.path.normcase(
+            os.path.realpath(str(repo))
+        )
+        assert data["repoRoot"] == f"[{passed}]"
+
 
 # ── /api/project/git/log tests ──
 
