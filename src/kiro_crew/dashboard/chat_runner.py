@@ -4099,6 +4099,28 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     if next_msg is None:
         return False
 
+    # A successor turn is now certain to dispatch (every no-successor path above
+    # already returned False), so the predecessor turn's assistant bubble must be
+    # finalized on the clients NOW, before the successor's row and first chunk
+    # reach them. The end-of-turn flush suppresses ``chat_segment``
+    # (``broadcast=False``), deferring the finalize to the ``chat_done`` that
+    # ``_finish_queue_cycle`` emits -- but on this path no ``chat_done`` follows.
+    # The flush's ``slot.append`` does emit a ``chat_message{role:assistant}``
+    # frame whose reducer branch also finalizes, but that frame is CONDITIONAL:
+    # suppressed while an HTTP SSE reader drains the slot (``_has_reader``),
+    # absent when the turn's final segment is empty (text already flushed at a
+    # tool boundary), and droppable client-side by the mid-keyed redelivery
+    # guard. Without an unconditional finalize the successor's chunks append
+    # into the still-open ``streaming`` row: two turns render as one bubble,
+    # and a line-final ``[OPTIONS: ...]`` marker in the first turn loses its
+    # end-of-line anchor and degrades to prose. ``chat_segment`` is that
+    # unconditional finalize, and it is idempotent on the reducer (no live
+    # ``streaming`` row -> no-op), so clients that already finalized are
+    # unaffected. The queue-empty and dropped-entry paths keep
+    # ``_finish_queue_cycle``'s ``chat_done`` as their sole finalizer -- no
+    # double finalize on any path.
+    state.broadcast_ws("chat_segment", {"slot": slot.key})
+
     is_recovery = any(is_synthetic_recovery_item(item) for item in consumed)
     # Orthogonal to `is_recovery`, which decides how the row renders: this decides
     # whether the runner may mirror the text to a linked thread as user speech.
@@ -4345,6 +4367,13 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 
         # All delivery guards hold. Consume immediately before the turn begins.
         slot._pending_synthesis = False
+        # Same successor boundary as the queue drain (see the finalize comment in
+        # `_start_next_queued_turn`): this dispatch is reached from the previous
+        # turn's tail without a `chat_done`, so the predecessor's streaming row
+        # must be finalized before the synthesis turn's row and first chunk.
+        # Every not-eligible path above already returned into
+        # `_finish_queue_cycle`, whose `chat_done` stays the sole finalizer there.
+        state.broadcast_ws("chat_segment", {"slot": slot.key})
         # Append the row BEFORE dispatching, matching `_start_next_queued_turn`.
         # This site bypasses that function (it runs no queue entry), and it was
         # the only turn-dispatching path that appended nothing — so the prompt

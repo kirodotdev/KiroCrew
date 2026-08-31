@@ -715,6 +715,24 @@ A pending tool approval has **two** pieces of state that must stay in lockstep: 
 
 **Runner backstop totality**: `outcome` is pre-seeded to `"rejected"` before the approval `await`, because the `finally` runs on *every* exit including `CancelledError` (slot deletion and cleanup endpoints cancel `slot.task`). Assigning it only inside `try`/`except` would raise `UnboundLocalError` from the `finally`, replacing the cancellation with a spurious exception and skipping both the message marking and the Slack prompt cleanup.
 
+### Queue turn boundary finalize
+
+A successor turn dispatched WITHOUT a `chat_done` -- the tail-drain starting a
+queued turn (`_start_next_queued_turn`), and the synthesis dispatch in
+`_run_pending_synthesis` -- broadcasts `chat_segment` for the slot once the
+successor is certain to dispatch, before the successor's row and first chunk.
+The end-of-turn flush suppresses its own `chat_segment` (deferring the
+client-side streaming->assistant finalize to `_finish_queue_cycle`'s
+`chat_done`, which never comes on these paths), and the flush's
+`chat_message{role:assistant}` frame is conditional (suppressed while an HTTP
+SSE reader drains the slot, absent when the final segment is empty, droppable
+by the client's mid-keyed redelivery guard) -- without the unconditional
+boundary frame the successor's chunks append into the still-open `streaming`
+row and a line-final `[OPTIONS: ...]` marker degrades to prose. Non-fire
+condition: a boundary where no successor dispatches (empty queue, dropped
+entry, synthesis not eligible) emits nothing here -- `_finish_queue_cycle`'s
+`chat_done` stays that path's sole finalizer, so no path double-finalizes.
+
 ### Mid-Turn Steer (dashboard transcript contract)
 
 A steer (`POST /api/chat` with `steer: true` while the slot is running) injects
