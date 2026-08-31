@@ -721,9 +721,20 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             task_safe, _ = redact_exfiltration_urls(info.task)
             task_safe, _ = redact_credentials(task_safe)
             task_preview: str = task_safe[:80]
-            approved: bool = await self._manager._on_spawn_approval(
-                request_id, f"spawn_run({task_preview})", info.parent_session_key
-            )
+            # Mark the pre-execution spawn gate as a human-wait so the reaper
+            # does not misreport it. This is the SAME lifecycle the mid-run TOOL
+            # approvals use in run.py: set before the await, cleared in a
+            # finally. The run has NOT started here (_exec_started is None),
+            # which is exactly what lets _force_reap distinguish a never-answered
+            # spawn approval from a mid-run tool prompt and report the accurate
+            # cause.
+            info._awaiting_approval = True
+            try:
+                approved: bool = await self._manager._on_spawn_approval(
+                    request_id, f"spawn_run({task_preview})", info.parent_session_key
+                )
+            finally:
+                info._awaiting_approval = False
         except Exception:
             logger.exception("Spawn approval failed for %s", info.id)
             approved = False
