@@ -4477,6 +4477,7 @@ async def run_script_hook(
             create_subprocess_limited,
             sandboxed_spawn_argv,
             sandboxed_spawn_argv_async,
+            wsl2_selected,
         )
 
         # A script hook inherits only the minimum env its shell + command need
@@ -4484,11 +4485,17 @@ async def run_script_hook(
         # copy of the whole gateway environment, which would expose the gateway's
         # AWS/model/OAuth/connection-string credentials to every hook command.
         env = _hook_subprocess_env(hook, context)
-        # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
-        # The argv is what the sandbox/cgroup chokepoints below vet, on BOTH
-        # platforms — only the eventual spawn form differs (see the Windows
+        # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there)
+        # -- UNLESS the operator selected the wsl2 sandbox backend, which offers
+        # a real POSIX /bin/sh inside its distribution. That case builds the
+        # SAME argv shape as POSIX platforms: sandboxed_spawn_argv_async below
+        # routes it through wsl_namespace_argv, which appends this argv after
+        # its staged guest-side launcher, so a cmd.exe-shaped argv here would
+        # try (nonsensically) to run cmd.exe inside the Linux guest.
+        # The argv is what the sandbox/cgroup chokepoints below vet, on every
+        # platform — only the eventual spawn form differs (see the Windows
         # branch under the spawn).
-        if platform_compat.IS_WINDOWS:
+        if platform_compat.IS_WINDOWS and not wsl2_selected():
             argv = ["cmd", "/c", hook.command]
         else:
             argv = ["/bin/sh", "-c", hook.command]

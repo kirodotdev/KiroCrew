@@ -7201,6 +7201,7 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Enable dynamic MCP tool discovery via kiro-cli. Takes effect on next session.",
         "immediate_auto_approves_all_tools_interactive_as": "Immediate. 'auto' approves all tools; 'interactive' asks before each.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Immediate. 'auto' enables sandbox for untrusted tools.",
+        "immediate_which_wsl2_distribution_to_sandbox_in": "Immediate. Which WSL2 distribution to sandbox in — Docker Desktop's own utility instances are not offered here.",
         "kirocrew_agents": "{{productName}} Agents",
         "max_channel_agents": "Max Channel Agents",
         "max_channels": "Max Channels",
@@ -7227,7 +7228,9 @@
         "using_legacy_mode_agent_default_agent_as_agent_t": "Using legacy mode — agent.default_agent as agent template",
         "warm_pool": "Warm Pool",
         "workspace": "Workspace",
-        "workspaces": "Workspaces"
+        "workspaces": "Workspaces",
+        "wsl2_distribution": "WSL2 Distribution",
+        "wsl_default_distro": "(WSL default)"
       },
       "mcpTab": {
         "actions": "Actions",

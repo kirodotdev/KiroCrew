@@ -11799,6 +11799,7 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Ativa a descoberta dinâmica de ferramentas MCP via kiro-cli. Aplica-se na próxima sessão.",
         "immediate_auto_approves_all_tools_interactive_as": "Imediato. 'auto' aprova todas as ferramentas; 'interactive' pergunta antes de cada uma.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Imediato. 'auto' ativa o sandbox para ferramentas não confiáveis.",
+        "immediate_which_wsl2_distribution_to_sandbox_in": "Imediato. Qual distribuição WSL2 usar para o isolamento — as instâncias internas do Docker Desktop não são oferecidas aqui.",
         "inherited_provider": "herdado ({{provider}})",
         "kirocrew_agents": "Agentes do {{productName}}",
         "max_channel_agents": "Máx. de agentes por canal",
@@ -11837,7 +11838,9 @@
         "number_of_pre_spawned_processes_0_disables": "Número de processos pré-iniciados. 0 desativa.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agente para os processos do pool. Vazio usa o agente padrão.",
         "warm_pool_description": "Pré-inicia processos da ACP CLI para um arranque de sessão instantâneo.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração."
+        "max_age_for_pooled_processes_0_disables_expiry": "Idade máxima dos processos do pool. 0 desativa a expiração.",
+        "wsl2_distribution": "Distribuição WSL2",
+        "wsl_default_distro": "(Padrão do WSL)"
       },
       "mcpTab": {
         "actions": "Ações",

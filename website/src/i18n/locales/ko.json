@@ -11467,6 +11467,7 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli를 통한 동적 MCP 도구 검색을 활성화합니다. 다음 세션부터 적용됩니다.",
         "immediate_auto_approves_all_tools_interactive_as": "즉시 적용됩니다. ‘auto’는 모든 도구를 승인하고, ‘interactive’는 도구마다 확인합니다.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "즉시 적용됩니다. ‘auto’는 신뢰할 수 없는 도구에 샌드박스를 활성화합니다.",
+        "immediate_which_wsl2_distribution_to_sandbox_in": "즉시 적용됩니다. 샌드박스에 사용할 WSL2 배포판을 선택하세요 — Docker Desktop 자체 유틸리티 인스턴스는 여기에 표시되지 않습니다.",
         "inherited_provider": "상속됨 ({{provider}})",
         "kirocrew_agents": "{{productName}} 에이전트",
         "max_channel_agents": "최대 채널 에이전트 수",
@@ -11505,7 +11506,9 @@
         "number_of_pre_spawned_processes_0_disables": "미리 생성할 프로세스 수. 0이면 비활성화됩니다.",
         "agent_for_pool_processes_empty_uses_default_agent": "풀 프로세스용 에이전트. 비워 두면 기본 에이전트를 사용합니다.",
         "warm_pool_description": "세션을 즉시 시작할 수 있도록 ACP CLI 프로세스를 미리 실행합니다.",
-        "max_age_for_pooled_processes_0_disables_expiry": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다."
+        "max_age_for_pooled_processes_0_disables_expiry": "풀링된 프로세스의 최대 수명. 0이면 만료를 비활성화합니다.",
+        "wsl2_distribution": "WSL2 배포판",
+        "wsl_default_distro": "(WSL 기본값)"
       },
       "mcpTab": {
         "actions": "동작",

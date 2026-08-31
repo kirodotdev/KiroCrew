@@ -57,6 +57,7 @@ from kiro_crew.sandbox import (
     popen_limited,
     run_limited,
     wrap_argv,
+    wsl2_selected,
 )
 from kiro_crew.secrets import SecretVault
 from kiro_crew.security import is_sensitive_path, redact
@@ -2011,8 +2012,18 @@ def _resolve_command_shell() -> str | None:
     # On Windows there is no shipped shell whose language matches what
     # mcp_cron._vet_shell_command was written against: cmd.exe is not POSIX at
     # all, and Git-for-Windows's sh.exe IS bash. Refuse rather than route the
-    # vetted string through a shell that widens its language.
+    # vetted string through a shell that widens its language --- UNLESS the
+    # operator has selected the wsl2 sandbox backend, which offers a real
+    # POSIX /bin/sh inside its distribution. The literal path below is never
+    # resolved on the WINDOWS filesystem: it becomes the argv
+    # sandbox.wrap_argv's wsl2 backend appends after its staged launcher, and
+    # is looked up inside the GUEST, where it genuinely is a POSIX shell.
+    # _shell_is_posix_strict below still probes it for real rather than
+    # trusting that by name, so an unusual distro that replaced /bin/sh is
+    # still caught exactly as the existing probe already catches macOS.
     if platform_compat.IS_WINDOWS:
+        if wsl2_selected():
+            return "/bin/sh"
         return None
     # POSIX: NEVER consult PATH (shutil.which("sh")). PATH may contain an
     # agent-writable directory that precedes /bin — an agent can plant

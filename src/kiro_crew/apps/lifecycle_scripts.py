@@ -71,7 +71,15 @@ async def run_lifecycle_script(
 
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]
-    sandboxed_cmd, cleanup = await wrap_argv_async(base_cmd, mode="standard", _prepare=wrap_argv)
+    # cwd is threaded through wrap_argv_async (not only passed to the spawn
+    # below) so the wsl2 backend can translate it into `wsl.exe --cd`: the
+    # working directory of wsl.exe itself (a Windows process) does not
+    # propagate into the guest shell it starts. Every other backend ignores
+    # this argument and keeps relying on the cwd= passed to
+    # create_subprocess_limited.
+    sandboxed_cmd, cleanup = await wrap_argv_async(
+        base_cmd, mode="standard", cwd=str(app_root), _prepare=wrap_argv
+    )
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
     env = minimal_env(NONINTERACTIVE="1")
     if extra_env:

@@ -11965,6 +11965,7 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Включить динамическое обнаружение инструментов MCP через kiro-cli. Применится в следующей сессии.",
         "immediate_auto_approves_all_tools_interactive_as": "Применяется сразу. 'auto' — подтверждает все инструменты; 'interactive' — спрашивает перед каждым.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Применяется сразу. 'auto' — включает песочницу для недоверенных инструментов.",
+        "immediate_which_wsl2_distribution_to_sandbox_in": "Применяется сразу. Какой дистрибутив WSL2 использовать для песочницы — собственные служебные экземпляры Docker Desktop здесь не предлагаются.",
         "inherited_provider": "наследуется ({{provider}})",
         "kirocrew_agents": "Агенты {{productName}}",
         "max_channel_agents": "Макс. агентов канала",
@@ -12003,7 +12004,9 @@
         "number_of_pre_spawned_processes_0_disables": "Количество заранее запущенных процессов. 0 отключает.",
         "agent_for_pool_processes_empty_uses_default_agent": "Агент для процессов пула. Пусто — используется агент по умолчанию.",
         "warm_pool_description": "Заранее запускает процессы ACP CLI для мгновенного старта сессии.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение."
+        "max_age_for_pooled_processes_0_disables_expiry": "Максимальный срок жизни процессов в пуле. 0 отключает истечение.",
+        "wsl2_distribution": "Дистрибутив WSL2",
+        "wsl_default_distro": "(по умолчанию WSL)"
       },
       "mcpTab": {
         "actions": "Действия",

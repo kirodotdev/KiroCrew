@@ -11633,6 +11633,7 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "Dynamische MCP-Werkzeugerkennung über kiro-cli aktivieren. Wird in der nächsten Sitzung wirksam.",
         "immediate_auto_approves_all_tools_interactive_as": "Sofort. „auto“ genehmigt alle Werkzeuge; „interactive“ fragt vor jedem nach.",
         "immediate_auto_enables_sandbox_for_untrusted_too": "Sofort. „auto“ aktiviert die Sandbox für nicht vertrauenswürdige Werkzeuge.",
+        "immediate_which_wsl2_distribution_to_sandbox_in": "Sofort wirksam. Welche WSL2-Distribution zum Sandboxing verwendet wird — die internen Docker-Desktop-Instanzen werden hier nicht angeboten.",
         "inherited_provider": "übernommen ({{provider}})",
         "kirocrew_agents": "{{productName}}-Agenten",
         "max_channel_agents": "Max. Kanal-Agenten",
@@ -11671,7 +11672,9 @@
         "number_of_pre_spawned_processes_0_disables": "Anzahl vorab gestarteter Prozesse. 0 deaktiviert dies.",
         "agent_for_pool_processes_empty_uses_default_agent": "Agent für Pool-Prozesse. Leer verwendet den Standardagenten.",
         "warm_pool_description": "Startet ACP-CLI-Prozesse vorab, damit Sitzungen sofort beginnen.",
-        "max_age_for_pooled_processes_0_disables_expiry": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf."
+        "max_age_for_pooled_processes_0_disables_expiry": "Maximales Alter für Pool-Prozesse. 0 deaktiviert den Ablauf.",
+        "wsl2_distribution": "WSL2-Distribution",
+        "wsl_default_distro": "(WSL-Standard)"
       },
       "mcpTab": {
         "actions": "Aktionen",

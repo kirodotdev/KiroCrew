@@ -11633,6 +11633,7 @@
         "enable_dynamic_mcp_tool_discovery_via_kiro_cli_t": "kiro-cli-এর মাধ্যমে ডাইনামিক MCP টুল ডিসকভারি সক্রিয় করুন। পরের সেশনে কার্যকর হবে।",
         "immediate_auto_approves_all_tools_interactive_as": "তাৎক্ষণিক। 'auto' সব টুল অনুমোদন করে; 'interactive' প্রতিটির আগে জিজ্ঞাসা করে।",
         "immediate_auto_enables_sandbox_for_untrusted_too": "তাৎক্ষণিক। 'auto' অবিশ্বস্ত টুলের জন্য স্যান্ডবক্স সক্রিয় করে।",
+        "immediate_which_wsl2_distribution_to_sandbox_in": "তাৎক্ষণিক। স্যান্ডবক্সের জন্য কোন WSL2 ডিস্ট্রিবিউশন ব্যবহার করতে হবে — Docker Desktop-এর নিজস্ব ইউটিলিটি ইনস্ট্যান্স এখানে দেখানো হয় না।",
         "inherited_provider": "উত্তরাধিকৃত ({{provider}})",
         "kirocrew_agents": "{{productName}} এজেন্ট",
         "max_channel_agents": "সর্বোচ্চ চ্যানেল এজেন্ট",
@@ -11671,7 +11672,9 @@
         "number_of_pre_spawned_processes_0_disables": "আগে থেকে চালু করা প্রসেসের সংখ্যা। 0 দিলে নিষ্ক্রিয় থাকে।",
         "agent_for_pool_processes_empty_uses_default_agent": "পুল প্রসেসের জন্য এজেন্ট। খালি রাখলে ডিফল্ট এজেন্ট ব্যবহার হয়।",
         "warm_pool_description": "সেশন তাৎক্ষণিক শুরু করতে ACP CLI প্রসেস আগে থেকে চালু রাখুন।",
-        "max_age_for_pooled_processes_0_disables_expiry": "পুল করা প্রসেসের সর্বোচ্চ বয়স। 0 দিলে মেয়াদ শেষ হওয়া বন্ধ থাকে।"
+        "max_age_for_pooled_processes_0_disables_expiry": "পুল করা প্রসেসের সর্বোচ্চ বয়স। 0 দিলে মেয়াদ শেষ হওয়া বন্ধ থাকে।",
+        "wsl2_distribution": "WSL2 ডিস্ট্রিবিউশন",
+        "wsl_default_distro": "(WSL ডিফল্ট)"
       },
       "mcpTab": {
         "actions": "অ্যাকশন",
