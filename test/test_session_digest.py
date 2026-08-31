@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from kiro_crew import session_digest
 from kiro_crew.session_digest import SessionDigest, _collapse_whitespace, digest
 
 
@@ -489,3 +490,341 @@ class TestMultipleStems:
         assert result.turns == 2
         # First message comes from the first stem's file (ordered by stems tuple)
         assert result.first_message == "First msg on legacy stem"
+
+
+class _SpyHandle:
+    """Wraps a real file handle, recording how the reader draws bytes from it."""
+
+    def __init__(self, real: object) -> None:
+        self._real = real
+        self.readline_limits: list[int] = []
+        self.iterated = False
+
+    def readline(self, limit: int = -1) -> str:
+        self.readline_limits.append(limit)
+        return self._real.readline(limit)  # type: ignore[attr-defined]
+
+    def __iter__(self) -> object:
+        # `for line in handle` — the unbounded shape this fix removes.
+        self.iterated = True
+        return iter(self._real)  # type: ignore[call-overload]
+
+    def __enter__(self) -> _SpyHandle:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._real.__exit__(*exc)  # type: ignore[attr-defined]
+
+
+def _user_record_of_length(total: int) -> str:
+    """A JSON user record whose serialized form is exactly *total* characters."""
+    pad = total - len(json.dumps({"role": "user", "content": ""}))
+    assert pad >= 0, "requested length is shorter than the record envelope"
+    return json.dumps({"role": "user", "content": "x" * pad})
+
+
+class TestBoundedRecords:
+    """A crafted newline-free record must not be materialised (#6345).
+
+    Both trees read here are agent-writable, so `for line in handle` let one
+    line without a newline in it allocate the whole file. These tests pin the
+    cap's behaviour with a small patched cap; the real one is 256 MiB.
+    """
+
+    def test_over_cap_transcript_record_is_skipped(self, sessions_dir: Path, cli_dir: Path) -> None:
+        """An over-cap user record contributes neither a turn nor first_message."""
+        path = sessions_dir / "over_cap.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"_type": "metadata", "created_at": "x"}) + "\n")
+            f.write(json.dumps({"role": "user", "content": "H" * 400}) + "\n")
+            f.write(json.dumps({"role": "user", "content": "kept"}) + "\n")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", 200, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("over_cap", ("over_cap",), "sid-nope")
+
+        assert result.turns == 1
+        assert result.first_message == "kept"
+
+    def test_transcript_handle_is_never_read_unbounded(
+        self, sessions_dir: Path, cli_dir: Path
+    ) -> None:
+        """Every read carries a limit, and the handle is never iterated."""
+        _write_transcript(
+            sessions_dir / "bounded.jsonl",
+            [
+                {"_type": "metadata", "created_at": "x"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        spies: list[_SpyHandle] = []
+        real_open = open
+
+        def _spy_open(*args: object, **kwargs: object) -> _SpyHandle:
+            spy = _SpyHandle(real_open(*args, **kwargs))  # type: ignore[arg-type]
+            spies.append(spy)
+            return spy
+
+        with (
+            patch("kiro_crew.session_digest.open", _spy_open),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("bounded", ("bounded",), "sid-nope")
+
+        assert result.turns == 1
+        assert spies, "the transcript was never opened"
+        for spy in spies:
+            assert not spy.iterated, "the handle was iterated, so one line is unbounded"
+            assert spy.readline_limits, "no bounded read was issued"
+            cap = session_digest._RECORD_CAP
+            assert all(0 < limit <= cap + 1 for limit in spy.readline_limits)
+
+    def test_record_exactly_at_cap_survives(self, sessions_dir: Path, cli_dir: Path) -> None:
+        """The cap is inclusive: a record of exactly cap bytes still counts."""
+        cap = 200
+        path = sessions_dir / "at_cap.jsonl"
+        # newline="" so the terminator is one byte on every platform: text mode
+        # would write CRLF on Windows, pushing a cap-byte record to cap+1 bytes
+        # with no LF in the first read and making it look over-cap.
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(_user_record_of_length(cap) + "\n")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("at_cap", ("at_cap",), "sid-nope")
+
+        assert result.turns == 1
+
+    def test_record_one_over_cap_is_skipped(self, sessions_dir: Path, cli_dir: Path) -> None:
+        """One byte past the cap is already over it."""
+        cap = 200
+        path = sessions_dir / "over_by_one.jsonl"
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(_user_record_of_length(cap + 1) + "\n")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("over_by_one", ("over_by_one",), "sid-nope")
+
+        assert result.turns == 0
+
+    def test_drain_resumes_at_the_next_record(self, sessions_dir: Path, cli_dir: Path) -> None:
+        """A record several caps long is drained, not lost mid-way, and the scan continues."""
+        cap = 100
+        path = sessions_dir / "deep_drain.jsonl"
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(json.dumps({"role": "user", "content": "H" * (cap * 7)}) + "\n")
+            f.write(json.dumps({"role": "user", "content": "first kept"}) + "\n")
+            f.write(json.dumps({"role": "user", "content": "second kept"}) + "\n")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("deep_drain", ("deep_drain",), "sid-nope")
+
+        assert result.turns == 2
+        assert result.first_message == "first kept"
+
+    def test_unterminated_final_record_still_parses(
+        self, sessions_dir: Path, cli_dir: Path
+    ) -> None:
+        """A crash mid-append leaves no trailing newline; a within-cap tail still counts."""
+        path = sessions_dir / "no_terminator.jsonl"
+        path.write_text(json.dumps({"role": "user", "content": "tail"}), encoding="utf-8")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", 200, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("no_terminator", ("no_terminator",), "sid-nope")
+
+        assert result.turns == 1
+        assert result.first_message == "tail"
+
+    def test_exotic_line_boundary_stays_one_record(self, sessions_dir: Path, cli_dir: Path) -> None:
+        """U+2028 inside a message is not a record boundary, so the turn survives.
+
+        `str.splitlines` — the shape session_storage's manifest reader needs —
+        would split here and lose the record; `readline` matches the iteration
+        this replaced.
+        """
+        path = sessions_dir / "exotic.jsonl"
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(json.dumps({"role": "user", "content": "a\u2028b"}, ensure_ascii=False) + "\n")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", 200, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("exotic", ("exotic",), "sid-nope")
+
+        assert result.turns == 1
+
+    def test_over_cap_record_cannot_forge_a_record_from_its_tail(
+        self, sessions_dir: Path, cli_dir: Path
+    ) -> None:
+        """A refused record must not smuggle a valid record out of its own tail.
+
+        The whole file below is ONE line. Its first cap+1 characters are junk, and
+        a complete user record sits immediately after that boundary. Draining the
+        refused record is what keeps the tail from being read as a record of its
+        own: without the drain, the next bounded read starts on the forged object,
+        ends on the real newline, and the reader counts a turn inside a record it
+        reported as skipped.
+        """
+        cap = 100
+        forged = json.dumps({"role": "user", "content": "phantom"})
+        path = sessions_dir / "forged_tail.jsonl"
+        path.write_text("H" * (cap + 1) + forged + "\n", encoding="utf-8", newline="")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("forged_tail", ("forged_tail",), "sid-nope")
+
+        assert result.turns == 0
+        assert result.first_message == ""
+
+    def test_cap_counts_bytes_not_characters(self, sessions_dir: Path, cli_dir: Path) -> None:
+        """A record under the cap in code points but over it in bytes is refused.
+
+        The cap has to be a memory bound, and one astral code point costs four
+        bytes of `str` under PEP 393 -- so counting characters would admit four
+        times the resident text the number promises. The record below is ~86 code
+        points and 266 bytes against a 200-byte cap.
+        """
+        cap = 200
+        content = "\U0001f600" * 60  # 60 code points, 240 UTF-8 bytes
+        record = json.dumps({"role": "user", "content": content}, ensure_ascii=False)
+        assert len(record) <= cap < len(record.encode("utf-8"))
+        path = sessions_dir / "astral.jsonl"
+        path.write_text(record + "\n", encoding="utf-8", newline="")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("astral", ("astral",), "sid-nope")
+
+        assert result.turns == 0
+
+    def test_crlf_terminated_records_still_parse(self, sessions_dir: Path, cli_dir: Path) -> None:
+        """Reading binary drops universal-newline translation; CRLF must still work.
+
+        `readline` splits on the LF, so the CR rides on the end of the record and
+        every caller's `strip()` removes it before `json.loads`.
+        """
+        path = sessions_dir / "crlf.jsonl"
+        body = "".join(
+            json.dumps({"role": "user", "content": text}) + "\r\n"
+            for text in ("first crlf", "second crlf")
+        )
+        path.write_text(body, encoding="utf-8", newline="")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", 4096, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("crlf", ("crlf",), "sid-nope")
+
+        assert result.turns == 2
+        assert result.first_message == "first crlf"
+
+    def test_crlf_record_at_the_cap_boundary_is_refused_by_one_byte(
+        self, sessions_dir: Path, cli_dir: Path
+    ) -> None:
+        """A CRLF-terminated record of exactly cap bytes is refused, by one byte.
+
+        The carriage return counts toward the bounded read, so `readline(cap + 1)`
+        returns cap+1 bytes ending on the CR rather than the LF and the record
+        reads as over-cap. Pinned rather than fixed: it shifts the threshold by one
+        byte on a 128 MiB cap, and buying the byte back would cost the reader its
+        single invariant (a return shorter than cap+1 is a whole record). This is
+        also the shape that makes a text-mode test fixture fail on Windows and pass
+        on Linux, which is why the fixtures above pass `newline=""`.
+        """
+        cap = 200
+        path = sessions_dir / "crlf_at_cap.jsonl"
+        path.write_bytes(_user_record_of_length(cap).encode("utf-8") + b"\r\n")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            refused = digest("crlf_at_cap", ("crlf_at_cap",), "sid-nope")
+
+        assert refused.turns == 0
+
+        # One byte shorter and the same CRLF record is accepted, which locates the
+        # shift precisely instead of asserting only that something was refused.
+        shorter = sessions_dir / "crlf_under_cap.jsonl"
+        shorter.write_bytes(_user_record_of_length(cap - 1).encode("utf-8") + b"\r\n")
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", cap, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            accepted = digest("crlf_under_cap", ("crlf_under_cap",), "sid-nope")
+
+        assert accepted.turns == 1
+
+    def test_over_cap_cli_record_drops_its_turn_and_images(
+        self, sessions_dir: Path, cli_dir: Path
+    ) -> None:
+        """An over-cap kiro-cli record contributes neither a turn nor an image."""
+        path = cli_dir / "sid-big.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "kind": "Prompt",
+                        "data": {
+                            "content": [
+                                {"kind": "image", "data": "B" * 400},
+                                {"kind": "text", "data": "oversized"},
+                            ]
+                        },
+                    }
+                )
+                + "\n"
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "kind": "Prompt",
+                        "data": {"content": [{"kind": "text", "data": "small kept"}]},
+                    }
+                )
+                + "\n"
+            )
+
+        with (
+            patch("kiro_crew.session_digest._RECORD_CAP", 200, create=True),
+            patch("kiro_crew.session_digest.data_home", return_value=sessions_dir.parent),
+            patch("kiro_crew.session_digest.kiro_sessions_dir", return_value=cli_dir),
+        ):
+            result = digest("cli_big", ("no_transcript",), "sid-big")
+
+        assert result.turns == 1
+        assert result.images == 0
+        assert result.first_message == "small kept"
