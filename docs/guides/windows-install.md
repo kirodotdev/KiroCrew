@@ -122,10 +122,17 @@ Current status:
   Defender's post-install scanning. macOS and Linux still redirect bytecode out
   of the signed/read-only app tree. The loading screen retains its extended
   Windows handoff window as a slow-machine fallback; a child exit or spawn error
-  still fails immediately and includes the launch-log cause. CI starts the
-  just-installed bundled interpreter against an isolated data home and requires
-  `/api/ready` within 30 seconds, so both the packaged caches and the full gateway
-  handoff are covered rather than only a synthetic import benchmark.
+  still fails immediately and includes the launch-log cause.
+  `.github/scripts/test-windows-installer.ps1` can start the just-installed
+  bundled interpreter against an isolated data home and require `/api/ready`
+  within 30 seconds, covering both the packaged caches and the full gateway
+  handoff — but it is a **real-artifact check, not a CI gate**: the installer
+  job builds the NSIS package over a synthetic backend stub, so it has no
+  bundled interpreter to start and runs the script with
+  `-SkipGatewayValidation`. What CI enforces on every push is the native
+  installer's performance ceiling and its install-location contract; run the
+  script without that switch against a genuine backend payload to exercise the
+  gateway handoff.
 
 The source install below remains the fully supported path.
 
