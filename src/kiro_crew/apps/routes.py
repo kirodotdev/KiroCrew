@@ -113,7 +113,7 @@ from kiro_crew.apps.registry import (
     resolve_installed_trust_repository,
 )
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
-from kiro_crew.apps.teardown import teardown_app_runtime
+from kiro_crew.apps.teardown import forget_app_hooks, teardown_app_runtime
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
@@ -1363,6 +1363,12 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
         return web.json_response(result.to_dict(), status=400)
     invalidate_app_secret_cache(name)
     _unregister_notification_channels(request, name)
+    # Same reason as the line above, for the hook registries: uninstall is the
+    # terminal path, so an entry left behind is a closure over a store this
+    # handler is about to delete. A surviving slot-close hook makes the app's
+    # leftover tabs UNDISMISSABLE -- `notify_slot_closed` returns False when the
+    # hook raises and `api_chat_slot_delete` refuses the close on that.
+    forget_app_hooks(name)
 
     # Step 6: Clean up workspace (each registry app has its own workspace)
     if is_registry_source(info.get("source", "")):
