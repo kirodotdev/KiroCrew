@@ -1045,7 +1045,6 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
   const qc = useQueryClient()
   const [mode, setMode] = useViewMode('drive', 'list')
   const [path, setPath] = useState('')
-  const [token, setToken] = useState('')
   const [share, setShare] = useState<{ key: string } | null>(null)
   const [uploadError, setUploadError] = useState('')
   const [downloadError, setDownloadError] = useState('')
@@ -1066,10 +1065,27 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
      overflows, so the edge is measured rather than assumed. */
   const [attachScroller, edges] = useScrollEdges<HTMLDivElement>()
 
-  const listQ = useQuery({
-    queryKey: ['aws-control', 'drive', account, 'list', path, token],
-    queryFn: () => awsControlApi.driveList(account, 'drive', path, token),
+  /* One listing per PATH, ACCUMULATED across pages -- the same shape Library
+     uses above. A continuation token is a page OF one listing, not a different
+     listing, so it belongs in the page params and never in the query key:
+     keying by token would make every "Load more" a brand-new query that
+     REPLACES the rows already on screen. Navigation resets fall out of the key itself (a
+     new path is a new query), and the explicit 'drive' segment keeps a folder
+     literally named "library" from colliding with the Library section's own
+     ['aws-control','drive',account,'list','library'] key. The key stays under
+     the ['aws-control','drive',account] prefix every mutation invalidates, and
+     invalidating an infinite query refetches every page it holds, so a deep
+     list survives an upload or delete instead of collapsing to page one. */
+  const listQ = useInfiniteQuery({
+    queryKey: ['aws-control', 'drive', account, 'list', 'drive', path],
+    queryFn: ({ pageParam }) => awsControlApi.driveList(account, 'drive', path, pageParam),
+    initialPageParam: '',
+    getNextPageParam: (last) => last.nextToken || undefined,
   })
+  /* Every fetched page's rows, in arrival order: the table and the grid render
+     from these, so page boundaries stay invisible to the reader. */
+  const folders = (listQ.data?.pages ?? []).flatMap((pg) => pg.folders)
+  const files = (listQ.data?.pages ?? []).flatMap((pg) => pg.files)
   const invalidate = () => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', account] })
 
   const uploadMut = useMutation({
@@ -1200,7 +1216,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
           as flat text would have removed. */}
       {crumbs.length > 0 && (
       <div className="mb-2 flex flex-wrap items-center gap-1 text-[12px] text-muted" data-testid="drive-crumbs">
-        <button className="hover:text-text cursor-pointer bg-transparent border-none p-0" onClick={() => { setPath(''); setToken('') }}>
+        <button className="hover:text-text cursor-pointer bg-transparent border-none p-0" onClick={() => setPath('')}>
           {i18nT('apps.awsControl.console.section_files')}
         </button>
         {crumbs.length > 1 && (
@@ -1221,7 +1237,6 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
                     onClick={() => {
                       setCrumbMenu(false)
                       setPath(crumbs.slice(0, i + 1).join('/'))
-                      setToken('')
                     }}
                   >
                     {c}
@@ -1243,7 +1258,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
           question was asked in exactly those words. So the empty state names
           what belongs here and how it differs from Library, and carries the
           upload action rather than making the reader find it in the header. */}
-      {listQ.data && listQ.data.folders.length === 0 && listQ.data.files.length === 0 && (
+      {listQ.isSuccess && folders.length === 0 && files.length === 0 && (
         <div className="rounded-lg border border-dashed border-border p-8 text-center" data-testid="drive-empty">
           <div className="mb-1.5 text-[13px] font-medium text-text-strong">
             {i18nT('apps.awsControl.console.files_empty_title')}
@@ -1266,11 +1281,11 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
           choice persists per section a reader who preferred tiles would
           otherwise lose Share and Delete on every future visit with nothing to
           tell them the controls existed. */}
-      {listQ.data && mode === 'grid' && (listQ.data.folders.length > 0 || listQ.data.files.length > 0) && (
+      {mode === 'grid' && (folders.length > 0 || files.length > 0) && (
         <div ref={filesGridRef} className="-mr-3" data-testid="drive-grid">
           <div className="grid items-start" style={{ gridTemplateColumns: `repeat(${fileCols}, minmax(0, 1fr))` }}>
-            {listQ.data.folders.map((name) => {
-              const open = () => { setPath(name); setToken(''); setDeletedCount(null) }
+            {folders.map((name) => {
+              const open = () => { setPath(name); setDeletedCount(null) }
               return (
               <div
                 key={`gf-${name}`}
@@ -1332,7 +1347,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
               </div>
               )
             })}
-            {listQ.data.files.map((f) => (
+            {files.map((f) => (
               <div
                 key={`go-${f.key}`}
                 /* No hover lift. A file card's actions live in its overflow menu;
@@ -1401,7 +1416,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
         </div>
       )}
 
-      {listQ.data && mode === 'list' && (listQ.data.folders.length > 0 || listQ.data.files.length > 0) && (
+      {mode === 'list' && (folders.length > 0 || files.length > 0) && (
         <div ref={attachScroller} className="overflow-x-auto rounded-md border border-border bg-card" data-testid="drive-listing">
           <table className="w-full border-collapse text-[13px]">
             {/* Shared head, drive columns. No column is sortable and `sort` is
@@ -1418,7 +1433,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
               actionsLabelKey="apps.awsControl.console.col_actions"
             />
             <tbody>
-              {listQ.data.folders.map((name) => (
+              {folders.map((name) => (
                 /* The WHOLE row opens the folder, which is both what the
                    artifact table's own folder row does (onClick on the <tr>)
                    and what a file browser is expected to do - when only the
@@ -1428,13 +1443,13 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
                    still reachable and operable from the keyboard. */
                 <Fragment key={`f-${name}`}>
                 <tr
-                  onClick={() => { setPath(name); setToken(''); setDeletedCount(null) }}
+                  onClick={() => { setPath(name); setDeletedCount(null) }}
                   className="cursor-pointer border-b border-border last:border-0 hover:bg-bg-hover"
                   data-testid="drive-folder"
                 >
                   <td className="px-2.5 py-2">
                     <button
-                      onClick={(e) => { e.stopPropagation(); setPath(name); setToken('') }}
+                      onClick={(e) => { e.stopPropagation(); setPath(name) }}
                       className="flex min-w-0 items-center gap-2 text-left text-text cursor-pointer bg-transparent border-none p-0"
                       data-testid="drive-folder-open"
                     >
@@ -1531,7 +1546,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
                 )}
                 </Fragment>
               ))}
-              {listQ.data.files.map((f) => (
+              {files.map((f) => (
                 /* A file is TWO rows when its delete is being confirmed, so the
                    key belongs on the fragment - on the inner <tr> React has
                    nothing to reconcile the pair by. */
@@ -1628,9 +1643,15 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
         </div>
       )}
 
-      {listQ.data?.nextToken && (
+      {listQ.hasNextPage && (
         <div className="mt-2">
-          <Btn onClick={() => setToken(listQ.data!.nextToken!)} data-testid="drive-load-more">{i18nT('apps.awsControl.console.load_more')}</Btn>
+          <Btn
+            onClick={() => listQ.fetchNextPage()}
+            disabled={listQ.isFetchingNextPage}
+            data-testid="drive-load-more"
+          >
+            {i18nT('apps.awsControl.console.load_more')}
+          </Btn>
         </div>
       )}
 

@@ -235,6 +235,68 @@ describe('DrivePage', () => {
     expect(screen.getByTestId('drive-load-more')).toBeTruthy()
   })
 
+  /** "Load more" is a promise about the rows already on screen: Files must
+   * append the next page below them, exactly as Library does. Keying the
+   * query on the continuation token instead would make each press swap the
+   * whole page. */
+  it('load more appends the next Files page below the current one instead of swapping it', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList)
+      .mockResolvedValueOnce({
+        files: [{ key: 'alpha.txt', size: 1024, modified: '2026-08-20T00:00:00Z' }],
+        folders: [], nextToken: 'tok-2',
+      })
+      .mockResolvedValueOnce({
+        files: [{ key: 'beta.txt', size: 1024, modified: '2026-08-20T00:00:00Z' }],
+        folders: [],
+      })
+
+    await renderDrive('drive')
+    expect(await screen.findByText('alpha.txt')).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('drive-load-more'))
+
+    // Both pages are on screen -- the first one did not vanish.
+    await waitFor(() => expect(screen.getAllByTestId('drive-file')).toHaveLength(2))
+    const listing = screen.getByTestId('drive-listing').textContent ?? ''
+    expect(listing).toContain('alpha.txt')
+    expect(listing).toContain('beta.txt')
+    // The second page is fetched WITH the first page's continuation token.
+    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT.account, 'drive', '', 'tok-2')
+  })
+
+  it('opening a folder shows that folder alone, not the accumulated parent rows', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList)
+      .mockResolvedValueOnce({
+        files: [{ key: 'alpha.txt', size: 1024, modified: '2026-08-20T00:00:00Z' }],
+        folders: ['docs'], nextToken: 'tok-2',
+      })
+      .mockResolvedValueOnce({
+        files: [{ key: 'beta.txt', size: 1024, modified: '2026-08-20T00:00:00Z' }],
+        folders: [],
+      })
+      .mockResolvedValueOnce({
+        files: [{ key: 'docs/gamma.txt', size: 1024, modified: '2026-08-20T00:00:00Z' }],
+        folders: [],
+      })
+
+    await renderDrive('drive')
+    fireEvent.click(await screen.findByTestId('drive-load-more'))
+    // Premise: the parent listing really is deep (two accumulated pages).
+    await waitFor(() => expect(screen.getAllByTestId('drive-file')).toHaveLength(2))
+
+    fireEvent.click(screen.getByTestId('drive-folder'))
+
+    // The new path starts from its own first page: no rows carried over.
+    expect(await screen.findByText('gamma.txt')).toBeTruthy()
+    expect(screen.getAllByTestId('drive-file')).toHaveLength(1)
+    expect(screen.queryByText('alpha.txt')).toBeNull()
+    expect(screen.queryByText('beta.txt')).toBeNull()
+    // And the navigation fetches the folder from its FIRST page, no stale token.
+    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT.account, 'drive', 'docs', '')
+  })
+
   it('drills into a folder from anywhere on the row, refetching for the new path', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.driveList).mockResolvedValue({
