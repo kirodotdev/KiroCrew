@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowUpFromLine, Check, ChevronDown, Target } from 'lucide-react'
-import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 
 import { i18nT } from '../i18n/t'
@@ -125,27 +125,16 @@ export default function BusySendButton({
   const splitRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const caretRef = useRef<HTMLButtonElement>(null)
-  // This menu has no filter input; the ref stays null so useListboxKeyboard
-  // treats ArrowUp from the first option as a no-op instead of a focus jump.
-  const noInputRef = useRef<HTMLElement | null>(null)
 
   const closeToTrigger = useCallback(() => {
     setMenuOpen(false)
     caretRef.current?.focus()
   }, [])
 
-  // Keyboard operability for the portaled menu (WAI-ARIA menu pattern):
-  // focus moves into the first option on open, ArrowUp/Down + Home/End roam,
-  // Escape/Tab close and return focus to the caret trigger.
-  const { onListKeyDown } = useListboxKeyboard({
-    open: menuOpen,
-    dropdownRef: menuRef,
-    inputRef: noInputRef,
-    hasFilterInput: false,
-    filteredCount: BUSY_SEND_MODES.length,
-    onEnterSingleMatch: () => {},
-    closeToTrigger,
-  })
+  // The portaled picker advertises role="menu", so it uses the shared menu
+  // contract: arrows wrap, Home/End jump, and Tab stays within the open rows.
+  // Escape remains host-owned because closing must restore the caret trigger.
+  useMenuKeyboard({ enabled: menuOpen, containerRef: menuRef })
 
   useEffect(() => {
     if (!menuOpen) return
@@ -202,7 +191,13 @@ export default function BusySendButton({
         <div
           ref={menuRef}
           role="menu"
-          onKeyDown={onListKeyDown}
+          tabIndex={-1}
+          onKeyDown={event => {
+            if (event.key !== 'Escape') return
+            event.preventDefault()
+            event.stopPropagation()
+            closeToTrigger()
+          }}
           className="fixed w-[250px] rounded-xl bg-bg-elevated border border-border shadow-xl p-1.5 animate-slide-up z-[60]"
           style={{ left: Math.max(8, Math.min(menuRect.right - 250, window.innerWidth - 250 - 8)), bottom: window.innerHeight - menuRect.top + 8 }}
         >
