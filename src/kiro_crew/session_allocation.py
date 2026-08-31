@@ -19,6 +19,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew.metrics.sessions import (
+    END_REASON_EVICTED,
+    discard_session_start,
+    record_session_ended,
+    record_session_started,
+)
+
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
 else:
@@ -490,6 +497,9 @@ class SessionAllocationService:
             if self._sessions.get(key) is session:
                 del self._sessions[key]
                 dead = session.provider
+                # Same tick as the removal. Left unrecorded, the start crumb
+                # survives and the next boot calls this a crash.
+                record_session_ended(key, end_reason=END_REASON_EVICTED)
         if dead is not None:
             await asyncio.to_thread(self._deps.unlink_session_queue, session)
             try:
@@ -565,6 +575,18 @@ class SessionAllocationService:
                 )
                 self._sessions[key] = session
                 won_race_session = session
+                try:
+                    await record_session_started(key)
+                except BaseException:
+                    # This await is the only suspension point between registering
+                    # the session and returning it. Cancelled here, the caller
+                    # hard-kills the provider while the entry stays visible, so a
+                    # claimant can be handed a session whose process is already
+                    # dying -- and the crumb would outlive it into a false crash.
+                    if self._sessions.get(key) is session:
+                        del self._sessions[key]
+                    discard_session_start(key)
+                    raise
         if duplicate is not None:
             try:
                 await duplicate.shutdown()
@@ -1089,6 +1111,10 @@ class SessionAllocationService:
                             stale_provider = session.provider
                             stale_session = session
                             del self._sessions[key]
+                            # Same tick as the removal. Left unrecorded, the
+                            # start crumb survives and the next boot calls this
+                            # a crash rather than an eviction.
+                            record_session_ended(key, end_reason=END_REASON_EVICTED)
                     if alive:
                         session.last_used = time.monotonic()
                         if (
@@ -1384,6 +1410,16 @@ class SessionAllocationService:
                     ):
                         owner._session_map.clear_sid(key)
                     self._sessions[key] = session
+                    try:
+                        await record_session_started(key)
+                    except BaseException:
+                        # See open_task_session: a cancellation here would leave a
+                        # registered session whose provider the caller is about to
+                        # kill, plus a crumb the next boot reads as a crash.
+                        if self._sessions.get(key) is session:
+                            del self._sessions[key]
+                        discard_session_start(key)
+                        raise
                     self._deps.logger.info(
                         "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
                         key,

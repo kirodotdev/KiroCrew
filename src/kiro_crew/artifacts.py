@@ -60,6 +60,7 @@ from kiro_crew.deploy.webapp_types import (  # noqa: F401 — re-export for API 
     WebAppTeardown,
     webapp_metadata_from_dict,
 )
+from kiro_crew.metrics.events import ARTIFACTS_CREATED, emit_counter
 from kiro_crew.publish_provider import DEFAULT_PROVIDER
 from kiro_crew.security import is_sensitive_path
 
@@ -1174,6 +1175,14 @@ class ArtifactStore:
             self._write_artifact(art, content)
             logger.info("artifact created: slug=%s name=%s kind=%s", slug, name, kind)
         self._fire_change("upsert", slug)
+        # After the write, so a failed create contributes nothing. ``kind`` and
+        # ``source`` are the values ``_validate_kind`` / ``_validate_source``
+        # already restrict to closed sets, and ``kind_auto`` says whether the
+        # kind was inferred rather than pinned by the caller.
+        emit_counter(
+            ARTIFACTS_CREATED,
+            {"kind": kind, "source": source, "kind_auto": bool(kind_auto)},
+        )
         return art
 
     def create_image(

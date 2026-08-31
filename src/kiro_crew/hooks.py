@@ -140,16 +140,52 @@ class ToolHookResult:
     security_deny: bool = True
 
     @staticmethod
+    def _count(action: str, security_deny: bool) -> None:
+        """Count one gate verdict. Best-effort; never changes the decision.
+
+        Called by the four factories below and nowhere else, which is what makes
+        it fire exactly once per gate consultation. A surface that OVERRIDES the
+        gate constructs a result directly (``chat_runner`` downgrades an
+        auto-approve to an interactive card this way, twice) and so is not
+        counted: the gate was consulted once, and counting every constructed
+        object would report one request as two decisions AND keep a count for a
+        verdict that was then discarded.
+
+        The two rejected alternatives were instrumenting the 23 exits of
+        ``HookManager.on_tool_call`` (23 call sites on a security path) and
+        counting in ``__post_init__`` behind a ``from_gate`` flag -- the flag had
+        no reader other than the counter itself, so it was state carried purely to
+        signal, where calling this from the four factories says the same thing
+        with no field at all.
+
+        ``action`` is one of three module constants and ``security_deny`` a bool,
+        so the series is bounded by construction -- no reason string, tool name or
+        command reaches the recorder.
+        """
+        try:
+            from kiro_crew.metrics.events import APPROVAL_DECISIONS, emit_counter
+
+            emit_counter(
+                APPROVAL_DECISIONS,
+                {"decision": action, "security_deny": bool(security_deny)},
+            )
+        except Exception:  # a tool decision must never fail on its telemetry
+            logger.debug("approval decision counter failed", exc_info=True)
+
+    @staticmethod
     def allow() -> ToolHookResult:
+        ToolHookResult._count(TOOL_ALLOW, False)
         return ToolHookResult(action=TOOL_ALLOW)
 
     @staticmethod
     def auto_approve() -> ToolHookResult:
+        ToolHookResult._count(TOOL_AUTO_APPROVE, False)
         return ToolHookResult(action=TOOL_AUTO_APPROVE)
 
     @staticmethod
     def deny(reason: str) -> ToolHookResult:
         """Deny on a hard security check — the attempt is the problem."""
+        ToolHookResult._count(TOOL_DENY, True)
         return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=True)
 
     @staticmethod
@@ -160,6 +196,7 @@ class ToolHookResult:
         durable budget (cron auto-pause) does not treat a governance ceiling as
         a defect in what it attempted.
         """
+        ToolHookResult._count(TOOL_DENY, False)
         return ToolHookResult(action=TOOL_DENY, reason=reason, security_deny=False)
 
 

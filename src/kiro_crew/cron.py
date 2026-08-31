@@ -52,6 +52,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
+from kiro_crew.metrics.events import CRON_FIRES, emit_counter
 from kiro_crew.resource_status import admission_check
 from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
@@ -3302,6 +3303,17 @@ class CronService:
         started_at = meta[0] if meta else time.time()
         trigger = meta[1] if meta else "scheduled"
         self._job_start_times[job.id] = started_at
+        # One increment per execution, before the jitter sleep so a run cancelled
+        # during jitter still counts as fired. ``kind`` is the dispatch shape --
+        # ``script`` and ``command`` bypass the model entirely, so this is the
+        # split between jobs that cost tokens and jobs that cost none.
+        emit_counter(
+            CRON_FIRES,
+            {
+                "kind": "script" if job.script else "command" if job.command else "agent",
+                "trigger": trigger,
+            },
+        )
         # Apply jitter to spread execution unless strict_schedule is set or manual
         jitter = self._compute_jitter(job) if trigger != "manual" else 0
         self._job_jitter[job.id] = jitter

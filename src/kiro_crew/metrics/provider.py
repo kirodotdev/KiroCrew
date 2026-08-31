@@ -184,7 +184,7 @@ _ATTR_OTHER = "other"
 # sizing one array for both costs either resolution at the fast end or truth at
 # the slow end.
 #
-# Three families, each sized to its instrument's MEASURED range:
+# Each family below is sized to its instrument's MEASURED range:
 
 # Sub-ms through a minute — pooled acquires, skill loads, HTTP requests.
 # These are dominated by ~1ms values, so the fine end matters. The 60s ceiling
@@ -228,6 +228,32 @@ _WATCHDOG_IDLE_BUCKETS_MS: list[float] = [
     600000, 900000, 1800000, 3600000, 5400000, 7200000, 10800000, 14400000,
 ]
 
+# Sub-ms through one hour — a single tool round-trip. The widest span of any
+# family here, and both ends are real: a cached file read returns in well under
+# a millisecond while a build or test run invoked through the execute tool runs
+# for minutes. The fine end is copied from _FAST_BUCKETS_MS because reads
+# dominate the population by count, and the ceiling matches _TURN_BUCKETS_MS
+# because a tool call cannot outlive the turn that contains it.
+_TOOL_CALL_BUCKETS_MS: list[float] = [
+    0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500,
+    1000, 2500, 5000, 10000, 30000, 60000,
+    120000, 300000, 600000, 1800000, 3600000,
+]
+
+# One second through one week — session lifetime. Sessions are the only
+# instrument here measured in hours and days: a speculative session removed
+# before its first turn lives seconds, while a dashboard tab left open across a
+# working week is ordinary. Resolution is densest from a minute to a few hours,
+# where interactive sessions land, and the 7-day ceiling exists so a long-lived
+# tab is not floored into an overflow bucket. Sub-minute bounds are kept because
+# the short-lived teardown paths (unclaimed, destroyed) are a real population
+# whose distribution would otherwise collapse onto one boundary.
+_SESSION_BUCKETS_MS: list[float] = [
+    1000, 5000, 15000, 30000, 60000, 300000, 900000, 1800000,
+    3600000, 7200000, 14400000, 28800000, 43200000,
+    86400000, 172800000, 259200000, 604800000,
+]
+
 # Instrument name -> boundaries. This map is the COMPLETE set of kirocrew
 # duration histograms: the Views below are built from it and there is no
 # catch-all, because the OTEL SDK applies EVERY matching View rather than the
@@ -266,6 +292,8 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
     "kirocrew.mcp.lazy_load.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.gateway.boot.duration": _STARTUP_BUCKETS_MS,
     "kirocrew.turn.duration": _TURN_BUCKETS_MS,
+    "kirocrew.tool.call.duration": _TOOL_CALL_BUCKETS_MS,
+    "kirocrew.session.duration": _SESSION_BUCKETS_MS,
     "kirocrew.watchdog.idle.duration": _WATCHDOG_IDLE_BUCKETS_MS,
     # Embedding queue wait + inference time. Both are ms and both predate this
     # map; neither name ends in `.duration`, which is precisely why the guard

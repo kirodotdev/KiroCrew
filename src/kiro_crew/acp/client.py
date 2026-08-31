@@ -134,6 +134,7 @@ from kiro_crew.hooks import (
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
 from kiro_crew.mcp_gateway.claim import schedule_claim
 from kiro_crew.mcp_gateway.session_servers import pooled_session_servers
+from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.resource_status import inject_xdist_auto_cap
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_SESSION_HOST,
@@ -5760,6 +5761,21 @@ class AcpClient:
             )
             # Build initial tool input string from raw params
             tool_call_id = update.get("toolCallId", "")
+            # Start the round-trip clock here rather than at the yield: this is
+            # the first moment Kiro Crew sees the call, and the same id's terminal
+            # status is stamped in _extract_tool_call_update below. Both of this
+            # class's message loops reach this method, so instrumenting it covers
+            # them without a second call site in each.
+            note_tool_call_started(
+                tool_call_id,
+                kind=kind,
+                mcp_server_name=_kiro_mcp_server_name(update),
+                # getattr: a real client always carries _session_id, but this
+                # extractor is also driven directly with lightweight test
+                # doubles (test_acp_tool_identity), and telemetry must not be
+                # the reason such a double stops working.
+                scope=getattr(self, "_session_id", "") or "",
+            )
             input_str = ""
             if tool_call_id and raw_input:
                 input_str = (
@@ -5887,6 +5903,16 @@ class AcpClient:
         tool_use_id = update.get("toolCallId", "")
         if not tool_use_id:
             return None
+        # Stamped before the output parsing below, which returns None for an
+        # output-less update: a tool that completes with no output is still a
+        # completed round-trip and must not be dropped from the histogram. A
+        # non-terminal status is a no-op, so a mid-stream update leaves the clock
+        # running for the real completion.
+        record_tool_call_finished(
+            tool_use_id,
+            status=update.get("status"),
+            scope=getattr(self, "_session_id", "") or "",
+        )
 
         output_parts: list[str] = []
 

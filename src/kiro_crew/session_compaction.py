@@ -20,6 +20,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.metrics.events import CONTEXT_COMPACTIONS, emit_counter
+from kiro_crew.metrics.sessions import END_REASON_RECYCLED, record_session_ended
+
 if TYPE_CHECKING:
     # Type-only: importing providers.base from this leaf at runtime enters the
     # providers -> acp package -> runtime -> session_pid -> providers cycle.
@@ -381,6 +384,10 @@ class CompactionCoordinator:
                 popped = None
                 if owner._sessions.get(key) is session:
                     popped = owner._sessions.pop(key, None)
+                    # Same tick as the pop. Only this branch records: on the
+                    # other one the registry already holds a SUCCESSOR under
+                    # this key, whose start must stay its own.
+                    record_session_ended(key, end_reason=END_REASON_RECYCLED)
 
             await asyncio.to_thread(self._deps.unlink_session_queue, session)
             if popped is None:
@@ -544,6 +551,21 @@ class CompactionCoordinator:
 
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None:
         """Mark reinjection and invoke the compact callback, swallowing errors."""
+        # Every compaction that reached a verdict passes here, whether or not a
+        # callback is registered, so this is where the counter belongs: the early
+        # return below would otherwise drop the surfaces that register none.
+        #
+        # The counter's success is NOT the callback's success. ``_recycle_held``
+        # fires this with success=True because the SESSION now has headroom, which
+        # is what the callback needs to know -- but it is reached exactly when an
+        # in-place /compact FAILED and the provider had to be replaced instead.
+        # Counting that as a successful compaction would report the failure mode
+        # as the success case. The recycling marker is set for the whole of
+        # ``_recycle_held`` and popped only after this call, so it is what
+        # separates the two populations here; ``test_a_failed_compact_that_recycles
+        # _is_not_counted_successful`` pins that ordering.
+        recycled = key in self._owner._recycling
+        emit_counter(CONTEXT_COMPACTIONS, {"success": bool(success) and not recycled})
         # Recycling destroys this session, so its successor receives startup
         # context normally.  The identity guard also avoids flagging a racing
         # replacement while the old provider is being reaped.

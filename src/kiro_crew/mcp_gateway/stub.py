@@ -40,6 +40,7 @@ from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
 from kiro_crew.mcp_gateway.pool import READ_BUFFER_LIMIT_BYTES, PoolKey
+from kiro_crew.metrics.events import MCP_RECONNECTS, emit_counter
 
 logger = logging.getLogger(__name__)
 
@@ -1399,6 +1400,7 @@ async def _reconnect(
                 return None
             session.note_init_result(json.loads(forward))
         session.reconnects += 1
+        emit_counter(MCP_RECONNECTS, {"pool": bool(pool_label)})
         logger.info(
             "stub reconnected to a restarted gateway (%s, reconnect #%d) pool=%s",
             detail,

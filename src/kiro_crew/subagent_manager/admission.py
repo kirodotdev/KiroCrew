@@ -790,6 +790,31 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
 
         Stats().inc_subagent_spawned()
+        # Beside that stat, and for the same reason: this is the confirmed-start
+        # funnel. Every path reaches it only AFTER the spawn is approved -- the
+        # approval path calls it once the user allows and returns earlier on a
+        # rejection -- so a rejected or unstarted spawn is never counted, which
+        # the admission-time increment could not promise. ``concurrency`` is the
+        # live running count, bounded by ``_max_concurrent``, so the aggregator's
+        # MAX over that attribute is the concurrency high-water mark without a
+        # second instrument.
+        #
+        # Imported HERE, not at module scope: ``bind_component_globals`` rebinds
+        # every ``*_impl`` function's ``__globals__`` to ``subagent``'s namespace
+        # for patch compatibility, so a module-level import in this file is not
+        # visible from inside this function at all.
+        try:
+            from kiro_crew.metrics.events import SUBAGENTS_SPAWNED, emit_counter
+
+            emit_counter(
+                SUBAGENTS_SPAWNED,
+                {
+                    "concurrency": self._manager._running_count,
+                    "batched": bool(getattr(info, "batch_id", "")),
+                },
+            )
+        except Exception:
+            logger.debug("subagent spawned counter failed", exc_info=True)
         sel().log_tool_invocation(
             session_key=info.parent_session_key,
             source="subagent",

@@ -855,6 +855,43 @@ start_pool()
   └── _ensure_background()        → BACKGROUND_KEY session (persistent)
 ```
 
+## Removing a session from the registry: record the end
+
+**Every path that removes an entry from `_sessions` must report that removal to
+`metrics/sessions.py`** — with `record_session_ended(key, end_reason=...)` for a
+session that lived, or `discard_session_start(key)` for a registration being
+rolled back before it ever became one. This is a correctness requirement on
+lifecycle code, not a telemetry nicety, and it is documented here rather than only
+in the metrics module because the people who can break it are editing this
+subsystem.
+
+The reason it matters more than a missing sample: a session start writes a
+breadcrumb file that survives process death, which is what lets a session killed
+with its gateway be counted at all. A removal that reports nothing leaves that
+breadcrumb behind, and the next boot reads a surviving breadcrumb as a crash. So
+an unrecorded removal does not lose a data point — it **fabricates a crash that
+never happened**, inside the one population the instrument exists to expose.
+
+Practical rules when you add or change a removal path:
+
+- Report it in the SAME event-loop tick as the `pop` / `del` / `clear`, before the
+  path's first `await`. Later than that, a racing cold start can register a
+  successor under the same key and have its record consumed by the predecessor's
+  teardown.
+- Give it its own `end_reason` if it is genuinely a different event. The enum is
+  closed and lives in `metrics/sessions.py`; reusing a label merges two
+  populations, and a metric is not a good reason to grow a lifecycle signature.
+- A registration cancelled mid-flight is NOT an end. Use `discard_session_start`,
+  which consumes the breadcrumb without emitting a lifetime.
+
+`test/metrics/test_session_duration.py::TestEveryRegistryRemovalRecordsAnEnd`
+enforces this. It is fail-closed and discovers its own scope: an AST walk over
+every module under `src/kiro_crew` that mentions `_sessions`, recognising the
+`pop`, `del` and `clear` spellings, so a new removal path anywhere fails the gate
+the day it lands rather than waiting to be added to a list. A container that
+merely shares the attribute name can be exempted with a stated reason, and the
+exemption self-voids if that module ever starts writing breadcrumbs.
+
 ## Security: PreToolUse Command Enforcement
 
 Command denial is enforced by Kiro Crew's bundled `hooks.py` `PreToolUse` gate,

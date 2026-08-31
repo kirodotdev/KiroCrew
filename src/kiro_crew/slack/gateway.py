@@ -10184,6 +10184,40 @@ class GatewayOrchestrator:
 
         cleanup_orphaned_sessions()
 
+        # Same "previous run left residue" concern as the orphan sweep above, for
+        # telemetry rather than processes: any open-session crumb on disk belongs
+        # to a session that never reached a teardown path, so it is emitted as
+        # end_reason=crashed.
+        #
+        # Deliberately NOT awaited here. The scan is a glob plus a read/stat/unlink
+        # per crumb, so its cost scales with accumulated user data, and running it
+        # inline would delay readiness in proportion to that. It goes to a worker
+        # thread on a tracked task instead, and the process-start cutoff means it
+        # cannot mistake a session THIS process opens in the meantime for a
+        # casualty of the last one -- so it no longer has to finish before the
+        # gateway starts serving.
+        _telemetry_backfill_cutoff = time.time()
+
+        async def _backfill_unclean_session_telemetry() -> None:
+            try:
+                from kiro_crew.metrics.sessions import backfill_crashed_sessions
+
+                count = await asyncio.to_thread(
+                    backfill_crashed_sessions, _telemetry_backfill_cutoff
+                )
+                if count:
+                    logger.info(
+                        "Telemetry: back-filled %d unclean session lifetime(s) "
+                        "from the previous run",
+                        count,
+                    )
+            except Exception:  # telemetry must never break boot
+                logger.debug("unclean-session telemetry backfill failed", exc_info=True)
+
+        _backfill_task = asyncio.create_task(_backfill_unclean_session_telemetry())
+        self._background_tasks.add(_backfill_task)
+        _backfill_task.add_done_callback(self._background_tasks.discard)
+
         # Fill the sandbox probe cache BEFORE any on-loop spawn path can reach
         # detect_backend(). Waiting (off-loop) rather than firing-and-forgetting
         # is what makes that guarantee hold: a fire-and-forget prewarm leaves the
