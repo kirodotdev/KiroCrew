@@ -173,7 +173,6 @@ def _load_neonize() -> "tuple[Any, dict[str, Any]]":
         LoggedOutEv,
         MessageEv,
         PairStatusEv,
-        QREv,
         TemporaryBanEv,
     )
 
@@ -183,7 +182,6 @@ def _load_neonize() -> "tuple[Any, dict[str, Any]]":
         "LoggedOutEv": LoggedOutEv,
         "MessageEv": MessageEv,
         "PairStatusEv": PairStatusEv,
-        "QREv": QREv,
         "TemporaryBanEv": TemporaryBanEv,
     }
 
@@ -291,19 +289,34 @@ class WhatsAppClient:
         LoggedOutEv = events["LoggedOutEv"]
         MessageEv = events["MessageEv"]
         PairStatusEv = events["PairStatusEv"]
-        QREv = events["QREv"]
         TemporaryBanEv = events["TemporaryBanEv"]
+
+        # Snapshot BEFORE NewAClient: constructing the client creates the sqlite
+        # store (schema and all), so a `session_exists()` asked afterwards is
+        # ALWAYS true and the first-boot pairing state would never be announced.
+        had_session = self.session_exists()
 
         # The first positional arg doubles as the sqlite session-store path
         # (ClientFactory passes its database_name through the same slot).
         client = NewAClient(self.db_path)
         self._client = client
 
-        @client.event(QREv)
-        async def _on_qr(_client: Any, event: Any) -> None:
+        # QR does NOT travel on the numbered event stream, so it cannot be
+        # registered with `client.event(...)`: `Event.execute` only dispatches
+        # INT_TO_EVENT codes into `list_func`, and QR is never one of them. The Go
+        # core delivers each rotating code by calling `NewAClient.__onQr`, which
+        # invokes `client.event._qr` directly, and `Event.__init__` pre-seeds that
+        # slot with a default that renders the code to a terminal — which a
+        # gateway started from a desktop launcher has no reader for. `client.qr()`
+        # is the supported registration, and it hands over ONE code as bytes per
+        # emission rather than a batch carrying `.Codes`.
+        async def _on_qr(_client: Any, data_qr: Any) -> None:
             import time as _time
 
-            codes = list(getattr(event, "Codes", []) or [])
+            code = (
+                data_qr.decode("utf-8", "replace") if isinstance(data_qr, bytes) else str(data_qr)
+            )
+            codes = [code] if code else []
             self.latest_qr = codes
             self.latest_qr_at = _time.monotonic()
             self._set_state(STATE_PAIRING, "scan the QR code from your phone")
@@ -312,6 +325,8 @@ class WhatsAppClient:
                     self.on_qr(codes)
                 except Exception:  # noqa: BLE001
                     logger.warning("whatsapp: QR observer failed", exc_info=True)
+
+        client.qr(_on_qr)
 
         @client.event(PairStatusEv)
         async def _on_pair(_client: Any, event: Any) -> None:
@@ -353,7 +368,7 @@ class WhatsAppClient:
             except Exception:  # noqa: BLE001 — one bad message must not kill inbound
                 logger.exception("whatsapp: inbound handler failed")
 
-        if not self.session_exists():
+        if not had_session:
             self._set_state(STATE_PAIRING, "waiting for first QR")
         await client.connect()
         self._idle_task = asyncio.get_running_loop().create_task(
