@@ -41,6 +41,15 @@
 #
 # Config:
 #   secrets.SLACK_WEBHOOK_URL                -- channel-locked incoming webhook
+#   secrets.SLACK_WEBHOOK_URLS_EXTRA         -- optional; whitespace/newline-
+#                                               separated additional webhooks.
+#                                               The same rendered report is
+#                                               POSTed to each; any failure
+#                                               fails the run so the window is
+#                                               re-covered (at-least-once for
+#                                               every channel, which can mean a
+#                                               duplicate in channels that
+#                                               already received it)
 #   secrets.SHIP_REPORT_BEDROCK_ROLE_ARN     -- OIDC role, bedrock:InvokeModel only
 #   vars.SHIP_REPORT_BEDROCK_MODEL_ID        -- whitespace-separated model
 #                                               priority chain; first success
@@ -510,6 +519,7 @@ jobs:
         if: steps.fetch.outputs.count != '0' || steps.issues.outputs.count != '0'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_URLS_EXTRA: ${{ secrets.SLACK_WEBHOOK_URLS_EXTRA }}
           START: ${{ steps.window.outputs.start }}
           END: ${{ steps.window.outputs.end }}
           COUNT: ${{ steps.fetch.outputs.count }}
@@ -549,6 +559,15 @@ jobs:
             exit 1
           fi
           jq -n --rawfile text report.txt '{text: $text}' > payload.json
-          curl -fsS --retry 2 -X POST -H 'Content-Type: application/json' \
-            --data @payload.json "$SLACK_WEBHOOK_URL" > /dev/null
-          echo "Report delivered to Slack."
+          # Fan out to the primary webhook plus any extras. Slack trigger URLs
+          # contain no whitespace, so plain word-splitting over the
+          # newline/space-separated secret is safe; disable globbing anyway so
+          # a stray metacharacter cannot expand against the workspace.
+          set -f
+          DELIVERED=0
+          for URL in $SLACK_WEBHOOK_URL $SLACK_WEBHOOK_URLS_EXTRA; do
+            curl -fsS --retry 2 -X POST -H 'Content-Type: application/json' \
+              --data @payload.json "$URL" > /dev/null
+            DELIVERED=$((DELIVERED + 1))
+          done
+          echo "Report delivered to $DELIVERED Slack webhook(s)."
