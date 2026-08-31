@@ -182,13 +182,14 @@ describe('Discover sub-tabs — URL sync', () => {
     expect(featuredTab().getAttribute('aria-selected')).toBe('true')
     expect(screen.getByTestId('path').textContent).toBe('/apps')
 
-    fireEvent.click(updatesTab())
+    // Radix's tab trigger activates on mousedown, not click.
+    fireEvent.mouseDown(updatesTab())
     await waitFor(() => expect(screen.getByTestId('path').textContent).toBe('/apps/-/updates'))
     expect(updatesTab().getAttribute('aria-selected')).toBe('true')
     // The Updates worklist replaced the storefront.
     expect(rowUpdateButtons()).toHaveLength(2)
 
-    fireEvent.click(featuredTab())
+    fireEvent.mouseDown(featuredTab())
     await waitFor(() => expect(screen.getByTestId('path').textContent).toBe('/apps'))
     expect(featuredTab().getAttribute('aria-selected')).toBe('true')
   })
@@ -296,7 +297,7 @@ describe('Updates sub-page — empty state', () => {
   it('renders the all-current empty state with a back-to-Featured action, and no tab count', async () => {
     renderDiscover('/apps/-/updates')
     expect(screen.getByTestId('empty-state-title')).toHaveTextContent('pages.discoverPage.updates_empty')
-    // UnderlineTabs hides the count at zero — no "0" badge noise.
+    // TabsCount hides the count at zero — no "0" badge noise.
     expect(within(updatesTab()).queryByText('0')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'pages.discoverPage.updates_empty_back_to_featured' }))

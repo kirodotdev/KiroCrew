@@ -20,7 +20,8 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AlertTriangle, CheckCircle2, ShoppingBag, X } from 'lucide-react'
 import { EmptyState, PageHeader, SearchInput } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
-import UnderlineTabs, { type UnderlineTab } from '../../components/UnderlineTabs'
+import { Tabs, TabsContent, TabsCount, TabsList, TabsTrigger } from '../../components/ui/tabs'
+import { TABS_RAIL_ROW_CLASS } from '../../components/ui/tabsPill'
 import FeaturedSpotlight from '../../components/appstore/FeaturedSpotlight'
 import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
@@ -275,29 +276,34 @@ function DiscoverPageBody() {
             copy's line length past comfortable reading. Utility pages stay
             full-width; a content shelf follows store convention instead. */}
         <div className="max-w-[1200px] mx-auto">
-        {/* Sub-tabs (V1 mockup): Featured is the storefront, Updates the
-            pending-updates worklist. The repo's shared UnderlineTabs carries
-            the WAI-ARIA tabs contract (roving tabindex, arrow keys,
-            aria-selected) and hides the count at zero, so no badge noise when
+        {/* The Tabs root spans the rail and both panels, so they are one
+            tablist. The notices and the trust modal sitting between them are
+            ordinary children, not panel content. */}
+        <Tabs
+          value={tab}
+          onValueChange={v => switchTab(v as DiscoverTab)}
+          layoutId="discover-subtab"
+        >
+        {/* Sub-tabs: Featured is the storefront, Updates the pending-updates
+            worklist. Radix carries the WAI-ARIA tabs contract (roving tabindex,
+            arrow keys, aria-selected, and the trigger ⇄ panel linkage);
+            TabsCount hides the count at zero, so no badge noise when
             everything is current. */}
-        <div className="mb-4">
-          <UnderlineTabs<DiscoverTab>
-            tabs={[
-              { key: 'featured', label: i18nT('pages.discoverPage.tab_featured') },
-              {
-                key: 'updates',
-                label: i18nT('pages.discoverPage.tab_updates'),
-                count: updatables.length,
-                tooltip: updatables.length > 0
-                  ? i18nT('pages.discoverPage.updates_badge_label', { count: updatables.length })
-                  : undefined,
-              },
-            ] satisfies Array<UnderlineTab<DiscoverTab>>}
-            value={tab}
-            onChange={switchTab}
-            ariaLabel={i18nT('pages.discoverPage.title')}
-            layoutId="discover-subtab"
-          />
+        <div className={TABS_RAIL_ROW_CLASS}>
+          <TabsList aria-label={i18nT('pages.discoverPage.title')}>
+            <TabsTrigger value="featured">
+              <span>{i18nT('pages.discoverPage.tab_featured')}</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="updates"
+              title={updatables.length > 0
+                ? i18nT('pages.discoverPage.updates_badge_label', { count: updatables.length })
+                : undefined}
+            >
+              <span>{i18nT('pages.discoverPage.tab_updates')}</span>
+              <TabsCount value={updatables.length} />
+            </TabsTrigger>
+          </TabsList>
         </div>
         {/* Notifications. No hand-off on the error notice: the SourcesPopover's
             install-path input shares this page — navigating away would discard
@@ -337,8 +343,8 @@ function DiscoverPageBody() {
           onConfirm={trust.confirm}
         />
 
-        {tab === 'updates' ? (
-          /* Updates sub-page: the pending-updates worklist. This branch owns
+        <TabsContent value="updates">{
+          /* Updates sub-page: the pending-updates worklist. This panel owns
              the tab's frame (loading, the all-current empty state); the row
              list and its Update All header render through UpdatesList, driven
              by the shared useAppUpdates instance above. */
@@ -388,7 +394,9 @@ function DiscoverPageBody() {
               onUpdateAll={updateAll}
             />
           )
-        ) : loading ? (
+        }</TabsContent>
+        <TabsContent value="featured">{
+          loading ? (
           <div className="text-center py-12 text-muted text-sm">{i18nT('pages.appsPage.loading_apps')}</div>
         ) : browseApps.length === 0 ? (
           <EmptyState
@@ -552,7 +560,8 @@ function DiscoverPageBody() {
               </div>
             </div>
           </>
-        )}
+        )}</TabsContent>
+        </Tabs>
         </div>
       </div>
     </>

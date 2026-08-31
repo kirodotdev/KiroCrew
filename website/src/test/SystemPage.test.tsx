@@ -79,10 +79,11 @@ describe('SystemPage URL handling (finding 2)', () => {
       const sessionsTab = tabs.find(t => t.getAttribute('aria-selected') === 'true')
       expect(sessionsTab).toBeDefined()
     })
-    // Click Performance tab
+    // Click Performance tab. `mouseDown`, not `click`: Radix's tab trigger
+    // activates on mousedown, and `fireEvent.click` does not synthesise it.
     const perfTab = screen.getAllByRole('tab').find(t => t.textContent?.includes('Performance'))
     expect(perfTab).toBeDefined()
-    fireEvent.click(perfTab!)
+    fireEvent.mouseDown(perfTab!)
     await waitFor(() => {
       const active = screen.getAllByRole('tab').find(t => t.getAttribute('aria-selected') === 'true')
       expect(active!.textContent).toContain('Performance')
@@ -114,7 +115,7 @@ describe('SystemPage keeps Performance history across plane flips', () => {
     const goTo = async (label: string) => {
       const tab = screen.getAllByRole('tab').find(t => t.textContent?.includes(label))
       expect(tab).toBeDefined()
-      fireEvent.click(tab!)
+      fireEvent.mouseDown(tab!)
       await vi.advanceTimersByTimeAsync(50)
       const active = screen.getAllByRole('tab').find(t => t.getAttribute('aria-selected') === 'true')
       expect(active!.textContent).toContain(label)

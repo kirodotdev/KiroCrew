@@ -23,14 +23,15 @@
 // the selected board mounts, so a reader looking at one is not paying for the
 // other's polling.
 //
-// The tab row is the repo's `UnderlineTabs`, not a hand-rolled one, and that matters
-// for a concrete reason: `role="tablist"` / `role="tab"` / `aria-selected` on plain
-// buttons announces a keyboard contract -- roving tabindex, arrow keys,
-// `aria-controls` -- that a hand-rolled row does not honour, so a screen reader says
-// "tab 1 of 2" while the arrow keys do nothing. Claiming the contract and not
-// honouring it is worse than not claiming it.
+// The tab row is the repo's shared `ui/tabs.tsx` (Radix Tabs), not a hand-rolled one,
+// and that matters for a concrete reason: `role="tablist"` / `role="tab"` /
+// `aria-selected` on plain buttons announces a keyboard contract -- roving tabindex,
+// arrow keys, `aria-controls` -- that a hand-rolled row does not honour, so a screen
+// reader says "tab 1 of 2" while the arrow keys do nothing. Claiming the contract and
+// not honouring it is worse than not claiming it.
 import { useMemo, useState } from 'react'
-import UnderlineTabs, { type UnderlineTab } from '../../../components/UnderlineTabs'
+import { Tabs, TabsContent, TabsList, TabsTrigger, type TabItem } from '../../../components/ui/tabs'
+import { TABS_RAIL_ROW_CLASS } from '../../../components/ui/tabsPill'
 import { useIssueRadar } from '../context'
 import { i18nT } from '../../../i18n/t'
 import { repoScopeKey } from '../lib/links'
@@ -44,7 +45,7 @@ export default function PipelineDashboardView() {
   const { active, repos } = useIssueRadar()
   const [tab, setTab] = useState<Tab>('pipeline')
 
-  const tabs: Array<UnderlineTab<Tab>> = [
+  const tabs: Array<TabItem<Tab>> = [
     { key: 'pipeline', label: i18nT('apps.autoTriagePipeline.global.tab_pipeline') },
     { key: 'lanes', label: i18nT('apps.autoTriagePipeline.global.tab_lanes') },
   ]
@@ -90,23 +91,28 @@ export default function PipelineDashboardView() {
   const scopeKey = repoScopeKey(repo)
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="shrink-0 pb-3">
-        <UnderlineTabs
-          tabs={tabs}
-          value={tab}
-          onChange={setTab}
-          ariaLabel={i18nT('apps.autoTriagePipeline.global.tablist_label')}
-        />
+    <Tabs
+      value={tab}
+      onValueChange={v => setTab(v as Tab)}
+      layoutId="issue-radar-pipeline"
+      className="flex h-full min-h-0 flex-col overflow-hidden"
+    >
+      <div className={`shrink-0 ${TABS_RAIL_ROW_CLASS}`}>
+        <TabsList aria-label={i18nT('apps.autoTriagePipeline.global.tablist_label')}>
+          {tabs.map(t => (
+            <TabsTrigger key={t.key} value={t.key}>{t.label}</TabsTrigger>
+          ))}
+        </TabsList>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {tab === 'pipeline' ? (
-          <GlobalPipelineView key={`fold:${scopeKey}`} repo={repo} />
-        ) : (
-          <PipelineView key={`lanes:${scopeKey}`} repo={repo} />
-        )}
-      </div>
-    </div>
+      {/* Only the selected board mounts, so a reader looking at one is not paying
+          for the other's polling — Radix unmounts the inactive panel. */}
+      <TabsContent value="pipeline" className="min-h-0 flex-1 overflow-hidden">
+        <GlobalPipelineView key={`fold:${scopeKey}`} repo={repo} />
+      </TabsContent>
+      <TabsContent value="lanes" className="min-h-0 flex-1 overflow-hidden">
+        <PipelineView key={`lanes:${scopeKey}`} repo={repo} />
+      </TabsContent>
+    </Tabs>
   )
 }

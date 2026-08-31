@@ -1,18 +1,19 @@
-// UnderlineTabs exists because a row of plain buttons is not a tablist: the
-// three hand-rolled `border-b-2` rails in this repo have no keyboard model and no
+// Tablist exists because a row of plain buttons is not a tablist: the
+// hand-rolled `border-b-2` rails in this repo have no keyboard model and no
 // selected state for assistive tech. Those two properties are therefore what this
-// file pins — the underline itself is decoration and is deliberately untested.
+// file pins — the pill itself is decoration, and the fact that it looks identical
+// to ui/tabs.tsx is pinned separately in tabsPillParity.test.tsx.
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import UnderlineTabs, {
+import Tablist, {
   edgeEnabledIndex,
   nextEnabledIndex,
-  type UnderlineTab,
-} from '../components/UnderlineTabs'
+  type TablistTab,
+} from '../components/Tablist'
 
 type Key = 'a' | 'b' | 'c'
 
-const TABS: Array<UnderlineTab<Key>> = [
+const TABS: Array<TablistTab<Key>> = [
   { key: 'a', label: 'Alpha' },
   { key: 'b', label: 'Beta', disabled: true, tooltip: 'Not yet' },
   { key: 'c', label: 'Gamma', count: 3 },
@@ -30,7 +31,7 @@ beforeAll(() => {
 const setup = (value: Key = 'a') => {
   const onChange = vi.fn()
   render(
-    <UnderlineTabs<Key> tabs={TABS} value={value} onChange={onChange} ariaLabel="Planes" />,
+    <Tablist<Key> tabs={TABS} value={value} onChange={onChange} ariaLabel="Planes" />,
   )
   return onChange
 }
@@ -47,7 +48,7 @@ describe('nextEnabledIndex', () => {
   })
 
   it('stays put when every other tab is disabled', () => {
-    const only: Array<UnderlineTab<Key>> = [
+    const only: Array<TablistTab<Key>> = [
       { key: 'a', label: 'Alpha' },
       { key: 'b', label: 'Beta', disabled: true },
     ]
@@ -62,7 +63,7 @@ describe('edgeEnabledIndex', () => {
   })
 
   it('skips a disabled edge', () => {
-    const tabs: Array<UnderlineTab<Key>> = [
+    const tabs: Array<TablistTab<Key>> = [
       { key: 'a', label: 'Alpha', disabled: true },
       { key: 'b', label: 'Beta' },
     ]
@@ -70,7 +71,7 @@ describe('edgeEnabledIndex', () => {
   })
 })
 
-describe('UnderlineTabs a11y contract', () => {
+describe('Tablist a11y contract', () => {
   it('is a labelled tablist of tabs', () => {
     setup()
     expect(screen.getByRole('tablist', { name: 'Planes' })).toBeInTheDocument()
@@ -102,7 +103,7 @@ describe('UnderlineTabs a11y contract', () => {
   })
 })
 
-describe('UnderlineTabs selection', () => {
+describe('Tablist selection', () => {
   it('selects on click', () => {
     const onChange = setup('a')
     fireEvent.click(screen.getByText('Gamma'))
@@ -129,7 +130,7 @@ describe('UnderlineTabs selection', () => {
 
   it('hides a zero count instead of rendering a 0 badge', () => {
     render(
-      <UnderlineTabs<Key>
+      <Tablist<Key>
         tabs={[{ key: 'a', label: 'Alpha', count: 0 }]}
         value="a"
         onChange={vi.fn()}

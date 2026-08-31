@@ -35,7 +35,8 @@ import type {
   WebhookTestResult, WebhookTokenCreated, WebhookTokenEntry, WebhooksView,
 } from '../api/client'
 import AgentSelector, { type KiroCrewAgent } from '../components/AgentSelector'
-import UnderlineTabs, { type UnderlineTab } from '../components/UnderlineTabs'
+import Tablist, { type TablistTab } from '../components/Tablist'
+import { TABS_RAIL_ROW_CLASS } from '../components/ui/tabsPill'
 import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skeleton } from '../components/ui'
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import { useIsMobile } from '../hooks/useIsMobile'
@@ -131,7 +132,7 @@ const SETUP: Selection = { kind: 'setup' }
 
 type WebhooksPlane = 'sources' | 'activity'
 
-function buildWebhooksPlanes(sourceCount: number, activityCount: number): Array<UnderlineTab<WebhooksPlane>> {
+function buildWebhooksPlanes(sourceCount: number, activityCount: number): Array<TablistTab<WebhooksPlane>> {
   return [
     { key: 'sources', label: i18nT('pages.webhooksPage.webhooks'), count: sourceCount },
     { key: 'activity', label: i18nT('pages.artifactDetailPage.activity'), count: activityCount },
@@ -1162,7 +1163,8 @@ export default function WebhooksPage() {
           )
           : undefined}
       />
-      <UnderlineTabs
+      <div className={TABS_RAIL_ROW_CLASS}>
+      <Tablist
         tabs={buildWebhooksPlanes(view.tokens.length, view.contexts.length + view.runs.length)}
         value={plane}
         onChange={next => {
@@ -1180,6 +1182,7 @@ export default function WebhooksPage() {
         ariaLabel={i18nT('pages.webhooksPage.webhooks')}
         layoutId="webhooks-planes"
       />
+      </div>
 
       <div className={`flex flex-1 w-full min-w-0 min-h-0 ${railBar ? 'flex-col' : ''}`}>
       {rail.collapsed

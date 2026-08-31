@@ -34,7 +34,9 @@ translated label.
 Other shared modules:
 
 - `Clickable.tsx` (accessible clickable div; see below)
-- `SegmentedControl.tsx` (sliding tab selector, Framer Motion)
+- `SegmentedControl.tsx` (sliding pill, Framer Motion) — see the switcher rule below
+- `ui/tabs.tsx`, `Tablist.tsx`, `ui/tabsPill.ts` (the other two switchers and their
+  shared class recipe) — see the switcher rule below
 - `DetailPanel.tsx` (resizable side panel with animated open/close)
 - `SidePanelLayout.tsx` (shared side-panel page layout)
 - `AgentSelector.tsx` (portal dropdown with ARIA)
@@ -46,6 +48,27 @@ Other shared modules:
 `src/kirocrew-ui/index.ts` re-exports the subset that apps may import as
 `@kirocrew/ui`. Adding a primitive there makes it app-facing API, so add
 deliberately.
+
+### Which switcher
+
+Three components render the same pill, because a user should see one control for
+"change what I am looking at". They are not interchangeable, and the choice is
+about ACCESSIBILITY SHAPE, not looks:
+
+| Use | When | Why not the others |
+|---|---|---|
+| `ui/tabs.tsx` (Radix) | Each tab owns its own panel | The only one that wires `aria-controls` ⇄ `aria-labelledby`, so the panel is announced as the tab's. It emits `aria-controls` UNCONDITIONALLY, so a `TabsList` with no matching `TabsContent` points every trigger at an element that does not exist |
+| `Tablist.tsx` | Navigation, but the body below is ONE shared subtree parameterised by the active tab (see `WebhooksPage`) | A tablist and nothing else. Use it exactly where Radix's unconditional `aria-controls` would dangle; `aria-controls` is recommended by WAI-ARIA, not required |
+| `SegmentedControl.tsx` | A FILTER over one view — which subset am I looking at | Not navigation: no panel relationship, and it measures its parent to collapse to icons then a dropdown, which the two above do not |
+
+All three take their metrics from `ui/tabsPill.ts`, so they cannot drift apart
+visually — `src/test/tabsPillParity.test.tsx` pins that. Do NOT hand-roll a
+fourth: a `border-b-2` row of buttons has no keyboard model and no selected state
+for assistive tech, which is the defect this consolidation removed.
+
+A navigation rail sits in `TABS_RAIL_ROW_CLASS` (rail, rule, then content). The
+rule is load-bearing rather than decoration: it is the only thing telling a
+navigation rail apart from a filter pill, and the System page stacks both.
 
 ## Accessibility
 

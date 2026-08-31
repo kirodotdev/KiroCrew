@@ -19,7 +19,8 @@
 import { useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '../components/ui'
-import UnderlineTabs, { type UnderlineTab } from '../components/UnderlineTabs'
+import { Tabs, TabsContent, TabsList, TabsTrigger, type TabItem } from '../components/ui/tabs'
+import { TABS_RAIL_ROW_CLASS } from '../components/ui/tabsPill'
 import SessionsTab from './system/SessionsTab'
 import PerformanceTab from './system/PerformanceTab'
 import ServicesTab from './system/ServicesTab'
@@ -36,7 +37,7 @@ const VALID_PLANES: ReadonlySet<string> = new Set(['sessions', 'performance', 's
  * whichever language was active at boot and leave the rail stale after a
  * language switch.
  */
-export function buildPlanes(): Array<UnderlineTab<SystemPlane>> {
+export function buildPlanes(): Array<TabItem<SystemPlane>> {
   return [
     { key: 'sessions', label: i18nT('pages.systemPage.tab_sessions') },
     { key: 'performance', label: i18nT('pages.systemPage.tab_performance') },
@@ -103,24 +104,30 @@ export default function SystemPage({ embedded }: { embedded?: boolean } = {}) {
           subtitle={i18nT('pages.systemPage.live_system_metrics')}
         />
       )}
-      <div className={`${embedded ? '' : 'px-4 md:px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}>
-        <div className="mb-4">
-          <UnderlineTabs<SystemPlane>
-            tabs={buildPlanes()}
-            value={plane}
-            onChange={setPlane}
-            ariaLabel={i18nT('pages.systemPage.system_planes')}
-            layoutId="system-plane"
-          />
+      <Tabs
+        value={plane}
+        onValueChange={v => setPlane(v as SystemPlane)}
+        layoutId="system-plane"
+        className={`${embedded ? '' : 'px-4 md:px-6 pb-8'} overflow-y-auto flex-1 min-h-0`}
+      >
+        {/* The rule under the rail is what a full-width tablist border used to give
+            tablist border: without it the pill floats over the content with no
+            boundary between chrome and data. */}
+        <div className={TABS_RAIL_ROW_CLASS}>
+          <TabsList aria-label={i18nT('pages.systemPage.system_planes')}>
+            {buildPlanes().map(p => (
+              <TabsTrigger key={p.key} value={p.key}>{p.label}</TabsTrigger>
+            ))}
+          </TabsList>
         </div>
-        {/* Mounted one at a time on purpose: each plane polls on its own interval,
+        {/* One panel at a time on purpose: each plane polls on its own interval,
             and keeping all three alive would triple the request rate to sample
-            data nobody is looking at. State is persisted in planeStateRef so it
-            survives the unmount/remount cycle. */}
-        {plane === 'sessions' && <SessionsTab planeStateRef={planeStateRef} />}
-        {plane === 'performance' && <PerformanceTab planeStateRef={planeStateRef} />}
-        {plane === 'services' && <ServicesTab />}
-      </div>
+            data nobody is looking at. Radix unmounts an inactive TabsContent, and
+            state is persisted in planeStateRef so it survives the cycle. */}
+        <TabsContent value="sessions"><SessionsTab planeStateRef={planeStateRef} /></TabsContent>
+        <TabsContent value="performance"><PerformanceTab planeStateRef={planeStateRef} /></TabsContent>
+        <TabsContent value="services"><ServicesTab /></TabsContent>
+      </Tabs>
     </>
   )
 }

@@ -8,11 +8,11 @@
  *
  * Keyboard behaviour is the WAI-ARIA tabs pattern under a roving tabindex, so the
  * whole rail is one Tab stop rather than one per surface — and the index maths is
- * reused from `UnderlineTabs` rather than reimplemented, because "skip a disabled
+ * reused from `Tablist` rather than reimplemented, because "skip a disabled
  * row, wrap at the ends" is exactly the same problem there.
  */
 import { useRef } from 'react'
-import { nextEnabledIndex, edgeEnabledIndex } from '../UnderlineTabs'
+import { nextEnabledIndex, edgeEnabledIndex } from '../Tablist'
 import type { CrewEditorSection, CrewPaneKey } from './crewEditorSections'
 
 export interface CrewEditorRailProps {
@@ -36,7 +36,7 @@ export default function CrewEditorRail({
 }: CrewEditorRailProps) {
   const refs = useRef<Array<HTMLButtonElement | null>>([])
 
-  // `nextEnabledIndex` takes `UnderlineTab`s; only `key` and `disabled` are read,
+  // `nextEnabledIndex` takes `TablistTab`s; only `key` and `disabled` are read,
   // and projecting avoids widening a shared component's signature for one caller.
   const nav = sections.map(s => ({ key: s.key, label: s.label, disabled: s.disabled }))
 
