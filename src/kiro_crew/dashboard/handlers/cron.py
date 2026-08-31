@@ -774,7 +774,7 @@ _SCRIPT_SOURCE_MAX_BYTES = 256 * 1024
 
 # The read below traverses the O_NOFOLLOW + fd-real-path chokepoint in hooks
 # (safe_read_file_bytes_nolink), which has no Windows implementation
-# (_fd_real_path returns None there -> fail-closed on every read). Gate with an
+# (pinned_fs.fd_real_path returns None there -> fail-closed on every read). Gate with an
 # honest 501 rather than an opaque refusal, mirroring the theme-pack routes.
 _SCRIPT_SOURCE_WIN_UNSUPPORTED = os.name == "nt"
 

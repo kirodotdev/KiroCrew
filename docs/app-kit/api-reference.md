@@ -785,25 +785,121 @@ Dev mode speeds up app-UI iteration: no manual copy-and-hard-refresh loop. When
 an installed app is in dev mode the gateway serves its UI files with
 `Cache-Control: no-store` and watches the app's `ui/` directory; on any file
 change it broadcasts an `app_reload` WebSocket event and the dashboard reloads
-the app so edits appear immediately. The recommended setup symlinks
-`~/.kiro/crew/apps/<name>/ui/` to your source tree so the watcher sees edits at
-the real files.
+the app so edits appear immediately.
+
+The recommended setup symlinks the **whole `ui/` directory** —
+`~/.kiro/crew/apps/<name>/ui` → your source tree — so the watcher sees edits at
+the real files. Link the directory, **never individual files inside it**: the
+UI route opens the final path component with `O_NOFOLLOW` (a swap-resistant
+open), so a per-file symlink like `ln -s ~/src/app/dist/index.mjs ui/index.mjs`
+answers `404` — indistinguishable from "not built yet". The directory link
+works because the route resolves the ui root *through* the link before
+validating files against it.
 
 **Contract surface:**
 
 - **`installed.json` field — `dev: bool`** (default `false`): persisted per-app
   flag. Tolerant on read (absent ⇒ `false`); reversible; no migration needed.
-  Builtin apps cannot enter dev mode.
+  Builtin apps cannot enter dev mode. This field controls **watching and
+  `no-store` serving only** — it is app-writable metadata and never authorizes
+  anything by itself (see the grant record below).
 - **Endpoint — `POST /api/apps/{name}/dev`**, body `{"enabled": <bool>}`.
   Returns `{"name": <name>, "dev": <bool>}`. `400` for a non-boolean body,
-  a builtin app, or an unsafe app name; `404` if the app is not installed.
-  Behind the standard gateway auth; emits an `app_dev_mode` SEL audit event.
+  a builtin app, an unsafe app name, or a refused grant (see below); `404` if
+  the app is not installed. Behind the standard gateway auth; emits an
+  `app_dev_mode` SEL audit event. The endpoint deliberately has no field to
+  confirm an out-of-install root — that confirmation is CLI-only (below).
 - **WebSocket event — `app_reload`**, payload `{"app": <name>, "ts": <float>}`.
   Re-dispatched to the frontend as the `mc:app-reload` window CustomEvent; the
   AppHost triggers a full page reload for the matching app.
-- **CLI — `kirocrew app dev <name> [--off]`**: toggles the flag out-of-process;
-  the gateway watcher picks up the change within one poll interval, so no
-  gateway restart is needed.
+- **CLI — `kirocrew app dev <name> [--off] [--confirm-out-of-install-root]`**:
+  toggles the flag out-of-process; the gateway watcher picks up the change
+  within one poll interval, so no gateway restart is needed.
+
+### The operator grant record
+
+Enabling dev mode also records an **operator grant**: a file at the apps root
+(`~/.kiro/crew/apps/.dev-grants.json`) mapping the app name to the ui root's
+**resolved path at toggle time** (`realpath` of `<install>/ui`). It is written
+**only by the dev-mode toggle** (and revoked on disable/uninstall) — never by
+the gateway's startup reconcile, and never derived from `installed.json`. The
+UI route requires it before serving a ui root that resolves **outside the
+app's install directory**: without a grant that exactly matches the current
+resolved root, out-of-install files answer `400`.
+
+Two files, two jobs: `installed.json` `dev` (plus an internal sentinel cache,
+below) drives *watching and cache headers*; the grant record is the
+*authorization*. An app can write `dev: true` into its own metadata, but it
+cannot mint a grant — that separation is what stops an app from pointing `ui`
+at an arbitrary directory and having the UI route serve it.
+
+Because the grant binds one exact resolved root, it is **self-invalidating**:
+repointing `ui` after the toggle (an app update, a swapped link, a reinstall
+under the same name) yields a root that no longer equals the granted one, and
+the route answers `400` for those files until the operator re-toggles.
+**Re-toggle after re-pointing** is the workflow — run the toggle again (enable
+while already enabled is fine) to bind the grant to the new root. The same
+applies after upgrading from a gateway version that predates the grant record:
+an app already in dev mode on an out-of-install root has no grant, so its UI
+answers `400` until one re-toggle.
+
+### Refused and confirmed grants
+
+The toggle validates the resolved ui root **before writing anything** (a
+refusal never disturbs existing state):
+
+- **Sensitive roots are never grantable.** A root that resolves *into* a
+  sensitive location (credential stores, key material) or *contains* sensitive
+  leaves at toggle time is refused outright with `400` and an error naming the
+  resolved root — no confirmation can override this. The screen is
+  **point-in-time**: it inspects the tree as it exists when the toggle runs,
+  and serving afterwards re-checks only that the resolved root still equals
+  the granted one. Confirming a grant approves the *tree location*, not a
+  permanent screen of its future contents.
+- **Out-of-install roots are refused over HTTP; confirm from the host.**
+  App UI bundles run as same-origin modules with the dashboard's own
+  credentials, so a request-body flag can never prove operator intent — the
+  endpoint therefore has no confirmation field at all. Enabling dev mode on a
+  root outside the install directory always answers `400` with
+  `code: "dev_mode_out_of_install_confirmation_required"` and an error naming
+  the fix: run `kirocrew app dev <name> --confirm-out-of-install-root` on the
+  gateway host. The CLI is the confirmation boundary because running it
+  requires the operator's own process on the host — a boundary page code
+  cannot cross. This gate is a fail-closed default that blocks self-granting
+  and unwitting scripted callers; the load-bearing serving guarantees remain
+  the resolved-root equality binding and the sensitivity screen. Roots inside
+  the install directory need no confirmation.
+- **The flag is operator-only on the agent side too — three tiers.** First,
+  the builtin agent deny rule
+  `self-protection-dev-mode-out-of-root-confirm` refuses any agent shell
+  command carrying the flag — matched both as literal text and, via the
+  rule's argv floor, on the shell-de-escaped command, so quote-splitting the
+  token (`--confirm-out-of-install-'root'`) is denied the same as the plain
+  spelling; the `dev` subparser is built with `allow_abbrev=False`, so
+  argparse rejects abbreviated spellings (`--confirm`) that would otherwise
+  reach the flag without its literal text ever appearing. Second — because a
+  command can *synthesize* the flag at runtime (`$(printf ...)`) so that no
+  command-text scan sees it — the flag's consumption point performs a
+  runtime human-vs-agent check: a process showing evidence of agent-shell
+  confinement (the launcher-set sandbox marker, or on macOS the kernel's own
+  Seatbelt verdict) is refused with
+  `code: "dev_mode_operator_attestation_required"`. Third — because an
+  environment can be scrubbed — the grant record itself
+  (`~/.kiro/crew/apps/.dev-grants.json`) is sealed read-only inside the
+  agent OS sandbox (Seatbelt / mount namespaces, alongside the other
+  keystone ceilings), so a sandboxed process cannot mint, extend, or rewrite
+  a grant no matter how the toggle is spelled; the gateway materializes the
+  record at startup so the seal always has a target, and any grant-touching
+  toggle from a process that cannot write the record is refused up front
+  (`code: "dev_mode_grant_record_readonly"`, SEL-audited) rather than
+  half-applied — use the dashboard toggle from such a process. The
+  confirmation must come from the operator's own terminal, which none of
+  these tiers govern.
+- **Both outcomes are audited.** The unconfirmed refusal and the confirmed
+  grant each emit a security event log (SEL) entry
+  (`operation: dev_mode_out_of_install_grant`, outcome `denied`/`granted`,
+  naming the resolved root); the granted event is written only after the
+  grant record lands.
 
 **Cost model:** dev mode is off for essentially all gateways. The
 authoritative per-app state is the `installed.json` `dev` field above; to keep
@@ -817,4 +913,6 @@ UI-serving hot path decide the cache header with no per-request disk IO. This
 sentinel is a derived cache and **not** part of the App Kit contract: its path,
 name, and format are internal implementation details, may change without
 notice, and must not be read or written by app or third-party tooling — treat
-`installed.json` `dev` as the only supported source of truth.
+`installed.json` `dev` as the only supported source of truth for the flag, and
+the grant record as gateway-owned (written only through the toggle, never
+directly).

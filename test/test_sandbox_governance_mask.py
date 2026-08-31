@@ -91,6 +91,11 @@ class TestKeystonesAreSealedInEveryMode:
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
+        # The app dev-mode authorization record (#6907): sealing it is what
+        # makes the operator-attestation flag unforgeable from an agent shell
+        # — a sandboxed process cannot mint a grant however the toggle was
+        # spelled.
+        "apps/.dev-grants.json",
     )
 
     @_POSIX_ONLY

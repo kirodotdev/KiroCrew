@@ -681,7 +681,7 @@ class TestBuildSeatbeltProfile:
             sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
         )
         monkeypatch.setattr(
-            "kiro_crew.hooks._fd_real_path", lambda _fd: "/canonical/workspace"
+            "kiro_crew.sandbox.fd_real_path", lambda _fd: "/canonical/workspace"
         )
 
         assert (
@@ -701,7 +701,7 @@ class TestBuildSeatbeltProfile:
         monkeypatch.setattr(
             sandbox_mod, "_bound_agent_workspace_matches", lambda *_args: True
         )
-        monkeypatch.setattr("kiro_crew.hooks._fd_real_path", lambda _fd: None)
+        monkeypatch.setattr("kiro_crew.sandbox.fd_real_path", lambda _fd: None)
 
         with pytest.raises(OSError):
             sandbox_mod.bound_agent_workspace_target(41, "/mutable/workspace")

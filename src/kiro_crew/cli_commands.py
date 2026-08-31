@@ -799,7 +799,22 @@ def _handle_app(args: argparse.Namespace) -> None:
         from kiro_crew.apps.dev_mode import set_dev_mode
 
         enabled = not getattr(args, "off", False)
-        dev_result = set_dev_mode(args.name, enabled)
+        confirm_root = getattr(args, "confirm_out_of_install_root", False)
+        if confirm_root and not enabled:
+            # The confirmation only applies to enabling: a disable never
+            # grants. Say so rather than silently ignoring the flag — an
+            # operator who reaches for it on the wrong invocation would
+            # otherwise read the exit-0 as "confirmed".
+            print(
+                "⚠️  --confirm-out-of-install-root has no effect with --off "
+                "(disabling grants nothing)",
+                file=sys.stderr,
+            )
+        dev_result = set_dev_mode(
+            args.name,
+            enabled,
+            confirm_out_of_install_root=confirm_root,
+        )
         if "error" in dev_result:
             print(f"❌ {dev_result['error']}", file=sys.stderr)
             sys.exit(1)

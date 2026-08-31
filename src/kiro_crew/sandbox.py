@@ -45,6 +45,7 @@ from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
+from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
 
 try:
@@ -224,6 +225,15 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # The app dev-mode AUTHORIZATION record (operator grants binding each dev
+    # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
+    # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
+    # extend, or rewrite a grant no matter how the toggle is spelled (the
+    # deny-list's text/argv tiers can be evaded by runtime construction —
+    # ``$(printf ...)`` — but a Seatbelt/namespace write denial cannot). The
+    # gateway ensures the file exists at startup (see apply_dev_mode's
+    # reconcile) because the Linux launcher can only seal an EXISTING target.
+    "apps/.dev-grants.json",
 )
 
 #: Crew-home leaves that MUST stay read-write for a sandboxed process. Every entry is
@@ -1290,13 +1300,7 @@ def bound_agent_workspace_target(descriptor: int, workspace: str | os.PathLike[s
     """
     if not _bound_agent_workspace_matches(descriptor, workspace):
         return None
-    # Local import: hooks imports sandbox at call time, so a module-level
-    # dependency would be circular. `_fd_real_path` is private but already
-    # borrowed this way by apps/builtins/spec_builder/backend/routes.py; issue
-    # #6907 tracks promoting it to a shared home.
-    from kiro_crew.hooks import _fd_real_path
-
-    resolved = _fd_real_path(descriptor)
+    resolved = fd_real_path(descriptor)
     if resolved is None:
         raise OSError(
             errno.ENOSYS,
@@ -4909,6 +4913,35 @@ def _inside_macos_sandbox() -> bool:
     The marker supplies that half; see :func:`wrap_argv`.
     """
     return _macos_sandbox_state() is True
+
+
+def agent_confinement_evidence() -> str | None:
+    """Evidence that THIS process runs under agent-shell confinement, or ``None``.
+
+    The runtime half of the operator-attestation check used by authorization
+    gates whose input must come from a human at a host terminal and never from
+    an agent-spawned process (the app dev-mode out-of-install confirmation,
+    #6907). Returns a short human-readable reason when there is ANY evidence of
+    confinement, ``None`` when there is none.
+
+    Deny-direction only, and deliberately so: each signal is unforgeable *in
+    the direction of refusal*. A present ``KIROCREW_SANDBOX_ACTIVE`` marker in
+    a genuinely unsandboxed process only over-refuses (and proves the marker
+    was forged or leaked — see :func:`_macos_sandbox_state`); a kernel verdict
+    of "Seatbelt-confined" for a non-KiroCrew sandbox (kiro-cli's internal
+    seatbelt, an operator-wrapped process) still means "not a bare operator
+    terminal", which is the question being asked. The converse is NOT
+    guaranteed: a ``None`` does not prove a human — an agent can strip the
+    marker with ``env -u``, and Linux offers no cheap kernel verdict — which
+    is why callers pair this with a structural probe of a sealed artifact
+    (``_CREW_READONLY_LEAVES``) that the OS sandbox denies regardless of the
+    environment. Never use this function to *grant* anything.
+    """
+    if os.environ.get(_IN_SANDBOX_MARKER):
+        return f"the {_IN_SANDBOX_MARKER} marker is set (agent-sandboxed process)"
+    if _macos_sandbox_state() is True:
+        return "the kernel reports this process is Seatbelt-confined"
+    return None
 
 
 def _warn_no_isolation(mode: str) -> None:

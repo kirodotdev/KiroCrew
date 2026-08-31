@@ -1545,6 +1545,34 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "a kill."
         ),
     ),
+    DeniedCommandRule(
+        id="self-protection-dev-mode-out-of-root-confirm",
+        # Two tiers, because neither alone closes the class.  The regex tier
+        # matches the flag as RAW TEXT, which covers the direct CLI form and
+        # nested shell payloads (``bash -c "kirocrew app dev x --confirm-…"``)
+        # — but raw text is exactly what quote-splitting defeats:
+        # ``--confirm-out-of-install-'root'`` reaches argparse as the accepted
+        # flag while the raw command never contains the literal.  The paired
+        # argv floor (``_is_dev_mode_out_of_root_confirm``, always run by
+        # ``is_denied`` while this rule is enabled) therefore re-checks the
+        # DE-ESCAPED text and every tokenized argv frame, so enforcement
+        # evaluates what the shell actually executes.  Deliberately broad
+        # (same posture as the printenv-AWS rule): the flag is the operator's
+        # out-of-install dev-mode attestation, and an agent command that
+        # merely *mentions* it is at best editing security-sensitive surface,
+        # which a human should drive.
+        pattern=".*--confirm-out-of-install-root.*",
+        category="self-protection",
+        description=(
+            "Blocks any agent command carrying the `--confirm-out-of-install-root` flag, "
+            "the operator's explicit attestation for granting app dev mode on a UI root "
+            "outside the app's install directory. The dev-mode grant relaxes the "
+            "unauthenticated UI route's root containment, so an agent able to pass the "
+            "flag itself would convert an auto-approved shell into a self-granted serving "
+            "grant on an arbitrary host directory. The confirmation must come from the "
+            "operator's own terminal, which these rules do not govern."
+        ),
+    ),
     # ── Legacy security.py deny globs (converted to regex) ──
     # These predate the agent-config ``deniedCommands`` list and were NOT part
     # of it, so they are not in the 130 ported patterns.  They cover explicit
@@ -1775,6 +1803,7 @@ _SELF_PROTECTION_FLOOR_RULE_IDS: frozenset[str] = frozenset(
         "self-protection-update",
         "self-protection-gateway-restart",
         "self-protection-cloud",
+        "self-protection-dev-mode-out-of-root-confirm",
     }
 )
 _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
@@ -1824,6 +1853,12 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
     "self-protection-cloud": (
         "Matched structurally on the command's argv, not by the pattern text above: "
         "shell de-escaping resolves the command to a destructive cloud operation."
+    ),
+    "self-protection-dev-mode-out-of-root-confirm": (
+        "Matched structurally on the command's argv, not by the pattern text above: "
+        "shell de-escaping resolves an argument to the operator's "
+        "`--confirm-out-of-install-root` attestation flag, which agent commands "
+        "may never carry."
     ),
 }
 
@@ -5417,6 +5452,45 @@ def _is_self_gateway_restart(text_lower: str) -> bool:
 def _is_self_cloud_destructive(text_lower: str) -> bool:
     """``kirocrew cloud <destructive>`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("cloud", _SELF_CLOUD_DESTRUCTIVE_VERBS))
+
+
+_DEV_MODE_CONFIRM_FLAG = "--confirm-out-of-install-root"
+
+
+def _is_dev_mode_out_of_root_confirm(text_lower: str) -> bool:
+    """True if the operator's out-of-install confirm flag materializes after de-escaping.
+
+    The regex tier matches the flag in RAW text, so quote-splitting inside the
+    token (``--confirm-out-of-install-'root'``) reaches argparse as the accepted
+    flag while the raw command never contains the literal.  This floor closes
+    that class two ways: the whole string with quote/backslash glue removed
+    (covers every quoting spelling in one O(n) pass), and every tokenized argv
+    frame — the same descent the other floors use — whose payload walk also
+    decodes printf/``$'…'`` escapes the glue-strip cannot see.
+
+    Unlike the subcommand floors this predicate keys on the FLAG token, not on
+    the product CLI being the argv program: the rule is deliberately broad (see
+    its catalog comment), so a mention inside any command is a deny.  It matches
+    the flag only as a token PREFIX boundary — ``--confirm-out-of-install-root``
+    itself or with an attached ``=…``/wrapper — never as a substring of prose,
+    because the leading ``--`` and full spelling make accidental prose hits
+    implausible and the regex tier already denies them anyway.
+    """
+    # Cheap necessary condition: the flag cannot materialize from text that,
+    # after glue removal, carries neither of its distinctive words unless an
+    # escape encoding (backslash / ANSI-C quoting) could synthesize them.
+    stripped = _SELF_FLOOR_QUOTE_JUNK_RE.sub("", text_lower)
+    if _DEV_MODE_CONFIRM_FLAG in stripped:
+        return True
+    if "confirm" not in stripped and "install" not in stripped and "\\" not in text_lower:
+        return False
+    for tokens in _self_token_frames(text_lower):
+        for token in tokens:
+            if _DEV_MODE_CONFIRM_FLAG in _SELF_FLOOR_QUOTE_JUNK_RE.sub(
+                "", _normalize_operand(token)
+            ):
+                return True
+    return False
 
 
 def _is_git_publish(text_lower: str) -> bool:
@@ -13533,6 +13607,7 @@ def is_denied(
         ("self-protection-update", _is_self_update),
         ("self-protection-gateway-restart", _is_self_gateway_restart),
         ("self-protection-cloud", _is_self_cloud_destructive),
+        ("self-protection-dev-mode-out-of-root-confirm", _is_dev_mode_out_of_root_confirm),
     ):
         pattern = _SELF_PROTECTION_FLOOR_BY_ID.get(rule_id)
         if pattern is None or pattern not in floor_enabled:

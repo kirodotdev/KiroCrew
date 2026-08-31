@@ -462,8 +462,45 @@ class TestAppCli:
     def test_dev_off_restores_caching(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("kiro_crew.apps.dev_mode.set_dev_mode", return_value={"ok": True}) as setter:
             cc._handle_app(_ns(app_action="dev", name="demo", off=True))
-        setter.assert_called_once_with("demo", False)
+        setter.assert_called_once_with("demo", False, confirm_out_of_install_root=False)
         assert "dev mode off" in capsys.readouterr().out
+
+    def test_dev_confirmation_refusal_reaches_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The refusal's own text (which names the CLI flag) is printed as-is."""
+        refusal = {
+            "error": "needs confirmation: run `kirocrew app dev demo --confirm-out-of-install-root`",
+            "code": "dev_mode_out_of_install_confirmation_required",
+        }
+        with (
+            patch("kiro_crew.apps.dev_mode.set_dev_mode", return_value=refusal) as setter,
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_app(
+                _ns(app_action="dev", name="demo", off=False, confirm_out_of_install_root=False)
+            )
+        assert exc.value.code == 1
+        assert "--confirm-out-of-install-root" in capsys.readouterr().err
+        setter.assert_called_once_with("demo", True, confirm_out_of_install_root=False)
+
+    def test_dev_confirm_flag_is_forwarded(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("kiro_crew.apps.dev_mode.set_dev_mode", return_value={"ok": True}) as setter:
+            cc._handle_app(
+                _ns(app_action="dev", name="demo", off=False, confirm_out_of_install_root=True)
+            )
+        setter.assert_called_once_with("demo", True, confirm_out_of_install_root=True)
+
+    def test_dev_confirm_flag_with_off_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """The flag only applies to enabling — an ignored flag must say so,
+        not exit 0 looking like a confirmed grant."""
+        with patch("kiro_crew.apps.dev_mode.set_dev_mode", return_value={"ok": True}) as setter:
+            cc._handle_app(
+                _ns(app_action="dev", name="demo", off=True, confirm_out_of_install_root=True)
+            )
+        err = capsys.readouterr().err
+        assert "no effect with --off" in err
+        setter.assert_called_once_with("demo", False, confirm_out_of_install_root=True)
 
     def test_dev_error_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
@@ -2621,3 +2658,50 @@ class TestRunEval:
             await cc._run_eval(_ns(all_scenarios=False, scenarios=None, judge=True))
         h.judge.judge_turn.assert_not_awaited()
         assert turn.assertion_results[0][1] is False
+
+
+class TestDevConfirmFlagNoAbbreviation:
+    """The dev subparser must reject flag abbreviations (#7169 review).
+
+    The builtin agent deny rule for `--confirm-out-of-install-root` matches
+    the flag's LITERAL text, but argparse's default `allow_abbrev=True` would
+    accept `--confirm` (or `--c`) as the same flag — an agent shell could then
+    supply the operator attestation in a spelling the rule never sees. The
+    `dev` subparser is built with `allow_abbrev=False`, so only the exact
+    flag parses and the substring rule stays sufficient.
+    """
+
+    def test_abbreviated_confirm_flag_is_rejected(self, capsys) -> None:
+        import sys
+        from unittest.mock import patch
+
+        for abbrev in ("--confirm", "--confirm-out-of-install-roo", "--c"):
+            argv = ["kirocrew", "app", "dev", "demo", abbrev]
+            with (
+                patch.object(sys, "argv", argv),
+                patch("kiro_crew.cli_commands._handle_app") as handler,
+            ):
+                from kiro_crew.cli import main
+
+                with pytest.raises(SystemExit) as exc:
+                    main()
+                assert exc.value.code == 2, f"{abbrev} did not exit 2"
+                handler.assert_not_called()
+            err = capsys.readouterr().err
+            assert "unrecognized arguments" in err, f"{abbrev}: {err!r}"
+
+    def test_literal_confirm_flag_still_parses(self) -> None:
+        import sys
+        from unittest.mock import patch
+
+        argv = ["kirocrew", "app", "dev", "demo", "--confirm-out-of-install-root"]
+        with (
+            patch.object(sys, "argv", argv),
+            patch("kiro_crew.cli_commands._handle_app") as handler,
+        ):
+            from kiro_crew.cli import main
+
+            main()
+            ns = handler.call_args[0][0]
+            assert ns.confirm_out_of_install_root is True
+            assert ns.off is False

@@ -2434,10 +2434,25 @@ Examples:
     app_info = app_sub.add_parser("info", help="Show app details")
     app_info.add_argument("name", help="App name")
     app_dev = app_sub.add_parser(
-        "dev", help="Toggle dev mode (no-store UI serving + live reload on file change)"
+        "dev",
+        help="Toggle dev mode (no-store UI serving + live reload on file change)",
+        # No flag abbreviations: --confirm-out-of-install-root is the
+        # operator's out-of-install attestation and the builtin agent deny
+        # rule matches its LITERAL text, so an accepted abbreviation
+        # (`--confirm`, `--c`) would sail past the rule and let an agent
+        # shell self-supply the attestation. Only the exact flag parses.
+        allow_abbrev=False,
     )
     app_dev.add_argument("name", help="App name")
     app_dev.add_argument("--off", action="store_true", help="Turn dev mode off")
+    app_dev.add_argument(
+        "--confirm-out-of-install-root",
+        action="store_true",
+        help=(
+            "Confirm enabling dev mode on a ui root that resolves outside the "
+            "app's install directory (e.g. a ui/ symlinked to your source tree)"
+        ),
+    )
     app_init = app_sub.add_parser("init", help="Scaffold a new app")
     app_init.add_argument("name", help="App name (kebab-case)")
     app_init.add_argument("--dir", default=".", help="Output directory (default: current)")

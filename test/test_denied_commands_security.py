@@ -36,10 +36,12 @@ class TestCatalog:
     def test_catalog_ids_are_unique(self):
         # 130 patterns ported byte-exact from the retired agent-config
         # deniedCommands list + 7 legacy security.py globs (secret-fetch tool
-        # names + boto3 underscore destructive forms) restored as regexes.
-        assert len(BUILTIN_DENIED_RULES) == 148
+        # names + boto3 underscore destructive forms) restored as regexes,
+        # plus later additions (e.g. the dev-mode out-of-install confirmation
+        # flag, #6907).
+        assert len(BUILTIN_DENIED_RULES) == 149
         ids = [r.id for r in BUILTIN_DENIED_RULES]
-        assert len(set(ids)) == 148
+        assert len(set(ids)) == 149
 
     def test_token_mint_is_blocked_in_both_the_cli_and_module_forms(self):
         """`kirocrew token` mints a signed dashboard token that authenticates to EVERY gateway
@@ -178,7 +180,7 @@ class TestCatalog:
     def test_patterns_match_manifest_verbatim(self):
         golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
         golden_by_id = {g["id"]: g for g in golden}
-        assert len(golden_by_id) == 148
+        assert len(golden_by_id) == 149
         for rule in BUILTIN_DENIED_RULES:
             g = golden_by_id[rule.id]
             assert rule.pattern == g["pattern"]
@@ -192,7 +194,7 @@ class TestCatalog:
 
     def test_builtin_denied_rules_accessor_returns_dicts(self):
         rules = builtin_denied_rules()
-        assert len(rules) == 148
+        assert len(rules) == 149
         first = rules[0]
         assert set(first.keys()) == {"id", "pattern", "category", "description"}
         assert isinstance(first["id"], str)
@@ -229,6 +231,12 @@ class TestSelfProtectionFlagInterposition:
         # tempered-greedy pattern, so it needs no widening/floor from this PR -- it
         # is listed here only to satisfy the category-completeness invariant.
         "self-protection-cron-adopt": "kirocrew {flags} cron adopt",
+        # Keys on the flag LITERAL itself (plain substring), so interposed
+        # flags anywhere in the command cannot separate the anchor from the
+        # token the rule matches — the flag IS the token.
+        "self-protection-dev-mode-out-of-root-confirm": (
+            "kirocrew {flags} app dev my-app --confirm-out-of-install-root"
+        ),
         # The kill rules key on the kill TARGET, not a CLI subcommand; their gap
         # is between the kill verb and the product name.
         "self-protection-kill": "pkill {flags} kirocrew",
@@ -451,25 +459,39 @@ class TestSelfProtectionFlagInterposition:
         rule joining the floor cannot silently skip all three walks. The kill
         rules key on a kill target, not a CLI subcommand, and the credential
         mint rule is outside the self-protection category -- neither has a
-        ``kirocrew ...`` template, so the derivation excludes them.
+        ``kirocrew ...`` template, so the derivation excludes them. The
+        dev-mode confirm rule's template does start with ``kirocrew``, but its
+        floor keys on the FLAG literal, not the subcommand words -- the
+        subcommand walks would quote ``app dev`` alone, which must stay
+        allowed without the flag -- so it is carved out explicitly and gets
+        its own quoting cross in
+        ``test_dev_mode_confirm_flag_denied_under_quote_splitting``.
         """
         from kiro_crew import security
 
+        flag_keyed_floor_ids = {"self-protection-dev-mode-out-of-root-confirm"}
         floor_subcommand_ids = {
             rule_id
             for rule_id in security._SELF_PROTECTION_FLOOR_RULE_IDS
             if self._TEMPLATES.get(rule_id, "").startswith("kirocrew ")
+            and rule_id not in flag_keyed_floor_ids
         }
         assert set(self._SUBCOMMANDS) == floor_subcommand_ids, (
             "every floor-listed kirocrew-subcommand rule must register its "
             "words in _SUBCOMMANDS (and every _SUBCOMMANDS entry must be "
             "floor-listed), or the shell-dressing walks silently skip it"
         )
+        # every flag-keyed carve-out must still be floor-listed -- the carve-out
+        # exempts a rule from the SUBCOMMAND walks, never from the floor itself
+        assert flag_keyed_floor_ids <= set(security._SELF_PROTECTION_FLOOR_RULE_IDS)
         # the predicate for each is wired and fires on a de-escaped argv
         assert security._is_self_restart("kirocrew -\\v restart")
         assert security._is_self_update("kirocrew \\update")
         assert security._is_self_gateway_restart("kirocrew -\\v gateway restart")
         assert security._is_self_cloud_destructive("kirocrew -\\v cloud destroy")
+        assert security._is_dev_mode_out_of_root_confirm(
+            "kirocrew app dev x --confirm-out-of-install-'root'"
+        )
 
     def test_self_protection_denied_under_interposed_redirection(self):
         """A redirection is removed from argv by the shell and can sit anywhere in
@@ -3805,6 +3827,61 @@ class TestStdinProgramTextScoping:
             f"echo {rule.pattern!r} >> notes.txt",
         ):
             assert security.is_denied(cmd) is None, f"rule fires on its own text: {cmd!r}"
+
+
+class TestDevModeConfirmFlagIsAgentInaccessible:
+    """`--confirm-out-of-install-root` must be unreachable from an agent shell.
+
+    The flag is the operator's explicit attestation for granting app dev mode
+    on a UI root OUTSIDE the app's install directory (#6907), and the grant
+    relaxes the unauthenticated UI route's root containment. Without this rule
+    an auto-approved Bash tool could pass the flag itself and convert shell
+    access into a self-granted serving grant on an arbitrary host directory —
+    the exact self-grant path the confirmation gate exists to close. Two tiers
+    enforce it: the catalog rule matches the flag's literal text (direct form,
+    nested shell payloads, quoted interpreter argv), and the paired argv floor
+    (``_is_dev_mode_out_of_root_confirm``) re-checks the DE-ESCAPED text and
+    tokenized argv, because quote-splitting inside the token
+    (``--confirm-out-of-install-'root'``) reaches argparse as the accepted
+    flag while the raw text never carries the literal.
+    """
+
+    def test_the_flag_is_denied_in_direct_and_nested_forms(self):
+        from kiro_crew import security
+
+        for cmd in (
+            "kirocrew app dev my-app --confirm-out-of-install-root",
+            'bash -c "kirocrew app dev my-app --confirm-out-of-install-root"',
+            "python3 -c \"import subprocess; subprocess.run("
+            "['kirocrew','app','dev','x','--confirm-out-of-install-root'])\"",
+        ):
+            assert security.is_denied(cmd) is not None, f"not denied: {cmd!r}"
+
+    def test_dev_mode_confirm_flag_denied_under_quote_splitting(self):
+        """Quoting splits the flag in RAW text but the shell strips it, so the
+        de-quoted argv still carries the accepted flag -- the argv floor must
+        deny every spelling the raw-text regex cannot see."""
+        from kiro_crew import security
+
+        for cmd in (
+            "kirocrew app dev my-app --confirm-out-of-install-'root'",
+            'kirocrew app dev my-app --confirm-out-of-install-"root"',
+            'kirocrew app dev my-app "--confirm-out-of-install-root"',
+            "kirocrew app dev my-app '--confirm-out-of-install-root'",
+            'kirocrew app dev my-app --confirm-out-of-install-ro""ot',
+            "kirocrew app dev my-app --confirm\\-out-of-install-root",
+            "kirocrew app dev my-app --'confirm'-out-of-install-root",
+            "bash -c \"kirocrew app dev my-app --confirm-out-of-install-'root'\"",
+        ):
+            assert security.is_denied(cmd) is not None, f"not denied: {cmd!r}"
+
+    def test_ordinary_dev_toggles_stay_allowed(self):
+        """The rule targets the attestation flag, not the dev-mode verb —
+        in-install dev-mode toggles remain an ordinary agent operation."""
+        from kiro_crew import security
+
+        assert security.is_denied("kirocrew app dev my-app") is None
+        assert security.is_denied("kirocrew app dev my-app --off") is None
 
 
 class TestSelfModuleIndexIsLinear:
