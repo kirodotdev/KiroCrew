@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+import kiro_crew
+from kiro_crew import cli
 from kiro_crew.secrets import SecretVault
 from kiro_crew.secrets.migrate import (
     MigrationConflictError,
@@ -1081,5 +1085,116 @@ def test_rollback_delete_failure_records_orphaned_key_and_propagates_error(
         "JIRA_API_TOKEN" in str(m) for m in warning_msgs
     ), f"Expected WARNING naming orphaned key; got: {warning_msgs}"
     assert any(
-        "kirocrew secrets rm" in str(m) for m in warning_msgs
-    ), "WARNING must mention cleanup command"
+        "Settings > Secrets" in str(m) for m in warning_msgs
+    ), "WARNING must name a cleanup surface that exists (the CLI has no `secrets rm`)"
+    # The remediation half of this format string carried a fourth `%s` for the
+    # key name; dropping it without dropping its argument would leave the
+    # message half-interpolated (logging swallows the mismatch to stderr).
+    assert not any("%s" in str(m) or "%r" in str(m) for m in warning_msgs), (
+        f"WARNING left an uninterpolated placeholder — format args and "
+        f"placeholders disagree: {warning_msgs}"
+    )
+
+
+class TestRemediationNamesOnlyRealCliSubcommands:
+    """Every ``kirocrew secrets <verb>`` a shipped message tells an operator to
+    run must be a verb the CLI actually registers.
+
+    The defect this pins (#6889): the importer's remediation strings named
+    ``kirocrew secrets set`` and ``kirocrew secrets rm``, but the ``secrets``
+    parser registers only ``import`` — so an operator who followed the message
+    at the exact moment a migration aborted got ``invalid choice`` and no way
+    forward. A dead instruction on a data-loss-adjacent path is worse than no
+    instruction, because it costs the operator a round trip before they start
+    looking for the real surface.
+
+    Scope is all of ``src/``, not just ``migrate.py``: the same wording is
+    reachable from the resolution path, and a per-file check would let the next
+    site re-introduce it. The oracle is the REAL parser (``cli.main()``), not a
+    hand-maintained list, so a verb that later ships genuinely passes with no
+    edit here.
+    """
+
+    _CMD_RE = re.compile(r"kirocrew secrets ([a-z][a-z0-9-]*)")
+
+    @classmethod
+    def _referenced_verbs(cls) -> dict[str, list[str]]:
+        """Map each ``secrets`` verb named under ``src/`` to the files naming it."""
+        src_root = Path(kiro_crew.__file__).resolve().parent
+        found: dict[str, list[str]] = {}
+        for path in sorted(src_root.rglob("*.py")):
+            for verb in cls._CMD_RE.findall(path.read_text(encoding="utf-8")):
+                found.setdefault(verb, []).append(str(path.relative_to(src_root)))
+        return found
+
+    @staticmethod
+    def _verb_is_registered(verb: str, monkeypatch, tmp_path, capsys) -> bool:
+        """True when ``kirocrew secrets <verb> --help`` parses.
+
+        ``--help`` makes argparse exit 0 during parsing, so the verb's handler
+        never runs (nothing is read, written or migrated). An unregistered verb
+        exits 2 with ``invalid choice`` instead.
+
+        ``main()`` mutates PROCESS-GLOBAL state before it reaches argparse, and
+        none of it is monkeypatch's to restore, so a bare call would leak into
+        every later test in the same worker:
+
+        * ``ensure_utf8_console`` overwrites ``PYTHONUTF8`` /
+          ``PYTHONIOENCODING`` on EVERY platform (not only Windows — see
+          ``_ensure_utf8_process_environment``, "Overwrite inherited settings
+          deliberately") and on Windows also replaces ``sys.stdout`` /
+          ``sys.stderr``, which fights pytest's capture. Stubbed: this probe
+          reads argparse's exit code, never the encoding of what it printed.
+        * ``main()`` unconditionally pops ``KIROCREW_SANDBOX_ACTIVE`` and
+          ``KIROCREW_SANDBOX_LEVEL`` to refuse an inherited sandbox-bypass
+          marker. ``delenv`` first so MONKEYPATCH owns the deletion and restores
+          any inherited value at teardown, leaving the pop a no-op.
+        """
+        monkeypatch.setattr(cli.platform_compat, "ensure_utf8_console", lambda: None)
+        for marker in ("KIROCREW_SANDBOX_ACTIVE", "KIROCREW_SANDBOX_LEVEL"):
+            monkeypatch.delenv(marker, raising=False)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "data"))
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(cli, "boot_platform", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli, "_setup_cli_logging", lambda *_a, **_k: None)
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "secrets", verb, "--help"])
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main()
+        capsys.readouterr()
+        return excinfo.value.code == 0
+
+    def test_probe_does_not_clobber_inherited_encoding_env(self, monkeypatch, tmp_path, capsys):
+        """The probe must not leave the worker's UTF-8 contract rewritten.
+
+        ``main()`` overwrites both names on every platform, and monkeypatch
+        cannot restore what it never set — so dropping the
+        ``ensure_utf8_console`` stub silently hands every later test in this
+        worker a different encoding environment. Sentinels catch that.
+        """
+        monkeypatch.setenv("PYTHONUTF8", "sentinel-utf8")
+        monkeypatch.setenv("PYTHONIOENCODING", "sentinel-ioencoding")
+        self._verb_is_registered("import", monkeypatch, tmp_path, capsys)
+        assert os.environ["PYTHONUTF8"] == "sentinel-utf8"
+        assert os.environ["PYTHONIOENCODING"] == "sentinel-ioencoding"
+
+    def test_oracle_rejects_a_verb_that_does_not_exist(self, monkeypatch, tmp_path, capsys):
+        """Guard the guard: the probe must be able to FAIL, or the scan below
+        is vacuous and would pass on any wording at all."""
+        assert not self._verb_is_registered("no-such-verb-xyz", monkeypatch, tmp_path, capsys)
+
+    def test_the_scan_finds_something(self):
+        """A regex that stops matching (a rewording to prose, say) would make
+        this file silently stop guarding anything."""
+        assert self._referenced_verbs(), "no `kirocrew secrets <verb>` reference found under src/"
+
+    def test_every_referenced_verb_is_registered(self, monkeypatch, tmp_path, capsys):
+        dead = {
+            verb: files
+            for verb, files in self._referenced_verbs().items()
+            if not self._verb_is_registered(verb, monkeypatch, tmp_path, capsys)
+        }
+        assert not dead, (
+            "shipped remediation text tells the operator to run a `kirocrew secrets` "
+            f"subcommand the CLI does not register: {dead}. Point the message at a real "
+            "surface (Settings > Secrets in the dashboard, or `kirocrew secrets import`)."
+        )

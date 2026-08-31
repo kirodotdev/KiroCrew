@@ -122,7 +122,7 @@ class MigrationReport:
     whether this pass wrote anything. ``orphaned_vault_keys`` names any keys
     whose rollback-delete raised an error during a failed apply — those vault
     entries may still exist and could shadow future rotations; manual cleanup
-    via ``kirocrew secrets rm <key>`` is recommended.
+    under Settings > Secrets in the dashboard is recommended.
     """
 
     env_file: Path
@@ -322,7 +322,8 @@ def migrate_env_secrets(
                 f"vault already has an entry for {key!r} whose value differs "
                 f"from the plaintext in the .env; refusing to migrate so neither "
                 f"value is silently discarded. Reconcile them (update the .env to "
-                f"match the vault, or `kirocrew secrets set {key}`), then re-run "
+                f"match the vault, or overwrite the vault entry under "
+                f"Settings > Secrets in the dashboard), then re-run "
                 f"`kirocrew secrets import --apply`."
             )
         already_in_vault.add(key)
@@ -562,12 +563,12 @@ def migrate_env_secrets(
                                 logger.warning(
                                     "secrets import rollback: failed to delete vault"
                                     " entry for %r (%s: %s). The entry may persist"
-                                    " and shadow future rotations — run"
-                                    " `kirocrew secrets rm %s` to clean it up.",
+                                    " and shadow future rotations — delete it under"
+                                    " Settings > Secrets in the dashboard to clean"
+                                    " it up.",
                                     _k,
                                     type(_rb_exc).__name__,
                                     _rb_exc,
-                                    _k,
                                 )
 
                     _rollback_loop.run_until_complete(_rollback())
