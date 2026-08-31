@@ -651,6 +651,23 @@ def test_import_zip_bomb_member_cap(tmp_path, monkeypatch):
         port.apply_import_zip(z)
 
 
+def test_import_member_inventory_is_rejected_before_zipfile(tmp_path, monkeypatch):
+    import kiro_crew.portability as port
+
+    z = _make_min_import_zip(tmp_path / "inventory.zip", extra_files=3)
+    monkeypatch.setattr(port, "_MAX_IMPORT_MEMBERS", 1)
+
+    def unexpected_zipfile(*args, **kwargs):
+        raise AssertionError("ZipFile was constructed for a refused archive")
+
+    monkeypatch.setattr(port.zipfile, "ZipFile", unexpected_zipfile)
+
+    ok, msg, _ = port.validate_import_zip(z)
+    assert ok is False and "too many entries" in msg
+    with pytest.raises(ValueError, match="too many entries"):
+        port.apply_import_zip(z)
+
+
 def test_import_zip_bomb_size_cap(tmp_path, monkeypatch):
     # SEC-7F44A198: excessive declared uncompressed size is rejected (zip bomb).
     import kiro_crew.portability as port

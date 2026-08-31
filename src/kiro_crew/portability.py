@@ -37,6 +37,7 @@ from kiro_crew.snapshot import (
     _merge_notifications,
     _staging_is_pinned,
 )
+from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,7 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
     Returns (ok, error_message, manifest_dict).
     """
     try:
+        vet_zip_inventory(zip_path, max_members=_MAX_IMPORT_MEMBERS)
         with zipfile.ZipFile(str(zip_path), "r") as zf:
             names = zf.namelist()
 
@@ -267,6 +269,12 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                 return False, f"Unsupported manifest version: {version}", {}
 
             return True, "", manifest_data
+    except ZipInventoryRejected as exc:
+        if exc.reason == "too_many_members":
+            return False, f"Rejected: archive has too many entries ({exc})", {}
+        if exc.reason in {"cdir_too_large", "zip64_saturated"}:
+            return False, f"Rejected: archive inventory exceeds cap ({exc}; possible zip bomb)", {}
+        return False, "Invalid zip file", {}
     except zipfile.BadZipFile:
         return False, "Invalid zip file", {}
     except (json.JSONDecodeError, KeyError) as e:
@@ -406,6 +414,17 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
 
     Returns summary dict of what was imported.
     """
+    try:
+        vet_zip_inventory(zip_path, max_members=_MAX_IMPORT_MEMBERS)
+    except ZipInventoryRejected as exc:
+        if exc.reason == "too_many_members":
+            raise ValueError(f"Import archive has too many entries ({exc})") from exc
+        if exc.reason in {"cdir_too_large", "zip64_saturated"}:
+            raise ValueError(
+                f"Import archive inventory exceeds cap ({exc}; possible zip bomb)"
+            ) from exc
+        raise zipfile.BadZipFile("Invalid zip file") from exc
+
     mc = _mc_dir()
     # Asked once, at the top, before anything is extracted or written. Both branches
     # below mutate the data home, and the merge branch writes core files with
