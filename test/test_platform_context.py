@@ -264,3 +264,213 @@ class TestBootstrapAndDiscovery:
         monkeypatch.setattr(bootstrap_mod, "discover_companion_context", lambda profile, cfg: None)
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
+
+
+class TestRedactLogViaContext:
+    """``redact_log_via_context`` -- the spelling a gate-side LOG line must use.
+
+    Two properties, and they are in tension by design: it must reach the
+    companion's redaction (so a log line is not scanned with the weaker OSS
+    baseline), and it must never raise (a log site cannot afford the fail-closed
+    raise that an egress sink wants -- see the helper's docstring for the MCP
+    stderr drain that a raise would wedge).
+    """
+
+    #: A shape the OSS baseline knows nothing about; only a companion policy
+    #: scrubs it. Mirrors ``_EnterpriseCredentialPolicy`` in the CPP wiring
+    #: tests, so both suites describe the companion's extra reach the same way.
+    COMPANION_SHAPE = "SSO-COOKIE"
+
+    #: Matched by the baseline's own credential patterns, so it proves the
+    #: companion pass is applied ON TOP of the baseline rather than instead.
+    BASELINE_SHAPE = "AKIAIOSFODNN7EXAMPLE"
+
+    @staticmethod
+    def _install(policy, cfg: KiroCrewConfig):
+        import dataclasses
+
+        from kiro_crew.platform import set_context
+
+        set_context(
+            dataclasses.replace(
+                build_default_context(cfg, profile=PROFILE_ENTERPRISE),
+                credentials=policy,
+            )
+        )
+
+    @pytest.fixture(autouse=True)
+    def _restore_context(self):
+        """Never leave a stub context installed for the rest of the session."""
+        from kiro_crew.platform import reset_context
+
+        yield
+        reset_context()
+
+    def test_companion_shape_is_scrubbed_on_top_of_the_baseline(self, cfg: KiroCrewConfig) -> None:
+        from kiro_crew.platform.context import redact_log_via_context
+
+        class _Policy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    TestRedactLogViaContext.COMPANION_SHAPE, "[REDACTED-SSO]"
+                )
+
+        self._install(_Policy(), cfg)
+        out = redact_log_via_context(
+            f"boot failed {self.COMPANION_SHAPE} using {self.BASELINE_SHAPE}"
+        )
+        # The companion's extra reach is the whole reason this helper exists.
+        assert self.COMPANION_SHAPE not in out
+        # ...and it did not come at the cost of the baseline pass.
+        assert self.BASELINE_SHAPE not in out
+
+    def test_composition_failure_withholds_the_text_instead_of_raising(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        from kiro_crew.platform.context import (
+            LOG_WITHHELD_PLACEHOLDER,
+            redact_log_via_context,
+        )
+
+        class _Unprovable:
+            def redact(self, text: str) -> str:
+                raise PlatformCompositionError("companion could not be composed")
+
+        self._install(_Unprovable(), cfg)
+        out = redact_log_via_context(f"boot failed {self.BASELINE_SHAPE}")
+        assert out == LOG_WITHHELD_PLACEHOLDER
+        # The point of withholding: nothing unscanned survives into the line.
+        assert self.BASELINE_SHAPE not in out
+
+    def test_the_bare_shim_still_raises_so_egress_stays_fail_closed(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        """The log spelling must not have softened the egress spelling.
+
+        Both read the same policy, so a caller could have been "fixed" by making
+        ``redact_via_context`` stop raising -- which would silently convert every
+        egress sink to fail-open. Pin the difference to the call site.
+        """
+        from kiro_crew.platform.context import redact_via_context
+
+        class _Unprovable:
+            def redact(self, text: str) -> str:
+                raise PlatformCompositionError("companion could not be composed")
+
+        self._install(_Unprovable(), cfg)
+        with pytest.raises(PlatformCompositionError):
+            redact_via_context("anything")
+
+    def test_a_transient_policy_error_still_degrades_to_the_baseline(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        """Only a composition failure withholds; a flaky adapter must not.
+
+        Withholding every transient error would silently blank operational logs
+        on a host whose companion is merely misbehaving, so the inherited
+        degrade-to-baseline path has to survive underneath the new catch.
+        """
+        from kiro_crew.platform.context import (
+            LOG_WITHHELD_PLACEHOLDER,
+            redact_log_via_context,
+        )
+
+        class _Flaky:
+            def redact(self, text: str) -> str:
+                raise RuntimeError("adapter blew up")
+
+        self._install(_Flaky(), cfg)
+        out = redact_log_via_context(f"boot failed {self.BASELINE_SHAPE} here")
+        assert out != LOG_WITHHELD_PLACEHOLDER
+        assert self.BASELINE_SHAPE not in out
+        # Text still present around the scrubbed credential -- degraded, not blanked.
+        assert "boot failed" in out
+
+    def test_no_installed_context_keeps_the_baseline_without_resolving_one(self) -> None:
+        """No context at all means baseline, NOT a withheld line.
+
+        The two no-companion states are different and must not be conflated. With
+        nothing installed there is no evidence a companion exists, the full OSS
+        pass still runs, and withholding would DESTROY diagnostics in a process
+        that deliberately never composes one -- ``mcp_gateway.gatewayd`` is
+        exactly that process. Withholding is reserved for the case where a
+        context IS installed and its policy failed, which is the only state where
+        the baseline would be a real downgrade.
+
+        Also pins the no-I/O guarantee: resolution must not be attempted at all,
+        since ``current_context()`` never memoizes its fail-closed verdict on a
+        non-standalone profile.
+        """
+        from kiro_crew.platform import context as context_mod
+        from kiro_crew.platform.context import (
+            LOG_WITHHELD_PLACEHOLDER,
+            redact_log_via_context,
+            reset_context,
+        )
+
+        reset_context()
+
+        def _explode() -> None:
+            raise AssertionError("redact_log_via_context resolved a context")
+
+        original = context_mod.current_context
+        context_mod.current_context = _explode  # type: ignore[assignment]
+        try:
+            out = redact_log_via_context(f"boot failed {self.BASELINE_SHAPE} here")
+        finally:
+            context_mod.current_context = original  # type: ignore[assignment]
+        # Diagnostics preserved, credential still scrubbed by the baseline pass.
+        assert out != LOG_WITHHELD_PLACEHOLDER
+        assert self.BASELINE_SHAPE not in out
+        assert "boot failed" in out
+
+    #: Gate-side log/audit sites converged onto the context spelling, each running
+    #: inside the composition process (the gateway) where a companion policy is
+    #: actually reachable. Deliberately NOT a list of every redaction call site --
+    #: `security_posture.NON_EGRESS_REDACTION_MODULES` owns that axis. This one
+    #: only pins that a site already converged cannot silently drift back, which
+    #: is how the class grew in the first place.
+    CONVERGED_LOG_SITES = (
+        "platform/update_provider.py",
+        "task_planner.py",
+        "name_grant.py",
+    )
+
+    def test_converged_log_sites_do_not_drift_back_to_the_baseline(self) -> None:
+        """Each converged site must CALL the helper and not the raw components.
+
+        An omission-detecting check, because the failure mode is silent: the two
+        spellings look equally deliberate at a call site, and nothing about a
+        `redact_credentials`/`redact_exfiltration_urls` pair reads as wrong until
+        someone asks which process it runs in.
+
+        Both halves are load-bearing, and the first is not enough on its own -- a
+        plain substring search for the helper's NAME is satisfied by the lingering
+        import even after the call has drifted back, so this counts CALL sites
+        (paren form, import lines excluded) and separately requires the component
+        spelling to be absent.
+        """
+        import pathlib
+
+        import kiro_crew
+
+        root = pathlib.Path(kiro_crew.__file__).parent
+        for rel in self.CONVERGED_LOG_SITES:
+            lines = (root / rel).read_text(encoding="utf-8").splitlines()
+            body = [ln for ln in lines if not ln.lstrip().startswith(("import ", "from "))]
+            calls = sum(1 for ln in body if "redact_log_via_context(" in ln)
+            assert calls >= 1, (
+                f"{rel} no longer CALLS redact_log_via_context (an import alone does not "
+                "count); if this site intentionally moved back to the baseline, say why "
+                "at the call site and drop it from CONVERGED_LOG_SITES"
+            )
+            leftovers = [
+                ln.strip()
+                for ln in body
+                if "redact_credentials(" in ln or "redact_exfiltration_urls(" in ln
+            ]
+            assert not leftovers, (
+                f"{rel} still reaches the baseline components directly: {leftovers}. "
+                "A converged site routes its gate-side text through the context spelling, "
+                "so a companion host is not scanned with the weaker pass."
+            )

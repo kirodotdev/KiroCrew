@@ -654,3 +654,74 @@ def redact_via_context(text: str) -> str:
         from kiro_crew.security import redact as _security_redact
 
         return _security_redact(text)
+
+
+#: Substituted for a log line's text when redaction could not be composed. Names
+#: the cause, because on the host where this fires the operator's real problem is
+#: the failed companion composition, not the missing line.
+LOG_WITHHELD_PLACEHOLDER = "<withheld: redaction unavailable>"
+
+
+def redact_log_via_context(text: str) -> str:
+    """Context-aware redaction for an operational LOG line, which must not raise.
+
+    Same redaction as :func:`redact_via_context` -- so a loaded companion's extra
+    credential/cookie regexes apply instead of the OSS baseline -- but it never
+    propagates :class:`PlatformCompositionError` to the caller.
+
+    Why a log site needs its own spelling. ``redact_via_context`` re-raises that
+    error deliberately: for an EGRESS sink, refusing to send is both safe and the
+    whole point. A gate-side log line is not an egress boundary, and there the
+    same raise buys nothing while costing availability -- several of these sites
+    log from a path whose failure is worse than a missing line (a background
+    drain, a boot-time install step, an audit write).
+
+    The two no-companion states are NOT the same, and conflating them is what
+    makes this helper subtle:
+
+    * **A context is installed but its policy could not be composed.** The host
+      is known to be non-standalone and its companion genuinely failed, so the
+      baseline would be a real downgrade -- exactly what
+      ``redact_via_context``'s fail-closed contract exists to forbid. The line's
+      TEXT is withheld (:data:`LOG_WITHHELD_PLACEHOLDER`): strictly safer than
+      either raising or downgrading, and the caller's own log call still records
+      that a line arrived and why its content is absent. Same shape as
+      ``auto_improvement.backend.mcp_server._redact_result``.
+    * **No context is installed at all.** Nothing here evidences a companion,
+      the full OSS pass still runs, and this is byte-for-byte what the site did
+      before it adopted this helper -- so withholding would DESTROY diagnostics
+      to protect against a companion that may not exist. Baseline it is. A
+      process that deliberately does not compose (``mcp_gateway.gatewayd`` is
+      one: see ``mcp_gateway/app_call.py``, "this daemon is not the composition
+      process") therefore keeps its logs, and closing that residual properly
+      means handing such a process a composed context -- a separate change, and
+      the same remedy that module already names for the security ceiling.
+
+    Transient (non-composition) adapter errors degrade to baseline, inherited
+    from ``redact_via_context``, so a merely flaky companion does not blank the
+    logs either.
+
+    Costs NO I/O per call. ``installed_context()`` is a bare attribute read, and
+    it is the right primitive here for the reason its own contract gives -- the
+    no-context answer is the SAME as the default-context answer, since
+    ``DefaultCredentialPolicy.redact`` delegates to ``security.redact``, so
+    resolving one would be pure cost. That matters because
+    ``current_context()`` never memoizes its fail-closed verdict on a
+    non-standalone profile, so a per-line caller reaching it would re-pay a
+    config load and an entry-point discovery for every line on the event loop
+    (``docs/system-specs/modules/platform-context.md`` calls this out). Once a
+    context IS installed the delegation below is also just an attribute read, so
+    no path resolves.
+
+    Callers keep their own truncation, and must apply it AFTER this returns:
+    slicing a redacted string is what keeps a credential from surviving as an
+    unmatchable fragment.
+    """
+    if installed_context() is None:
+        from kiro_crew.security import redact as _security_redact
+
+        return _security_redact(text)
+    try:
+        return redact_via_context(text)
+    except PlatformCompositionError:
+        return LOG_WITHHELD_PLACEHOLDER

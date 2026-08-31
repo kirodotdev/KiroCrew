@@ -448,16 +448,22 @@ class CommandProvider:
             # Redact credentials AND token-bearing URLs before logging stderr,
             # so neither an inline token nor a presigned/token URL enters the
             # persistent ring buffer or the /api/logs dashboard stream.
-            from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+            #
+            # Through the CONTEXT, not `security.redact` directly: an installer
+            # error is prime territory for a host-specific credential shape (an
+            # internal registry cookie, an SSO token in a fetch URL), and those
+            # live in a loaded companion's regexes rather than in the OSS
+            # baseline. Reading the baseline here would scan a companion host's
+            # stderr with the weaker pass and log what it missed. The `_log_`
+            # spelling is the one that cannot raise -- see its docstring.
+            from kiro_crew.platform.context import redact_log_via_context
 
             # Redact BEFORE truncating. Slicing first can cut a credential in
             # half, and half a token no longer matches the redactors' patterns
             # (an AWS key needs its full 20 chars to match), so the surviving
             # fragment would reach gateway.log and /api/logs verbatim. The
             # 500-char cap is for log volume, so it belongs last.
-            err_text = (stderr or b"").decode(errors="replace")
-            err_text, _ = redact_exfiltration_urls(err_text)
-            err_text, _ = redact_credentials(err_text)
+            err_text = redact_log_via_context((stderr or b"").decode(errors="replace"))
             err_text = err_text[:500]
             logger.error(
                 "CommandProvider.apply: failed (rc=%d): %s",

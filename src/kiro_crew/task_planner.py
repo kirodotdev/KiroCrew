@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_DENY
 from kiro_crew.llm_helpers import _extract_json_of_type
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.task_models import (
     SESSION_PREFIX,
@@ -184,12 +184,19 @@ def parse_tasks(text: str) -> list[Task]:
             # Bound the payload: an uncapped ERROR record would evict the
             # rotating gateway.log window other subsystems tail, and the raw
             # LLM text can echo credentials or exfiltration URLs, so redact
-            # before the bounded slice is written to log surfaces. URLs are
-            # redacted FIRST: replacing a credential embedded in a URL would
-            # split the URL so the URL redactor no longer matches it, leaving
-            # the rest of its sensitive query string in the log.
-            snippet, _ = redact_exfiltration_urls(text)
-            snippet, _ = redact_credentials(snippet)
+            # before the bounded slice is written to log surfaces.
+            #
+            # Through the CONTEXT (`redact_log_via_context`) so a loaded
+            # companion's extra credential regexes apply -- an LLM response can
+            # echo a host-specific token shape the OSS baseline does not know.
+            # The `_log_` spelling because this is a diagnostic path: it must not
+            # raise, and on a process with no composed context it keeps the
+            # baseline rather than blanking the snippet. It also subsumes the
+            # URL-before-credential ordering this site used to spell out by
+            # hand -- `security.redact` runs the exfil pass first for exactly
+            # that reason (replacing a credential inside a URL would split it so
+            # the URL redactor no longer matches).
+            snippet = redact_log_via_context(text)
             logger.error("Failed to parse tasks JSON (%d chars): %.500s", len(text), snippet)
             return []
 

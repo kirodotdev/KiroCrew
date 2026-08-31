@@ -104,7 +104,7 @@ from typing import Any, Callable
 from kiro_crew import platform_compat
 from kiro_crew.env import augmented_path
 from kiro_crew.github_runner import agent_writable_roots
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform.context import redact_log_via_context
 
 logger = logging.getLogger(__name__)
 
@@ -1390,8 +1390,13 @@ def log_decline(
     md: dict = dict(metadata or {})
     md.update({"reason": "name_grant", "code": refusal.code, "tier": tier})
     title = str(getattr(event, "title", "") or "")
-    title, _ = redact_exfiltration_urls(title)
-    title, _ = redact_credentials(title)
+    # Through the CONTEXT so a loaded companion's extra credential regexes apply.
+    # This one persists: the title is model-authored and lands in a shared SEL
+    # audit row, so a host-specific token shape the OSS baseline does not know
+    # would be durable rather than rotating out of a log window. The `_log_`
+    # spelling because an audit write must not raise, and because on a process
+    # with no composed context the baseline is still the right answer.
+    title = redact_log_via_context(title)
     sel_factory().log_tool_invocation(
         session_key=session_key,
         agent=agent,

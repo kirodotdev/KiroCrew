@@ -372,6 +372,38 @@ delegates to that same global. Wired sites:
   exfil-then-credential two-pass (the Default `CredentialPolicy.redact` delegates
   to `security.redact`); a loaded companion adds its internal-token regexes
   uniformly across every egress surface.
+- Gate-side LOG lines (`kiro_crew.platform.redact_log_via_context`) — the same
+  companion-aware redaction for an operational log or audit line, which unlike an
+  egress sink cannot afford to raise. `redact_via_context` propagates
+  `PlatformCompositionError` because refusing to SEND is both safe and the point;
+  a log line is not an output boundary, and there the same raise buys nothing
+  while costing availability. The two no-companion states are treated
+  DIFFERENTLY, and conflating them is the subtle part: a context that IS
+  installed whose policy failed to compose withholds the line's TEXT
+  (`LOG_WITHHELD_PLACEHOLDER`), because the host is known non-standalone and the
+  baseline would be a real downgrade; whereas NO installed context keeps the
+  baseline, because nothing there evidences a companion and withholding would
+  destroy diagnostics. Transient adapter errors still degrade to baseline
+  (inherited), so a merely flaky companion does not blank the logs. Covers
+  `platform/update_provider.py` (a failed update command's stderr),
+  `task_planner.py` (an unparseable LLM response before the diagnostic ERROR
+  line) and `name_grant.py` (a model-authored tool title before the shared SEL
+  row — the one that PERSISTS rather than rotating out of a log window).
+  Resolves NOTHING: the no-context branch is answered by the bare
+  `installed_context()` read, whose contract this fits exactly — the no-context
+  answer is the same as the default-context answer, since
+  `DefaultCredentialPolicy.redact` delegates to `security.redact` — so a
+  per-line caller never re-pays the unmemoized config load described in the
+  exemption bullet below.
+- `mcp_gateway/backend.py` deliberately stays on the baseline redactor for its
+  backend stderr and spawn-argv log lines. `gatewayd` is NOT the composition
+  process — it never runs `boot_platform` (see the reasoning at
+  `mcp_gateway/app_call.py`, which relies on the same fact for the security
+  ceiling) — so routing those sites through the context could not reach a
+  companion policy in the first place, and would only trade the baseline for a
+  lazily-composed standalone default resolved per stderr line on the event loop.
+  Closing this residual means handing gatewayd a composed context, the same
+  remedy that module already names for the ceiling, and is a separate change.
 - Exfil exact-host heuristic exemption (`CredentialPolicy.exempt_exact_hosts()`) —
   `security.scan_exfiltration_urls` / `redact_exfiltration_urls` read the
   companion-supplied exact-host set and, for a URL whose domain is an EXACT
