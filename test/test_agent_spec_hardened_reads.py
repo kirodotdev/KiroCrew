@@ -360,6 +360,37 @@ class TestResolveMcpServer:
         # no env block resolves to an empty dict, not None.
         assert _resolve_mcp_server("srv-hr") == (("c", "a"), {})
 
+    def test_a_declared_env_block_survives_the_hardened_read(self, agents_dir_resolver):
+        """The other half of the post-#2602 contract, on THIS module's read path.
+
+        The case above pins the empty-env shape, which a resolver that dropped the
+        block entirely would also satisfy. #2602 added ``env`` because a launcher
+        that shells out to a helper reachable only via the PATH the config supplies
+        dies at the JSON-RPC ``initialize`` handshake without it -- so the value has
+        to arrive, not just the tuple shape. Nothing here asserted that: this file's
+        other cases are refusals asserting ``is None``, and the accepted branch is
+        the size-capped hardened read, which is exactly where a future tightening
+        could drop the block with the argv assertion still green.
+        """
+        from kiro_crew.cron_script import _resolve_mcp_server
+
+        _plant(
+            agents_dir_resolver,
+            AGENT_FILENAME,
+            {
+                "name": "kirocrew",
+                "mcpServers": {
+                    "srv-hr": {
+                        "command": "c",
+                        "args": ["a"],
+                        "env": {"PATH": "/opt/tools/bin"},
+                    }
+                },
+            },
+        )
+
+        assert _resolve_mcp_server("srv-hr") == (("c", "a"), {"PATH": "/opt/tools/bin"})
+
     def test_malformed_spec_no_longer_escapes_as_a_decode_error(self, agents_dir_resolver):
         """The differential case for THIS site.
 
