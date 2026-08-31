@@ -2,10 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
 import {
-  createPinnedPromptTextCache,
   derivePinnedPromptText,
   expandPastesCapped,
-  pasteSignature,
+  nextPinnedPromptState,
   promptBody,
   promptImages,
   promptPreview,
@@ -219,34 +218,75 @@ describe('the card renders what the derivation hands it', () => {
   })
 })
 
-describe('the pinned-text cache does not alias two distinct pastes', () => {
+describe('the pinned reducer does not alias two distinct pastes', () => {
   // Same seq and same line count, so formatToken yields IDENTICAL collapsed text
-  // for both — and equal content length, so a seq+length signature collides.
+  // for both -- and equal content length, so a content-shape key would collide.
   const first = block(1, 'alpha\nbravo\ncharlie')
   const second = block(1, 'delta\nechos\nfoxtrot')
+  const prompt = formatToken(first)
+
+  const input = (b: PasteBlock, over: Record<string, unknown> = {}) => ({
+    idx: 4, ts: 't1', raw: prompt, pastes: [b], machineLabel: null, push: 0, bannerH: 40, ...over,
+  })
 
   it('the two really are indistinguishable to a seq+length key', () => {
-    // Guard: without this the test could pass for the wrong reason.
     expect(second.content.length).toBe(first.content.length)
     expect(second.lines).toBe(first.lines)
     expect(formatToken(second)).toBe(formatToken(first))
   })
 
-  it('gives distinct blocks distinct signatures despite matching seq and length', () => {
-    expect(pasteSignature([second])).not.toBe(pasteSignature([first]))
+  it('derives the second message from its OWN paste, not the first one held', () => {
+    const a = nextPinnedPromptState(null, input(first))
+    const b = nextPinnedPromptState(a, input(second, { idx: 9, ts: 't2' }))
+    expect(a.text).toBe('alpha bravo charlie')
+    expect(b.text).toBe('delta echos foxtrot')
   })
 
-  it('derives the second prompt from its OWN paste, not the first one cached', () => {
-    const cache = createPinnedPromptTextCache()
-    const prompt = formatToken(first)
-    expect(cache(prompt, [first]).text).toBe('alpha bravo charlie')
-    expect(cache(prompt, [second]).text).toBe('delta echos foxtrot')
+  it('CONTROL: an unchanged scroll frame returns the IDENTICAL object', () => {
+    // The no-re-render property the reducer replaced the cache to keep.
+    const a = nextPinnedPromptState(null, input(first))
+    expect(nextPinnedPromptState(a, input(first))).toBe(a)
   })
 
-  it('CONTROL: still serves the cache when the same prompt and block return', () => {
-    // Proves the fix separates distinct blocks rather than neutering the memo.
-    const cache = createPinnedPromptTextCache()
-    const prompt = formatToken(first)
-    expect(cache(prompt, [first])).toBe(cache(prompt, [first]))
+  it('carries the derivation forward when only the push geometry moved', () => {
+    const a = nextPinnedPromptState(null, input(first))
+    const b = nextPinnedPromptState(a, input(first, { push: 12 }))
+    expect(b).not.toBe(a)
+    expect(b.push).toBe(12)
+    // Same strings, so no regex walk was needed to produce them.
+    expect(b.text).toBe(a.text)
+    expect(b.full).toBe(a.full)
+    expect(b.images).toBe(a.images)
+  })
+})
+
+describe('bodyBeyondPreview earns the expand chevron', () => {
+  it('is set for a SHORT multiline paste, whose body the preview flattens away', () => {
+    // The defect: this shape never clamps, so the flag is the only thing that can
+    // mount the chevron -- and the body is the whole point of expanding.
+    const p = block(1, 'first\nsecond\nthird')
+    const st = nextPinnedPromptState(null, {
+      idx: 1, ts: 't', raw: formatToken(p), pastes: [p], machineLabel: null, push: 0, bannerH: 40,
+    })
+    expect(st.text).toBe('first second third')
+    expect(st.full).toBe('first\nsecond\nthird')
+    expect(st.bodyBeyondPreview).toBe(true)
+  })
+
+  it('NEGATIVE CONTROL: a genuinely single-line paste does NOT earn one', () => {
+    const p = block(1, 'one single line of pasted text')
+    const st = nextPinnedPromptState(null, {
+      idx: 1, ts: 't', raw: formatToken(p), pastes: [p], machineLabel: null, push: 0, bannerH: 40,
+    })
+    expect(st.full).toBe(st.text)
+    expect(st.bodyBeyondPreview).toBe(false)
+  })
+
+  it('stays set for a machine row, whose label is not its body', () => {
+    const st = nextPinnedPromptState(null, {
+      idx: 1, ts: 't', raw: 'payload', pastes: [], machineLabel: 'Auto-nudge - cycle 17',
+      machineBody: 'Babysit the run. Check CI.', push: 0, bannerH: 40,
+    })
+    expect(st.bodyBeyondPreview).toBe(true)
   })
 })

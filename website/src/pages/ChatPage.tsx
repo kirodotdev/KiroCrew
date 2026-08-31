@@ -224,7 +224,7 @@ import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } fro
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
 import { addSessionRef, removeSessionRef, mergeSessionRefs, appendSessionRefLinks, type SessionRef } from '../utils/sessionRefs'
-import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, createPinnedPromptTextCache, type PinnedPromptText, pinHandoffY, pinPushTravel, jumpAnchorIdx, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, nextPinnedPromptState, type PinnedPromptState, pinHandoffY, pinPushTravel, jumpAnchorIdx, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   adoptSourceSelections,
   commitRevealedSource,
@@ -3363,7 +3363,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinFoldRef = useRef<HTMLDivElement | null>(null)
   const pinCardRef = useRef<HTMLDivElement | null>(null)
   const pinEnabledRef = useRef(true)
-  const [pinned, setPinned] = useState<{ idx: number; ts?: string; text: string; raw: string; full: string; images: string[]; bodyBeyondPreview: boolean; push: number; bannerH: number } | null>(null)
+  const [pinned, setPinned] = useState<PinnedPromptState | null>(null)
   const [pinExpanded, setPinExpanded] = useState(false)
   // Collapsed card height — the hand-off line is derived from it, so it must be
   // known even while nothing is pinned (no card mounted to measure). Seeded with
@@ -3373,13 +3373,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pinCollapsedHRef = useRef(DEFAULT_PINNED_CARD_H)
   const onPinCollapsedHeight = useCallback((h: number) => {
     if (h > 0) pinCollapsedHRef.current = h
-  }, [])
-  // Memoised because `updatePinnedPrompt` runs once per animation frame of a
-  // scroll, and this walks the prompt (and its pastes) with three regexes.
-  const pinTextCacheRef = useRef<ReturnType<typeof createPinnedPromptTextCache> | null>(null)
-  const pinnedPromptText = useCallback((content: string, pastes: PasteBlock[]): PinnedPromptText => {
-    pinTextCacheRef.current ??= createPinnedPromptTextCache()
-    return pinTextCacheRef.current(content, pastes)
   }, [])
   // Recompute which prompt is pinned, and how far the incoming prompt has
   // pushed it out, from the current scroll position.
@@ -3457,23 +3450,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         ? subagentHeadline(sub)
         : null
     // Stored content is COLLAPSED (recollapsePastes), so a big paste is a
-    // `[ Paste #N ]` token; deriving through the paste layer is what unwraps it.
-    const derived = machineLabel
-      ? null
-      : pinnedPromptText(full, (pinItem.msg.meta?.pastes as PasteBlock[] | undefined) || [])
-    const text = machineLabel ?? derived?.text ?? ''
-    // Compare the RAW content (`prev.raw`), not `text` or the derived body:
-    // `text`, `full` and `images` are all derived from it, and an edit-and-resend
-    // that changes ONLY an attached image leaves the flattened preview text
-    // byte-identical. Comparing the source covers every derived value with one
-    // string compare — and returning `prev` unchanged matters because this runs
-    // once per animation frame during a scroll, so a fresh object (or a fresh
-    // `images` array) would re-render the banner on every one of them.
-    setPinned(prev => (prev && prev.idx === pinIdx && prev.push === push
-      && prev.raw === full && prev.bannerH === bannerH && prev.ts === pinItem.msg.ts)
-      ? prev
-      : { idx: pinIdx, ts: pinItem.msg.ts, text, raw: full, full: nudge ? nudge.body : (sub ? full : derived?.body ?? full), images: derived?.images ?? [], bodyBeyondPreview: !!machineLabel, push, bannerH })
-  }, [scrollerRef, pinnedPromptText])
+    // `[ Paste #N ]` token; the reducer unwraps it and decides whether to derive.
+    setPinned(prev => nextPinnedPromptState(prev, {
+      idx: pinIdx,
+      ts: pinItem.msg.ts,
+      raw: full,
+      pastes: (pinItem.msg.meta?.pastes as PasteBlock[] | undefined) || [],
+      machineLabel,
+      machineBody: nudge ? nudge.body : (sub ? full : undefined),
+      push,
+      bannerH,
+    }))
+  }, [scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
   // fling fires scroll dozens of times/sec. Coalesce to at most once per frame,

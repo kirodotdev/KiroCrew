@@ -1,7 +1,7 @@
 import type { DisplayItem } from '../pages/chat/types'
 import { TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
 import { mdImageDestToPath } from './fileTokens'
-import { type PasteBlock, findTokenRanges } from './pasteTokens'
+import { type PasteBlock, expandAll } from './pasteTokens'
 
 /**
  * Geometry + selection helpers for the pinned-prompt banner (the most recent
@@ -388,18 +388,14 @@ export function expandPastesCapped(
   blocks: PasteBlock[],
   mapBlock?: (text: string) => string,
 ): string {
-  const ranges = findTokenRanges(content, blocks)
-  if (!ranges.length) return content
-  let out = content
-  for (let i = ranges.length - 1; i >= 0; i--) {
-    const { start, end, block } = ranges[i]
-    const capped = block.content.length > PINNED_PASTE_HEAD_CHARS
-      ? block.content.slice(0, PINNED_PASTE_HEAD_CHARS) + ' …'
-      : block.content
-    const body = mapBlock ? mapBlock(capped) : capped
-    out = out.slice(0, start) + body + out.slice(end)
-  }
-  return out
+  // Safe to delegate: `findTokenRanges` pairs a token to a block by `seq`, and
+  // the spread preserves it, so rewriting content cannot move a range.
+  return expandAll(content, blocks.map(b => {
+    const capped = b.content.length > PINNED_PASTE_HEAD_CHARS
+      ? b.content.slice(0, PINNED_PASTE_HEAD_CHARS) + ' …'
+      : b.content
+    return { ...b, content: mapBlock ? mapBlock(capped) : capped }
+  }))
 }
 
 /** Everything the pinned card renders, derived from one prompt in one pass. */
@@ -444,38 +440,70 @@ export function derivePinnedPromptText(content: string, blocks: PasteBlock[]): P
   }
 }
 
-/**
- * Cache key for a prompt's paste blocks.
- *
- * `id` is what makes two blocks distinguishable, and it is load-bearing rather
- * than belt-and-braces. `seq` restarts per draft (`nextSeq` is max+1) and an
- * equal character length is ordinary, so a seq+length pair aliases two
- * same-shaped pastes of the same size and different text — and because the token
- * text embeds seq and line count, such a pair ALSO yields identical collapsed
- * content, which is the cache's other half. `id` is minted once per block
- * (`makePasteId`) and never reused, so it separates them without hashing the
- * text.
- */
-export function pasteSignature(blocks: PasteBlock[]): string {
-  return blocks.map(b => `${b.id}:${b.seq}:${b.content.length}`).join(',')
+/** The pinned banner's complete state, owned by the transcript page. */
+export interface PinnedPromptState {
+  idx: number
+  ts?: string
+  text: string
+  raw: string
+  full: string
+  images: string[]
+  bodyBeyondPreview: boolean
+  push: number
+  bannerH: number
+}
+
+/** What the scroll recompute knows before any derivation is done. */
+export interface PinnedPromptInput {
+  idx: number
+  ts?: string
+  /** Stored (collapsed) prompt content — the identity the derivation keys on. */
+  raw: string
+  pastes: PasteBlock[]
+  /** Compact label a machine-authored row shows instead of its payload. */
+  machineLabel: string | null
+  /** Body such a row reveals when expanded, when it differs from `raw`. */
+  machineBody?: string
+  push: number
+  bannerH: number
 }
 
 /**
- * Single-slot memo for `derivePinnedPromptText`, owned by the caller across
- * renders. One slot is enough because only one prompt is pinned at a time, and
- * the caller runs once per animation frame of a scroll — which is what the memo
- * exists to keep the three regex walks out of.
+ * Next banner state, or `prev` itself when nothing a reader can see has moved.
+ *
+ * Derivation lives HERE rather than ahead of the call because the caller runs
+ * once per animation frame of a scroll: on a frame that moved only the push
+ * geometry the second branch carries the already-derived text forward, so the
+ * three regex walks happen once per pinned message instead of once per frame.
+ * That is what the cache this replaced was for.
+ *
+ * Identity is `(idx, raw, ts)` — the message — so two prompts that collapse to
+ * the same token text cannot share a derivation the way a content-shape key let
+ * them.
  */
-export function createPinnedPromptTextCache(): (content: string, pastes: PasteBlock[]) => PinnedPromptText {
-  let hit: { sig: string; content: string; value: PinnedPromptText } | null = null
-  return (content, pastes) => {
-    // Two values, not one joined key, so neither can absorb the other's
-    // characters.
-    const sig = pasteSignature(pastes)
-    if (hit && hit.sig === sig && hit.content === content) return hit.value
-    const value = derivePinnedPromptText(content, pastes)
-    hit = { sig, content, value }
-    return value
+export function nextPinnedPromptState(
+  prev: PinnedPromptState | null,
+  input: PinnedPromptInput,
+): PinnedPromptState {
+  const { idx, ts, raw, pastes, machineLabel, machineBody, push, bannerH } = input
+  const sameMsg = prev !== null && prev.idx === idx && prev.raw === raw && prev.ts === ts
+  if (sameMsg && prev.push === push && prev.bannerH === bannerH) return prev
+  if (sameMsg) return { ...prev, push, bannerH }
+  const derived = machineLabel === null ? derivePinnedPromptText(raw, pastes) : null
+  const text = machineLabel ?? derived?.text ?? ''
+  const full = machineBody ?? derived?.body ?? raw
+  return {
+    idx,
+    ts,
+    text,
+    raw,
+    full,
+    images: derived?.images ?? [],
+    // By COMPARISON, not by being machine-authored: a short multiline paste never
+    // clamps, so this flag is the only thing that can reach its body.
+    bodyBeyondPreview: full !== text,
+    push,
+    bannerH,
   }
 }
 
