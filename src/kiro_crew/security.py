@@ -2998,6 +2998,8 @@ _ONE_CHAR_CLASS_RE = re.compile(r"\[(\w)\]")
 def _debracket(text: str) -> str:
     """Collapse one-character bracket classes (``[k]irocrew`` -> ``kirocrew``)."""
     return _ONE_CHAR_CLASS_RE.sub(r"\1", text)
+
+
 # The product name as a WHOLE program name (bare or the tail of a path), which is
 # what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
 
@@ -3581,6 +3583,49 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
     tokens = _split_glued_operators(tokens)
     for idx, token in enumerate(tokens):
         assign = _LOCAL_ASSIGN_RE.match(token)
+        # ``NAME+=tail`` APPENDS, and the pattern above cannot match it at all (``+`` is
+        # not a name character), so an appended PROGRAM word was invisible here: `F=fi;
+        # F+=nd; $F <fenced> -exec cat {} +` ran a `find` this resolver never saw, while
+        # its single-assignment twin `F=fin; ${F}d` -- closed in an earlier round --
+        # denied (found in review). Seven spellings did it, including an empty initial
+        # value, repeated appends, a quoted tail and an append feeding a braced use.
+        #
+        # Append is in the same closed class as those: the tail is a LITERAL, so what the
+        # shell will run is decided by the text alone. That is what separates it from
+        # `$(printf find)`, whose value needs a program run and is out of scope here.
+        #
+        # `_SHELL_ASSIGN_RE` is REUSED rather than a second append pattern being added:
+        # it already carries the optional ``+`` group for this exact problem on the
+        # path-tracking side, so there is one spelling of the rule in the module. It is
+        # matched only in the branch the assignment pattern rejects, which keeps this
+        # additive -- renumbering the shared pattern's groups instead would have rewritten
+        # every existing reader of them for no behavioural gain.
+        append = None if assign else _SHELL_ASSIGN_RE.match(token)
+        if append and append.group(2):
+            name, tail = append.group(1), append.group(3)
+            if values and "$" in tail:
+                # Same reason the assignment path expands first: a tail built from an
+                # already-tracked variable is a literal once expanded, and left
+                # unexpanded it reads as computed and the append is dropped.
+                tail = _VAR_USE_RE.sub(
+                    lambda m: values.get(m.group(1) or m.group(2), m.group(0)), tail
+                )
+            if _is_computed_value(tail):
+                # No literal to concatenate. Over-approximate exactly as the assignment
+                # path does: the value only matters where it is later used as a program,
+                # so a wrong guess there is a refusal rather than a bypass.
+                produced = _protected_name_in_substitution(tokens, idx)
+                if produced:
+                    values[name] = produced
+                out.append(token)
+                continue
+            piece = tail.strip("\"'").rstrip(";&|")
+            # `F=` records nothing, so an append to an unset name starts from empty
+            # rather than being discarded -- that was one of the seven spellings, and
+            # bash builds the value the same way.
+            values[name] = values.get(name, "") + piece
+            out.append(token)
+            continue
         if assign and values and "$" in (assign.group(2) or ""):
             # A new value may be built FROM a variable already tracked
             # (``x=p; x=${x}kill``).  Expanding before classifying is what makes the
@@ -8253,6 +8298,92 @@ def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) ->
 # automatically denied by the others.
 DENIED_ROOT_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker"})
 
+#: Leaf names that carry credential material wherever they sit, and the suffixes that
+#: do the same. The companion to :data:`DENIED_ROOT_PARTS`, which answers "is this
+#: DIRECTORY fenced": this answers "does this FILENAME carry a secret", which is a
+#: different question and had no owner here. Two leaf modules had each grown their own
+#: copy for their own surface -- ``PROJECT_SECRET_NAMES`` in the design-tweak preview
+#: server and ``_EXCLUDE_NAMES`` in the cloud source packer -- and both already import
+#: ``DENIED_ROOT_PARTS`` from here, so this module is where a shared answer would
+#: belong. Deliberately PRIVATE all the same: it has one consumer today, and a public
+#: spelling would exist only for a migration this change does not perform. Renaming it
+#: is the cheaper half of that migration when someone does.
+#:
+#: Conservative on purpose, and that cuts both ways. A broad rule (any name containing
+#: ``secret``) reintroduces exactly the false positives this exists to avoid, because
+#: the fenced tree includes OPERATIONAL directories holding ordinary readable files.
+#: But a curated list also means an OMISSION allows -- the one place in this pass whose
+#: polarity is not "anything unenumerated denies" (found in review). It holds for the
+#: names it enumerates and cannot hold for names the USER chooses: a private key called
+#: ``github_work`` or ``deploy_key_prod`` is allowed, and no addition to this list closes
+#: that, because the name space is not ours. So this is a documented BOUNDARY of the
+#: pass, not a gap awaiting more entries.
+#:
+#: Two ways to invert it were measured. Failing closed for literal-name deliveries over a
+#: root holding a whole-directory store spares globs but flips 12 of 12 ordinary literal
+#: searches to DENY (``-name Makefile``, ``-name package.json``, ``-name README.md`` ...).
+#: Classifying every fence entry as a pure store versus an operational one denies
+#: ``find ~ -name '*.py'`` outright whenever ``.ssh`` exists, which is worse. Choosing
+#: between them is a decision about acceptable friction, tracked in issue #8074.
+_CREDENTIAL_LEAF_NAMES: frozenset[str] = frozenset(
+    {
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "identity",
+        "credentials",
+        "credentials.json",
+        "credentials.csv",
+        "credentials.db",
+        # gcloud's OAuth refresh token. Named for the mechanism rather than for what it
+        # holds, so it matched none of the `credential`-shaped entries above and none of
+        # the suffixes -- an omission of exactly the kind this list's polarity makes
+        # dangerous (found in review).
+        "application_default_credentials.json",
+        # The Azure CLI's bearer-token cache, missed for the same reason: the name says
+        # what the file is FOR, not that it holds a secret. Both premises this list
+        # requires were measured before adding it -- a direct `cat` of the file already
+        # denies on main as well as here, so naming it makes the traversal agree with the
+        # direct read rather than becoming stricter than it, and the file IS a credential
+        # (it holds access and refresh tokens). Matched case-folded, so the
+        # `accessTokens.json` the CLI actually writes is covered by this spelling.
+        "accesstokens.json",
+        # gcloud's short-lived access tokens, in the same fenced directory and missed the
+        # same way. A direct read of it already DENIES, so the traversal was strictly more
+        # permissive than `cat` on the identical path -- the incoherence this pass exists
+        # to remove, rather than a judgement about how sensitive the file is (measured in
+        # review).
+        "access_tokens.db",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+        ".htpasswd",
+        ".app_secret",
+        "secring.gpg",
+    }
+)
+_CREDENTIAL_LEAF_SUFFIXES: tuple[str, ...] = (
+    ".pem",
+    ".key",
+    ".p8",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+)
+
+
+def _looks_like_credential_leaf(name: str) -> bool:
+    """Does this BASENAME hold credential material wherever it sits?
+
+    Names are compared casefolded, because a case-insensitive filesystem opens the
+    same file either way -- the reasoning :func:`_path_in_home_dirs` already applies.
+    """
+    lowered = name.casefold()
+    return lowered in _CREDENTIAL_LEAF_NAMES or lowered.endswith(_CREDENTIAL_LEAF_SUFFIXES)
+
 
 def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     """Return True if the path points to a read+write-sensitive location.
@@ -8758,6 +8889,22 @@ def is_sensitive_bash_command(
     alt_result = _check_alt_traversal_reaches_fence(command)
     if alt_result:
         return alt_result
+
+    # ── Pass 5: a `find` traversal that DELIVERS a fenced match ──
+    # The passes above all judge a TOKEN. `find` factors the path across two
+    # arguments and produces it at runtime, so no token names it -- see the block
+    # comment on `_check_find_traversal_reaches_fence`. It judges every text this
+    # command runs as a shell, not just the outer line, so a traversal wrapped in a
+    # `-c` payload or a substitution is judged too.
+    #
+    # Pass 4 is the sibling of this one and the two are disjoint by construction: it
+    # answers the same question for every traversal program EXCEPT `find` (its own
+    # docstring says so), because `find` is the one whose filter grammar decides
+    # which paths the traversal even produces. Neither subsumes the other, so both
+    # run; being disjoint on the program word, their order does not matter.
+    find_result = _check_find_traversal_reaches_fence(command)
+    if find_result:
+        return find_result
 
     # IMDS access via any IP encoding (decimal, hex, octal, IPv6-mapped)
     imds_result = _check_imds_access(command, enabled_ids=enabled_ids)
@@ -9561,6 +9708,1477 @@ def _path_candidates(token: str) -> list[str]:
             cand = stripped
         out.append(cand)
     return out
+
+
+#: ── ``find``: a traversal that DELIVERS a match names the path it produces ──
+#:
+#: Every other pass in this module asks one question of every token: does this
+#: token resolve to a fenced path? ``find`` defeats that question by
+#: CONSTRUCTION, because it factors the path in two -- the directory is one
+#: argument, the leaf another, and the path itself is computed at runtime and
+#: never appears in the command text at all::
+#:
+#:     find ~/.kiro/crew -name '.env' -exec cat {} +
+#:     find ~ -name credentials | xargs cat
+#:
+#: Re-joining the two halves is what makes the traversal visible again (#7034).
+#: Two bounds decide where that join is denied.
+#:
+#: **Delivery.** A ``find`` that only LISTS is left alone, which is what keeps the
+#: newly-denied set small: an ordinary ``find ~ -name '*.md'`` is untouched, and
+#: only a traversal that hands a match to a command is judged -- an action
+#: primary, a pipe, a redirect, or a substitution that captures its output. The
+#: inert primaries are an ALLOW-list and anything else denies, the
+#: same polarity ``_TRUST_ROOT_READ_LISTERS`` documents: enumerating the
+#: delivering primaries would fail OPEN, so a primary nobody thought of would be
+#: a silent bypass. Note that none of this needs to know the CHILD command --
+#: ``cat``, ``base64``, a script, ``xargs`` with any of its flag grammars -- because
+#: the gate denies NAMING a fenced path whatever is then done with it. That is
+#: why no executor list appears here, the direction this module's own comments
+#: call fragile.
+#:
+#: Delivery is read from the invocation's OWN token span, not from the command
+#: line. Reading the whole line denied a listing because an UNRELATED later
+#: command carried a pipe (``find ~/.kiro/crew -type f; cat notes | less``).
+#:
+#: A filter only BOUNDS that delivery when find will run the delivery after it and only
+#: where it holds. Position and the boolean operators decide that, not mere presence:
+#: ``find ~ -exec cat {} + -name '*.py'`` cats every file under the home directory, and a
+#: disjunction, a negation or a comma each detach the filter from the delivery. Where the
+#: bound cannot be established cheaply the traversal is read as unfiltered -- see
+#: :data:`_FIND_SCOPE_BREAKING_OPS`.
+#:
+#: **Framing.** Which text to judge is its own question, and answering it by
+#: inspecting the command's characters was wrong twice: capture was read off the two
+#: opener characters glued to the program word's token, so ``cat $( find … )`` was
+#: allowed where ``cat $(find … )`` was denied; and a ``bash -c '<traversal>'``
+#: payload was never re-tokenized at all, so the traversal was invisible even though
+#: the argv floor already descends into payloads for plain path tokens. Both are the
+#: same defect -- judging the command's TEXT rather than the things the shell runs.
+#: `_find_traversal_views` enumerates those instead, so capture stops being a
+#: spelling to detect and becomes a property of how a view was DERIVED, and no depth
+#: of wrapping is a special case. The same reframing is why the program word is
+#: matched through the pattern machinery (`_find_program_word_names_find`): a shell
+#: expands ``f?nd`` against the filesystem, which no substring test on the text can
+#: see.
+#:
+#: **Cost.** A filter is agent-supplied text, and this gate is synchronous and
+#: in-process, so evaluating one is a denial-of-service surface before it is a
+#: correctness question -- CPython's ``re`` has no timeout, and the module already
+#: records a watchdog-crossing hang from admitting a run into a pattern. Two rules
+#: keep the work bounded, and both fail CLOSED by widening the traversal rather
+#: than dropping the filter:
+#:
+#: * a ``-regex``/``-iregex`` pattern is NEVER compiled and NEVER run. Screening for
+#:   catastrophic shapes was rejected: against a hostile author that enumeration
+#:   does not terminate, which is the argument this module already makes about
+#:   enumerating dangerous punctuation. The cost is an over-block on a rare flag.
+#: * a glob becomes a regex through `_glob_to_regex`, so it is bounded instead:
+#:   adjacent ``.*`` runs are collapsed, which is semantics-preserving, and what
+#:   remains is capped. ``-name '{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}b'``
+#:   compiled to fourteen adjacent ``.*`` and hung the gate outright -- measured as
+#:   still running after 12 seconds.
+#:
+#: The SUBJECTS are never agent input, which is what makes the cap sufficient: they
+#: are fence basenames and credential-store entry names, all short.
+#:
+#: **Certainty.** The join is denied where the FENCE supplies the missing half,
+#: and left alone where the traversal merely might wander into one:
+#:
+#: * the root is a fenced path, or a directory whose secrets live in its leaves
+#:   (``~/.kiro/crew``) -- the command names the credential directory outright and
+#:   the leaf is the runtime wildcard, which is exactly the ``~/.kiro/crew/$F``
+#:   shape `_sensitive_under_unresolved_var` already denies;
+#: * a name pattern matches the BASENAME of a fence entry lying under the root,
+#:   so the fence itself declares the name the traversal asks for (``-name .env``
+#:   under ``~``, and the unfiltered ``find ~/.kiro/crew -type f``, whose pattern
+#:   is effectively ``*``);
+#: * the filter asks for a NAME that carries credentials wherever it sits, and a
+#:   whole-directory credential store lies under the root (``-name id_rsa`` under
+#:   ``~``, reaching ``~/.ssh/``). Everything inside such a store is fenced, so the
+#:   traversal is resolving a path rather than searching, and
+#:   `_find_filter_names_a_credential_leaf` answers it from the NAME -- no stat, no
+#:   listing. Two earlier revisions asked the filesystem instead and each way was its
+#:   own defect: a direct-child ``os.path.exists`` could not see
+#:   ``~/.ssh/archive/id_rsa`` while denying the same name at the top, and an
+#:   ``os.listdir`` per store to match a glob measured 110 listdir calls and 14.4ms on
+#:   ONE traversal (against 0 and 0.7ms for an ordinary fenced read) on a gate that is
+#:   synchronous and in-process. Those two point in OPPOSITE directions -- probe
+#:   deeper, stop enumerating -- so neither is reachable by extending the probe;
+#:   deciding from the name removes the depth question and the enumeration together,
+#:   and drops a host-dependence that was never a feature (the same command allowed or
+#:   denied according to whether a store happened to exist yet). Every filter spelling
+#:   of one read answers alike -- ``-name id_rsa``, ``-name 'id_*'`` and
+#:   ``-path '*/id_rsa'`` -- which is the invariant an earlier round established and
+#:   which each of these revisions had to be re-checked against. It is also the whole
+#:   difference between denying ``find ~ -name credentials -exec cat {} +`` and leaving
+#:   ``find ~ -type d -name __pycache__ -exec rm -rf {} +`` alone: no credential name
+#:   is asked for, so the clause says no. The cost is that this is strictly WIDER than
+#:   a probe, which is the fail-closed direction, bounded by keeping the predicate
+#:   conservative -- known credential leaves and suffixes, nothing pattern-like.
+#:
+#: What this cannot see is unchanged and known, and the largest part of it is DESCOPED
+#: rather than pending: this pass recognises a traversal by its SPELLING, so an operand
+#: the shell COMPUTES is outside it. ``$(printf find) ~/.kiro/crew -type f -exec cat {} +``
+#: is the witness -- knowing that runs ``find`` means knowing what ``printf`` writes, which
+#: is not a property of the text. The same applies to a glob-bearing root
+#: (``~/.kir*/crew``), brace expansion (``f{i,}nd``), a root supplied from outside the
+#: command line (``-files0-from -``), a genuinely unassigned expansion, and a root reached
+#: by a preceding ``cd`` rather than named (the working-directory emulation this module
+#: deliberately does not rest security on -- see `_check_sensitive_cd_taint`). Six review
+#: rounds measured 17 such spellings; each one closed revealed others, because the set of
+#: programs whose output is ``find`` is not enumerable by any pattern over the text. The
+#: fix is to invert the polarity -- require literal operands and fail closed on computed
+#: ones -- which is a behaviour change on a security gate with its own false-positive
+#: surface to price, tracked in issue #8074, NOT a gap in this pass.
+#:
+#: What IS resolved here is what the text alone determines: a same-command assignment
+#: (``F=find; $F``, and the split ``F=fin; ${F}d``), a glob-expanded program word
+#: (``f?nd``), a quote splice (``fi''nd``), a nested ``-c`` payload, and the body of a
+#: substitution. Those turn a computed spelling back into a literal one.
+#:
+#: Also outside it: a pattern held in a variable, a shell loop over a substitution, a leaf
+#: fenced only by LOCATION whose own name carries no credential signal (``known_hosts``),
+#: the credential-name list's own polarity (see `_CREDENTIAL_LEAF_NAMES`, also #8074), and
+#: -- where the root is unknowable AND no filter is left to evaluate -- the literal reading
+#: is all that is judged, because widening both at once denied an ordinary
+#: ``find "$TMPDIR" -type f -delete`` outright (see `_find_root_readings`). And any OTHER
+#: program that factors a root and a name the same way -- ``fd`` / ``fdfind``
+#: (``-x`` / ``-X``), ``locate`` / ``plocate`` piped into a reader, ``rg --files``,
+#: ``du -a`` -- each of which needs its own grammar, plus ``grep -r <dir>``, which needs no
+#: second command at all. This pass closes the LITERALLY SPELLED ``find`` form, NOT the
+#: traversal class and NOT the computed-operand class; it must not be read as either.
+_FIND_PROGRAM_NAMES: frozenset[str] = frozenset({"find", "gfind"})
+
+#: Options that precede the roots. A closed set on purpose: skipping EVERY
+#: leading ``-`` token would read ``find -name x`` as a traversal of ``x``.
+#: ``-O<level>`` is glued, ``-D`` takes the next token.
+_FIND_GLOBAL_OPTS: frozenset[str] = frozenset({"-H", "-L", "-P", "--"})
+
+#: BSD/macOS find takes more pre-root options than GNU, and they BUNDLE:
+#: ``find [-H|-L|-P] [-EXdsx] [-f path] [path ...] [expression]``. An unrecognised one ends
+#: the roots run, so the traversal was read as rooted at ``.`` and the fenced operand was
+#: never seen -- ``find -E ~/.kiro/crew -type f -exec cat {} +`` was allowed while the same
+#: command without ``-E`` denied, and the bundles (``-EX``, ``-Es``, ``-dsx``, ``-EXdsx``)
+#: went the same way (found in review). Matched as a character class rather than by
+#: enumerating the 31 bundle spellings, and safe against the primaries because every
+#: primary is a word -- ``-delete`` and ``-depth`` carry letters outside this set.
+_FIND_BSD_PREROOT_CHARS = frozenset("EXdsx")
+
+#: The one pre-root option that takes an OPERAND, and the operand is a ROOT: BSD
+#: ``find -f <path>`` names a hierarchy to traverse. So it is collected rather than
+#: skipped -- skipping it would lose the very path that decides the verdict.
+_FIND_ROOT_OPTION = "-f"
+
+
+def _find_is_bsd_preroot_option(token: str) -> bool:
+    """True for a BSD pre-root option or bundle (``-E``, ``-sx``, ``-EXdsx``)."""
+    return (
+        len(token) > 1
+        and token[0] == "-"
+        and all(ch in _FIND_BSD_PREROOT_CHARS for ch in token[1:])
+    )
+
+
+#: Primaries that neither run a command nor write a file, so a traversal built
+#: only from these can do nothing with a match but print it. Everything else
+#: beginning with ``-`` is treated as delivery -- see the polarity note above.
+#: ``-newerXY`` is matched by prefix, since the suffix pairs are combinatorial.
+_FIND_INERT_PRIMARIES: frozenset[str] = frozenset(
+    {
+        # tests
+        "-name",
+        "-iname",
+        "-path",
+        "-ipath",
+        "-wholename",
+        "-iwholename",
+        "-lname",
+        "-ilname",
+        "-regex",
+        "-iregex",
+        "-type",
+        "-xtype",
+        "-size",
+        "-empty",
+        "-perm",
+        "-links",
+        "-inum",
+        "-samefile",
+        "-user",
+        "-uid",
+        "-group",
+        "-gid",
+        "-nouser",
+        "-nogroup",
+        "-fstype",
+        "-context",
+        "-readable",
+        "-writable",
+        "-executable",
+        "-true",
+        "-false",
+        "-mtime",
+        "-atime",
+        "-ctime",
+        "-mmin",
+        "-amin",
+        "-cmin",
+        "-used",
+        "-anewer",
+        "-cnewer",
+        # positional/global options that may appear among the primaries
+        "-maxdepth",
+        "-mindepth",
+        "-depth",
+        "-d",
+        "-mount",
+        "-xdev",
+        "-follow",
+        "-noleaf",
+        "-warn",
+        "-nowarn",
+        "-ignore_readdir_race",
+        "-noignore_readdir_race",
+        "-help",
+        "--help",
+        "-version",
+        "--version",
+        # operators
+        "-not",
+        "-a",
+        "-and",
+        "-o",
+        "-or",
+        # actions that only print or stop
+        "-print",
+        "-print0",
+        "-printf",
+        "-ls",
+        "-quit",
+        "-prune",
+    }
+)
+
+#: Filters whose pattern is matched against the whole path rather than the
+#: basename, and the two spellings whose pattern is a regex instead of a glob.
+_FIND_NAME_TESTS: frozenset[str] = frozenset({"-name", "-iname"})
+_FIND_PATH_TESTS: frozenset[str] = frozenset(
+    {"-path", "-ipath", "-wholename", "-iwholename", "-lname", "-ilname"}
+)
+_FIND_REGEX_TESTS: frozenset[str] = frozenset({"-regex", "-iregex"})
+
+#: Glob metacharacters, for telling "resolve this exact name" from "search".
+_FIND_GLOB_META = frozenset("*?[")
+
+#: The one primary that supplies ROOTS from outside the command line: GNU find reads
+#: them from a file, or from stdin for ``-``. The command therefore names no root at
+#: all, and a parser reading only operands defaults the traversal to ``.`` --
+#: ``printf '%s\0' ~/.kiro/crew | find -files0-from - -name .env -exec cat {} +`` walked
+#: a fenced root the parse never saw (found in review). Read as an UNKNOWABLE root
+#: instead, exactly like a root carrying an unassigned expansion, so the FILTER is what
+#: decides and an ordinary ``-files0-from list.txt -name '*.o' -delete`` is untouched.
+#:
+#: What that buys is precise, and smaller than it looks: the pass stops inventing a ``.``
+#: root it cannot justify, so a credential-shaped filter still denies
+#: (``-files0-from list -name id_rsa`` denies through the name vocabulary). It does NOT
+#: make the traversal safe -- with no evaluable filter, ``-files0-from - -type f -exec cat``
+#: is ALLOWED, because the root is exactly the kind of computed operand this pass does
+#: not cover. The enumeration here is closed (this is the only way find takes a root that
+#: is not an operand); the CASE is not. Deciding it belongs to the polarity inversion in
+#: issue #8074, not here.
+_FIND_ROOT_SOURCE_FLAGS: frozenset[str] = frozenset({"-files0-from"})
+
+
+#: Operators that must not arrive GLUED to a neighbouring word. ``shlex`` splits on
+#: whitespace only, so ``-name .env|xargs`` reaches the parser as ONE token and the
+#: pipe is consumed as pattern text -- delivery is never seen, and the command reads
+#: a fenced secret that its whitespace-separated twin denies (found in review). The
+#: same glue hides a redirect: ``-type f>/tmp/leak`` yields the token ``f>/tmp/leak``.
+#:
+#: ``<`` is deliberately ABSENT, because a ``<`` is never a delivery on its own: it
+#: feeds the traversal's stdin rather than carrying its output anywhere. Spacing it
+#: would also split ``<(find …)`` into ``<`` and ``(find``, and while capture no
+#: longer depends on reading those two characters off a token (see
+#: `_find_traversal_views`), the split serves nothing.
+_FIND_GLUED_OPERATORS = frozenset("|;&>")
+
+
+def _find_space_unquoted_operators(command: str) -> str:
+    """Surround unquoted, unescaped control/redirect operators with spaces.
+
+    Splitting the TOKENS instead was rejected for the reason `_split_glued_operators`
+    documents: ``shlex`` has already removed the quotes by then, so a quoted
+    ``-name 'a|b'`` is indistinguishable from a real pipe and would be split too.
+    Working on the RAW string keeps quote state, so a quoted operator is left alone
+    and only a real one becomes its own token.
+
+    A run is kept together (``>>``, ``&&``, ``2>&1``) so a two-character operator is
+    not split into two. A backslash escapes the next character exactly as a shell
+    reads it, which is what keeps ``-exec cat {} \\;`` intact.
+    """
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                out.append(command[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(command[i + 1])
+            i += 2
+            continue
+        if ch in _FIND_GLUED_OPERATORS:
+            start = i
+            while i < n and command[i] in _FIND_GLUED_OPERATORS:
+                i += 1
+            out.append(" ")
+            out.append(command[start:i])
+            out.append(" ")
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _find_credential_store_dirs() -> list[str]:
+    """Every fence entry, as a real path, for "does this directory hold a match".
+
+    EVERY entry in :data:`_SENSITIVE_HOME_DIRS` fences its whole subtree -- that is
+    the ``startswith(target + os.sep)`` rule in `_path_in_home_dirs` -- so any name
+    found inside one is fenced whatever the name is. An earlier version kept only
+    SINGLE-segment entries, which silently dropped the nested whole-directory stores:
+    ``.config/gcloud`` was never probed, so ``find ~ -name credentials.db -exec cat
+    {} +`` read its credential database (found in review).
+
+    What must NOT be scanned is a crew leaf-PARENT such as ``~/.kiro/crew``, which
+    holds readable files (``config.json``, ``sessions.db``) beside its fenced leaves.
+    Those directories are not fence entries at all -- only their leaves are -- so
+    taking the list as-is excludes them by construction. That is the property the
+    single-segment filter was reaching for, and it gets it right.
+
+    Returned UN-casefolded, unlike ``_home_dir_targets``: the caller stats these
+    paths, and on a case-sensitive filesystem a casefolded home
+    (``/Users/Alice`` -> ``/users/alice``) does not exist.
+
+    Anchored on the real home only, so a crew home relocated by ``KIROCREW_HOME`` is
+    not scanned here. Nothing is lost: this clause exists for stores whose leaf names
+    the fence does NOT declare (``~/.aws/credentials``), and those are home-anchored
+    by nature, while every crew leaf is matched by NAME through the re-anchored
+    ``_home_dir_targets`` in the clause above.
+    """
+    home = os.path.expanduser("~")
+    return [os.path.join(home, entry) for entry in _SENSITIVE_HOME_DIRS]
+
+
+def _credential_leaf_subjects() -> "list[str]":
+    """The vocabulary a filter pattern is matched against: leaf names and suffix bearers.
+
+    Shared so the ``-name`` route and the ``-path`` route test the SAME set -- the
+    invariant this pass owes is that every filter spelling of one read answers alike,
+    and two copies of this list is how that invariant breaks.
+    """
+    return list(_CREDENTIAL_LEAF_NAMES) + [f"x{suffix}" for suffix in _CREDENTIAL_LEAF_SUFFIXES]
+
+
+def _credential_probe_forms(probe: str, sep: str) -> "set[str]":
+    """The spellings a ``-path`` pattern may have to match this synthetic path in.
+
+    A `-path` pattern is written in find's own spelling, which uses forward slashes,
+    while the probe is joined with the platform separator. On Windows the compiled
+    pattern (``.*/id_rsa``) therefore could never match the probe
+    (``...\\.ssh\\id_rsa``) and the whole `-path` clause was inert there -- caught by the
+    Windows shard, invisible on POSIX where the two spellings coincide.
+
+    *sep* is a parameter rather than read from :data:`os.sep` so the separator-dependent
+    behaviour is reachable from a test on either platform. Taking it from the module
+    global made the fix unfalsifiable off Windows: a mutation deleting the second
+    spelling survived every local test, because on POSIX it deletes nothing.
+    """
+    return {probe, probe.replace(sep, "/")}
+
+
+def _find_filter_names_a_credential_leaf(
+    literal_names: list[str],
+    glob_matchers: "list[re.Pattern[str]] | None" = None,
+) -> str | None:
+    """Does this traversal's filter ask for a name that carries credentials anywhere?
+
+    Answers from the NAME alone -- no filesystem access. Two earlier revisions asked
+    the store instead, and each way of asking was its own defect:
+
+    * ``os.path.exists(store/name)`` only ever probed a store's DIRECT children, so a
+      key one level down (``~/.ssh/archive/id_rsa``) was invisible while the same name
+      at the top denied -- the whole subtree is fenced, so that split had no meaning;
+    * ``os.listdir(store)`` to match a glob against real entries reached 110 listdir
+      calls and 14.4ms for ONE traversal (measured), against 0 calls and 0.7ms for an
+      ordinary fenced read. This gate is synchronous and in-process, so that is
+      latency on the async permission path, not merely wasted work.
+
+    Those two point in opposite directions -- probe deeper, and stop enumerating -- so
+    neither is reachable by extending the probe. Asking the name removes both at once:
+    there is no depth to get wrong and nothing to enumerate. It also drops a
+    host-dependence that was never a feature, where the same command was allowed or
+    denied according to whether a store happened to exist yet.
+
+    The cost is that this is strictly WIDER than a probe: ``find ~ -name id_rsa
+    -exec cat {} +`` is denied on a host with no ``.ssh`` at all. That is the
+    fail-closed direction and the module's stated posture -- a *maybe* answers yes.
+
+    What keeps it from over-blocking is that the predicate is conservative: it names
+    known credential leaves and suffixes, nothing pattern-like. The three false
+    positives an earlier revision measured on a real developer home
+    (``~/.kirocrew/run`` holds transient sandbox ``*.py`` wrappers,
+    ``~/.local/share/kiro-cli`` holds ``tui.js``, four fenced directories hold a
+    ``*.json``) are all NON-credential basenames, so none of them is reachable here.
+
+    A GLOB is tested against the predicate's own vocabulary rather than against a
+    directory: the credential leaf names, and one synthetic bearer per credential
+    suffix. So ``-name 'id_*'`` matches ``id_rsa`` and ``-name '*.pem'`` matches the
+    suffix probe, while ``-name '*.py'`` matches neither. The subjects are this
+    module's own short constants, never agent input, which is what keeps the existing
+    wildcard bound sufficient.
+    """
+    for name in literal_names:
+        if _looks_like_credential_leaf(name):
+            return name
+    if not glob_matchers:
+        return None
+    subjects = _credential_leaf_subjects()
+    for subject in subjects:
+        if any(m.fullmatch(subject) for m in glob_matchers):
+            return subject
+    return None
+
+
+#: A backslash escape inside a find filter pattern. GNU find reads ``\c`` as the literal
+#: ``c``, so the escape has to come off before the pattern is compared to anything.
+_FIND_PATTERN_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
+
+
+def _find_pattern_operand(token: str) -> str:
+    r"""A filter's pattern, with a captured substitution's closing punctuation removed.
+
+    ``cat $(find ~ -regex '.*/id_rsa$')`` reaches ``shlex`` with the closing paren
+    glued to the pattern, so the token is ``.*/id_rsa$)``. Applied HERE, where the
+    pattern is read, rather than at the call site: the strip was originally written
+    per-list at the call site, ``-regex`` was the one list that did not get it, and
+    an uncompilable pattern then dropped its matcher and allowed a read that the
+    ``-name`` spelling of the same read denied (found in review). One place means no
+    family can be forgotten again.
+
+    Stripping only ever WIDENS what the pattern matches, so a genuine trailing
+    ``)`` or backtick in a filename costs a denial, never a permit.
+
+    But it must not strip punctuation belonging to the TOKEN's own substitution, because
+    the pass reads a computed filter as opaque and that reading is what fails closed.
+    ``-name "$(printf id_rsa)"`` arrived here as ``$(printf id_rsa)``, lost its closing
+    paren, and the leftover no longer looked like a substitution -- so it was taken as the
+    literal name ``$(printf id_rsa``, matched nothing in the vocabulary, and the read was
+    allowed where the literal ``-name id_rsa`` denied (found in review). The mechanism was
+    never missing; this strip defeated it, and ``${LEAF}`` only survived because it has no
+    trailing character to lose.
+    So a trailing ``)`` comes off only while the token has MORE closers than openers, and a
+    trailing backtick only while their count is odd -- an unbalanced one is the outer
+    capture's, a balanced one is the token's own. That also keeps a parenthesised
+    ``-regex`` group intact (``.*(id_rsa|id_dsa)$)`` loses exactly one).
+
+    A backslash is then removed with the same reasoning. GNU find reads ``\c`` as the
+    LITERAL ``c``, so ``-name '\.env'`` asks for exactly ``.env`` -- but a backslash is
+    not glob metacharacter, so the pattern was taken as the literal name ``\.env``,
+    matched nothing in the credential vocabulary, and the read was allowed while the
+    unescaped twin denied (found in review). Every escaped spelling of every enumerated
+    name defeated the clause the same way (``i\d_rsa``, ``\c\r\e\d\e\n\t\i\a\l\s``).
+    Unescaping here rather than per family is the same argument as the strip above: one
+    place, so no family can be forgotten. It stays in the widening direction too -- an
+    escaped wildcard (``\*``, a literal asterisk to find) is read as a wildcard, which
+    over-matches rather than under-matches. ``-regex`` patterns pass through here as
+    well, and a backslash IS meaningful to them, but that cannot weaken anything:
+    a non-empty ``regex_pats`` already forces the opaque reading regardless of content.
+    """
+    trimmed = token
+    while trimmed:
+        tail = trimmed[-1]
+        if tail == ")" and trimmed.count(")") > trimmed.count("("):
+            trimmed = trimmed[:-1]
+        elif tail == "`" and trimmed.count("`") % 2:
+            trimmed = trimmed[:-1]
+        else:
+            break
+    return _FIND_PATTERN_ESCAPE_RE.sub(r"\1", trimmed)
+
+
+#: Ceiling on the "any run" wildcards a filter glob may carry before the pass stops
+#: building a matcher for it and treats it as opaque instead.
+#:
+#: `_glob_to_regex` maps ``*`` and a brace group to ``.*``, so an agent-supplied
+#: pattern becomes an agent-supplied REGEX that this synchronous gate then runs.
+#: ``-name '{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}{a}b'`` compiles to fourteen
+#: adjacent ``.*`` and hangs the gate outright -- measured as still running after
+#: 12s, which is the watchdog-crossing hang `_separator_collapsed_variants`
+#: documents. Two bounds together, because either alone leaves the other open:
+#: adjacent ``.*`` runs are collapsed (``.*.*`` names exactly what ``.*`` names, so
+#: this is semantics-preserving), and what remains is capped. Eight is far above
+#: any real filename filter and keeps the work polynomial in a SHORT subject --
+#: the subjects here are fence basenames and store entry names, never agent input.
+_FIND_GLOB_WILDCARD_LIMIT = 8
+
+#: A generated ``.*`` run, for the collapse above. Matches the two-character
+#: sequence a wildcard produces; a LITERAL ``.`` or ``*`` in the glob arrives
+#: escaped (``\.``, ``\*``), so this cannot collapse a literal.
+_FIND_GENERATED_ANY_RUN_RE = re.compile(r"(?:\.\*)+")
+
+
+def _find_glob_matcher(pattern: str) -> "re.Pattern[str] | None":
+    """Compile a find ``-name``/``-path`` glob into a matcher, or None if it cannot.
+
+    Returning None makes the caller treat the filter as opaque, which WIDENS the
+    traversal rather than dropping it -- see `_find_traversal_reaches_fence`. That
+    is the fail-closed answer for a pattern this function refuses to run as well as
+    for one that will not compile.
+
+    Case-insensitive for every spelling, not just ``-iname``: the fence itself
+    casefolds both sides (see :func:`_path_in_home_dirs`), because on a
+    case-insensitive filesystem the two spellings open the same file.
+    """
+    generated = _FIND_GENERATED_ANY_RUN_RE.sub(".*", _glob_to_regex(pattern))
+    if generated.count(".*") > _FIND_GLOB_WILDCARD_LIMIT:
+        return None
+    try:
+        return re.compile(generated, re.IGNORECASE)
+    except re.error:
+        return None
+
+
+def _find_literal_path_probe(pattern: str, root: str) -> str | None:
+    """Reduce a ``-path`` pattern to the path its non-wildcard segments name.
+
+    ``-path`` matches the whole path, so the pattern carries the fenced segments
+    itself. Dropping the segments that are wildcards leaves something the
+    ordinary path gate can answer: ``*/.aws/credentials`` reduces to
+    ``.aws/credentials``, which is fenced under the root, while
+    ``*/node_modules/*`` reduces to ``node_modules``, which is not.
+    """
+    normalized = pattern.replace("\\", "/")
+    literal = [seg for seg in normalized.split("/") if seg and not (_FIND_GLOB_META & set(seg))]
+    if not literal:
+        return None
+    joined = "/".join(literal)
+    if normalized.startswith("/"):
+        return "/" + joined
+    return os.path.join(root, joined)
+
+
+#: Operators that break the guarantee that a collected filter BOUNDS the delivery.
+#:
+#: find evaluates its expression left to right with an implicit AND, so a filter only
+#: bounds a delivery primary when that primary can run *after* it and only when it
+#: holds. A disjunction runs the right branch where the left FAILS
+#: (``-name '*.py' -o -exec cat {} +``), a negation inverts it
+#: (``-not -name '*.py' -exec cat {} +``), and a comma makes the two sides independent
+#: expressions -- in each case the collected filter does not narrow what is delivered,
+#: and the pass believed it did (found in review). Deciding which filters really bind
+#: would need find's own precedence grammar (``!`` over ``-a`` over ``-o``, with ``,``
+#: sequencing); reading the traversal as UNFILTERED instead needs no grammar and fails
+#: closed. ``-a``/``-and`` are absent on purpose: an explicit AND binds exactly as the
+#: implicit one does.
+_FIND_SCOPE_BREAKING_OPS: frozenset[str] = frozenset({"-o", "-or", "-not", "!", ","})
+
+
+class _FindInvocation(NamedTuple):
+    """One parsed ``find`` invocation.
+
+    A NamedTuple rather than a widening positional tuple: the parse now carries seven
+    facts, and at that width a caller unpacking them in order is one edit away from
+    silently swapping two booleans.
+    """
+
+    roots: list[str]
+    name_pats: list[str]
+    path_pats: list[str]
+    regex_pats: list[str]
+    delivers: bool
+    opaque_roots: bool
+    #: False when a collected filter does not bound the delivery -- see
+    #: :data:`_FIND_SCOPE_BREAKING_OPS`. The caller then reads the traversal as
+    #: unfiltered, which is the fail-closed direction.
+    filters_bind: bool
+
+
+def _parse_find_invocation(tokens: list[str], start: int) -> _FindInvocation:
+    """Read one ``find`` invocation starting at the token AFTER the program word.
+
+    Returns its roots, its filter patterns by family, whether it DELIVERS matches,
+    whether its roots came from somewhere this parse cannot read, and whether the
+    collected filters actually BOUND that delivery.
+    A traversal with no root operand walks the working directory, which is what
+    find itself does.
+    """
+    i = start
+    n = len(tokens)
+    # Declared before the option run because BSD `-f <path>` contributes a ROOT from
+    # inside it, not after it.
+    roots: list[str] = []
+    # Global options first: a closed set, so an unrecognized flag ends the run
+    # rather than being skipped past the roots.
+    while i < n:
+        token = tokens[i]
+        if token in _FIND_GLOBAL_OPTS:
+            i += 1
+            continue
+        if _find_is_bsd_preroot_option(token):
+            i += 1
+            continue
+        # `-f <path>` names a hierarchy to traverse, so its operand is a ROOT.
+        if token == _FIND_ROOT_OPTION and i + 1 < n:
+            roots.append(tokens[i + 1])
+            i += 2
+            continue
+        if token == "-D" and i + 1 < n:
+            i += 2
+            continue
+        if token.startswith("-O") and len(token) > 2 and token[2:].isdigit():
+            i += 1
+            continue
+        break
+    delivers = False
+    while i < n:
+        token = tokens[i]
+        if not token or token.startswith("-") or token in ("(", ")", "!", ","):
+            break
+        # A redirect can sit BEFORE the operands (`find >out ~/dir -type f`). Without
+        # this the roots loop collected `>` and its target AS ROOTS, so delivery was
+        # never seen and the leading spelling was allowed while its trailing twin
+        # (`find ~/dir -type f >out`) denied -- the same write, the redirect moved to
+        # the front (found in review). The operand is consumed with it so a log path
+        # is not read as a traversal root.
+        if _OUTPUT_REDIRECT_RE.match(token):
+            delivers = True
+            i += 2 if (i + 1 < n and not tokens[i + 1].startswith("-")) else 1
+            continue
+        if _CONTROL_OPERATOR_RE.search(token):
+            break
+        roots.append(token)
+        i += 1
+    name_pats: list[str] = []
+    path_pats: list[str] = []
+    regex_pats: list[str] = []
+    opaque_roots = False
+    # A filter bounds the delivery only if the delivery can run AFTER it and only when
+    # it holds. Two things break that: a delivery PRIMARY appearing before any filter
+    # (find runs it on every visited file, and the later filter narrows nothing --
+    # `find ~ -exec cat {} + -name '*.py'` reads everything), and a scope-breaking
+    # operator anywhere in the expression. Either way the caller reads the traversal as
+    # unfiltered, which is the fail-closed direction.
+    #
+    # Seeded False rather than from `delivers`, which a LEADING redirect has already
+    # set: a redirect delivers the FILTERED listing, so the filter does bound it.
+    # Seeding from it made `find >out ~ -name '*.py'` deny while the trailing twin
+    # `find ~ -name '*.py' >out` allowed -- parse order deciding the verdict, which is
+    # the very thing the redirect fix above exists to prevent (found in review).
+    delivery_before_filter = False
+    scope_broken = False
+    while i < n:
+        token = tokens[i]
+        if token in _FIND_SCOPE_BREAKING_OPS:
+            scope_broken = True
+        # A root source is read BEFORE the operator tests below, so its operand is
+        # consumed with it and cannot be mistaken for anything else. It is not a
+        # delivery on its own -- a `-files0-from` listing still only prints.
+        if token in _FIND_ROOT_SOURCE_FLAGS:
+            opaque_roots = True
+            i += 2 if i + 1 < n else 1
+            continue
+        # A filter's PATTERN is consumed with its flag, before any operator test
+        # below can look at it -- so a quoted `-name 'a|b'` cannot be mistaken for
+        # a pipe.
+        if token in _FIND_NAME_TESTS and i + 1 < n:
+            name_pats.append(_find_pattern_operand(tokens[i + 1]))
+            i += 2
+            continue
+        if token in _FIND_PATH_TESTS and i + 1 < n:
+            path_pats.append(_find_pattern_operand(tokens[i + 1]))
+            i += 2
+            continue
+        if token in _FIND_REGEX_TESTS and i + 1 < n:
+            regex_pats.append(_find_pattern_operand(tokens[i + 1]))
+            i += 2
+            continue
+        # A redirect writes the listing to a file, the same disclosure as `-fprint`.
+        # Tested BEFORE the control-operator break, because the redirect spellings that
+        # carry an `&` (`&>`, `&>>`, `>&`) match that break too and it claimed them
+        # first: `find <fenced> -name .env &>/tmp/list` was allowed while the plain `>`
+        # twin denied (found in review). The roots loop above already ordered these two
+        # this way, so the pass disagreed with itself depending on which loop saw the
+        # redirect. `_OUTPUT_REDIRECT_RE` enumerates the spellings, so ordering the
+        # tests correctly covers the whole set rather than the one that was reported.
+        redirect = _OUTPUT_REDIRECT_RE.match(token)
+        if redirect:
+            delivers = True
+            # `>out;cat` glues the NEXT command onto the redirect. The redirect is this
+            # invocation's, the rest is not, so the span still ends here -- otherwise a
+            # later command's flags would be read as this traversal's filters.
+            if _CONTROL_OPERATOR_RE.search(token[redirect.end() :]):
+                break
+            i += 1
+            continue
+        # END of this invocation. `shlex` splits on whitespace only, so an operator
+        # glued to its neighbour (`-type f|xargs`) arrives inside a token -- which is
+        # also why the span, not the whole command line, is what decides delivery. A
+        # `|` among the operators IS a delivery: the matches flow into the next
+        # stage. `;`, `&&` and `&` are not -- they only sequence, and reading them as
+        # delivery denied a listing because an UNRELATED later command in the same
+        # line happened to contain a pipe (found in review).
+        if _CONTROL_OPERATOR_RE.search(token):
+            if "|" in token:
+                delivers = True
+            break
+        if token.startswith("-"):
+            if not (token in _FIND_INERT_PRIMARIES or token.startswith("-newer")):
+                delivers = True
+                if not (name_pats or path_pats or regex_pats):
+                    delivery_before_filter = True
+        i += 1
+    return _FindInvocation(
+        roots=roots,
+        name_pats=name_pats,
+        path_pats=path_pats,
+        regex_pats=regex_pats,
+        delivers=delivers,
+        opaque_roots=opaque_roots,
+        filters_bind=not (delivery_before_filter or scope_broken),
+    )
+
+
+#: How many roots this pass will resolve before refusing. Resolution is a filesystem
+#: operation per root per candidate form, and nothing upstream bounds how many roots a
+#: `find` names, so the synchronous hook's cost grew with the command: measured on this
+#: branch, 100 roots cost 61.9 ms, 500 cost 290.8 ms and 1000 cost 607.6 ms, against
+#: main's 3.4 / 31.0 / 97.7 ms for the same commands -- so the pass added +510 ms at
+#: 1000 roots, and 500 roots that all name the fenced directory cost 728.4 ms (found in
+#: review). The bound matches `_FIND_SUBSTITUTION_BUDGET` deliberately: both cap a
+#: dimension the text can inflate without limit, and both fail CLOSED, because a
+#: traversal too wide to inspect is not thereby known to be safe. 64 roots holds the
+#: worst case near 40 ms; a command naming more than 64 directories in one `find` is
+#: not a shape this gate needs to allow.
+_FIND_ROOT_BUDGET = 64
+
+#: How many brace expansions of a single root this pass will enumerate before refusing.
+#: Unlike a glob, brace expansion needs no filesystem -- it is finite and decided by the
+#: text -- so the expansions are enumerable and this pass resolves them. It is also
+#: MULTIPLICATIVE: `{a,b}{c,d}{e,f}` is 8 roots and n groups are 2**n, so the budget is
+#: what keeps a textual bomb from becoming the cost the root budget above exists to
+#: prevent. Over budget fails closed for the same reason.
+_FIND_BRACE_BUDGET = 32
+
+#: How deeply braces may NEST before this pass refuses. Separate from the budget above
+#: because the two bound different things: that one caps how many forms the expansion
+#: PRODUCES, this one caps how deep the enumeration RECURSES. A nested group is expanded
+#: by a recursive call, so depth in the text became depth on the Python stack, and 1,200
+#: nested groups raised an uncaught `RecursionError` inside the synchronous permission
+#: check -- a crash rather than a verdict, in code this pass added (found in review; main
+#: handles the same input in 86 ms because it has no such recursion). Checked BEFORE any
+#: expansion, so the recursion can never be entered deeper than this. Real commands nest
+#: one or two groups; 16 is far past anything a shell user writes and far short of the
+#: interpreter's limit.
+_FIND_BRACE_DEPTH_BUDGET = 16
+
+
+def _find_brace_nesting_depth(root: str) -> int:
+    """The deepest brace nesting in *root*, counted without recursing."""
+    depth = 0
+    deepest = 0
+    for ch in root:
+        if ch == "{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif ch == "}" and depth:
+            depth -= 1
+    return deepest
+
+
+def _find_brace_expansions(root: str) -> list[str] | None:
+    """Every literal root this brace-carrying root expands to, or None if over budget.
+
+    ``~/x/cre{w,w}`` reads as a root naming no fenced path while the shell hands `find`
+    the fenced directory twice, so a root was allowed that its own brace-free spelling
+    denied -- six spellings did it, including a nested group and an empty alternative
+    (found in review). Brace expansion is the same KIND of gap as quoting or backslash
+    escaping and closes the same way: it is finite, it is decided by the text alone, and
+    no filesystem lookup is needed to enumerate it. That is what separates it from a
+    glob, which cannot be enumerated without asking the filesystem what exists and is
+    therefore out of scope for this pass.
+
+    Returns the expansions WITHOUT the original -- the caller keeps that separately --
+    or None when the product exceeds `_FIND_BRACE_BUDGET`, which the caller turns into
+    a refusal rather than an allow.
+    """
+    if "{" not in root:
+        return []
+    # Depth first, and before anything recurses: a nested group is expanded by a
+    # recursive call, so without this the text's nesting depth became the stack's depth
+    # and a deep enough root raised `RecursionError` out of a synchronous security check.
+    # Refusing is the same fail-closed answer the width budget gives.
+    if _find_brace_nesting_depth(root) > _FIND_BRACE_DEPTH_BUDGET:
+        return None
+    out: list[str] = [""]
+    i = 0
+    n = len(root)
+    while i < n:
+        ch = root[i]
+        if ch != "{":
+            out = [prefix + ch for prefix in out]
+            i += 1
+            continue
+        # Find this group's matching close, tracking nesting so an inner group is
+        # carried into the alternative text and expanded by the recursive call below.
+        depth = 0
+        close = -1
+        for j in range(i, n):
+            if root[j] == "{":
+                depth += 1
+            elif root[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    close = j
+                    break
+        if close < 0:
+            # An unterminated brace is a literal brace to the shell, so read it that way.
+            out = [prefix + root[i:] for prefix in out]
+            break
+        alts = _find_brace_alternatives(root[i + 1 : close])
+        if alts is None:
+            return None
+        widened: list[str] = []
+        for prefix in out:
+            for alt in alts:
+                # The alternative may itself carry a group; expanding it here is what
+                # makes `{cr{ew,x},y}` terminate in the same budget as a flat group.
+                inner = _find_brace_expansions(alt)
+                if inner is None:
+                    return None
+                for tail in inner or [alt]:
+                    widened.append(prefix + tail)
+                    if len(widened) > _FIND_BRACE_BUDGET:
+                        return None
+        out = widened
+        i = close + 1
+    expansions = [form for form in dict.fromkeys(out) if form != root]
+    return expansions[:_FIND_BRACE_BUDGET]
+
+
+#: A brace SEQUENCE: `{a..z}`, `{1..9}`, either direction, with an optional step
+#: (`{1..9..2}`). Bash's brace grammar is exactly comma lists, sequences and nesting, so
+#: without this the enumeration was incomplete by construction rather than by oversight:
+#: `<fenced-parent>/cre{w..w}` expands to the fenced directory in bash while this pass
+#: recorded the literal `crew..w` and allowed the traversal (found in review, immediately
+#: after the comma-list form was closed -- the class was sampled, not closed).
+#:
+#: Measured against `bash -c 'printf %s\\n ...'` as the oracle, the covered forms are now
+#: comma lists, empty alternatives, nesting, preamble/postscript, adjacent groups, letter
+#: and numeric sequences in both directions, stepped sequences, and a sequence nested
+#: inside a comma list.
+_FIND_BRACE_SEQUENCE_RE = re.compile(
+    r"\A(?P<start>-?\w+)\.\.(?P<end>-?\w+)(?:\.\.(?P<step>-?\d+))?\Z"
+)
+
+
+def _find_brace_sequence(body: str) -> list[str] | None:
+    """The items of a brace sequence, or None when *body* is not one.
+
+    Returns an empty list when the sequence is well-formed but yields nothing this pass
+    can enumerate (mixed letter/number endpoints, a zero step), which the caller treats
+    the same way bash does -- as a literal rather than an expansion.
+    """
+    match = _FIND_BRACE_SEQUENCE_RE.match(body)
+    if not match:
+        return None
+    start, end = match.group("start"), match.group("end")
+    raw_step = match.group("step")
+    try:
+        step = int(raw_step) if raw_step else None
+    except ValueError:
+        return []
+    if step == 0:
+        return []
+    magnitude = abs(step) if step else 1
+
+    def numeric(text: str) -> bool:
+        return bool(re.fullmatch(r"-?\d+", text))
+
+    if numeric(start) and numeric(end):
+        lo, hi = int(start), int(end)
+        # Bash zero-pads the whole sequence when either endpoint is padded.
+        width = 0
+        for text in (start, end):
+            stripped = text[1:] if text.startswith("-") else text
+            if len(stripped) > 1 and stripped.startswith("0"):
+                width = max(width, len(stripped))
+        direction = 1 if hi >= lo else -1
+        values = range(lo, hi + direction, direction * magnitude)
+        out = []
+        for value in values:
+            text = str(abs(value)).rjust(width, "0") if width else str(abs(value))
+            out.append(f"-{text}" if value < 0 else text)
+            if len(out) > _FIND_BRACE_BUDGET:
+                return None
+        return out
+    if len(start) == 1 and len(end) == 1 and start.isalpha() and end.isalpha():
+        lo, hi = ord(start), ord(end)
+        direction = 1 if hi >= lo else -1
+        out = []
+        for code in range(lo, hi + direction, direction * magnitude):
+            out.append(chr(code))
+            if len(out) > _FIND_BRACE_BUDGET:
+                return None
+        return out
+    # Mixed or unsupported endpoints (`{a..3}`): bash leaves these literal, so this pass
+    # does too rather than guessing at a range.
+    return []
+
+
+def _find_brace_alternatives(body: str) -> list[str] | None:
+    """The comma-separated alternatives of one brace group, splitting at depth 0 only.
+
+    An empty alternative is real -- `crew{,x}` yields `crew` -- so the split keeps empty
+    fields rather than filtering them, which is what made the empty-alternative spelling
+    a gap of its own.
+    """
+    # A sequence has no top-level comma, so it is recognised before the split rather
+    # than after it: `{a..c}` split on commas is one alternative reading `a..c`, which
+    # is exactly the literal that let `cre{w..w}` through.
+    sequence = _find_brace_sequence(body)
+    if sequence is None:
+        pass  # not a sequence; fall through to the comma split below
+    elif sequence:
+        return sequence
+    else:
+        # Well-formed but not enumerable here, so it stays literal, as in bash.
+        return [body]
+    alts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in body:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            alts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    alts.append("".join(current))
+    if len(alts) > _FIND_BRACE_BUDGET:
+        return None
+    return alts
+
+
+def _find_root_readings(roots: list[str], hypothesise: bool) -> list[str] | None:
+    """Every reading of the traversal roots, including the unresolved-home readings.
+
+    A root carrying an expansion this command never assigned cannot be resolved from
+    the text. Rather than deny every such traversal -- ``find $BUILD -name '*.o'
+    -delete`` is ordinary -- two fail-closed readings are ADDED alongside the literal
+    one and the FILTER is left to decide: the literal tail joined onto a home anchor
+    (`_unresolved_home_hypothesis`), and the home directory itself. So
+    ``find $D -name .env -exec cat {} +`` is denied on the fence-declared name, while
+    a build glob under the same unknown root is not.
+
+    *hypothesise* is what keeps "the filter decides" true. The widened readings are
+    only sound when a filter can actually reject them, and with no evaluable filter
+    the caller reads the traversal as ``*`` -- so the bare-home reading matched every
+    fence and denied ``find "$TMPDIR" -type f -delete`` and ``find "$SRC" -type f
+    -exec cat {} +`` outright, contradicting this docstring (found in review). When
+    nothing is left to decide, an unknowable root is judged on its literal reading
+    alone. The residual is named rather than paid for with that false positive: an
+    unfiltered delivering traversal of a root this parse cannot read is allowed, the
+    same way the module already allows one whose root sits in an unread variable.
+
+    Additive only, so a reading that turns out to be wrong can produce a denial but
+    never withdraw one.
+
+    Returns None when a root's brace expansion exceeds `_FIND_BRACE_BUDGET`, which the
+    caller turns into a refusal: an expansion too wide to enumerate is not thereby known
+    to name nothing fenced.
+    """
+    out = list(roots)
+    # Brace expansion first, and unconditionally -- it is not a hypothesis. The shell
+    # hands `find` these roots whether or not a filter binds, so they are readings of
+    # what the command DOES, on the same footing as the literal spelling.
+    for root in roots:
+        expansions = _find_brace_expansions(root)
+        if expansions is None:
+            return None
+        for form in expansions:
+            if form not in out:
+                out.append(form)
+    if not hypothesise:
+        return out
+    for root in list(out):
+        if _mark_unresolved(root) == root:
+            continue
+        # The literal tail joined onto a home anchor, which is what catches
+        # `cd "$(printf %s ~)/.kiro/crew"`-shaped roots.
+        hypothesis = _unresolved_home_hypothesis(root)
+        if hypothesis is not None:
+            expanded = os.path.expanduser(hypothesis)
+            if expanded not in out:
+                out.append(expanded)
+        # And the home directory ITSELF, because an unknowable root could simply BE
+        # it. Without this, `find ${D}/crew -name token_signing.key | xargs cat`
+        # resolved to `~/crew`, which holds no fence, and the keystone read went
+        # through. The filter still decides, so an ordinary build search under an
+        # unknown root is not denied by this reading alone.
+        home = os.path.expanduser("~")
+        if home not in out:
+            out.append(home)
+    return out
+
+
+#: What this pass returns when a path's canonical form cannot be established. Named so
+#: the two `PathResolutionStalled` handlers cannot drift apart, and phrased as a path-ish
+#: string because the caller renders it as the resolved subject of the denial.
+_FIND_STALLED_REASON = "<unresolvable path: filesystem resolution stalled>"
+
+#: What the two budget refusals resolve to. Phrased as path-ish strings for the same
+#: reason `_FIND_STALLED_REASON` is: the caller renders the return value as the resolved
+#: subject of the denial, so a bare sentence would read as a path in the message.
+_FIND_ROOT_OVER_BUDGET_REASON = (
+    f"<more than {_FIND_ROOT_BUDGET} traversal roots: too wide to resolve>"
+)
+_FIND_BRACE_OVER_BUDGET_REASON = (
+    f"<brace expansion exceeds {_FIND_BRACE_BUDGET} forms: too wide to enumerate>"
+)
+
+
+def _find_traversal_reaches_fence(
+    roots: list[str],
+    name_pats: list[str],
+    path_pats: list[str],
+    regex_pats: list[str],
+    opaque_roots: bool = False,
+    filters_bind: bool = True,
+) -> str | None:
+    """Does a traversal of *roots* filtered by these patterns name a fenced path?
+
+    Returns the fenced path (or the fenced directory) it names, or None. See the
+    block comment above for why each of the three answers counts as the fence
+    supplying the missing half of the join, rather than as a guess about where
+    the traversal might wander.
+    """
+    targets = _home_dir_targets(_SENSITIVE_HOME_DIRS)
+    stores = _find_credential_store_dirs()
+    # A pattern that will not compile must WIDEN, not vanish. Collecting the
+    # matchers with a filter dropped the uncompilable ones, and because
+    # `unfiltered` was computed from the raw pattern lists the clause then had
+    # neither a matcher nor the no-filter reading -- so `-regex '('` and every
+    # other malformed pattern silently allowed the traversal (found in review).
+    # Treating it as opaque is the module's documented stance: a *maybe* answers
+    # yes, since the gate may over-trigger but must never under-trigger.
+    name_matchers: "list[re.Pattern[str]]" = []
+    path_matchers: "list[re.Pattern[str]]" = []
+    opaque = False
+    all_pats = name_pats + path_pats + regex_pats
+    for pattern in name_pats:
+        matcher = _find_glob_matcher(pattern)
+        if matcher is None:
+            opaque = True
+        else:
+            name_matchers.append(matcher)
+    for pattern in path_pats:
+        matcher = _find_glob_matcher(pattern)
+        if matcher is None:
+            opaque = True
+        else:
+            path_matchers.append(matcher)
+    # A ``-regex``/``-iregex`` pattern is NEVER compiled and NEVER run. It is an
+    # agent-supplied regex, this gate is synchronous and in-process, and CPython's
+    # ``re`` has no timeout -- so a catastrophic-backtracking pattern would wedge the
+    # gate for every session rather than merely mis-answer. Screening for the
+    # dangerous shapes was rejected: against a hostile author that enumeration does
+    # not terminate, which is the argument this module already makes about
+    # enumerating dangerous punctuation. Treating the filter as opaque costs an
+    # over-block on a rare flag and removes the whole class.
+    if regex_pats:
+        opaque = True
+    # A filter carrying an expansion this command never assigned is unknowable from
+    # the text, so it is opaque too. `normalize_shell_command` expands only `$HOME`,
+    # so `P=.env; find ~ -name $P -exec cat {} +` otherwise matched the literal `$P`
+    # against the fence, matched nothing, and read the secret (found in review).
+    if any(_is_shell_variable_reference(p) or _mark_unresolved(p) != p for p in all_pats):
+        opaque = True
+    # No filter at all means every visited file matches, so the effective pattern
+    # is `*`. A filter this pass will not evaluate is read the same way, and so is one
+    # that does not BOUND the delivery -- see `_FIND_SCOPE_BREAKING_OPS`.
+    unfiltered = opaque or not all_pats or not filters_bind
+    literal_names = [p for p in name_pats if not (_FIND_GLOB_META & set(p))]
+    # A root this parse cannot read (`-files0-from`) gets the same treatment as a root
+    # carrying an unassigned expansion: add the home reading and let the FILTER decide,
+    # rather than trusting the `.` a rootless parse defaults to. Gated on an evaluable
+    # filter for the reason `_find_root_readings` documents -- with nothing left to
+    # decide, the widened reading would deny every `-files0-from` traversal outright.
+    readable_roots = list(roots)
+    if opaque_roots and not unfiltered:
+        home = os.path.expanduser("~")
+        if home not in readable_roots:
+            readable_roots.append(home)
+    # Each store's candidate forms are a property of the STORE, not of the root being
+    # tested, so they are resolved once here rather than once per (root, store) pair.
+    # Resolving them inside the loop made the cost the product of the two: a traversal
+    # naming 100 benign roots spent 117 ms in this synchronous hook, against 1.2 ms for
+    # one root (measured in review). The casefold is hoisted with them for the same
+    # reason -- it ran per form per root.
+    # `_candidate_forms` REFUSES rather than guessing when a canonical form cannot be
+    # established -- a wedged mount under the path raises `PathResolutionStalled`, and
+    # every sibling gate turns that into a denial (`is_sensitive_path`,
+    # `_is_keystone_publish_artifact`, `path_contains_sensitive`,
+    # `_dir_holds_sensitive_leaf` all do). This pass did not, so the exception escaped the
+    # synchronous permission gate instead of failing closed, and hoisting the store
+    # resolution out of the root loop made it eager for EVERY command rather than only
+    # those carrying a name filter -- widening a crash from rare to routine on a host
+    # whose home mount has stalled (found in review, by both lanes independently).
+    #
+    # A stall is only ever a reason to refuse: with no canonical form there is nothing to
+    # prove the traversal stays outside the fence.
+    try:
+        store_forms: list[tuple[str, list[str]]] = [
+            (store, [form.casefold() for form in _candidate_forms(store)]) for store in stores
+        ]
+    except PathResolutionStalled:
+        return _FIND_STALLED_REASON
+    root_readings = _find_root_readings(readable_roots, hypothesise=not unfiltered)
+    if root_readings is None:
+        return _FIND_BRACE_OVER_BUDGET_REASON
+    # Nothing upstream bounds how many roots a `find` names, and each one costs a
+    # filesystem resolution per candidate form, so the width of the command set the cost
+    # of this synchronous hook -- see `_FIND_ROOT_BUDGET` for the measurement. Bounded
+    # AFTER the readings are built, because the readings are what actually get resolved:
+    # brace expansion and the home hypotheses both add to the count, so bounding the
+    # parsed roots alone would have left the real work unbounded.
+    if len(root_readings) > _FIND_ROOT_BUDGET:
+        return _FIND_ROOT_OVER_BUDGET_REASON
+    for root in root_readings:
+        if is_sensitive_path(root) or _dir_holds_sensitive_leaf(root):
+            return root
+        try:
+            root_forms = list(_candidate_forms(root))
+        except PathResolutionStalled:
+            return _FIND_STALLED_REASON
+        for form in root_forms:
+            form_cf = form.casefold().rstrip(os.sep)
+            prefix = form_cf + os.sep
+            for target in targets:
+                if not (target == form_cf or target.startswith(prefix)):
+                    continue
+                if unfiltered:
+                    return target
+                base = os.path.basename(target)
+                if any(m.fullmatch(base) for m in name_matchers):
+                    return target
+                if any(m.fullmatch(target) for m in path_matchers):
+                    return target
+            for pattern in path_pats:
+                probe = _find_literal_path_probe(pattern, form)
+                if probe and is_sensitive_path(probe):
+                    return probe
+            if not (literal_names or name_matchers or path_matchers):
+                continue
+            # A whole-directory credential store lying under this root, plus a filter
+            # asking for a name that carries credentials wherever it sits. Decided from
+            # the NAME -- no stat, no listing, and so no depth to get wrong: everything
+            # beneath such a store is fenced, so a key one level down counts exactly as
+            # much as one at the top. See `_find_filter_names_a_credential_leaf`.
+            for store, store_cf_forms in store_forms:
+                # STRICTLY under the root: a root that IS the store already
+                # returned above, through the fenced-path test.
+                if not any(form_cf.startswith(prefix) for form_cf in store_cf_forms):
+                    continue
+                named = _find_filter_names_a_credential_leaf(literal_names, name_matchers)
+                if named:
+                    return os.path.join(store, named)
+                # A `-path` pattern is the same request in another spelling, and its
+                # leaf cannot be tested alone: the EARLIER segments constrain the path,
+                # so `-path '*/node_modules/*'` ends in a wildcard matching any leaf yet
+                # can never name a store entry. Match the WHOLE pattern against a
+                # synthetic fenced path instead. That covers the literal leaf
+                # (`*/id_rsa`) and the glob leaf (`*/id_*`) with one rule -- an earlier
+                # revision routed only the literal one, so `-path '*/id_*'` read a key
+                # that `-name 'id_*'` was denied for, and a mutation then showed the
+                # literal-leaf extraction had become dead weight (both traced in review).
+                for subject in _credential_leaf_subjects():
+                    probe = os.path.join(store, subject)
+                    # A `-path` pattern uses find's forward-slash spelling while the join
+                    # above uses the platform separator -- see `_credential_probe_forms`
+                    # for why both are tested and why the separator is a parameter.
+                    forms = _credential_probe_forms(probe, os.sep)
+                    if any(m.fullmatch(form) for form in forms for m in path_matchers):
+                        return probe
+    return None
+
+
+def _find_program_word_names_find(program: str) -> bool:
+    """Does this program word run ``find`` -- including after the shell expands it?
+
+    A word is the program ``find`` in three ways, and each was a live bypass:
+    spelled outright, spelled with quotes or escapes the shell removes (``fi''nd``,
+    handled by the normalizer before this is reached), or spelled as a GLOB the shell
+    expands against the filesystem. ``/usr/bin/f?nd`` is the third: the exact-string
+    test read a basename of ``f?nd``, matched nothing, and the whole pass was skipped
+    while the shell ran ``find`` (found in review).
+
+    The glob is answered by the pattern MACHINERY rather than by enumerating
+    spellings: the word is compiled through `_find_glob_matcher`, which carries the
+    module's wildcard bound, and asked whether it can match a find name. A word that
+    bound refuses is read as a match, so the cap widens the pass instead of opening a
+    hole in it -- the polarity every other decision here takes.
+
+    A fourth way is BRACE expansion: `f{in,oo}d` and `f{i..i}nd` are `find` to the shell
+    and matched nothing here, because braces are neither a literal spelling nor a glob
+    metacharacter (found in review). Expansion is applied to the program word for the
+    same reason it is applied to a root -- it is finite and decided by the text -- and
+    through the same helper, so the two sites cannot cover different halves of the
+    grammar. `$(printf find)` is still out of scope and is tracked in #8074: its value
+    needs a program run, which is the boundary this pass states.
+    """
+    if _find_brace_expansions(program) is None:
+        # Over either brace budget. The width refusals fail closed everywhere else in
+        # this pass, so an unenumerable program word reads as a possible `find` rather
+        # than as a word that is known not to be one.
+        return True
+    for form in [program] + (_find_brace_expansions(program) or []):
+        if _find_program_word_names_find_literal(form):
+            return True
+    return False
+
+
+def _find_program_word_names_find_literal(program: str) -> bool:
+    """`_find_program_word_names_find` for a word with no brace expansion left in it."""
+    base = os.path.basename(program).lower()
+    if base in _FIND_PROGRAM_NAMES:
+        return True
+    if not (_FIND_GLOB_META & set(base)):
+        return False
+    matcher = _find_glob_matcher(base)
+    if matcher is None:
+        return True
+    return any(matcher.fullmatch(name) for name in _FIND_PROGRAM_NAMES)
+
+
+#: Ceiling on the substitution openers a command may carry before this pass stops
+#: enumerating views and DENIES instead.
+#:
+#: `_find_traversal_views` derives a view per nesting level, and each level re-scans its
+#: own source, so the cost is quadratic in DEPTH. Measured on this pass alone: depth 200
+#: costs 129 ms, depth 800 costs 3.9 s, and the 1600-level command a reviewer constructed
+#: (4.8 KB of text) costs **28.9 s** in the walk and 40.8 s through the whole gate, against
+#: 1.0 s for the same command on `main`. This gate is synchronous and the gateway watchdog
+#: hard-exits well before that, so the shape is a crash, not merely a slow check.
+#:
+#: An earlier disposition of this finding rebutted it after measuring the WIDTH dimension
+#: (80 sibling substitutions, linear, 4 ms) and missing that the reviewer meant depth. The
+#: mechanism it described -- every shrinking parent rescanned -- is exactly right for depth.
+#:
+#: Counted on the raw command in one pass, before any walking, so the bound is paid up
+#: front. Failing CLOSED is what makes this safe to have: the deleted pre-filter this pass
+#: used to carry decided to SKIP work and so became the bypass, whereas exceeding this
+#: ceiling denies. 64 leaves an enormous margin over anything hand-written (the walk stays
+#: under ~40 ms there) while capping the pathological case.
+_FIND_SUBSTITUTION_BUDGET = 64
+
+
+def _find_substitution_openers(command: str) -> int:
+    """How many substitution openers the command carries, counted in one pass."""
+    return (
+        command.count("$(") + command.count("`") + command.count("<(") + command.count(">(")
+    )
+
+
+def _find_traversal_views(command: str) -> "list[tuple[str, bool]]":
+    """Every text this command runs as a shell, paired with whether its output is CAPTURED.
+
+    Capture and nesting were each being answered by looking for characters glued to a
+    token, and both answers were frame-dependent, because ``shlex`` splits on
+    whitespace and the shell does not:
+
+    * ``cat $(find … )`` was denied but ``cat $( find … )`` was allowed -- one space
+      moved the substitution's opener into a token of its own, so the two-character
+      test on the program word's token missed it;
+    * ``bash -c '<traversal>'`` was allowed outright, because the traversal lives in
+      a ``-c`` argument that the whole-command pass never re-tokenizes -- while the
+      same payload holding a plain fenced path TOKEN was correctly denied, since the
+      argv floor already descends into payloads.
+
+    Both are the same defect: the pass judged the command's TEXT rather than the
+    things the shell actually runs. So enumerate those instead. Capture stops being a
+    spelling to detect and becomes a property of how a view was DERIVED -- a
+    substitution body's output is captured by construction, whatever the spacing --
+    and a nested payload is simply another view, so no depth of wrapping is a special
+    case.
+
+    This reuses the module's own view idiom (`_self_token_frames` joins exactly these
+    two extractors) and its termination discipline: no depth cap, because whatever
+    number is chosen one more nesting level defeats it. A derived view is a proper
+    substring of its parent and so is STRICTLY SHORTER, and a visited set stops
+    sibling wrappers re-walking the same text.
+    """
+    views: list[tuple[str, bool]] = [(command, False)]
+    seen: set[str] = {command}
+    pending: list[tuple[str, bool, int]] = [(command, False, len(command) + 1)]
+    while pending:
+        source, captured, parent_len = pending.pop()
+        try:
+            tokens = normalize_shell_command(source)
+        except Exception:
+            tokens = []
+        # A substitution body's output is CAPTURED; a nested payload inherits its
+        # parent's capture, since `bash -c '<traversal>'` prints where the wrapper
+        # prints. `_substitution_bodies` walks the raw string with paren nesting and
+        # covers `$( )`, backticks and `<( )` / `>( )` alike.
+        derived = [(body, True) for body in _substitution_bodies(source)]
+        derived += [(payload, captured) for payload in _nested_shell_payloads(tokens)]
+        for text, text_captured in derived:
+            text = _decode_printf_escapes(text)
+            if len(text) >= parent_len or text in seen:
+                continue
+            seen.add(text)
+            views.append((text, text_captured))
+            pending.append((text, text_captured, len(source)))
+    return views
+
+
+def _check_find_traversal_reaches_fence(command: str) -> str | None:
+    """Deny a ``find`` whose delivered matches include a fenced path.
+
+    Returns a denial reason string, or None if clean.
+    """
+    # There is deliberately NO cheap pre-filter here. A substring test for the program
+    # name has to survive every rewriting the shell performs between this text and the
+    # program it runs, or the bail IS the bypass -- and the one that stood here modelled
+    # only some of them. It removed quotes and escapes (`fi''nd`, `fi\nd`) and let a
+    # glob metacharacter defeat it (`f?nd`), but a word built by parameter expansion
+    # walked straight past it: `F=fin; ${F}d <fenced> -exec cat {} +` contains no `find`
+    # substring and no glob, so it returned before the pass ran -- while the pass it
+    # guarded resolves exactly that spelling through `_resolve_local_assignments`, so
+    # the un-obfuscated twin denied and this one read the store (found in review).
+    # Brace expansion (`f{i,}nd`) and command substitution construct the word too. That
+    # list is open-ended, which is the whole problem: any pre-filter cheap enough to be
+    # worth having is one spelling away from being the hole. So the pass runs
+    # unconditionally and decides from the RESOLVED program word, which it already knew
+    # how to do. Measured cost for a command that names no traversal: 45-190 us against
+    # the 136-844 us the surrounding checks already spend on the same command. This runs
+    # once per command, not in a loop.
+    # The view walk is quadratic in nesting depth, so a command carrying more
+    # substitution openers than any real one does is refused before the walk rather
+    # than during it -- see `_FIND_SUBSTITUTION_BUDGET` for the measured cost.
+    if _find_substitution_openers(command) > _FIND_SUBSTITUTION_BUDGET:
+        return (
+            "Blocked: command nests more than "
+            f"{_FIND_SUBSTITUTION_BUDGET} shell substitutions, which this traversal "
+            "check cannot inspect within its time budget"
+        )
+    for view, captured in _find_traversal_views(command):
+        named = _find_traversal_in_view(view, captured)
+        if named:
+            return (
+                "Blocked: command traverses a sensitive credential path and "
+                f"delivers the match to a command (resolved via find: {named[:80]})"
+            )
+    return None
+
+
+def _find_traversal_in_view(view: str, captured: bool) -> str | None:
+    """The fenced path a ``find`` in this one view names, or None.
+
+    *captured* says the whole view's output is consumed by something (it is a
+    substitution body, or sits inside one), so every traversal in it delivers. When
+    it is False a traversal must carry its own delivery -- an action primary, a pipe,
+    or a redirect -- which `_parse_find_invocation` reads from the invocation's own
+    token span rather than from the line, so an unrelated later command's pipe does
+    not make a listing a delivery.
+    """
+    try:
+        tokens = normalize_shell_command(_find_space_unquoted_operators(view))
+    except Exception:
+        return None
+    # A program word or a root held in a variable the SAME command assigns is a
+    # literal the shell will resolve, so resolve it here too: `F=find; $F <fenced>`
+    # ran a traversal this pass could not see, and `D=<fenced>; find "$D" -type f`
+    # named a fenced root it read as unknowable -- while the plain-path passes already
+    # denied `D=<fenced>; cat $D/.env`, because they consume this same resolver. The
+    # asymmetry was the tell: the machinery existed and this pass was not wired into
+    # it, exactly as with nested payloads. Resolving also DISTINGUISHES the two cases
+    # a bare "unresolved root" reading conflated -- an assigned root becomes a real
+    # path and is judged on it, while a genuinely unassigned `$SRC` stays unknowable
+    # and is left to the filter.
+    try:
+        tokens = _resolve_local_assignments(tokens)
+    except Exception:
+        pass
+    for index, token in enumerate(tokens):
+        # Three things can sit between the start of a token and the program word:
+        #
+        #   `<(find ...)`   a process substitution's redirect -- `_REDIR_PREFIX_RE`
+        #   `$(find ...)`   a substitution's opener -- `_strip_grouping`
+        #   `ls|find ...`   a control operator glued to the previous command, which
+        #                   `shlex` does not split on, so the whole thing arrived as
+        #                   ONE token whose basename matched nothing (found in review)
+        #
+        # The operator split takes the LAST piece, because that is the position a
+        # program word occupies: `ls|find` runs `find`.
+        program = _strip_grouping(_REDIR_PREFIX_RE.sub("", token))
+        program = _CONTROL_OPERATOR_RE.split(program)[-1]
+        # `_strip_grouping` removes a leading `{` because `{ cmd; }` is shell GROUPING --
+        # but the same character opens a brace EXPANSION, so `{f,g}ind` arrived here as
+        # `f,g}ind` with the group's opener gone and matched nothing, while the shell ran
+        # `find` (found in review; the mechanism was present and an existing normalizer
+        # defeated it). The raw token is therefore tested too, and only when it really is
+        # an expansion -- a brace group that CLOSES in the same word -- so `{ find ...; }`
+        # keeps being read as grouping exactly as before.
+        raw = _CONTROL_OPERATOR_RE.split(_REDIR_PREFIX_RE.sub("", token))[-1]
+        raw_is_expansion = (
+            raw is not program and "{" in raw and "}" in raw.partition("{")[2]
+        )
+        if not _find_program_word_names_find(program) and not (
+            raw_is_expansion and _find_program_word_names_find(raw)
+        ):
+            continue
+        parsed = _parse_find_invocation(tokens, index + 1)
+        if not (parsed.delivers or captured):
+            continue
+        # A traversal with no root operand walks the working directory -- unless the
+        # roots came from a source this parse cannot read, in which case `.` would be
+        # a fiction and the unknowable-root reading applies instead.
+        if not parsed.roots and parsed.opaque_roots:
+            reading: list[str] = []
+        else:
+            reading = parsed.roots or ["."]
+        named = _find_traversal_reaches_fence(
+            reading,
+            parsed.name_pats,
+            parsed.path_pats,
+            parsed.regex_pats,
+            parsed.opaque_roots,
+            parsed.filters_bind,
+        )
+        if named:
+            return named
+    return None
 
 
 def _check_sensitive_via_normalizer(command: str) -> str | None:
