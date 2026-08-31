@@ -7360,10 +7360,7 @@
       "speech_to_text_is_not_enabled_yet_so_the_microph": "A transcrição de voz ainda não está ativada, então o microfone não pode transformar sua voz em texto.",
       "then_click_the_mic_to_dictate_into_the_message_b": ", depois clique no microfone para ditar na caixa de mensagem.",
       "turn_on_voice_input": "Ativar entrada de voz",
-      "voice_provider_not_installed": "Provedor de voz não instalado",
-      "voice_not_available_remote": "Voice input may not work here",
-      "voice_remote_instance_body": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. This may not work reliably depending on browser security policies and the parent’s configuration.",
-      "voice_remote_instance_hint": "If the mic doesn’t respond, use the local dashboard’s voice input instead."
+      "voice_provider_not_installed": "Provedor de voz não instalado"
     },
     "voiceStatusBar": {
       "default_microphone": "Microfone padrão",
@@ -12810,7 +12807,6 @@
         "ptt_try_desc": "Pressione sua tecla de atalho para verificar se este teclado a envia corretamente.",
         "ptt_heading_desc_other": "Pressione uma tecla para começar a falar em vez de clicar no botão do microfone. Alt + Shift + Espaço funciona de imediato — você pode deixar tudo aqui como está.",
         "ptt_key_desc_other": "Escolha uma tecla que não digite nada por si só, para não interferir no que você está escrevendo. O Alt direito ficou de fora porque a maioria dos layouts o usa para compor caracteres.",
-        "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn’t respond here, use the local (parent) dashboard instead.",
         "provider_local": "Local (é executado nesta máquina)",
         "provider_desc": "O reconhecimento de voz local é executado nesta máquina e não envia nada para fora. O Transcribe envia o seu áudio para a AWS.",
         "streaming_desc": "Mostrar a transcrição na caixa de texto enquanto você fala, em vez de apenas quando parar.",
