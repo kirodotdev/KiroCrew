@@ -59,7 +59,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, validation
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -75,9 +75,15 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
-from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import (
+    _MAX_SLOT_MESSAGES,
+    MAX_LIVE_SLOTS,
+    DashboardState,
+    _ChatSlot,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +103,14 @@ BUNDLE_VERSION = 2
 #: conversation.
 _SUPPORTED_BUNDLE_VERSIONS = (1, 2)
 
+#: Row-contributing element classes in a bundle: transcript messages and section
+#: markers. Named, not a literal 2, so a THIRD class has to change this line.
+_BUNDLE_ELEMENT_CLASSES = 2
+
 #: Per-bundle limits. A bundle arrives from another instance, so it is untrusted
 #: input even though the peer is one the owner configured: these bound the work
 #: a single request can cause before any of it is written to disk.
-_MAX_MESSAGES = 5_000
+_MAX_MESSAGES = _MAX_SLOT_MESSAGES // _BUNDLE_ELEMENT_CLASSES
 _MAX_CONTENT_CHARS = 1_000_000
 _MAX_TITLE_CHARS = 500
 _MAX_TOTAL_CHARS = 20_000_000
@@ -801,8 +811,30 @@ def _assemble_bundle(
     in a thread, and anything touching ``slot`` there would race the event loop.
     """
     messages: list[dict[str, Any]] = []
+    section_markers: list[dict[str, Any]] = []
     for m in all_messages:
         role = m.get("role")
+        if role == SECTION_MARKER_ROLE:
+            # Carried OUT-OF-BAND: ``messages`` keeps exactly the roles a v1/v2
+            # importer validates, so an older peer ignores this and does not reject.
+            marker_meta = m.get("meta")
+            label = marker_meta.get("label", "") if isinstance(marker_meta, dict) else ""
+            # The label is a SECOND copy of caller text, so it needs the same egress
+            # scrub as the rendered content beside it, not just a type coercion.
+            marker_label = label if isinstance(label, str) else ""
+            marker_label, _ = redact_exfiltration_urls(marker_label)
+            marker_label, _ = redact_credentials(marker_label)
+            marker_content, _ = redact_exfiltration_urls(m.get("content", ""))
+            marker_content, _ = redact_credentials(marker_content)
+            section_markers.append(
+                {
+                    "at": len(messages),
+                    "label": marker_label,
+                    "content": marker_content,
+                    "ts": m.get("ts", ""),
+                }
+            )
+            continue
         if role not in _VISIBLE_ROLES:
             continue
         content = m.get("content", "")
@@ -838,6 +870,10 @@ def _assemble_bundle(
         "agent": agent,
         "messages": messages,
     }
+    # Additive and omitted when empty, so a bundle from a session with no markers
+    # is shaped exactly as this code produced before markers existed.
+    if section_markers:
+        bundle["section_markers"] = section_markers
     # Layer B rides along only when the session has one. Its events were already
     # egress-redacted in :func:`_read_layer_b`; the envelope carries no secret
     # (its paths and title are neutralised on import).
@@ -926,6 +962,57 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         ts = m.get("ts", "")
         messages.append({"role": role, "content": content, "ts": ts if isinstance(ts, str) else ""})
 
+    # ADDITIVE and OPTIONAL: absent from every v1/v2 bundle, so absence is normal.
+    # Peer-supplied, so bounds-checked exactly like ``messages`` above.
+    raw_markers = body.get("section_markers", [])
+    if not isinstance(raw_markers, list):
+        return {}, _reject("section_markers must be a list", "transfer_bad_section_markers")
+    if len(raw_markers) > _MAX_MESSAGES:
+        return {}, _reject(
+            f"too many section markers ({len(raw_markers)} > {_MAX_MESSAGES})",
+            "transfer_too_many_section_markers",
+        )
+    section_markers: list[dict[str, Any]] = []
+    for i, sm in enumerate(raw_markers):
+        if not isinstance(sm, dict):
+            return {}, _reject(
+                f"section marker {i} is not an object",
+                "transfer_section_marker_not_object",
+            )
+        at = sm.get("at")
+        if isinstance(at, bool) or not isinstance(at, int) or not 0 <= at <= len(messages):
+            return {}, _reject(
+                f"section marker {i} has out-of-range at {sm.get('at')!r}",
+                "transfer_section_marker_bad_at",
+            )
+        label = sm.get("label", "")
+        marker_content = sm.get("content", "")
+        if not isinstance(label, str) or not isinstance(marker_content, str):
+            return {}, _reject(
+                f"section marker {i} label and content must be strings",
+                "transfer_section_marker_bad_text",
+            )
+        marker_ts = sm.get("ts", "")
+        # A marker CREATED here passes SECTION_MARKER_SCHEMA; an IMPORTED one never goes
+        # through creation, so the same schema has to be the gate on this path too.
+        try:
+            validation.validate_tool_args({"label": label}, validation.SECTION_MARKER_SCHEMA)
+        except validation.ValidationError as exc:
+            return {}, _reject(
+                f"section marker {i} label is not importable: {exc}",
+                "transfer_section_marker_bad_label",
+            )
+        section_markers.append(
+            {
+                "at": at,
+                # NOT truncated: the schema above bounds the length and refuses the
+                # line breaks a one-line rule cannot render, so shortening would hide them.
+                "label": label,
+                "content": marker_content[:_MAX_TITLE_CHARS],
+                "ts": marker_ts if isinstance(marker_ts, str) else "",
+            }
+        )
+
     title = body.get("title", "")
     if not isinstance(title, str):
         return {}, _reject("title must be a string", "transfer_bad_title")
@@ -943,6 +1030,7 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
         # downstream -- and this is what tells a degraded import apart from a
         # session that simply never had a kiro-cli context.
         "layer_b_skipped": bool(body.get("layer_b_skipped")),
+        "section_markers": section_markers,
         "title": title[:_MAX_TITLE_CHARS],
         "origin": origin[:_MAX_TITLE_CHARS],
         "agent": agent,
@@ -1213,7 +1301,31 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
             new_slot.title = f"{new_slot.title} — transcript only"
 
         since_yield = 0
-        for m in messages:
+        # Grouped by insertion point so a marker lands between the same two turns
+        # it separated on the source instance.
+        markers_at: dict[int, list[dict[str, Any]]] = {}
+        for sm in bundle.get("section_markers") or []:
+            markers_at.setdefault(sm["at"], []).append(sm)
+
+        def _emit_markers(index: int) -> None:
+            for sm in markers_at.get(index, ()):
+                # Peer-supplied and never a user turn, so BOTH fields take the
+                # ingress scrub the sibling loop below applies to assistant text.
+                marker_content, _ = redact_exfiltration_urls(sm["content"])
+                marker_content, _ = redact_credentials(marker_content)
+                marker_label, _ = redact_exfiltration_urls(sm["label"])
+                marker_label, _ = redact_credentials(marker_label)
+                new_slot.append(
+                    SECTION_MARKER_ROLE,
+                    marker_content,
+                    "",
+                    ts=sm["ts"],
+                    meta={"label": marker_label},
+                    broadcast=False,
+                )
+
+        for position, m in enumerate(messages):
+            _emit_markers(position)
             role = m["role"]
             content = m["content"]
             # Assistant content arrives from another instance and lands in a
@@ -1241,6 +1353,9 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
                 since_yield = 0
                 # sleep(0) yields to the ready queue with no wall-clock delay.
                 await asyncio.sleep(0)
+        # A marker recorded AT len(messages) trails the last turn, so the loop
+        # above never reaches its index.
+        _emit_markers(len(messages))
         new_slot.drain()
         # best_effort=False: a swallowed write failure would let us answer 200
         # while the imported session exists only in memory, so the peer believes

@@ -18,6 +18,7 @@ import pytest
 
 from kiro_crew import mcp_core, session_directive
 from kiro_crew.dashboard.session_directive_apply import apply_session_directive
+from kiro_crew.session_surface import has_dashboard_surface
 
 
 def _item(**over: object) -> dict:
@@ -63,7 +64,12 @@ class TestSuggestFollowupApplier:
         state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
         slot = SimpleNamespace(key="dashboard:chat-1")
         result = await apply_session_directive(
-            state, slot, "dashboard:chat-1", "suggest_followup", {"items": [_item()]}
+            state,
+            slot,
+            "dashboard:chat-1",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=True,
         )
         assert len(calls) == 1
         event, payload = calls[0]
@@ -83,7 +89,12 @@ class TestSuggestFollowupApplier:
         state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
         slot = SimpleNamespace(key="dashboard:chat-1")
         result = await apply_session_directive(
-            state, slot, "dashboard:chat-1", "suggest_followup", {"items": [_item()]}
+            state,
+            slot,
+            "dashboard:chat-1",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=True,
         )
         assert "restate" in result.lower()
 
@@ -101,7 +112,12 @@ class TestSuggestFollowupApplier:
         state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
         slot = SimpleNamespace(key="dashboard:research-1", project="")
         result = await apply_session_directive(
-            state, slot, "dashboard:research-1", "suggest_followup", {"items": [_item()]}
+            state,
+            slot,
+            "dashboard:research-1",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=True,
         )
         assert "no project directory" in result.lower()
         assert "add to this session" in result.lower()
@@ -120,7 +136,81 @@ class TestSuggestFollowupApplier:
         state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
         slot = SimpleNamespace(key="dashboard:chat-1", project="/repo")
         result = await apply_session_directive(
-            state, slot, "dashboard:chat-1", "suggest_followup", {"items": [_item()]}
+            state,
+            slot,
+            "dashboard:chat-1",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=True,
         )
         assert "no project directory" not in result.lower()
         assert "shown below the composer" in result.lower()
+
+
+# ──────────────── provenance: a tab is not an entitlement ────────────────────
+
+
+class TestHeadlessProducersAreRefused:
+    """The tool's own description promises that "Slack, cron, and subagent
+    contexts are rejected", but the dashboard-only gate it sits behind asks only
+    whether an open tab EXISTS. A cron turn can run on a user's slot and a
+    sub-agent can share its parent's slot, so both inherit a tab they never
+    opened and clear that gate without a human having asked for a card.
+    """
+
+    def test_the_surface_gate_cannot_tell_a_headless_turn_apart(self):
+        """The premise, pinned so the test below cannot be misread as belt on
+        braces: the surface gate admits ANY ``dashboard:``-prefixed key, so a
+        refusal can only come from provenance.
+        """
+        assert has_dashboard_surface("dashboard:ridden-by-cron") is True
+
+    @pytest.mark.asyncio
+    async def test_a_headless_producer_is_refused_with_a_tab_open(self):
+        """The case a tabless test cannot reach: the session HAS a surface, so
+        the dashboard-only gate admits it and only provenance can refuse. No
+        card reaches the owner channel.
+        """
+        calls: list = []
+
+        async def deliver_ws_owners(event, payload):
+            calls.append((event, payload))
+            return 1
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:ridden-by-cron", project="/repo")
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:ridden-by-cron",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=False,
+        )
+        assert "headless" in result
+        assert "Nothing was changed" in result
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_human_turn_on_the_same_slot_is_admitted(self):
+        """Negative control for the test above: the refusal must be caused by the
+        producer's provenance, not by anything else about this slot or key.
+        """
+        calls: list = []
+
+        async def deliver_ws_owners(event, payload):
+            calls.append((event, payload))
+            return 1
+
+        state = SimpleNamespace(deliver_ws_owners=deliver_ws_owners)
+        slot = SimpleNamespace(key="dashboard:ridden-by-cron", project="/repo")
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:ridden-by-cron",
+            "suggest_followup",
+            {"items": [_item()]},
+            producer_is_user_facing=True,
+        )
+        assert len(calls) == 1
+        assert "error" not in result.lower()

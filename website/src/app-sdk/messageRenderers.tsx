@@ -28,6 +28,7 @@ import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
+import SectionMarkerRow from '../pages/chat/SectionMarkerRow'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import StopEventCard from '../pages/chat/StopEventCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
@@ -386,6 +387,20 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'nudge',
     roles: ['nudge'],
     render: (m, ctx) => ctx.row(<NudgeCard message={m} disclosureKey={ctx.key} />),
+  },
+  {
+    // In the DEFAULT registry, not a host override: an unclaimed role resolves
+    // to undefined here and draws NOTHING, so a host entry would miss surfaces.
+    id: 'section_marker',
+    roles: ['section_marker'],
+    render: (m, ctx) =>
+      ctx.row(
+        <SectionMarkerRow
+          label={m.meta?.label as string | undefined}
+          fallback={m.content}
+        />,
+        true,
+      ),
   },
 ]
 

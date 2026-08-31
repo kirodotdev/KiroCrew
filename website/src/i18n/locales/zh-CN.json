@@ -9238,6 +9238,10 @@
         "copy_text_failed": "复制失败",
         "copy_text_unavailable": "当前环境禁止写入剪贴板。文案已选中——按 Ctrl+C / ⌘C 复制。你改过的卡片文字请直接从卡片上复制。",
         "export_failed": "无法生成分享卡片"
+      },
+      "sectionMarkerRow": {
+        "end_of": "{{label}} 结束",
+        "end_of_section": "本节结束"
       }
     },
     "chatPage": {
@@ -9267,6 +9271,7 @@
       "filter_agents": "筛选代理",
       "focus_popped_out_window": "聚焦弹出窗口",
       "fork_failed_error": "分叉失败：{{error}}",
+      "fork_too_large_error": "此对话过大，无法分叉。请尝试复制更少消息的位置。",
       "hide_sessions": "隐藏会话",
       "hide_sessions_sidebar": "隐藏会话侧边栏",
       "in_split": "在分屏中",

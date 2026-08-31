@@ -9238,6 +9238,10 @@
         "copy_text_failed": "복사하지 못했습니다",
         "copy_text_unavailable": "이 환경에서는 클립보드가 차단되어 있습니다. 게시글 텍스트가 선택되어 있으니 Ctrl+C / ⌘C를 누르세요. 편집한 카드 텍스트는 카드에서 직접 복사하세요.",
         "export_failed": "공유 카드를 만들 수 없습니다"
+      },
+      "sectionMarkerRow": {
+        "end_of": "{{label}} 끝",
+        "end_of_section": "섹션 끝"
       }
     },
     "chatPage": {
@@ -9267,6 +9271,7 @@
       "filter_agents": "에이전트 필터",
       "focus_popped_out_window": "분리된 창으로 포커스 이동",
       "fork_failed_error": "포크에 실패했습니다: {{error}}",
+      "fork_too_large_error": "이 대화는 포크하기에 너무 큽니다. 복사할 메시지가 더 적은 지점을 사용해 보세요.",
       "hide_sessions": "세션 숨기기",
       "hide_sessions_sidebar": "세션 사이드바 숨기기",
       "in_split": "분할 보기 중",

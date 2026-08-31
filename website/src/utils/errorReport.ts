@@ -196,6 +196,7 @@ export function parseErrorCode(body: string | undefined): string | undefined {
   }
 }
 
+
 // Newest first. Plain module state: the journal is per-tab, per-page-load
 // diagnostic scratch — persisting it would resurrect stale errors as if fresh.
 let _journal: ErrorReport[] = []

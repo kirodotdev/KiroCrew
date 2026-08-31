@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import (
+    _MAX_SLOT_MESSAGES,
     MAX_LIVE_SLOTS,
     DashboardState,
     request_slot_origin,
@@ -24,6 +25,7 @@ from kiro_crew.history import carry_provenance
 from kiro_crew.history_projection import drop_persisted_tail_prefix as _drop_persisted_tail_prefix
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,24 @@ _FORK_DIRECTION_HEAD = "head"
 _FORK_DIRECTION_TAIL = "tail"
 _FORK_DIRECTIONS = (_FORK_DIRECTION_HEAD, _FORK_DIRECTION_TAIL)
 _MAX_MESSAGE_ID_CHARS = 256
+
+# Roles a fork COPIES. Wider than the visible index space above on purpose: a
+# section marker is a boundary between turns, so dropping it moves the boundary.
+_FORKED_ROLES = ("user", "assistant", SECTION_MARKER_ROLE)
+
+
+def _slice_boundary(visible_positions: list[int], at_index: int, corpus_len: int) -> int:
+    """Corpus position that divides visible turn ``at_index`` from the next one.
+
+    The NEXT VISIBLE row, not ``position + 1``: a section marker closes the section
+    the preceding turn ended, so every non-visible row between the two travels with
+    the turn ABOVE it. Using ``position + 1`` splits the pair the other way, which
+    drops the marker from a head fork and makes it the orphaned first row of a tail.
+    """
+    following = at_index + 1
+    if following < len(visible_positions):
+        return visible_positions[following]
+    return corpus_len
 
 
 def drop_persisted_tail_prefix(full_disk: list[dict], tail: list[dict]) -> list[dict]:
@@ -745,7 +765,14 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 all_messages = _rotated_head + drop_persisted_tail_prefix(
                     _rotated_head, all_messages
                 )
-    visible = [m for m in all_messages if m.get("role") in ("user", "assistant")]
+    # ``visible`` is the fork-point INDEX SPACE (at_message_index, the id lookup,
+    # head_count). Markers are copied without entering it, via these positions.
+    # Derived AFTER the archive prepend above, so the positions index the rebuilt
+    # corpus rather than the pre-rotation one.
+    visible_positions = [
+        i for i, m in enumerate(all_messages) if m.get("role") in ("user", "assistant")
+    ]
+    visible = [all_messages[i] for i in visible_positions]
     if not visible:
         return web.json_response(
             {"error": "no messages to fork", "code": "no_messages_to_fork"},
@@ -797,6 +824,10 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             )
 
     head_messages: list[dict] = []
+    # Copy span in ``all_messages`` coordinates, so a marker between two visible
+    # turns travels with them while ``visible`` keeps its own indices.
+    copy_lo = 0
+    copy_hi = len(all_messages)
     if direction == _FORK_DIRECTION_TAIL:
         if at_index is None:
             return web.json_response(
@@ -807,6 +838,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 status=400,
             )
         head_messages = visible[: at_index + 1]
+        copy_lo = _slice_boundary(visible_positions, at_index, len(all_messages))
         visible = visible[at_index + 1 :]
         if not visible:
             return web.json_response(
@@ -817,7 +849,24 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
                 status=400,
             )
     elif at_index is not None:
+        copy_hi = _slice_boundary(visible_positions, at_index, len(all_messages))
         visible = visible[: at_index + 1]
+
+    copied_messages = [m for m in all_messages[copy_lo:copy_hi] if m.get("role") in _FORKED_ROLES]
+    # The destination's append trims from the FRONT at capacity, and nothing has
+    # reached disk during the copy, so those evicted rows are unrecoverable.
+    if len(copied_messages) > _MAX_SLOT_MESSAGES:
+        return web.json_response(
+            {
+                "error": (
+                    f"conversation too large to fork: {len(copied_messages)} rows exceed the "
+                    f"{_MAX_SLOT_MESSAGES}-row session capacity. Fork at a message "
+                    f"(at_message_index or at_message_id) to copy a smaller slice."
+                ),
+                "code": "fork_corpus_too_large",
+            },
+            status=400,
+        )
 
     # A fork of a member DM thread is an ordinary chat, never a second "member"
     # slot: the fork mints a chat-* key, so member mode would make it invisible
@@ -864,13 +913,16 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     new_slot._titled = True
 
     try:
-        for m in visible:
+        for m in copied_messages:
             role = m.get("role", "assistant")
             content = m.get("content", "")
             if role != "user":
                 content, _ = redact_exfiltration_urls(content)
                 content, _ = redact_credentials(content)
-            cls = "msg msg-u" if role == "user" else "msg msg-a"
+            if role == SECTION_MARKER_ROLE:
+                cls = ""
+            else:
+                cls = "msg msg-u" if role == "user" else "msg msg-a"
             new_slot.append(
                 role, content, cls, ts=m.get("ts", ""), meta=m.get("meta"), broadcast=False
             )

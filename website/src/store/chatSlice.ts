@@ -15,6 +15,7 @@ import { SOFT_STOP_DEBOUNCE_MS, SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import { mergePreservedPastes } from '../utils/pasteTokens'
 import { safeSetItem } from '../utils/safeStorage'
 import { errMessage, isMissingSlotError, type StatusRejection } from '../utils/thunkError'
+import { parseErrorCode } from '../utils/errorReport'
 import { jsonEqual } from '../utils/structuralEqual'
 import type { McpAppRenderPayload } from '../lib/mcpAppSrcdoc'
 import { i18nT } from '../i18n/t'
@@ -2949,11 +2950,28 @@ export const forkSlot = createAsyncThunk(
   'chat/forkSlot',
   async (
     { slot, atIndex, messageId, prompt, mode, direction }: { slot: string; atIndex?: number; messageId?: string; prompt?: string; mode?: string; direction?: 'head' | 'tail' },
-    { dispatch },
+    { dispatch, rejectWithValue },
   ) => {
-    const d = messageId
-      ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
-      : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
+    let d
+    try {
+      d = messageId
+        ? await api.forkChatSlot(slot, atIndex, prompt, mode, direction, messageId)
+        : await api.forkChatSlot(slot, atIndex, prompt, mode, direction)
+    } catch (e) {
+      // Same boundary as fetchSlotDetail above: `miniSerializeError` drops the
+      // backend `code`, and the check is STRUCTURAL for the reason documented there.
+      const status = (e as { status?: unknown } | null)?.status
+      const body = (e as { body?: unknown } | null)?.body
+      const raw = typeof body === 'string' ? body : undefined
+      if (typeof status === 'number') {
+        return rejectWithValue({
+          status,
+          message: errMessage(e),
+          code: parseErrorCode(raw),
+        })
+      }
+      throw e
+    }
     if (d.ok) {
       dispatch(addSlotOptimistic({ key: d.key, title: d.title || d.key, messages: d.messages || 0, running: false, folder_id: d.folder_id }))
     }

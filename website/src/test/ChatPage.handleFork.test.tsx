@@ -39,6 +39,8 @@
  * not destructure `isLoading` either.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { useQuery, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { renderHook, waitFor } from '@testing-library/react'
@@ -46,6 +48,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import chatReducer, { forkSlot } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -218,5 +221,119 @@ describe('handleFork B3 cold-cache fix (bug-fix regression test, required per ru
     await forkPromise
 
     expect(forkChatSlotMock).toHaveBeenCalledWith('chat-1-100', 3, undefined, undefined, 'head')
+  })
+})
+
+describe('handleFork over-capacity refusal reaches the user as human copy', () => {
+  it('carries the backend code ACROSS the thunk boundary, where serialization drops it', async () => {
+    // A resolved-result read is unreachable: HTTP 400 makes the thunk REJECT, and
+    // default serialization keeps string fields only, so the payload is the only path.
+    const body = JSON.stringify({
+      error: 'conversation too large to fork: 10001 rows exceed the 10000-row session capacity.',
+      code: 'fork_corpus_too_large',
+    })
+    dashboardConfigMock.mockResolvedValue({ tail_fork_enabled: false })
+    forkChatSlotMock.mockRejectedValue(new ApiError(400, 'Bad Request', body))
+
+    const store = makeStore()
+    const { result: hook } = renderHook(() => useHandleForkUnderTest(store), {
+      wrapper: makeWrapper(store),
+    })
+    await waitFor(() => expect(dashboardConfigMock).toHaveBeenCalled())
+
+    let rejected: unknown
+    try {
+      await hook.current!('chat-1-100', 2)
+    } catch (e) {
+      rejected = e
+    }
+
+    expect(rejected).toBeDefined()
+    expect((rejected as { code?: string }).code).toBe('fork_corpus_too_large')
+    expect((rejected as { status?: number }).status).toBe(400)
+  })
+
+  it('rethrows a failure carrying no numeric status, leaving the ordinary path alone', async () => {
+    dashboardConfigMock.mockResolvedValue({ tail_fork_enabled: false })
+    forkChatSlotMock.mockRejectedValue(new Error('network down'))
+
+    const store = makeStore()
+    const { result: hook } = renderHook(() => useHandleForkUnderTest(store), {
+      wrapper: makeWrapper(store),
+    })
+    await waitFor(() => expect(dashboardConfigMock).toHaveBeenCalled())
+
+    let rejected: unknown
+    try {
+      await hook.current!('chat-1-100', 2)
+    } catch (e) {
+      rejected = e
+    }
+
+    // Negative control: no status means no payload, so `code` must be absent
+    // rather than defaulted to the over-capacity string.
+    expect((rejected as { code?: string }).code).toBeUndefined()
+    expect((rejected as { message?: string }).message).toContain('network down')
+  })
+})
+
+describe('handleFork surfaces its failure through ErrorNotice, not alert()', () => {
+  const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+  const handler = src.slice(
+    src.indexOf('const handleFork = useCallback'),
+    src.indexOf('const handlePlanFromHere = useCallback'),
+  )
+
+  it('extracted the handler slice', () => {
+    expect(handler).toContain('forkSlot(')
+    expect(handler.length).toBeGreaterThan(200)
+  })
+
+  it('raises no browser alert on either failure path', () => {
+    expect(handler).not.toContain('alert(')
+  })
+
+  it('reads the code off the rejection rather than off a resolved result', () => {
+    expect(handler).toContain('setForkError(forkErrorNotice(')
+    expect(handler).toMatch(/catch \(e\)[\s\S]*\?: string \} \| null\)\?\.code/)
+  })
+
+  it('keeps the structured report the localized message can no longer be matched to', () => {
+    // ErrorNotice recovers endpoint/status/code by matching `message` against the
+    // journal, which stores the RAW wire text, so a localized string loses it.
+    expect(src).toContain('report: findReport(raw)')
+    const notice = src.slice(src.indexOf('data-testid="fork-error"'))
+    expect(notice.slice(0, 600)).toContain('report={forkError.report}')
+  })
+
+  it('carries no retry affordance: one consumer did not justify a permanent wire field', () => {
+    // Pinned so the affordance is not reintroduced by halves; the 400 and its code stay.
+    expect(src).not.toContain('fitsAt')
+    expect(src).not.toContain('fork-error-retry')
+    expect(src).not.toContain('fork_there_action')
+    expect(src).not.toContain('fork_too_large_at_error')
+    const en = readFileSync(resolve(__dirname, '../i18n/locales/en.manual.json'), 'utf8')
+    const chat = JSON.parse(en).pages.chatPage as Record<string, string>
+    expect(chat.fork_too_large_at_error).toBeUndefined()
+    expect(chat.fork_there_action).toBeUndefined()
+    // The prose advice the subtraction keeps, so this is a removal and not a regression.
+    expect(chat.fork_too_large_error).toBeTruthy()
+  })
+
+  it('renders the failure through ErrorNotice with the hand-off decision recorded', () => {
+    const notice = src.slice(src.indexOf('data-testid="fork-error"'))
+    expect(notice).toContain('<ErrorNotice')
+    // The rule blocks on a MISSING askAgent decision, never on its direction.
+    expect(/askAgent|No hand-off/.test(notice.slice(0, 600))).toBe(true)
+  })
+
+  it('clears a stale banner on a new attempt, so it cannot outlive the failure', () => {
+    // Without this the banner survives a retry that SUCCEEDS and keeps asserting
+    // the fork failed on the slot the success just switched to.
+    expect(handler).toMatch(/if \(!activeSlot\) return\s*\n\s*setForkError\(null\)/)
+  })
+
+  it('clears the banner when the active slot changes, so it cannot leak across slots', () => {
+    expect(src).toMatch(/useEffect\(\(\) => \{ setForkError\(null\) \}, \[activeSlot\]\)/)
   })
 })

@@ -9371,6 +9371,10 @@
         "copy_text_failed": "Kopieren fehlgeschlagen",
         "copy_text_unavailable": "Die Zwischenablage ist hier blockiert. Dein Beitragstext ist markiert — drücke Strg+C / ⌘C. Bearbeiteten Kartentext kopierst du direkt aus der Karte.",
         "export_failed": "Die Share-Karte konnte nicht erzeugt werden"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Ende von: {{label}}",
+        "end_of_section": "Ende des Abschnitts"
       }
     },
     "chatPage": {
@@ -9400,6 +9404,7 @@
       "filter_agents": "Agenten filtern",
       "focus_popped_out_window": "Ausgekoppeltes Fenster fokussieren",
       "fork_failed_error": "Verzweigen fehlgeschlagen: {{error}}",
+      "fork_too_large_error": "Diese Unterhaltung ist zu groß zum Verzweigen. Versuche eine Stelle, die weniger Nachrichten kopiert.",
       "hide_sessions": "Sitzungen ausblenden",
       "hide_sessions_sidebar": "Sitzungsseitenleiste ausblenden",
       "in_split": "In geteilter Ansicht",

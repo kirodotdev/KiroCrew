@@ -9504,6 +9504,10 @@
         "copy_text_failed": "Échec de la copie",
         "copy_text_unavailable": "Le presse-papiers est bloqué ici. Le texte de ta publication est sélectionné — appuie sur Ctrl+C / ⌘C. Le texte de la carte que tu as modifié se copie depuis la carte elle-même.",
         "export_failed": "Impossible de générer la carte de partage"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fin de : {{label}}",
+        "end_of_section": "Fin de la section"
       }
     },
     "chatPage": {
@@ -9533,6 +9537,7 @@
       "filter_agents": "Filtrer les agents",
       "focus_popped_out_window": "Activer la fenêtre détachée",
       "fork_failed_error": "Échec du fork : {{error}}",
+      "fork_too_large_error": "Cette conversation est trop volumineuse pour être forkée. Essayez un point qui copie moins de messages.",
       "hide_sessions": "Masquer les sessions",
       "hide_sessions_sidebar": "Masquer la barre latérale des sessions",
       "in_split": "En vue divisée",

@@ -6167,6 +6167,10 @@
       "earlierMessagesBar": {
         "load_earlier_messages": "Load earlier messages",
         "error_retry": "Couldn't load earlier messages — retry"
+      },
+      "sectionMarkerRow": {
+        "end_of": "End of: {{label}}",
+        "end_of_section": "End of section"
       }
     },
     "chatPage": {

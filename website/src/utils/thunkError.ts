@@ -38,7 +38,11 @@
  * `return rejectWithValue({ status, message })` rather than rethrow. `message`
  * stays a string so `errMessage` reads the payload unchanged and every
  * `errMessage(e) || <fallback>` call site keeps working. */
-export type StatusRejection = { status: number; message: string }
+export type StatusRejection = {
+  status: number
+  message: string
+  code?: string
+}
 
 /** The human message of a rejection, in whichever shape it arrives.
  *
