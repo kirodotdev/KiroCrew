@@ -123,6 +123,22 @@ class TestApplySecurityHeaders:
         assert "http://*.localhost:*" not in csp
         assert "frame-ancestors 'self'" in csp
 
+    def test_csp_script_src_admits_wasm_but_not_eval(self) -> None:
+        """The Pierre highlight workers tokenize with the shiki-wasm engine
+        (website/src/pierre/config.ts, PIERRE_REGEX_ENGINE), and a same-origin
+        worker takes its CSP from its own script response — this header.
+        WebAssembly.instantiate needs 'wasm-unsafe-eval' in script-src or the
+        tokenizer worker dies on first highlight and every diff surface
+        unmounts. The expression admits ONLY WASM compilation: JS eval stays
+        banned, which the second assertion pins so a future edit cannot
+        silently widen this into 'unsafe-eval'."""
+        resp = _make_response()
+        _apply_security_headers(resp, _make_app(with_instances=False))
+        csp = resp.headers["Content-Security-Policy"]
+        script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+        assert "'wasm-unsafe-eval'" in script_src
+        assert "'unsafe-eval'" not in script_src.replace("'wasm-unsafe-eval'", "")
+
     def test_csp_connect_src_allows_loopback_liveness_probe(self) -> None:
         """WebPreviewPanel polls the framed dev server with a no-cors ``fetch``
         because a cross-origin iframe cannot report that its server died. When

@@ -702,7 +702,17 @@ _BASE_CSP = (
     # imports are blocked no matter what the per-app srcdoc <meta> CSP says
     # (when two policies apply, the most restrictive wins per directive).
     # Same pattern as the widget CDN allowances (tailwind/jsdelivr/cdnjs).
-    "script-src 'self' 'unsafe-inline' "
+    # 'wasm-unsafe-eval': the Pierre highlight workers tokenize with the
+    # shiki-wasm engine (website/src/pierre/config.ts, PIERRE_REGEX_ENGINE —
+    # chosen there because the JS engine has no backtracking ceiling and a
+    # pathological grammar match kills the renderer as a cage OOM).
+    # WebAssembly.compile/instantiate requires this source expression in the
+    # executing context's script-src, and a same-origin worker takes its CSP
+    # from its own script RESPONSE — this header — not from the document that
+    # spawned it. Without it the tokenizer worker's WASM instantiation is
+    # refused and every diff surface dies on first highlight. It permits ONLY
+    # WebAssembly compilation, never JS eval ('unsafe-eval' stays out).
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' "
     "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
     "https://esm.sh; "
     # https://fonts.googleapis.com + https://fonts.gstatic.com: index.html loads
