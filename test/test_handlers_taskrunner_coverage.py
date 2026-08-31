@@ -99,6 +99,38 @@ def _state(runner: MagicMock | None) -> SimpleNamespace:
     return SimpleNamespace(task_runner=runner)
 
 
+class _Payload:
+    """Minimal stand-in for the request body stream.
+
+    Five of this module's handlers now read their body through
+    ``_shared.read_bounded_json`` with the shared 64 KB cap, which enforces the
+    ceiling BEFORE decoding by draining ``request.content`` incrementally --
+    so a mocked ``request.json`` alone no longer feeds them. Supplying a real
+    payload serves both paths: the capped handlers drain this stream, and the
+    uncapped ones still go through ``request.json()``.
+    """
+
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    async def iter_chunked(self, n: int):
+        for i in range(0, len(self._raw), n):
+            yield self._raw[i : i + n]
+
+    async def read(self) -> bytes:
+        return self._raw
+
+    def set_read_chunk_size(self, size: int) -> None:
+        # ``request.read()`` configures the stream before draining it.
+        return None
+
+    def at_eof(self) -> bool:
+        # ``request.can_read_body`` is ``not payload.at_eof()``, and the
+        # allow_absent handlers branch on it: reporting EOF while bytes are
+        # waiting would make every request look bodyless and silently default.
+        return not self._raw
+
+
 def _request(
     state: Any,
     method: str = "POST",
@@ -109,15 +141,33 @@ def _request(
     raw_json_error: bool = False,
     request_app: str = "",
     with_content_length: bool = True,
+    body_present: bool = False,
 ) -> web.Request:
     app = web.Application()
     app["state"] = state
-    headers = {"Content-Length": "32"} if (json_body is not None and with_content_length) else {}
-    req = make_mocked_request(method, path, app=app, match_info=match_info or {}, headers=headers)
+    if raw_json_error:
+        raw = b"{bad json"
+    elif json_body is not None or body_present:
+        # ``body_present`` distinguishes a body whose CONTENT is the JSON
+        # literal ``null`` from no body at all -- the allow_absent handlers
+        # branch on that difference, and conflating them hides a non-object
+        # body behind a silent default.
+        raw = json.dumps(json_body).encode()
+    else:
+        raw = b""
+    headers = {"Content-Length": str(len(raw))} if (raw and with_content_length) else {}
+    req = make_mocked_request(
+        method,
+        path,
+        app=app,
+        match_info=match_info or {},
+        headers=headers,
+        payload=_Payload(raw),
+    )
     req["app"] = request_app
     if raw_json_error:
         req.json = AsyncMock(side_effect=ValueError("bad json"))  # type: ignore[method-assign]
-    elif json_body is not None:
+    elif json_body is not None or body_present:
         req.json = AsyncMock(return_value=json_body)  # type: ignore[method-assign]
     return req
 
@@ -1353,3 +1403,45 @@ class TestRunRefine:
         state.sessions = sessions
         await _run_refine(state, "x")
         assert state._refine_status == "cancelled"
+
+
+class TestNonObjectBodiesAcrossConvertedHandlers:
+    """Every converted handler answers 400, never 5xx, on a non-object body.
+
+    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
+    ``request.json()`` returned them and the ``.get()`` each handler performs
+    next raised ``AttributeError`` from OUTSIDE the parse ``try`` -- a 500 for
+    what is really malformed client input (issue #5587). Enumerated rather than
+    one test per handler so a handler that loses the guard fails by
+    construction; the cap decision for each of these sites is recorded in
+    ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.
+    """
+
+    _HANDLERS = [
+        (api_taskrunner_start, {}),
+        (api_taskrunner_cancel, {}),
+        (api_taskrunner_rename, {"task_id": "t1"}),
+        (api_taskrunner_update_task, {"task_id": "t1", "index": "0"}),
+        (api_taskrunner_retry, {"task_id": "t1"}),
+        (api_taskrunner_plan, {}),
+        (api_taskrunner_update_plan, {"task_id": "t1"}),
+        (api_taskrunner_execute_plan, {"task_id": "t1"}),
+        (api_taskrunner_from_chat, {}),
+        (api_taskrunner_refine, {}),
+        (api_taskrunner_refine_answer, {}),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], "a string", 5, 1.5, True, None], ids=repr)
+    @pytest.mark.parametrize(
+        "handler,match_info", _HANDLERS, ids=lambda v: getattr(v, "__name__", "")
+    )
+    async def test_non_object_body_is_400_not_500(
+        self, handler: Any, match_info: dict[str, str], payload: Any, tmp_path: Path
+    ) -> None:
+        runner = _runner(tmp_path)
+        runner._runs["t1"] = TaskRun(spec_path="s.md", spec_content="s", task_id="t1")
+        req = _request(_state(runner), json_body=payload, match_info=match_info, body_present=True)
+        resp = await handler(req)
+        assert resp.status == 400, f"{handler.__name__} on {payload!r}: expected 400"
+        assert _body(resp)["code"] == "body_not_object", handler.__name__

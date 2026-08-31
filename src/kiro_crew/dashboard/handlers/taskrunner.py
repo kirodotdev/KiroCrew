@@ -10,6 +10,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.task_planner import plan_to_yaml
@@ -135,10 +136,10 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     spec_path = body.get("spec", "")
     if not spec_path:
         return web.json_response({"error": "spec path required"}, status=400)
@@ -212,10 +213,10 @@ async def api_taskrunner_cancel(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
-    try:
-        body = await request.json() if request.content_length else {}
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     state.task_runner.cancel(body.get("task_id"))
     return web.json_response({"ok": True})
 
@@ -286,10 +287,10 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     run = state.task_runner._runs.get(task_id)
     if not run:
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        data = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    data, data_err = await read_bounded_json(request)
+    if data_err is not None:
+        return data_err
+    assert data is not None  # read_bounded_json returns (dict, None) on success
     name = data.get("name", "").strip()
     if not name:
         return web.json_response({"error": "name required"}, status=400)
@@ -308,10 +309,10 @@ async def api_taskrunner_update_task(request: web.Request) -> web.Response:
         index = int(request.match_info["index"])
     except ValueError:
         return web.json_response({"error": "invalid index"}, status=400)
-    try:
-        data = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    data, data_err = await read_bounded_json(request, max_bytes=None)
+    if data_err is not None:
+        return data_err
+    assert data is not None  # read_bounded_json returns (dict, None) on success
     try:
         result = await state.task_runner.update_task(task_id, index, data)
         # SEL audit for all task field changes
@@ -344,10 +345,10 @@ async def api_taskrunner_retry(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
-    try:
-        body = await request.json() if request.content_length else {}
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     from_step = body.get("from_step", 1)
     try:
         await state.task_runner.retry_from_task(
@@ -519,10 +520,10 @@ async def api_taskrunner_plan(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     input_text = body.get("input", "")
     source = body.get("source", "text")
     spec_path = body.get("spec", "")
@@ -583,10 +584,10 @@ async def api_taskrunner_update_plan(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     steps = body.get("steps", [])
     try:
         run = await state.task_runner.update_plan(task_id, steps)
@@ -622,10 +623,10 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
     task_id = request.match_info["task_id"]
-    try:
-        body = await request.json() if request.content_length else {}
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     agent = body.get("agent", "")
     fresh = body.get("fresh", False)
     workspace_dir = body.get("workspace_dir", "")
@@ -658,10 +659,10 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.task_runner:
         return web.json_response({"error": "task runner not available"}, status=400)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     steps = body.get("steps", [])
     task_id = body.get("task_id", "")
     if not steps or not isinstance(steps, list):
@@ -824,10 +825,10 @@ async def _run_refine(state: DashboardState, user_input: str) -> None:
 async def api_taskrunner_refine(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine — start background spec generation from user input."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     user_input = body.get("input", "").strip()
     if not user_input:
         return web.json_response({"error": "input is required"}, status=400)
@@ -872,10 +873,10 @@ async def api_taskrunner_refine_cancel(request: web.Request) -> web.Response:
 async def api_taskrunner_refine_answer(request: web.Request) -> web.Response:
     """POST /api/taskrunner/refine/answer — answer a clarifying question."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     answer = body.get("answer", "").strip()
     if not answer:
         return web.json_response({"error": "answer required"}, status=400)

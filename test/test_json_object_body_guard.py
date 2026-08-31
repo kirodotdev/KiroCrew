@@ -141,12 +141,17 @@ _CONTROL_FIELDS_CAP_PENDING = (
 )
 _BOUNDED_BY_DEFAULT = "small fixed-shape payload on a strict-internal route"
 _BOUNDED_EXPLICIT = "explicit per-route cap, larger than the shared default"
+_BOUNDED_CONTROL_FIELDS = (
+    "body is a fixed set of control fields (an identifier, a flag, a number, a "
+    "short name), so the shared 64 KB ceiling is right and is applied"
+)
 
 _CAP_REASONS = {
     _UNBOUNDED_USER_CONTENT,
     _CONTROL_FIELDS_CAP_PENDING,
     _BOUNDED_BY_DEFAULT,
     _BOUNDED_EXPLICIT,
+    _BOUNDED_CONTROL_FIELDS,
 }
 
 #: ``module::handler`` -> (declared cap, why). Declared cap is ``"None"`` for an
@@ -213,6 +218,41 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "None",
         _UNBOUNDED_USER_CONTENT,
     ),
+    # ---- tranche 2 ----
+    # taskrunner.py: the control-field endpoints TAKE the cap rather than
+    # deferring it, which is what tranche 1 could not do without rewriting its
+    # handlers' mocked-json test harness. Its own harness is updated in this PR.
+    "handlers/taskrunner.py::api_taskrunner_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/taskrunner.py::api_taskrunner_rename": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/taskrunner.py::api_taskrunner_retry": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/taskrunner.py::api_taskrunner_execute_plan": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    # taskrunner.py: these carry a spec, a plan, or a free-text prompt.
+    # ``start`` looks like a path field, but its documented contract is
+    # ``{"spec": "path"}`` OR ``{"spec": "__inline__:<whole spec>"}`` -- the
+    # inline form puts an entire spec in the body, so capping it would 413 a
+    # large spec that works today.
+    "handlers/taskrunner.py::api_taskrunner_start": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/taskrunner.py::api_taskrunner_update_task": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/taskrunner.py::api_taskrunner_plan": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/taskrunner.py::api_taskrunner_update_plan": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/taskrunner.py::api_taskrunner_from_chat": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/taskrunner.py::api_taskrunner_refine": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/taskrunner.py::api_taskrunner_refine_answer": (
+        "None",
+        _UNBOUNDED_USER_CONTENT,
+    ),
+    # chat_tags.py: every payload is a tag/column identifier, a short name
+    # (already truncated at _NAME_MAX), or an id array -- all capped.
+    "chat_tags.py::api_chat_tag_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags.py::api_chat_tag_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags.py::api_chat_slot_tags": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags.py::api_chat_tag_column_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags.py::api_chat_tag_columns_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_tags.py::api_chat_slot_drop": ("<default>", _BOUNDED_CONTROL_FIELDS),
 }
 
 _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent

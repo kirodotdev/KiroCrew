@@ -103,6 +103,34 @@ def _plain_provider(text: str = "done"):
 # ══════════════════════════════════════════════════════════════════════
 
 
+class _Payload:
+    """Minimal stand-in for the request body stream.
+
+    ``api_taskrunner_start`` and ``api_taskrunner_execute_plan`` read their body
+    through ``_shared.read_bounded_json`` with the shared 64 KB cap, which
+    enforces the ceiling BEFORE decoding by draining ``request.content`` -- so a
+    mocked ``request.json`` alone no longer feeds them.
+    """
+
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    async def iter_chunked(self, n: int):
+        for i in range(0, len(self._raw), n):
+            yield self._raw[i : i + n]
+
+    async def read(self) -> bytes:
+        return self._raw
+
+    def set_read_chunk_size(self, size: int) -> None:
+        return None
+
+    def at_eof(self) -> bool:
+        # ``request.can_read_body`` is ``not payload.at_eof()``, and the
+        # allow_absent handlers branch on it.
+        return not self._raw
+
+
 class TestAutoApproveDefault:
     def test_project_auto_approve_defaults_false(self) -> None:
         run = Project(spec_path="s.md", spec_content="s")
@@ -456,15 +484,17 @@ class TestAutoApproveProvenanceGating:
         runner.start_background = MagicMock(return_value="tid")
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
-        req = make_mocked_request("POST", "/api/taskrunner", app=app)
-        req["app"] = request_app  # set by token_auth_middleware; "" == dashboard itself
-        req.json = AsyncMock(
-            return_value={
-                "spec": "__inline__:# t\n## Steps\n1. do",
-                "source": source,
-                "auto_approve": auto_approve,
-            }
+        start_body = {
+            "spec": "__inline__:# t\n## Steps\n1. do",
+            "source": source,
+            "auto_approve": auto_approve,
+        }
+        req = make_mocked_request(
+            "POST", "/api/taskrunner", app=app,
+            payload=_Payload(json.dumps(start_body).encode()),
         )
+        req["app"] = request_app  # set by token_auth_middleware; "" == dashboard itself
+        req.json = AsyncMock(return_value=start_body)
         await api_taskrunner_start(req)
         return runner.start_background.call_args.kwargs["auto_approve"]
 
@@ -490,12 +520,14 @@ class TestAutoApproveProvenanceGating:
         runner.execute_plan = AsyncMock(return_value=None)
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
+        exec_body = {"auto_approve": auto_approve}
+        raw = json.dumps(exec_body).encode()
         req = make_mocked_request(
             "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
-            headers={"Content-Length": "32"},
+            headers={"Content-Length": str(len(raw))}, payload=_Payload(raw),
         )
         req["app"] = request_app
-        req.json = AsyncMock(return_value={"auto_approve": auto_approve})
+        req.json = AsyncMock(return_value=exec_body)
         await api_taskrunner_execute_plan(req)
         return runner.execute_plan.call_args.kwargs["auto_approve"]
 
@@ -523,9 +555,10 @@ class TestAutoApproveProvenanceGating:
         runner.execute_plan = AsyncMock(return_value=None)
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
+        raw = json.dumps({"auto_approve": True}).encode()
         req = make_mocked_request(
             "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
-            headers={"Content-Length": "32"},
+            headers={"Content-Length": str(len(raw))}, payload=_Payload(raw),
         )
         req["app"] = ""  # dashboard context → requested trust is honored, so the gate audits
         req.json = AsyncMock(return_value={"auto_approve": True})
@@ -569,7 +602,10 @@ class TestInlineSpecCleanup:
             runner.start_background = AsyncMock(return_value="tid")
         app = web.Application()
         app["state"] = SimpleNamespace(task_runner=runner)
-        req = make_mocked_request("POST", "/api/taskrunner", app=app)
+        req = make_mocked_request(
+            "POST", "/api/taskrunner", app=app,
+            payload=_Payload(json.dumps(body).encode()),
+        )
         req["app"] = ""
         req.json = AsyncMock(return_value=body)
         return await api_taskrunner_start(req), runner

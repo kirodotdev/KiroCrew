@@ -22,6 +22,7 @@ from typing import Any, Callable, TypeVar
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -252,10 +253,10 @@ async def api_chat_tags(request: web.Request) -> web.Response:
 async def api_chat_tag_create(request: web.Request) -> web.Response:
     """POST /api/chat/tags — create a new tag."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     # Redact credential / exfiltration patterns from the user-supplied name
     # BEFORE truncation — truncating first can slice a credential that
     # straddles the length cut into a fragment the scanners no longer
@@ -298,10 +299,10 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
     # JSON parse + lock contention for non-existent tags).
     if not _tag_by_id(state, tid):
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     if "name" in body:
         new_name = str(body["name"]).strip()[:_NAME_MAX]
         if not new_name:
@@ -487,10 +488,10 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     raw_ids = body.get("tags")
     if not isinstance(raw_ids, list):
         return web.json_response(
@@ -623,10 +624,10 @@ def _state_lane_owner(
 async def api_chat_tag_column_create(request: web.Request) -> web.Response:
     """POST /api/chat/tag-columns — append a new sidebar column."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     async with _tags_write_lock(state):
         column = _normalize_column(state, {**body, "order": len(state._tag_boards)})
         if column is None:
@@ -678,10 +679,10 @@ async def api_chat_tag_column_update(request: web.Request) -> web.Response:
     column = next((c for c in state._tag_boards if c.get("id") == cid), None)
     if not column:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     async with _tags_write_lock(state):
         # Re-check under lock (column may have been deleted concurrently).
         column = next((c for c in state._tag_boards if c.get("id") == cid), None)
@@ -765,10 +766,10 @@ async def api_chat_tag_column_delete(request: web.Request) -> web.Response:
 async def api_chat_tag_columns_reorder(request: web.Request) -> web.Response:
     """PUT /api/chat/tag-columns/order — reorder columns by id list."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     ids = body.get("ids")
     if not isinstance(ids, list):
         return web.json_response(
@@ -831,10 +832,10 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     column_id = str(body.get("column_id") or "")
     column = next((c for c in state._tag_boards if c.get("id") == column_id), None)
     if not column:

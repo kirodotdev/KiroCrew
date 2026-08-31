@@ -1222,3 +1222,58 @@ class TestUpdateDeleteRace:
 
             # The tag must NOT be in state (no silent ghost mutation).
             assert not any(t["id"] == tid for t in state._tags)
+
+
+class TestNonObjectBodiesAcrossConvertedHandlers:
+    """Every converted handler answers 400, never 5xx, on a non-object body.
+
+    ``[]`` / ``"s"`` / ``5`` / ``true`` / ``null`` are all VALID JSON, so
+    ``request.json()`` returned them and the ``.get()`` (or ``in``) that each
+    handler performs next raised from OUTSIDE the parse ``try`` -- a 500 for
+    what is really malformed client input (issue #5587). Driven through a real
+    client so the shared guard's 64 KB pre-decode cap is exercised on the wire,
+    which is how these endpoints now read their body; the cap decision for each
+    site is recorded in ``_CAP_REGISTER`` in ``test_json_object_body_guard.py``.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], "a string", 5, 1.5, True, None], ids=repr)
+    async def test_non_object_body_is_400_not_500(self, payload, tmp_path) -> None:
+        state = _make_state(tmp_path)
+        app = _make_tags_app(state)
+        async with TestClient(TestServer(app)) as client:
+            # Seed a real tag and column: the {id} routes check existence BEFORE
+            # parsing, so a made-up id would 404 and never reach the guard --
+            # the test would pass for the wrong reason.
+            created = await client.post("/api/chat/tags", json={"name": "T"})
+            assert created.status in (200, 201), await created.text()
+            tag_id = (await created.json())["id"]
+            col = await client.post("/api/chat/tag-columns", json={"name": "C"})
+            assert col.status in (200, 201), await col.text()
+            col_id = (await col.json())["id"]
+
+            routes = [
+                ("post", "/api/chat/tags"),
+                ("patch", f"/api/chat/tags/{tag_id}"),
+                ("post", "/api/chat/tag-columns"),
+                ("put", "/api/chat/tag-columns/order"),
+                ("patch", f"/api/chat/tag-columns/{col_id}"),
+            ]
+            # api_chat_slot_tags and api_chat_slot_drop are converted too, but
+            # they resolve the slot BEFORE parsing, so reaching their guard
+            # needs a live slot rather than a seeded tag. Their call sites are
+            # pinned in _CAP_REGISTER, and their guard is the same shared call.
+            for method, path in routes:
+                # ``json=None`` makes the client send NO body, which is a
+                # different fact (invalid_json) from a body containing the JSON
+                # literal ``null`` -- send that one as raw bytes.
+                if payload is None:
+                    resp = await getattr(client, method)(
+                        path,
+                        data=b"null",
+                        headers={"Content-Type": "application/json"},
+                    )
+                else:
+                    resp = await getattr(client, method)(path, json=payload)
+                assert resp.status == 400, (path, payload, resp.status)
+                assert (await resp.json())["code"] == "body_not_object", path
