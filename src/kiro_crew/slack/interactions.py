@@ -1410,6 +1410,9 @@ async def _route_action_to_session(
             subagent_manager=_orch.subagent_mgr,
             task_runner=_orch.task_runner,
             action_context=action_context,
+            # The label is the CLICKED BUTTON's text, authored by an agent into the
+            # OPTIONS control -- turn content, exactly as an option label is.
+            interpret_commands=False,
         )
     )
     _orch._handler_tasks.add(t)
@@ -1800,6 +1803,7 @@ async def _handle_options_submit(payload: dict, channel: str, msg_ts: str) -> No
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            interpret_commands=False,
         )
     )
     _orch._handler_tasks.add(t)
@@ -2051,6 +2055,7 @@ async def _handle_options(payload: dict, action: dict, channel: str, msg_ts: str
             target_slot_name=_pinned_slot_name,
             route_pinned=_route_pinned,
             asker_key=_asker_key,
+            interpret_commands=False,
         )
     )
     _orch._handler_tasks.add(t)

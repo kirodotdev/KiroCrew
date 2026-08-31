@@ -1246,13 +1246,30 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
-    "[END CRITICAL RULES]\n\n"
+)
+_CRITICAL_RULES_END = "[END CRITICAL RULES]\n\n"
+# Dashboard only: no channel renders a badge, and a channel parser strips the marker
+# before dispatch -- except on a reserved label, returned unchanged so no promotion.
+_OPTIONS_RECOMMENDED_RULE = (
+    "Mark the option you recommend by starting its label with `(recommended)`. "
+    "The dashboard renders that marker as a badge beside the label and sends "
+    "the label without it, so the marker never becomes part of the user's "
+    "message. Mark at most one option, and omit the marker when no option is a "
+    "clear recommendation.\n"
 )
 # The dashboard variant is the module's canonical block: tests and the
 # marker-neutralization prefix check treat "a critical-rules block" as one of
 # these two fixed strings, so both stay module constants (never templated).
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
-_CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD
+    + _DIFF_RULE_DASHBOARD
+    + _CRITICAL_RULES_TAIL
+    + _OPTIONS_RECOMMENDED_RULE
+    + _CRITICAL_RULES_END
+)
+_CRITICAL_RULES_CHANNEL = (
+    _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL + _CRITICAL_RULES_END
+)
 
 # Runtime sources whose transcript renders tool-call cards (and therefore the
 # inline diff card). Everything else — messaging channels, cron, subagent,
@@ -2987,6 +3004,16 @@ class ContextBuilder:
                     "after ANY file change you MUST include a ```diff code "
                     "block in your message text — it is the only place the "
                     "user can see what changed.\n\n"
+                )
+                # Same asymmetry, same cause: a dashboard-started session carries the
+                # marker instruction, but this surface renders no badge for it.
+                parts.append(
+                    "For THIS turn: this surface renders no badge, and it strips a "
+                    "`(recommended)` marker out of the label before sending it (unless "
+                    "the label would become a command, when it is sent unchanged), so "
+                    "marking an option would simply delete the marker unread — do NOT "
+                    "mark any option; name the option you recommend in your message "
+                    "body instead.\n\n"
                 )
 
         # Post-compaction re-injection: the skills index was lost when the

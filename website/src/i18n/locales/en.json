@@ -4306,6 +4306,7 @@
       "yes_move_it": "Move it"
     },
     "followUpBar": {
+      "recommended": "recommended",
       "scroll_left": "Scroll left",
       "scroll_right": "Scroll right",
       "scroll_suggestions_left": "Scroll suggestions left",

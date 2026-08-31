@@ -151,6 +151,61 @@ OPTIONS_RE_TRAILER = re.compile(
     re.DOTALL,
 )
 
+# RECOMMENDED-OPTION MARKER — edges only, so an interior ``(recommended)`` stays prose.
+# Beside the trailer regex so the marker has ONE definition rather than one per renderer.
+_RECOMMENDED_LEADING_RE = re.compile(r"^\s*\(recommended\)", re.IGNORECASE)
+
+# Stripping a marker off one of these would promote inert text into a slash command, a
+# prompt mention, or reserved provenance, so such a label is left exactly as it arrived.
+_RESERVED_DISPATCH_SIGILS = ("/", "@", "[")
+
+# Channel commands carrying NO sigil, which the prefix guard above cannot see: WeCom and
+# Weixin match these CJK spellings by exact equality. A parity test holds the list honest.
+_RESERVED_TEXT_COMMANDS = frozenset(
+    {
+        "新对话",  # wecom, weixin -- new session
+        "清空",  # wecom, weixin -- new session
+        "压缩",  # wecom -- compact
+        "帮助",  # wecom, weixin -- help
+        "停止",  # wecom, weixin -- stop
+    }
+)
+
+# Dashboard plan chips carrying NO sigil either: the orchestrator matches these by exact
+# equality after casefolding, so a stripped marker would promote a label into an auto-run.
+_RESERVED_PLAN_ACTIONS = frozenset({"go", "go all", "cancel"})
+
+
+def strip_recommended_marker(label: str) -> str:
+    """Return *label* with a LEADING ``(recommended)`` marker removed.
+
+    A channel sends an option label verbatim as the user's next message, so the
+    marker must not survive into the dispatched text. Returns the label UNCHANGED
+    when removing the marker would expose a dispatch sigil, when the cleaned label
+    IS a sigil-less channel command or a dashboard plan chip, when the marker is the
+    whole label, or when there is no leading marker -- so this can run over every
+    choice.
+
+    Leading only, matching the producer rule. A trailing marker is not recognised:
+    nothing emits one, and admitting a shape with no producer would mean stripping
+    text from a label on a guess. A drifted trailing marker therefore stays visible
+    as ordinary label text, which is what happened before this grammar existed.
+    """
+    match = _RECOMMENDED_LEADING_RE.search(label)
+    if not match:
+        return label
+    cleaned = (label[: match.start()] + label[match.end() :]).strip()
+    if not cleaned or cleaned.startswith(_RESERVED_DISPATCH_SIGILS):
+        return label
+    # Matched the way the channels match: exact equality, either casing.
+    if cleaned in _RESERVED_TEXT_COMMANDS or cleaned.casefold() in _RESERVED_TEXT_COMMANDS:
+        return label
+    # Matched the way the orchestrator matches a plan chip: casefolded equality.
+    if cleaned.strip().casefold() in _RESERVED_PLAN_ACTIONS:
+        return label
+    return cleaned
+
+
 # CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).
 #
 # Agent control tags ride in HTML comments, which the dashboard's markdown

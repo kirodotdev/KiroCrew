@@ -128,6 +128,43 @@ not linger:
 const { followUpOptions } = deriveFollowUpOptions(messages, running)
 ```
 
+#### `(recommended)` is split off the label
+
+**An app that does not read `recommended` now silently drops the agent's steer.** The marker no
+longer arrives inside the label, so a renderer that draws only `options` shows the recommended
+choice looking exactly like every other one.
+
+Both parsers treat a `(recommended)` marker at the **start** of a label as protocol rather
+than label text, and return it separately. The leading edge is the only one admitted: no
+producer emits a trailing marker, and stripping a shape nothing emits would mean removing
+text from a label on a guess, so a trailing `(recommended)` stays as ordinary label text.
+So an option the agent wrote as
+`(recommended) Merge it now` reaches you as the label `Merge it now`, with the marker available on
+`ParsedOptions.recommended` — the one marked label, or `null`. It is a single label rather than a
+set because the only sanctioned producer marks at most one option, and rather than a label-to-word
+map because the grammar admits exactly one marker word, so a map's value could only ever be the
+constant `recommended` (the ordering variants `recommended first` / `recommended then` are
+deliberately not admitted):
+
+```tsx
+const { options, recommended } = parseOptions(cleaned)
+// options     -> ['Merge it now', 'Show me the diff']
+// recommended -> 'Merge it now'
+// test it with recommended === option
+```
+
+`deriveFollowUpOptions` exposes the same value as `followUpRecommended`.
+
+**If your app renders options itself, note two things.** The label you get is the marker-stripped
+one, which is also the text a click should send — the marker was never part of the user's
+instruction. And `recommended` is additive: an app built before it existed keeps working and simply
+renders no recommendation, so the agent's steer is dropped rather than shown. Comparing
+`recommended === label` is what restores it. Should a producer break the contract and mark several
+options, the first wins and the rest arrive unmarked.
+
+Only the two edge positions are recognised, so a label that merely *contains* the string — `Search
+for the literal (recommended) token` — is left exactly as written and reports no recommendation.
+
 The module imports no React and no dashboard component, so it is also usable from a worker, a test,
 or a non-React renderer.
 

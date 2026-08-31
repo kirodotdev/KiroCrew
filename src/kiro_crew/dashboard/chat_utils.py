@@ -393,6 +393,8 @@ def user_text_span(
     return offset, offset + length
 
 
+# A cross-surface dependent: the option-marker splitter `splitRecommendation` refuses to
+# strip a marker off a `/`-leading label, so a sigil added here needs adding there too.
 def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     """Whether *first_word* should be forwarded to the harness as a command.
 

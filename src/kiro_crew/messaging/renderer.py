@@ -35,7 +35,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER, strip_control_comments
+from kiro_crew.constants import (
+    OPTIONS_RE_TRAILER,
+    strip_control_comments,
+    strip_recommended_marker,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
@@ -457,6 +461,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
     match = OPTIONS_RE_TRAILER.search(text)
     if match:
         choices = [c.strip() for c in match.group(1).split("|") if c.strip()]
+        choices = [strip_recommended_marker(c) for c in choices]
         return text[: match.start()].rstrip(), choices
     if hide_partial:
         idx = text.rfind("[OPTIONS")
