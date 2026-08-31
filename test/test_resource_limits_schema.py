@@ -299,6 +299,46 @@ class TestCgroupConsumerUnchanged:
             assert tasks and int(tasks[0].split("=")[1]) >= 1, raw
             assert memory and int(memory[0].split("=")[1].rstrip("M")) >= 1, raw
 
+    def test_an_unresolvable_wrapper_degrades_to_unwrapped_not_to_a_zero_ceiling(self):
+        """Negative control for the wrapper-pin mock above: when the
+        ``systemd-run`` pin cannot resolve (the reality on Windows, where #7183
+        turned this file red), ``cgroup_scope_argv`` returns argv UNCHANGED --
+        its documented fail-open, pinned in depth by
+        ``test_sandbox_argv.py::test_cgroup_wrapper_is_absolute_or_refused``.
+        Asserting it here too keeps the ceiling test above honest: the
+        "degrading must not mean unbounded" invariant is about the emitted
+        limit VALUES, and this is the shape degradation takes -- no properties
+        at all, never a zero ceiling."""
+        import kiro_crew.sandbox as sb
+
+        try:
+            with (
+                unittest.mock.patch.object(sb, "_probe_cgroup_scope", return_value=(True, "")),
+                unittest.mock.patch.object(sb, "_reconcile_slice_memory_high_off_thread"),
+                unittest.mock.patch.object(sb, "_cpu_controller_delegated", return_value=True),
+                unittest.mock.patch.object(
+                    sb.platform_compat, "trusted_system_bin", return_value=None
+                ),
+                # Deliberately never read on the healthy path -- the wrapper
+                # gate returns before ``_cgroup_limits_from_config`` runs. It
+                # stays mocked so a REGRESSION of the fail-open (proceeding
+                # past the gate) still cannot read the host's real config.
+                unittest.mock.patch(
+                    "kiro_crew.config.loader._raw_config",
+                    return_value={"resource_limits": {"max_processes": 0.5, "max_memory_mb": 0.5}},
+                ),
+            ):
+                argv = sb.cgroup_scope_argv(["/bin/true"])
+        finally:
+            # The degraded path arms the once-per-process warning latch; leaving
+            # it set would silence the SECURITY warning for later tests on this
+            # worker (same reset as test_sandbox_argv.py's _reset_probe).
+            sb._CGROUP_WARNED = False
+        assert argv == ["/bin/true"]
+        # Drift guard for the name's claim: degradation means NO properties,
+        # never a zero one.
+        assert not [a for a in argv if a.startswith(("TasksMax=", "MemoryMax=", "CPUQuota="))]
+
 
 class TestSliceConsumer:
     @staticmethod
