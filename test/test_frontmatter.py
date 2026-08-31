@@ -24,6 +24,7 @@ from kiro_crew.frontmatter import (
     SKILL_LOADER,
     SKILL_UPDATE,
     FrontmatterDialect,
+    fold_block_scalar,
     frontmatter_value,
     parse_frontmatter,
     split_frontmatter,
@@ -292,6 +293,61 @@ class TestSkillUpdateDialect:
     def test_none_and_empty(self) -> None:
         assert history._frontmatter_value(None, "description") == ""
         assert history._frontmatter_value("", "description") == ""
+
+
+class TestTheLiteralFoldTheSkillEditorSimulates:
+    """Pin the literal-scalar fold that ``backendFoldsLiteral`` reproduces.
+
+    ``website/src/components/SkillForm.tsx`` holds a function named
+    ``backendFoldsLiteral``. It exists because the editor refuses to restructure a managed
+    field whose value this reader and a real YAML parser disagree about -- adopting one
+    reading and saving it would silently redefine the file for the code that loads skills.
+    Rather than predict agreement from the block-scalar indicator, which was wrong three
+    times, it SIMULATES this function for the bare ``|`` family and compares; a folded or
+    explicit-indicator form is refused outright, so no simulation of the folded rules
+    exists to keep in step.
+
+    So this is the backend half of a cross-language invariant, and its scope is every step
+    that simulation mirrors -- trailing-blank trim, dedent relative to the first non-blank
+    line, join, and the final ``.strip()`` -- not the chomping axis alone. A dedent change
+    would otherwise leave both this file and the TypeScript tests green (those expectations
+    are hardcoded) while the two readers drifted apart, reopening exactly the silent
+    corruption the editor's refusal was written to prevent. If any assertion below fails,
+    ``backendFoldsLiteral`` has to change with it. See #1825 and #7097.
+
+    Note for anyone editing :func:`fold_block_scalar`: the trailing-blank trim is applied
+    at TWO points -- the ``while`` loop that shortens ``block``, and the final ``.strip()``
+    on the literal branch -- so disabling either one alone leaves the observable result
+    unchanged and these tests still pass. That is measured, not assumed. They assert the
+    CONTRACT, so they go red when the output actually changes, which needs both to go.
+    """
+
+    # The bodies the TypeScript simulation test drives through `canEditStructured`, with
+    # the value measured from this reader. Held here so a fold change reds the backend
+    # too, instead of only the hardcoded frontend expectations that mirror it.
+    LITERAL_FOLDS = (
+        ("plain two lines", ["  one", "  two"], "one\ntwo"),
+        ("interior blank", ["  one", "", "  two"], "one\n\ntwo"),
+        ("deeper indent inside", ["  one", "    nested", "  two"], "one\n  nested\ntwo"),
+        ("leading blank", ["", "  true"], "true"),
+    )
+
+    def test_the_literal_fold_the_simulation_mirrors(self):
+        for label, body, expected in self.LITERAL_FOLDS:
+            assert fold_block_scalar("|", body) == expected, label
+
+    def test_a_leading_blank_line_is_lost_where_a_parser_keeps_it(self):
+        # The crux of simulate-don't-predict: `.strip()` eats a LEADING newline, which no
+        # YAML chomping mode does, so `|` agrees on some content and not on other content.
+        assert fold_block_scalar("|", ["", "  true"]) == "true"
+        assert fold_block_scalar("|", ["  true"]) == "true"
+
+    def test_the_keep_forms_discard_what_keep_chomping_preserves(self):
+        # `|+`/`>+` tell YAML to KEEP the trailing blank lines. This reader strips them,
+        # so the two readings differ. A bare `|+` is caught by comparing; `>+` never
+        # reaches a comparison because every folded form is refused.
+        for indicator in ("|+", ">+"):
+            assert fold_block_scalar(indicator, ["  true", "", ""]) == "true", indicator
 
 
 class TestDialectContracts:

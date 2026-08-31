@@ -236,11 +236,20 @@ describe('structured editor preserves unmodelled frontmatter', () => {
     expect(parseFrontmatter(out).meta.repo_scope).toBe('x')
   })
 
-  it('does not glue the next key onto an edited folded value', () => {
+  it('hands a folded value to the raw editor rather than restructuring it', () => {
+    /* Was: an edited folded value spliced without gluing the next key on. That still
+       holds for LITERAL block scalars, but a FOLDED one is now refused. The reader folds
+       single breaks to spaces, preserves blank-line runs as newlines, and keeps breaks
+       next to more-indented lines; reproducing those rules in TypeScript to verify
+       agreement is the cross-language coupling this change exists to avoid, and three
+       attempts at predicting agreement from the indicator alone were each wrong. So the
+       block opens raw, where nothing is rewritten and the next key cannot be glued on.
+       A deliberate narrowing of #7003's behaviour: a folded description is no longer
+       structurally editable, traded for the guarantee that no save redefines the file. */
     const raw = ['---', 'name: s', 'description: >', '  soft', '  wrapped', 'repo_scope: x', '---', '', '# Body'].join('\n')
-    const out = assembleSkillContent({ ...parseSkillContent(raw, 's'), description: 'edited' })
-    expect(out).toContain('description: edited\nrepo_scope: x')
-    expect(parseFrontmatter(out).meta.repo_scope).toBe('x')
+    expect(canEditStructured(raw)).toBe(false)
+    expect(parseSkillContent(raw, 's').raw).toBeDefined()
+    expect(assembleSkillContent(parseSkillContent(raw, 's'))).toBe(raw)
   })
 
   it('does not glue the next key onto an edited block-sequence value', () => {
@@ -823,6 +832,79 @@ describe('structured editor preserves unmodelled frontmatter', () => {
          above cannot tell those two apart, so this pins the better outcome. */
       expect(rhs, JSON.stringify(value)).toMatch(/^\|/)
     }
+  })
+
+  it('declines an existing block scalar with an explicit indentation indicator', () => {
+    /* GPT round 24, read side. `SKILL_LOADER` resolves only the six BARE indicators
+       (`>` `|` `>-` `|-` `>+` `|+`, its own BLOCK_SCALAR_INDICATORS); given `|2-` it
+       takes the header itself as the value. The YAML parser decodes the body, so the
+       two disagree about what this file already means, and the divergence rule was
+       skipping every block scalar rather than just the ones both sides resolve. */
+    const raw = ['---', 'name: s', 'description: |2-', '  body text', 'repo_scope: x', '---', '', '# Body'].join('\n')
+    expect(canEditStructured(raw)).toBe(false)
+    expect(assembleSkillContent(parseSkillContent(raw, 's'))).toBe(raw)
+  })
+
+  it('simulates the literal fold the way the reader does', () => {
+    /* `backendFoldsLiteral` reproduces `fold_block_scalar` for the `|` family, and a wrong
+       simulation means a wrong comparison. Each expected string below was measured from
+       the real Python reader, so this test fails if either side drifts. Reached through
+       the public behaviour: a field whose simulated backend value MATCHES the parser's is
+       editable, one that differs is refused. */
+    const editable: [string, string[]][] = [
+      ['plain two lines', ['  one', '  two']],
+      ['interior blank', ['  one', '', '  two']],
+      ['deeper indent inside', ['  one', '    nested', '  two']],
+    ]
+    for (const [label, body] of editable) {
+      const raw = ['---', 'name: s', 'description: |', ...body, 'repo_scope: x', '---', '', '# Body'].join('\n')
+      expect(canEditStructured(raw), label).toBe(true)
+    }
+    /* These the reader collapses to something the parser does not: a leading blank line
+       survives in YAML and not in the reader, and keep-chomped trailing blanks likewise. */
+    const refused: [string, string, string[]][] = [
+      ['leading blank', '|', ['', '  true']],
+      ['keep chomp trailing blanks', '|+', ['  true', '', '']],
+    ]
+    for (const [label, ind, body] of refused) {
+      const raw = ['---', 'name: s', `description: ${ind}`, ...body, 'repo_scope: x', '---', '', '# Body'].join('\n')
+      expect(canEditStructured(raw), label).toBe(false)
+    }
+  })
+
+  it('compares block scalars instead of trusting their indicator', () => {
+    /* GPT rounds 24-26 walked this boundary three times: six indicators exempt, then
+       four, then the realisation that agreement depends on the CONTENT -- the reader's
+       fold ends in `.strip()`, which eats LEADING whitespace, something no YAML chomping
+       mode does. So nothing is exempt by indicator any more. A bare LITERAL scalar is
+       SIMULATED and compared, which keeps it editable when the two readings match; a
+       FOLDED or explicit-indicator form is refused, because reproducing those rules to
+       compare is the coupling this change avoids. */
+    const literal = ['---', 'name: s', 'description: |', '  body text', 'repo_scope: x', '---', '', '# Body'].join('\n')
+    expect(canEditStructured(literal), 'plain literal agrees').toBe(true)
+    for (const ind of ['>', '>-', '>+', '|2-']) {
+      const raw = ['---', 'name: s', `description: ${ind}`, '  body text', 'repo_scope: x', '---', '', '# Body'].join('\n')
+      expect(canEditStructured(raw), ind).toBe(false)
+      expect(assembleSkillContent(parseSkillContent(raw, 's')), ind).toBe(raw)
+    }
+  })
+
+  it('declines a block scalar whose blank first line the reader eats', () => {
+    /* The case that ended the indicator approach: `|-` is a STRIP form, so nothing about
+       the indicator hints at a problem -- the divergence comes from where the content
+       sits. On `always` it is the undisableable-skill case again. */
+    const raw = ['---', 'name: s', 'always: |-', '', '  true', 'repo_scope: x', '---', '', '# Body'].join('\n')
+    expect(canEditStructured(raw)).toBe(false)
+    expect(parseSkillContent(raw, 's').raw).toBeDefined()
+  })
+
+  it('does not let a keep-chomped always become undisableable', () => {
+    /* The form would read `true\n\n` (not "true") and treat the field as already false,
+       so `managedUnchanged` would keep the original bytes and the backend would go on
+       reading true -- the skill could not be turned off. */
+    const raw = ['---', 'name: s', 'always: |+', '  true', '', '', 'repo_scope: x', '---', '', '# Body'].join('\n')
+    expect(canEditStructured(raw)).toBe(false)
+    expect(parseSkillContent(raw, 's').raw).toBeDefined()
   })
 
   it('leaves a skill with no frontmatter alone', () => {

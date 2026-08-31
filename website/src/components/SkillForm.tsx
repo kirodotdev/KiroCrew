@@ -105,6 +105,32 @@ function everyTopKeyAtColumnZero(block: string, doc: Document.Parsed): boolean {
   return true
 }
 
+/** Reproduce the reader's fold for a BARE LITERAL block scalar, from the source lines
+ *  after its header.
+ *
+ *  Mirrors `fold_block_scalar` in `src/kiro_crew/frontmatter.py` for the `|` family only:
+ *  it drops trailing blank lines, dedents by the first non-blank line's indent, joins with
+ *  newlines and strips. The strip is the part no YAML chomping mode performs, and it is
+ *  why comparing beats predicting -- a leading blank line survives in the parser and not
+ *  here, and nothing about the indicator says so. */
+function backendFoldsLiteral(block: string, headerEnd: number): string {
+  const rest = block.slice(headerEnd + 1).split('\n')
+  const body: string[] = []
+  for (const line of rest) {
+    // The scalar ends at the first non-blank line that is not indented.
+    if (line.trim() !== '' && !/^\s/.test(line)) break
+    body.push(line)
+  }
+  let end = body.length
+  while (end && body[end - 1].trim() === '') end -= 1
+  if (!end) return ''
+  const kept = body.slice(0, end)
+  const first = kept.find(l => l.trim() !== '') ?? ''
+  const indent = first.length - first.replace(/^\s+/, '').length
+  const dedented = kept.map(l => (l.slice(0, indent).trim() === '' ? l.slice(indent) : l.replace(/^\s+/, '')))
+  return dedented.join('\n').trim()
+}
+
 /** What the BACKEND reader would take a managed field's value to be, from its own
  *  source line. Returns null when the shape is one both readers agree on and so needs
  *  no comparison.
@@ -123,7 +149,19 @@ function backendReadsValue(block: string, pair: Pair<unknown, unknown>): string 
   const colon = line.indexOf(':')
   if (colon === -1) return null
   const rhs = line.slice(colon + 1).trim()
-  if (/^[|>]/.test(rhs)) return null
+  /* Block scalars. Three attempts at deciding agreement from the INDICATOR were all
+     wrong -- six (the reader's resolvable set), then four, then the realisation that the
+     reader's fold ends in `.strip()`, which eats LEADING whitespace too, so
+     `always: |-` with a blank first line reads `true` on the backend and
+     newline-then-true in the parser. Agreement depends on the CONTENT.
+     So stop predicting and SIMULATE, exactly as the single-line branch below does.
+     For a bare LITERAL indicator the reader's fold is short enough to reproduce
+     faithfully: drop trailing blank lines, dedent by the first non-blank line's indent,
+     join with newlines, strip. Verified against the real `fold_block_scalar`.
+     A FOLDED (`>`) form is NOT reproduced -- its blank-line and indentation folding rules
+     are intricate, and duplicating them is the cross-language coupling this change exists
+     to avoid -- so it falls through and is refused, as does an explicit indicator. */
+  if (/^\|[+-]?$/.test(rhs)) return backendFoldsLiteral(block, lineEnd)
   return rhs.replace(/^["']+/, '').replace(/["']+$/, '')
 }
 

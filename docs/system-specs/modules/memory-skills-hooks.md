@@ -1227,8 +1227,22 @@ because it read with the same line dialect it wrote with. So a managed scalar wh
 backend reading differs from its YAML decoding is not spliceable at all -- adopting one
 reading and saving it would silently redefine the file for the code that loads skills.
 The comparison skips fields carrying a comment on their line (the comment rule's case,
-and the backend does not strip a trailing comment) and block scalars, where both sides
-fold identically. This is the READ direction only: a boundary-quoted value TYPED into the
+and the backend does not strip a trailing comment). Block scalars are NOT skipped, and
+the history of that decision is worth keeping: three attempts to decide agreement from
+the INDICATOR were each wrong -- the reader's six resolvable indicators, then the four
+that survive chomping, then the discovery that its fold ends in `.strip()`, which removes
+LEADING whitespace as well, something no YAML chomping mode does. So `always: |-` with a
+blank first line reads `true` on the backend and newline-then-true in the parser, and
+nothing about `|-` says so. Agreement depends on the CONTENT.
+
+The rule therefore SIMULATES rather than predicts. For a bare LITERAL indicator the
+reader's fold is short enough to reproduce faithfully (drop trailing blank lines, dedent
+by the first non-blank line's indent, join, strip), so the two readings are compared like
+any single-line value and the field stays editable when they match. A FOLDED (`>`) form or
+an explicit indicator is refused outright: the folding rules for `>` are intricate, and
+reproducing them to compare is the cross-language coupling this design exists to avoid.
+That refusal narrows what the structured editor accepts relative to the first version of
+this change, which could splice a folded value; the trade is a capability for a guarantee. This is the READ direction only: a boundary-quoted value TYPED into the
 form is still written, as a block literal, because there the author's intent is
 unambiguous.
 
