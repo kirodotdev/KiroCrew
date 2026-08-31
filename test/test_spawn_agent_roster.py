@@ -186,8 +186,8 @@ class TestSpawnListUsesTheSameFilter:
         assert "Available agents: scout" in out
         assert "IGNORE" not in out
 
-    def test_the_reserved_pair_has_one_definition(self) -> None:
-        """Two rosters hid the same pair by respelling the literal. A behavioral test
+    def test_the_reserved_set_has_one_definition(self) -> None:
+        """Two rosters hid the same names by respelling the literal. A behavioral test
         cannot see a re-duplication (both spellings behave alike), so this is a
         source ratchet: the pair is spelled once, where the constant lives.
 
@@ -198,16 +198,19 @@ class TestSpawnListUsesTheSameFilter:
         import inspect
         import pathlib
 
-        assert sa.UNADVERTISED_AGENTS == frozenset({"kirocrew", "kirocrew-conductor"})
+        assert sa.UNADVERTISED_AGENTS == frozenset(
+            {"kirocrew", "kirocrew-conductor", "kirocrew-pipeline-conductor"}
+        )
         default = inspect.signature(sa.visible_agent_names).parameters["exclude"].default
         assert default is sa.UNADVERTISED_AGENTS
         for module in (sa, spawn_tools):
             src = pathlib.Path(module.__file__).read_text(encoding="utf-8")
             expected = 1 if module is sa else 0
-            assert src.count("kirocrew-conductor") == expected, (
-                f"{module.__name__} respells the reserved pair; call "
-                "subagent.visible_agent_names instead"
-            )
+            for reserved in ("kirocrew-conductor", "kirocrew-pipeline-conductor"):
+                assert src.count(reserved) == expected, (
+                    f"{module.__name__} respells the reserved set; call "
+                    "subagent.visible_agent_names instead"
+                )
 
 
 class TestRosterIsAdvertisedOnSpawnRun:

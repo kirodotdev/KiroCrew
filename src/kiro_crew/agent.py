@@ -48,6 +48,11 @@ from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_F
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
+)
+from kiro_crew.agent_files import (
+    PIPELINE_CONDUCTOR_AGENT_FILENAME as _PIPELINE_CONDUCTOR_AGENT_FILENAME,
+)
+from kiro_crew.agent_files import (
     REQUIRED_KIRO_AGENT_FILES,
 )
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
@@ -4543,6 +4548,12 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
     except Exception:
         logger.debug("kirocrew-conductor agent install failed", exc_info=True)
 
+    # Install kirocrew-pipeline-conductor agent (repository pipeline fleet supervision)
+    try:
+        _install_pipeline_conductor_agent()
+    except Exception:
+        logger.debug("kirocrew-pipeline-conductor agent install failed", exc_info=True)
+
     # Bidirectional sync: ensure packages installed for one provider
     # are also available for the other (agents↔plugins, skills).
     sync_aim_packages()
@@ -5087,6 +5098,219 @@ def _install_conductor_agent() -> None:
     path = kiro_agents_dir_path() / _CONDUCTOR_AGENT_FILENAME
     _atomic_json_write(path, config)
     logger.info("Installed conductor agent config: %s", path)
+
+
+_PIPELINE_CONDUCTOR_SYSTEM_PROMPT = """# Kiro Crew Pipeline Conductor
+
+You are `kirocrew-pipeline-conductor`. You run ONE pipeline on ONE repository:
+you pick up queued work items, stand up one worker session per item in the
+pipeline's folder, patrol the fleet, verify claimed results independently,
+intervene when a worker loops or stalls, adjudicate blocked items, govern host
+resources and per-item credit budgets, and report verified greens to the
+person as plain-language digests.
+
+**You never do a work item's work yourself.** A file to write, a build to run,
+a fix to make — each one belongs to a worker session you dispatch, verify and
+report on. You have no dedicated file-writing tool (the shell tool stays
+mounted but gated behind operator approval), and a work item never goes to
+`spawn_run`, `spawn_sub_agents`, `workflow_run` or `task_run`. `spawn_run`
+exists here for ONE purpose: a bounded INSPECTOR subagent that reads a suspect
+worker's tail and its PR state and returns a verdict — spawn it with an
+`allowed_tools` list limited to reads so read-only is enforced by the spawn,
+not assumed of the prompt.
+
+**Scripts are the deterministic half of your loop.** Shell access exists to
+run the `pipeline-conductor` skill's two bundled scripts:
+`scripts/fleet_probe.py` (the ONE batch probe per patrol cycle — worker tails,
+idle age, error tails, banned-process scan, host load) and
+`scripts/credit_spend.py` (per-item credit rollups and budget verdicts). Read
+their output; never re-derive what they compute from transcripts.
+
+**Patrol with `monitor_start`, never with `wait`.** Arm it with the full cycle
+instructions AND the exit condition, then end the turn; call `autonudge_stop`
+when you stop. A reply saying *requested* is success — do not retry it. If
+arming is refused outright, say no loop is running and drive that one round
+with `wait`. A quiet cycle is one line, then end the turn.
+
+Your tools:
+
+- Worker sessions — `session_create`, `session_send`, `session_read_message`,
+  `session_stop`, `list_sessions`.
+- Keeping the pipeline's sessions together — `chat_folder_tree`,
+  `chat_folder_create`.
+- State that outlives a round — `session_ledger_read`, `session_ledger_record`.
+- Patrol — `monitor_start`, `monitor_update`, `autonudge_stop`, `wait`.
+- Capacity, before dispatching — `resource_status`.
+- Inspecting a suspect worker — `spawn_run`, bounded and read-only.
+- Talking to the person — `ask_question` puts a decision that is not yours to
+  make to them as a card, after which you END your turn and their answer
+  arrives as the next message; `send_message` / `send_notification` to report.
+- Naming the right skill in a seed message — `skill_search`, `skill_fetch`.
+- Reading — `fs_read`, `web_fetch`.
+- `tool_search` loads a tool that is not in your list yet.
+
+The `pipeline-conductor` skill carries the operating procedure — the pipeline
+spec, the work-order brief, the probe cycle and its action table, the
+intervention ladder, the adjudication and override protocol, the
+resource-posture table, the credit budget rules, and the cleanup steps. Read
+it before acting on a pipeline. The user can message you at any time: a
+steering message is a MODE CHANGE — fold it into the standing patrol
+instruction with `monitor_update` so every later cycle honors it.
+
+{{VERBOSITY_BLOCK}}
+"""
+
+
+#: The kirocrew-core verbs the pipeline conductor may call WITHOUT an approval
+#: prompt. Named one by one rather than as the whole ``@kirocrew-core`` server,
+#: extending the dashboard-grants invariant below to the core surface: the
+#: conductor ingests untrusted content (issue text, PR bodies) on unattended
+#: cycles, and a server-wide grant would let that content start persistent
+#: work (``task_run``, ``workflow_run``, ``cron_add``) or spawn arbitrary
+#: subagents with no human in the loop. What is granted is reads
+#: (``resource_status``, ``list_sessions``, skills), the conductor's OWN
+#: patrol-loop lifecycle (``monitor_*``, ``autonudge_stop``, ``wait``), its
+#: OWN durable ledger, and reporting to the owner (``send_message``,
+#: ``send_notification``, ``ask_question``). ``spawn_run`` — the intervention
+#: ladder's read-only inspector — is deliberately NOT here: it starts agent
+#: work from ingested context, so like ``session_send``/``session_stop`` it
+#: stays mounted-but-gated and unattended runs get it from the operator's
+#: session-level trust grant.
+_PIPELINE_CONDUCTOR_CORE_GRANTS: tuple[str, ...] = (
+    "@kirocrew-core/monitor_start",
+    "@kirocrew-core/monitor_update",
+    "@kirocrew-core/autonudge_stop",
+    "@kirocrew-core/wait",
+    "@kirocrew-core/resource_status",
+    "@kirocrew-core/list_sessions",
+    "@kirocrew-core/session_ledger_read",
+    "@kirocrew-core/session_ledger_record",
+    "@kirocrew-core/skill_search",
+    "@kirocrew-core/skill_fetch",
+    "@kirocrew-core/send_message",
+    "@kirocrew-core/send_notification",
+    "@kirocrew-core/ask_question",
+)
+
+
+#: The dashboard verbs the pipeline conductor may call WITHOUT an approval
+#: prompt. Same tuple, same reasoning, as ``_CONDUCTOR_DASHBOARD_GRANTS``
+#: above — the invariant (a granted verb may CREATE or READ, never MUTATE
+#: workspace state that already exists and is not the agent's own; its worst
+#: case in a loop must be bounded by the server) applies verbatim, because
+#: this agent too ingests untrusted content by design: issue text and PR
+#: bodies feed every granted verb on a nudge-driven cycle with nobody at the
+#: keyboard. ``session_send`` / ``session_stop`` — which the patrol's
+#: intervention ladder does use — stay mounted-but-gated for the same reason
+#: they are gated on the goal conductor; unattended operation gets them via
+#: the operator arming the conductor's own session in trust mode (the same
+#: explicit, session-scoped human grant the worker sessions already require),
+#: not via a standing spec-level bypass.
+_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
+    "@kirocrew-dashboard/chat_folder_tree",
+    "@kirocrew-dashboard/chat_folder_create",
+    "@kirocrew-dashboard/session_create",
+    "@kirocrew-dashboard/session_read_message",
+)
+
+
+def _install_pipeline_conductor_agent() -> None:
+    """Generate and install the kirocrew-pipeline-conductor agent config.
+
+    Follows ``_install_conductor_agent`` above deliberately — one standalone
+    installer per generated agent is the file's established pattern — and
+    keeps every property that installer's docstring argues for: derived from
+    the kirocrew agent, **no dedicated file-writing tool** (neither ``fs_write``
+    nor ``code``), ``@kirocrew-dashboard`` mounted whole but auto-approved only
+    verb by verb, ``execute_bash`` mounted but never auto-approved
+    (``allowedTools`` has no argument matching, so trusting the two bundled
+    skill scripts cannot be told apart from trusting arbitrary shell), and the
+    KAS policy derived from the FILTERED grant list. Where the two agents
+    differ is charter, not mechanics: this one supervises a repository
+    pipeline's worker fleet (probe / verify / intervene / adjudicate / govern)
+    per the ``pipeline-conductor`` builtin skill, rather than decomposing a
+    free-form goal.
+    """
+    config = build_agent_config()
+    config["name"] = "kirocrew-pipeline-conductor"
+    config["description"] = (
+        "Runs one repository pipeline as a supervised fleet: picks up queued "
+        "work items, dispatches one worker session per item, probes and "
+        "verifies them, intervenes on stalls, adjudicates blocked items, and "
+        "governs host resources and per-item credit budgets. Never does a "
+        "work item's work itself."
+    )
+    config["prompt"] = _PIPELINE_CONDUCTOR_SYSTEM_PROMPT
+    config["tools"] = [
+        "execute_bash",
+        "fs_read",
+        "web_fetch",
+        "session",
+        "report",
+        "tool_search",
+        "@kirocrew-core",
+        "@kirocrew-dashboard",
+    ]
+    granted: list[str] = []
+    withheld: list[str] = []
+    for ref in (
+        "session",
+        "report",
+        "tool_search",
+        *_PIPELINE_CONDUCTOR_CORE_GRANTS,
+        *_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
+    ):
+        (granted if _may_auto_approve(ref) else withheld).append(ref)
+    config["allowedTools"] = granted
+    if withheld:
+        # Same audit contract as every other ``allowedTools`` writer: a
+        # withheld grant is a permission decision and must leave a record.
+        try:
+            sel().log_api_access(
+                caller="system",
+                operation="mcp_auto_approve_withheld",
+                outcome="ok",
+                source="_install_pipeline_conductor_agent",
+                resources=(
+                    f"{', '.join(withheld)} mounted without auto-approve "
+                    "(governance ceiling); calls go through the approval gate"
+                ),
+            )
+        except Exception:  # noqa: BLE001 — the audit must not break the install
+            logger.debug("SEL audit unavailable for withheld auto-approve", exc_info=True)
+    mcp = config.get("mcpServers", {}) or {}
+    core_entry = mcp.get("kirocrew-core")
+    narrowed: dict = {}
+    if core_entry:
+        narrowed["kirocrew-core"] = core_entry
+    dash_cmd, dash_args = _kirocrew_mcp_invocation("mcp-dashboard")
+    dash_entry: dict[str, Any] = {"command": dash_cmd, "args": dash_args}
+    # Same managed-server metadata as the conductor's hand-built entry, for the
+    # same two failure modes: a registry-mode client silently DROPS an entry
+    # with no ``type``, and without the data-home pin the shim reads the
+    # DEFAULT home while the gateway runs under an override.
+    if _mcp_registry_mode():
+        dash_entry["type"] = _MCP_REGISTRY_TYPE
+    dash_env = _managed_mcp_env()
+    if dash_env:
+        dash_entry["env"] = dash_env
+    narrowed["kirocrew-dashboard"] = dash_entry
+    config["mcpServers"] = narrowed
+    # Same derive-don't-restate rationale as the conductor above, but routed
+    # through the agent-sdk boundary: ``drivers.acp`` is the one layer permitted
+    # to import ``kiro_crew.acp``, and agent.py's direct-import count is a
+    # shrink-only baseline that must not grow.
+    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+        derived_agent_permissions,
+    )
+
+    config["permissions"] = derived_agent_permissions(
+        config["allowedTools"], _PIPELINE_CONDUCTOR_AGENT_FILENAME
+    )
+    kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = kiro_agents_dir_path() / _PIPELINE_CONDUCTOR_AGENT_FILENAME
+    _atomic_json_write(path, config)
+    logger.info("Installed pipeline-conductor agent config: %s", path)
 
 
 _HEARTBEAT_SYSTEM_PROMPT = """# KiroCrew Heartbeat Worker

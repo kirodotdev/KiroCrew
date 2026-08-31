@@ -39,8 +39,32 @@ __all__ = [
     "claude_adapter_cached_negative",
     "claude_adapter_install_command",
     "claude_components_resolve",
+    "derived_agent_permissions",
     "kiro_cli_resolves",
 ]
+
+
+def derived_agent_permissions(allowed_tools: list, agent_filename: str) -> dict:
+    """The KAS policy a generated agent spec should carry, from its grant list.
+
+    Deriving from the FILTERED ``allowedTools`` instead of restating a literal
+    means the rules come out byte-identical, a later edit to the grant list
+    carries through, and a ceiling that strips a grant strips its KAS rule with
+    it. ``{"rules": []}`` when nothing qualifies -- the key's mere PRESENCE is
+    what makes KAS load the spec at all, so the empty policy is still a policy.
+
+    Plain data in, plain data out: a list of grant refs and a spec filename
+    (the KAS ``agent_id`` is its stem), a JSON-ready dict back -- no ACP type
+    crosses the boundary. Function-local import for the same boot-path reason
+    as every other function here, though ``kas_permissions`` itself is a leaf
+    that depends on nothing else in the package.
+    """
+    from pathlib import Path
+
+    from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+
+    derived = allowed_tools_to_permissions(allowed_tools, agent_id=Path(agent_filename).stem)
+    return derived if derived is not None else {"rules": []}
 
 
 def kiro_cli_resolves() -> bool:

@@ -224,8 +224,10 @@ class TestOrderingConverged:
 
 class TestExclusionIsInheritedNotRespelled:
     def test_the_helper_default_is_the_shared_constant(self) -> None:
-        """The spawn tools no longer name the reserved pair at all -- they inherit
+        """The spawn tools no longer name the reserved set at all -- they inherit
         it as this default -- so the default is what makes that omission safe."""
         default = inspect.signature(sa.visible_agent_names).parameters["exclude"].default
         assert default is sa.UNADVERTISED_AGENTS
-        assert sa.UNADVERTISED_AGENTS == frozenset({"kirocrew", "kirocrew-conductor"})
+        assert sa.UNADVERTISED_AGENTS == frozenset(
+            {"kirocrew", "kirocrew-conductor", "kirocrew-pipeline-conductor"}
+        )

@@ -22,6 +22,7 @@ AGENT_FILENAME = "kirocrew.json"
 # Background/auxiliary managed agent specs KiroCrew writes under ~/.kiro/agents/.
 LITE_AGENT_FILENAME = "kirocrew-lite.json"
 CONDUCTOR_AGENT_FILENAME = "kirocrew-conductor.json"
+PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
@@ -34,6 +35,7 @@ OWNED_KIRO_AGENT_FILES = (
     AGENT_FILENAME,
     LITE_AGENT_FILENAME,
     CONDUCTOR_AGENT_FILENAME,
+    PIPELINE_CONDUCTOR_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,
     HEARTBEAT_AGENT_FILENAME,

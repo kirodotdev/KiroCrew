@@ -39,7 +39,7 @@ Cron jobs can specify an agent at creation time.
 
 ## Built-in Agent Specs
 
-Kiro Crew owns specs named `kirocrew`, `kirocrew-lite`, `kirocrew-conductor`, `kirocrew-knowledge`, `kirocrew-research`, and `kirocrew-heartbeat`. The primary and lite specs are required; the others support conductor, knowledge extraction, research, and heartbeat features.
+Kiro Crew owns specs named `kirocrew`, `kirocrew-lite`, `kirocrew-conductor`, `kirocrew-pipeline-conductor`, `kirocrew-knowledge`, `kirocrew-research`, and `kirocrew-heartbeat`. The primary and lite specs are required; the others support goal conducting, pipeline fleet supervision, knowledge extraction, research, and heartbeat features.
 
 ## Custom Agents
 
