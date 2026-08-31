@@ -3693,6 +3693,8 @@ def _strip_yaml_frontmatter(content: str) -> str:
     return content
 
 
+# Same cross-surface dependent as the slash path: `splitRecommendation` refuses to strip a
+# marker off an `@`-leading label, so a sigil added here needs adding there too.
 def _resolve_prompt_mention(
     message: str,
     project_dir: Path | None,
@@ -5751,6 +5753,26 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         )
 
 
+def pair_action_contexts(consumed: list[dict[str, Any]]) -> str | None:
+    """Assemble the opaque action payloads from a drained batch, each paired with its label.
+
+    A busy slot's queue drains into ONE turn, so a batch can carry several clicks. Taking
+    only the first payload dropped every later one; pairing keeps each identifiable, which
+    matters because the labels are concatenated and a payload alone cannot say which it
+    belongs to. A lone click passes through unwrapped so the ordinary turn is unchanged.
+    """
+    pairs = [
+        (str(item.get("content") or ""), str(ac))
+        for item in consumed
+        if (ac := (item.get("meta") or {}).get("action_context"))
+    ]
+    if not pairs:
+        return None
+    if len(pairs) == 1:
+        return pairs[0][1]
+    return "\n\n".join(f"Context for the clicked option {label!r}:\n{ctx}" for label, ctx in pairs)
+
+
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
@@ -6131,10 +6153,18 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             if inspect.isawaitable(result):
                 await result
 
+    # ANY model-authored entry in the batch taints the turn: the drained entries are
+    # concatenated into one message, so one clicked label's `$name` would expand.
+    model_authored = any(
+        (item.get("meta") or {}).get("model_authored") is True for item in consumed
+    )
+    action_context = pair_action_contexts(consumed)
     _run_kwargs: dict[str, Any] = {
         "_synthetic_payload": synthetic_payload,
         "_directive_user_origin": directive_user_origin,
         "_directive_channel_origin": directive_channel_origin,
+        "_model_authored": model_authored,
+        "_action_context": action_context,
     }
     if _settleable or _delivery_callbacks:
         _run_kwargs["_on_consumed"] = _note_consumed
@@ -6383,6 +6413,12 @@ async def _run_chat(
     # injections never set it.
     _directive_self_wake: bool = False,
     _directive_channel_origin: bool = False,
+    # This turn's text was authored by a MODEL, not typed by the user. `$skill` expansion is
+    # defined over what the user typed, so a model-authored `$name` must not load a body.
+    _model_authored: bool = False,
+    # Opaque agent-authored payload behind an `action::` click. Reaches the CONTEXT BUILDER
+    # only, never the dispatched text, so no expansion can read it.
+    _action_context: str | None = None,
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -7744,7 +7780,9 @@ async def _run_chat(
         # it stops the expansion entirely. `user_text_span` keeps the two apart.
         _is_quick_prompt = first_word.lower() in QUICK_PROMPTS
         prompt_expanded = _is_quick_prompt
-        if message.startswith("@") and not is_slash and _prompt_depth < 1:
+        # `_model_authored` gates this for the same reason it gates `$skill` below: an
+        # expansion reads local files, and a label the model wrote is not what the user typed.
+        if message.startswith("@") and not is_slash and not _model_authored and _prompt_depth < 1:
             original = message
             # Off the loop, for the same reason the `$skill` expansion below is:
             # this resolves and READS files — the project's prompt directory is
@@ -7803,7 +7841,15 @@ async def _run_chat(
         # the context (expand-what-the-user-typed, principle of least surprise).
         # Skipped for slash commands; _prompt_depth<1 blocks the recursive _run_chat
         # path. Token is left literal; resolved bodies are appended.
-        if "$" in message and not is_slash and not prompt_expanded and _prompt_depth < 1:
+        # `_model_authored` extends the same rule to a label the MODEL wrote: a clicked
+        # OPTIONS label is not what the user typed, so its `$name` must not load a body.
+        if (
+            "$" in message
+            and not is_slash
+            and not prompt_expanded
+            and not _model_authored
+            and _prompt_depth < 1
+        ):
             # Offloaded: expansion walks the skills tree(s) and reads skill
             # bodies, which is filesystem work that must not run on the event
             # loop — a large tree would stall the gateway heartbeat and every
@@ -8060,6 +8106,7 @@ async def _run_chat(
                 provider_type=cfg.agent.provider,
                 runtime_source="dashboard",
                 request_prefix_context=_request_prefix_context or None,
+                action_context=_action_context or None,
                 exclude_last_n=1,
                 folder_path=folder_path,
                 model_window=model_window,
@@ -12408,7 +12455,7 @@ async def _run_chat(
             try:
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
-                    extract_options,
+                    extract_options_with_recommendation,
                     render_for_slack,
                 )
 
@@ -12417,7 +12464,13 @@ async def _run_chat(
                 # means whatever conversion did to the tail decides whether the
                 # controls render at all -- and a >39,000-char turn loses the tag
                 # entirely to to_slack_mrkdwn's self-truncation.
-                _mirror_body, _mirror_options = extract_options(assistant_text)
+                # One parse yields the marked label too: this turn ran on the dashboard,
+                # so the agent marked a chip instead of naming its pick in prose.
+                (
+                    _mirror_body,
+                    _mirror_options,
+                    _mirror_recommended,
+                ) = extract_options_with_recommendation(assistant_text)
 
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)
@@ -12433,7 +12486,9 @@ async def _run_chat(
                     # with a conversation that never asked the question.
                     _mirror_token = await asyncio.to_thread(mint_options_token, state, session_key)
                     _mirror_blocks = build_options_blocks(
-                        _mirror_options, staleness_token=_mirror_token
+                        _mirror_options,
+                        staleness_token=_mirror_token,
+                        recommended=_mirror_recommended,
                     )
                     # The thread's owner BEFORE the post. A relink landing while
                     # post_blocks is in flight moves the conversation to another

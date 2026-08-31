@@ -1893,13 +1893,51 @@ _CRITICAL_RULES_TAIL = (
     "renders each label on a single line, so a long label displays cut off; "
     "put supporting detail in the message body before the [OPTIONS:] line and "
     "keep the label itself to the bare instruction.\n"
-    "[END CRITICAL RULES]\n\n"
+)
+_CRITICAL_RULES_END = "[END CRITICAL RULES]\n\n"
+# Dashboard only: no channel renders a badge, and only the Slack path strips the
+# marker -- a channel parse leaves it in the label, so a click sends it verbatim.
+_OPTIONS_RECOMMENDED_RULE = (
+    "Mark the option you recommend by starting its label with `(recommended)`, "
+    "always that literal English word and never a translation of it -- both parsers "
+    "match only that spelling, so a translated marker survives into the label and a "
+    "click sends it as your own words. "
+    "The dashboard renders that marker as a badge beside the label and sends the "
+    "label without it. That split is SKIPPED for a label the transport has to "
+    "match verbatim, which is returned unchanged -- so on one of those the marker "
+    "would stay in the message you receive and the click would send prose instead "
+    "of acting. Leave those bare: a label starting with `/` or `@`, and one opening "
+    "with a bracketed wire marker such as `[SYSTEM]`. Leave a bare channel command "
+    "unmarked too, for a different reason -- that one IS split, and the click sends "
+    "the cleaned text as prose rather than running it, so your marker simply "
+    "disappears from what the user asked for. "
+    "NEVER mark a plan action either -- a label that is exactly `Go`, "
+    "`Go All` or `Cancel` starts or stops an auto-run and is matched verbatim. "
+    "Leave a stop word bare as well: any label whose FIRST word is `stop`, "
+    "`cancel` or `abort` stops an orchestrated run, and that is matched on the "
+    "leading word alone -- so `Stop after this stage` counts, not just a bare "
+    "`Stop`. Word one is what decides it, so rephrase to put it later if you want "
+    "the option markable. "
+    "Mark at most one option, and omit the marker when no option is a clear "
+    "recommendation. Order the options most-reasonable-first so the recommended one "
+    "leads: a channel that renders no buttons still shows the marker as plain label "
+    "text rather than a badge, and a chip clamps a long label, so position is the "
+    "only ranking that survives both.\n"
 )
 # The dashboard variant is the module's canonical block: tests and the
 # marker-neutralization prefix check treat "a critical-rules block" as one of
 # these two fixed strings, so both stay module constants (never templated).
-_CRITICAL_RULES = _CRITICAL_RULES_HEAD + _DIFF_RULE_DASHBOARD + _CRITICAL_RULES_TAIL
-_CRITICAL_RULES_CHANNEL = _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+_CRITICAL_RULES = (
+    _CRITICAL_RULES_HEAD
+    + _DIFF_RULE_DASHBOARD
+    + _CRITICAL_RULES_TAIL
+    + _OPTIONS_RECOMMENDED_RULE
+    + _CRITICAL_RULES_END
+)
+
+_CRITICAL_RULES_CHANNEL = (
+    _CRITICAL_RULES_HEAD + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL + _CRITICAL_RULES_END
+)
 
 # Product-owned working protocol for crew members (layer 2 of the member
 # system prompt — see ContextBuilder._build_member_section for the layer
@@ -4024,11 +4062,20 @@ class ContextBuilder:
                     # restored transcript; at ~1.5K chars they are cheap
                     # insurance against output-format drift. Same variant
                     # selection and per-agent opt-out gate as session start.
-                    _resume_rules = (
-                        _critical_rules_for(session_key, runtime_source)
-                        if _agent_includes_crew_context(agent)
-                        else ""
-                    )
+                    _resume_variant = _critical_rules_for(session_key, runtime_source)
+                    _resume_rules = _resume_variant if _agent_includes_crew_context(agent) else ""
+                    # Keyed on the VARIANT, not on `_resume_rules`: an agent opted out of crew
+                    # context still resumes carrying that instruction, so this is owed anyway.
+                    if _resume_variant is _CRITICAL_RULES_CHANNEL:
+                        _resume_rules += (
+                            "[This runtime does not use the dashboard's option-marking "
+                            "prefix. If an instruction earlier in the restored history above "
+                            "told you to mark a recommended option with a literal prefix, it "
+                            "does NOT apply here: this surface sends a label as written, so "
+                            "the prefix would reach the user as their own words. Put the "
+                            "recommendation in your prose and order the options best-first "
+                            "instead.]\n"
+                        )
                     # SLIM_RESUME leg of the member lifecycle (see the
                     # chokepoint consult above): the restored transcript
                     # carries the ORIGINAL member section, but [PERMANENT

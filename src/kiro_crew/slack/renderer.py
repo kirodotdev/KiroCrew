@@ -56,7 +56,11 @@ from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
-from kiro_crew.slack.format import SLACK_MSG_LIMIT, extract_options, strip_thinking_tags
+from kiro_crew.slack.format import (
+    SLACK_MSG_LIMIT,
+    extract_options_with_recommendation,
+    strip_thinking_tags,
+)
 from kiro_crew.slack.handler import (
     _APPROVAL_TIMEOUT,
     _CURSOR,
@@ -1089,7 +1093,7 @@ class SlackRenderer(Renderer):
         # Flush any buffered (throttled) stream text before finalizing.
         if self._use_slack_stream:
             await self._flush_stream_buffer()
-        clean_text, options = extract_options(self._accumulated)
+        clean_text, options, _stream_rec = extract_options_with_recommendation(self._accumulated)
         # THE semantic seal, and the only place local images are extracted: the
         # whole reply is in hand, in its original fence context, so each reference
         # is seen once and whole. A length cut never extracts, because that is how a cut
@@ -1209,7 +1213,12 @@ class SlackRenderer(Renderer):
             except Exception:
                 _options_token = None
         footer_blocks = _append_footer_actions(
-            footer_blocks, options, self.thread_ts, None, None, _options_token
+            footer_blocks,
+            options,
+            self.thread_ts,
+            None,
+            None,
+            _options_token,
         )
         footer_ts = await self.slack.post_blocks(
             self.channel, footer_blocks, footer_text, self.thread_ts

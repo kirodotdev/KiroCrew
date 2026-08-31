@@ -6284,6 +6284,8 @@
       "click_to_remove_from_input": "इनपुट से हटाने के लिए क्लिक करें",
       "click_to_remove_from_input_double_click_to_send": "इनपुट से हटाने के लिए क्लिक करें (भेजने के लिए डबल-क्लिक करें)",
       "click_to_send_instantly_shift_click_to_select_mu": "तुरंत भेजने के लिए क्लिक करें, एक से ज़्यादा चुनने के लिए Shift+Click",
+      "recommended": "अनुशंसित",
+      "recommended_marker_kept": "“(recommended)” से शुरू होने वाले विकल्प उस टेक्स्ट को संदेश के हिस्से के रूप में भेजते हैं। क्लिक करने पर वह पहले लिखने वाले बॉक्स में जाता है, जिससे उपसर्ग हटाया जा सकता है।",
       "scroll_left": "बाएँ स्क्रॉल करें",
       "scroll_right": "दाएँ स्क्रॉल करें",
       "scroll_suggestions_left": "सुझाव बाएँ स्क्रॉल करें",

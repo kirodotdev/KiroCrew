@@ -189,6 +189,13 @@ _SESSION_RELOAD_NOTICE = (
 # hashing, so a non-string body value answers False instead of raising.
 _SLOT_SCOPED_TRUST_MODES = ("trust", "trust_reads")
 
+# The two plan chips that START an auto-run, not the three the marker guard declines.
+# Read only here, so the leaf-module anchor in ``constants`` would earn nothing.
+_PLAN_AUTO_RUN_ACTIONS = frozenset({"go", "go all"})
+# Beside its only reader rather than in `constants`: one production consumer does not earn a
+# shared home. The frontend twin `RESERVED_STOP_WORD_RE` is still parity-gated against it.
+_RESERVED_STOP_WORDS = frozenset({"stop", "cancel", "abort"})
+
 
 def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
     """Mark unresolved permissions from prior turns as stale.
@@ -893,7 +900,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
     if (
         getattr(slot, "mode", "") == "orchestrator"
-        and message.strip().lower() in ("go", "go all")
+        and message.strip().lower() in _PLAN_AUTO_RUN_ACTIONS
         and _widget_origin
     ):
         sel().log(
@@ -914,9 +921,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             "Refused orchestrator auto-run escalation for widget-origin turn on slot %s",
             slot.key,
         )
-    elif getattr(slot, "mode", "") == "orchestrator" and message.strip().lower() in (
-        "go",
-        "go all",
+    elif (
+        getattr(slot, "mode", "") == "orchestrator"
+        and message.strip().lower() in _PLAN_AUTO_RUN_ACTIONS
     ):
         _is_auto = message.strip().lower() == "go all"
         if _is_auto:
@@ -959,13 +966,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         return web.json_response({"ok": True, "slot": slot.key})
 
     # ── Orchestrator stop detection ─────────────────────────────────
-    _stop_words = {"stop", "cancel", "abort"}
     tracker = slot._orch_tracker
     if (
         tracker is not None
         and tracker.has_escalated
         and not tracker.stopped
-        and message.strip().lower().split()[0] in _stop_words
+        and message.strip().lower().split()[0] in _RESERVED_STOP_WORDS
     ):
         tracker.stop()
         # Same latch as the plan-action Cancel handler: tracker.stopped

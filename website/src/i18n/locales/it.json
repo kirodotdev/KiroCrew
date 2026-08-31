@@ -6383,6 +6383,8 @@
       "click_to_remove_from_input": "Clicca per rimuovere dall'input",
       "click_to_remove_from_input_double_click_to_send": "Clicca per rimuovere dall'input (doppio clic per inviare)",
       "click_to_send_instantly_shift_click_to_select_mu": "Clicca per inviare subito, Shift+Clic per selezionarne più di uno",
+      "recommended": "CONSIGLIATO",
+      "recommended_marker_kept": "Le opzioni che iniziano con «(recommended)» inviano quel testo come parte del messaggio. Un clic lo inserisce prima nell’area di scrittura, dove il prefisso può essere rimosso.",
       "scroll_left": "Scorri a sinistra",
       "scroll_right": "Scorri a destra",
       "scroll_suggestions_left": "Scorri i suggerimenti a sinistra",

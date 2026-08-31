@@ -85,7 +85,7 @@ from kiro_crew.notifications.bus import (
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
 from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
-from kiro_crew.slack.format import build_options_blocks, extract_options
+from kiro_crew.slack.format import build_options_blocks, extract_options_with_recommendation
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
 from kiro_crew.subagent import effort_applied_note, effort_drop_reason
@@ -2279,8 +2279,9 @@ async def api_send_message(request: web.Request) -> web.Response:
     # dashboard notification and the Slack post; an actions block is appended
     # after the message when options are present.
     options: list[str] = []
+    recommended: str | None = None
     if not blocks:
-        text, options = extract_options(text)
+        text, options, recommended = extract_options_with_recommendation(text)
 
     # --- Authorization gates (before any side effects) ---
     if target_channel and not is_tracked_channel(target_channel):
@@ -2578,7 +2579,9 @@ async def api_send_message(request: web.Request) -> web.Response:
                                         else None
                                     )
                                     option_blocks = build_options_blocks(
-                                        options, staleness_token=_sm_t
+                                        options,
+                                        staleness_token=_sm_t,
+                                        recommended=recommended,
                                     )
                                     # Fallback text is the SAFE stub, not the
                                     # message body. Slack parses entities in a

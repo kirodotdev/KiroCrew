@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from kiro_crew.constants import _INJECTED_PROVENANCE_PREFIXES
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -36,18 +37,9 @@ _READ_ROLES = frozenset({"user", "assistant"})
 # injects cron notifications, subagent completions, auto-nudge cycles, tool
 # refusals and restored webhook context under that role. Counting one as intent
 # invents a goal the user never had, so they are marked and excluded from the
-# intent signal while staying visible as context.
-_INJECTED_PREFIXES = (
-    "[cron notification",
-    "[subagent completion event]",
-    "[subagent batch completion event]",
-    "[auto-nudge cycle",
-    "[monitor wake]",
-    "[tool refusal",
-    "[tool stall",
-    "=== restored context",
-    "[system]",
-)
+# intent signal while staying visible as context. Shared with the marker guard in
+# ``constants``, since two copies would drift and reopen the forgery it declines.
+_INJECTED_PREFIXES = _INJECTED_PROVENANCE_PREFIXES
 
 # A pasted stack trace or log dump under role "user" is not a goal either, but
 # it is only recognizable by shape. Cap user text so one paste cannot crowd out

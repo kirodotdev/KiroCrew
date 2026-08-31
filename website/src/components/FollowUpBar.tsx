@@ -3,11 +3,23 @@ import { useScrollEdges } from '../hooks/useScrollEdges'
 import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { dispatchIsCommandShaped, markerDeclined } from '../app-sdk/protocol/recommendation'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
   options: string[]
+  /**
+   * The one option that carried a `(recommended)` marker — pass a host's
+   * `followUpRecommended` straight through.
+   *
+   * The label itself rather than marked-up label text, so `options` stays the
+   * single canonical string: a click sends it and `picked` is keyed on it, so a
+   * label that differed between display and dispatch would break selection
+   * tracking. One label rather than a set because the only sanctioned producer
+   * marks at most one option.
+   */
+  recommended?: string | null
   picked: ReadonlySet<string>
   /**
    * Third argument is `sourceKey` AS IT WAS AT CLICK TIME (see `sourceKey`
@@ -150,8 +162,14 @@ function chipColors(isPicked: boolean) {
 
 /** Standalone chip: the flex item itself, so it owns the width cap (and, in the
  *  scroll layout, `shrink-0` so it does not collapse). Fully rounded. */
-function chipClassName(isPicked: boolean, { shrink0 = false }: { shrink0?: boolean } = {}) {
-  return `${shrink0 ? 'shrink-0 ' : ''}${CHIP_MAX_WIDTH} ${CHIP_BASE} rounded-lg ${chipColors(isPicked)}`
+function chipClassName(
+  isPicked: boolean,
+  { shrink0 = false, declined = false }: { shrink0?: boolean; declined?: boolean } = {},
+) {
+  // A declined chip does NOT send on click where its siblings do, so the difference has to be
+  // visible at rest: a dashed edge reads as "not the usual action" without spending colour.
+  const edge = declined ? ' border-dashed' : ''
+  return `${shrink0 ? 'shrink-0 ' : ''}${CHIP_MAX_WIDTH} ${CHIP_BASE}${edge} rounded-lg ${chipColors(isPicked)}`
 }
 
 /** Main button INSIDE a split-button wrapper. The WRAPPER is the flex item that
@@ -181,8 +199,93 @@ function splitMainChipClassName(isPicked: boolean) {
  * is recoverable. One line keeps every chip the same height by construction
  * rather than by an alignment rule.
  */
-function ChipLabel({ option }: { option: string }) {
-  return <span className="block truncate">{option}</span>
+function ChipLabel({ option, floored }: { option: string, floored?: boolean }) {
+  // A kept marker gets NO typographic signal: mono already means "recommended" elsewhere in
+  // the product, so a second meaning here would collide rather than teach.
+  // The floor exists ONLY beside a `shrink-0` badge, which cannot give width back: 12ch keeps
+  // a readable stem where 6ch left about one word of a `ru`/`en-XA` badge's neighbour.
+  // Below `sm` the floor RELAXES to 7ch rather than vanishing: a fixed 12ch plus a 13-24
+  // character badge overflows a ~320px chip, but no floor left the instruction a sliver.
+  const floor = floored && option.length >= 12
+  return (
+    <span className={`block truncate ${floor ? 'min-w-[7ch] sm:min-w-[12ch]' : 'min-w-0'}`}>
+      {option}
+    </span>
+  )
+}
+
+/**
+ * The `(recommended)` marker, rendered as a badge rather than left in the label.
+ *
+ * The whole point is WHERE this sits: outside `ChipLabel`'s truncating span, as a
+ * `shrink-0` sibling. Inside the label the marker is plain text competing with the
+ * instruction for one clamped line, styled identically to it, and it is part of what
+ * a click DISPATCHES as the user's own message. Out here it is one distinct word no
+ * label length can hide, and because it stays on the same line the
+ * chip is no taller than its neighbours, which is the constraint `ChipLabel`
+ * above exists to protect.
+ *
+ * The word is a constant, not a value carried through the protocol: the grammar
+ * admits exactly one marker word, so threading a string here would promise a
+ * variation the parser refuses to produce. It is chrome the renderer chose after
+ * stripping the marker, so it is translated even though the grammar it stands for
+ * stays English-only.
+ *
+ * Sized to CONTENT, not capped. A cap bounded how much of a `followup-chip` the
+ * badge could claim, but a one-word label has no useful abbreviation: uppercased `ru`
+ * is 13 characters and the `en-XA` pseudo-locale 24 against English's 11, and clipping
+ * any of them renders as a defect rather than as a graceful overflow. `shrink-0` with
+ * `whitespace-nowrap` keeps the word whole; `ChipLabel` still carries `truncate`, so
+ * the instruction remains the element that pays for a narrow chip.
+ *
+ * The fill is deliberately NEUTRAL. Accent is the chip's SELECTION signal
+ * (`border-accent/50 text-accent bg-accent-subtle` when picked), so an accent-filled
+ * badge made an unpicked recommendation read as already chosen. Separation therefore
+ * comes from WEIGHT, not from dimming: an unpicked chip is already `text-muted`, so
+ * lowering the badge's opacity on top of that made the one word the feature exists to
+ * show the hardest thing on the chip to read. Weight separates at rest and through the
+ * chip's `hover:text-text`, and reads brighter rather than fainter. `ChipBody` sets a
+ * separator.
+ *
+ * The slant is the second axis, and the fill is the third: `text-muted` is what an
+ * unpicked chip's own label already uses, so at rest the one word the feature exists to
+ * surface was the dimmest thing in the row on a dark theme. `text-text` reads against
+ * that without borrowing accent, which stays the SELECTION signal.
+ */
+function ChipBadge() {
+  return (
+    <span
+      data-testid="recommended-badge"
+      className="shrink-0 whitespace-nowrap self-center font-semibold uppercase text-[11px] leading-none tracking-[.06em] text-text"
+    >
+      {i18nT('components.followUpBar.recommended')}
+    </span>
+  )
+}
+
+/**
+ * Badge plus label. A flex row so the badge is `shrink-0` and the label absorbs
+ * all the truncation; `min-w-0` is what lets the label shrink below its content
+ * width inside a flex parent, without which the label would push the chip wide
+ * instead of ellipsizing. The wrapper is inside the button rather than replacing
+ * it so the button keeps `CHIP_BASE` and the split-button sizing untouched.
+ */
+function ChipBody({ option, recommended }: { option: string, recommended?: boolean }) {
+  // No per-chip note for a declined marker: the prefix is real LABEL TEXT, so a screen
+  // reader already reads it out, and only its mono styling was ever sighted-only.
+  if (!recommended) return <ChipLabel option={option} />
+  return (
+    <span className="flex items-baseline gap-1.5 min-w-0">
+      <ChipLabel option={option} floored />
+      {/* The visible separator is aria-hidden, so without this the button's
+          accessible name runs "Merge it now recommended" as one phrase. */}
+      <span data-testid="recommended-a11y-sep" className="sr-only">, </span>
+      <span data-testid="recommended-sep" aria-hidden="true" className="shrink-0 select-none text-muted">
+        ·
+      </span>
+      <ChipBadge />
+    </span>
+  )
 }
 
 /**
@@ -219,12 +322,17 @@ function sendSegmentClassName(isPicked: boolean) {
   }`
 }
 
-function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: ReadonlySet<string>, hasOnSend: boolean) {
+function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: ReadonlySet<string>, hasOnSend: boolean, declined?: boolean) {
   if (isPicked) {
-    return hasOnSend
+    // `declined` also suppresses the send half: `useDebouncedClick` drops the whole send
+    // apparatus for it, so a double-click toggles twice and dispatches nothing.
+    return hasOnSend && !declined
       ? i18nT('components.followUpBar.click_to_remove_from_input_double_click_to_send')
       : i18nT('components.followUpBar.click_to_remove_from_input')
   }
+  // Ordered ABOVE the quick-send arms: a declined chip must win, which is what frees those arms
+  // to read the REAL `quickSend` instead of a send-eligibility flag that hid the selection case.
+  if (declined) return i18nT('components.followUpBar.click_to_add_to_input_editable_before_sending')
   if (quickSend && picked.size === 0) return i18nT('components.followUpBar.click_to_send_instantly_shift_click_to_select_mu')
   if (quickSend) return i18nT('components.followUpBar.click_to_add_to_selection')
   return hasOnSend
@@ -234,6 +342,8 @@ function chipTitle(isPicked: boolean, quickSend: boolean | undefined, picked: Re
 
 interface ChipProps {
   option: string
+  /** Whether this option carried a `(recommended)` marker. */
+  recommended?: boolean
   isPicked: boolean
   picked: ReadonlySet<string>
   quickSend: boolean | undefined
@@ -257,7 +367,7 @@ interface ChipProps {
  *   double-click to fire `onSend(text)` directly without going through setInput (which would
  *   race with the React state update and cause send() to read a stale inputRef.current).
  */
-function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className, index, animating, sourceKey }: ChipProps) {
+function Chip({ option, recommended, isPicked, picked, quickSend, onSelect, onSend, className, index, animating, sourceKey }: ChipProps) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // First-click row identity for the in-flight gesture. A double-click is
   // click(detail=1) then dblclick; the footer can be replaced on the reused
@@ -266,8 +376,19 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
   const armedSourceKeyRef = useRef<string | null | undefined>(undefined)
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
-  const useDebouncedClick = !!onSend && !(quickSend && !isPicked && picked.size === 0)
-  const title = chipTooltip(option, chipTitle(isPicked, quickSend, picked, !!onSend))
+  // A declined chip dispatches the raw `(recommended)` prefix as the user's own words, so it is
+  // exempt from instant send: the click has to leave an edit chance in the composer.
+  const instant =
+    quickSend &&
+    !isPicked &&
+    picked.size === 0 &&
+    !markerDeclined(option) &&
+    !dispatchIsCommandShaped(option)
+  // Declined is excluded here too, taking the WHOLE send apparatus with it: gating only the
+  // send-now segment left `onDoubleClick` live, so the raw prefix still went out.
+  const useDebouncedClick =
+    !!onSend && !instant && !markerDeclined(option) && !dispatchIsCommandShaped(option)
+  const title = chipTooltip(option, chipTitle(isPicked, quickSend, picked, !!onSend, markerDeclined(option)))
   // The entrance belongs on whichever element is this chip's flex item — the
   // button when the chip is standalone, the wrapper when it is a split button.
   // On the inner button of a split chip it would animate the label away from
@@ -278,7 +399,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
   // instant-send state, where a single click on an unpicked chip already
   // sends — so it's suppressed there to avoid two controls doing the same
   // thing side by side.
-  const showSendSegment = useDebouncedClick
+  const showSendSegment = useDebouncedClick && !markerDeclined(option)
 
   if (!useDebouncedClick) {
     return (
@@ -296,7 +417,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
         style={entrance.style}
         title={title}
       >
-        <ChipLabel option={option} />
+        <ChipBody option={option} recommended={recommended} />
       </button>
     )
   }
@@ -354,7 +475,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       style={showSendSegment ? undefined : entrance.style}
       title={title}
     >
-      <ChipLabel option={option} />
+      <ChipBody option={option} recommended={recommended} />
     </button>
   )
 
@@ -387,7 +508,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
  *  layout switch cannot restart an entrance that already played. */
 type LayoutProps = Omit<FollowUpBarProps, 'layout'> & { animating: boolean }
 
-function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
+function ScrollLayout({ options, recommended, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
 
@@ -474,12 +595,13 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating,
             <Chip
               key={o}
               option={o}
+              recommended={recommended === o && options.indexOf(o) === i}
               isPicked={isPicked}
               picked={picked}
               quickSend={quickSend}
               onSelect={onSelect}
               onSend={onSend}
-              className={chipClassName(isPicked, { shrink0: true })}
+              className={chipClassName(isPicked, { shrink0: true, declined: markerDeclined(o) })}
               index={i}
               animating={animating}
               sourceKey={sourceKey}
@@ -492,7 +614,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating,
   )
 }
 
-function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
+function MultilineLayout({ options, recommended, picked, onSelect, onSend, quickSend, animating, sourceKey }: LayoutProps) {
   return (
     // Bottom-aligned for the same reason as the scroll layout: with the
     // one-line clamp every chip is already the same height, so this only
@@ -505,12 +627,13 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
           <Chip
             key={o}
             option={o}
+            recommended={recommended === o && options.indexOf(o) === i}
             isPicked={isPicked}
             picked={picked}
             quickSend={quickSend}
             onSelect={onSelect}
             onSend={onSend}
-            className={chipClassName(isPicked)}
+            className={chipClassName(isPicked, { declined: markerDeclined(o) })}
             index={i}
             animating={animating}
             sourceKey={sourceKey}
@@ -521,16 +644,28 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
   )
 }
 
-function FollowUpBar({ options, picked, onSelect, onSend, quickSend, layout = 'multiline', sourceKey }: FollowUpBarProps) {
+function FollowUpBar({ options, recommended, picked, onSelect, onSend, quickSend, layout = 'multiline', sourceKey }: FollowUpBarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Content-keyed, not identity-keyed: the caller rebuilds the array on every
   // render, so an identity comparison would restart the entrance constantly.
   // \u0000 cannot occur inside an option label.
   const animating = useChipEntrance(options.join('\u0000'))
-  if (layout === 'scroll') {
-    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
-  }
-  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+  // Visible, not hover-gated: a `title` reaches no touch user and no keyboard user, and an
+  // sr-only note reaches no sighted one -- yet the prefix it explains is dispatched verbatim.
+  const kept = options.some(markerDeclined)
+  const bar =
+    layout === 'scroll'
+      ? <ScrollLayout options={options} recommended={recommended} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+      : <MultilineLayout options={options} recommended={recommended} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} animating={animating} sourceKey={sourceKey} />
+  if (!kept) return bar
+  return (
+    <>
+      {bar}
+      <p data-testid="recommended-kept-note" className="mt-1 px-1 text-[11px] leading-tight text-text">
+        {i18nT('components.followUpBar.recommended_marker_kept')}
+      </p>
+    </>
+  )
 }
 
 export default memo(FollowUpBar)

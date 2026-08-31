@@ -102,7 +102,7 @@ from kiro_crew.sel import sel
 from kiro_crew.session import SessionManager
 from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.session_workspace import result_path as _ws_result_path
-from kiro_crew.slack.format import extract_options
+from kiro_crew.slack.format import extract_options_with_recommendation
 from kiro_crew.stats import Stats
 from kiro_crew.subagent_completion_meta import (
     OUTCOME_FAILED,
@@ -2666,7 +2666,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     consult_offloaded,
     create_agent_folder,
     evict_completed_agents,
-    extract_options,
+    extract_options_with_recommendation,
     fire_tool_hooks,
     identity_grant_covers_child,
     has_dashboard_surface,

@@ -4489,6 +4489,8 @@
       "yes_move_it": "Move it"
     },
     "followUpBar": {
+      "recommended": "RECOMMENDED",
+      "recommended_marker_kept": "“(recommended) …” options send that text as part of the message. Click one to put it in the composer, then edit the prefix out before sending.",
       "scroll_left": "Scroll left",
       "scroll_right": "Scroll right",
       "scroll_suggestions_left": "Scroll suggestions left",
