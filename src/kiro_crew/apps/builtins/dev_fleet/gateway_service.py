@@ -71,11 +71,11 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import uuid
 from pathlib import Path
 from typing import IO, Awaitable, Callable, Protocol
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 
 # service.* is import-safe on every platform (it only touches launchctl/systemctl
@@ -146,17 +146,21 @@ def reject_unsafe(raw: str) -> str:
 
 
 def atomic_write_text(path: Path, content: str) -> None:
-    """Write *content* to *path* atomically (temp sibling + ``os.replace``).
+    """Write *content* to *path* atomically (unique temp sibling + rename).
 
-    ``os.replace`` is an atomic same-filesystem rename, so a crash or partial
-    write never leaves a half-written service definition behind.
+    Thin delegate to :func:`kiro_crew.atomic_write.atomic_write`, kept as a
+    named function because it is the seam Dev Fleet's tests drive the staging
+    failure path through. The shared helper carries the same
+    ``mkstemp``-plus-rename shape this used to hand-roll, plus the Windows
+    sharing-violation rename retry and the ``except BaseException`` temp
+    cleanup that the local ``finally`` provided.
+
+    ``fsync`` stays off and no explicit *mode* is passed, so the drop-in lands
+    at the umask default exactly as ``Path.write_text`` left it. Encoding is
+    now pinned to UTF-8 rather than following the locale, which is what the
+    generated unit text (systemd reads it as UTF-8) always needed.
     """
-    tmp = path.parent / f".{path.name}.tmp-{uuid.uuid4().hex}"
-    try:
-        tmp.write_text(content)
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    atomic_write(path, content)
 
 
 class GatewayServiceBackend(Protocol):

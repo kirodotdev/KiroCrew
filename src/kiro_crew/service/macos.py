@@ -13,9 +13,9 @@ import os
 import plistlib
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.gateway_shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
@@ -166,20 +166,22 @@ def _write_plist_atomic(contents: str) -> None:
     when source and destination are on the same filesystem, so a SIGINT
     or crash mid-write leaves either the old plist or no plist at all —
     never a partial XML document that ``launchctl load`` would reject.
+
+    Delegates to :func:`kiro_crew.atomic_write.atomic_write`, which is that
+    exact shape. Two deliberate strengthenings come with it: the temp cleanup
+    moves from ``except Exception`` to ``except BaseException``, so the SIGINT
+    this docstring already promised to survive also stops leaving a scratch
+    file behind, and the shared helper adds the Windows sharing-violation
+    rename retry. ``fsync`` stays off, as before.
+
+    ``mode=0o600`` preserves rather than tightens: ``mkstemp`` creates its file
+    owner-only and the hand-rolled form never chmod'd it, so the plist has
+    always landed at ``0o600``. It has to be explicit, because ``atomic_write``
+    with no *mode* applies the umask default and would publish the plist
+    world-readable instead. launchd loads the agent as the owning user, so
+    nothing else needs to read it.
     """
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=PLIST_PATH.name + ".", suffix=".tmp", dir=str(PLIST_DIR)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(contents)
-        os.replace(tmp_path, PLIST_PATH)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
-        raise
+    atomic_write(PLIST_PATH, contents, mode=0o600)
 
 
 def _launchctl(*args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -232,9 +234,12 @@ def write_live_program(contents: str, path: Path | None = None) -> None:
     disagree about which file is authoritative.
 
     Atomic because the agent may be kickstarted at any moment: a partially
-    written launcher would exec a truncated script. The temp file is chmod'd
-    BEFORE the rename so the file is never visible at the final path without its
-    exec bit.
+    written launcher would exec a truncated script. The mode is applied to the
+    temp file BEFORE the rename so the file is never visible at the final path
+    without its exec bit -- :func:`kiro_crew.atomic_write.atomic_write` applies
+    *mode* to the descriptor before any content reaches it, which is if anything
+    tighter than the ``os.chmod``-after-write this used to hand-roll. The temp
+    cleanup also widens from ``except Exception`` to ``except BaseException``.
 
     ``0o700``, not ``0o755``: launchd runs the agent as the owning user, so
     nobody else needs to read or execute it, and it lives in that user's own
@@ -242,21 +247,8 @@ def write_live_program(contents: str, path: Path | None = None) -> None:
     """
     dest = path or LIVE_PROGRAM
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=dest.name + ".", suffix=".tmp", dir=str(dest.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(contents)
-        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- launchd EXECUTES this file as the ProgramArguments entry, so the exec bit is required and the rule's suggested 0o644 would stop the agent from spawning at all. 0o700 is the tightest mode that still works: owner-only, in the owner's own application-support directory, and the agent runs as that same user.  # noqa: E501
-        os.chmod(tmp_path, 0o700)  # fmt: skip
-        os.replace(tmp_path, dest)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
-        raise
+    # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- launchd EXECUTES this file as the ProgramArguments entry, so the exec bit is required and the rule's suggested 0o644 would stop the agent from spawning at all. 0o700 is the tightest mode that still works: owner-only, in the owner's own application-support directory, and the agent runs as that same user.  # noqa: E501
+    atomic_write(dest, contents, mode=0o700)
 
 
 def _repairer_bin() -> str:

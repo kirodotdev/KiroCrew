@@ -37,6 +37,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.dashboard.theme_validate import (
     _THEME_ASSET_CSP,
     _THEME_ASSET_CT,
@@ -398,20 +399,21 @@ def _atomic_write_theme_json(target: Path, text: str) -> None:
     reader ever sees either the old or the new complete file, never a partial
     one. Callers MUST hold ``_theme_install_lock(slug)`` so the exists-check and
     this write are one critical section (closes the create/update TOCTOU).
+
+    Delegates to :func:`kiro_crew.atomic_write.atomic_write`, which is the same
+    ``mkstemp``-plus-rename shape this used to hand-roll -- including the
+    ``except BaseException`` temp cleanup, so a Ctrl-C mid-write still leaves no
+    scratch file -- plus the Windows sharing-violation rename retry. ``fsync``
+    stays off, as before.
+
+    ``mode=0o600`` is not a tightening, it is what this site already published:
+    ``mkstemp`` creates its file owner-only and the hand-rolled form never
+    chmod'd it, so the theme JSON landed at ``0o600`` and the rename carried
+    that through. Passing it explicitly keeps that, because ``atomic_write``
+    without a *mode* applies the umask default instead and would widen a
+    previously owner-only file to ``0o644``.
     """
-    fd, tmp = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.stem}-", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, target)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    atomic_write(target, text, mode=0o600)
 
 
 def _read_theme_bytes_nolink(slug: str, target: Path) -> bytes | None:
