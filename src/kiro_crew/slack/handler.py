@@ -133,7 +133,7 @@ from kiro_crew.slack.format import (
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
     _convert_tables,
-    extract_options,
+    extract_options_with_recommendation,
     render_one_for_slack,
     split_message,
     strip_thinking_tags,
@@ -2732,6 +2732,8 @@ async def maybe_route_linked_thread(
     reply_ts: str,
     target_slot: Any | None = None,
     route_pinned: bool = False,
+    interpret_commands: bool = True,
+    action_context: str | None = None,
 ) -> bool:
     """Route a Slack message to a linked dashboard slot, if one is linked.
 
@@ -2742,8 +2744,15 @@ async def maybe_route_linked_thread(
     Returns ``True`` when the caller MUST return without further handling —
     either the message was routed into the linked dashboard slot, or an
     unauthorized user was denied. Returns ``False`` when normal routing should
-    continue: no dashboard state, no linked slot, or a ``!``-bang command
-    (which is intentionally allowed to fall through to normal handling).
+    continue: no dashboard state, no linked slot, or a ``!``-bang command that is
+    being read as a command (which is intentionally allowed to fall through).
+
+    *interpret_commands* is ``False`` when the text is MODEL-AUTHORED — an OPTIONS
+    click sends a label the model wrote. Such a label is turn content whatever it
+    looks like, so the bang fallthrough is suppressed: letting it through would
+    persist the turn under the dashboard key while the linked slot's transcript
+    never sees it, so the click would resolve to a different slot than an ordinary
+    message from the same thread.
 
     *route_pinned* makes *target_slot* authoritative instead of resolving the
     thread's CURRENT owner. An OPTIONS answer is accepted against the
@@ -2782,12 +2791,16 @@ async def maybe_route_linked_thread(
         await slack.post_message(channel, "Not authorized.", reply_ts)
         return True
 
-    # Let bang commands fall through to normal handling.
+    # Fall through only when this text is READ as a command: a model-authored label would
+    # otherwise persist under the dashboard key with the linked transcript never updated.
     _first_word = text.strip().split(maxsplit=1)[0] if text.strip() else ""
-    if _first_word in _BANG_TO_SLASH:
+    if interpret_commands and _first_word in _BANG_TO_SLASH:
         return False
 
     _linked_slot_key = _linked_slot.key
+    # The payload rides as a CONTEXT-BUILDER argument, never joined to the dispatched text:
+    # `$skill`/`@prompt` expand over user text, and `_model_authored` disables both anyway.
+    _model_authored = not interpret_commands
     # Redact for UI display only — LLM receives original text so it can process
     # user intent fully (redaction strips URLs/creds that may be relevant
     # context). The LLM's own output is redacted before display.
@@ -2810,6 +2823,8 @@ async def maybe_route_linked_thread(
                 text,
                 _directive_user_origin=True,
                 _directive_channel_origin=True,
+                _model_authored=_model_authored,
+                _action_context=action_context or None,
             )
         )
         _linked_slot.task = _chat_task
@@ -2822,9 +2837,16 @@ async def maybe_route_linked_thread(
         # Stamp the admission-time containment. A linked slot records
         # linked=True here, so its own channel's queued messages keep draining;
         # only a constraint that appears AFTER this enqueue drops the entry.
+        _queue_meta = containment_meta(_dashboard_state, _linked_slot)  # type: ignore[arg-type]
+        if _model_authored:
+            # Ride the meta dict rather than a new queue field: append retains the
+            # producer's object precisely so enqueue sites can add structured facts.
+            _queue_meta["model_authored"] = True
+        if action_context:
+            _queue_meta["action_context"] = action_context
         _linked_slot.queue_append(
             text,
-            meta=containment_meta(_dashboard_state, _linked_slot),  # type: ignore[arg-type]
+            meta=_queue_meta,
             directive_user_origin=True,
             directive_channel_origin=True,
         )
@@ -2867,6 +2889,7 @@ async def handle_message(
     from_trusted_bot: bool = False,
     channel_activation: str | None = None,
     had_voice_input: bool = False,
+    interpret_commands: bool = True,
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
@@ -2881,6 +2904,12 @@ async def handle_message(
 
     *channel_agent* overrides the default agent for this channel (set via
     per-channel config in ``slack.channels``).
+
+    *interpret_commands* is ``False`` when the text is MODEL-AUTHORED rather than
+    typed by the user — an OPTIONS click sends a label the model wrote, so a leading
+    command token there is ordinary turn content and never permission to run
+    ``!yolo``, ``!agent`` or any future command. Mirrors the Telegram and Discord
+    dispatchers, which pass the same flag on their callback paths.
     """
     Stats().inc_message_received()
     _t0 = time.monotonic()
@@ -2895,6 +2924,10 @@ async def handle_message(
     # conversation log, and the per-thread override maps across two keys.
     reply_ts = thread_ts or msg_ts
     session_key = canonical_key(reply_ts)
+
+    # ONE decision, read by every command branch below and forwarded to the linked router.
+    # A new branch that forgets it is visible against the single name, not a token list.
+    interpret_as_command = interpret_commands
 
     # Inbound channels-governance gate (off-loop). Slack is a governed transport
     # like the others: a ``channels`` policy that denies ``slack`` stops inbound
@@ -2932,6 +2965,8 @@ async def handle_message(
         reply_ts,
         target_slot=_target_slot,
         route_pinned=route_pinned,
+        interpret_commands=interpret_as_command,
+        action_context=action_context,
     ):
         return
 
@@ -2961,7 +2996,7 @@ async def handle_message(
             return
 
     # ── Status keyword: reply with stats summary ──
-    if text.strip().lower() == "status":
+    if interpret_as_command and text.strip().lower() == "status":
         # Identity status via the active PlatformContext (Default == OSS no-op
         # stub returning ""; an enterprise companion returns the real SSO line).
         sso_line = await current_context().identity.status_line(prefix=" · sso")
@@ -2969,7 +3004,7 @@ async def handle_message(
         return
 
     # ── Sessions keyword: list recent sessions ──
-    if text.strip().lower() == "sessions":
+    if interpret_as_command and text.strip().lower() == "sessions":
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -3008,13 +3043,14 @@ async def handle_message(
     _cmd_text = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
 
     # ── !temporary / !incognito privacy modifiers (shared with transport) ──
-    text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
-        text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
-    )
-    if _only_modifier:
-        return
+    if interpret_as_command:
+        text, _cmd_text, _only_modifier = await maybe_apply_privacy_modifiers(
+            text, _cmd_text, session_key, user_id, channel, slack, sessions, reply_ts
+        )
+        if _only_modifier:
+            return
 
-    if _cmd_text.strip().lower() == "!compact":
+    if interpret_as_command and _cmd_text.strip().lower() == "!compact":
         if is_owner(user_id) or is_allowed_user(user_id):
             sel().log_api_access(
                 caller=user_id,
@@ -3041,7 +3077,7 @@ async def handle_message(
     # Strip leading bot mention from app_mention events so the ! prefix is exposed.
     # DM:       "!agent foo"                    → "!agent foo"       (no-op)
     # @mention: "<@UBOT|kirocrew> !agent foo"   → "!agent foo"      (strip prefix)
-    if _cmd_text.startswith("!"):
+    if interpret_as_command and _cmd_text.startswith("!"):
         # !dashboard and !stop are available to any allowed user
         _cmd_word = _cmd_text.split()[0]
         if _cmd_word in ("!dashboard", "!stop", "!title"):
@@ -3103,7 +3139,7 @@ async def handle_message(
     # ``!temporary``/``!incognito`` modifier rewrites can't turn a modified
     # message into a bare ``sessions`` match. The transport path (which has no
     # modifier machinery) handles all four via the same helper.
-    if await maybe_handle_keyword_command(
+    if interpret_as_command and await maybe_handle_keyword_command(
         text,
         slack,
         sessions,
@@ -4268,7 +4304,9 @@ async def handle_message(
     # answer ending in [OPTIONS: ...] is truncated, the tag goes with the tail,
     # and the buttons silently never appear. Matches the ordering used by the
     # cron, subagent-completion and dashboard-mirror paths.
-    _body_text, options = extract_options(accumulated) if accumulated else ("", [])
+    _body_text, options, _final_rec = (
+        extract_options_with_recommendation(accumulated) if accumulated else ("", [], None)
+    )
 
     _render = render_one_for_slack(_body_text, keep_tables=actually_streamed)
     final_text = _render.text or _NO_RESPONSE

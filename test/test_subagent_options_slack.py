@@ -6,7 +6,7 @@ from kiro_crew.slack.format import (
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
     build_options_blocks,
-    extract_options,
+    extract_options_with_recommendation,
 )
 
 
@@ -23,7 +23,7 @@ class TestSubagentOptionsExtraction:
         from kiro_crew.slack.format import to_slack_mrkdwn
 
         reply_text = to_slack_mrkdwn(response)
-        reply_text, options = extract_options(reply_text)
+        reply_text, options, _ = extract_options_with_recommendation(reply_text)
 
         assert options == ["Commit and raise CR", "Spawn adversarial review", "Just commit"]
         assert "[OPTIONS:" not in reply_text
@@ -45,7 +45,7 @@ class TestSubagentOptionsExtraction:
     def test_no_options_no_extra_blocks(self):
         """When response has no OPTIONS tag, footer should not get checkbox blocks."""
         response = "Here is my response with no options."
-        _, options = extract_options(response)
+        _, options, _ = extract_options_with_recommendation(response)
         assert options == []
 
         footer_blocks = [{"type": "context", "elements": []}]

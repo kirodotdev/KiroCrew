@@ -1945,6 +1945,7 @@ answer is not permission: a raised evaluation and a `Decision` without
 - **Session resume has ONE controller and routing machine, not one per channel**: `SessionResumeController` is the only consumer of `ResumeSurface`; it owns eligibility/search delegation, the picker registry, access audit, transcript existence, both conflict checks around the awaited UI settlement, expectation-before-success ordering, the atomic inbound claim, dashboard push, and the final audit. Dashboard keys are the default eligibility. A resume-capable channel passes only its canonical native key; the controller applies one exact-bucket policy with its own `SessionMap`. Discord, Telegram and Teams include generations in the current private conversation's exact durable bucket, resolving irreversible filename folds through `SessionMap.channel_key_for_stem`; only a mapped generation with a real history row is eligible. A zero-turn generation holds no work to recover and creates no picker row. Explicit `new` still records and flushes a monotonic generation floor on every DM channel, so a restart cannot seed the prior generation and append the next message to old history. Other users, agents, shared conversations and channels remain excluded. `SessionBinder` owns routing, refusal settlement, and release. Discord and Teams supply address and owner identity, their widgets/cards and exact copy/display redaction, callback parsing, and channel-local replay. The machine is where a mistake routes somebody's transcript into someone else's chat, and its hazard is timing: between the durable record read and the live session-map read a binding can appear, vanish or move, so ONE call returns ONE `RoutingDecision` — where the message runs, the refusal that stops it, and the settlement owed once that refusal is delivered. Two resolver calls with an await between them let the binding change in the gap and the routing check fall through to the conversation's own session, silently. A second copy of either transaction is not a maintenance cost, it is a second chance to get it wrong.
 - **There is ONE auto-approve grant, and a channel does not get its own**: every surface that can arm it — the dashboard toggle, `/yolo` on seven channels, and Teams' approval card — goes through `safety_override` via `messaging.commands.run_yolo_command`. A channel-local trusted set is a second grant with its own lifetime, its own audit trail and its own answer to "is YOLO on?", and it has to reimplement the expiry, renewal and auditing the shared helper already owns. Slack's `is_slack_session_trusted` predates this and is the one exception; a new channel follows the seven. It also follows that a control which arms the grant must NAME its blast radius: Teams' button says "Approve + auto-approve", not "Trust session", because the effect reaches every surface until the grant expires.
 - **A model-authored label is never interpreted as a command**: an `[OPTIONS:]` chip re-dispatches with `interpret_commands=False`, exactly like a drained queue payload. Display redaction does not strip a leading `/`, so with interpretation on a model that emitted `[OPTIONS: /dashboard | cancel]` renders a chip whose single tap mints a dashboard login credential.
+- **The `(recommended)` marker rides IN-BAND, inside the option label, and that is a decision with a cost rather than an accident**: the label is the only part of the trailer every renderer already reads. `split_options_trailer` is the ONE parse and it keys on the trailer's literal shape, so a sibling control tag placed after `[OPTIONS:]` — or a widened `[OPTIONS(2): …]` — falls outside what a channel renderer matches and degrades its option rendering rather than reaching it. Measured per pipeline, because it does not hold everywhere: `discord/renderer.py`, `teams/renderer.py`, `telegram/renderer.py`, `webex/renderer.py` and `wecom/renderer.py` each call `split_options_trailer` with NO `strip_control_comments` of their own, so a trailing tag breaks their parse; the shared `messaging/renderer.py` projection strips control comments FIRST, so on that path the trailer parses normally and the argument does not apply. Do not cite the shared projection as evidence for in-band placement. Producer reliability points the same way: the marker rule ships only in the dashboard critical-rules block, so on every other channel no producer is told the grammar at all, and a marker that survives there has to travel in the text a renderer is certain to draw. The price paid is the promotion fence — the reserved dispatch literals mirrored in `constants.py` and `recommendation.ts`, policed by the parity and drift suites — and it is paid because a marker must never decide what runs. **What would move it out-of-band**: a registry-based control-tag grammar that every renderer consumes, the shape `strip_control_comments` already uses, at which point the fence deletes with it.
 - **An option button is bound to the session that posted it**: Discord and Telegram encode `opt:<index>:<tag>`, where `session_provenance_tag` is a stable 12-hex SHA-256 digest of the posting session key. The raw key never reaches client-visible callback data. A press is checked before busy handling and again after idle/daily rotation; a mismatch or an untagged legacy button fails closed. A valid press against a busy session is refused rather than queued or steered, because those paths retain only bare text and would replay the choice with no tag to validate.
 - **Attachment ingest belongs to the frame that awaits the turn**: download after the busy check, in the dispatcher, and unlink in that frame's `finally`. Ingesting at arrival and unlinking there leaves a QUEUED message's prompt naming files that were deleted minutes before the drained turn read them, and the encoder skips a missing path silently. It follows that an attachment-bearing message is never steered (a steer carries text only) and never read as a command (the caption lives in `text`); the queue entry carries RAW descriptors and the drained turn re-ingests them.
 - **An outbound refusal is never budget-dropped**: when extraction has already CUT a reference's markup, its refusal line is the only surviving trace of the file, so it is appended unconditionally and the caller chunks. Trading the line for staying inside one message is the one outcome that leaves the user with neither the picture nor a reason.
@@ -3114,17 +3115,50 @@ parameter rather than a baked-in policy:
   cutting prose is permanent: a reply ending `see the [OPTIONS section` keeps its
   last four words.
 
+That parse leaves a leading `(recommended)` marker in the choice, and restates nothing in
+its place. Both halves are decisions rather than omissions, and
+`test_messaging_recommended_marker.py` pins them: a marked label arrives in `choices`
+exactly as written, an unmarked label is unchanged, and a marker sitting in front of text
+that looks like a bare channel command gets no special handling either.
+
+No channel producer rule asks for the marker — only the dashboard is instructed to emit
+one — so a marker arriving here is model drift, and rendering drift as label text is what
+every unmarked label already does. Restating it would instead give drift protocol
+standing, and the two-value wrapper carries no recommendation identity to restate WITH:
+it drops that identity by contract, which `test_recommendation_seam_parity.py` polices, so
+the choice a line would name is not knowable at this seam. Slack does not go through this
+parse at all — it keeps its own `*Recommended:*` context block through
+`slack.format.extract_options_with_recommendation`, which carries the identity explicitly
+and so is the one surface that can name the choice, and the one with a real producer
+behind it in the dashboard mirror.
+
 The default is `False` because the failure directions are asymmetric — a needless
 keep flashes markup for one frame, a needless cut deletes unrecoverable text — so a
 caller that forgets degrades toward the cosmetic failure, and every streaming caller
 states `True` explicitly, which also makes the destructive choice greppable.
 
-**`slack/format.py::extract_options` is deliberately NOT converged.** It parses the
+**`slack/format.py::extract_options_with_recommendation` is deliberately NOT converged.** It parses the
 LINE grammar (`OPTIONS_RE_LINE` — `re.MULTILINE`, end-of-*line*), not the
 end-of-buffer `OPTIONS_RE_TRAILER` every other channel uses, so routing it through
 this helper would silently stop matching a marker that ends a line mid-message.
 Different grammar, not a duplicate. `test_options_cap_contract.py::TestOnlyOneTrailerParseExists`
 greps the tree for a re-derived parse and records both exemptions.
+
+**Channel seams deliberately DROP an extracted recommendation, and that is a seam rather than an
+oversight.** The `(recommended)` rule ships in `_CRITICAL_RULES` (dashboard) and NOT in
+`_CRITICAL_RULES_CHANNEL`, so a Slack-native agent is never told to mark an option. A marker arriving
+on a channel-origin turn is therefore model DRIFT, and restating it as an authoritative
+`*Recommended:*` line would present that drift to the user as a product affordance. So four paths
+extract options and discard the recommendation — cron and subagent reply in `slack/gateway.py`,
+stream completion in `slack/renderer.py`, final answer in `slack/handler.py` — while the
+dashboard-origin mirror, which IS instructed, passes it to `build_options_blocks`.
+
+Read the consequence plainly, because it is a real cost and not only a nicety: on those four paths a
+drifted marker is stripped from the posted text AND dropped from the controls, so it becomes
+invisible rather than merely unamplified. `test_recommendation_seam_parity.py` pins the seam from both
+sides — `_append_footer_actions` must take no recommendation parameter, and no channel block build may
+restate one — so threading it through those paths breaks the suite by design rather than by accident.
+Anyone changing this is choosing to amplify channel drift and should say so here first.
 
 **Proactive push works, per-target.** `aibot_send_msg` needs no token and has no
 expiry, but WeCom only delivers into a conversation the user has already written

@@ -33,10 +33,25 @@ from kiro_crew.config.loader import (
     config_dir,
     resolve_effective_agent,
 )
-from kiro_crew.constants import (
+from kiro_crew.constants import (  # noqa: F401 - re-exported for existing importers
+    BUSY_RECOVERY_PREFIX,
+    COMPACTION_RECOVERY_PREFIX,
+    CONN_RECOVERY_PREFIX,
+    CRON_NOTIFY_PREFIX,
+    EMPTY_RESPONSE_RECOVERY_PREFIX,
+    HOOK_CONTINUATION_RECOVERY_PREFIX,
+    HOOK_HALTED_RECOVERY_PREFIX,
+    MANUAL_RESUME_RECOVERY_PREFIX,
+    MONITOR_WAKE_PREFIX,
     OPTIONS_RE_LINE,
+    POSTTOKEN_RECOVERY_PREFIX,
+    PROMISE_ONLY_RECOVERY_PREFIX,
+    REFUSAL_INBAND_RECOVERY_PREFIX,
+    REFUSAL_RECOVERY_PREFIX,
+    STALE_RECOVERY_PREFIX,
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
+    TOOL_STALL_RECOVERY_PREFIX,
 )
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
@@ -241,7 +256,6 @@ MAX_SLOTS_PER_CREATOR = 50
 
 # Structured monitor wakeups are automation, not user speech. The controller
 # owns the complete envelope; every delivery surface passes it through unchanged.
-MONITOR_WAKE_PREFIX = "[Monitor wake]"
 
 #: Return type of a mutate_folders callback.
 _T = TypeVar("_T")
@@ -2630,7 +2644,6 @@ NEW_SESSION_TITLE = "New Session…"
 _SLOT_KEY_TITLE_RE = re.compile(r"(?:dashboard_)?chat-\d+-\d+$")
 
 # Cron notification wrapper format — used by handlers.py (create), chat.py (detect), ChatPage.tsx (render)
-CRON_NOTIFY_PREFIX = "[Cron notification from "
 CRON_NOTIFY_END = "[End of cron notification]"
 CRON_NOTIFY_RE = re.compile(rf'^{re.escape(CRON_NOTIFY_PREFIX)}"(.*)"\]')
 # Both sub-agent markers, for the checks that must treat either shape as a system
@@ -2662,45 +2675,37 @@ SUBAGENT_SYNTHESIS_PROMPT = (
 # refusal reason back to the model so it can adapt instead of stalling for the
 # user. Rendered as an "inject" message (not a user bubble) and never mirrored
 # to a linked Slack thread as user input.
-REFUSAL_RECOVERY_PREFIX = "[Tool refusal — automatic recovery]"
 # Synthetic continuation injected after a genuinely-wedged (stale) turn was
 # detected + reset. Tells the model its previous turn was interrupted by a
 # system stall — NOT the user — and to resume from its last committed step
 # rather than restart. Rendered as an "inject" message (not a user bubble) and
 # never mirrored to a linked Slack thread as user input.
-STALE_RECOVERY_PREFIX = "[Stalled turn — automatic recovery]"
 # Synthetic continuation injected after the per-session watchdog judged an
 # in-flight tool dead/stuck and cancelled the session. Unlike the legacy path
 # (which re-queued the ORIGINAL user message verbatim — restarting the whole
 # task from scratch), this hands the model the stall context so it can check
 # partial results and continue. Rendered as an "inject" message (not a user
 # bubble) and never mirrored to a linked Slack thread as user input.
-TOOL_STALL_RECOVERY_PREFIX = "[Tool stall — automatic recovery]"
 # Prefix on the continuation injected after a reset recovers an interrupted
 # connection. The body lives in chat_utils so queue provenance and turn routing
 # share one canonical instruction.
-CONN_RECOVERY_PREFIX = "[Connection lost — automatic recovery]"
 # Prefix on the continuation injected when a reset recovers a turn the backend
 # refused because the session was still busy. Separate from
 # CONN_RECOVERY_PREFIX even though both requeue the same continuation shape:
 # nothing was disconnected, and the marker is what the transcript renders, so
 # sharing the connection marker would report a dropped connection to a user
 # whose status card reads "Session busy". Body: _BUSY_RECOVER_MSG in chat_utils.
-BUSY_RECOVERY_PREFIX = "[Session busy — automatic recovery]"
 # Prefix on the runner-injected CONTINUE that resumes a turn cut short by a
 # transient backend 5xx after tokens/tools had already streamed. The body lives
 # in chat_utils as _POSTTOKEN_RECOVER_MSG; the prefix is here so all eight
 # recovery markers share one home and the frontend has one list to mirror.
-POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
 # Prefix on the runner-injected nudge that breaks a repeated empty-generation
 # pattern (the model returned no output twice). Body: _EMPTY_AUTO_CONTINUE_MSG.
-EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
 # Prefix on the runner-injected continuation sent when a turn ended on a
 # PROMISE-ONLY final message: the model announced an immediate action ("I'll do
 # that now") and then yielded without making the tool call, so the work never
 # happened and the turn still billed. Body: _PROMISE_ONLY_CONTINUE_MSG in
 # chat_utils. One bounded attempt (slot._promise_only_retries), never a loop.
-PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
 # Prefix on the runner-injected continuation sent when the BACKEND compacted the
 # conversation in the middle of a turn and then ended the turn without finishing
 # the work. The compaction itself succeeded — nothing failed — but the request
@@ -2708,7 +2713,6 @@ PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
 # looking clean (a settled footer with elapsed time), so without this the chat
 # just stops. Body: _COMPACTION_CONTINUE_MSG in chat_utils. One bounded attempt
 # (slot._compaction_continue_retries), never a loop.
-COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
 # Prefix on the continuation injected when the USER pressed Continue on an
 # interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
 # *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
@@ -2717,7 +2721,6 @@ COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
 # The VALUE is what carries the user-facing meaning, and it deliberately does NOT
 # say "automatic recovery" like the five above: a person pressed the button, and
 # the card must not claim the system recovered by itself.
-MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
 # Prefix on the continuation injected when a Stop hook returns a block decision
 # (`{"decision": "block", "reason": ...}` on exit-0 stdout). The reason IS the
 # instruction, handed back as the next turn so a hook can steer the session
@@ -2726,7 +2729,6 @@ MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
 # family renders as a full-width bubble instead of a card. The VALUE deliberately
 # does not say "recovery": the turn completed and a hook asked for another, so
 # nothing failed and nothing was recovered.
-HOOK_CONTINUATION_RECOVERY_PREFIX = "[Hook continuation — automatic]"
 # Prefix on the informational row surfaced when a Stop-hook continuation run hits
 # the `agent.max_stop_hook_nudges` cap: the next block decision is refused, no
 # turn is dispatched, and this row is appended instead so the transcript shows
@@ -2735,7 +2737,6 @@ HOOK_CONTINUATION_RECOVERY_PREFIX = "[Hook continuation — automatic]"
 # it — a marker outside the family renders as a full-width bubble, not a card.
 # The VALUE does not say "recovery": nothing failed or recovered, a safety cap
 # fired.
-HOOK_HALTED_RECOVERY_PREFIX = "[Stop-hook nudge cap reached]"
 # Prefix on the DISPLAY-ONLY row appended when a tool deny's reason was steered
 # into the running turn (see chat_runner._steer_policy_notice). Nothing is
 # queued and no turn is dispatched — the agent already has the reason — so this
@@ -2749,7 +2750,6 @@ HOOK_HALTED_RECOVERY_PREFIX = "[Stop-hook nudge cap reached]"
 # machine prose. The VALUE deliberately does not say "recovery": nothing was
 # recovered and no continuation was sent, which is the whole point. Same
 # reasoning as HOOK_HALTED_RECOVERY_PREFIX, whose row is also display-only.
-REFUSAL_INBAND_RECOVERY_PREFIX = "[Tool blocked — reason sent to the agent]"
 
 
 def should_queue_refusal_recovery(

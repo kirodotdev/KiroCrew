@@ -60,7 +60,7 @@ if TYPE_CHECKING:
         cap_result_file,
         configured_fallback_chain,
         evict_completed_agents,
-        extract_options,
+        extract_options_with_recommendation,
         fire_tool_hooks,
         identity_grant_covers_child,
         logger,
@@ -1699,7 +1699,11 @@ class RunEventCoordinator(ManagerComponent):
                 break
 
         # Strip [OPTIONS: ...] tags and redact sensitive content
-        cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
+        cleaned, _, _ = (
+            extract_options_with_recommendation(result_text)
+            if result_text
+            else (result_text, [], None)
+        )
         if cleaned:
             from kiro_crew.security import (
                 redact_credentials,

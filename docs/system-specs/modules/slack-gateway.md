@@ -452,7 +452,7 @@ When kiro-cli reports a prompt is still in flight ("already in progress" — a t
 
 LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered as interactive Block Kit checkboxes with a Send button:
 
-1. `extract_options()` parses the `[OPTIONS: ...]` tag from the response text
+1. `extract_options_with_recommendation()` parses the `[OPTIONS: ...]` tag from the response text, returning the body, the choices with any `(recommended)` marker stripped, and the recommended label
 2. Tag is stripped from the displayed message
 3. `build_options_blocks()` creates Block Kit checkboxes (max 10) + primary Send button
 4. Checkboxes posted as a follow-up message in the thread
@@ -461,7 +461,7 @@ LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered 
 
 Action IDs: `options_checkboxes` (toggle), `options_submit` (send). Checkbox `value` contains the choice text.
 
-Beyond the reply-finalization path in `handler.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
+Beyond the reply-finalization path in `handler.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway.py`). Both call `extract_options_with_recommendation()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
 
 ### Inline action values (`action::`)
 

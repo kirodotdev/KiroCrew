@@ -1292,7 +1292,11 @@ class TestLinkedThreadRouting:
             *,
             _directive_user_origin,
             _directive_channel_origin,
+            _model_authored=False,
+            _action_context=None,
         ):
+            # A typed message keeps user provenance, so `$skill` expansion stays enabled for it.
+            assert _model_authored is False
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
             ran.append(text)
