@@ -2126,7 +2126,6 @@ import sys
 # from the filesystem.
 sys.path[:] = [p for p in sys.path if p not in ("", sys.path[0])]
 import ctypes
-import ctypes.util
 import os
 import stat
 import tempfile
@@ -2139,7 +2138,23 @@ _MS_BIND       = 4096
 _MS_REC        = 16384
 _MS_PRIVATE    = 1 << 18
 
-_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+# dlopen(NULL): resolve mount()/unshare()/prctl() from the libc ALREADY loaded
+# into this interpreter. Never ctypes.util.find_library here -- on Linux it
+# EXECUTES helper processes to locate libc (ldconfig first, then a PATH-resolved
+# gcc/cc/objdump/ld once ldconfig yields no match, i.e. on musl hosts). This
+# module scope runs BEFORE the fork and before either unshare() below, under an
+# environment the SPAWNING CALLER supplies -- so on such a host a
+# caller-controlled `gcc` on PATH would be same-user code execution ahead of the
+# confinement this launcher exists to establish.
+#
+# Same rule, same reason, as the spawned userns probe in ``_PROBE_SHIM_CODE``,
+# which already resolves libc this way; the launcher was the one pre-confinement
+# script still violating it. Not a new code path either: ``find_library``
+# returning None made this call ``CDLL(None)`` anyway, so dlopen(NULL) was
+# already the implicit fallback here. ``ctypes.util`` is deliberately left
+# unimported above so a future reintroduction fails loudly instead of silently
+# reopening the PATH lookup.
+_libc = ctypes.CDLL(None, use_errno=True)
 _libc.mount.argtypes = [
     ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
     ctypes.c_ulong, ctypes.c_void_p,
