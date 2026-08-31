@@ -719,27 +719,20 @@ async def _handle_drive_upload(request: web.Request) -> web.Response:
         if received == 0:
             return _bad_request("empty upload", "empty_upload")
         # A 512 MB stream can take minutes: the authorization resolved before
-        # the transfer may no longer hold. Re-check the app gate, then RE-RESOLVE
-        # the identity, then consent -- in that order, because consent is asked
-        # ABOUT a profile and region, so verifying it against a stale pair proves
-        # nothing about where the bytes are going. A profile repointed A -> B
-        # during the spool would have had consent verified for B while `put_file`
-        # still wrote into A's bucket (reachable whenever B holds cross-account
-        # access), so the write must be refused unless the SAME triple the
-        # request was authorized for still resolves.
-        if not await asyncio.to_thread(is_app_enabled, APP_NAME):
-            _audit("drive_upload", request.path, "denied", error="app_disabled")
-            return _forbidden("aws-control is disabled", "app_disabled")
-        recheck = await _account_target(request)
-        if isinstance(recheck, web.Response):
-            return recheck
-        if recheck != (account, profile, region):
-            _audit("drive_upload", request.path, "denied", error="account_mismatch")
-            return _conflict(
-                "this connection changed while the file was uploading; nothing was written",
-                "account_mismatch",
-            )
-        denied = await _consent(aws_consent.SERVICE_S3, profile, region)
+        # the transfer may no longer hold. The spool is the same post-wait gap
+        # the Library operations cross under their lock, so the SAME helper
+        # re-runs the full re-authorization: app gate, live identity re-probe,
+        # consent, and the drive bucket itself -- the piece an identity check
+        # cannot cover, because tag discovery can move the drive to a different
+        # bucket while the identity is unchanged, and a name held across the
+        # spool is exactly the staleness the module's no-cache rule forbids. A
+        # pass means the pre-spool ``bucket`` still names the account's current
+        # drive, so the put below writes to the post-spool resolution; anything
+        # else is refused with nothing written. No publish gate: an upload does
+        # not consult it on the way in, so the re-check does not add it.
+        denied = await _reauthorize_in_lock(
+            request, "drive_upload", account, profile, region, bucket, publish=False
+        )
         if denied:
             return denied
         try:
@@ -972,21 +965,22 @@ async def _reauthorize_in_lock(
     *,
     publish: bool,
 ) -> web.Response | None:
-    """Re-run the authorization a queued caller may have outlived.
+    """Re-run the authorization a waiting caller may have outlived.
 
-    ``_library_lock`` makes a Library operation WAIT, and the wait sits between
-    the checks ``_require_drive`` ran and the AWS call they authorized. In that
-    gap the app can be disabled, the profile can be repointed at another account,
-    consent can be withdrawn, publish governance can start denying, or the drive
-    tags can move to a different bucket -- and the call would then run on an
+    Something makes a handler WAIT -- ``_library_lock`` queues the Library
+    operations, and the upload spool holds ``_handle_drive_upload`` for as long
+    as a 512 MB transfer takes -- and the wait sits between the checks
+    ``_require_drive`` ran and the AWS call they authorized. In that gap the app
+    can be disabled, the profile can be repointed at another account, consent
+    can be withdrawn, publish governance can start denying, or the drive tags
+    can move to a different bucket -- and the call would then run on an
     authorization that no longer holds.
 
-    Exactly the gap ``_handle_drive_upload`` already re-checks after its spool,
-    and in the same order and for the same reason: app, then IDENTITY, then
-    consent. Consent is asked ABOUT a profile and region, so verifying it against
-    a stale pair proves nothing about where the bytes are going -- the identity
-    has to be re-resolved first, and must still be the triple the request was
-    authorized for.
+    The order is deliberate: app, then IDENTITY, then consent. Consent is asked
+    ABOUT a profile and region, so verifying it against a stale pair proves
+    nothing about where the bytes are going -- the identity has to be
+    re-resolved first, and must still be the triple the request was authorized
+    for.
 
     The BUCKET is re-resolved too, which the identity check does not cover: tag
     discovery can return a different bucket while the identity is unchanged. This

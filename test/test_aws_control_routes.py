@@ -613,6 +613,112 @@ class TestDriveUpload:
         assert resp.status == 200
         put.assert_called_once()
 
+    def test_a_drive_retag_during_the_spool_refuses_the_write(self):
+        # The drive bucket is tag-discovered, and a 512 MB spool is long enough
+        # for the tags to move to a DIFFERENT bucket while the identity triple
+        # stays the same. A name resolved before the spool is exactly the
+        # staleness the module's no-cache rule forbids, so the post-spool
+        # re-authorization re-resolves the drive and refuses on a mismatch --
+        # otherwise put_file would land the object in the previously-discovered
+        # bucket.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request(
+            "POST",
+            f"/drive/{ACCOUNT}/upload?section=drive&key=f.bin",
+            match_info={"account": ACCOUNT},
+        )
+        req._fake_content = _FakeContent([b"hello"])  # type: ignore[attr-defined]
+        with (
+            mock.patch.object(type(req), "content", new=property(lambda s: s._fake_content)),
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            mock.patch.object(
+                routes_mod.storage_mod,
+                "find_drive",
+                side_effect=["drive-before", "drive-after"],
+            ),
+            mock.patch.object(routes_mod, "_audit") as audit,
+            mock.patch.object(routes_mod.storage_mod, "put_file") as put,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/upload")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "drive_changed"
+        # The decisive assertions: nothing was written, and the denial is a
+        # permission DECISION so it must reach the audit trail.
+        put.assert_not_called()
+        audit.assert_any_call("drive_upload", mock.ANY, "denied", error="drive_changed")
+
+    def test_the_put_targets_the_bucket_the_post_spool_discovery_returned(self):
+        # A pass through the re-authorization means the pre-spool name and the
+        # post-spool resolution AGREE, so the put's target is the post-wait
+        # answer, never a name only the pre-spool lookup vouched for. The second
+        # find_drive call is that re-resolve; without it the equality was never
+        # checked and the write trusts a stale name.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request(
+            "POST",
+            f"/drive/{ACCOUNT}/upload?section=drive&key=f.bin",
+            match_info={"account": ACCOUNT},
+        )
+        req._fake_content = _FakeContent([b"hello"])  # type: ignore[attr-defined]
+        with (
+            mock.patch.object(type(req), "content", new=property(lambda s: s._fake_content)),
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            mock.patch.object(
+                routes_mod.storage_mod, "find_drive", return_value="drive-stable"
+            ) as find,
+            mock.patch.object(routes_mod.storage_mod, "put_file") as put,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/upload")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 200
+        assert find.call_count == 2
+        put.assert_called_once()
+        assert put.call_args.args[2] == "drive-stable"
+
+    def test_consent_withdrawn_during_the_spool_refuses_the_write(self):
+        # Way-in consent PASSES and the withdrawal lands during the spool, so
+        # the refusal can only come from the post-spool re-check. The blanket
+        # always-deny variant cannot tell the two gates apart: it refuses on
+        # the way in and never reaches the spool.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request(
+            "POST",
+            f"/drive/{ACCOUNT}/upload?section=drive&key=f.bin",
+            match_info={"account": ACCOUNT},
+        )
+        req._fake_content = _FakeContent([b"hello"])  # type: ignore[attr-defined]
+        with (
+            mock.patch.object(type(req), "content", new=property(lambda s: s._fake_content)),
+            p1,
+            p2,
+            p3,
+            mock.patch.object(
+                routes_mod.aws_consent,
+                "refuse_and_log",
+                AsyncMock(side_effect=[True, False]),
+            ),
+            _drive_found(),
+            mock.patch.object(routes_mod.storage_mod, "put_file") as put,
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/drive/{account}/upload")](req)  # type: ignore[operator]
+            )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "aws_consent_required"
+        put.assert_not_called()
+
     def test_empty_upload_is_refused_and_never_put(self):
         resp, put = self._run([])
         assert resp.status == 400
