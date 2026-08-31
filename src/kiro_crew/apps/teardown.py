@@ -554,12 +554,15 @@ def forget_app_hooks(app: str) -> None:
     of for an app that no longer exists. Dropping the entry restores the
     no-hook-registered path, which returns True and lets the close proceed.
 
-    DISABLE deliberately does not call this. A disabled app can be switched back
-    on, and the registries are re-populated from each app's own watchdog rather
-    than at boot; clearing them on disable would rely on that watchdog having run
-    again before the next dismissal, which is a race this has no need to take.
-    Uninstall is terminal -- nothing re-registers behind it -- which is the same
-    reason the notification-channel unregistration sits on that path alone.
+    DISABLE deliberately does not call this, and the asymmetry with the
+    notification channels next to it is the reason rather than an oversight:
+    those ARE unregistered on both paths, because the gateway's own enable
+    pipeline puts them back. These registries are not gateway-owned. They are
+    repopulated only from each app's own watchdog -- ``register_app_disable_hook``
+    says so -- so clearing them on disable would leave a window after a re-enable,
+    before that watchdog next runs, in which a dismissal quietly fails to reach a
+    worker that is live again. Uninstall has no such window: nothing re-registers
+    behind it.
     """
     unregister_app_disable_hook(app)
     unregister_slot_close_hook(app)
