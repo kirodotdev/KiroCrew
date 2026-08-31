@@ -343,7 +343,7 @@ def _write_unit_via_sudo(contents: str) -> subprocess.CompletedProcess[str]:
     """
     fd, tmp_path = tempfile.mkstemp(prefix="kirocrew-unit-", suffix=".service")
     try:
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(contents)
         return subprocess.run(
             [
@@ -377,7 +377,7 @@ def _install_file_via_sudo(contents: str, dest: Path, mode: str = "0644") -> Non
     """
     fd, tmp_path = tempfile.mkstemp(prefix="kirocrew-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(contents)
         res = _sudo_run("install", "-m", mode, "-o", "root", "-g", "root", tmp_path, str(dest))
         if res.returncode != 0:
