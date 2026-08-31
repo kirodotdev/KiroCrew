@@ -454,6 +454,12 @@ jobs:
 
   backend-lint:
     name: Backend Lint & Type Check
+    needs: [changes]
+    # black/flake8/isort/mypy read no file under website/, so a frontend-only
+    # diff cannot change this verdict. Gated on only_frontend (not on a
+    # positive "python changed" allowlist) so that anything the selector could
+    # not classify as frontend -- docs, a new root file, meta -- still runs it.
+    if: needs.changes.outputs.only_frontend != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -702,7 +708,6 @@ jobs:
   # run the same tests measurably slower.
   backend-test-windows:
     name: Backend Tests (Windows)
-    needs: [changes]
     runs-on: windows-latest
     # windows-latest runs the same shards measurably slower than POSIX.
     timeout-minutes: 40
@@ -739,29 +744,14 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
-      - name: Select test scope
-        id: scope
-        # bash (Git Bash on windows-latest), not pwsh -- same reason as the test
-        # step below. Mirrors the POSIX backend-test selector exactly.
-        shell: bash
-        env:
-          ONLY_FRONTEND: ${{ needs.changes.outputs.only_frontend }}
-          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
-        run: |
-          if [ "$ONLY_FRONTEND" != "true" ]; then
-            echo "reduced=false" >> "$GITHUB_OUTPUT"
-            echo "Full backend suite (diff is not frontend-only)."
-            exit 0
-          fi
-          rc=0
-          python3 scripts/ci-surface-tests.py --surface backend --summary > "$TARGETS_FILE" || rc=$?
-          if [ "$rc" != "0" ] || [ ! -s "$TARGETS_FILE" ]; then
-            echo "::warning::surface selector unusable (rc=$rc) -- running the FULL backend suite."
-            echo "reduced=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "reduced=true" >> "$GITHUB_OUTPUT"
-          echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
+      # No surface selector here, unlike the POSIX backend-test job. Narrowing
+      # this job to the cross-surface subset on a frontend-only diff was
+      # measured as a PESSIMISATION: 4 shards x ~18 min = 70 job-min for the
+      # subset, against 62-67 job-min for the whole suite (runs 33412618648 vs
+      # 33406565382). `-n auto` already saturates each runner, so a smaller
+      # file list does not shorten a shard, and the cross-surface files are not
+      # the cheap ones. Running everything is both cheaper and strictly more
+      # coverage, so there is nothing to select.
 
       - name: Run tests (Windows shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
         # bash (Git Bash on windows-latest), not pwsh: the invocation shares
@@ -792,18 +782,7 @@ jobs:
         # is red either way, and a named red in 12 minutes beats an
         # uninterpretable one at the 40-minute cap.
         shell: bash
-        env:
-          REDUCED: ${{ steps.scope.outputs.reduced }}
-          TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
-          if [ "$REDUCED" = "true" ]; then
-            TARGETS=()
-            while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
-            pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
-              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
-              "${TARGETS[@]}"
-            exit 0
-          fi
           pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
@@ -1276,6 +1255,11 @@ jobs:
 
   frontend-lint:
     name: Frontend Lint & Type Check
+    needs: [changes]
+    # eslint/tsc/i18n over website/** only; a backend-only diff leaves every
+    # input byte-identical. only_backend is the catch-all side of the same
+    # decision, so an unclassifiable path still runs this.
+    if: needs.changes.outputs.only_backend != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1444,6 +1428,9 @@ jobs:
   # class, and without a job on the floor nothing would notice.
   lockfile-engines-floor:
     name: Lockfile Installs On Declared Node Floor
+    needs: [changes]
+    # Reads website/package.json + website/package-lock.json and nothing else.
+    if: needs.changes.outputs.only_backend != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1489,6 +1476,10 @@ jobs:
 
   cfn-lint:
     name: CloudFormation Lint
+    needs: [changes]
+    # The templates it lints live under src/kiro_crew/deploy/, which the
+    # paths-filter counts as backend, so a frontend-only diff cannot touch one.
+    if: needs.changes.outputs.only_frontend != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1516,6 +1507,14 @@ jobs:
   # shipped DMG. That is not hypothetical: the missing macOS microphone
   # entitlement reached users this way. This job is deliberately tiny and fast —
   # pure unit tests, no Electron binary download, no packaging.
+  # NOT diff-gated, deliberately. The obvious gate (only_backend != 'true')
+  # is wrong: test/packaging.test.js pins the macOS entitlement contract
+  # against BOTH signing lanes, and one of them is
+  # packaging/signing/Entitlements.entitlements -- outside website/, so the
+  # paths-filter counts it as backend. A packaging-only diff would therefore
+  # skip the job whose absence already shipped a broken bundle once (the
+  # missing microphone entitlement above). Same for the
+  # packaging/installer-assets/* references it pins.
   electron-test:
     name: Electron Shell Tests
     runs-on: ubuntu-latest

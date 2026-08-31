@@ -7,6 +7,14 @@ on:
 permissions:
   contents: read
 
+# Five jobs fire per event, on `edited` as well as `synchronize`, so without a
+# group a push burst leaves every superseded revision's jobs running to
+# completion. Matches the sibling reviewers (codex-review, pr-scope,
+# cross-platform), which all key on the PR number and cancel.
+concurrency:
+  group: code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   autosde-rules:
     name: Automated Rule Check
