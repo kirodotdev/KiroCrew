@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
@@ -1815,7 +1816,11 @@ class ContextBuilder:
             self._bot_name = bot_name
         else:
             cfg = KiroCrewConfig.load()
-            self._bot_name = "KiroCrew" if cfg.agent.provider == "claude_code" else "Kiro"
+            provider = cfg.agent.provider
+            # The joined spelling is the {bot_name} value the prompt
+            # substitutes, not prose about the product: respelling it would
+            # change what the model is told to answer to.
+            self._bot_name = "KiroCrew" if is_claude_code(provider) else "Kiro"  # brand-ok
         # Register default memory in the workspace cache
         _memory_stores["default"] = self.memory
 
@@ -2118,7 +2123,7 @@ class ContextBuilder:
         deployment's effective window), leaving that path byte-for-byte
         unchanged.
 
-        All providers — including ``provider_type="claude_code"`` — receive the
+        All providers — including Claude Code — receive the
         same injected context (critical rules, thread history, memory, skills,
         lessons); steering files are the one exception (see below). This keeps
         Claude Code at parity with kiro so dashboard/Slack UI contracts (diff
@@ -2127,7 +2132,7 @@ class ContextBuilder:
 
         *provider_type* is consumed again for the steering gate only: the
         steering block below is injected solely on the CC backend
-        (``provider_type == "claude_code"``). kiro-cli loads an agent's
+        (``is_claude_code(provider_type)``). kiro-cli loads an agent's
         ``resources`` natively when spawned with ``--agent`` (acp/client.py
         ``_spawn``), so re-injecting steering on the ACP/kiro backend would
         duplicate what kiro already loaded; the CC backend (claude-agent-acp)
@@ -2151,7 +2156,7 @@ class ContextBuilder:
         and hooks are injected for all agents.
         """
         is_custom = agent and agent != "kirocrew"
-        is_cc = provider_type == "claude_code"
+        is_cc = is_claude_code(provider_type)
         caps = _resolve_caps(model_window)
         parts: list[str] = []
 
@@ -2664,7 +2669,7 @@ class ContextBuilder:
         # Set together with the user's text part when user_text_range is given.
         _user_bounds: tuple[int, int] | None = None
         _user_part_index: int | None = None
-        is_cc = provider_type == "claude_code"
+        is_cc = is_claude_code(provider_type)
 
         # Session context on first message only
         if is_new_session:

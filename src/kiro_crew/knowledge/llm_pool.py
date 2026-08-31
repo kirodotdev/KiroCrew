@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.paths import config_dir
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.sandbox import (
@@ -662,7 +663,7 @@ class LLMPool:
 
     async def _create_worker(self) -> Worker:
         """Create and start a new worker based on provider type."""
-        if self._provider_type == "claude_code":
+        if is_claude_code(self._provider_type):
             worker: Worker = CCWorker()
         else:
             worker = AcpWorker(

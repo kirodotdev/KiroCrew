@@ -98,6 +98,26 @@ def test_the_forbidden_roots_include_the_re_export_channel(gate):
     assert "kiro_crew.providers" in gate.FORBIDDEN_ROOTS
 
 
+def test_the_baseline_header_comes_from_the_generator(gate):
+    """The committed baseline must start with the generator's own HEADER.
+
+    ``_write_baseline`` writes ``HEADER + body``, so the script is the source of
+    truth for that prose and the committed file is only its output. Editing the
+    file directly looks like it works and then silently reverts the moment
+    anyone runs ``--update-baseline`` -- which is exactly how the "floor, not a
+    countdown" rationale was lost once already.
+
+    Keeping them equal is what lets a reader trust the committed header: it is
+    the text every future refresh will reproduce.
+    """
+    committed = BASELINE.read_text(encoding="utf-8")
+    assert committed.startswith(gate.HEADER), (
+        "the committed baseline does not begin with scripts/"
+        "check_agent_sdk_boundary.py's HEADER -- put the prose in HEADER and "
+        "regenerate with --update-baseline, rather than editing the artifact"
+    )
+
+
 def test_every_recorded_violation_still_exists(gate):
     """A paid-off entry must be pruned; a stale baseline stops shrinking."""
     baseline = gate._read_baseline(BASELINE)

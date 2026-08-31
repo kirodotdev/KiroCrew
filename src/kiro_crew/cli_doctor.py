@@ -34,6 +34,7 @@ from kiro_crew.agent_discovery import (
     project_agent_files,
     project_agent_name,
 )
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig
@@ -421,7 +422,7 @@ def _agent_spec_model_problems(
     """
     # The retained claude_code seam accepts its own registered wire ids. The
     # correction below is specifically an ACP/kiro-cli spelling audit.
-    if provider == "claude_code":
+    if is_claude_code(provider):
         return []
 
     problems: list[tuple[str, str, str]] = []

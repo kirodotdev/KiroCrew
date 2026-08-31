@@ -1074,7 +1074,7 @@ class SessionAllocationService:
                             owner._session_map.set(
                                 key,
                                 session.provider.session_id,
-                                provider="claude_code",
+                                provider=constants.provider_label_claude,
                                 cwd=session.provider.cwd,
                             )
                         # The semaphore may be held for a full turn; claim it
@@ -1373,7 +1373,7 @@ class SessionAllocationService:
                             owner._session_map.set(
                                 key,
                                 sid,
-                                provider="claude_code",
+                                provider=constants.provider_label_claude,
                                 cwd=provider_cwd,
                             )
 

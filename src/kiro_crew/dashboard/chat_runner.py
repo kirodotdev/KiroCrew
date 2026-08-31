@@ -39,6 +39,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
 )
 from kiro_crew.agent_discovery import warm_project_agent_names
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -802,7 +803,7 @@ def _backfill_canonical_model(client: Any, provider: str) -> str:
     prov_model = getattr(getattr(client, "client", None), "_model", "") or ""
     if not (isinstance(prov_model, str) and prov_model and prov_model != "auto"):
         return ""
-    if provider != "claude_code" and _is_bedrock_profile_id(prov_model):
+    if not is_claude_code(provider) and _is_bedrock_profile_id(prov_model):
         return ""
     return model_registry.canonicalize_for_provider(prov_model, provider)
 
@@ -832,7 +833,7 @@ def _pinned_model_withheld(client: Any, model: str, provider: str) -> bool:
     (or a provider with no getter) leaves the pin alone: entitlement unknown is
     not entitlement denied.
     """
-    if not model or model == "auto" or provider == "claude_code":
+    if not model or model == "auto" or is_claude_code(provider):
         return False
     if getattr(client, "is_claude_backend", False):
         return False
@@ -5006,7 +5007,7 @@ async def _run_chat(
 
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
-    _is_cc_provider = KiroCrewConfig.load().agent.provider == "claude_code"
+    _is_cc_provider = is_claude_code(KiroCrewConfig.load().agent.provider)
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving this whole function: a macro
     # must NOT be forwarded to the harness as a command.

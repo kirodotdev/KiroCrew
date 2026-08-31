@@ -100,8 +100,9 @@ DEFAULT_TARGETS = ("src",)
 # Import targets application code may not reach.
 FORBIDDEN_ROOTS = ("kiro_crew.acp", "kiro_crew.providers")
 
-# Source trees that ARE the boundary. providers/ is temporary -- it goes when the
-# package is deleted in the RFC's final phase.
+# Source trees that ARE the boundary: the SDK plus the two packages it is built
+# on. All three stay. ACP is the SDK's foundation rather than an implementation
+# detail being sealed off, so providers/ is not scheduled for deletion.
 EXEMPT_PREFIXES = (
     "src/kiro_crew/agent_sdk/",
     "src/kiro_crew/acp/",
@@ -117,9 +118,17 @@ HEADER = """\
 # a consumer look migrated while still reading the backend's own types.
 #
 # The gate requires every OTHER file under src/ to be clean and none of these
-# counts to grow, so this list can only shrink. There is no inline opt-out
-# marker: "this consumer legitimately needs ACP" is the claim the boundary
-# refuses, so the baseline is the only exemption mechanism.
+# counts to grow, so the list can shrink but never grow.
+#
+# It is a floor, not a countdown to zero. Most of these consumers are expected
+# to keep reading ACP directly: ACP is the foundation the SDK is built on, not
+# a layer being hidden behind it. What the gate buys is that the dependency
+# cannot SPREAD into a file that is clean today -- which is what makes it safe
+# to consolidate provider-specific logic gradually instead of in one sweep.
+#
+# There is no inline opt-out marker: "this consumer legitimately needs ACP" is
+# the claim the boundary refuses, so the baseline is the only exemption
+# mechanism.
 #
 # Do NOT add or raise a line to make a red gate green -- route the dependency
 # through kiro_crew.agent_sdk instead. Design of record:

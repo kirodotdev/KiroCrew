@@ -146,6 +146,7 @@ class SessionLifecycleConstants:
     drain_active_turns_timeout_secs: float
     unbind_reason_session_destroyed: str
     first_turn_nothing_armed: object
+    provider_label_claude: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -889,7 +890,7 @@ class SessionLifecycleService:
                         owner._session_map.set(
                             key,
                             sid,
-                            provider="claude_code",
+                            provider=constants.provider_label_claude,
                             cwd=cwd_str,
                         )
 

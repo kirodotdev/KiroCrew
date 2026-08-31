@@ -25,6 +25,7 @@ from kiro_crew import members as members_mod
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -4364,7 +4365,7 @@ def _model_rejected_reason(model_name: str, provider: str | None = None) -> str 
             provider = KiroCrewConfig.load().agent.provider
         except Exception:  # pragma: no cover - config load is resilient
             provider = ""
-    if provider == "claude_code":
+    if is_claude_code(provider):
         return None
     if model_registry.is_canonical_key(model_name):
         return (

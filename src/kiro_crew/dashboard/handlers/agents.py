@@ -36,6 +36,7 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
+from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.apps.bridges import _mcp_lock as _agent_file_lock
 from kiro_crew.apps.bridges import _registration_source
 from kiro_crew.apps.manager import (
@@ -2003,7 +2004,7 @@ async def api_effort_levels(request: web.Request) -> web.Response:
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
-    if cfg.agent.provider == "claude_code":
+    if is_claude_code(cfg.agent.provider):
         state: DashboardState = request.app["state"]
         cc_commands: list[str] = []
         for provider in state.sessions.active_providers():
@@ -2617,7 +2618,7 @@ def _model_pin_rejected(model: str, request: web.Request, provider: str) -> str 
     # intentionally map away from. Its entitlement guard lives in its own
     # provider path, where full configured ids and bare advertised ids can be
     # canonicalized before comparison.
-    if provider == "claude_code":
+    if is_claude_code(provider):
         return None
 
     # The registry knows each model under several spellings and only one is what
