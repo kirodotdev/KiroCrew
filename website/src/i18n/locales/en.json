@@ -3683,8 +3683,7 @@
         "library_add_one": "Add to Library",
         "folder_open": "Open folder {{name}}",
         "library_adding": "Adding…",
-        "library_remove_hint": "Removing a copy from the cloud is not available here yet. “Where this lives” below shows where these copies are kept.",
-        "library_add_oneway": "Copies here fill cloud storage, and removing one is not available in the app yet.",
+        "library_add_oneway": "Copies here fill cloud storage.",
         "library_add_again": "Add again",
         "library_add_count": "Add from Artifacts ({{count}} ready)",
         "library_add_nothing": "Nothing left to add — everything that can be is already here.",
@@ -3705,7 +3704,9 @@
         "library_added": "Added {{when}}",
         "library_open": "Open {{name}} in Artifacts",
         "files_empty_title": "Files is empty",
-        "files_empty_body": "This folder holds files you upload from your computer. It is separate from Library, which holds things Kiro made for you."
+        "files_empty_body": "This folder holds files you upload from your computer. It is separate from Library, which holds things Kiro made for you.",
+        "library_remove": "Remove",
+        "library_remove_confirm": "Remove “{{name}}” from the cloud library?"
       },
       "page": {
         "title": "AWS Control",

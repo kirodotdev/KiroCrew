@@ -233,11 +233,16 @@ nightly toggle, and staged restore.
 Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, profile
 registration, library push, library removal, share creation, and backup
 mutations have no separate confirmation request; the dashboard separately
-confirms object and folder deletion. Library removal is API-level only in this
-change — it has no dashboard caller yet, so no UI confirm exists for it; the
-companion frontend is expected to gate it the way object and folder deletion are
-gated. Every mutation is owner-gated, restricted-session refused, and
-SEL-audited. Account-targeted AWS operations additionally enforce live identity
-and service consent, and egress paths enforce publish governance. Library removal
-is deliberately outside that egress set: it sends no bytes out, so a profile that
-denies publishing can still empty a bucket it is paying for.
+confirms object deletion, folder deletion, and library removal. Library removal
+is gated the way folder deletion is: the picker's per-card Remove control reveals
+an inline Cancel-plus-danger strip naming the artifact, and that strip stays open
+until the request resolves, so a failed delete renders on the card instead of
+vanishing with the confirm. The strip also names the `artifacts/<slug>/` bucket
+folder the sweep will empty, because the ledger that reveals the control is keyed
+by slug alone: a reused slug can point the delete at a different artifact's cloud
+copy, and the bucket prefix is the only identity a reader can cross-check in the
+S3 console. Every mutation is owner-gated, restricted-session
+refused, and SEL-audited. Account-targeted AWS operations additionally enforce
+live identity and service consent, and egress paths enforce publish governance.
+Library removal is deliberately outside that egress set: it sends no bytes out,
+so a profile that denies publishing can still empty a bucket it is paying for.

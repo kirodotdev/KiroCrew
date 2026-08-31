@@ -75,6 +75,11 @@
     }
   },
   "apps": {
+    "awsControl": {
+      "console": {
+        "library_remove_confirm_slug": "This empties the cloud folder <folder>{{folder}}</folder>."
+      }
+    },
     "meetings": {
       "transcript": {
         "empty": "No transcript yet",

@@ -4706,8 +4706,7 @@
         "library_add_one": "‘라이브러리’에 추가",
         "folder_open": "{{name}} 폴더 열기",
         "library_adding": "추가 중…",
-        "library_remove_hint": "아직 여기에서 클라우드 사본을 지울 수 없습니다. 이 사본들이 어디에 보관되는지는 ‘저장 위치’에 표시됩니다.",
-        "library_add_oneway": "여기에 만든 사본은 클라우드 용량을 사용하며, 삭제는 아직 앱에서 지원되지 않습니다.",
+        "library_add_oneway": "여기에 만든 사본은 클라우드 용량을 사용합니다.",
         "library_add_again": "다시 추가",
         "library_add_count": "아티팩트에서 추가({{count}}개 준비됨)",
         "library_add_nothing": "추가할 것이 더 없습니다.",
@@ -4728,7 +4727,10 @@
         "library_added": "{{when}} 추가됨",
         "library_open": "아티팩트에서 {{name}} 열기",
         "files_empty_title": "‘파일’이 비어 있습니다",
-        "files_empty_body": "이 폴더에는 컴퓨터에서 업로드한 파일이 있습니다. Kiro가 만들어 준 항목이 있는 ‘라이브러리’와는 별개입니다."
+        "files_empty_body": "이 폴더에는 컴퓨터에서 업로드한 파일이 있습니다. Kiro가 만들어 준 항목이 있는 ‘라이브러리’와는 별개입니다.",
+        "library_remove": "제거",
+        "library_remove_confirm": "‘{{name}}’을(를) 클라우드 라이브러리에서 제거하시겠습니까?",
+        "library_remove_confirm_slug": "이 작업은 클라우드 폴더 <folder>{{folder}}</folder>를 비웁니다."
       },
       "page": {
         "title": "AWS Control",

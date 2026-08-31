@@ -4866,8 +4866,7 @@
         "library_add_one": "Añadir a Biblioteca",
         "folder_open": "Abrir la carpeta {{name}}",
         "library_adding": "Añadiendo…",
-        "library_remove_hint": "Quitar una copia de la nube todavía no está disponible aquí. En “Dónde está esto” verás dónde se guardan estas copias.",
-        "library_add_oneway": "Las copias ocupan almacenamiento en la nube y quitarlas todavía no está disponible en la app.",
+        "library_add_oneway": "Las copias ocupan almacenamiento en la nube.",
         "library_add_again": "Añadir de nuevo",
         "library_add_count": "Añadir desde Artefactos ({{count}} listos)",
         "library_add_nothing": "No queda nada por añadir: todo lo que puede estar ya está aquí.",
@@ -4888,7 +4887,10 @@
         "library_added": "Añadido {{when}}",
         "library_open": "Abrir {{name}} en Artefactos",
         "files_empty_title": "Archivos está vacío",
-        "files_empty_body": "Esta carpeta contiene archivos que subes desde tu equipo. Está separada de Biblioteca, que contiene las cosas que Kiro creó para ti."
+        "files_empty_body": "Esta carpeta contiene archivos que subes desde tu equipo. Está separada de Biblioteca, que contiene las cosas que Kiro creó para ti.",
+        "library_remove": "Quitar",
+        "library_remove_confirm": "¿Quitar “{{name}}” de la biblioteca en la nube?",
+        "library_remove_confirm_slug": "Esto vacía la carpeta en la nube <folder>{{folder}}</folder>."
       },
       "page": {
         "title": "AWS Control",

@@ -4866,8 +4866,7 @@
         "library_add_one": "Ajouter à la Bibliothèque",
         "folder_open": "Ouvrir le dossier {{name}}",
         "library_adding": "Ajout…",
-        "library_remove_hint": "Retirer une copie du cloud n’est pas encore possible ici. «Où cela réside» indique où ces copies sont conservées.",
-        "library_add_oneway": "Les copies occupent du stockage cloud, et leur suppression n’est pas encore possible dans l’application.",
+        "library_add_oneway": "Les copies occupent du stockage cloud.",
         "library_add_again": "Ajouter de nouveau",
         "library_add_count": "Ajouter depuis les artefacts ({{count}} prêts)",
         "library_add_nothing": "Plus rien à ajouter : tout ce qui peut y être est déjà là.",
@@ -4888,7 +4887,10 @@
         "library_added": "Ajouté {{when}}",
         "library_open": "Ouvrir {{name}} dans Artefacts",
         "files_empty_title": "Fichiers est vide",
-        "files_empty_body": "Ce dossier contient les fichiers que vous importez depuis votre ordinateur. Il est distinct de Bibliothèque, qui contient les éléments créés par Kiro pour vous."
+        "files_empty_body": "Ce dossier contient les fichiers que vous importez depuis votre ordinateur. Il est distinct de Bibliothèque, qui contient les éléments créés par Kiro pour vous.",
+        "library_remove": "Retirer",
+        "library_remove_confirm": "Retirer « {{name}} » de la bibliothèque cloud ?",
+        "library_remove_confirm_slug": "Cela vide le dossier cloud <folder>{{folder}}</folder>."
       },
       "page": {
         "title": "AWS Control",

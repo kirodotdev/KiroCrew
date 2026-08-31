@@ -4706,8 +4706,7 @@
         "library_add_one": "添加到“产物库”",
         "folder_open": "打开文件夹 {{name}}",
         "library_adding": "正在添加…",
-        "library_remove_hint": "目前还不能在这里从云端删除副本。“存放位置”里会显示这些副本保存在哪里。",
-        "library_add_oneway": "这里的副本会占用云端存储，而应用内还不能删除。",
+        "library_add_oneway": "这里的副本会占用云端存储。",
         "library_add_again": "再添加一次",
         "library_add_count": "从制品添加（{{count}} 个可用）",
         "library_add_nothing": "没有可添加的了 - 能添加的都已经在这里。",
@@ -4728,7 +4727,10 @@
         "library_added": "{{when}} 添加",
         "library_open": "在产物中打开 {{name}}",
         "files_empty_title": "“文件”为空",
-        "files_empty_body": "此文件夹存放你从电脑上传的文件。它与“库”是分开的，“库”存放 Kiro 为你生成的内容。"
+        "files_empty_body": "此文件夹存放你从电脑上传的文件。它与“库”是分开的，“库”存放 Kiro 为你生成的内容。",
+        "library_remove": "移除",
+        "library_remove_confirm": "从云端库中移除“{{name}}”？",
+        "library_remove_confirm_slug": "此操作会清空云端文件夹 <folder>{{folder}}</folder>。"
       },
       "page": {
         "title": "AWS Control",

@@ -4706,8 +4706,7 @@
         "library_add_one": "「ライブラリー」に追加",
         "folder_open": "フォルダー {{name}} を開く",
         "library_adding": "追加中…",
-        "library_remove_hint": "クラウドからの削除はまだここからできません。これらのコピーの保存先は「保存場所」に表示されます。",
-        "library_add_oneway": "ここのコピーはクラウドの容量を使います。削除はまだアプリ内ではできません。",
+        "library_add_oneway": "ここのコピーはクラウドの容量を使います。",
         "library_add_again": "もう一度追加",
         "library_add_count": "アーティファクトから追加（{{count}} 件が利用可能）",
         "library_add_nothing": "追加できるものはもうありません。",
@@ -4728,7 +4727,10 @@
         "library_added": "{{when}} に追加",
         "library_open": "アーティファクトで {{name}} を開く",
         "files_empty_title": "「ファイル」は空です",
-        "files_empty_body": "このフォルダーには、コンピューターからアップロードしたファイルが入ります。Kiro が作成したものが入る「ライブラリ」とは別です。"
+        "files_empty_body": "このフォルダーには、コンピューターからアップロードしたファイルが入ります。Kiro が作成したものが入る「ライブラリ」とは別です。",
+        "library_remove": "削除",
+        "library_remove_confirm": "「{{name}}」をクラウドライブラリから削除しますか？",
+        "library_remove_confirm_slug": "これによりクラウドフォルダー <folder>{{folder}}</folder> が空になります。"
       },
       "page": {
         "title": "AWS Control",
