@@ -356,7 +356,11 @@ class TestResolveMcpServer:
             {"name": "kirocrew", "mcpServers": {"srv-hr": {"command": "c", "args": ["a"]}}},
         )
 
-        assert _resolve_mcp_server("srv-hr") == ("c", "a")
+        # #2602 made the resolver return the argv AND the server's own env block,
+        # so unpack the pair rather than comparing against the old bare argv.
+        argv, env = _resolve_mcp_server("srv-hr")
+        assert argv == ("c", "a")
+        assert env == {}, "a spec with no env block resolves to an empty env, not None"
 
     def test_malformed_spec_no_longer_escapes_as_a_decode_error(self, agents_dir_resolver):
         """The differential case for THIS site.
