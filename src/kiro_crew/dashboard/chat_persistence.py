@@ -20,6 +20,8 @@ from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import agent_model_map
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
+    AUTOCOMPACT_PCT_MAX,
+    AUTOCOMPACT_PCT_MIN,
     CHAT_ENTRY_CACHE_BYTES_DEFAULT,
     CHAT_ENTRY_CACHE_ENTRIES_DEFAULT,
     KiroCrewConfig,
@@ -217,6 +219,32 @@ def _validate_reasoning_effort(raw: object) -> str:
     if raw:
         logger.warning("Discarding invalid persisted reasoning_effort: %r", raw)
     return ""
+
+
+def _validate_autocompact_pct(raw: object) -> float | None:
+    """Return *raw* as a threshold percent within the documented range, else None.
+
+    Restore-path twin of the endpoint validation: a tampered or corrupted
+    metadata file must not seed an override that can never fire (over the max)
+    or that thrashes compaction (under the min). Out-of-range finite values
+    clamp — matching how the loader treats the global knob — while
+    non-numeric/NaN values are discarded.
+    """
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        try:
+            value = float(raw)
+        except OverflowError:
+            # An int too large for a float; a corrupted metadata file must not
+            # abort the restore path.
+            logger.warning("Discarding oversized persisted autocompact_pct")
+            return None
+        if value != value:  # NaN
+            logger.warning("Discarding NaN persisted autocompact_pct")
+            return None
+        return min(max(value, AUTOCOMPACT_PCT_MIN), AUTOCOMPACT_PCT_MAX)
+    if raw is not None:
+        logger.warning("Discarding invalid persisted autocompact_pct: %r", raw)
+    return None
 
 
 def save_all_slots_to_history(state: DashboardState) -> None:
@@ -902,6 +930,9 @@ def _rehydrate_slot_from_history(
         # recognize a file recreated by another writer after a permanent
         # delete (delete-won guard).
         slot._disk_meta_created_at = str(meta.get("created_at") or "")
+        # Legacy metadata has no ``created_at``: record the observation
+        # itself so the guard's missing-file witness still fires for it.
+        slot._disk_meta_observed = bool(meta)
         # Member keys keep the binding-derived agent/mode: transcript metadata
         # is the operator-editable file the pin must not re-derive from.
         if meta.get("agent") and _member_identity is None:
@@ -926,6 +957,8 @@ def _rehydrate_slot_from_history(
                 )
         if meta.get("reasoning_effort"):
             slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+        if meta.get("autocompact_pct") is not None:
+            slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
             slot.workspace = meta["workspace"]
         if meta.get("project"):
@@ -985,6 +1018,13 @@ def _rehydrate_slot_from_history(
             # Skipped, the slot would answer from a dashboard-only session and the
             # channel thread would stop seeing its replies.
             slot.linked_session_key = str(meta["linked_session_key"])
+        # Re-seed the live compaction threshold. The SessionManager's override
+        # map is process-local, so a rehydrated slot must push its persisted
+        # value back or the session silently compacts at the global threshold.
+        # After the link assignment above, so a channel-born slot seeds the
+        # session its turns actually run on.
+        if slot.autocompact_pct is not None and state.sessions:
+            state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
         # Restore the persisted tab_id so cross-restart fork chaining survives.
         # get_or_create_slot (called by our caller) assigns a fresh random uuid to
         # slot._tab_id; if we don't overwrite it here, the next _flush_dirty_slots
@@ -1372,6 +1412,9 @@ def _apply_recent_session(
     # recognize a file recreated by another writer after a permanent delete
     # (delete-won guard).
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
+    # Legacy metadata has no ``created_at``: record the observation itself so
+    # the guard's missing-file witness still fires for it.
+    slot._disk_meta_observed = bool(meta)
     # Member keys keep the binding-derived agent/mode: transcript metadata is
     # the operator-editable file the pin must not re-derive from.
     if meta.get("agent") and _member_identity is None:
@@ -1393,6 +1436,8 @@ def _apply_recent_session(
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
     if meta.get("reasoning_effort"):
         slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+    if meta.get("autocompact_pct") is not None:
+        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
         slot.workspace = meta["workspace"]
     if meta.get("project"):
@@ -1458,6 +1503,9 @@ def _apply_recent_session(
         real_key = state.sessions.channel_key_for_stem(key)
         if real_key:
             slot.linked_session_key = real_key
+    # Re-seed the live compaction threshold (see _rehydrate_slot_from_history).
+    if slot.autocompact_pct is not None and state.sessions:
+        state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
     tab_id = meta.get("tab_id")
     if not tab_id:
         tab_id = uuid.uuid4().hex[:12]
@@ -2419,6 +2467,7 @@ def _save_slot_to_history(
     closed_at: float | None = None,
     force: bool = False,
     rewrite: bool = False,
+    expected_history_key: str | None = None,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
 
@@ -2510,6 +2559,20 @@ def _save_slot_to_history(
         history_key = slot_history_key(slot)
         if getattr(slot, "linked_session_key", "") == routing:
             break
+    if expected_history_key is not None and history_key != expected_history_key:
+        # The caller authorized a write against a specific transcript and the
+        # slot's routing moved before this snapshot (a rebind on the event
+        # loop wins any race with this worker). Writing would land the
+        # caller's mutation on a transcript it never authorized -- refuse the
+        # whole save instead, exactly like the delete-won guard: return False
+        # with nothing written, and let the caller roll back and re-decide.
+        logger.warning(
+            "Slot %s save refused: routing moved from %s to %s during the write",
+            slot.key,
+            expected_history_key,
+            history_key,
+        )
+        return False
     kept = [m for m in window if not _note_authorized_elsewhere(m.get("meta"), note_auth_key)]
     dropped_notes = len(window) - len(kept)
     window = kept
@@ -2597,6 +2660,11 @@ def _save_slot_to_history(
                     "color_theme": slot.color_theme or "",
                     "memory_mode": slot.memory_mode,
                     "model": slot.model,
+                    # None means "follow the global threshold" and is the
+                    # cleared value (rehydrate reads it with ``is not None``),
+                    # so the override is CLEARABLE: written even when None,
+                    # like the other clearable fields above.
+                    "autocompact_pct": slot.autocompact_pct,
                 }
                 if slot.title and slot.title != slot.key:
                     fields["title"] = slot.title
@@ -2770,7 +2838,13 @@ def _save_slot_to_history(
             # all-zero counters while its delete must still win against the
             # save of its first message.
             _known = slot._disk_meta_created_at
-            if _known:
+            # ``created_at`` is the identity, but legacy metadata carries none
+            # — the observation BIT is the evidence there, so a save racing a
+            # permanent delete cannot recreate a legacy transcript through the
+            # "no identity recorded" gap. The missing-file witness needs only
+            # the observation; the identity COMPARISON below still needs the
+            # recorded ``created_at``.
+            if _known or slot._disk_meta_observed:
                 try:
                     path.stat()
                 except FileNotFoundError:
@@ -2791,7 +2865,8 @@ def _save_slot_to_history(
                     # retries once the transient read failure clears, instead
                     # of the delete-won path discarding the content. A
                     # readable-but-absent ``created_at`` (legacy meta) fails
-                    # open to the pre-guard behavior.
+                    # open for an EXISTING file only — a missing file is the
+                    # legacy delete witness via the observation bit above.
                     if not _meta_readable:
                         raise OSError(
                             f"history metadata for {history_key} is transiently "
@@ -2799,7 +2874,14 @@ def _save_slot_to_history(
                             "before writing — save deferred for retry"
                         )
                     _current = str(existing_meta.get("created_at") or "")
-                    if _current and _current != _known:
+                    # Compare identities only when one was RECORDED: a legacy
+                    # observation (``_known`` empty) cannot distinguish "the
+                    # same legacy file, stamped with a ``created_at`` by a
+                    # sibling's save since" from "a fresh incarnation born
+                    # after a delete" — fail open for the existing file,
+                    # matching the documented legacy behavior above. The
+                    # missing-file witness is the legacy delete evidence.
+                    if _known and _current and _current != _known:
                         _delete_won = True
             if _delete_won:
                 # WARNING, with the slot key: for a slot the delete's cleanup
@@ -2869,6 +2951,9 @@ def _save_slot_to_history(
             meta_line["model"] = slot.model
             if slot.reasoning_effort:
                 meta_line["reasoning_effort"] = slot.reasoning_effort
+            # Unconditional, matching the empty-window merge mirror: None is
+            # the cleared "follow the global" value, not an absent field.
+            meta_line["autocompact_pct"] = slot.autocompact_pct
             if slot.mode:
                 meta_line["mode"] = slot.mode
             if slot.workspace and slot.workspace != "default":
@@ -3116,6 +3201,10 @@ def _save_slot_to_history(
             # preserves every other field, so ``created_at`` — the only field
             # this identity depends on — survives a rotation unchanged.
             slot._disk_meta_created_at = str(meta_line.get("created_at") or "")
+            # A committed save is a direct observation of the file this slot
+            # writes — even when the carried-forward metadata is legacy and
+            # has no ``created_at`` for the identity string above.
+            slot._disk_meta_observed = True
             # Enforce the session byte cap on THIS path too, against the FROZEN
             # PREFIX. ``_maybe_rotate`` used to have exactly one caller
             # (``ConversationLog.append``), so a transcript written only through
@@ -3225,7 +3314,9 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     ``_dirty``, after which those callers skip their own flush arm entirely and
     would copy from the in-memory window. This probe answers directly, however
     the flush ordering fell out. Same evidence rule: the slot must have
-    OBSERVED its file on disk (``_disk_meta_created_at`` non-empty — recorded
+    OBSERVED its file on disk (``_disk_meta_created_at`` non-empty, or the
+    ``_disk_meta_observed`` bit for legacy metadata that records no
+    ``created_at`` — both recorded
     at the hydrate sites and at committed saves, nowhere else), so a fresh
     slot is never "deleted". Witnesses, in order: a missing file
     (``FileNotFoundError``; any other ``stat`` failure also refuses — the
@@ -3252,7 +3343,11 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     # ``_resumed_count`` optimistically after a best-effort save that may have
     # failed, and a restored zero-message session has all-zero counters).
     known = str(getattr(slot, "_disk_meta_created_at", "") or "")
-    if not known:
+    # Same widening as the guard: legacy metadata records no ``created_at``,
+    # so the observation BIT carries the evidence there — the missing-file
+    # stat below is the legacy delete witness, while the identity comparison
+    # at the tail still requires the recorded ``known``.
+    if not known and not bool(getattr(slot, "_disk_meta_observed", False)):
         return False
     path_fn = getattr(state.conversation_log, "_path", None)
     if path_fn is None:
@@ -3308,7 +3403,10 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
             # Still there, so the empty ``created_at`` is a genuine legacy-
             # metadata answer, which fails OPEN by the documented rule.
             return False
-        if current != known:
+        # Compare identities only when one was RECORDED (same rule as the
+        # guard): a legacy observation cannot tell "the same legacy file,
+        # stamped since by a sibling's save" from a fresh incarnation.
+        if known and current != known:
             return True
     return False
 
@@ -3323,6 +3421,7 @@ async def save_slot_off_loop(
     force: bool = False,
     rewrite: bool = False,
     best_effort: bool = True,
+    expected_history_key: str | None = None,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
@@ -3350,9 +3449,17 @@ async def save_slot_off_loop(
     the session: the save still runs off-loop (patient acquire), but any
     exception propagates so the caller can roll back and keep the slot.
 
-    Returns ``False`` only when the save was skipped because the session was
-    permanently deleted while the save awaited the lock (the delete-won guard
-    in :func:`_save_slot_to_history`) — that skip raises nothing, for either
+    ``expected_history_key``: the transcript key the caller authorized its
+    mutation against. The save refuses (returns ``False``, nothing written)
+    when the slot's routing no longer resolves to that key at write time -- a
+    rebind on the event loop can land between the caller's authorization and
+    the worker's routing snapshot, and without this pin the durable write
+    would target a transcript the caller never authorized.
+
+    Returns ``False`` only when the save was skipped WITHOUT writing: the
+    session was permanently deleted while the save awaited the lock (the
+    delete-won guard in :func:`_save_slot_to_history`), or the routing moved
+    off ``expected_history_key``. Neither skip raises, for either
     ``best_effort`` mode, so a clean return NO LONGER proves a committed write.
     Callers that go on to republish the slot's content elsewhere (fork, the
     transfer export) must check the return; archival callers (close/cleanup)
@@ -3368,6 +3475,7 @@ async def save_slot_off_loop(
             closed_at=closed_at,
             force=force,
             rewrite=rewrite,
+            expected_history_key=expected_history_key,
         )
 
     try:

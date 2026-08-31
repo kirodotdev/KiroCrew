@@ -1406,6 +1406,23 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
         )
     except Exception:
         logger.warning("History delete: ledger sweep failed for %s", key, exc_info=True)
+    # The per-session compaction-threshold override dies with permanent
+    # deletion, and ``destroy()`` above only runs when a LIVE slot exists — a
+    # slotless delete of archived history would otherwise leave the override
+    # for a deterministic (channel) key to be silently inherited by a
+    # recreated session. Same fold-matching sweep as the ledger purge; safe to
+    # run unconditionally (the slot path's destroy already popped its entry).
+    try:
+        raw_candidates = set(pin_slot_keys) | {key}
+        dropped = state.sessions.drop_autocompact_overrides_matching(
+            raw_candidates | folded_keys,
+            {_normalize_slot_key(k) for k in raw_candidates} | folded_keys,
+            _normalize_slot_key,
+        )
+        if dropped:
+            logger.info("History delete: dropped %d autocompact override(s) for %s", dropped, key)
+    except Exception:
+        logger.warning("History delete: override sweep failed for %s", key, exc_info=True)
 
 
 async def api_sessions_clear(request: web.Request) -> web.Response:

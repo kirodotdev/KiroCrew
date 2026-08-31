@@ -1,8 +1,10 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { api } from '../api/client'
+import { SlotProvider } from '../providers/SlotContext'
 import type { PasteBlock } from '../utils/pasteTokens'
 
 // Collapsed-paste tokens are the composer's most intricate keyboard surface:
@@ -624,5 +626,154 @@ describe('ChatInput context-usage popover', () => {
   it('renders no context chip at all when the host reports no percentage', () => {
     renderWithProviders(<ChatInput {...base} />)
     expect(screen.queryByLabelText('Context usage')).toBeNull()
+  })
+
+  // ── per-session auto-compact threshold (slider section) ──────────────────
+  // The section fetches lazily on popover open, so each test mocks the GET
+  // and wraps ChatInput in a SlotProvider to give it a slot to fetch for.
+
+  const renderWithSlot = (ui: React.ReactElement) =>
+    renderWithProviders(<SlotProvider slotId="test-slot">{ui}</SlotProvider>)
+
+  it('shows the override value with a reset-to-global link when overridden', async () => {
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: 85, global_pct: 70, min: 5, max: 90 })
+    const post = vi.spyOn(api, 'setChatSlotAutocompact').mockResolvedValue({ ok: true, pct: null, global_pct: 70 })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('Auto-compact at')).toBeInTheDocument()
+    expect(screen.getByText('85%')).toBeInTheDocument()
+    // Clearing posts null for THIS slot (debounced, hence waitFor).
+    fireEvent.click(screen.getByText('Reset to global (70%)'))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('test-slot', null), { timeout: 1500 })
+  })
+
+  it('shows the global value and a following-global note when not overridden', async () => {
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: null, global_pct: 70, min: 5, max: 90 })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('Following global (70%)')).toBeInTheDocument()
+    expect(screen.getByText('70%')).toBeInTheDocument()
+    expect(screen.queryByText(/Reset to global/)).toBeNull()
+  })
+
+  it('explains a failed threshold fetch instead of silently omitting the section', async () => {
+    vi.spyOn(api, 'chatSlotAutocompact').mockRejectedValue(new Error('offline'))
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('Context window')).toBeInTheDocument()
+    await waitFor(() => expect(api.chatSlotAutocompact).toHaveBeenCalled())
+    expect(screen.queryByText('Auto-compact at')).toBeNull()
+    // The learned control must not vanish unexplained: a muted one-liner
+    // takes the section's place.
+    expect(await screen.findByText("Couldn't load the auto-compact setting")).toBeInTheDocument()
+  })
+
+  it('refetches the applied threshold when a write is rejected (no false cache)', async () => {
+    // Regression: a rejected POST used to leave the optimistic value cached,
+    // showing a threshold the session never applied.
+    const get = vi
+      .spyOn(api, 'chatSlotAutocompact')
+      .mockResolvedValue({ pct: 85, global_pct: 70, min: 5, max: 90 })
+    vi.spyOn(api, 'setChatSlotAutocompact').mockRejectedValue(new Error('rejected'))
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('85%')).toBeInTheDocument()
+    // Trigger a write via the reset link; the POST rejects.
+    fireEvent.click(screen.getByText('Reset to global (70%)'))
+    // onError invalidates the query -> a refetch restores server truth.
+    await waitFor(() => expect(get.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 2500 })
+    expect(await screen.findByText('85%')).toBeInTheDocument()
+  })
+
+  it('surfaces a rejected write as a visible notice, like the sibling slot settings', async () => {
+    // Regression (UX review): a failed POST used to snap the slider back with
+    // no explanation — and with the popover closed, no visible change at all,
+    // while the session kept compacting at the old threshold.
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: 85, global_pct: 70, min: 5, max: 90 })
+    vi.spyOn(api, 'setChatSlotAutocompact').mockRejectedValue(new Error('threshold rejected'))
+    const { store } = renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('85%')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Reset to global (70%)'))
+    await waitFor(() =>
+      expect(store.getState().chat.agentSwitchNotice?.message).toBe('threshold rejected'),
+    { timeout: 2500 })
+  })
+
+  it('flushes a pending debounced write on unmount instead of discarding it', async () => {
+    // Regression: the unmount cleanup cancelled the sole POST, so changing
+    // the slider and navigating away within 400ms silently kept the old
+    // threshold on the server.
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: 85, global_pct: 70, min: 5, max: 90 })
+    const post = vi.spyOn(api, 'setChatSlotAutocompact').mockResolvedValue({ ok: true, pct: null, global_pct: 70 })
+    post.mockClear()
+    const { unmount } = renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('85%')).toBeInTheDocument()
+    // Schedule the debounced write, then unmount before the 400ms timer fires.
+    fireEvent.click(screen.getByText('Reset to global (70%)'))
+    expect(post).not.toHaveBeenCalled()
+    unmount()
+    await waitFor(() => expect(post).toHaveBeenCalledWith('test-slot', null))
+  })
+
+  it('flushes a pending write for another slot when a new slot writes within the debounce window', async () => {
+    // Regression (GPT round 5): the debounce clearTimeout discarded a pending
+    // write unconditionally, so drag on session A -> switch to B -> drag on B
+    // within 400ms silently kept A's old threshold on the server. Debouncing
+    // must only supersede same-slot writes; a different slot's pending write
+    // is flushed immediately.
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: 85, global_pct: 70, min: 5, max: 90 })
+    const post = vi.spyOn(api, 'setChatSlotAutocompact').mockResolvedValue({ ok: true, pct: null, global_pct: 70 })
+    post.mockClear()
+    const { rerender } = renderWithProviders(
+      <SlotProvider slotId="slot-a"><ChatInput {...base} contextPct={42} contextWindowTokens={200_000} /></SlotProvider>,
+    )
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('85%')).toBeInTheDocument()
+    // Schedule a debounced write for slot-a, then switch the active slot
+    // before the 400ms timer fires.
+    fireEvent.click(screen.getByText('Reset to global (70%)'))
+    expect(post).not.toHaveBeenCalled()
+    rerender(
+      <SlotProvider slotId="slot-b"><ChatInput {...base} contextPct={42} contextWindowTokens={200_000} /></SlotProvider>,
+    )
+    // A write on slot-b inside the window must flush slot-a's pending write.
+    fireEvent.click(await screen.findByText('Reset to global (70%)'))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('slot-a', null))
+    // slot-b's own write still goes out on its debounce.
+    await waitFor(() => expect(post).toHaveBeenCalledWith('slot-b', null), { timeout: 1500 })
+  })
+
+  it('serializes concurrent writes so a delayed earlier POST cannot overwrite a newer value', async () => {
+    // Regression (GPT round 8): the debounced mutation, cross-slot flush and
+    // unmount flush each POSTed independently, so two writes for the same slot
+    // could be in flight at once and commit on the server in reverse order —
+    // a delayed "reset" POST landing after a newer slider value silently
+    // reverted the user's latest choice. Writes are now chained per slot:
+    // a later write is not issued until the prior one settles.
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: 85, global_pct: 70, min: 5, max: 90 })
+    let resolveFirst!: (v: { ok: boolean; pct: number | null; global_pct: number }) => void
+    const firstPost = new Promise<{ ok: boolean; pct: number | null; global_pct: number }>(res => { resolveFirst = res })
+    const post = vi.spyOn(api, 'setChatSlotAutocompact')
+    post.mockClear()
+    post.mockReturnValueOnce(firstPost).mockResolvedValue({ ok: true, pct: 71, global_pct: 70 })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('85%')).toBeInTheDocument()
+    // First write: reset to global. Its POST stays in flight (deferred).
+    fireEvent.click(screen.getByText('Reset to global (70%)'))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('test-slot', null), { timeout: 1500 })
+    expect(post).toHaveBeenCalledTimes(1)
+    // Second write while the first POST is still pending: nudge the slider.
+    fireEvent.keyDown(screen.getByRole('slider'), { key: 'ArrowRight' })
+    // Let the 400ms debounce elapse — WITHOUT serialization the second POST
+    // fires here while the first is unresolved (post count hits 2).
+    await new Promise(r => setTimeout(r, 600))
+    expect(post).toHaveBeenCalledTimes(1)
+    // Settle the first write; only then may the second be issued.
+    resolveFirst({ ok: true, pct: null, global_pct: 70 })
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2), { timeout: 1500 })
+    expect(post).toHaveBeenLastCalledWith('test-slot', 71)
   })
 })

@@ -5314,7 +5314,12 @@
       "used": "使用済み",
       "voice_input": "音声入力",
       "finishing": "処理中…",
-      "keep_holding_to_record": "押したままで録音"
+      "keep_holding_to_record": "押したままで録音",
+      "auto_compact_at": "自動圧縮の実行値",
+      "auto_compact_threshold": "自動圧縮のしきい値",
+      "auto_compact_load_failed": "自動圧縮の設定を読み込めませんでした",
+      "reset_to_global": "グローバル設定に戻す（{{pct}}%）",
+      "following_global": "グローバル設定に従う（{{pct}}%）"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",

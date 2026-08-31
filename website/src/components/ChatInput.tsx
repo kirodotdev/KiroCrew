@@ -8,10 +8,11 @@ import VoiceStatusBar from './VoiceStatusBar'
 import VoiceDictationPanel, { useDictationPanelUsable } from './VoiceDictationPanel'
 import type { AudioSample } from '../hooks/mic'
 import { createPortal } from 'react-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppSelector, useAppDispatch } from '../store'
-import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone } from '../store/chatSlice'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone, setAgentSwitchNotice } from '../store/chatSlice'
+import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
@@ -29,7 +30,7 @@ import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
-import { Btn } from './ui'
+import { Btn, Slider } from './ui'
 import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
 import BusySendButton, { useBusySendMode } from './BusySendButton'
@@ -1101,6 +1102,12 @@ function ChatInput({
   // "+" drop-up menu (upload file / image + browse toggle).
   const [plusOpen, setPlusOpen] = useState(false)
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false)
+  // Per-session auto-compact threshold (slider in the context popover). The
+  // debounce timer collapses a slider drag into one POST; the fetch itself is
+  // the React Query below (declared after the shared queryClient), so the
+  // value lives in the standard cache rather than hand-rolled state.
+  const autoCompactTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const autoCompactPending = useRef<{ slot: string; pct: number | null } | null>(null)
   // Shelf responsiveness: measure the shelf row width and collapse chips to
   // icon-only (agent/project) + drop the model effort label when space is tight.
   // Truncation handles the in-between cases.
@@ -1327,6 +1334,101 @@ function ChatInput({
   // The deadline binds HERE too, not only in the menu: react-query dedupes on that
   // shared key, so the menu opening onto this fetch never runs its own queryFn.
   const queryClient = useQueryClient()
+  // Per-session auto-compact threshold: fetched lazily on popover open (the
+  // slots frame stays untouched), cached under the standard query layer. The
+  // slider writes optimistically into the cache per step and the debounced
+  // mutation collapses a drag into one POST; the response re-syncs the cache.
+  const autoCompactQuery = useQuery({
+    queryKey: ['slot-autocompact', activeSlot ?? null],
+    queryFn: () => api.chatSlotAutocompact(activeSlot as string),
+    enabled: ctxPopoverOpen && !!activeSlot,
+    staleTime: 30_000,
+  })
+  const autoCompact = autoCompactQuery.data ?? null
+  // INVARIANT: every threshold POST is chained onto the previous
+  // write for that slot, so writes commit in issue order — a delayed earlier
+  // POST can never land after (and overwrite) a newer value on the server.
+  // ALL dispatch sites (the debounced mutation, the cross-slot flush, the
+  // unmount flush) MUST go through enqueueAutoCompactWrite; never call
+  // api.setChatSlotAutocompact directly from this component.
+  const autoCompactChain = useRef<Map<string, Promise<unknown>>>(new Map())
+  const enqueueAutoCompactWrite = useCallback((slot: string, pct: number | null) => {
+    const prev = autoCompactChain.current.get(slot) ?? Promise.resolve()
+    // Chain through settle (not just success): a failed write must not block
+    // — or reorder — the writes queued behind it.
+    const next = prev.then(
+      () => api.setChatSlotAutocompact(slot, pct),
+      () => api.setChatSlotAutocompact(slot, pct),
+    )
+    autoCompactChain.current.set(slot, next.then(() => undefined, () => undefined))
+    return next
+  }, [])
+  const autoCompactMutation = useMutation({
+    mutationFn: ({ slot, pct }: { slot: string; pct: number | null }) => enqueueAutoCompactWrite(slot, pct),
+    onSuccess: (r, vars) => {
+      queryClient.setQueryData(
+        ['slot-autocompact', vars.slot],
+        (prev: { pct: number | null; global_pct: number; min: number; max: number } | undefined) =>
+          prev ? { ...prev, pct: r.pct, global_pct: r.global_pct } : prev,
+      )
+    },
+    onError: (err, vars) => {
+      // A rejected write must not leave the optimistic value cached: refetch
+      // the server truth so the slider snaps back to the applied threshold.
+      queryClient.invalidateQueries({ queryKey: ['slot-autocompact', vars.slot] })
+      // Surface the failure the way the sibling per-slot settings do (model,
+      // reasoning effort): a silent snap-back leaves the user's compaction
+      // intent unapplied with no explanation — and with the popover closed,
+      // no visible change at all.
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(err)))
+    },
+  })
+  const pushAutoCompact = useCallback((pct: number | null) => {
+    if (!activeSlot) return
+    const slot = activeSlot
+    queryClient.setQueryData(
+      ['slot-autocompact', slot],
+      (prev: { pct: number | null; global_pct: number; min: number; max: number } | undefined) =>
+        prev ? { ...prev, pct } : prev,
+    )
+    if (autoCompactTimer.current) clearTimeout(autoCompactTimer.current)
+    // Debouncing only ever supersedes a write for the SAME slot. A pending
+    // write for another slot (drag on A, switch, drag on B within the window)
+    // is a different session's change: flush it now instead of discarding it,
+    // or A would silently keep its old threshold on the server.
+    const pending = autoCompactPending.current
+    if (pending && pending.slot !== slot) {
+      autoCompactPending.current = null
+      autoCompactMutation.mutate({ slot: pending.slot, pct: pending.pct })
+    }
+    autoCompactPending.current = { slot, pct }
+    autoCompactTimer.current = setTimeout(() => {
+      autoCompactPending.current = null
+      autoCompactMutation.mutate({ slot, pct })
+    }, 400)
+  }, [activeSlot, queryClient, autoCompactMutation])
+  // Flush (not discard) a pending debounced write on unmount: cancelling the
+  // sole POST would leave the server on the old threshold while the user saw
+  // their change accepted. Fire the API call directly -- the component is
+  // gone, so the mutation's cache re-sync has nothing left to update.
+  useEffect(() => () => {
+    if (autoCompactTimer.current) clearTimeout(autoCompactTimer.current)
+    const pending = autoCompactPending.current
+    if (pending) {
+      autoCompactPending.current = null
+      // On rejection, drop the optimistic value from the cache so a return to
+      // this slot refetches server truth instead of showing a threshold the
+      // session never applied (mirrors the mutation's onError). Routed through
+      // the per-slot chain so the flush cannot overtake an in-flight write.
+      void enqueueAutoCompactWrite(pending.slot, pending.pct).catch((err) => {
+        queryClient.invalidateQueries({ queryKey: ['slot-autocompact', pending.slot] })
+        // The component is gone but the store is not: surface the failure
+        // like the sibling settings do, or the user's last change before
+        // navigating away silently never applies.
+        dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(err)))
+      })
+    }
+  }, [queryClient, enqueueAutoCompactWrite, dispatch])
   const skillSlotKey = slotId ? `dashboard:${slotId}` : undefined
   const skillSlotKeyRef = useRef(skillSlotKey)
   skillSlotKeyRef.current = skillSlotKey
@@ -3694,6 +3796,44 @@ function ChatInput({
                           {modelName && (
                             <div className="mt-2 pt-2 border-t border-border flex justify-between text-[11px] font-mono">
                               <span className="text-muted">{i18nT('components.chatInput.model')}</span><span className="text-text truncate max-w-[120px]" title={modelName}>{modelName}</span>
+                            </div>
+                          )}
+                          {autoCompactQuery.isLoading && (
+                            <div className="mt-2 pt-2 border-t border-border" aria-hidden="true">
+                              <div className="h-4 mb-1 rounded bg-bg-hover animate-pulse" />
+                              <div className="h-5 rounded bg-bg-hover animate-pulse" />
+                            </div>
+                          )}
+                          {autoCompactQuery.isError && !autoCompact && (
+                            <div className="mt-2 pt-2 border-t border-border text-[10px] text-muted">
+                              {i18nT('components.chatInput.auto_compact_load_failed')}
+                            </div>
+                          )}
+                          {autoCompact && (
+                            <div className="mt-2 pt-2 border-t border-border">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[11px] text-muted">{i18nT('components.chatInput.auto_compact_at')}</span>
+                                <span className="text-[12px] font-mono font-bold text-accent">{fmtPercent(Math.round(autoCompact.pct ?? autoCompact.global_pct) / 100)}</span>
+                              </div>
+                              <Slider
+                                value={autoCompact.pct ?? autoCompact.global_pct}
+                                onChange={v => pushAutoCompact(v)}
+                                min={autoCompact.min}
+                                max={autoCompact.max}
+                                step={1}
+                                formatValue={v => fmtPercent(v / 100)}
+                                aria-label={i18nT('components.chatInput.auto_compact_threshold')}
+                              />
+                              {autoCompact.pct != null ? (
+                                <Btn
+                                  className="mt-1 px-0 py-0 border-none text-[10px] text-muted underline hover:text-text hover:bg-transparent"
+                                  onClick={() => pushAutoCompact(null)}
+                                >
+                                  {i18nT('components.chatInput.reset_to_global', { pct: Math.round(autoCompact.global_pct) })}
+                                </Btn>
+                              ) : (
+                                <div className="mt-1 text-[10px] text-muted">{i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}</div>
+                              )}
                             </div>
                           )}
                   </div>

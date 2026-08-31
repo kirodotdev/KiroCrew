@@ -5314,7 +5314,12 @@
       "used": "已用",
       "voice_input": "语音输入",
       "finishing": "收尾中…",
-      "keep_holding_to_record": "按住才能录音"
+      "keep_holding_to_record": "按住才能录音",
+      "auto_compact_at": "自动压缩触发值",
+      "auto_compact_threshold": "自动压缩阈值",
+      "auto_compact_load_failed": "无法加载自动压缩设置",
+      "reset_to_global": "重置为全局设置（{{pct}}%）",
+      "following_global": "跟随全局设置（{{pct}}%）"
     },
     "chatPane": {
       "agent_list": "代理列表",

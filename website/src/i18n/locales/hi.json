@@ -5403,7 +5403,12 @@
       "used": "उपयोग",
       "voice_input": "वॉइस इनपुट",
       "finishing": "पूरा हो रहा है…",
-      "keep_holding_to_record": "रिकॉर्ड करने के लिए दबाए रखें"
+      "keep_holding_to_record": "रिकॉर्ड करने के लिए दबाए रखें",
+      "auto_compact_at": "ऑटो-कॉम्पैक्ट",
+      "auto_compact_threshold": "ऑटो-कॉम्पैक्ट थ्रेशोल्ड",
+      "auto_compact_load_failed": "ऑटो-कॉम्पैक्ट सेटिंग लोड नहीं हो सकी",
+      "reset_to_global": "ग्लोबल पर रीसेट करें ({{pct}}%)",
+      "following_global": "ग्लोबल का पालन कर रहा है ({{pct}}%)"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",

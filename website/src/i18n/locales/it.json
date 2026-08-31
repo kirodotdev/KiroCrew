@@ -5492,7 +5492,12 @@
       "used": "Utilizzato",
       "voice_input": "Input vocale",
       "finishing": "Completamento…",
-      "keep_holding_to_record": "Tieni premuto per registrare"
+      "keep_holding_to_record": "Tieni premuto per registrare",
+      "auto_compact_at": "Compattazione automatica al",
+      "auto_compact_threshold": "Soglia di compattazione automatica",
+      "auto_compact_load_failed": "Impossibile caricare l'impostazione di compattazione automatica",
+      "reset_to_global": "Ripristina il valore globale ({{pct}}%)",
+      "following_global": "Segue il valore globale ({{pct}}%)"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",

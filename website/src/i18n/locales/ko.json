@@ -5314,7 +5314,12 @@
       "used": "사용됨",
       "voice_input": "음성 입력",
       "finishing": "마무리 중…",
-      "keep_holding_to_record": "누른 상태로 녹음"
+      "keep_holding_to_record": "누른 상태로 녹음",
+      "auto_compact_at": "자동 압축 실행 지점",
+      "auto_compact_threshold": "자동 압축 임계값",
+      "auto_compact_load_failed": "자동 압축 설정을 불러오지 못했습니다",
+      "reset_to_global": "전역 설정으로 재설정 ({{pct}}%)",
+      "following_global": "전역 설정 따름 ({{pct}}%)"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",

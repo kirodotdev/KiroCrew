@@ -5403,7 +5403,12 @@
       "used": "Verbraucht",
       "voice_input": "Spracheingabe",
       "finishing": "Wird beendet…",
-      "keep_holding_to_record": "Zum Aufnehmen halten"
+      "keep_holding_to_record": "Zum Aufnehmen halten",
+      "auto_compact_at": "Auto-Verdichtung bei",
+      "auto_compact_threshold": "Schwellenwert für automatische Verdichtung",
+      "auto_compact_load_failed": "Einstellung für die automatische Verdichtung konnte nicht geladen werden",
+      "reset_to_global": "Auf global zurücksetzen ({{pct}} %)",
+      "following_global": "Folgt global ({{pct}} %)"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",

@@ -94,6 +94,8 @@ class SessionLifecycleOwner(Protocol):
 
     def _fold_key(self, key: str) -> str: ...
 
+    def set_autocompact_pct(self, key: str, pct: float | None) -> None: ...
+
     def _is_continuable_key(self, key: str) -> bool: ...
 
     def clear_queue(self, key: str) -> None: ...
@@ -637,6 +639,12 @@ class SessionLifecycleService:
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
+            # The per-session compaction-threshold override dies with the
+            # session's permanent destruction (unlike reset/recycle, which it
+            # deliberately survives): a later session recreated on this key is
+            # a NEW conversation, and inheriting the deleted one's threshold
+            # while the slot reports "following global" is silent divergence.
+            owner.set_autocompact_pct(key, None)
             # _origin_links deliberately survives destroy; existing callers
             # rely on the historical asymmetry with reset/remove.
         try:

@@ -5492,7 +5492,12 @@
       "used": "Usado",
       "voice_input": "Entrada de voz",
       "finishing": "Finalizando…",
-      "keep_holding_to_record": "Mantén pulsado para grabar"
+      "keep_holding_to_record": "Mantén pulsado para grabar",
+      "auto_compact_at": "Compactación automática al",
+      "auto_compact_threshold": "Umbral de compactación automática",
+      "auto_compact_load_failed": "No se pudo cargar el ajuste de compactación automática",
+      "reset_to_global": "Restablecer al global ({{pct}}%)",
+      "following_global": "Sigue el global ({{pct}}%)"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",

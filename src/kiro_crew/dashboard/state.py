@@ -2929,6 +2929,7 @@ class _ChatSlot:
         "agent",
         "model",
         "reasoning_effort",
+        "autocompact_pct",
         "mode",
         "workspace",
         "project",
@@ -3049,6 +3050,7 @@ class _ChatSlot:
         "_disk_older_durable_count",
         "_disk_window_len",
         "_disk_meta_created_at",
+        "_disk_meta_observed",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
         "_pending_rewrite",
@@ -3090,6 +3092,10 @@ class _ChatSlot:
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
+        # Per-session auto-compact threshold override (percent). None = follow
+        # the global session.autocompact_pct. Persisted with the slot and
+        # re-seeded into the SessionManager after restore.
+        self.autocompact_pct: float | None = None
         # "" = default chat, "orchestrator" = orchestrated chat
         self.mode = mode
         self.workspace = workspace
@@ -3528,6 +3534,17 @@ class _ChatSlot:
         # deleted window into the latter. Empty means "never observed a disk
         # identity" (fresh slot), which the guard treats as no evidence.
         self._disk_meta_created_at: str = ""
+        # Whether this slot has OBSERVED its transcript's metadata on disk at
+        # all — set wherever ``_disk_meta_created_at`` is recorded (hydrate
+        # sites and committed saves). Legacy metadata carries no
+        # ``created_at``, which leaves the identity string above EMPTY even
+        # though the file was genuinely observed; without this bit the
+        # delete-won guard would read that empty identity as "fresh slot, no
+        # evidence" and let a save racing a permanent delete recreate the
+        # deleted transcript. The bit supplies the missing-file witness for
+        # legacy sessions; the identity COMPARISON still requires a non-empty
+        # ``created_at`` on both sides.
+        self._disk_meta_observed: bool = False
         # The newest ``ts`` seen on disk at the last save, INCLUDING rows this
         # slot never observed. A subagent, cron, or CLI appending to a session a
         # live tab also has open writes rows that ``_save_slot_to_history``

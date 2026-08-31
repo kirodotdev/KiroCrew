@@ -39,6 +39,12 @@ class CompactionState:
     compacting: set[str] = field(default_factory=set)
     cooldown_until: dict[str, float] = field(default_factory=dict)
     pending_verdict: dict[str, float] = field(default_factory=dict)
+    #: Per-session threshold overrides (folded key -> pct). A key absent here
+    #: falls back to the published global (``cfg.session.autocompact_pct``).
+    #: Deliberately independent of ``_sessions`` membership: an override is a
+    #: user preference on the conversation, so it survives session resets and
+    #: recycles, and is re-seeded from slot persistence after a restart.
+    pct_overrides: dict[str, float] = field(default_factory=dict)
     on_compacted: CompactCallback | None = None
 
 
@@ -153,7 +159,7 @@ class CompactionCoordinator:
             if pct > 0:
                 self._deps.logger.info("Session %s context at %.0f%% (CC-managed)", key, pct)
         elif decline == "below_threshold":
-            warn_at = owner._cfg.session.autocompact_pct - self._deps.context_warn_margin_pct
+            warn_at = self.effective_autocompact_pct(key) - self._deps.context_warn_margin_pct
             if warn_at > 0 and pct >= warn_at:
                 self._deps.logger.warning("Session %s context at %.0f%%", key, pct)
             elif pct > 0:
@@ -203,6 +209,43 @@ class CompactionCoordinator:
         session.needs_context_reinjection = False
         return True
 
+    def set_autocompact_pct(self, key: str, pct: float | None) -> None:
+        """Set or clear (``None``) this session's compaction-threshold override.
+
+        The value is stored as given — range validation belongs to the facade
+        (``SessionManager.set_autocompact_pct``), which owns the loader
+        constants; this boundary deliberately stays free of config imports.
+        """
+        key = self._owner._fold_key(key)
+        if pct is None:
+            self.state.pct_overrides.pop(key, None)
+        else:
+            self.state.pct_overrides[key] = pct
+
+    def effective_autocompact_pct(self, key: str) -> float:
+        """This session's compaction threshold: its override, else the global."""
+        return self.state.pct_overrides.get(
+            self._owner._fold_key(key), self._owner._cfg.session.autocompact_pct
+        )
+
+    def drop_autocompact_overrides_matching(
+        self, exact_keys: set[str], folded_keys: set[str], fold: Callable[[str], str]
+    ) -> int:
+        """Drop overrides for permanently deleted sessions with NO live session.
+
+        ``destroy()`` clears a live session's override, but a permanent delete
+        of ARCHIVED history has no session to destroy — and channel keys are
+        deterministic, so a recreated session would silently inherit the
+        deleted conversation's threshold. Same fold-matching contract as the
+        session-ledger purge sweep: an override matches when its stored key is
+        in ``exact_keys`` or its ``fold``-ed spelling is in ``folded_keys``.
+        Returns the number of entries dropped.
+        """
+        doomed = [k for k in self.state.pct_overrides if k in exact_keys or fold(k) in folded_keys]
+        for k in doomed:
+            self.state.pct_overrides.pop(k, None)
+        return len(doomed)
+
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Return the first compaction gate decline, in lifecycle order.
 
@@ -219,7 +262,7 @@ class CompactionCoordinator:
 
         if self._deps.is_cc_managed(provider):
             return "cc_managed"
-        if pct < self._owner._cfg.session.autocompact_pct:
+        if pct < self.effective_autocompact_pct(key):
             return "below_threshold"
         if self._deps.context_pct_is_unknown(provider):
             self._deps.logger.info(

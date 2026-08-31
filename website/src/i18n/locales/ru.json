@@ -5581,7 +5581,12 @@
       "used": "Использовано",
       "voice_input": "Голосовой ввод",
       "finishing": "Завершение…",
-      "keep_holding_to_record": "Удерживайте, чтобы записать"
+      "keep_holding_to_record": "Удерживайте, чтобы записать",
+      "auto_compact_at": "Автосжатие при",
+      "auto_compact_threshold": "Порог автосжатия",
+      "auto_compact_load_failed": "Не удалось загрузить настройку автосжатия",
+      "reset_to_global": "Сбросить к глобальному ({{pct}}%)",
+      "following_global": "Следует глобальному ({{pct}}%)"
     },
     "chatPane": {
       "agent_list": "Список агентов",
