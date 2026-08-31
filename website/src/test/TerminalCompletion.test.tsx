@@ -777,12 +777,15 @@ describe('TerminalCompletion', () => {
       expect(sent).toEqual([])
     })
 
-    it('passes through the Tab that ends composition', async () => {
+    it('consumes the post-composition Tab without accepting the suggestion', async () => {
       const h = await open()
       h.compositionEnd()
       const r = h.key({ key: 'Tab' })
-      expect(r.passedThrough).toBe(true)
-      expect(r.prevented).toBe(false)
+      // Native composition flags are already clear, so the grace latch owns
+      // both halves: the menu must not accept Tab, and xterm/browser must not
+      // pass it on to the PTY as shell completion.
+      expect(r.passedThrough).toBe(false)
+      expect(r.prevented).toBe(true)
       expect(sent).toEqual([])
     })
 
