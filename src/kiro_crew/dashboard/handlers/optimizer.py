@@ -38,6 +38,56 @@ _PASTE_CONTENT_BUDGET = 12000
 _MAX_PASTE_BLOCKS = 128
 
 
+# XML-style wrapper tag some models add around the whole reply — format
+# imitation of the pseudo-XML payload sections, the same class as quoting the
+# answer. Conservative identifier shape (letter/underscore start, then word
+# chars or hyphens) so text that merely begins with an angle bracket — a
+# comparison, a placeholder like "<a link>" — is never read as a wrapper.
+_WRAPPER_TAG_REGEX = re.compile(r"<([A-Za-z_][A-Za-z0-9_-]*)>")
+
+
+def _strip_outer_wrapper_tag(text: str, draft: str) -> str:
+    """Strip at most one XML-style wrapper tag enclosing all of *text*.
+
+    The payload the optimizer model receives is built from pseudo-XML sections,
+    and despite the no-wrapper instruction some models mirror that format by
+    wrapping the whole answer in a tag of their own choosing (e.g.
+    ``<optimized_prompt>…</optimized_prompt>``). The tag name is the model's,
+    not ours, so a leading tag is matched against its own closing tag rather
+    than against any fixed name.
+
+    Only a wrapper enclosing the entire text is removed: the closing tag must
+    carry the same name and sit at the very end, otherwise the text is returned
+    untouched (mismatched names, an unbalanced pair, angle brackets mid-text).
+    Exactly one layer is stripped — never a loop — so a genuinely
+    XML-structured rewrite loses at most its outermost element and keeps all
+    nested structure intact.
+
+    A tag that already appears in *draft* is never treated as a wrapper: when
+    the draft carries its own XML-style structure, a reply enclosed in that
+    same tag is preserving the user's content, not imitating the payload
+    format, and unwrapping it would corrupt the rewrite (and make an
+    echoed-back draft compare as changed). The draft check matches the tag
+    name at an opening-bracket boundary — bare (``<task>``), attributed
+    (``<task priority="high">``), or self-closing (``<task/>``) — because a
+    reply's bare wrapper must also be recognized as the draft's own tag when
+    the draft spells it with attributes. Case-insensitive, and it fails toward
+    leaving the text alone.
+    """
+    text = text.strip()
+    match = _WRAPPER_TAG_REGEX.match(text)
+    if match is None:
+        return text
+    tag = match.group(1)
+    if re.search(rf"<{re.escape(tag)}[\s/>]", draft, re.IGNORECASE):
+        return text
+    closing = f"</{tag}>"
+    body = text[match.end() :]
+    if not body.endswith(closing):
+        return text
+    return body[: -len(closing)].strip()
+
+
 def _paste_seqs(text: str) -> set[str]:
     """Set of paste placeholder seq numbers present in *text* (used to scope
     which paste content to forward to the model)."""
@@ -265,6 +315,13 @@ async def handle_optimize(request: web.Request) -> web.Response:
         return web.json_response({"optimized": prompt, "changed": False})
 
     optimized = text.strip().strip('"').strip("'")
+    # Strip one model-added XML wrapper before the sentinel check, the
+    # placeholder guard, redaction, and the changed comparison, so every one of
+    # them sees the real text. Ordering matters most for `changed`: a rewrite
+    # that is the original draft inside a wrapper must compare equal and leave
+    # the draft alone rather than overwrite it with a tagged copy of itself.
+    # The draft is passed so a tag the user wrote themselves is never stripped.
+    optimized = _strip_outer_wrapper_tag(optimized, prompt)
     if not optimized or optimized.upper() == "UNCHANGED":
         return web.json_response({"optimized": prompt, "changed": False})
 
