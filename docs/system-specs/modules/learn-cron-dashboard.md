@@ -307,7 +307,19 @@ future pause-state change cannot land in only one reader and drift.
 
 `count_enabled_from_disk()` is a **read-only** parse of `crons.json`: it counts
 enabled jobs via `_record_is_enabled` and never mutates loop-owned state
-(`self._jobs`, `self._last_mtime`) or the asyncio timer. It exists specifically
+(`self._jobs`, `self._last_mtime`) or the asyncio timer. The reduction itself
+lives one level down, in the module function `enabled_count_from_disk(path)` — a
+sibling of `unhealthy_jobs_from_disk` that returns `(count, loadable)` and is the
+single owner of the "loadable record AND enabled" loop. Two callers want
+different halves of that pair: this method keeps the count and degrades an
+unloadable store to `0`, because its caller is a status pusher that must always
+have a number to render; the telemetry probe
+(`metrics/inventory_gauges.read_active_crons`) needs `loadable` so it can report a
+present-but-unreadable store as a fault rather than as a plausible count. Before
+the split each side carried its own spelling of the loop, capped only by the
+shared predicates.
+
+It exists specifically
 for the dashboard WS status pusher, which needs an enabled-job count off the
 event loop. The pusher MUST NOT run `list_jobs` off-thread: `list_jobs` calls
 `_sync()` → `_load()` → `_arm_timer()`, and `_arm_timer` both calls

@@ -306,11 +306,89 @@ presence without the endpoint string),
 | `kirocrew.process.memory.rss_bytes` / `.peak_rss_bytes` | gauge (By) | — | Same module; delegate to `platform_compat.proc_rss_bytes` (current) / `proc_peak_rss_bytes` (high-water mark), both cross-platform. A 0 return maps to None: gap, never a fake zero sample. |
 | `kirocrew.process.cpu.seconds` | counter (s) | — | Same module; `platform_compat.proc_cpu_seconds` cumulative user+system CPU, exported CUMULATIVE (rebuild-idempotent; see exporter row). |
 | `kirocrew.process.gc.collections` / `.collected` / `.uncollectable` | counter | `generation` (`0`/`1`/`2`) | Same module; `gc.get_stats()` per generation. Rules GC in/out of a leak diagnosis (rising uncollectable = reference cycles; flat collected with rising RSS = native leak). |
+| `kirocrew.inventory.crons.active` | gauge | — | `metrics/inventory_gauges.py::register_inventory_gauges`, callbacks run only at reader collection. The enabled-count reduction is `cron.enabled_count_from_disk`, a module-level sibling of `unhealthy_jobs_from_disk` that returns `(count, loadable)` and is the single owner of that loop — `CronService.count_enabled_from_disk` calls it too and keeps only the count, so the probe cannot drift from what the scheduler considers enabled, and neither needs a running gateway. Deliberately NOT `list_jobs`: that re-arms the asyncio timer, which from a reader thread with no running loop raises AND cancels the live timer first, stopping every scheduled job. A missing store is a genuine `0` and no fault (a fresh install has no crons). A store that is present but unparseable yields a gap **and increments `probe.failures{probe="crons"}`** — `_read_job_records` calls that case a fault, and a silent gap would be indistinguishable from a host that stopped exporting, which is the confusion the counter exists to resolve. |
+| `kirocrew.inventory.monitor_loops.active` | gauge | — | Same module; `autonudge.get_instance()` then a materialized `list(...)` snapshot of the loop registry counting `active`. The registry is mutated only under an `asyncio.Lock` on the event loop, which gives a reader thread no protection and cannot be acquired from it; the snapshot is safe anyway because each dict op is atomic under the GIL and a gauge stale by one loop is fine. `get_instance()` returning None (spawned agent process, unit test, auto-nudge off) yields a gap — a `0` there would be indistinguishable from a running service with none armed. |
+| `kirocrew.inventory.skills.installed` | gauge | — | Same module; one module-global `SkillsLoader(install_builtins=False)` (`install_builtins=True` would make a metrics probe perform a content-hashing write sync). Listing is a recursive walk, so it is cached for `_EXPENSIVE_TTL_SECS` (300s) — five collection cycles on the default interval. One combined total, NOT a builtin/user split: builtins are copied onto disk into the same tree, so nothing in the listing distinguishes them and a split would be a guess. |
+| `kirocrew.inventory.memory.migrated` | gauge | — | Same module; `memory.migrated` as 0/1. Reports the migration bit rather than a "memory enabled" switch because no such switch exists — the embedding provider is coerced to a real value on load, so memory is structurally always on and an "enabled" gauge could only read 1. The bit flips on the first boot that initialises vector memory, fresh installs included, so 1 is the healthy reading and a **0 on a live install is a fault**: vector memory never initialised, migration aborted before the flip, or the flag write was skipped on an unparseable `config.json`. That is what keeps it from being a rollout metric that goes quiet once a fleet converges. |
+| `kirocrew.inventory.knowledge.documents` | gauge | — | Same module; the raw source count. Deliberately NOT a constant 1 under a magnitude-band attribute: the quasi-identifying argument for banding does not hold when the only destination is the operator's own collector describing their own machines, while the band costs a series per band, hides growth inside a band (the drift the gauge exists for), and fixes the boundaries at emit time — a backend can band a raw count at query time and cannot recover a count from a band. Counts the `sources` table, not `items` (an item is one chunk, so counting items would report a chunking artifact as a document count), via a **read-only** `sqlite3` URI guarded on `exists()`: constructing a `KnowledgeStore` would run schema init plus graph load and would CREATE the database on an install that never ingested anything. Cached 300s. Absent database yields a gap. |
+| `kirocrew.inventory.lessons` | gauge | — | Same module; the raw lesson count, same shape and rationale. Reads through one module-global `LessonStore`, whose own mtime cache makes a repeated read on an unchanged file a single `stat` — reused across ticks because that cache lives on the instance, and left uncached here because a second cache would add only staleness. An absent file is a genuine `0` (an install that never saved a lesson), unlike the knowledge database. |
+| `kirocrew.inventory.mcp.servers` | gauge | `class` (`first_party` / `third_party`) | Same module; the roster merged from the agent config and `_load_mcp_json_by_source`, classified against `mcp_discovery._MANAGED_SERVER_NAMES` — reused rather than restated, since a second name list here would drift silently the first time a managed server is added or renamed. **Server names are read to classify and then discarded: no name ever reaches an attribute.** A roster is user-chosen free-form text, so publishing it would be both a cardinality bomb and a disclosure of what the user has installed. An empty merged roster yields a gap: the loaders fail soft to `{}`, so empty cannot be told apart from an unwritten config, and the managed servers are always present once installed. |
+| `kirocrew.inventory.config.toggle` | gauge | `key` (closed enum, `inventory_gauges.CONFIG_TOGGLES`) | Same module; each declared feature switch as 0/1. Config is read ONCE for the whole set, so the gauge costs one fingerprint-cached load per collection instead of one per key. `telemetry.enabled` is deliberately absent — this module only runs inside the consent gate, so it could report nothing but 1. `memory.migrated` is absent because it has its own gauge. A key whose field cannot be resolved is OMITTED rather than reported as 0 (a renamed config field must read as a missing series, never as a switch someone turned off); `test_every_declared_toggle_resolves_against_a_real_config` is what keeps that from being a silent hole. |
 
-All nine registrations are wired in `provider.py::_build_recorder` (live path only)
-and wrapped so a gauge failure can never disable telemetry as a whole; each
-reader callback is individually guarded — a failing probe yields a gap for that
-cycle, never an exporter error.
+| `kirocrew.inventory.probe.failures` | counter | `probe` (closed enum, `inventory_gauges.ALL_PROBES`) | Same module; times a probe raised, per probe. **Absent on a healthy install** — it publishes only once something has failed, so a healthy host adds no series, and roster assertions must exempt it (`_HEALTHY_ABSENT` in `test_otlp_wire_e2e.py`). It exists because absence has TWO readings that this family cannot afford to conflate: a missing series can mean the probe broke OR that the host stopped exporting, and distinguishing a drifted host from a dark host is the job these gauges were added to do. A broken probe therefore presents as data — the failure series is present and climbing, which a host that went dark cannot produce. The first failure per probe also logs at WARNING (a default install's journal keeps WARNING and above, so debug would be invisible on exactly the installs that need it); repeats drop to debug so a permanently broken probe cannot emit one WARNING per export interval for the process lifetime. Cumulative, like the process counters. |
+
+All eighteen registrations are wired in `provider.py::_build_recorder` (live path
+only) and wrapped so a gauge failure can never disable telemetry as a whole. The
+two families register in SEPARATE `try` blocks — they read entirely different
+subsystems, and the process gauges must not go dark because, say, the skills tree
+is unreadable. Each reader callback is individually guarded — a failing probe
+yields a gap for that cycle, never an exporter error.
+
+Because the inventory probes read subsystems rather than process counters, cost is
+the binding constraint: a callback runs once per export interval **per reader**, so
+an install with an OTLP destination configured enters them on two ticker threads
+concurrently. Every probe is O(1) in-memory, a single small file parse, or
+explicitly TTL-cached (`_ttl_cached`, whose produce call runs OUTSIDE its lock so a
+second reader misses the cache rather than blocking on the first). A `None`
+reading is cached like any other answer, so an install that can never answer does
+not re-pay an expensive failing probe every cycle.
+
+Scope of the `kirocrew.inventory.*` family, stated here because the names invite
+the opposite reading: it is OPERATOR-fleet telemetry, not project-wide adoption
+analytics. Collection is off by default, egress is a second opt-in, and OTLP needs
+the `kirocrew[otlp]` extra, so any aggregate describes one operator's opted-in
+machines. Adoption data structurally cannot ride this trunk — see "Why it is NOT
+part of the OTEL trunk" above, whose four reasons apply to these instruments
+exactly as they do to the beacon's payload. Do not later "promote" these to answer
+install-population questions.
+
+**One publisher per install (`mark_install_reporter`).** `_build_recorder` runs in
+every process that touches telemetry, and an install runs several at once — the
+gateway, `gatewayd`, spawned agents and apps (which is why the local exporter
+shards per PID). That is correct for process-scoped instruments and WRONG for
+install-scoped ones: each process would publish the same "this install has 14
+crons" under its own resource, so an aggregate over installs counts one install
+once per running process, and the bucketed gauges (whose shape is "publish 1, sum
+by bucket") would make one install look like N. Deduplicating downstream is not
+available, because that needs an install-scoped resource identity and the resource
+carries only a per-process id today. So exactly one process publishes: the gateway
+calls `inventory_gauges.mark_install_reporter()` during startup, and every callback
+checks it at COLLECT time (not at registration), so it does not matter whether a
+recorder was built before or after the claim. A process that never claims it
+registers the same instruments and publishes nothing. The election is an EXPLICIT
+call rather than inferred from, say, `autonudge.get_instance()` being non-None
+(true only in the gateway today) — an inference stops holding the moment that
+service's startup moves or becomes conditional, and the failure mode is inventory
+silently disappearing.
+
+That failure mode applies to the explicit call too, which is why the call SITE is
+part of the contract: it sits in `GatewayOrchestrator.run()` at a point no branch
+guards. A feature-flagged host does the same damage an inference would — the claim
+first shipped inside `_init_autonudge()`, which returns early under
+`KIROCREW_AUTONUDGE=0`, so one env var left no process publishing inventory at all.
+Nothing reported it, either: the callbacks return before probing, so `probe.failures`
+stays empty and the whole subsystem reads like a host that stopped exporting.
+`test_reporter_claim_is_unconditional` parses the gateway and asserts the call is
+reached from `run()` without passing through a conditional (`try` is allowed —
+telemetry must never block boot).
+
+A persisted install-scoped resource id is the precondition for ever removing this
+mechanism, but it is not by itself a replacement. With one, an install CAN be
+deduplicated downstream (`max by (install)` over its processes) — but that is
+query-time discipline: the exported data would still contain one copy per process,
+and a naively written fleet `sum` would read N times the truth. The election makes
+the data correct at the point of emit, which no consumer has to remember. So
+retiring it is a deliberate trade (fewer moving parts here, a rule every dashboard
+must follow there), not something that falls out of the identity work landing.
+
+Scope of the guarantee: it elects one GATEWAY PROCESS, which is one install wherever
+the product runs one gateway per data home. Two gateways sharing a data home on
+different ports would both claim, because the dashboard's singleton is per port, not
+per data home — a pre-existing property of that configuration that duplicates every
+install-scoped fact, and one no flag can detect (a second gateway double-counts
+whether or not it runs crons). A pod is not this case: it boots with its own
+`KIROCREW_HOME` and copies no crons, sessions, or databases, so its inventory belongs
+to a different install and publishing it is correct.
 
 ### Histogram bucket boundaries: per instrument, not shared
 

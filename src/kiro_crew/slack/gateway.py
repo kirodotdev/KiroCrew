@@ -10322,6 +10322,28 @@ class GatewayOrchestrator:
                 register_post_install_hook(reproject_for_ceiling_change)
                 await asyncio.to_thread(start_refresher)
 
+        # Claim the install-scoped telemetry reporter role for this process.
+        # Install-level inventory (crons, skills, knowledge, config toggles) is the
+        # same for every process in the install, so if each telemetry-enabled
+        # process published it -- the gateway, gatewayd, spawned agents -- an
+        # aggregate over installs would count this install once per process. This
+        # is the gateway, so it is the one that publishes.
+        #
+        # It lives in run() itself, unconditionally: the claim belongs to being the
+        # gateway, not to any single service, and a feature-flagged host would take
+        # the whole subsystem down with it. _init_autonudge() below returns early
+        # under KIROCREW_AUTONUDGE=0, so a claim made in there means no process ever
+        # publishes inventory -- and nothing says so, because the gauge callbacks
+        # bail before probing and leave probe.failures empty, which reads exactly
+        # like a host that stopped exporting. test_reporter_claim_is_unconditional
+        # pins the call site. Best-effort: telemetry is never a boot blocker.
+        try:
+            from kiro_crew.metrics.inventory_gauges import mark_install_reporter
+
+            mark_install_reporter()
+        except Exception:  # noqa: BLE001 -- telemetry must never break gateway boot
+            logger.debug("could not claim the telemetry inventory role", exc_info=True)
+
         # AutoNudge must run after dashboard init — _fire callback dereferences
         # self.dashboard_state. In --no-dashboard mode the guard inside _fire
         # early-returns so persisted loops are harmless until a dashboard

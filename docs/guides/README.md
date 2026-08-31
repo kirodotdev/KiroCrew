@@ -16,6 +16,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | [slack-setup.md](slack-setup.md) | Creating and configuring the Slack app. |
 | [enterprise-mcp-governance.md](enterprise-mcp-governance.md) | Running Kiro Crew on an enterprise Kiro account (IAM Identity Center / API key) whose administrator allow-lists MCP servers through a registry: why features go silently missing, and the two-sided fix. Also the admin-facing rollout for **central policy distribution** — publishing one `security_policy.json` that every host fetches, caches and re-fetches. |
 | [secrets-env.md](secrets-env.md) | Passing secrets (API keys, tokens) to MCP servers via systemd environment directives or a shell wrapper — interim workarounds pending the encrypted vault. |
+| [telemetry-otlp-export.md](telemetry-otlp-export.md) | Pushing Kiro Crew's OpenTelemetry metrics to a collector and on to CloudWatch, Datadog, or any OTLP-compatible backend: the two separate consent switches, collector config samples, the temporality setting that decides whether a backend accepts the data, what is and is not exported, and how to verify the path end to end. |
 | — | Other chat channels (Discord, Telegram, Teams, Webex, WeCom, WeChat) are documented in [../../src/kiro_crew/docs/](../../src/kiro_crew/docs/README.md); the channel-neutral transport contract is [messaging.md](../system-specs/modules/messaging.md). |
 
 `assets/` holds the copy-pasteable service unit, launchd plist, and setup script

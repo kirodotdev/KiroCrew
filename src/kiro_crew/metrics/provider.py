@@ -528,6 +528,17 @@ def _build_recorder() -> _Build:
             register_process_gauges(meter)
         except Exception:
             logger.warning("process gauges unavailable", exc_info=True)
+        # Install-inventory gauges (crons/skills/knowledge/MCP/toggles) ride the
+        # same consent gate and the same observable-callback contract. Registered
+        # in its OWN try so a failure in either set cannot cost the other one —
+        # they read entirely different subsystems, and the process gauges must
+        # not go dark because, say, the skills tree is unreadable.
+        try:
+            from kiro_crew.metrics.inventory_gauges import register_inventory_gauges
+
+            register_inventory_gauges(meter)
+        except Exception:
+            logger.warning("inventory gauges unavailable", exc_info=True)
         return _Build(MetricsRecorder(meter), provider, consent)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)

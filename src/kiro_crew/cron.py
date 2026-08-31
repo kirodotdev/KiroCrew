@@ -1033,6 +1033,34 @@ def unhealthy_jobs_from_disk() -> tuple[list[tuple[str, str]], list[tuple[str, s
     return (auto_paused, errored, loadable)
 
 
+def enabled_count_from_disk(path: Path) -> tuple[int, bool]:
+    """Return ``(enabled count, loadable)`` for the store at *path*.
+
+    A sibling of :func:`unhealthy_jobs_from_disk`: read-only, non-raising, needs
+    no running scheduler, and carries ``loadable`` on the SAME read for the same
+    reason — a store the scheduler cannot load counts 0, which is
+    indistinguishable from a healthy empty store in the number alone.
+
+    Single owner of the enabled-count reduction. Two callers need it and want
+    different halves: :meth:`CronService.count_enabled_from_disk` takes the count
+    and degrades a fault to 0 (its caller is a status pusher that must keep
+    running), while the telemetry probe needs ``loadable`` to report a fault as a
+    fault rather than as a plausible number. Both spellings of the loop existed
+    before this; the shared ``_is_loadable_record`` / ``_record_is_enabled``
+    predicates capped the drift, but only one loop removes it.
+    """
+    count = 0
+    records, loadable = _read_job_records(path)
+    for j in records:
+        # Same skip decision as _load (#4664): a record _job_from_record rejects
+        # is not a schedulable job, so it must not be counted.
+        if not _is_loadable_record(j):
+            continue
+        if _record_is_enabled(j):
+            count += 1
+    return (count, loadable)
+
+
 def _job_from_record(j: dict[str, Any]) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
@@ -2922,17 +2950,12 @@ class CronService:
         and deeply nested JSON (``RecursionError``, a ``RuntimeError``) both
         escaped and killed the pusher. A count of 0 is the correct degrade: an
         unreadable store has no jobs anyone can schedule.
+
+        The reduction itself lives in :func:`enabled_count_from_disk`, whose
+        ``loadable`` half this method deliberately discards — the status pusher
+        wants a number it can always render, not a fault to handle.
         """
-        count = 0
-        for j in _read_job_records(self._path)[0]:
-            # Same skip decision as _load (#4664): a record _job_from_record
-            # rejects is not a schedulable job, so it must not be counted.
-            # One spelling of loadability for the whole module.
-            if not _is_loadable_record(j):
-                continue
-            if _record_is_enabled(j):
-                count += 1
-        return count
+        return enabled_count_from_disk(self._path)[0]
 
     def get_job(self, job_id: str) -> CronJob | None:
         """Find a job by its id in the in-memory snapshot — CACHE-ONLY, no disk I/O.
