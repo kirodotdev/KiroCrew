@@ -260,7 +260,7 @@ path a public build takes when an operator picks Claude Code.
 | Methods returning a neutral value purely for a companion to override | 6 |
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` | 11 sites, 2 sentinels (`session.py:200`, `subagent.py:144`) |
 | Comment clusters naming the companion or a deleted module as the supplier | 19 |
-| Refusal / downgrade mechanisms | 9, including one degrade log line (`config/loader.py:4647-4652`) and five capability non-memberships |
+| Refusal / downgrade mechanisms | 9, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships |
 | Live `_is_claude` branches inside `acp/` | 13 |
 | CC-symbol lines in `src/kiro_crew` | 146 (352 including `test/`) |
 

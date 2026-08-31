@@ -446,9 +446,9 @@ class TestNoSiteRespellsTheConjunction:
                 if "trust_identity and" not in line:
                     continue
                 # The property's own definition is the one legitimate spelling,
-                # and the loader's config-validation rule is a different
+                # and the section parser's config-validation rule is a different
                 # question (is this combination writable), not this one.
-                if path.name in ("tailnet.py", "loader.py"):
+                if path.name in ("tailnet.py", "sections.py"):
                     continue
                 offenders.append(f"{path.relative_to(src_root)}:{lineno}")
         assert offenders == [], (

@@ -223,7 +223,7 @@ kinds of undeclared hole:
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`session.py:170`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
 | Defensive attribute probes across the provider boundary (`session_pid.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
 | Comment clusters naming the companion or a deleted module as the supplier of behaviour | 19 | The seam's real contract lives in prose |
-| Refusal / downgrade mechanisms, including the degrade log line at `config/loader.py:4647-4652` and five capability non-memberships | 9 | — |
+| Refusal / downgrade mechanisms, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships | 9 | — |
 | Live `_is_claude` branches inside `acp/` | 13 | — |
 | CC-symbol lines in `src/kiro_crew` | 146 (352 with `test/`) | — |
 
