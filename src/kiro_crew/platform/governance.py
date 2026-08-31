@@ -1126,6 +1126,34 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # by kiro_crew.safety_override at the activation seam, against the HOST
     # profile and fail-closed.
     "yolo_duration": ScopeSpec(RULESET, matcher="identifier"),
+    # Which ACP harness a deployment may select (``agent.acp_backend``).
+    #
+    # Distinct from the selectable-backend REGISTRY in ``kiro_crew.acp_backends``:
+    # that answers "what can this BUILD serve", which is a capability fact and is
+    # not governable. This row answers "what may THIS DEPLOYMENT select", so a
+    # managed fleet can qualify one harness and bound the rest.
+    #
+    # ADDITIVE over a floor, which is the semantics decision #6622 was blocked on:
+    #   {"agent_backend": {"mode": "allow", "allow": ["claude"]}}
+    # means "ALSO allow claude", not "only claude" — ``kiro`` stays selectable
+    # because ``acp_backends.GOVERNANCE_FLOOR_BACKEND`` is never submitted to this
+    # scope at all. The alternative reading (exclusive) can empty the set, and an
+    # install with no startable harness cannot be recovered from the dashboard,
+    # since the trust-root policy is the one file it may not write.
+    #
+    # Members are POLICY ids, not the code's spelling: ``kiro`` / ``kas`` /
+    # ``claude`` (see ``acp_backends.POLICY_ID_BY_BACKEND``) — the kiro backend is
+    # the empty string internally, which no identifier matcher can carry.
+    #
+    # Consulted by ``kiro_crew.agent_backend_governance`` at exactly ONE place: it
+    # recomputes the ``acp_backends`` registry, from ``bootstrap_context`` at boot and
+    # from ``policy_distribution.apply_ceiling`` on every runtime ceiling install.
+    # Deliberately NOT consulted at provider construction — harness-parity H13 forbids
+    # the Kiro construction path gaining a conditional in service of an adapter, and a
+    # test asserts ``create_provider_factory`` contains no governance call. The
+    # existing single gate ``resolve_selected_backend`` reads the narrowed registry, so
+    # it degrades a denied persisted value with no second check.
+    "agent_backend": ScopeSpec(RULESET, matcher="identifier"),
     # Capabilities (registered defaults — see the CAPABILITY-DEFAULT CONTRACT above):
     "capabilities.spawn": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}

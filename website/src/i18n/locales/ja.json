@@ -9588,12 +9588,17 @@
         "could_not_save_the_agent_backend": "エージェントバックエンドを保存できませんでした。",
         "default_all_features_supported": "デフォルト。すべての機能に対応しています。",
         "experimental": "実験的",
+        "install_check_failed": "このマシンにインストールされているか確認できませんでした。",
+        "installed_restart_required": "このマシンにインストール済みですが、使用するにはこの gateway を再起動する必要があります。",
         "kas_kiro_agent": "KAS (kiro-agent)",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "設定を読み込んでいます…",
+        "missing_components": "このマシンにありません: {{components}}",
+        "missing_components_with_command": "このマシンにありません: {{components}}。次でインストールします: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "新しいセッションはこのエージェントを使用します。すでに開いているセッションは開始時のエージェントを維持し、ここで切り替えてもセッション中に変わることはありません。",
         "not_enabled_in_this_build": "このビルドでは有効になっていません",
-        "retry": "再試行"
+        "retry": "再試行",
+        "set_is_fixed_at_gateway_start": "ここに表示されるエージェントは gateway の起動時に決まります。管理された環境ではポリシーで対象を制限できます。ポリシーの変更は次回の起動時に反映されます。"
       },
       "featurePreviewsTab": {
         "crew": "Crew",

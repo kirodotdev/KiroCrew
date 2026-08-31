@@ -9588,12 +9588,17 @@
         "could_not_save_the_agent_backend": "에이전트 백엔드를 저장할 수 없습니다.",
         "default_all_features_supported": "기본값입니다. 모든 기능이 지원됩니다.",
         "experimental": "실험적",
+        "install_check_failed": "이 컴퓨터에 설치되어 있는지 확인할 수 없습니다.",
+        "installed_restart_required": "이 컴퓨터에 설치되어 있지만, 사용하려면 이 gateway를 다시 시작해야 합니다.",
         "kas_kiro_agent": "KAS (kiro-agent)",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "구성을 불러오는 중…",
+        "missing_components": "이 컴퓨터에 없음: {{components}}",
+        "missing_components_with_command": "이 컴퓨터에 없음: {{components}}. 다음으로 설치하세요: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "새 세션은 이 에이전트를 사용합니다. 이미 열려 있는 세션은 시작할 때의 에이전트를 유지하며, 여기서 전환해도 세션 중에는 바뀌지 않습니다.",
         "not_enabled_in_this_build": "이 빌드에서는 활성화되지 않았습니다",
-        "retry": "다시 시도"
+        "retry": "다시 시도",
+        "set_is_fixed_at_gateway_start": "여기에 표시되는 에이전트는 gateway가 시작될 때 결정됩니다. 관리형 배포는 정책으로 이 집합을 제한할 수 있으며, 정책 변경은 다음 시작 시 적용됩니다."
       },
       "featurePreviewsTab": {
         "crew": "Crew",

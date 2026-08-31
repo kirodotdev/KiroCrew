@@ -10026,12 +10026,17 @@
         "could_not_save_the_agent_backend": "Не удалось сохранить бэкенд агента.",
         "default_all_features_supported": "По умолчанию. Все функции поддерживаются.",
         "experimental": "Экспериментальный",
+        "install_check_failed": "Не удалось проверить, установлено ли это на данной машине.",
+        "installed_restart_required": "Установлено на этой машине, но перед использованием этот gateway нужно перезапустить.",
         "kas_kiro_agent": "KAS (kiro-agent)",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Загрузка конфигурации…",
+        "missing_components": "Отсутствует на этой машине: {{components}}",
+        "missing_components_with_command": "Отсутствует на этой машине: {{components}}. Установите: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Новые сессии используют этого агента. Уже открытая сессия сохраняет того, с которым была начата, — переключение здесь не меняет её посреди сессии.",
         "not_enabled_in_this_build": "Не включено в этой сборке",
-        "retry": "Повторить"
+        "retry": "Повторить",
+        "set_is_fixed_at_gateway_start": "Какие агенты здесь появляются, определяется при запуске gateway. Управляемое развёртывание может ограничить набор политикой; изменения политики вступают в силу при следующем запуске."
       },
       "featurePreviewsTab": {
         "crew": "Crew",

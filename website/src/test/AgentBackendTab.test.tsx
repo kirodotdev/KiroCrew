@@ -1,26 +1,30 @@
 /**
  * AgentBackendTab — Developer > Agent Backend switch.
  *
- * The behaviour worth pinning is the SCHEMA GATING, not the three labels: the tab
- * renders every backend the code knows about but may only select the ones the
- * running build advertises in `GET /api/config/schema`. Two of these cases are the
- * ones a hardcoded option list would silently get wrong — a backend the build
- * cannot serve must not be selectable, and a backend a later edition adds must
- * become selectable with no change here.
+ * Two independent gates, and the tests exist mostly to keep them from being
+ * collapsed into one. The SCHEMA gate is a build/edition fact from
+ * `GET /api/config/schema`: a backend the build cannot serve must not be
+ * selectable, and one a later edition adds must become selectable with no change
+ * here. The PROBE gate is a machine fact from `GET /api/acp-backends`: a backend
+ * whose components are absent must not be selectable either, and must say what to
+ * install. Its `unknown` verdict — and every way the probe can fail to answer at
+ * all — must leave the option ENABLED, because an optimistic disable costs a user
+ * a control they were entitled to and an install they did not need.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
-const { patchConfigMock, kirocrewConfigMock, schemaMock } = vi.hoisted(() => ({
+const { patchConfigMock, kirocrewConfigMock, schemaMock, acpBackendsMock } = vi.hoisted(() => ({
   patchConfigMock: vi.fn(() => Promise.resolve({})),
   kirocrewConfigMock: vi.fn(() => Promise.resolve({ agent: { acp_backend: '' } })),
   schemaMock: vi.fn(),
+  acpBackendsMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
-  api: { kirocrewConfig: kirocrewConfigMock, patchConfig: patchConfigMock },
+  api: { kirocrewConfig: kirocrewConfigMock, patchConfig: patchConfigMock, acpBackends: acpBackendsMock },
 }))
 
 vi.mock('../components/settingRef/useConfigSchema', () => ({
@@ -33,6 +37,23 @@ import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
 function schemaWith(values: string[] | undefined) {
   if (!values) return undefined
   return new Map([['agent.acp_backend', { path: 'agent.acp_backend', type: 'enum', enum: values }]])
+}
+
+/**
+ * One `GET /api/acp-backends` row, defaulted to the uninteresting answer
+ * (selectable and installed) so each test states only the field it is about.
+ */
+function probeRow(id: string, over: Partial<{ selectable: boolean; installed: string; missing_components: string[]; install_command: string; restart_required: boolean }> = {}) {
+  return {
+    id,
+    policy_id: id || 'kiro',
+    selectable: true,
+    installed: 'installed',
+    missing_components: [],
+    install_command: '',
+    restart_required: false,
+    ...over,
+  }
 }
 
 function wrap() {
@@ -53,6 +74,11 @@ beforeEach(() => {
   kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: '' } })
   // The shipped core: kiro-cli + KAS selectable, Claude Code known but dormant.
   schemaMock.mockReturnValue(schemaWith(['', 'kas']))
+  // Default to NO probe information — a 404 from a gateway that predates the
+  // endpoint. Every test that does not opt in therefore pins the pre-probe
+  // behaviour: schema-only gating, nothing disabled or annotated by the probe.
+  acpBackendsMock.mockClear()
+  acpBackendsMock.mockRejectedValue(new Error('404 Not Found'))
 })
 
 describe('AgentBackendTab', () => {
@@ -190,5 +216,231 @@ describe('AgentBackendTab', () => {
     await screen.findByText('Could not save the agent backend.')
     expect(button('Kiro CLI')).toHaveAttribute('aria-pressed', 'true')
     expect(button('KAS (kiro-agent)')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('disables a backend this machine is missing, and names the install command', async () => {
+    // The gap the probe exists to close: the build serves KAS, so the schema
+    // lights it up, but the components are not on this machine. Disabling without
+    // saying what is absent leaves the user with a dead control and no remedy.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude', { installed: 'unknown' }),
+        probeRow('kas', {
+          installed: 'missing',
+          missing_components: ['kiro-agent', 'kiro-agent-acp'],
+          install_command: 'npm install -g @kiro/agent',
+        }),
+      ],
+    })
+    wrap()
+    await waitFor(() => expect(button('KAS (kiro-agent)')).toBeDisabled())
+    expect(
+      screen.getByText(
+        'Missing on this machine: kiro-agent, kiro-agent-acp. Install with: npm install -g @kiro/agent',
+      ),
+    ).toBeInTheDocument()
+    // Its own row still carries the reason, so the disabled button describes itself.
+    const describedBy = button('KAS (kiro-agent)').getAttribute('aria-describedby')
+    expect(describedBy).toBe('agent-backend-status-kas')
+    expect(document.getElementById(describedBy!)).toHaveTextContent('Missing on this machine')
+    // A backend the machine HAS is untouched by another one's verdict.
+    expect(button('Kiro CLI')).toBeEnabled()
+  })
+
+  it('states the missing components without a command when the server has none to give', async () => {
+    // `install_command: ''` means there is nothing to suggest. Naming the absent
+    // components is still actionable; inventing a command is not.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow(''), probeRow('kas', { installed: 'missing', missing_components: ['kiro-agent'] })],
+    })
+    wrap()
+    await waitFor(() => expect(button('KAS (kiro-agent)')).toBeDisabled())
+    expect(screen.getByText('Missing on this machine: kiro-agent')).toBeInTheDocument()
+    expect(screen.queryByText(/Install with/)).not.toBeInTheDocument()
+  })
+
+  it('leaves a backend ENABLED when the install check could not be completed', async () => {
+    // `unknown` is the check failing, not the binary being absent. Collapsing it
+    // onto missing would disable a control the user may be entitled to and send
+    // them to install something they already have.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow(''), probeRow('kas', { installed: 'unknown' })],
+    })
+    wrap()
+    await waitFor(() =>
+      expect(
+        screen.getByText('Could not check whether this is installed on this machine.'),
+      ).toBeInTheDocument(),
+    )
+    expect(button('KAS (kiro-agent)')).toBeEnabled()
+    // And the line must not read as an absent install.
+    expect(screen.queryByText(/Missing on this machine/)).not.toBeInTheDocument()
+
+    // Enabled means genuinely usable: the PATCH allowlist is the real gate.
+    fireEvent.click(button('KAS (kiro-agent)'))
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', 'kas'))
+  })
+
+  it('falls back to schema-only gating when the probe endpoint refuses (403)', async () => {
+    // Owner-only endpoint, and absent entirely on an older gateway. Neither is a
+    // verdict about this machine, so nothing may be disabled or annotated by it —
+    // the tab behaves exactly as it did before the endpoint existed.
+    acpBackendsMock.mockRejectedValue(new Error('403 Forbidden'))
+    wrap()
+    await waitFor(() => expect(button('Claude Code')).toBeDisabled())
+    expect(button('Kiro CLI')).toBeEnabled()
+    expect(button('KAS (kiro-agent)')).toBeEnabled()
+    expect(screen.getByText('Default. All features supported.')).toBeInTheDocument()
+    expect(screen.getByText('Experimental')).toBeInTheDocument()
+    expect(screen.getByText('Not enabled in this build')).toBeInTheDocument()
+    expect(screen.queryByText(/Missing on this machine|Could not check/)).not.toBeInTheDocument()
+  })
+
+  it('never flashes disabled while the probe is still in flight', async () => {
+    // A pending answer is absent information. Gating on it would dim a live
+    // control on every slow load, then un-dim it — which reads as broken.
+    acpBackendsMock.mockReturnValue(new Promise(() => {}))
+    wrap()
+    await waitFor(() => expect(button('Kiro CLI')).toBeEnabled())
+    expect(button('KAS (kiro-agent)')).toBeEnabled()
+    expect(screen.queryByText(/Missing on this machine|Could not check/)).not.toBeInTheDocument()
+  })
+
+  it('lets not-selectable win over any installed verdict', async () => {
+    // Strict priority. A backend this build will not serve is not made actionable
+    // by an install command — running it would still be refused, so the row says
+    // the one thing that is true and the missing-components line is suppressed.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude', {
+          selectable: false,
+          installed: 'missing',
+          missing_components: ['claude-code'],
+          install_command: 'npm install -g @anthropic-ai/claude-code',
+        }),
+      ],
+    })
+    // The schema advertises Claude Code, so the probe's own `selectable: false` is
+    // the only thing keeping it dead — this pins that the field is honoured.
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas']))
+    wrap()
+    await waitFor(() => expect(button('Claude Code')).toBeDisabled())
+    expect(screen.getByText('Not enabled in this build')).toBeInTheDocument()
+    expect(screen.queryByText(/Missing on this machine|claude-code/)).not.toBeInTheDocument()
+  })
+
+  it('leaves a selectable, installed backend reading exactly as it did before', async () => {
+    // The probe adds lines for the two cases it can report; it must not rewrite
+    // the ordinary ones. An all-installed answer is indistinguishable from no
+    // answer at all in this view.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow(''), probeRow('claude'), probeRow('kas')],
+    })
+    wrap()
+    await waitFor(() => expect(button('Kiro CLI')).toBeEnabled())
+    expect(screen.getByText('Default. All features supported.')).toBeInTheDocument()
+    expect(screen.getByText('Experimental')).toBeInTheDocument()
+    expect(screen.getByText('Not enabled in this build')).toBeInTheDocument()
+    expect(screen.queryByText(/Missing on this machine|Could not check/)).not.toBeInTheDocument()
+    expect(button('KAS (kiro-agent)')).toBeEnabled()
+  })
+
+  it('disables an installed backend this gateway must restart to use', async () => {
+    // The one case where a POSITIVE install verdict still gates the control: the
+    // binary is on disk, but this process cached its absence, so the click would
+    // reach a spawn that fails. Offering it would be the "told you it was ready,
+    // then failed the session" trap the probe exists to prevent.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude', { restart_required: true }),
+        probeRow('kas'),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas']))
+    wrap()
+    await waitFor(() => expect(button('Claude Code')).toBeDisabled())
+    expect(
+      screen.getByText('Installed on this machine, but this gateway must restart before it can be used.'),
+    ).toBeInTheDocument()
+    // Must not read as absent — the operator already installed it.
+    expect(screen.queryByText(/Missing on this machine/)).not.toBeInTheDocument()
+  })
+
+  it('prefers the not-enabled line over the restart line', async () => {
+    // A build that will not serve the harness at all makes the restart advice
+    // wasted work: restarting changes nothing.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow(''),
+        probeRow('claude', { selectable: false, restart_required: true }),
+        probeRow('kas'),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas']))
+    wrap()
+    await waitFor(() => expect(button('Claude Code')).toBeDisabled())
+    expect(screen.getByText('Not enabled in this build')).toBeInTheDocument()
+    expect(screen.queryByText(/must restart/)).not.toBeInTheDocument()
+  })
+
+  it('re-asks the probe on an interval under the app\'s real staleTime: Infinity', async () => {
+    // The bug this pins is invisible to a test that builds its own QueryClient with
+    // default options: the app's global client sets `staleTime: Infinity` and its own
+    // comment says freshness is driven "exclusively by WebSocket push
+    // (invalidateQueries on server events)" — and there is no server event for this
+    // probe. Inheriting that default made the answer permanent for the life of the
+    // page, so an operator who ran the install command the panel gave them was left
+    // looking at a disabled option with no way to re-ask short of a reload.
+    //
+    // So this test mirrors the REAL default, not the convenient one.
+    vi.useFakeTimers()
+    try {
+      acpBackendsMock.mockResolvedValue({
+        backends: [
+          probeRow(''),
+          probeRow('claude', {
+            installed: 'missing',
+            missing_components: ['claude-agent-acp'],
+            install_command: 'npm i -g @agentclientprotocol/claude-agent-acp',
+          }),
+          probeRow('kas'),
+        ],
+      })
+      schemaMock.mockReturnValue(schemaWith(['', 'claude', 'kas']))
+
+      const qc = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      })
+      render(
+        <QueryClientProvider client={qc}>
+          <AgentBackendTab />
+        </QueryClientProvider>,
+      )
+      await vi.waitFor(() => expect(button('Claude Code')).toBeDisabled())
+
+      // The operator installs the adapter the panel just named.
+      acpBackendsMock.mockResolvedValue({
+        backends: [probeRow(''), probeRow('claude'), probeRow('kas')],
+      })
+      await vi.advanceTimersByTimeAsync(31_000)
+
+      await vi.waitFor(() => expect(button('Claude Code')).toBeEnabled())
+      expect(screen.queryByText(/Missing on this machine/)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('states that the set is decided at gateway start', async () => {
+    // The only place the policy semantics can be surfaced: nothing in the UI can
+    // detect a not-yet-applied policy edit, so an operator who edits the policy
+    // and sees no change needs this sentence to know it is not a bug.
+    acpBackendsMock.mockResolvedValue({ backends: [probeRow('')] })
+    wrap()
+    await waitFor(() => expect(button('Kiro CLI')).toBeEnabled())
+    expect(screen.getByText(/decided when the gateway starts/)).toBeInTheDocument()
   })
 })

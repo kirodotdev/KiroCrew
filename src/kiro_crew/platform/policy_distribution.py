@@ -2154,6 +2154,26 @@ def apply_ceiling(ceiling: GovernanceCeiling) -> None:
     validate_ceiling(ceiling)
     set_context(replace(current_context(), governance=ceiling))
 
+    # NOTE: the selectable-ACP-backend set is deliberately NOT recomputed here.
+    #
+    # Every other chokepoint reads ``current_context().governance`` per decision, so the
+    # swap above is all they need. The backend gate cannot: its single gate
+    # ``resolve_selected_backend`` runs inside ``KiroCrewConfig.load()``, and reading a
+    # ceiling there re-enters that load (harness-parity H3). Its state therefore lives in
+    # the ``acp_backends`` registry, established once from ``bootstrap_context``.
+    #
+    # Recomputing the registry here would bind the new ceiling for backend SELECTION
+    # while leaving sessions and pooled providers already running a now-denied harness
+    # untouched -- an enforcement that looks complete and is not. Retiring live work needs
+    # a session-lifecycle path that does not exist yet (tracked separately), so the
+    # promise this scope makes is deliberately the narrow one it can keep: the set is
+    # decided at gateway start, and a policy change binds on the next start. That is
+    # stated in the dashboard panel and in
+    # ``docs/system-specs/modules/governance.md``. Wiring the recompute in is a
+    # one-line change once retirement exists -- ``apply_selectable_denials`` assigns
+    # ``baseline - denied`` rather than mutating, so it is already safe to re-run with a
+    # looser ceiling.
+
 
 def refresh_now(*, force: bool = False) -> RefreshOutcome:
     """Re-fetch the central ceiling and install it if it is usable.

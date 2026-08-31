@@ -9880,12 +9880,17 @@
         "could_not_save_the_agent_backend": "Não foi possível salvar o backend do agente.",
         "default_all_features_supported": "Predefinição. Todas as funcionalidades são suportadas.",
         "experimental": "Experimental",
+        "install_check_failed": "Não foi possível verificar se isto está instalado nesta máquina.",
+        "installed_restart_required": "Instalado nesta máquina, mas este gateway precisa reiniciar antes de poder ser usado.",
         "kas_kiro_agent": "KAS (kiro-agent)",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "Carregando a configuração…",
+        "missing_components": "Ausente nesta máquina: {{components}}",
+        "missing_components_with_command": "Ausente nesta máquina: {{components}}. Instale com: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "As novas sessões usam este agente. Uma sessão já aberta mantém aquele com que foi iniciada — alterar aqui não a modifica a meio da sessão.",
         "not_enabled_in_this_build": "Não ativado nesta build",
-        "retry": "Tentar novamente"
+        "retry": "Tentar novamente",
+        "set_is_fixed_at_gateway_start": "Quais agentes aparecem aqui é decidido quando o gateway inicia. Uma implantação gerenciada pode restringir o conjunto por política; editar essa política passa a valer no próximo início."
       },
       "featurePreviewsTab": {
         "crew": "Crew",

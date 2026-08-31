@@ -1124,6 +1124,43 @@ export interface TrustedAppsRevokeResult extends TrustedAppsData {
   disabled: boolean
 }
 
+/**
+ * Whether THIS MACHINE has an ACP backend's components installed.
+ *
+ * `'unknown'` means the check itself failed, and it is NOT a synonym for
+ * `'missing'`: telling someone to install what they may already have costs them a
+ * global package install for nothing. Consumers must keep the three apart.
+ */
+export type AcpBackendInstalled = 'installed' | 'missing' | 'unknown'
+
+/**
+ * One row of `GET /api/acp-backends` — a backend the code knows about, paired
+ * with what this build can serve and what this machine actually has.
+ *
+ * `selectable` is a BUILD/edition-and-policy fact (the same set
+ * `PATCH /api/config/kirocrew` validates against); `installed` is a machine fact.
+ * They are independent: a build can serve a backend whose binary is absent, and a
+ * machine can hold a backend this build refuses to run.
+ *
+ * `missing_components` is non-empty only when `installed === 'missing'`;
+ * `install_command` is `''` when there is nothing to suggest.
+ */
+export interface AcpBackendProbe {
+  id: string
+  policy_id: string
+  selectable: boolean
+  installed: AcpBackendInstalled
+  missing_components: string[]
+  install_command: string
+  /**
+   * Installed on disk, but the RUNNING gateway already resolved its absence and
+   * cached that for the process's life — so a session started now would still
+   * fail. Disables the option and says restart, rather than offering a control
+   * that is guaranteed to error.
+   */
+  restart_required: boolean
+}
+
 let _sessionExpiredShown = false
 
 /**
@@ -2672,6 +2709,10 @@ export const api = {
   kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
   saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
   patchConfig: (path: string, value: unknown) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value }) }).then(j),
+  // Owner-only, and absent (404) on an older gateway. Both of those reach the
+  // caller as a rejection, which is the intended signal: "no probe information",
+  // to be treated as fail-open rather than as a verdict.
+  acpBackends: () => fetch('/api/acp-backends').then(j) as Promise<{ backends: AcpBackendProbe[] }>,
   // Optional integrations — backend endpoints are graceful no-ops on a public
   // install (AIM / kiro usage are stubbed). Kept so the UI compiles and
   // degrades gracefully (panels render empty when the feature is absent).

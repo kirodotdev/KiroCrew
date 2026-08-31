@@ -9734,12 +9734,17 @@
         "could_not_save_the_agent_backend": "एजेंट बैकएंड सहेजा नहीं जा सका।",
         "default_all_features_supported": "डिफ़ॉल्ट। सभी सुविधाएँ समर्थित हैं।",
         "experimental": "प्रयोगात्मक",
+        "install_check_failed": "यह जाँचा नहीं जा सका कि यह इस मशीन पर इंस्टॉल है या नहीं।",
+        "installed_restart_required": "इस मशीन पर इंस्टॉल है, लेकिन उपयोग से पहले इस gateway को पुनः आरंभ करना होगा।",
         "kas_kiro_agent": "KAS (kiro-agent)",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "कॉन्फ़िगरेशन लोड हो रहा है…",
+        "missing_components": "इस मशीन पर अनुपस्थित: {{components}}",
+        "missing_components_with_command": "इस मशीन पर अनुपस्थित: {{components}}। इससे इंस्टॉल करें: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "नए सत्र इस एजेंट का उपयोग करते हैं। पहले से खुला सत्र उसी एजेंट पर बना रहता है जिससे वह शुरू हुआ था — यहाँ बदलने से चालू सत्र नहीं बदलता।",
         "not_enabled_in_this_build": "इस बिल्ड में सक्रिय नहीं है",
-        "retry": "पुनः प्रयास करें"
+        "retry": "पुनः प्रयास करें",
+        "set_is_fixed_at_gateway_start": "यहाँ कौन-से एजेंट दिखते हैं यह gateway शुरू होने पर तय होता है। प्रबंधित परिनियोजन नीति द्वारा इस समूह को सीमित कर सकता है; उस नीति में बदलाव अगली शुरुआत पर लागू होता है।"
       },
       "featurePreviewsTab": {
         "crew": "Crew",

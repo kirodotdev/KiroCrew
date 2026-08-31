@@ -1240,9 +1240,10 @@ without re-implementing it.
 **`host` surface (in-process host actions).** A governance check that is not
 driven by a user-facing surface — app activation
 (`apps.manager._app_activation_denied`), Slack workspace admission
-(`slack.enterprise`), and non-Slack transport startup
-(`slack.gateway._channel_transport_permitted`) — runs under the `_host` sentinel
-session key, which classifies to surface `host`. Operators can bind a
+(`slack.enterprise`), non-Slack transport startup
+(`slack.gateway._channel_transport_permitted`), and the selectable-ACP-harness
+narrowing (`agent_backend_governance.narrow_selectable_backends`) — runs under
+the `_host` sentinel session key, which classifies to surface `host`. Operators can bind a
 `surface:host` profile to narrow these on top of the policy ceiling (e.g. an
 `apps` allowlist that further restricts which apps may activate, or a `channels`
 allowlist that narrows which transports may connect below what the ceiling
@@ -2063,7 +2064,9 @@ command body + the enterprise force-pin for built-in denied-command rules, see
 below), `filesystem.read` / `filesystem.write` / `folders.*` and
 `network.egress` (host gate via tool kind + args), `channels` (per-transport at
 the messaging chokepoint AND at non-Slack transport startup), `apps` (app
-activation), `sandbox.min_level` (ordinal
+activation), `agent_backend` (which ACP harness a deployment may select —
+materialised by narrowing the `acp_backends` registry at boot and on every
+runtime ceiling install, see below), `sandbox.min_level` (ordinal
 floor at `wrap_argv`), `approval_mode` (boot floor only), and every capability
 gate — `capabilities.spawn`, `capabilities.messaging`, `capabilities.cron`,
 `capabilities.memory_writes`, `capabilities.script_hooks`,
@@ -2422,6 +2425,152 @@ switch off" (flippable) from "off because an administrator pinned it" (a config
 write returns 403), since offering a working-looking toggle for the second is the
 half-control this row exists to avoid.
 
+### Which ACP harness a deployment may select — `agent_backend`
+
+`agent.acp_backend` chooses the harness a session runs on (kiro-cli, KAS, and
+whatever an edition registered — see [harness-parity.md](harness-parity.md)).
+Two different questions decide whether a value is usable, and keeping them apart
+is what this row is for:
+
+- **Can this build serve it?** `acp_backends.selectable_backends()` — a
+  capability fact contributed by the edition that called
+  `register_selectable_backend`. Not governable: no policy can conjure a harness
+  the build has no code for.
+- **May THIS DEPLOYMENT select it?** the `agent_backend` `SCOPE_CATALOG` row
+  (a `ScopedRuleset` on the `identifier` matcher; data-only shape — no
+  `CONTRACT_VERSION` or evaluator change, mirroring the rows above), so a managed
+  fleet can qualify one harness and bound the rest.
+
+**Members are POLICY ids, not the code's spelling** — `kiro` / `kas` / `claude`,
+translated by `acp_backends.POLICY_ID_BY_BACKEND`. `ACP_BACKEND_KIRO` is the
+empty string internally, which no identifier matcher can carry: an empty
+allow/deny entry is indistinguishable from a typo'd blank a JSON linter would
+keep. The wire vocabulary is therefore owned in one place rather than translated
+at each reader.
+
+**Additive over a floor — the semantics ruling that unblocked
+[issue #6622](https://github.com/kirodotdev/KiroCrew/issues/6622).**
+
+```json
+{"agent_backend": {"mode": "allow", "allow": ["claude"]}}
+```
+
+means **also allow claude**, not **only claude**: `kiro` stays selectable because
+`acp_backends.GOVERNANCE_FLOOR_BACKEND` is never submitted to the scope at all,
+so no rule can remove it. The exclusive reading was rejected because it can empty
+the selectable set, and an install with **no startable harness cannot be repaired
+from the dashboard** — the trust-root `security_policy.json` is the one file the
+dashboard may not write (see
+[Self-protection](#self-protection-the-keystone)). The guarantee does not rest on
+the governance caller being careful either: `apply_selectable_denials` force-keeps
+the floor even when a caller names it in `denied`. Issue #6622 remains open for
+the wider enforcement question; only the semantics is settled here.
+
+kiro-cli is the floor rather than KAS deliberately. KAS is not an independent
+harness — it is served by kiro-cli's own ACP relay
+(`acp/kas_transport.build_kas_argv`) — so a KAS floor would rest on the same
+binary while adding a second thing that can be absent. The floor has to be the
+member with the fewest preconditions of its own; revisit if KAS ever ships a
+binary of its own.
+
+**Enforced by RECOMPUTING the registry, not by a per-decision read.** This is the
+one scope here whose answer is materialised instead of resolved at each decision.
+`agent_backend_governance.narrow_selectable_backends()` iterates the BASELINE
+(`registered_backends()`), asks the scope about every non-floor member, and
+assigns `baseline - denied` whole via `apply_selectable_denials`. One call site,
+**outside** `KiroCrewConfig.load()`:
+
+| Call site | When | Why it is needed |
+|---|---|---|
+| `platform/bootstrap.py::bootstrap_context` | after `set_context`, and after every edition's `register_acp_backends` | the first session already sees the policy, and nothing an edition registers later escapes it |
+
+**When a policy change binds: the next gateway start.** `apply_ceiling` replaces
+`current_context().governance` mid-process — the poll thread reaches it through
+`refresh_now()` — and every other scope on this page picks that up on its next
+decision. This one does not, deliberately.
+
+Re-deriving the registry there would bind the new ceiling for backend SELECTION only.
+Sessions already running the now-denied harness, and providers already in the warm
+pool, keep going: nothing in this scope can retire them, because retiring live work is
+a session-lifecycle capability that does not exist yet. The operator-visible result
+would be the worst of both — the option disappears from the panel while the harness is
+still in use, which reads as "it stopped being used". A narrow promise kept beats a
+broad one that quietly holds only for new sessions, so the contract is stated plainly
+instead: the set is decided at gateway start, and editing policy takes effect on the
+next start. The dashboard panel says exactly that
+(`set_is_fixed_at_gateway_start`), and
+`test_apply_ceiling_does_not_renarrow_the_registry` pins it so the omission cannot be
+mistaken for an oversight and quietly "fixed" without the retirement half.
+
+Assigning rather than subtracting still earns its place at one call site: the recompute
+is idempotent, order-independent and reversible, so adding the runtime call site once
+retirement exists is a one-line change rather than a redesign of the primitive.
+
+**Why it cannot be a per-decision read like every other scope.** Three
+harness-parity invariants rule out each of the otherwise-obvious positions:
+
+- **H3** — the single selectability gate `resolve_selected_backend` runs inside
+  `KiroCrewConfig.load()` and must never read the platform context:
+  `current_context()`'s lazy branch loads config, so resolving a ceiling there
+  re-enters the load that called it. The gate cannot ask.
+- **H4** — selectability has exactly ONE gate. A second derivation (an
+  intersection in the dashboard handler, say) is the drift the registry replaced.
+- **H13** — the Kiro construction path gains no conditional in service of an
+  adapter, which rules out `create_provider_factory`; a test asserts no governance
+  call appears there.
+
+Narrowing the registry satisfies all three: the context is installed at both call
+sites (so no re-entrant load), the registry stays the single source, and no call
+site changes. Everything downstream inherits the narrowed answer with no code of
+its own — `resolve_selected_backend` degrades a now-denied persisted value to the
+floor with a logged reason on the next load, and the `PATCH
+/api/config/kirocrew` allowlist, `GET /api/config/schema`, `GET /api/acp-backends`
+and the provider factory all read the one derivation
+(`handlers/core.py::_selectable_acp_backends`). `bootstrap_context` additionally
+re-runs that SAME gate over the config instance it is holding — that instance was
+normalised before the narrowing — rather than adding a second gate anywhere.
+
+**`GET /api/acp-backends`** is the operator-facing view of the outcome: one
+owner-only row per backend in `ACP_BACKENDS_KNOWN`, carrying `selectable` (build
+capability ∩ this deployment's policy, from the derivation above) beside
+`installed` (is the harness on THIS machine, from `agent_sdk.probe_backends`).
+The two facts are deliberately not conflated: a policy-denied harness and an
+uninstalled
+one need different operator remedies, and the dashboard must not offer an install
+instruction for a backend an administrator pinned off.
+
+**Fails CLOSED to the floor, which is what keeps fail-closed from meaning
+bricked.** `governance_permits(..., fail_closed=True)` denies for an error raised
+inside it, and `_scope_permits` additionally denies for what that helper does not
+swallow (an absent platform context, an import failure) — so an unqualified
+harness never becomes selectable on an unreadable policy. Without the floor,
+closed and bricked would be the same state. `narrow_selectable_backends` itself
+never raises: a boot that aborts because a policy could not be evaluated is worse
+than one that starts on the floor alone, and the same holds for a runtime refresh
+whose caller keeps serving traffic either way (it leaves the registry as it was,
+plus a logged warning).
+
+**Audited in BOTH directions**, unlike the publish gate which audits denials
+only. Every decision lands a `governance_decision` SEL record through
+`log_governance_decision` with `outcome` `"allowed"` / `"denied"` — the vocabulary
+`sel.py` pins and `governance_profiles` emits, so a log query for allowed
+decisions cannot miss this scope. The full record is affordable precisely because
+the decision is materialised: it runs once per gateway start and once per pushed
+ceiling, not per panel open — and *which harnesses did this deployment admit* is
+the question an operator actually reconstructs afterwards, which a denials-only
+log cannot answer. Audit failure is swallowed: an unwritable log must not decide
+which harness starts.
+
+Every decision is bound to `HOST_SESSION_KEY` (`_host`), **not** an empty session
+key, and that is load-bearing rather than cosmetic: an empty key classifies to
+surface `unknown` and matches no profile, so a `surface:host` profile would be
+silently ignored and the harness it denies would stay selectable. It is the same
+binding app activation and the messaging host gates use — see
+[`host` surface](#profile-resolution--binding).
+
+The Security panel picks the row up automatically — `api_governance_policy`
+iterates `SCOPE_CATALOG`.
+
 ### Computer use is NOT governed (deliberately)
 
 Computer use (see [computer-use.md](computer-use.md)) has **no scope rows in
@@ -2513,6 +2662,16 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `GOVERNANCE_ERROR_REASON` (the eval-error marker consumers match on),
   `vet_and_audit`.
 - `security.py` — `_SENSITIVE_HOME_DIRS` keystone entries.
+- `agent_backend_governance.py` — the `agent_backend` scope: `SCOPE`,
+  `narrow_selectable_backends` (the registry recompute, plus its host-bound,
+  both-directions audit), driven from `platform/bootstrap.py::bootstrap_context`
+  and `platform/policy_distribution.py::apply_ceiling`.
+- `acp_backends.py` — the selectable registry the scope narrows:
+  `GOVERNANCE_FLOOR_BACKEND`, `POLICY_ID_BY_BACKEND`, the baseline/effective
+  split (`registered_backends` / `selectable_backends`) and
+  `apply_selectable_denials`.
+- `dashboard/handlers/acp_backend_status.py` — `GET /api/acp-backends`
+  (selectability ∩ install state, owner-only).
 - `hooks.py` — Plane A gate threading + the computer-use read-only auto-approve
   (`_cu_read_only_auto_approve`, which reads the action-class table rather than a
   governance row).
@@ -2556,5 +2715,10 @@ controls on the cache itself — `TestAnExposedCacheIsStillReadOnly`,
 read-only bind and its sealing remount, refuse the spawn when they fail),
 `test_governance_updates.py` (the
 `updates` pins, the shared seam's fail-open-on-error disposition, and the
-tracked-remote resolution), and `test_computer_use_gate.py` (that the
+tracked-remote resolution), `test_agent_backend_governance.py` (the
+`agent_backend` scope: the additive-over-floor semantics, the registry recompute
+and its restore-on-loosening behaviour, the gateway-start binding contract and that
+a runtime ceiling install deliberately does not re-derive the set, the
+host-session binding, the both-directions audit, the fail-closed disposition, and
+that no second gate exists), and `test_computer_use_gate.py` (that the
 computer-use gate is audit-only and permits — see the section above).

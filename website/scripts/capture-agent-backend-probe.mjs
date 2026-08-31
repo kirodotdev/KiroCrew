@@ -1,0 +1,188 @@
+/**
+ * Capture harness for Developer > Agent Backend, once it reads the machine probe.
+ *
+ * Runs the REAL built SPA (website/dist) behind a static file server with every
+ * /api/** call answered from fixtures — no gateway, no token, no agent. The panel
+ * is static, so these are still PNGs rather than video.
+ *
+ * ## Why the scenes are fixtures rather than this machine's real state
+ *
+ * The panel composes TWO independent server facts, and one of the three verdicts
+ * each fact can carry is unreachable on any single host: a public build never
+ * reports `claude` as selectable, and `installed: "unknown"` only happens when the
+ * probe itself raises. Shooting only the local truth would leave the two lines this
+ * change exists for undocumented. Every scene below is therefore a payload the
+ * server can genuinely emit; the FIRST one is this machine's real answer, recorded
+ * from an unmocked probe call, and the others vary one field from it.
+ *
+ * Usage: node scripts/capture-agent-backend-probe.mjs [outDir]
+ */
+import { chromium } from 'playwright'
+import { mkdirSync } from 'node:fs'
+import { serveDist } from './lib/serve-dist.mjs'
+import { json, makeFixedApi, handleBootRoute } from './lib/boot-api.mjs'
+
+const OUT = process.argv[2] || '../temp-screenshots/agent-backend-probe'
+const PROJECT = '/home/user/workspace/KiroCrew'
+
+mkdirSync(OUT, { recursive: true })
+
+const CLAUDE_INSTALL = 'npm i -g @agentclientprotocol/claude-agent-acp'
+
+/** One row of GET /api/acp-backends. */
+const row = (id, policy_id, over = {}) => ({
+  id,
+  policy_id,
+  selectable: true,
+  installed: 'installed',
+  missing_components: [],
+  install_command: '',
+  restart_required: false,
+  ...over,
+})
+
+/**
+ * Scene 1 — what THIS host actually returns today: kiro and kas resolved, claude
+ * not selectable on a public build (its registry row is absent) and, separately,
+ * only half-installed. `selectable: false` is what the panel reports, because the
+ * build gate outranks the machine gate.
+ */
+const SCENE_LOCAL = {
+  schemaEnum: ['', 'kas'],
+  backends: [
+    row('claude', 'claude', {
+      selectable: false,
+      installed: 'missing',
+      missing_components: ['claude-agent-acp'],
+      install_command: CLAUDE_INSTALL,
+    }),
+    row('kas', 'kas'),
+    row('', 'kiro'),
+  ],
+}
+
+/**
+ * Scene 2 — the missing-component line. Same host state, but on a build whose
+ * edition registered the claude provider, so the machine gate is now the one that
+ * decides and the panel names the component plus its install command.
+ */
+const SCENE_MISSING = {
+  schemaEnum: ['', 'kas', 'claude'],
+  backends: [
+    row('claude', 'claude', {
+      installed: 'missing',
+      missing_components: ['claude-agent-acp'],
+      install_command: CLAUDE_INSTALL,
+    }),
+    row('kas', 'kas'),
+    row('', 'kiro'),
+  ],
+}
+
+/**
+ * Scene 3 — the check-failed line. `unknown` must leave the option ENABLED: the
+ * probe could not answer, and disabling on that would send someone to install what
+ * they may already have.
+ */
+const SCENE_UNKNOWN = {
+  schemaEnum: ['', 'kas', 'claude'],
+  backends: [
+    row('claude', 'claude', { installed: 'unknown' }),
+    row('kas', 'kas'),
+    row('', 'kiro'),
+  ],
+}
+
+/**
+ * Scene 4 — the restart disclosure, and the one case where a POSITIVE install
+ * verdict still disables the option. The adapter is on disk now, but this gateway
+ * process already cached its absence, so a session started now would still fail.
+ * Offering the control would be the "told you it was ready, then failed" trap.
+ */
+const SCENE_RESTART = {
+  schemaEnum: ['', 'kas', 'claude'],
+  backends: [
+    row('claude', 'claude', { restart_required: true }),
+    row('kas', 'kas'),
+    row('', 'kiro'),
+  ],
+}
+
+let scene = SCENE_LOCAL
+
+const { srv, base } = await serveDist()
+
+const browser = await chromium.launch()
+const context = await browser.newContext({
+  viewport: { width: 1280, height: 900 },
+  deviceScaleFactor: 2,
+})
+const page = await context.newPage()
+
+const errors = []
+page.on('pageerror', e => errors.push(`PAGEERROR: ${e.message}`))
+page.on('console', m => { if (m.type() === 'error') errors.push(m.text().slice(0, 200)) })
+
+await page.routeWebSocket(/\/api\/ws/, () => {})
+
+const fixedApi = makeFixedApi(PROJECT)
+await page.route('**/api/**', route => {
+  const path = new URL(route.request().url()).pathname
+
+  // The two facts the panel composes.
+  if (path === '/api/acp-backends') return json(route, { backends: scene.backends })
+  if (path === '/api/config/schema') {
+    return json(route, {
+      entries: [{ path: 'agent.acp_backend', type: 'enum', enumValues: scene.schemaEnum }],
+    })
+  }
+  // Which option is pressed.
+  if (path === '/api/config/kirocrew') return json(route, { agent: { acp_backend: '' } })
+
+  return handleBootRoute(route, path, { project: PROJECT, fixedApi })
+})
+
+await page.addInitScript(() => {
+  localStorage.clear()
+  localStorage.setItem('mc-theme', 'dark')
+  localStorage.setItem('mc-onboarded', '1')
+})
+
+const heading = () => page.getByText('Agent Backend', { exact: true }).first()
+
+/** Wait for the card to settle after a (re)navigation, then screenshot it. */
+const shoot = async (name) => {
+  await heading().waitFor({ timeout: 20000 })
+  // The status lines come from a second query; wait for one of its verdicts
+  // rather than a bare timeout, so a scene can never be shot pre-hydration.
+  await page.waitForTimeout(600)
+  await page.screenshot({ path: `${OUT}/${name}` })
+}
+
+const reloadScene = async (next) => {
+  scene = next
+  await page.reload({ waitUntil: 'domcontentloaded' })
+}
+
+await page.goto(`${base}/developer?tab=agent-backend`, { waitUntil: 'domcontentloaded' })
+await shoot('agent-backend-local.png')
+
+await reloadScene(SCENE_MISSING)
+await page.getByText(CLAUDE_INSTALL, { exact: false }).waitFor({ timeout: 20000 })
+await shoot('agent-backend-missing.png')
+
+await reloadScene(SCENE_UNKNOWN)
+await shoot('agent-backend-unknown.png')
+
+await reloadScene(SCENE_RESTART)
+await page.getByText('must restart', { exact: false }).waitFor({ timeout: 20000 })
+await shoot('agent-backend-restart.png')
+
+await browser.close()
+srv.close()
+
+if (errors.length) {
+  console.error('console/page errors:\n' + errors.join('\n'))
+  process.exit(1)
+}
+console.log(`wrote 4 frames to ${OUT}`)

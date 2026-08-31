@@ -230,6 +230,32 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     except Exception:
         logger.warning("register_acp_backends failed; continuing", exc_info=True)
 
+    # Apply the ``agent_backend`` governance scope by narrowing that same registry —
+    # HERE, and only here, because this is the one point where both halves are true:
+    # the context is installed (so resolving the ceiling cannot re-enter the config
+    # load, harness-parity H3) and every edition has finished widening (so nothing
+    # registered later escapes the policy). Narrowing the registry rather than
+    # checking downstream is what keeps selectability at ONE gate (H4) and leaves the
+    # Kiro construction path free of an adapter-driven conditional (H13).
+    #
+    # Best-effort like the registration above: a policy that cannot be evaluated
+    # denies the harness it was evaluating and leaves the floor, which is a startable
+    # deployment — aborting boot would not be.
+    try:
+        from kiro_crew.agent_backend_governance import narrow_selectable_backends
+
+        if narrow_selectable_backends():
+            # The cfg passed into this function was normalized BEFORE the narrowing,
+            # so a value the policy just removed is still on this instance while
+            # every later ``KiroCrewConfig.load()`` (which re-reads from disk) sees
+            # the narrowed answer. Re-run the SAME single gate on that one field
+            # rather than adding a second one anywhere.
+            from kiro_crew.acp_backends import resolve_selected_backend
+
+            cfg.agent.acp_backend = resolve_selected_backend(cfg.agent.acp_backend)
+    except Exception:
+        logger.warning("agent_backend policy narrowing failed; continuing", exc_info=True)
+
     # Register any edition-contributed artifact-publish providers now that the
     # context is installed.  The Default PublishRegistry.register_publish_providers()
     # is a no-op (the public edition ships no publish destination), so the

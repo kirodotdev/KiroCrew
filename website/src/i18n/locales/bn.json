@@ -9734,12 +9734,17 @@
         "could_not_save_the_agent_backend": "এজেন্ট ব্যাকএন্ড সংরক্ষণ করা যায়নি।",
         "default_all_features_supported": "ডিফল্ট। সব বৈশিষ্ট্য সমর্থিত।",
         "experimental": "পরীক্ষামূলক",
+        "install_check_failed": "এই মেশিনে এটি ইনস্টল করা আছে কিনা তা যাচাই করা যায়নি।",
+        "installed_restart_required": "এই মেশিনে ইনস্টল করা আছে, তবে ব্যবহারের আগে এই gateway পুনরায় চালু করতে হবে।",
         "kas_kiro_agent": "KAS (kiro-agent)",
         "kiro_cli": "Kiro CLI",
         "loading_configuration": "কনফিগারেশন লোড হচ্ছে…",
+        "missing_components": "এই মেশিনে অনুপস্থিত: {{components}}",
+        "missing_components_with_command": "এই মেশিনে অনুপস্থিত: {{components}}। ইনস্টল করুন: {{command}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "নতুন সেশনগুলি এই এজেন্ট ব্যবহার করে। ইতিমধ্যে খোলা সেশন যে এজেন্টে শুরু হয়েছিল সেটিই ধরে রাখে — এখানে বদলালে চলমান সেশন বদলায় না।",
         "not_enabled_in_this_build": "এই বিল্ডে সক্রিয় নয়",
-        "retry": "আবার চেষ্টা করুন"
+        "retry": "আবার চেষ্টা করুন",
+        "set_is_fixed_at_gateway_start": "এখানে কোন এজেন্টগুলি দেখা যাবে তা gateway চালু হওয়ার সময় নির্ধারিত হয়। পরিচালিত ডিপ্লয়মেন্ট নীতির মাধ্যমে এই সেট সীমিত করতে পারে; নীতি সম্পাদনা পরবর্তী চালুর সময় কার্যকর হয়।"
       },
       "featurePreviewsTab": {
         "crew": "Crew",

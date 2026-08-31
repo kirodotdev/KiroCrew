@@ -1528,6 +1528,11 @@ def _selectable_acp_backends() -> list[str]:
     entry below reads in this module's vocabulary; the answer itself comes from the
     one code owner, which the config load path and the schema endpoint also use —
     three independent derivations is how the old literal list drifted.
+
+    Deployment POLICY needs no second derivation here: the ``agent_backend``
+    governance scope is applied once at boot by narrowing the registry itself
+    (``agent_backend_governance.narrow_selectable_backends``), so a policy-denied
+    harness is already absent from the answer this returns.
     """
     return selectable_backend_values()
 
