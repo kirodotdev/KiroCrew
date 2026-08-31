@@ -204,8 +204,10 @@ async def send_dashboard_link(
     Returns the generated URL (for logging), or an empty string on failure.
     The link is always sent as a DM to prevent token leakage in channels.
 
-    The URL must be clicked within 5 minutes. Once opened, the session
-    cookie lasts for *ttl* seconds (capped at ``MAX_SESSION_TTL_SECS``).
+    The URL must be clicked within 5 minutes, or within the session TTL when
+    that is shorter — the mint clamps the click window so the link never
+    authenticates past the session it grants. Once opened, the session cookie
+    lasts for *ttl* seconds (capped at ``MAX_SESSION_TTL_SECS``).
     """
     session_ttl = min(ttl, MAX_SESSION_TTL_SECS)
     cfg = KiroCrewConfig.load()
@@ -288,7 +290,10 @@ async def send_dashboard_link(
     if proxy:
         proxy_line = f"\n🔗 <{proxy}/?token={token}|Open via DevSpaces Proxy>"
 
-    link_mins = LINK_WINDOW_SECS // 60
+    # ``generate_token`` clamps the link-click ``exp`` to the session TTL, so a
+    # sub-window session gets a link that dies with it. Report the clamped value,
+    # not the constant, or the countdown promises minutes the link does not have.
+    link_mins = min(LINK_WINDOW_SECS, session_ttl) // 60
     session_mins = session_ttl // 60
     # Mirrors the guidance the boot log gives, because this is the one case where
     # the link cannot work anywhere but the host and will not start working later.
