@@ -59,7 +59,15 @@ export default function AppIconTile({
       style={hasIcon ? { background: 'var(--bg-elevated)' } : { background: gradientFor(name) }}
     >
       {hasIcon ? (
-        <AppIcon icon={icon} iconUrl={iconUrl} iconUrlDark={iconUrlDark} size={30} />
+        // ``rasterFill``: an app-supplied icon FILE is a finished tile (the
+        // publishing guide asks for a 512x512 opaque square), so it bleeds to
+        // this box's edges and the box's own radius clips it. Inset at 30px in a
+        // 58px tile it reads as a small sticker stuck on a dark plate rather
+        // than as the app's icon. The flag is inert on the glyph paths by
+        // construction: a first-party ``/app-assets/`` SVG and the lucide
+        // fallback stay inset at ``size``, because line art needs that air and
+        // bleeding it would run its strokes into the border.
+        <AppIcon icon={icon} iconUrl={iconUrl} iconUrlDark={iconUrlDark} size={30} rasterFill />
       ) : (
         <Package size={22} />
       )}
