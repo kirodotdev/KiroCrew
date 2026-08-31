@@ -9,10 +9,10 @@ The backend has the sibling mechanism, Composed Platform Providers: see
 [`docs/system-specs/modules/platform-context.md`](../../docs/system-specs/modules/platform-context.md).
 The two are independent. Nothing here reads `CONTRACT_VERSION`.
 
-## The thirteen registry seams
+## The fourteen registry seams
 
 Each entry is one registrar the edition may call, paired with the reader the core
-already calls. `src/extensions.ts` names exactly these thirteen in its header.
+already calls. `src/extensions.ts` names exactly these fourteen in its header.
 `src/test/extensionSeams.test.tsx` exercises each one except the source-provider
 seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`.
 
@@ -31,16 +31,17 @@ seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`.
 | Non-app route prefixes | `components/MigrationCheck.tsx` | `registerNonAppPrefix()`, read by `MigrationCheck` |
 | Source providers (Changes panel + sidebar chips) | `utils/pullRequestLinks.ts` | `registerSourceProvider()` to `sourceProviderDescriptor()` |
 | Phone-connection method renderers | `components/mobileConnectRenderers.tsx` | `registerMobileConnectRenderer()` to `getMobileConnectRenderers()` / `canRenderMobileConnectKind()` |
+| Bare-token autolink rules | `utils/autolinkRules.ts` | `registerAutolinkRules()` to `getAutolinkRules()` |
 
 Plus one **exported-transport** seam for edition-owned API methods. It is not a
 registry; see "API methods" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets, highlight.js languages) are core-internal
-wiring, not edition seams. Only the thirteen above are called from the composition
+wiring, not edition seams. Only the fourteen above are called from the composition
 root.
 
-Twelve of the thirteen are **additive** — the edition contributes a surface. The
+Thirteen of the fourteen are **additive** — the edition contributes a surface. The
 remaining one is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
 Overview surface for a distribution whose environment makes it permanently
 inapplicable, which no additive seam can express. It is named `suppress*` rather
@@ -486,6 +487,30 @@ disables only itself. It **cannot widen governance**: the endpoint filters every
 through `capabilities.mobile_connect` before the dialog sees a kind, and each mint
 endpoint re-runs that decision (`mint_denied_reason`), so a renderer for a denied or
 unoffered method draws nothing.
+
+**Bare-token autolink rules.**
+`registerAutolinkRules([{ id, pattern, href }])` teaches the markdown renderer that
+a bare token is an address. GFM already autolinks anything carrying a scheme; what
+it cannot know is that in a given organisation `TICKET-1234` is a link. The core
+registers none, so the stock build is byte-identical — the plugin returns before
+walking when the registry is empty — and the vocabulary stays
+downstream, where it belongs: a token scheme usually names infrastructure specific
+to one deployment.
+
+`getAutolinkRules()` is the reader, returning rules in **registration order**;
+where two rules match overlapping spans the earlier-registered one wins.
+`remarkAutolinkRules` is the consumer, ordered last in `REMARK_PLUGINS`.
+
+Everything is validated at **registration**, so a bad rule fails once and loudly
+instead of on one unlucky message: a sticky pattern is refused, an empty-matching
+pattern is refused, a missing `g` is added, and `href` must be an absolute
+`http(s)` URL template containing `{match}`, with no userinfo and the placeholder
+outside the authority. `{match}` is substituted percent-encoded, which is what
+makes that single check sufficient — a token cannot introduce a scheme, userinfo,
+host or separator, so no per-match re-check could reach a different verdict.
+
+The safety argument for *where* rules are applied belongs to the plugin and is
+documented in `website/src/utils/remarkAutolinkRules.ts`.
 
 ## Reactivity
 

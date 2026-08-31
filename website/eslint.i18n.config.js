@@ -632,6 +632,9 @@ export default [
               // above — it would start releasing real copy the moment a label
               // interpolated a placeholder.
               String.raw`^(?:\{owner\}(?:/_git)?/\{repo\}|\{owner\}|\{repo\}|_workitems)$`,
+              // The autolink href template's substitution placeholder, consumed by
+              // `expand()`; a translated token would stop every match expanding.
+              String.raw`^\{match\}$`,
               // A FILE-PICKER `accept` EXTENSION LIST, e.g.
               // `,.txt,.md,.json,.har,.yaml` — the comma-joined dot-extension
               // string handed to `<input type="file" accept=…>`. These live at
