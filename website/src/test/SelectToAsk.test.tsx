@@ -53,7 +53,10 @@ describe('Select-to-Ask', () => {
     const onAsk = vi.fn()
     renderWithProviders(<ToolbarHarness onAsk={onAsk} />)
     act(() => { screen.getByRole('button', { name: 'Ask in Side Chat' }).click() })
-    expect(onAsk).toHaveBeenCalledWith('hi', expect.anything())
+    // Selection actions may also receive a source descriptor; this case only
+    // verifies the selected text and selection geometry.
+    expect(onAsk.mock.calls[0][0]).toBe('hi')
+    expect(onAsk.mock.calls[0][1]).toBeTruthy()
   })
 
   it('SideChat seeds the draft as a grounding quote on the side-seed event', () => {

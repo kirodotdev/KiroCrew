@@ -7142,6 +7142,17 @@
       "submitting": "Отправка...",
       "thanks": "Спасибо за ваш отзыв!"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "Удалить все цитаты",
+      "jump_to_source": "Перейти к цитируемому сообщению",
+      "n_quotes": "Цитаты: {{n}} · {{roles}}",
+      "one_quote": "{{role}} · «{{excerpt}}»",
+      "remove_quote": "Удалить цитату",
+      "review_quotes": "Просмотреть цитаты",
+      "role_assistant": "Ассистент",
+      "role_unknown": "Цитата",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} сообщ.",
       "remove_reference": "Удалить ссылку",

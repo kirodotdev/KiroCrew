@@ -1246,6 +1246,17 @@
     }
   },
   "components": {
+    "quoteAnnotationPill": {
+      "clear_all": "Remove all quotes",
+      "jump_to_source": "Jump to the quoted message",
+      "n_quotes": "{{n}} quotes · {{roles}}",
+      "one_quote": "{{role}} · “{{excerpt}}”",
+      "remove_quote": "Remove quote",
+      "review_quotes": "Review quoted text",
+      "role_assistant": "Assistant",
+      "role_unknown": "Quoted",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "crewWakeSection": {
       "active": "active",
       "pause_named": "Pause {{name}}",

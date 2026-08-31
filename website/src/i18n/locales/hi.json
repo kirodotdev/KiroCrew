@@ -6934,6 +6934,17 @@
       "submitting": "सबमिट हो रहा है...",
       "thanks": "तुम्हारी प्रतिक्रिया के लिए धन्यवाद!"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "सभी उद्धरण हटाओ",
+      "jump_to_source": "उद्धृत संदेश पर जाओ",
+      "n_quotes": "{{n}} उद्धरण · {{roles}}",
+      "one_quote": "{{role}} · “{{excerpt}}”",
+      "remove_quote": "उद्धरण हटाओ",
+      "review_quotes": "उद्धृत टेक्स्ट देखो",
+      "role_assistant": "असिस्टेंट",
+      "role_unknown": "उद्धृत अंश",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} संदेश",
       "remove_reference": "संदर्भ हटाएँ",

@@ -7038,6 +7038,17 @@
       "submitting": "Envoi en cours…",
       "thanks": "Merci pour vos commentaires !"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "Supprimer toutes les citations",
+      "jump_to_source": "Accéder au message cité",
+      "n_quotes": "{{n}} citations · {{roles}}",
+      "one_quote": "{{role}} · « {{excerpt}} »",
+      "remove_quote": "Supprimer la citation",
+      "review_quotes": "Consulter le texte cité",
+      "role_assistant": "Assistant",
+      "role_unknown": "Citation",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} msgs",
       "remove_reference": "Supprimer la référence",

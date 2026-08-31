@@ -7038,6 +7038,17 @@
       "submitting": "Enviando...",
       "thanks": "¡Gracias por tus comentarios!"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "Eliminar todas las citas",
+      "jump_to_source": "Ir al mensaje citado",
+      "n_quotes": "{{n}} citas · {{roles}}",
+      "one_quote": "{{role}} · “{{excerpt}}”",
+      "remove_quote": "Eliminar cita",
+      "review_quotes": "Revisar texto citado",
+      "role_assistant": "Asistente",
+      "role_unknown": "Cita",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} msjs",
       "remove_reference": "Quitar referencia",

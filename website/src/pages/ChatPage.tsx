@@ -191,7 +191,6 @@ import type { FollowupItem } from '../store/chatSlice'
 // the selector would make it a new reference on every store update.
 const EMPTY_FOLLOWUPS: Record<string, { items: FollowupItem[]; ts: number }> = {}
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
-import FlyingQuote from '../components/FlyingQuote'
 import { useMessageSearch } from '../hooks/useMessageSearch'
 import SearchHighlightContext, { MessageSearchScope } from '../hooks/SearchHighlightContext'
 import SearchBar from '../components/SearchBar'
@@ -229,7 +228,15 @@ import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
+import {
+  loadQuoteDrafts,
+  saveQuoteDrafts as persistQuoteDrafts,
+  setQuoteDraft,
+  mergeQuoteRefs,
+} from '../utils/chatQuoteDrafts'
 import { addSessionRef, removeSessionRef, mergeSessionRefs, appendSessionRefLinks, type SessionRef } from '../utils/sessionRefs'
+import { prependQuoteRefs, type QuoteRef } from '../utils/quoteRefs'
+import type { SelectionSource } from '../components/SelectionToolbar'
 import { findPinnedPromptIdx, findNextPromptIdx, computePinPush, nextPinnedPromptState, type PinnedPromptState, pinHandoffY, pinPushTravel, pinHidesRow, jumpAnchorIdx, DEFAULT_PINNED_CARD_H } from '../utils/pinnedPrompt'
 import {
   adoptSourceSelections,
@@ -1252,8 +1259,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // smearing onto another.
   const sessionRefDrafts = useRef<Record<string, SessionRef[]>>(null!)
   if (sessionRefDrafts.current === null) sessionRefDrafts.current = loadSessionRefDrafts()
+  const quoteDrafts = useRef<Record<string, QuoteRef[]>>(null!)
+  if (quoteDrafts.current === null) quoteDrafts.current = loadQuoteDrafts()
   const saveDraftsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current) }, [])
+  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current); persistQuoteDrafts(quoteDrafts.current) }, [])
   const saveDraftsDebounced = useCallback(() => {
     if (saveDraftsTimer.current) clearTimeout(saveDraftsTimer.current)
     saveDraftsTimer.current = setTimeout(() => { saveDraftsTimer.current = null; saveDrafts() }, DRAFT_SAVE_DEBOUNCE_MS)
@@ -1399,9 +1408,24 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // NOT fire-and-forget: the receipt is the only thing that knows whether the
   // text reached the running turn, and the optimistic bubble asserts that it did.
   const steerMutation = useMutation({
-    mutationFn: ({ text, sendId, slot }: { text: string; sendId?: string; slot: string }) => api.steerChat(text, slot, sendId),
-    // eslint-disable-next-line no-console -- no toast for a rejected steer, which is otherwise indistinguishable from one the agent ignored
-    onError: (e) => { console.error('steer failed', e) },
+    mutationFn: ({ text, sendId, slot }: { text: string; sendId?: string; slot: string; quotes: QuoteRef[] }) => api.steerChat(text, slot, sendId),
+    onError: (e, { slot, quotes }) => {
+      // eslint-disable-next-line no-console -- no toast for a rejected steer, which is otherwise indistinguishable from one the agent ignored
+      console.error('steer failed', e)
+      if (!quotes.length) return
+      const onScreen = slot === activeSlotRef.current && composerSlotRef.current === slot
+      const keep = onScreen ? quotedRepliesRef.current : (quoteDrafts.current[slot] ?? [])
+      const restored = mergeQuoteRefs(keep, quotes)
+      setQuoteDraft(quoteDrafts.current, slot, restored)
+      if (onScreen) {
+        setQuotedReplies(restored)
+      } else if (composerSlotRef.current === slot) {
+        // The outgoing-slot persist effect has not run yet. Keep its ref aligned
+        // with the recovered draft so it cannot overwrite recovery mid-switch.
+        quotedRepliesRef.current = restored
+      }
+      saveDrafts()
+    },
     onSuccess: (body, { sendId, slot }) => {
       if (!sendId || !slot) return
       const receipt = (body ?? {}) as { ok?: boolean; steered?: boolean; queued?: boolean }
@@ -1897,10 +1921,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     for (const [k, v] of Object.entries(storedPastes)) { if (!(k in pasteDrafts.current)) pasteDrafts.current[k] = v }
     const storedSessionRefs = loadSessionRefDrafts()
     for (const [k, v] of Object.entries(storedSessionRefs)) { if (!(k in sessionRefDrafts.current)) sessionRefDrafts.current[k] = v }
+    const storedQuotes = loadQuoteDrafts()
+    for (const [k, v] of Object.entries(storedQuotes)) { if (!(k in quoteDrafts.current)) quoteDrafts.current[k] = v }
     if (prevSlot.current) setDraft(drafts.current, prevSlot.current, inputRef.current)
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
+    if (prevSlot.current) setQuoteDraft(quoteDrafts.current, prevSlot.current, quotedRepliesRef.current)
     const prevSlotVal = prevSlot.current
     prevSlot.current = activeSlot
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
@@ -1939,6 +1966,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setPendingSessions(activeSlot
       ? (sessionRefDrafts.current[activeSlot] ?? []).map(r => ({ ...r }))
       : [])
+    setQuotedReplies(activeSlot
+      ? (quoteDrafts.current[activeSlot] ?? []).map(quote => ({ ...quote }))
+      : [])
     knowledgeFetchRef.current.clearResults()
     setUploadError('')
     flushDrafts()
@@ -1950,6 +1980,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
     if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
     if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
+    if (prevSlot.current) setQuoteDraft(quoteDrafts.current, prevSlot.current, quotedRepliesRef.current)
     flushDrafts()
   }, [flushDrafts])
   // Flush pending draft save on tab close / refresh (debounce may not fire)
@@ -1959,6 +1990,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       if (prevSlot.current) setFileDraft(fileDrafts.current, prevSlot.current, pendingFilesRef.current)
       if (prevSlot.current) setPasteDraft(pasteDrafts.current, prevSlot.current, pasteBlocksRef.current)
       if (prevSlot.current) setSessionRefDraft(sessionRefDrafts.current, prevSlot.current, pendingSessionsRef.current)
+      if (prevSlot.current) setQuoteDraft(quoteDrafts.current, prevSlot.current, quotedRepliesRef.current)
       flushDrafts()
     }
     window.addEventListener('beforeunload', h)
@@ -2038,6 +2070,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Session references staged by dragging a session from the list onto this
   // pane. Serialized as LINKS on send — never the referenced transcript.
   const [pendingSessions, setPendingSessions] = useState<SessionRef[]>([])
+  // Text quotes staged by the Quote action. A ref mirror so the send path can
+  // read the current list without re-creating its callback on every keystroke,
+  // mirroring how pendingSessions is consumed below.
+  const [quotedReplies, setQuotedReplies] = useState<QuoteRef[]>([])
+  const quotedRepliesRef = useRef(quotedReplies)
+  useEffect(() => {
+    quotedRepliesRef.current = quotedReplies
+    const slot = composerSlotRef.current
+    if (slot) {
+      setQuoteDraft(quoteDrafts.current, slot, quotedReplies)
+      saveDraftsDebounced()
+    }
+    // draft key is composerSlotRef; slot-change effect handles that transition.
+  }, [quotedReplies, saveDraftsDebounced])
   const pendingSessionsRef = useRef(pendingSessions)
   useEffect(() => {
     pendingSessionsRef.current = pendingSessions
@@ -4414,7 +4460,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // widget action pre-filled. Cleared on every send so it can't go stale.
     const widgetOrigin = !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     widgetPrefillRef.current = null
-    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length) return
+    if (!raw && !pendingFilesRef.current.length && !pendingSessionsRef.current.length && !quotedRepliesRef.current.length) return
 
     // Sending while STREAMING dictation is live ends the dictation. The panel
     // advertises "Enter to send", so this path is reachable by design — and
@@ -4511,6 +4557,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // this shape since long before this feature, and changing it here would widen
     // the PR into pre-existing attachment behaviour.
     const sentSessionRefs = optionText ? [] : pendingSessionsRef.current.slice()
+    // Same send-or-clear discipline as session refs: snapshot now, clear after
+    // the send is accepted, so a quote is never sent twice nor silently dropped.
+    const sentQuotes = optionText ? [] : quotedRepliesRef.current.slice()
     const { txt: typedTxt, displayTxt: typedDisplayTxt, filePaths } = prepareSendPayload(raw, pendingFilesRef.current)
     // Folder references serialize like files but from the text alone: each
     // `@rel/` token becomes `[attached_dir N] /abs/path` in the LLM-facing
@@ -4536,8 +4585,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // is no collapsed form to preserve in the bubble, so what the user sees is
     // exactly what was sent. Appending (never splicing) also means paste-token
     // ranges found earlier in the string are untouched.
-    const txt = appendSessionRefLinks(typedTxtDirs, sentSessionRefs)
-    const displayTxt = appendSessionRefLinks(typedDisplayTxt, sentSessionRefs)
+    const txt = prependQuoteRefs(appendSessionRefLinks(typedTxtDirs, sentSessionRefs), sentQuotes)
+    const displayTxt = prependQuoteRefs(appendSessionRefLinks(typedDisplayTxt, sentSessionRefs), sentQuotes)
     // Expand paste tokens for the LLM; UI-facing displayTxt keeps the tokens
     // intact so the user bubble can render them as clickable chips.
     const activePastes = pasteBlocksRef.current
@@ -4554,7 +4603,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
     setPrefillHint(false)
     if (!optionText) {
-      setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
+      setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); setQuotedReplies([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; delete quoteDrafts.current[uiSlot]; saveDrafts() }
       // The challenge-handoff prompt is seeded into PREFILL_STORAGE_KEY and the
       // slot-restore effect re-applies it on slot changes. Once that prompt is
       // sent, clear the seed so a later slot-restore can't re-fill the (now
@@ -4622,6 +4671,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // pastes), keeping whatever the user staged since the failed send.
         const keepRefs = onScreen ? pendingSessionsRef.current : (uiSlot ? sessionRefDrafts.current[uiSlot] ?? [] : [])
         const restoredRefs = mergeSessionRefs(keepRefs, sentSessionRefs)
+        const keepQuotes = onScreen ? quotedRepliesRef.current : (uiSlot ? quoteDrafts.current[uiSlot] ?? [] : [])
+        const restoredQuotes = mergeQuoteRefs(keepQuotes, sentQuotes)
         const keepPastes = onScreen ? pasteBlocksRef.current : (uiSlot ? pasteDrafts.current[uiSlot] ?? [] : [])
         const keptPasteIds = new Set(keepPastes.map(b => b.id))
         // Collapsed pastes resolve by `seq`, not id, and a paste made while the
@@ -4643,7 +4694,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         // site, including the send-failure path further down.
         const restoredText = mergeRecoveredDraft(keepText, payload)
         if (onScreen && uiSlot) {
-          setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
+          setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs); setQuotedReplies(restoredQuotes)
           // clearPending() above already consumed the knowledge selection, so a
           // retry would otherwise go out WITHOUT the context the user picked. Slot-
           // gated: selection is per-slot, so re-injecting while the user views another
@@ -4720,6 +4771,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           setPasteDraft(pasteDrafts.current, uiSlot, restoredPastes)
           setFileDraft(fileDrafts.current, uiSlot, restoredFiles)
           setSessionRefDraft(sessionRefDrafts.current, uiSlot, restoredRefs)
+          setQuoteDraft(quoteDrafts.current, uiSlot, restoredQuotes)
           saveDrafts()
         }
         return
@@ -4797,6 +4849,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const onScreenNow = slot === activeSlotRef.current
       const liveRefs = onScreenNow ? pendingSessionsRef.current : (sessionRefDrafts.current[slot] ?? [])
       const refsBack = mergeSessionRefs(liveRefs, sentSessionRefs)
+      const liveQuotes = onScreenNow ? quotedRepliesRef.current : (quoteDrafts.current[slot] ?? [])
+      const quotesBack = mergeQuoteRefs(liveQuotes, sentQuotes)
       // MERGE, never overwrite. The send is in flight for up to 10s, and the user
       // can type a fresh message in that window — clobbering it with the failed
       // payload would lose newer work to recover older. Mirrors the create-failure
@@ -4821,9 +4875,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setDraft(drafts.current, slot, textBack)
       setPasteDraft(pasteDrafts.current, slot, pastesBack)
       setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
+      setQuoteDraft(quoteDrafts.current, slot, quotesBack)
       saveDrafts()
       if (onScreenNow) {
-        setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack)
+        setInput(textBack); setPasteBlocks(pastesBack); setPendingSessions(refsBack); setQuotedReplies(quotesBack)
       }
     }
     try {
@@ -5897,20 +5952,36 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return -1
   }, [messages])
 
-  const [flyingQuote, setFlyingQuote] = useState<{ text: string; from: DOMRect } | null>(null)
   const inputAreaRef = useRef<HTMLDivElement>(null)
 
-  const handleQuote = useCallback((text: string, rect: DOMRect) => {
-    const quoted = text.split('\n').map(line => `> ${line}`).join('\n')
-    setInput(prev => {
-      // Append new quote after existing content (supports multiple quotes)
-      if (!prev.trim()) return `${quoted}\n\n`
-      return `${prev.trimEnd()}\n\n${quoted}\n\n`
-    })
-    // Trigger flying animation
-    setFlyingQuote({ text, from: rect })
+  const handleQuote = useCallback((text: string, _rect: DOMRect, source?: SelectionSource) => {
+    // Staged as a STRUCTURED reference rather than injected as `> ` text: the
+    // quote then has a boundary the user cannot accidentally half-delete, it
+    // carries who said it and when, and several quotes stay individually
+    // removable instead of merging into one run-on blockquote. The wire format
+    // is still a blockquote (see prependQuoteRefs), so the agent contract is
+    // unchanged.
+    const trimmed = text.trim()
+    if (!trimmed) return
+    setQuotedReplies(prev => [...prev, {
+      // Unique per staged quote: the same span can legitimately be quoted twice,
+      // so identity cannot be derived from the text or the source row.
+      key: `q-${Date.now()}-${prev.length}`,
+      role: source?.role || i18nT('components.quoteAnnotationPill.role_unknown'),
+      time: source?.time || '',
+      text: trimmed,
+      mid: source?.mid,
+      ts: source?.ts,
+      code: source?.code,
+    }])
     revealComposer()
   }, [])
+
+  const handleRemoveQuote = useCallback((key: string) => {
+    setQuotedReplies(prev => prev.filter(q => q.key !== key))
+  }, [])
+
+  const handleClearQuotes = useCallback(() => setQuotedReplies([]), [])
 
   // "Ask" (Select-to-Ask): open the isolated /side conversation seeded with the
   // selection, WITHOUT touching the main chat context (unlike handleQuote, which
@@ -6359,7 +6430,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     if (!slotRunning) { void send(undefined, undefined, true); return }
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
-    if (!raw && !files.length) return
+    const quotes = quotedRepliesRef.current.slice()
+    if (!raw && !files.length && !quotes.length) return
     // Client-side slash commands (/side, /onboarding) are UI commands, not
     // turn content: they must work identically whether the agent is mid-turn
     // or idle. Without this guard the command text is steered into the
@@ -6416,7 +6488,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // under replay. Serialize on steer only if that transport ever carries
     // attachment metadata.
     const activePastes = pasteBlocksRef.current
-    const llmTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
+    const expandedTxt = activePastes.length ? expandPasteTokens(txt, activePastes) : txt
+    const llmTxt = prependQuoteRefs(expandedTxt, quotes)
     // Optimistically show the steered text immediately. Steer is the default
     // mid-turn action (split send button), so pressing Enter while a turn is
     // running routes here; without an optimistic bubble the message only appears
@@ -6430,16 +6503,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // whichever path the server took (#6075).
     const steerSendId = mintSendId()
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, quotes })
     // Staged session references are deliberately NOT part of steering: neither
-    // carried into the payload nor cleared. `steerMutation`'s onError only logs,
-    // so anything cleared here is gone for good — text, attachments and pastes
-    // have always been discarded on a failed steer, and adding refs to that set
-    // would lose a reference the user cannot recover except by dragging again.
+    // carried into the payload nor cleared. The text-only steering contract has
+    // no session-reference metadata, so consuming those chips would lose context
+    // the user cannot recover except by dragging again.
     // Leaving them staged is lossless and predictable: the chip stays in the
     // composer and rides the next real send, which does have a restore path.
-    setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([])
-    delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
+    // Quotes are different: they are textual context and ARE serialized above,
+    // so leaving them staged would send the same quoted passage again with the
+    // next message. Clear them atomically with the text they annotated; the
+    // mutation's error path re-stages them in their origin slot if steering is
+    // rejected.
+    setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setQuotedReplies([])
+    delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]; delete quoteDrafts.current[activeSlot]
     saveDrafts()
   }, [activeSlot, slotRunning, send, steerMutation, saveDrafts, dispatch])
 
@@ -6914,6 +6991,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const forkIndex = canFork ? visibleIndexMapRef.current.get(i) : undefined
     const msgTime = fmtMessageTime(m.ts)
     const msgTimeFull = fmtMessageTimeFull(m.ts)
+    const messageMid = (m.meta as Record<string, unknown> | undefined)?.mid
     return (
       <MessageSearchScope key={key} messageIdx={i}>
       <div className={`group flex flex-col min-w-0 ${isUser ? 'items-end' : ''} ${m.ts && m.ts === highlightTs ? 'animate-msg-highlight rounded-lg' : ''}`}>
@@ -6962,7 +7040,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             })()
           ) : (
             <div className="flex flex-col gap-0">
-              <AssistantMessage suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} timestampTitle={msgTimeFull} messageTs={m.ts} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
+              <AssistantMessage suppressSteerAck={turnHadPolicyBlock(messagesRef.current, i)} prevUserText={prevUserTextFor(messagesRef.current, i)} linkPreviews={linkPreviewsOn} content={m.content} isStreaming={isStreaming} isRegenerating={regenerating && i === lastTextIdxRef.current} onFileOpen={handleFileOpen} onFolderOpen={handleFolderOpen} onArtifactOpen={handleArtifactOpen} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} onQuote={handleQuote} onAsk={handleAsk} slotRunning={slotRunning} planTaskId={planTaskId} timestamp={chatConfig.showTimestamps ? msgTime : undefined} quoteSourceTime={msgTime} timestampTitle={msgTimeFull} messageTs={m.ts} messageMid={typeof messageMid === 'string' ? messageMid : undefined} slotKey={activeSlot || undefined} slotTitle={activeSlotTitle} mode={mode} fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined} turnStats={chatConfig.showTurnStats ? (m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined : undefined} onOpenDiff={handleOpenDiff} fileChipStyle={chatConfig.fileChipStyle} artifactPaths={artifactPaths} pinned={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? isPinned((m.meta as Record<string, unknown>).mid as string) : false} onTogglePin={m.ts && (m.meta as Record<string, unknown> | undefined)?.mid ? () => handleTogglePinForMessage((m.meta as Record<string, unknown>).mid as string, m.ts!, 'assistant', m.content) : undefined} showFooter={(() => {
                 // Show footer on the last assistant message of each completed turn
                 if (isStreaming) return false
                 // Find next message after this one that's assistant, user, or streaming
@@ -8369,7 +8447,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
-              {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={() => setFlyingQuote(null)} />}
               <div ref={inputAreaRef} className="relative z-10">
               {/* The refused-press answer sits directly above the composer,
                   adjacent to the message-footer controls that raised it, so the
@@ -8505,6 +8582,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }
               value={input}
               onChange={setInput}
+              quotedReplies={quotedReplies}
+              onRemoveQuote={handleRemoveQuote}
+              onClearQuotes={handleClearQuotes}
+              onJumpToQuoteSource={(q) => handleJumpToPin(q.ts || '', q.mid)}
               onSend={() => send()}
               canSteer={composerBusy}
               onSteer={steer}

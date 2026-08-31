@@ -7038,6 +7038,17 @@
       "submitting": "Invio in corso...",
       "thanks": "Grazie per il tuo feedback!"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "Rimuovi tutte le citazioni",
+      "jump_to_source": "Vai al messaggio citato",
+      "n_quotes": "{{n}} citazioni · {{roles}}",
+      "one_quote": "{{role}} · «{{excerpt}}»",
+      "remove_quote": "Rimuovi citazione",
+      "review_quotes": "Rivedi testo citato",
+      "role_assistant": "Assistente",
+      "role_unknown": "Citazione",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} msg",
       "remove_reference": "Rimuovi riferimento",

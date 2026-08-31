@@ -6830,6 +6830,17 @@
       "submitting": "正在提交…",
       "thanks": "感谢你的反馈！"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "移除所有引用",
+      "jump_to_source": "跳转到引用的消息",
+      "n_quotes": "{{n}} 条引用 · {{roles}}",
+      "one_quote": "{{role}} · “{{excerpt}}”",
+      "remove_quote": "移除引用",
+      "review_quotes": "查看引用文本",
+      "role_assistant": "助手",
+      "role_unknown": "引用内容",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} 条消息",
       "remove_reference": "移除引用",

@@ -6934,6 +6934,17 @@
       "submitting": "জমা দেওয়া হচ্ছে...",
       "thanks": "আপনার মতামতের জন্য ধন্যবাদ!"
     },
+    "quoteAnnotationPill": {
+      "clear_all": "সব উদ্ধৃতি সরাও",
+      "jump_to_source": "উদ্ধৃত মেসেজে যাও",
+      "n_quotes": "{{n}}টি উদ্ধৃতি · {{roles}}",
+      "one_quote": "{{role}} · “{{excerpt}}”",
+      "remove_quote": "উদ্ধৃতি সরাও",
+      "review_quotes": "উদ্ধৃত লেখা দেখো",
+      "role_assistant": "অ্যাসিস্ট্যান্ট",
+      "role_unknown": "উদ্ধৃত অংশ",
+      "row_attribution": "{{n}}. {{role}} · {{time}}"
+    },
     "sessionRefStrip": {
       "n_messages": "{{n}} মেসেজ",
       "remove_reference": "রেফারেন্স সরান",
