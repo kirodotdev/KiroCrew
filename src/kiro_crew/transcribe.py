@@ -174,8 +174,15 @@ _MAX_SIGNED_FFMPEG_BYTES = 192 * 1024 * 1024
 # ties the chain to Apple's root, so only a certificate Apple issued to THIS team
 # satisfies the requirement -- a self-signed or ad-hoc replacement does not.
 _MACOS_SIGNING_TEAM_ID = "94KV3E626L"
+# The team identifier MUST stay quoted. In the requirement language a bare token
+# beginning with a digit is not a valid identifier, so an unquoted 94KV3E626L is
+# a SYNTAX ERROR rather than a comparison: codesign exits non-zero without ever
+# evaluating the signature, which this function cannot tell apart from a genuine
+# authenticity failure. That made every signed macOS release refuse its own
+# decoder -- the digest anchor cannot cover a signed artifact by construction,
+# so with the signature anchor unparseable both anchors were unreachable.
 _MACOS_FFMPEG_REQUIREMENT = (
-    f"anchor apple generic and certificate leaf[subject.OU] = {_MACOS_SIGNING_TEAM_ID}"
+    f'anchor apple generic and certificate leaf[subject.OU] = "{_MACOS_SIGNING_TEAM_ID}"'
 )
 
 

@@ -2350,6 +2350,13 @@ class TestSttRetiredProviders:
     provider" without the name is unactionable.
     """
 
+    @pytest.fixture(autouse=True)
+    def _reset_warn_once(self):
+        """The degrade log is once-per-value-per-process, so tests must not inherit it."""
+        loader_module._WARNED_STT_PROVIDERS.clear()
+        yield
+        loader_module._WARNED_STT_PROVIDERS.clear()
+
     @pytest.mark.parametrize("retired", loader_module._RETIRED_STT_PROVIDERS)
     def test_retired_provider_degrades_to_local(self, retired: str, caplog) -> None:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
@@ -2396,6 +2403,31 @@ class TestSttRetiredProviders:
         assert "whispr" in caplog.text
         for selectable in loader_module._VALID_STT_PROVIDERS:
             assert selectable in caplog.text
+
+    def test_the_same_unusable_provider_is_only_said_once(self, caplog) -> None:
+        """A stored retired name must not narrate itself on every config load.
+
+        The gateway loads config repeatedly -- several times a second under normal
+        dashboard traffic -- and this degrade sits on that path, so without
+        deduplication one stale ``config.json`` value fills the log for the whole
+        session and buries everything else. The retirement is per-install
+        information: saying it once is what makes it readable.
+        """
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            for _ in range(25):
+                assert _validated_stt_provider("whisper") == STT_PROVIDER_LOCAL
+        assert caplog.text.count("retired") == 1
+
+    def test_each_distinct_unusable_provider_still_gets_its_own_line(self, caplog) -> None:
+        """Deduplication is per VALUE, not a single global latch -- otherwise the
+        first bad value would silence the explanation for every later one."""
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+            assert _validated_stt_provider("whisper") == STT_PROVIDER_LOCAL
+            assert _validated_stt_provider("parakeet") == STT_PROVIDER_LOCAL
+            assert _validated_stt_provider("whispr") == STT_PROVIDER_LOCAL
+        assert "whisper" in caplog.text
+        assert "parakeet" in caplog.text
+        assert "whispr" in caplog.text
 
     def test_a_non_string_provider_degrades_rather_than_raising(self, tmp_path: Path) -> None:
         """The membership tests take an ``object``, so a hand-edited number or a

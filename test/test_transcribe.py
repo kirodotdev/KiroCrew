@@ -13,6 +13,7 @@ import asyncio
 import importlib.machinery
 import importlib.util
 import os
+import subprocess
 import sys
 import threading
 import types
@@ -26,6 +27,7 @@ import pytest
 from kiro_crew import platform_compat as _pc
 from kiro_crew import stt, transcribe
 from kiro_crew.config.loader import SttConfig
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.transcribe import (
     _ProfileCredentialResolver,
     availability_detail,
@@ -1489,8 +1491,49 @@ class TestBundledFfmpeg:
         replacement cannot satisfy it."""
         assert transcribe._MACOS_SIGNING_TEAM_ID == "94KV3E626L"
         assert transcribe._MACOS_FFMPEG_REQUIREMENT == (
-            "anchor apple generic and certificate leaf[subject.OU] = 94KV3E626L"
+            'anchor apple generic and certificate leaf[subject.OU] = "94KV3E626L"'
         )
+
+    def test_codesign_requirement_quotes_the_team_identifier(self):
+        """The team id must be a QUOTED string constant, not a bare token.
+
+        A requirement-language identifier cannot begin with a digit, so an
+        unquoted 94KV3E626L does not parse as a comparison operand at all --
+        codesign rejects the whole requirement and exits non-zero before it looks
+        at any signature. :func:`_macos_developer_id_authentic` only sees that
+        exit status, so the malformed constant is indistinguishable there from an
+        inauthentic binary, and every signed release refused its own decoder.
+        Asserting the exact string above cannot catch this on its own: the old
+        assertion pinned the unparseable form and passed.
+        """
+        assert f'"{transcribe._MACOS_SIGNING_TEAM_ID}"' in transcribe._MACOS_FFMPEG_REQUIREMENT
+
+    @pytest.mark.skipif(not sys.platform.startswith("darwin"), reason="codesign is macOS-only")
+    def test_codesign_accepts_the_requirement_as_parseable(self):
+        """Let codesign itself judge the syntax -- the only oracle that counts.
+
+        Run against a binary the OS signs (never our team), so a PARSEABLE
+        requirement is simply unsatisfied while an unparseable one reports a
+        syntax error. Only the latter is asserted against: this test is about the
+        requirement compiling, not about /bin/ls being authentic.
+        """
+        result = subprocess.run(
+            [
+                "/usr/bin/codesign",
+                "--verify",
+                "--strict",
+                "-R",
+                f"={transcribe._MACOS_FFMPEG_REQUIREMENT}",
+                "--",
+                "/bin/ls",
+            ],
+            check=False,
+            capture_output=True,
+            timeout=120,
+            **UTF8_TEXT,
+        )
+        assert "syntax error" not in result.stderr.lower()
+        assert "invalid or corrupted code requirement" not in result.stderr.lower()
 
     def test_codesign_is_invoked_by_absolute_path_with_requirement_source_text(
         self, monkeypatch, tmp_path
