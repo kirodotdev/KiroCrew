@@ -62,6 +62,7 @@ import {
 import ErrorNotice from '../../components/ErrorNotice'
 import AskAgentButton from '../../components/AskAgentButton'
 import type { ErrorReport } from '../../utils/errorReport'
+import { parseErrorCode } from '../../utils/errorReport'
 import { reportInstanceFailure } from '../../utils/instanceFailureReport'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
 import { copyToClipboard } from '../../utils/clipboard'
@@ -766,13 +767,32 @@ export function RemoteCrewPanel() {
   const launches = useMemo(() => launchesQuery.data?.jobs ?? [], [launchesQuery.data])
   const inProgress = useMemo(() => launches.filter(isInProgress), [launches])
 
+  // An OLDER gateway POSIX-gates the read-only launch-history route too, so a
+  // Windows host answers 400 posix_host_required for it. That is not a load
+  // failure — the gateway is refusing a capability, not failing to read — and
+  // letting it reach `loadError` below replaced the entire crew list, hand-added
+  // SSH rows included, with a cloud-provisioning error and no way to connect,
+  // edit or remove anything. Current gateways answer the route on every
+  // platform; this keeps the panel usable against one that does not.
+  //
+  // Safe to proceed with no launch history — and it does NOT rest on the host
+  // having no cloud crews, which a carried-over config dir would break. The row
+  // itself does not assume: an SSM target with no matching job renders as
+  // `unverifiedCloud`, keeping the confirm step and the copy about what Remove
+  // does not do.
+  const cloudUnsupported =
+    launchesQuery.error instanceof ApiError &&
+    launchesQuery.error.status === 400 &&
+    parseErrorCode(launchesQuery.error.body) === 'posix_host_required'
+
   // Both queries gate the crew list: a row's cloud-vs-manual identity comes from the
   // launch history, and the two destructive actions are NOT interchangeable. Treating
   // absent launch data as [] makes a real cloud crew render as "added by you", whose
   // trash button is a single unconfirmed click that unregisters the instance and
   // leaves the EC2 stack running and billing, invisible to the dashboard. So the list
   // waits until both are known, and surfaces either failure instead of guessing.
-  const loadError = !disabled && (instancesQuery.isError || launchesQuery.isError)
+  const loadError =
+    !disabled && (instancesQuery.isError || (launchesQuery.isError && !cloudUnsupported))
   const authExpired =
     isAuthExpiredError(instancesQuery.error) || isAuthExpiredError(launchesQuery.error)
   const listLoading = !disabled && (instancesQuery.isLoading || launchesQuery.isLoading)

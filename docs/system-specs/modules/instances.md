@@ -758,6 +758,19 @@ account without dropping to the CLI. `dashboard/handlers_cloud.py` exposes the
 launcher behind the same owner-only guard as `/api/instances/*`: an
 authenticated owner (`request["user"]`), non-Slack, POSIX only, `403` otherwise.
 
+**The two read-only launch routes are the POSIX exception.** `GET
+/api/cloud/launch` and `GET /api/cloud/launch/{id}` parse a local job store and
+shell to nothing, so they answer on every platform (`_guard(..., posix_only=False)`);
+everything that can provision, stop or terminate stays POSIX-gated with
+`400 posix_host_required`. The list is what makes the crew rows classifiable
+(cloud-launched vs hand-added), and the panel waits for it before rendering
+anything — so gating it on Windows replaced the whole Remote Crew list, SSH rows
+included, with a cloud-provisioning error and no way to connect or remove
+anything. On a Windows host the route answers with whatever launch history is
+persisted in the config dir — normally nothing, since nothing there could have
+created a job, though a config dir carried over from a POSIX host still reports
+its real jobs.
+
 | Method and path | Purpose |
 |---|---|
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |

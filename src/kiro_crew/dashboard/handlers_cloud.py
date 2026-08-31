@@ -12,6 +12,9 @@ process carries no ``KIROCREW_SESSION_KEY``, so the destructive verbs
 (stop/start/destroy) are allowed here but blocked from any agent subprocess.
 
 POSIX-only: the deploy engine shells to ``bash``/``aws``; Windows returns 400.
+The exception is the two read-only launch-history routes, which parse a local
+job store and shell to nothing — they answer on every platform so a Windows
+dashboard can still render its Remote Crew list (see :func:`_guard`).
 No new AWS logic lives here — it reuses the tested ``cloud/`` engine.
 """
 
@@ -61,8 +64,23 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
         logger.debug("SEL audit failed for cloud_%s", operation, exc_info=True)
 
 
-def _guard(request: web.Request, operation: str) -> Optional[web.Response]:
-    """Owner-only (non-Slack) + POSIX. Returns a denial Response or None."""
+def _guard(
+    request: web.Request, operation: str, *, posix_only: bool = True
+) -> Optional[web.Response]:
+    """Owner-only (non-Slack) + POSIX. Returns a denial Response or None.
+
+    ``posix_only=False`` is for the two read-only launch-history routes, which
+    only parse a local job store and shell to nothing. Failing those on Windows
+    is not a harmless "unsupported" answer: the Remote Crew list deliberately
+    waits for BOTH the instances and the launch history before rendering (a
+    row's cloud-vs-manual identity decides what its delete button does), so a
+    400 here replaced the whole list — including hand-added SSH crews that need
+    no cloud provisioning at all — with the POSIX error. Reading the history
+    reports whatever this host has persisted rather than guessing on the
+    client's behalf: normally nothing after Windows-only use, since the write
+    routes below stay POSIX-gated, but a config dir carried over from a POSIX
+    host still answers with its real jobs, which is the honest reply.
+    """
     if request.headers.get("X-Session-Key", "").startswith("slack:"):
         _audit(operation, "denied", error="slack-origin rejected")
         return web.json_response(
@@ -90,7 +108,7 @@ def _guard(request: web.Request, operation: str) -> Optional[web.Response]:
             "not an app or an allowed Slack user)",
             "cloud_owner_only",
         )
-    if sys.platform.startswith("win"):
+    if posix_only and sys.platform.startswith("win"):
         _audit(operation, "denied", error="windows unsupported")
         return web.json_response(
             {
@@ -219,7 +237,7 @@ async def api_cloud_iam_policy(request: web.Request) -> web.Response:
 
 async def api_cloud_launch_list(request: web.Request) -> web.Response:
     """GET /api/cloud/launch — all launch jobs (newest first)."""
-    denied = _guard(request, "launch_list")
+    denied = _guard(request, "launch_list", posix_only=False)
     if denied is not None:
         return denied
     # list() globs the job dir and parses every file: cheap for a handful, but it
@@ -232,7 +250,7 @@ async def api_cloud_launch_list(request: web.Request) -> web.Response:
 
 async def api_cloud_launch_get(request: web.Request) -> web.Response:
     """GET /api/cloud/launch/{id} — one job's live state (progress + sign-in)."""
-    denied = _guard(request, "launch_get")
+    denied = _guard(request, "launch_get", posix_only=False)
     if denied is not None:
         return denied
     store = await _astore(request.app["state"])

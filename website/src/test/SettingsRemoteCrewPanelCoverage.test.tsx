@@ -23,9 +23,14 @@ import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 vi.mock('../api/client', () => {
   class ApiError extends Error {
     status: number
-    constructor(status: number, message: string) {
+    // The real class carries the raw response body so a caller can read the
+    // structured `code` the human message collapses away — the panel branches
+    // on it to tell an unsupported-platform refusal from a load failure.
+    body: string
+    constructor(status: number, message: string, body = '') {
       super(message)
       this.status = status
+      this.body = body
     }
   }
   return {

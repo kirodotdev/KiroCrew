@@ -120,6 +120,48 @@ class TestGuards:
         assert resp.status == 400
         assert "POSIX" in _body(resp)["error"]
 
+    async def test_windows_may_still_read_launch_history(self, tmp_path, monkeypatch):
+        """The two read-only launch routes answer on Windows; the writes do not.
+
+        The Remote Crew list waits for BOTH the instances and the launch history
+        before it renders anything, so POSIX-gating this read replaced the whole
+        list — hand-added SSH crews included — with a cloud-provisioning error,
+        leaving no way to connect, edit or remove any of them. The route parses a
+        local job store and shells to nothing, so there is nothing to gate.
+        """
+        state = _state(tmp_path)
+        monkeypatch.setattr(hc.sys, "platform", "win32")
+
+        lst = await hc.api_cloud_launch_list(_req("GET", "/api/cloud/launch", state=state))
+        assert lst.status == 200
+        # Empty because THIS store is tmp-rooted and untouched — the route reports
+        # whatever is persisted, so it is not asserting "Windows is always empty".
+        assert _body(lst)["jobs"] == []
+
+        got = await hc.api_cloud_launch_get(
+            _req("GET", "/api/cloud/launch/nope", state=state, match_info={"id": "nope"})
+        )
+        assert got.status == 404  # reached the store, not the platform gate
+
+        # Provisioning itself stays refused — the deploy engine needs bash/aws.
+        created = await hc.api_cloud_launch_create(
+            _req(
+                "POST", "/api/cloud/launch", state=state,
+                body={"profile": "dev", "region": "us-east-1", "size_key": "balanced"},
+            )
+        )
+        assert created.status == 400
+        assert _body(created)["code"] == "posix_host_required"
+
+    async def test_windows_launch_read_still_owner_only(self, tmp_path, monkeypatch):
+        """Dropping the POSIX gate must not drop the owner gate with it."""
+        monkeypatch.setattr(hc.sys, "platform", "win32")
+        resp = await hc.api_cloud_launch_list(
+            _req("GET", "/api/cloud/launch", state=_state(tmp_path), slack=True)
+        )
+        assert resp.status == 403
+        assert _body(resp)["code"] == "cloud_owner_only"
+
     async def test_app_token_rejected(self, tmp_path):
         """token_auth sets request["app"] alongside request["user"], so checking
         "user" alone would let an app that declares /api/cloud in its manifest

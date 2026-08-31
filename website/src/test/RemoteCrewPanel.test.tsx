@@ -9,9 +9,14 @@ import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 vi.mock('../api/client', () => {
   class ApiError extends Error {
     status: number
-    constructor(status: number, message: string) {
+    // The real class carries the raw response body so a caller can read the
+    // structured `code` the human message collapses away — the panel branches
+    // on it to tell an unsupported-platform refusal from a load failure.
+    body: string
+    constructor(status: number, message: string, body = '') {
       super(message)
       this.status = status
+      this.body = body
     }
   }
   return {
@@ -195,6 +200,42 @@ describe('RemoteCrewPanel', () => {
     await u.click(screen.getByRole('menuitem', { name: /Remove Kiro Crew Cloud/i }))
     expect(await screen.findByText(/keeps running and billing/i)).toBeInTheDocument()
     expect(api.removeInstance).not.toHaveBeenCalled()
+  })
+
+  it('still lists the crews when the gateway cannot do cloud provisioning at all', async () => {
+    // A Windows gateway POSIX-gates the launch-history route, so the launches query
+    // fails with 400 posix_host_required. Treating that as a load failure replaced
+    // the whole list — hand-added SSH crews included — with a cloud-provisioning
+    // error, leaving no way to connect, edit or remove anything the user had saved.
+    // It is not a failure: it means this host cannot have launched a cloud crew.
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE, CLOUD_INSTANCE],
+    })
+    vi.mocked(api.cloudLaunches).mockRejectedValue(
+      new ApiError(
+        400,
+        'cloud provisioning requires a POSIX host (Linux/macOS); use WSL on Windows',
+        JSON.stringify({
+          error: 'cloud provisioning requires a POSIX host (Linux/macOS); use WSL on Windows',
+          code: 'posix_host_required',
+        }),
+      ),
+    )
+    renderWithProviders(<RemoteCrewPanel />)
+
+    // Both saved crews render, each with its own Connect button.
+    expect(await screen.findByText('dev-box-1')).toBeInTheDocument()
+    expect(screen.getByText(/Kiro Crew Cloud/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Connect$/i })).toBeInTheDocument()
+    // The POSIX message belongs on the Set-up tab, not over the crew list.
+    expect(screen.queryByText(/requires a POSIX host/i)).not.toBeInTheDocument()
+
+    // With no launch history, the SSM row must NOT be downgraded to "added by you":
+    // the CLI launcher registers real cloud crews the same way, so it stays
+    // possibly-cloud with the confirm step and the honest copy.
+    expect(
+      screen.getByText(/cannot verify whether this machine has AWS resources/i),
+    ).toBeInTheDocument()
   })
 
   it('shows the install command the gateway reported, not a hardcoded macOS one', async () => {
