@@ -4911,6 +4911,7 @@ function ChatSidebar({
   // each behaviour has one definition. Rename + Tags stay local (they drive this
   // component's inline-edit + tag-popover state).
   const sessionActions = useSessionActions(mode)
+  const { forkError: duplicateError, clearForkError: clearDuplicateError } = sessionActions
   // Which sessions are currently open in a popped-out window (shared singleton).
   const { poppedOut } = useChatPopouts()
   // Unified dnd-kit handlers for the legacy single-lane layout. One DndContext
@@ -5541,7 +5542,11 @@ function ChatSidebar({
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
     const orderStamp = Math.min(sessionRowOrderStamp++, SIDEBAR_DISPLACEMENT_WINDOW)
+    // A refused Duplicate belongs beside the row it was invoked on: the panel top is
+    // off-screen once the list scrolls, so the feedback lands away from the pointer.
+    const refusedHere = duplicateError?.slotKey === s.key ? duplicateError : null
     return (
+      <Fragment key={s.key}>
       <SessionRow key={s.key} slot={s} orderStamp={orderStamp}
         showDivider={showDivider} scope={scope} navScope={navScope} holdContainer={holdContainer}
         isActive={activeSlot === s.key} connected={connected} isOut={poppedOut.has(s.key)}
@@ -5573,6 +5578,19 @@ function ChatSidebar({
         onMenuCloseAutoFocus={onMenuCloseAutoFocus} onSelectSlot={onSelectSlot}
         onOpenSlotInNewTab={onOpenSlotInNewTab} onOpenSource={onOpenSource}
       />
+      {refusedHere ? (
+        <ErrorNotice
+          message={refusedHere.message}
+          report={refusedHere.report}
+          variant="inline"
+          askAgent
+          onDismiss={clearDuplicateError}
+          testId={`sidebar-duplicate-error-${s.key}`}
+          className="mx-1 mt-1 mb-1 min-w-0 flex-wrap"
+          messageClassName="min-w-0 break-words"
+        />
+      ) : null}
+      </Fragment>
     )
   }
 
@@ -6065,6 +6083,7 @@ function ChatSidebar({
         inset={12}
         className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-10"
       />
+
 
       {/* Header — all elements ("Sessions" title, kebab, New button) centered
           on one line 23px from the panel top (1px card border + mt-0.5, then

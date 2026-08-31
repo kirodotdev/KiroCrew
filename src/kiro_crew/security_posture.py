@@ -1327,6 +1327,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # surfaces that SHOW the report are the registered sinks (the dashboard
         # slot snapshot and the live stream).
         "acp/mcp_session_report.py",
+        # Capture-side too: scrubs a restored deferred row as it comes back OFF
+        # DISK, before the label cap; the slot append that ships it is the sink.
+        "dashboard/slot_buffers.py",
         # Audit-side log hygiene: log_decline scrubs the model-authored tool
         # title before writing the shared auto_approve_declined SEL row. The
         # audit log is a gate-side record, not an output bound for a human or

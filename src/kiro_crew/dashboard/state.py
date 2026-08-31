@@ -3563,6 +3563,7 @@ class _ChatSlot:
         "remote_slot",
         "_relay_in_flight",
         "_active_turn_session_key",
+        "_active_turn_history_key",
         "_side",
         "_acp_client",
         "_last_turn_awaiting_permission",
@@ -4192,6 +4193,9 @@ class _ChatSlot:
         # lifecycle owner (installed once the turn is committed, cleared after
         # its session is released).
         self._active_turn_session_key: str = ""
+        # The TRANSCRIPT this turn authorized, captured beside the identity above:
+        # an unbound channel slot resolves a different key on each side.
+        self._active_turn_history_key: str = ""
         # True only when this slot was created to DISPLAY a conversation that
         # already lives in a channel transcript (the reconciler surfacing a
         # thread, a restore, a History resume). It is what separates such a tab
@@ -4745,9 +4749,14 @@ class _ChatSlot:
         """Held notes whose context half has not reached the queue yet."""
         return self._buffers.deferred_context_count(self)
 
-    def flush_deferred_notes(self) -> int:
-        """Flush held notes in order, restoring the unwritten suffix on failure."""
-        return self._buffers.flush_deferred_notes(self, logger=logger)
+    def flush_deferred_notes(self, *, markers_only: bool) -> int:
+        """Flush held notes in order, restoring the unwritten suffix on failure.
+
+        ``markers_only`` has no default ON PURPOSE: the hold carries two element
+        classes with opposite release policies, and neither wrong choice fails
+        visibly, so a new seam must state which class it releases.
+        """
+        return self._buffers.flush_deferred_notes(self, logger=logger, markers_only=markers_only)
 
     def mark_permission_resolved(self, approval_id: str, decision: str = "approved") -> None:
         """Update the matching stored permission row without marking it dirty."""

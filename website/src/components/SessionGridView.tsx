@@ -2,13 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, Plus, GitFork, Loader2, Circle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
-import { api } from '../api/client'
+import ErrorNotice from './ErrorNotice'
+import { api, ApiError } from '../api/client'
 import SessionGridLayout from './SessionGridLayout'
 import ChatPane from './ChatPane'
 import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
 import { emitSlotFocused } from '../hooks/useWebSocket'
 
 import { i18nT } from '../i18n/t'
+import { forkFailureMessageForConfig } from '../utils/forkFailure'
+import type { ForkFailureNotice } from '../utils/forkFailure'
+import { errMessage } from '../utils/thunkError'
 type Slot = {
   key: string
   title?: string
@@ -209,7 +213,15 @@ function PlaceholderPane({
   onSplitDown: () => void
 }) {
   const [search, setSearch] = useState('')
+  const [forkError, setForkError] = useState<ForkFailureNotice | null>(null)
   const queryClient = useQueryClient()
+  // Same key and shape the transcript path reads, so the two share one cache entry
+  // and cannot disagree about which end of the conversation to advise.
+  const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: () => api.dashboardConfig(),
+    staleTime: 30_000,
+  })
   const createSession = useMutation({
     mutationFn: () => api.createChatSlot(),
     onSuccess: (r: { key?: string }) => {
@@ -222,6 +234,18 @@ function PlaceholderPane({
     onSuccess: (r: { ok?: boolean; key?: string }) => {
       queryClient.invalidateQueries({ queryKey: ['session-grid-slots'] })
       if (r?.ok && r.key) onPick(r.key)
+    },
+    // A refused fork must not read as a no-op: the only other signal is the spinner
+    // stopping, which is indistinguishable from success that opened no tab.
+    onError: async (err) => {
+      setForkError(
+        await forkFailureMessageForConfig(
+          err instanceof ApiError ? err.body : '',
+          errMessage(err),
+          forkCfg,
+          () => api.dashboardConfig(),
+        ),
+      )
     },
   })
 
@@ -249,6 +273,14 @@ function PlaceholderPane({
       onMouseDownCapture={onFocus}
       className={`flex flex-col h-full border-[1.5px] border-dashed rounded-lg bg-bg overflow-hidden m-1 ${focused ? 'border-accent' : 'border-border'}`}
     >
+      <ErrorNotice
+        message={forkError?.message}
+        report={forkError?.report}
+        onDismiss={() => setForkError(null)}
+        askAgent
+        className="mx-2 mt-2 mb-0"
+        testId="grid-fork-error"
+      />
       <div className="flex items-center gap-1 p-2 border-b border-border">
         <input
           autoFocus={focused}

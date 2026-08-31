@@ -240,10 +240,12 @@ export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import {
   consumeChatHandoff,
+  findReport,
   handoffToChat,
   persistClaimedChatHandoffs,
   subscribeChatHandoff,
 } from '../utils/errorReport'
+import type { ErrorReport } from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { openPanelView, claimAppAutoOpen } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -266,6 +268,7 @@ import SessionControlHost from '../components/SessionControlHost'
 import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
 import type { ChatFolder } from '../types'
 import ErrorNotice from '../components/ErrorNotice'
+import { forkFailureMessageForCode } from '../utils/forkFailure'
 import VoicePlaybackNotice from '../components/VoicePlaybackNotice'
 import ChatDropOverlay from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
@@ -445,6 +448,20 @@ type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
  * points never touch. The two label keys stay under `pages.chatSidebar.*`
  * because the sidebar's own row still renders them.
  */
+/** Fork failure copy. The over-capacity refusal's wire message names API parameters
+ *  and advises forking at a message, which this control already does. */
+function forkErrorNotice(
+  code: string | undefined,
+  raw: string | undefined,
+  direction: 'head' | 'tail',
+) {
+  // The 400 body is `error` + `code` only. A row count is not an affordance in a
+  // transcript that numbers nothing, so no bound is sent and the copy names the ACTION.
+  // The journal is keyed on the RAW wire message, so a localized replacement has to
+  // carry the report it can no longer be matched to (endpoint, status, backend code).
+  return { message: forkFailureMessageForCode(code, raw || '', direction), report: findReport(raw) }
+}
+
 function unresumableNoticeMessage(r: { key: string; title: string; surface: string; reason: 'surface' | 'failed' }): string {
   const title = r.title || r.key
   if (r.reason === 'failed') {
@@ -964,12 +981,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // ErrorNotice; the newest failure wins, the same shape as `refusedPress`.
   // `title` is optional because several sites already own a whole-sentence
   // message ("Fork failed: …") that must stay intact for the error-journal match.
-  const [actionError, setActionError] = useState<{ title?: string; message: string } | null>(null)
-  const showActionError = useCallback((message: string, title?: string) => {
-    // Same failure re-reported (an effect re-run, a retry that fails the same
-    // way) keeps the stored object, so React bails out instead of re-rendering.
-    setActionError(prev => (prev && prev.message === message && prev.title === title) ? prev : { title, message })
+  const [actionError, setActionError] = useState<{ title?: string; message: string; report?: ErrorReport } | null>(null)
+  const showActionError = useCallback((message: string, title?: string, report?: ErrorReport) => {
+    // The report is part of the identity: a retry failing the same way carries its
+    // OWN diagnostic context, so matching on the copy alone would pin the first one.
+    setActionError(prev => (
+      prev && prev.message === message && prev.title === title && prev.report === report
+    ) ? prev : { title, message, report })
   }, [])
+  const showForkError = useCallback(
+    (notice: { message: string; report?: ErrorReport }) => showActionError(notice.message, undefined, notice.report),
+    [showActionError],
+  )
   // NOT fire-and-forget: the receipt is the only thing that knows whether the
   // text reached the running turn, and the optimistic bubble asserts that it did.
   // The same `/api/chat` POST as `send()` with the `steer` flag, through the
@@ -1987,6 +2010,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const { data: forkCfg } = useQuery<{ tail_fork_enabled?: boolean }>({ queryKey: ['dashboardConfig'], queryFn: () => api.dashboardConfig(), staleTime: 30_000 })
   const handleFork = useCallback(async (visibleIndex: number, messageId?: string) => {
     if (!activeSlot) return
+    // Hoisted so the catch can name the direction too. `head` matches the server's
+    // own fallback when tail-fork is disabled, so an early throw cannot mis-advise.
+    let direction: 'head' | 'tail' = 'head'
     try {
       // Fork WITHOUT a prompt: an unsent composer draft must never be
       // auto-submitted into the freshly forked session. The
@@ -2000,17 +2026,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // — which would downgrade an intended tail-fork to a head-fork whenever
       // the query has errored or settled with no data, not just while loading.
       const resolvedCfg = forkCfg ?? await api.dashboardConfig()
-      const direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
+      direction = resolvedCfg?.tail_fork_enabled ? 'tail' : 'head'
       const result = await dispatch(forkSlot({ slot: activeSlot, atIndex: visibleIndex, messageId, direction })).unwrap()
       if (result.ok) {
         await dispatch(switchSlot(result.key))
       } else {
-        showActionError(i18nT('pages.chatPage.fork_failed_error', { error: result.error || i18nT('pages.chatPage.unknown_error') }))
+        showForkError(forkErrorNotice(result.code, result.error, direction))
       }
     } catch (e) {
-      showActionError(i18nT('pages.chatPage.fork_failed_error', { error: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+      // A refusal is a non-2xx, so the thunk rejects rather than resolving: the
+      // code arrives on the rejection payload, never on a `result` read here.
+      showForkError(
+        forkErrorNotice(
+          (e as { code?: string } | null)?.code,
+          errMessage(e),
+          direction,
+        ),
+      )
     }
-  }, [activeSlot, dispatch, forkCfg, showActionError])
+  }, [activeSlot, dispatch, forkCfg, showForkError])
 
   const handlePlanFromHere = useCallback(async (visibleIndex: number, messageId?: string) => {
     if (!activeSlot) return
@@ -6359,6 +6393,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         <ErrorNotice
           title={actionError?.title}
           message={actionError?.message}
+          report={actionError?.report}
           onDismiss={() => setActionError(null)}
           askAgent
           className="mx-4 mt-2 mb-0 animate-rise"

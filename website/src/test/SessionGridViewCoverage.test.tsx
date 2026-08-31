@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import SessionGridView from '../components/SessionGridView'
 import { renderWithProviders } from './helpers'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { emitSlotFocused } from '../hooks/useWebSocket'
 import type { GridNode } from '../hooks/useSessionGrid'
 
@@ -547,6 +547,56 @@ describe('SessionGridView — picker controls', () => {
 
     await waitFor(() => expect(m.forkChatSlot).toHaveBeenCalled())
     expect(screen.queryByTestId('pane-forked-1')).toBeNull()
+  })
+
+  // Built from the mocked client's own class: the component's `instanceof ApiError`
+  // resolves against that binding, and a real instance would fail the check.
+  function overCapacity() {
+    const err = new ApiError(400, 'too large')
+    return Object.assign(err, {
+      status: 400,
+      message: 'too large',
+      body: JSON.stringify({ code: 'fork_corpus_too_large' }),
+    })
+  }
+
+  it('routes a rejected fork to the pane notice, not a native dialog', async () => {
+    const m = seedApi([{ key: 'a' }])
+    m.forkChatSlot = vi.fn().mockRejectedValue(overCapacity())
+    const nativeDialog = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    renderGrid('a')
+
+    fireEvent.click(within(onlyPicker()).getByRole('button', { name: 'Fork' }))
+
+    const notice = await screen.findByTestId('grid-fork-error')
+    expect(notice.textContent).toContain('too large to duplicate whole')
+    expect(nativeDialog).not.toHaveBeenCalled()
+    nativeDialog.mockRestore()
+  })
+
+  it('still shows the pane notice when the config lookup fails too', async () => {
+    const m = seedApi([{ key: 'a' }])
+    m.forkChatSlot = vi.fn().mockRejectedValue(overCapacity())
+    m.dashboardConfig = vi.fn().mockRejectedValue(new Error('config unavailable'))
+    renderGrid('a')
+
+    fireEvent.click(within(onlyPicker()).getByRole('button', { name: 'Fork' }))
+
+    const notice = await screen.findByTestId('grid-fork-error')
+    expect(notice.textContent).toContain('too large to duplicate whole')
+    expect(notice.textContent).not.toContain('earlier message')
+    expect(notice.textContent).not.toContain('later message')
+  })
+
+  it('offers the agent hand-off on a rejected fork, which cannot destroy anything', async () => {
+    const m = seedApi([{ key: 'a' }])
+    m.forkChatSlot = vi.fn().mockRejectedValue(overCapacity())
+    renderGrid('a')
+
+    fireEvent.click(within(onlyPicker()).getByRole('button', { name: 'Fork' }))
+
+    const notice = await screen.findByTestId('grid-fork-error')
+    expect(within(notice).getByRole('button', { name: /ask.*agent/i })).toBeTruthy()
   })
 
   it('disables the fork button while no session is in the grid', async () => {
