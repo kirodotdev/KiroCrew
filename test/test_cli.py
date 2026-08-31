@@ -4729,6 +4729,35 @@ class TestArtifactCli:
     `--content-file`).
     """
 
+    def test_save_parses_an_explicit_slug(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A subparser that never declared the flag exits at parse time, so this
+        # pins the whole argv -> namespace -> command hop rather than the
+        # forwarding alone.
+        seen: dict[str, object] = {}
+        from kiro_crew import cli
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._artifact",
+            lambda args: seen.update(slug=args.slug, name=args.name),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "kirocrew",
+                "artifact",
+                "save",
+                "--name",
+                "Run Summary",
+                "--slug",
+                "chosen-by-hand",
+                "--content",
+                "body",
+            ],
+        )
+        cli.main()
+        assert seen == {"slug": "chosen-by-hand", "name": "Run Summary"}
+
     def test_save_refuses_sensitive_content_file(
         self, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
     ) -> None:

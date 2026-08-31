@@ -1863,6 +1863,145 @@ class TestArtifactCli:
         assert "Saved: slug=fresh version=1" in captured.out
         assert captured.err == ""
 
+    def test_save_forwards_an_explicit_slug(self) -> None:
+        with _ArtifactHarness([_FakeResponse({"slug": "chosen", "version": 1})]) as h:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Chosen",
+                    slug="chosen-by-hand",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        body = json.loads(h.urlopen.call_args[0][0].data.decode())
+        assert body["slug"] == "chosen-by-hand"
+
+    def test_save_forwards_an_empty_explicit_slug(self) -> None:
+        # "" is a slug the caller named, not a request to derive one. Filtering it
+        # out would silently route an explicit save into the derive-and-suffix
+        # branch — the exact asymmetry this flag exists to close.
+        with _ArtifactHarness([_FakeResponse({"slug": "x", "version": 1})]) as h:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Empty Slug",
+                    slug="",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        body = json.loads(h.urlopen.call_args[0][0].data.decode())
+        assert "slug" in body
+        assert body["slug"] == ""
+
+    def test_save_with_an_empty_slug_surfaces_the_refusal(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Forwarding "" is only worth anything if the refusal reaches the caller.
+        # The store rejects it via _validate_slug and the handler answers 400, so
+        # it arrives on the CLI's existing error path — no new error surface.
+        err = _http_error(
+            400,
+            json.dumps({"error": "invalid slug '': must match ^[a-z0-9]..."}).encode(),
+        )
+        with _ArtifactHarness([err]), pytest.raises(SystemExit) as exc:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Empty Slug",
+                    slug="",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "invalid slug" in captured.err
+        assert captured.out == ""
+
+    def test_save_omits_the_slug_key_when_none_was_given(self) -> None:
+        # An ABSENT flag must send no key at all. Forwarding it as "" would hand
+        # the store a slug it refuses, so every plain `save` would start failing;
+        # only an explicitly-passed value may reach the request body.
+        with _ArtifactHarness([_FakeResponse({"slug": "derived", "version": 1})]) as h:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Derived",
+                    slug=None,
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        body = json.loads(h.urlopen.call_args[0][0].data.decode())
+        # Positive control: this is the save request body, so the absence below
+        # is a fact about the field and not about a request that never went out.
+        assert body["name"] == "Derived"
+        assert "slug" not in body
+
+    def test_save_with_a_taken_slug_reports_the_conflict(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The store refuses an explicit slug rather than suffixing it, so the
+        # handler answers 409. It has to reach the caller as the named condition
+        # and a non-zero exit, never a traceback.
+        err = _http_error(409, json.dumps({"error": "artifact already exists: taken"}).encode())
+        with _ArtifactHarness([err]), pytest.raises(SystemExit) as exc:
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Taken",
+                    slug="taken",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert "artifact already exists: taken" in captured.err
+        assert captured.out == ""
+
+    def test_save_with_an_explicit_slug_emits_no_suffix_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The warning advises `artifact update`, which is wrong guidance for a
+        # caller who named the slug: they get a 409, never a rename. The CLI must
+        # therefore key it on the server's field alone and not on the flag being
+        # set. The server half — an explicit slug reporting no collision — is
+        # pinned in test_artifacts_handlers.py.
+        with _ArtifactHarness([_FakeResponse({"slug": "chosen-by-hand", "version": 1})]):
+            cc._artifact(
+                _ns(
+                    artifact_action="save",
+                    name="Run Summary",
+                    slug="chosen-by-hand",
+                    content="body",
+                    content_file=None,
+                    tags=None,
+                    kind=None,
+                    description=None,
+                )
+            )
+        captured = capsys.readouterr()
+        assert "Saved: slug=chosen-by-hand version=1" in captured.out
+        assert captured.err == ""
+
     def test_save_reads_content_file(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

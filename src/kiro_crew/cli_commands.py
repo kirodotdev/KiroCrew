@@ -2329,6 +2329,13 @@ def _artifact(args: argparse.Namespace) -> None:
             "content": _read_content(args),
             "tags": _parse_tags(getattr(args, "tags", None)),
         }
+        # An explicit --slug is forwarded whenever it is not None, INCLUDING the
+        # empty string. "" is a slug the caller named, not a request to derive
+        # one, and the store refuses it; truthy filtering would swallow it and
+        # silently take the derive-and-suffix branch instead.
+        slug_arg = getattr(args, "slug", None)
+        if slug_arg is not None:
+            body["slug"] = slug_arg
         for k in ("kind", "description"):
             v = getattr(args, k, None)
             if v:
@@ -2339,12 +2346,14 @@ def _artifact(args: argparse.Namespace) -> None:
             sys.exit(1)
         slug = d.get("slug", "?")
         print(f"Saved: slug={slug} version={d.get('version', 1)}")
-        # `save` has no --slug, so the slug is always derived from --name and a
-        # name collision can only ever be resolved by suffixing. That reads as
-        # success (exit 0, "version=1"), which is how a re-save of corrected
-        # content ends up published at a slug nobody looks at while the
-        # original keeps serving the old text. Name the slug that was taken and
-        # the verb that versions in place.
+        # Present only when the slug was derived from --name, because that is the
+        # branch where a taken slug resolves by suffixing. That reads as success
+        # (exit 0, "version=1"), which is how a re-save of corrected content ends
+        # up published at a slug nobody looks at while the original keeps serving
+        # the old text. Name the slug that was taken and the verb that versions in
+        # place. An explicit --slug cannot land here: the store refuses it rather
+        # than renaming — 409 when the slug is taken, 400 when it is malformed
+        # (the empty string included) — so both surface on the error path above.
         taken = d.get("slug_collided_with")
         if taken:
             print(

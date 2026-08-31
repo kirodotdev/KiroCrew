@@ -2242,6 +2242,15 @@ Examples:
     art_save = art_sub.add_parser("save", help="Save a new artifact")
     art_save.add_argument("--name", required=True, help="Human-readable name")
     art_save.add_argument(
+        "--slug",
+        help=(
+            "Explicit slug instead of one derived from --name. A taken or "
+            "malformed slug is REFUSED, never renamed: use 'artifact update "
+            "<slug>' to version one in place. Omit to let a collision resolve "
+            "by suffixing (-2, -3, ...)"
+        ),
+    )
+    art_save.add_argument(
         "--kind",
         choices=["widget", "html", "markdown", "svg", "json", "text", "image"],
         default=None,

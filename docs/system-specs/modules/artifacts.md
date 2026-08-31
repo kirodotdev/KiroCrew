@@ -124,7 +124,7 @@ middleware live in one place.
 ```
 kirocrew artifact list [--tag T] [--kind K] [--q SUBSTR]
 kirocrew artifact show <slug> [--version N] [--meta]
-kirocrew artifact save --name N [--kind K] [--content C | --content-file F] [--tags A,B] [--description D]
+kirocrew artifact save --name N [--slug S] [--kind K] [--content C | --content-file F] [--tags A,B] [--description D]
 kirocrew artifact update <slug> [--content C | --content-file F] [--name N] [--description D] [--tags A,B]
 kirocrew artifact versions <slug>
 kirocrew artifact delete <slug>
