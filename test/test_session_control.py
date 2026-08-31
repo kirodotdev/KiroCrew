@@ -810,6 +810,43 @@ class TestTheRoutesRequireTheInternalSecret:
         assert resp.status == 403
         assert self._body(resp)["code"] == "linked_session_target"
 
+    def test_close_without_the_secret_is_forbidden(self, tmp_path):
+        req = self._request(tmp_path, internal=False, path="/api/session-control/close")
+        resp = asyncio.run(handlers_sc.api_session_control_close(req))
+        assert resp.status == 403
+        assert self._body(resp)["code"] == "internal_secret_required"
+
+    def test_close_with_the_secret_reaches_the_operation(self, tmp_path, monkeypatch):
+        """The close ROUTE's success path, for the reason create's docstring gives:
+        a handler wired only at the business layer ships dead if the route itself
+        refuses or never reaches the operation."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/close")
+
+        async def _ok(*_a, **_kw):
+            return {"ok": True, "target": "chat-2"}
+
+        monkeypatch.setattr(sc, "close_target", _ok)
+        resp = asyncio.run(handlers_sc.api_session_control_close(req))
+
+        assert resp.status == 200
+        assert self._body(resp)["target"] == "chat-2"
+
+    def test_close_renders_a_refusal_as_its_status_not_a_500(self, tmp_path, monkeypatch):
+        """Same refusal contract the other routes hold — including the close-path
+        failure codes, which arrive as their own 500 rather than an unhandled crash."""
+        req = self._request(tmp_path, internal=True, path="/api/session-control/close")
+
+        async def _boom(*_a, **_kw):
+            raise sc.SessionControlError(
+                "failed to save history", status=500, code="history_save_failed"
+            )
+
+        monkeypatch.setattr(sc, "close_target", _boom)
+        resp = asyncio.run(handlers_sc.api_session_control_close(req))
+
+        assert resp.status == 500
+        assert self._body(resp)["code"] == "history_save_failed"
+
     def test_send_without_the_secret_is_forbidden(self, tmp_path):
         req = self._request(tmp_path, internal=False, path="/api/session-control/send")
         resp = asyncio.run(handlers_sc.api_session_control_send(req))
@@ -2916,3 +2953,230 @@ def test_slot_cap_has_one_owning_constant() -> None:
     assert sc_mod.MAX_LIVE_SLOTS is owning
     assert chat_fork.MAX_LIVE_SLOTS is owning
     assert session_transfer.MAX_LIVE_SLOTS is owning
+
+
+# ── Close (archive) ──────────────────────────────────────────────────────────
+
+
+def test_close_archives_a_peer_and_removes_the_slot(tmp_path):
+    """The happy path end to end: a peer in the caller's workspace is closed via
+    the real ``close_slot`` extraction, so the slot leaves ``_slots`` and the
+    per-tab session is torn down — exactly what the tab ✕ does."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+
+    result = asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=target.key))
+
+    assert result == {"ok": True, "target": target.key}
+    assert target.key not in state._slots
+    # The per-tab kiro-cli session is torn down through the shared close path.
+    state.sessions.remove.assert_awaited()
+
+
+def test_close_refuses_a_self_target(tmp_path):
+    """Close routes through ``authorize_target`` like stop and read, so a session
+    cannot close itself (the guard is operation-agnostic)."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=caller.key))
+    assert exc.value.code == "self_target"
+    # The self-close was refused, so the caller's own slot survives.
+    assert caller.key in state._slots
+
+
+def test_close_maps_a_close_failure_to_its_code(tmp_path, monkeypatch):
+    """A ``SlotCloseError`` from the shared path surfaces as a
+    ``SessionControlError`` carrying the SAME code and status — so a caller can
+    tell "history could not be saved" from a generic failure — and the failed
+    close is audited as denied."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+
+    from kiro_crew.dashboard import chat_handlers
+
+    async def _boom(_state, _slot, _name, *, pre_pop_check=None):
+        raise chat_handlers.SlotCloseError("failed to notify the app", code="app_close_hook_failed")
+
+    audited: list[tuple[str, str]] = []
+    real_audit = sc._audit
+
+    def _audit(*, caller_session_key, operation, slot_key, outcome, detail=None):
+        audited.append((operation, outcome))
+        return real_audit(
+            caller_session_key=caller_session_key,
+            operation=operation,
+            slot_key=slot_key,
+            outcome=outcome,
+            detail=detail,
+        )
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.close_slot", _boom)
+    monkeypatch.setattr(sc, "_audit", _audit)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=target.key))
+    assert exc.value.code == "app_close_hook_failed"
+    assert exc.value.status == 500
+    # The target was NOT removed — the failing close rolled back, and the trail
+    # records the attempt as denied.
+    assert target.key in state._slots
+    assert ("close", "denied") in audited
+
+
+def test_close_authorizes_then_acts_with_nothing_in_between(tmp_path, monkeypatch):
+    """Same adjacency contract stop keeps: the SEL prewarm precedes authorization,
+    and no ``await`` separates the gate from the act it authorizes.
+
+    Mutation guard: moving the prewarm below the gate, or slipping an await
+    between ``authorize_target`` and ``close_slot``, reorders this list."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    order: list[str] = []
+
+    def _sel():
+        order.append("sel")
+        return MagicMock()
+
+    real_authorize = sc.authorize_target
+
+    def _authorize(*a, **kw):
+        order.append("authorize")
+        return real_authorize(*a, **kw)
+
+    async def _fake_close(_state, _slot, _name, *, pre_pop_check=None):
+        order.append("close")
+
+    monkeypatch.setattr(sc, "sel", _sel)
+    monkeypatch.setattr(sc, "authorize_target", _authorize)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.close_slot", _fake_close)
+
+    asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=target.key))
+
+    assert order[:1] == ["sel"], f"the prewarm must precede authorization; got {order}"
+    assert (
+        order.index("close") - order.index("authorize") == 1
+    ), f"something ran between the gate and the act it authorizes: {order}"
+
+
+def test_close_reauthorizes_at_the_point_of_no_return(tmp_path, monkeypatch):
+    """A target that gains a channel mirror DURING close_slot's awaits is refused
+    at the pre-pop re-check, so the now-channel-backed session is not archived.
+
+    This is the GPT-flagged race: `authorize_target` runs before `close_slot`,
+    whose nudge-retirement + app-hook awaits are a window in which the target can
+    gain a mirror link — the same class `create_session` re-gates for.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+
+    async def _fake_close(_state, _slot, _name, *, pre_pop_check=None):
+        # Simulate the race: the target gains an outbound channel mirror while
+        # close_slot is mid-await, then the point-of-no-return check runs.
+        state.sessions.set_mirror_link(slot_history_key(target), "C123", "T1")
+        assert pre_pop_check is not None, "close_target must arm a pre-pop re-check"
+        pre_pop_check()  # re-runs authorize_target -> raises for the new mirror
+        raise AssertionError("close must not reach the pop after a stale-auth abort")
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.close_slot", _fake_close)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=target.key))
+    # The re-check's mirrored_target refusal round-trips with its own 403, not a
+    # generic close failure, and the session survives.
+    assert exc.value.code == "mirrored_target"
+    assert exc.value.status == 403
+    assert target.key in state._slots
+
+
+def test_close_slot_pre_pop_abort_rolls_back_and_does_not_pop(tmp_path):
+    """A `pre_pop_check` that raises `SlotCloseError` aborts the close at the point
+    of no return: the slot stays in `_slots` and the per-tab session is never torn
+    down. The human ✕ path (pre_pop_check=None) is unaffected."""
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+
+    def _abort():
+        raise chat_handlers.SlotCloseError(
+            "target became unreachable", code="mirrored_target", status=403
+        )
+
+    with pytest.raises(chat_handlers.SlotCloseError) as exc:
+        asyncio.run(chat_handlers.close_slot(state, slot, slot.key, pre_pop_check=_abort))
+
+    assert exc.value.code == "mirrored_target"
+    assert slot.key in state._slots  # not popped
+    state.sessions.remove.assert_not_awaited()  # teardown never ran
+
+
+def test_close_aborts_if_the_key_was_reminted_during_the_close(tmp_path, monkeypatch):
+    """A concurrent close+reopen re-mints the same key onto a DIFFERENT session
+    while close_slot awaits. The pre-pop re-check compares slot identity (not mere
+    presence) and aborts with `target_replaced`, so close_slot never pops the
+    replacement — the GPT-flagged data-corruption race."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    original_key = target.key
+
+    async def _fake_close(_state, _slot, _name, *, pre_pop_check=None):
+        # Simulate the re-mint: drop the original and put a fresh slot object
+        # under the SAME key, then run the point-of-no-return check.
+        state._slots.pop(original_key, None)
+        replacement = state.get_or_create_slot(original_key)
+        assert replacement is not target
+        assert pre_pop_check is not None
+        pre_pop_check()  # authorize_target resolves the replacement -> identity mismatch
+        raise AssertionError("close must not pop after a re-mint abort")
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.close_slot", _fake_close)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.close_target(state, caller_session_key=_key(caller), target=original_key))
+    assert exc.value.code == "target_replaced"
+    assert exc.value.status == 409
+    # The replacement survives.
+    assert original_key in state._slots
+
+
+def test_close_slot_runs_the_pre_pop_check_synchronously_after_retirement(tmp_path, monkeypatch):
+    """`pre_pop_check` runs SYNCHRONOUSLY after the (awaited) nudge retirement and
+    immediately before the pop, so there is no suspension between the last
+    retirement, the re-check, and the removal — a concurrent `monitor_start`
+    cannot arm a loop in a window that would leave a timer to rehydrate the
+    archived tab, and a mirror/link cannot land between the re-authorization and
+    the archival.
+
+    Asserted by the call order (retire is the last AWAIT; the sync check follows,
+    then the pop) and by the callback being a plain synchronous function."""
+    import inspect
+
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    order: list[str] = []
+
+    async def _retire(_name):
+        order.append("retire")
+        return None
+
+    def _check():  # synchronous by contract — no await before the pop
+        order.append("check")
+
+    assert not inspect.iscoroutinefunction(_check)
+    monkeypatch.setattr(chat_handlers, "_retire_slot_nudge_loop", _retire)
+
+    asyncio.run(chat_handlers.close_slot(state, slot, slot.key, pre_pop_check=_check))
+
+    # Retirement (the last await) then the synchronous check, then the pop. No
+    # second retirement is needed because the check itself suspends nothing.
+    assert order == ["retire", "check"], order
+    assert slot.key not in state._slots  # closed

@@ -174,7 +174,6 @@ src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
 src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/scripts/local_review.py
 src/kiro_crew/changelog.py
-src/kiro_crew/channel.py
 src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli_bench.py
@@ -308,7 +307,6 @@ src/kiro_crew/mcp_caller.py
 src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_core.py
 src/kiro_crew/mcp_cron.py
-src/kiro_crew/mcp_dashboard.py
 src/kiro_crew/mcp_discovery.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
@@ -385,7 +383,6 @@ src/kiro_crew/suggestions.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
 src/kiro_crew/tips.py
-src/kiro_crew/validation.py
 src/kiro_crew/vector_memory.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py

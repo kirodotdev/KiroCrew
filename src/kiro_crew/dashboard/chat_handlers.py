@@ -3642,45 +3642,68 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     return web.json_response({"slot": name, "reset": True, "replay": replay})
 
 
-async def api_chat_slot_delete(request: web.Request) -> web.Response:
-    """DELETE /api/chat/slots/{slot} — stop and remove a UI slot.
+class SlotCloseError(Exception):
+    """A close that could not complete, carrying the response the tab-✕ path
+    would have rendered.
 
-    Kills the per-tab kiro-cli session and saves history.  The session
-    will be recreated from the warm pool if the tab is resumed later.
+    Extracted alongside :func:`close_slot` so the DELETE endpoint and
+    session-control's ``close_target`` map the SAME three failures the same way.
+    ``code`` is the machine-readable contract; ``message`` is advisory prose;
+    ``status`` is 500 for every close failure (each leaves the tab open and
+    every partial step rolled back — a state the user can see and retry).
     """
-    state: DashboardState = request.app["state"]
-    name = request.match_info["slot"]
-    slot = state._slots.get(name)
-    if not slot:
-        return web.json_response({"error": "not found"}, status=404)
 
-    # App ownership check (App Kit §5.2): app can only delete slots it created.
-    # Unscoped slots (empty _app) cannot be deleted by app tokens.
-    # Dashboard users (empty request_app) can delete anything.
-    request_app = request.get("app", "")
-    if request_app and slot._app != request_app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="slot_delete",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app does not own this slot",
-        )
-        return web.json_response({"error": "not found"}, status=404)
-    if request_app and not slot._app:
-        sel().log_api_access(
-            caller=request_app,
-            operation="slot_delete",
-            outcome="denied",
-            source="app_isolation",
-            resources=f"slot={name}",
-            error="app cannot delete unscoped slots",
-        )
-        # 404 (not 403): a foreign/unscoped slot is indistinguishable from a
-        # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
-        return web.json_response({"error": "not found"}, status=404)
+    def __init__(self, message: str, code: str, status: int = 500) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.status = status
 
+
+async def close_slot(
+    state: DashboardState,
+    slot: "_ChatSlot",
+    name: str,
+    *,
+    pre_pop_check: Callable[[], None] | None = None,
+) -> None:
+    """Close (archive) one live slot the way the tab ✕ does: tombstone it, retire
+    its auto-nudge loop, notify its owning app, persist it as closed, and tear
+    down the per-tab session.
+
+    Non-destructive: the conversation is saved to history (``closed=True``) and
+    recreated from the warm pool if the tab is resumed later — nothing is
+    permanently deleted here.
+
+    Shared by :func:`api_chat_slot_delete` and ``session_control.close_target``
+    so neither can diverge on the ordering invariants that keep a nudge or an
+    app watchdog from resurrecting the very tab being dismissed. The three
+    failure paths raise :class:`SlotCloseError`, leaving the slot open with every
+    partial step rolled back; the caller renders the refusal in its own idiom
+    (an HTTP response, or a ``SessionControlError``). The APP-OWNERSHIP check is
+    deliberately NOT here — it is DELETE-endpoint policy (App Kit isolation for
+    app tokens) and stays in that handler; session control scopes the caller
+    through ``authorize_target`` instead.
+
+    ``pre_pop_check`` runs SYNCHRONOUSLY at the point of no return — immediately
+    before the slot is popped, after the nudge-retirement and app-hook awaits. It
+    exists for a caller (``close_target``) that authorized the target BEFORE this
+    coroutine and must re-assert that authorization against state those awaits
+    could have changed: a target unmirrored/unlinked at admission can gain a
+    channel mirror or link while the AutoNudge lock and the app hook are awaited,
+    and archiving a now-channel-backed session it was never allowed to reach is
+    the boundary the target guards exist to hold. It is SYNCHRONOUS on purpose —
+    an awaited check would put a suspension back between the last retirement and
+    the pop (reopening the retired-loop window) and between the re-authorization
+    and the pop (reopening the mirror window); a synchronous check has neither, so
+    nothing can change between the final authorization and the archival. It must
+    therefore do no blocking I/O (``close_target`` passes ``skip_enabled_check=True``
+    so its ``authorize_target`` never reads config on the loop). It raises
+    :class:`SlotCloseError` to abort; the abort unwinds the teardown so far (the
+    retired nudge loop is restored, an app notification is taken back) and
+    re-raises, exactly like the persist-failure path. The human ✕ path passes
+    ``None`` — the person owns the tab and closes it unconditionally.
+    """
     # Synchronous tombstone, BEFORE any await: a channel-slot reconcile pass
     # whose snapshot predates this close reads these after its last await, so
     # it cannot re-surface the tab this handler is dismissing (see
@@ -3706,10 +3729,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         logger.error("Failed to retire nudge loop for slot %s, close aborted", name)
         _sync_dashboard_slots(state)
         state.push_slots_update()
-        return web.json_response(
-            {"error": "failed to retire nudge loop", "code": "nudge_retire_failed"},
-            status=500,
-        )
+        raise SlotCloseError("failed to retire nudge loop", code="nudge_retire_failed")
     # Remove from the registry only AFTER the loop is retired, because the ORDER
     # is what decides whether a nudge landing in between is harmless or fatal.
     # Retiring takes the AutoNudge lock, so it awaits; a timer expiring inside
@@ -3751,10 +3771,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
             logger.error("Slot-close hook for app %r failed on %r, close aborted", slot._app, name)
             _sync_dashboard_slots(state)
             state.push_slots_update()
-            return web.json_response(
-                {"error": "failed to notify the app", "code": "app_close_hook_failed"},
-                status=500,
-            )
+            raise SlotCloseError("failed to notify the app", code="app_close_hook_failed")
         # The app hook awaits external work while the slot is still visible.
         # Re-arbitrate the nudge registry after it returns: an arm that committed
         # during that await must be retired before the synchronous pop below.
@@ -3778,12 +3795,37 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
             logger.error("Late nudge retirement failed for slot %s; close aborted", name)
             _sync_dashboard_slots(state)
             state.push_slots_update()
-            return web.json_response(
-                {"error": "failed to retire nudge loop", "code": "nudge_retire_failed"},
-                status=500,
-            )
+            raise SlotCloseError("failed to retire nudge loop", code="nudge_retire_failed")
         if late_retired_loop is not None:
             retired_loop = late_retired_loop
+    if pre_pop_check is not None:
+        # Point of no return: re-assert authorization that the awaits above could
+        # have staled (nudge retirement takes the AutoNudge lock; the app hook
+        # awaits external work). Called SYNCHRONOUSLY so there is NO suspension
+        # between the last retirement above, this re-check, and the pop below —
+        # nothing can change between the final authorization and the archival, and
+        # the retirement stays adjacent to the removal. A raised SlotCloseError
+        # unwinds the teardown so far — restore the retired nudge loop, take back
+        # an app notification — and re-raises, exactly like a failed persist.
+        try:
+            pre_pop_check()
+        except SlotCloseError:
+            await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
+            if slot._app:
+                from kiro_crew.apps.teardown import (
+                    notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
+                )
+
+                if not await notify_slot_close_undone(slot._app, name):
+                    logger.error(
+                        "Could not take back the dismissal for app %r on %r after a "
+                        "pre-pop re-check aborted the close",
+                        slot._app,
+                        name,
+                    )
+            _sync_dashboard_slots(state)
+            state.push_slots_update()
+            raise
     state._slots.pop(name, None)
     # Release any blocking wait before cancelling the task: a question pending on
     # the blocking POST /api/ask-question path holds an MCP worker on an open
@@ -3836,9 +3878,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
                 )
         _sync_dashboard_slots(state)
         state.push_slots_update()
-        return web.json_response(
-            {"error": "failed to save history", "code": "history_save_failed"}, status=500
-        )
+        raise SlotCloseError("failed to save history", code="history_save_failed")
     else:
         state._restricted_keys.discard(f"dashboard:{name}")
         # Durable, so no rollback can retract this frame — a client pruning its
@@ -3851,6 +3891,61 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     _sync_dashboard_slots(state)
     state.push_slots_update()
     state.push_refresh("history")
+
+
+async def api_chat_slot_delete(request: web.Request) -> web.Response:
+    """DELETE /api/chat/slots/{slot} — stop and remove a UI slot.
+
+    Kills the per-tab kiro-cli session and saves history.  The session
+    will be recreated from the warm pool if the tab is resumed later.
+
+    The close sequence itself lives in :func:`close_slot`, shared with
+    session-control's ``close_target``; this handler adds only the
+    DELETE-endpoint's App Kit ownership check and maps the outcome to a
+    response.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found"}, status=404)
+
+    # App ownership check (App Kit §5.2): app can only delete slots it created.
+    # Unscoped slots (empty _app) cannot be deleted by app tokens.
+    # Dashboard users (empty request_app) can delete anything.
+    request_app = request.get("app", "")
+    if request_app and slot._app != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="slot_delete",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app does not own this slot",
+        )
+        return web.json_response({"error": "not found"}, status=404)
+    if request_app and not slot._app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="slot_delete",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error="app cannot delete unscoped slots",
+        )
+        # 404 (not 403): a foreign/unscoped slot is indistinguishable from a
+        # missing one — anti-enumeration (CWE-204); true reason logged via SEL.
+        return web.json_response({"error": "not found"}, status=404)
+
+    try:
+        await close_slot(state, slot, name)
+    except SlotCloseError as exc:
+        # Every failure `close_slot` raises is a server-side 500 (nudge retire /
+        # app hook / history save); a literal status keeps the error-code contract
+        # gate able to verify the `code` statically (a `status=<expr>` would read
+        # as an un-verifiable dynamic-status response). The pre-pop re-check that
+        # raises other statuses is session-control's path, not this handler's.
+        return web.json_response({"error": exc.message, "code": exc.code}, status=500)
     return web.json_response({"ok": True})
 
 

@@ -62,6 +62,7 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     "session_send",
     "session_read_message",
     "session_create",
+    "session_close",
 )
 
 # Boundary-aware matcher: the tool name must stand alone in the rendered
@@ -418,7 +419,9 @@ class Channel:
         }
 
     @classmethod
-    def deserialize(cls, data: dict[str, Any], broadcast_fn: Any = None, save_fn: Any = None) -> "Channel":
+    def deserialize(
+        cls, data: dict[str, Any], broadcast_fn: Any = None, save_fn: Any = None
+    ) -> "Channel":
         """Restore a channel from serialized data."""
         ch = cls(id=data["id"], topic=data["topic"])
         ch.orchestrator_id = data.get("orchestrator_id")
@@ -436,7 +439,9 @@ class Channel:
                 session_key=ad.get("session_key", f"channel:{data['id']}:{ad['id']}"),
                 state="done",  # always restore as done
                 is_orchestrator=ad.get("is_orchestrator", False),
-                listen_mode=ListenMode(ad.get("listen_mode", "all" if ad.get("is_orchestrator") else "mention")),
+                listen_mode=ListenMode(
+                    ad.get("listen_mode", "all" if ad.get("is_orchestrator") else "mention")
+                ),
             )
             ch.members[aid] = agent
         for md in data.get("messages", []):
@@ -530,7 +535,9 @@ class ChannelManager:
             try:
                 with open(path) as f:
                     data = json.load(f)
-                ch = Channel.deserialize(data, broadcast_fn=self._broadcast_fn, save_fn=self._save_channel)
+                ch = Channel.deserialize(
+                    data, broadcast_fn=self._broadcast_fn, save_fn=self._save_channel
+                )
                 ch._max_agents = self._max_agents
                 self._channels[ch.id] = ch
                 logger.info("Restored channel %s (%s)", ch.id, ch.topic)

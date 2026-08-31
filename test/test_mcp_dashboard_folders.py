@@ -1527,6 +1527,7 @@ class TestAdvertisedSet:
             "chat_folder_move_session",
             "session_create",
             "session_stop",
+            "session_close",
             "session_send",
             "session_read_message",
         }

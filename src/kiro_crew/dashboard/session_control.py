@@ -1,14 +1,16 @@
 """Session control: letting one chat session observe and interrupt another.
 
-Three operations — create a session, stop its turn, read its transcript — plus the
-authorization that decides whether a caller may address a target at all. The
-operations are deliberately thin: they reuse the same creation, stop and history
-paths the dashboard itself uses, so a controlled session behaves exactly like one
-a human is typing into.
+Four operations — create a session, stop its turn, close (archive) it, and read
+its transcript — plus the authorization that decides whether a caller may address
+a target at all. The operations are deliberately thin: they reuse the same
+creation, stop, close and history paths the dashboard itself uses, so a controlled
+session behaves exactly like one a human is typing into.
 
 **One verb here writes into another session's conversation: ``session_send``.**
 Reading returns a transcript tail; stopping cancels an in-flight turn the way the
-Stop button does; creating opens an empty session in the user's sidebar; sending
+Stop button does; closing archives the session the way the tab ✕ does (the
+conversation is saved to history and can be reopened — closing is not deletion);
+creating opens an empty session in the user's sidebar; sending
 delivers a message the target runs as its next turn, redacted through
 ``sanitize_outbound`` and prefixed with a ``[sent by session … via session_send]``
 envelope so it can never render as something the person typed. An IDLE target runs
@@ -21,9 +23,10 @@ that did not hold at admission. A human-typed queued message shares the same
 window and the same re-check.
 
 Authorization is deny-by-default and checked in one place
-(:func:`authorize_target`) for the two operations that take a target, so a guard
-cannot be present on one verb and missing on another. ``session_create`` has no
-target; it checks the caller's own eligibility with the same refusals.
+(:func:`authorize_target`) for the three operations that take a target — stop,
+close and read — so a guard cannot be present on one verb and missing on another.
+``session_create`` has no target; it checks the caller's own eligibility with the
+same refusals.
 """
 
 from __future__ import annotations
@@ -892,12 +895,21 @@ def authorize_target(
     caller_session_key: str,
     target: str,
     operation: str,
+    skip_enabled_check: bool = False,
 ) -> "_ChatSlot":
     """Resolve *target* and decide whether *caller* may act on it.
 
     Deny-by-default: every refusal raises :class:`SessionControlError` and is
     recorded in the SEL, so an attempt to reach a session that is out of bounds
     is visible after the fact even though nothing happened.
+
+    ``skip_enabled_check`` omits ONLY the ``session_control_enabled()`` config
+    read. It exists for a re-check that must run SYNCHRONOUSLY with no event-loop
+    suspension (``close_target``'s point-of-no-return callback): the feature was
+    already confirmed enabled when the operation was first authorized, whether
+    session control got switched off mid-operation is not a containment boundary,
+    and the config read is the one part of this function that can touch the disk
+    on a cache miss. Every containment and identity refusal still runs.
     """
 
     def deny(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -933,7 +945,7 @@ def authorize_target(
         )
         return SessionControlError(reason, status=status, code=code)
 
-    if not session_control_enabled():
+    if not skip_enabled_check and not session_control_enabled():
         raise deny(
             "session control is disabled in config (agent.session_control)",
             "session_control_disabled",
@@ -1215,6 +1227,114 @@ async def stop_target(
         },
     )
     return {"ok": True, "target": slot.key, **result}
+
+
+async def close_target(
+    state: "DashboardState",
+    *,
+    caller_session_key: str,
+    target: str,
+) -> dict[str, Any]:
+    """Close *target*, the same archival the tab ✕ performs.
+
+    Non-destructive: the conversation is saved to history and can be reopened
+    later — closing dismisses the LIVE tab, it does not delete the transcript.
+    An in-flight turn is cancelled first (its work is discarded), so this is a
+    strictly heavier act than :func:`stop_target`; the description tells the
+    caller to read the session before closing it.
+
+    Reuses the dashboard's own close path (:func:`chat_handlers.close_slot`), so
+    a controlled close and a human ✕ share the identical nudge-retirement and
+    app-notification ordering that keeps a dismissed tab from being resurrected.
+    Its three failure modes surface as their own ``SessionControlError`` codes
+    rather than a generic 500, so a caller can tell "the app refused the
+    dismissal" from "history could not be saved".
+    """
+    # Same prewarm ordering as `stop_target`, for the same reasons: the SEL write
+    # inside `authorize_target`'s deny path must be a cache hit, and the config
+    # warm must be the LAST suspension before the synchronous gate.
+    try:
+        await asyncio.to_thread(sel)
+    except Exception:  # noqa: BLE001 - a prewarm failure must not fail the close
+        logger.warning("session-control SEL prewarm failed", exc_info=True)
+    await prewarm_enabled_check()
+
+    slot = authorize_target(
+        state,
+        caller_session_key=caller_session_key,
+        target=target,
+        operation="close",
+    )
+    slot_key = slot.key
+    # Deferred for the same import cycle `stop_target` documents.
+    from kiro_crew.dashboard.chat_handlers import SlotCloseError, close_slot
+
+    def _reassert_closeable() -> None:
+        # Re-run the SAME target gate at close_slot's point of no return —
+        # SYNCHRONOUSLY, so there is NO event-loop suspension between it and the
+        # pop and nothing can change between the final authorization and the
+        # archival. The initial gate above ran before close_slot's awaits
+        # (nudge-loop retirement takes the AutoNudge lock; the app hook awaits
+        # external work), and a target that was unmirrored/unlinked then can gain
+        # a channel mirror or link in that window — archiving a now-channel-backed
+        # session the caller was never allowed to reach.
+        #
+        # `skip_enabled_check=True` omits the ONE part of authorize_target that
+        # can touch the disk (`session_control_enabled()`'s config read): the
+        # feature was already confirmed enabled above, whether it was switched off
+        # mid-close is not a containment boundary, and skipping it is what lets
+        # this run with no await — an async prewarm-then-check would put an await
+        # back before the pop and reopen the very window this closes. Every
+        # containment and identity refusal still runs.
+        try:
+            live = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=slot_key,
+                operation="close",
+                skip_enabled_check=True,
+            )
+        except SessionControlError as exc:
+            # A stale-authorization refusal (mirrored/linked/workspace/caller-gone)
+            # becomes a SlotCloseError carrying that same status, so it round-trips
+            # to the caller as the specific 403 rather than a generic close failure.
+            raise SlotCloseError(exc.message, code=exc.code, status=exc.status) from exc
+        if live is not slot:
+            # The key was re-minted onto a DIFFERENT session while close_slot
+            # awaited (a concurrent close+reopen). authorize_target resolves by
+            # key, so it would authorize the replacement — but close_slot pops
+            # `name` and tears down / saves the ORIGINAL slot it holds. Comparing
+            # identity (not mere presence) is the same guard `create_session` uses
+            # for its re-minted-key window; abort so the replacement lives.
+            raise SlotCloseError(
+                "the target session was replaced during the close",
+                code="target_replaced",
+                status=409,
+            )
+
+    try:
+        await close_slot(state, slot, slot_key, pre_pop_check=_reassert_closeable)
+    except SlotCloseError as exc:
+        # The close path already rolled back every partial step and logged the
+        # cause; re-raise it as the surface's own error so the caller sees the
+        # specific reason (nudge/app/history) rather than a bare failure. Audited
+        # as a denied operation so the trail shows the close was attempted and did
+        # not take.
+        _audit(
+            caller_session_key=caller_session_key,
+            operation="close",
+            slot_key=slot_key,
+            outcome="denied",
+            detail={"code": exc.code},
+        )
+        raise SessionControlError(exc.message, status=exc.status, code=exc.code) from exc
+    _audit(
+        caller_session_key=caller_session_key,
+        operation="close",
+        slot_key=slot_key,
+        outcome="allowed",
+    )
+    return {"ok": True, "target": slot_key}
 
 
 #: Cap on one delivered message. Aliased to ``validation.MAX_LONG_STRING`` rather

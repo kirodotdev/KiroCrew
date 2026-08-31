@@ -301,14 +301,18 @@ class TestRouteBodyValidation:
 class TestRefusalStatusMapping:
     """The renderer answers only from a closed set of statuses."""
 
-    @pytest.mark.parametrize("status", [403, 404, 409, 429])
+    @pytest.mark.parametrize("status", [403, 404, 409, 429, 500])
     def test_a_mapped_status_is_forwarded(self, status):
         exc = sc.SessionControlError("no", status=status, code="c")
         assert handlers_sc._refusal(exc).status == status
 
     def test_an_unmapped_status_degrades_to_400(self):
-        """A status outside the set must not be forwarded verbatim."""
-        exc = sc.SessionControlError("no", status=500, code="c")
+        """A status outside the set must not be forwarded verbatim.
+
+        500 is now in the set (``close_target`` raises it for the three close-path
+        failures), so the degrade case uses a genuinely unmapped status.
+        """
+        exc = sc.SessionControlError("no", status=418, code="c")
         assert handlers_sc._refusal(exc).status == 400
 
     def test_the_code_is_always_present(self):

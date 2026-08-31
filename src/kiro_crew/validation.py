@@ -1955,9 +1955,7 @@ ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("owner", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("repo", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec(
-            "number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER
-        ),
+        FieldSpec("number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER),
         # provider/host/kind are REQUIRED, with no defaults, because together
         # with owner/repo they select the record's STORAGE NAMESPACE (see
         # ``store.provider_root``: public GitHub keeps the original
@@ -1969,9 +1967,7 @@ ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
         # The caller always has this information to hand (`recordIdentityJson`
         # in ``website/src/apps/issue-radar/lib/links.ts`` emits all three), so
         # requiring them costs nothing and removes the ambiguity.
-        FieldSpec(
-            "provider", str, required=True, max_len=16, allowed=_ISSUE_RADAR_PROVIDERS
-        ),
+        FieldSpec("provider", str, required=True, max_len=16, allowed=_ISSUE_RADAR_PROVIDERS),
         FieldSpec("host", str, required=True, max_len=253),
         FieldSpec("kind", str, required=True, max_len=8, allowed=_ISSUE_RADAR_ITEM_KINDS),
         FieldSpec("status", str, max_len=16, allowed=_ISSUE_RADAR_STATUSES, default="resolved"),
@@ -2111,9 +2107,7 @@ ISSUE_RADAR_CREW_RECORD_SCHEMA = ToolSchema(
         # Bounds the number that becomes the work item's FILENAME
         # (``crews/<crew_id>/<n>.json``) — same ENAMETOOLONG rationale as the
         # investigation record, hence the same constant.
-        FieldSpec(
-            "number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER
-        ),
+        FieldSpec("number", int, required=True, min_val=1, max_val=_ISSUE_RADAR_MAX_ITEM_NUMBER),
         FieldSpec("phase", str, max_len=32, allowed=_ISSUE_RADAR_CREW_PHASES),
         # Bounded but deliberately NOT ``allowed=``, unlike ``phase`` beside it.
         # An out-of-vocabulary phase has to be refused — it would corrupt the
@@ -2342,7 +2336,13 @@ HOOK_CREATE_SCHEMA = ToolSchema(
         FieldSpec("command", str, max_len=2000, default=""),
         FieldSpec("event", str, required=True, allowed=ALLOWED_HOOK_EVENTS),
         FieldSpec("matcher", str, max_len=500, default=""),  # optional: empty = match all
-        FieldSpec("matcher_mode", str, max_len=10, default="glob", allowed=frozenset({"glob", "regex", "contains"})),
+        FieldSpec(
+            "matcher_mode",
+            str,
+            max_len=10,
+            default="glob",
+            allowed=frozenset({"glob", "regex", "contains"}),
+        ),
         FieldSpec("skills", list, default=[], item_type=str, item_max_len=100),
         FieldSpec("timeout", int, min_val=1, max_val=300, default=30),
         FieldSpec("enabled", bool, default=True),
@@ -2357,7 +2357,9 @@ HOOK_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("command", str, max_len=2000),  # optional on update
         FieldSpec("event", str, allowed=ALLOWED_HOOK_EVENTS),
         FieldSpec("matcher", str, max_len=500),  # optional: empty = match all
-        FieldSpec("matcher_mode", str, max_len=10, allowed=frozenset({"glob", "regex", "contains"})),
+        FieldSpec(
+            "matcher_mode", str, max_len=10, allowed=frozenset({"glob", "regex", "contains"})
+        ),
         FieldSpec("skills", list, item_type=str, item_max_len=100),
         FieldSpec("timeout", int, min_val=1, max_val=300),
         FieldSpec("enabled", bool),
@@ -2661,6 +2663,13 @@ SESSION_STOP_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_CLOSE_SCHEMA = ToolSchema(
+    tool_name="session_close",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
 SESSION_SEND_SCHEMA = ToolSchema(
     tool_name="session_send",
     fields=[
@@ -2857,9 +2866,7 @@ _CU_DRAG_PATHS = frozenset(_cu_types.DRAG_PATHS)
 # accepted either would be "run an arbitrary program with attacker-chosen input"
 # rather than "open an application". The drivers narrow it much further (a resolved
 # executable must sit under a protected install root); this is only the outer bound.
-_CU_LAUNCH_APP_FIELD = FieldSpec(
-    "app", str, required=True, max_len=_cu_types.MAX_LAUNCH_QUERY_LEN
-)
+_CU_LAUNCH_APP_FIELD = FieldSpec("app", str, required=True, max_len=_cu_types.MAX_LAUNCH_QUERY_LEN)
 
 
 def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
@@ -2894,6 +2901,7 @@ def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
 MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_create": SESSION_CREATE_SCHEMA,
     "session_stop": SESSION_STOP_SCHEMA,
+    "session_close": SESSION_CLOSE_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,
     "session_read_message": SESSION_READ_MESSAGE_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
