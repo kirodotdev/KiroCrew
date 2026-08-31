@@ -1227,8 +1227,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "transcribe.py::_pcm_via_ffmpeg",
         "transcribe.py::_transcribe_aws",
         # The build probe executes the same authenticated image with the single
-        # fixed `-version` argument and discards both streams; it accepts no external
-        # input at all.
+        # fixed `-version` argument; it accepts no external input at all. Both
+        # streams are CAPTURED rather than discarded, so a refusal can name itself
+        # in the build log, and are decoded with errors="replace" because a loader
+        # complaint arrives in the host's console encoding.
         "transcribe.py::_packaged_ffmpeg_version_probe",
         # JSON-Schema ``pattern`` validation for MCP app→gateway tool-call args
         # (validate_mcp_tool_arguments). The spawn's command surface is FULLY

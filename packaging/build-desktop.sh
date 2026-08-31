@@ -155,23 +155,65 @@ is_macos_intel_backend() {
 # is not enough: an ABI mismatch or missing executable otherwise reaches every
 # user as an unusable Download button. Model weights are deliberately not involved
 # in this gate.
+#
+# THREE outcomes, not two, because the decoder answers two independent questions
+# (see transcribe.PackagedDecoderProbe):
+#
+#   exit 0  everything loaded and ran
+#   exit 1  the recogniser is broken, OR no decoder AUTHENTICATED -- a defect in
+#           what we are about to publish, so the build stops
+#   exit 2  the decoder authenticated but this HOST would not run it
+#
+# Exit 2 is a warning and not a failure, and that is the whole point of splitting
+# them. Authenticity is a property of the artifact and is gated everywhere;
+# executability is a property of the build machine. A build image missing an OS
+# library the pinned executable load-time imports refuses it before its entry
+# point runs -- Windows Server Core, which every CodeBuild Windows image is built
+# on, ships no Video for Windows components and so cannot load an ffmpeg that
+# imports AVICAP32.dll -- while the identical bytes run correctly on a user's
+# machine. Blocking a release on that withholds a correct artifact because the
+# machine that assembled it was not the machine that runs it.
 #   $1 = bundled interpreter
 local_voice_runtime_gate() {
-  local python="$1"
+  local python="$1" report status
   log "Verifying bundled local voice runtime…"
-  env PYTHONNOUSERSITE=1 PYTHONPATH= "$python" -s -c '
+  # `if` rather than a bare assignment: under `set -e` a command substitution that
+  # exits non-zero aborts the script, which would make exit 2 a hard failure again.
+  if report="$(env PYTHONNOUSERSITE=1 PYTHONPATH= "$python" -s -c '
+import sys
+
 from kiro_crew.stt.engine import probe
 from kiro_crew.transcribe import _packaged_ffmpeg_version_probe
 
 state = probe()
 if not state.ok:
-    raise SystemExit(f"{state.code}: {state.detail}")
-if not _packaged_ffmpeg_version_probe():
-    raise SystemExit("bundled ffmpeg executable is missing, modified, or cannot run")
-' || {
-    echo "ERROR: bundled local voice runtime cannot load" >&2
-    exit 1
-  }
+    sys.stderr.write(f"{state.code}: {state.detail}\n")
+    raise SystemExit(1)
+
+decoder = _packaged_ffmpeg_version_probe()
+if decoder.ok:
+    raise SystemExit(0)
+sys.stderr.write(f"{decoder.code}: {decoder.detail}\n")
+raise SystemExit(1 if not decoder.authentic else 2)
+' 2>&1)"; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ -n "$report" ]; then
+    printf '    %s\n' "$report"
+  fi
+  case "$status" in
+    0) ;;
+    2)
+      echo "  ⚠ the bundled decoder authenticated but does not run on THIS host." >&2
+      echo "    Its bytes are the pinned payload, so the bundle is shipped as-is." >&2
+      ;;
+    *)
+      echo "ERROR: bundled local voice runtime cannot load" >&2
+      exit 1
+      ;;
+  esac
 }
 
 # Re-stamp every staged backend tree with <dist>, for the Linux multi-format

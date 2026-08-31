@@ -334,7 +334,10 @@ same way). Key details:
 - **Local dictation runtime bundled** — supported desktop builds include
   `pywhispercpp`, the platform `imageio-ffmpeg` executable used for compressed
   recordings, and all transitive runtime dependencies. The build imports the
-  recognizer and executes the exact packaged decoder before publishing. Model
+  recognizer and executes the exact packaged decoder before publishing — and
+  distinguishes a decoder that fails to AUTHENTICATE, which fails the build, from
+  one that authenticates but will not run on the build host, which warns and
+  ships (see [stt-streaming](../system-specs/features/stt-streaming.md)). Model
   weights are deliberately excluded from the installer: the user selects a
   model and clicks **Download now**, with no package manager or separate
   dependency step. Intel macOS is the unsupported recognizer exception.

@@ -340,7 +340,18 @@ describe("first-download installer design contract", () => {
     assert.doesNotMatch(buildScript, /bundling without it/);
     assert.match(buildScript, /from kiro_crew\.stt\.engine import probe/);
     assert.match(buildScript, /from kiro_crew\.transcribe import _packaged_ffmpeg_version_probe/);
-    assert.match(buildScript, /if not _packaged_ffmpeg_version_probe\(\)/);
+    assert.match(buildScript, /decoder = _packaged_ffmpeg_version_probe\(\)/);
+    // Both halves of the decoder verdict are pinned, because collapsing them back
+    // into one boolean is the regression this shape exists to prevent.
+    // AUTHENTICITY gates the release everywhere (exit 1 -> the build stops), so
+    // pip metadata or a swapped payload still cannot publish. EXECUTABILITY does
+    // not, because it is a property of the build host rather than the artifact:
+    // an image lacking an OS library the executable load-time imports refuses it
+    // before its entry point runs, while the same bytes run for a user, so that
+    // case warns and ships (exit 2).
+    assert.match(buildScript, /raise SystemExit\(1 if not decoder\.authentic else 2\)/);
+    assert.match(buildScript, /ERROR: bundled local voice runtime cannot load/);
+    assert.match(buildScript, /authenticated but does not run on THIS host/);
     // The Apple-Silicon decoder must ship as a PLAIN Mach-O so the app signer
     // signs it. Sealing it as a compressed payload (#6746) made Apple's notary
     // service decompress the member, find an unsigned executable inside, and

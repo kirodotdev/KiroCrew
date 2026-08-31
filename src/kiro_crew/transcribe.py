@@ -43,6 +43,7 @@ import sys
 import tempfile
 import threading
 import wave
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator
 
 from kiro_crew import aws_consent, platform_compat, stt
@@ -654,11 +655,86 @@ def _packaged_ffmpeg_resource() -> str | None:
         authenticated.close()
 
 
-def _packaged_ffmpeg_version_probe() -> bool:
-    """Run ``-version`` from authenticated bytes for the desktop build gate."""
+#: Outcome codes for :func:`_packaged_ffmpeg_version_probe`.
+DECODER_OK = "decoder_ok"
+DECODER_UNAUTHENTIC = "decoder_unauthentic"
+DECODER_NOT_EXECUTABLE = "decoder_not_executable"
+
+#: Windows loader refusals worth naming in the build gate's report. Both mean the
+#: image was rejected BEFORE its entry point ran -- a missing or wrong-version
+#: import -- which is a property of the host, never of the bytes. Spelled as the
+#: signed values ``subprocess`` reports, because CPython surfaces the Windows exit
+#: DWORD through a signed C int.
+_WINDOWS_LOADER_STATUS: dict[int, str] = {
+    -1073741515: "STATUS_DLL_NOT_FOUND",
+    -1073741511: "STATUS_ENTRYPOINT_NOT_FOUND",
+}
+
+#: Cap on child output quoted into a probe's ``detail``. Enough for a loader or
+#: dynamic-linker complaint, short enough to stay one readable log line.
+_DECODER_DETAIL_MAX_CHARS = 400
+
+
+@dataclass(frozen=True)
+class PackagedDecoderProbe:
+    """Whether the packaged decoder authenticated, and whether it then ran.
+
+    Two INDEPENDENT questions, and collapsing them is what made this unreadable.
+    ``authentic`` is a property of the ARTIFACT: the bytes matched the pinned
+    upstream digest or an accepted signature, and it must hold on every host.
+    ``ok`` additionally requires that they EXECUTED, which is a property of the
+    BUILD HOST -- a container image can lack an OS library the executable
+    load-time imports, and the loader then refuses it before its entry point runs
+    even though the identical bytes run correctly for a user.
+
+    A caller that treats a host limitation as a corrupt payload sends the reader
+    to the wrong half of the problem, so the release gate reads these separately:
+    ``authentic`` false fails the build, ``ok`` false alone only warns.
+    """
+
+    ok: bool
+    authentic: bool
+    code: str = DECODER_OK
+    detail: str = ""
+
+
+def _decoder_exit_detail(source_path: str, result: subprocess.CompletedProcess[bytes]) -> str:
+    """Describe a decoder that authenticated but would not run."""
+    code = result.returncode
+    named = _WINDOWS_LOADER_STATUS.get(code)
+    # The unsigned spelling is what a reader can look up; the signed one is what
+    # the log of a failing build will actually have shown them.
+    status = f"exit {code} (0x{code & 0xFFFFFFFF:08X}{f', {named}' if named else ''})"
+    # Decoded here rather than by asking subprocess for text mode: a loader or
+    # dynamic-linker complaint arrives in the host's console encoding, not
+    # necessarily UTF-8, and a probe must not raise while explaining a failure.
+    streams = b"\n".join(part for part in (result.stderr, result.stdout) if part)
+    noise = streams.decode("utf-8", "replace").strip()
+    if len(noise) > _DECODER_DETAIL_MAX_CHARS:
+        noise = f"{noise[:_DECODER_DETAIL_MAX_CHARS]}…"
+    return f"{source_path} authenticated but did not run: {status}{f'; {noise}' if noise else ''}"
+
+
+def _packaged_ffmpeg_version_probe() -> PackagedDecoderProbe:
+    """Authenticate the packaged decoder, then try to run it, for the build gate.
+
+    Both halves are reported because they fail for unrelated reasons and demand
+    unrelated fixes; see :class:`PackagedDecoderProbe`. Streams are captured
+    rather than discarded so that a refusal explains itself in the build log
+    instead of arriving as one unattributable line.
+    """
     authenticated = _open_packaged_ffmpeg_resource()
     if authenticated is None:
-        return False
+        return PackagedDecoderProbe(
+            ok=False,
+            authentic=False,
+            code=DECODER_UNAUTHENTIC,
+            detail=(
+                "no packaged decoder authenticated against the pinned upstream "
+                "digest or an accepted signature"
+            ),
+        )
+    source_path = authenticated.source_path
     try:
         kwargs: dict[str, Any] = {}
         if not platform_compat.IS_WINDOWS:
@@ -666,15 +742,26 @@ def _packaged_ffmpeg_version_probe() -> bool:
         result = subprocess.run(
             [authenticated.execution_path, "-version"],
             check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             **kwargs,
         )
-        return result.returncode == 0
-    except OSError:
-        return False
+    except OSError as exc:
+        return PackagedDecoderProbe(
+            ok=False,
+            authentic=True,
+            code=DECODER_NOT_EXECUTABLE,
+            detail=f"{source_path} authenticated but could not be spawned: {exc}",
+        )
     finally:
         authenticated.close()
+    if result.returncode == 0:
+        return PackagedDecoderProbe(ok=True, authentic=True)
+    return PackagedDecoderProbe(
+        ok=False,
+        authentic=True,
+        code=DECODER_NOT_EXECUTABLE,
+        detail=_decoder_exit_detail(source_path, result),
+    )
 
 
 def _bundled_ffmpeg() -> str | None:

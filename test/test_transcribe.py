@@ -1299,6 +1299,116 @@ class TestBundledFfmpeg:
 
         assert transcribe._bundled_ffmpeg() is None
 
+    def _probe_with_exit(self, monkeypatch, tmp_path, script: bytes):
+        """Install *script* as the packaged decoder and probe it for real.
+
+        The decoder is EXECUTED rather than stubbed, because the split this covers
+        is about what a real spawn reports back.
+        """
+        package_dir = tmp_path / "imageio_ffmpeg"
+        binaries = package_dir / "binaries"
+        binaries.mkdir(parents=True)
+        filename = "ffmpeg-test.exe" if _pc.IS_WINDOWS else "ffmpeg-test"
+        binary = binaries / filename
+        binary.write_bytes(script)
+        binary.chmod(0o755)
+        monkeypatch.setattr(transcribe, "_trusted_site_package_roots", lambda: (str(tmp_path),))
+        monkeypatch.setattr(
+            transcribe,
+            "_PACKAGED_FFMPEG_ARTIFACTS",
+            {filename: (len(script), transcribe.hashlib.sha256(script).hexdigest())},
+        )
+        monkeypatch.setattr(transcribe, "_SIGNER_REWRITTEN_FFMPEG_ARTIFACTS", frozenset())
+        return binary, transcribe._packaged_ffmpeg_version_probe()
+
+    @pytest.mark.skipif(_pc.IS_WINDOWS, reason="needs a POSIX shell for the fake decoder")
+    def test_probe_reports_ok_when_the_authenticated_decoder_runs(self, monkeypatch, tmp_path):
+        _, probe = self._probe_with_exit(
+            monkeypatch, tmp_path, b"#!/bin/sh\necho 'ffmpeg version 7'\nexit 0\n"
+        )
+
+        assert probe.ok is True
+        assert probe.authentic is True
+        assert probe.code == transcribe.DECODER_OK
+
+    @pytest.mark.skipif(_pc.IS_WINDOWS, reason="needs a POSIX shell for the fake decoder")
+    def test_a_host_that_cannot_run_an_authentic_decoder_is_not_reported_as_tampering(
+        self, monkeypatch, tmp_path
+    ):
+        """This is the WHOLE point of the split, so it is pinned explicitly.
+
+        A build image missing a library the decoder needs makes the loader refuse
+        an executable whose bytes are exactly the pinned payload. Reporting that as
+        an unauthentic artifact fails the release over a property of the build
+        machine, and sends whoever reads the log hunting a supply-chain problem
+        that is not there.
+        """
+        _, probe = self._probe_with_exit(
+            monkeypatch,
+            tmp_path,
+            b"#!/bin/sh\necho 'libavcodec.so.61: cannot open shared object' >&2\nexit 127\n",
+        )
+
+        assert probe.ok is False
+        # Authentic: the release gate must NOT fail the build on this.
+        assert probe.authentic is True
+        assert probe.code == transcribe.DECODER_NOT_EXECUTABLE
+        # The child's own complaint reaches the caller, rather than DEVNULL.
+        assert "libavcodec.so.61" in probe.detail
+
+    @pytest.mark.skipif(_pc.IS_WINDOWS, reason="needs a POSIX shell for the fake decoder")
+    def test_a_decoder_that_cannot_be_spawned_at_all_still_counts_as_authentic(
+        self, monkeypatch, tmp_path
+    ):
+        """The OSError arm is a DISTINCT path from a non-zero exit and must reach
+        the same verdict: the bytes authenticated, the host would not run them."""
+        _, probe = self._probe_with_exit(
+            monkeypatch, tmp_path, b"#!/nonexistent/interpreter\nbody\n"
+        )
+
+        assert probe.ok is False
+        assert probe.authentic is True
+        assert probe.code == transcribe.DECODER_NOT_EXECUTABLE
+
+    def test_a_payload_that_fails_authentication_is_still_refused(self, monkeypatch, tmp_path):
+        """Splitting the outcomes must not have weakened the half that matters:
+        bytes that are not the pinned payload stay a hard failure."""
+        binary = self._fake_package(monkeypatch, tmp_path)
+        binary.write_bytes(b"attacker decoder")
+
+        probe = transcribe._packaged_ffmpeg_version_probe()
+
+        assert probe.ok is False
+        assert probe.authentic is False
+        assert probe.code == transcribe.DECODER_UNAUTHENTIC
+
+    def test_windows_loader_statuses_are_named_in_the_detail(self):
+        """0xC0000135 is the observed Server Core refusal, and a bare signed
+        integer in a build log is not something a reader can act on."""
+
+        class _Refused:
+            returncode = -1073741515
+            stdout = b""
+            stderr = b""
+
+        detail = transcribe._decoder_exit_detail("/x/ffmpeg", _Refused())
+
+        assert "0xC0000135" in detail
+        assert "STATUS_DLL_NOT_FOUND" in detail
+
+    def test_probe_detail_is_bounded(self):
+        """A decoder can emit unbounded output; the report stays log-sized."""
+
+        class _Noisy:
+            returncode = 1
+            stdout = b""
+            stderr = b"x" * 5000
+
+        detail = transcribe._decoder_exit_detail("/x/ffmpeg", _Noisy())
+
+        assert len(detail) < transcribe._DECODER_DETAIL_MAX_CHARS + 200
+        assert detail.endswith("…")
+
     def test_payload_chunks_yield_the_file_bytes(self, tmp_path):
         raw = tmp_path / "ffmpeg"
         raw.write_bytes(b"bundled decoder")

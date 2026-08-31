@@ -30,6 +30,19 @@ dependency metadata or an ambient PATH copy satisfying the check. Source
 environments use the fixed system-decoder search instead, because a project venv
 is agent-writable executable storage.
 
+That gate reports **two independent verdicts** and the build treats them
+differently (`transcribe.PackagedDecoderProbe`). Whether the resolved bytes
+**authenticate** is a property of the artifact, holds on every host, and failing
+it stops the build. Whether they then **execute** is a property of the build
+machine: an image lacking an OS library the executable load-time imports makes
+the loader refuse it before its entry point runs, while the identical bytes run
+correctly for a user. Windows Server Core is the case that forced the
+distinction — it carries no Video for Windows components, so it cannot load a
+Windows ffmpeg that imports `AVICAP32.dll`, and every CodeBuild Windows image is
+built on it. So an authenticated payload that will not run **warns and ships**;
+only an unauthenticated one fails. Collapsing the two reported a build-host
+limitation as a corrupt artifact and withheld a correct release over it.
+
 That executable ships **uncompressed** inside the macOS bundle, and must keep
 doing so: the Apple notary service decompresses archive members and scans what is
 inside them, so a decoder sealed as a compressed payload is rejected as an
