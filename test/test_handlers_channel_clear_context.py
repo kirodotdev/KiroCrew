@@ -102,9 +102,46 @@ class TestChannelClearContext:
         body = json.loads(resp.body)
         assert body["ok"] is True
         assert body["cleared"] == ["Researcher"]
-        sessions.reset.assert_called_once_with("channel:ch1:a1")
+        assert body["busy"] == []
+        # skip_if_busy: a turn can be streaming on the channel agent, so forcing the
+        # teardown would drop that reply; the refusal is reported in `busy` instead.
+        sessions.reset.assert_called_once_with("channel:ch1:a1", skip_if_busy=True)
         # Messages and exchange_counts NOT cleared for single-agent scope
         assert len(ch.messages) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_total_refusal_answers_409_not_a_false_success(self):
+        """Reporting the refusal into a field nothing reads IS the silent no-op.
+
+        An earlier version answered 200 with a `busy` list and no reader, so the caller
+        rendered a clear that never happened -- a success signal that is not proof of
+        effect. When NOTHING cleared the endpoint now fails, which reaches the user through
+        the caller's existing error path. Declining the reset is still right: forcing it
+        would tear down a streaming reply.
+        """
+        agents = {"a1": _make_agent("a1", "Researcher", "channel:ch1:a1")}
+        ch = _make_channel("ch1", agents)
+        sessions = AsyncMock()
+        sessions.reset = AsyncMock(return_value=False)
+
+        request = _make_request(
+            "ch1", {"scope": "agent", "agent_id": "a1"}, channel=ch, sessions=sessions
+        )
+        with patch(
+            "kiro_crew.dashboard.handlers_channel._mgr",
+            return_value=MagicMock(get=MagicMock(return_value=ch)),
+        ):
+            resp = await api_channel_clear_context(request)
+
+        assert (
+            resp.status == 409
+        ), f"a clear that cleared nothing must not answer 200; got {resp.status}"
+        body = json.loads(resp.body)
+        assert "Researcher" in body.get("error", ""), (
+            "and the error must name what refused, or the user cannot tell what to retry; "
+            f"got {body}"
+        )
+        assert body["busy"] == ["Researcher"]
 
     @pytest.mark.asyncio
     async def test_returns_404_for_unknown_agent_id(self):

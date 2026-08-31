@@ -37,6 +37,7 @@ from kiro_crew.config.loader import (
     published_autocompact_pct,
     resolve_agent_bindings,
 )
+from kiro_crew.config.paths import CWD_CLEARED, resolved_cwd
 from kiro_crew.dashboard import remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
@@ -5476,6 +5477,9 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # (the websocket rebroadcast corrects it only when the socket is up,
         # which is exactly when the optimistic write is load-bearing).
         workspace = slot.workspace or "default"
+        # Initialised outside the try: on a resolution failure the claim also falls back
+        # to slot.agent, so both sides must degrade to the same value.
+        resolved_kiro_agent: str | None = None
         try:
             cfg = KiroCrewConfig.load()
             if agent_name:
@@ -5494,6 +5498,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     slot.project or None, operation="api_chat_slot_agent", source="dashboard"
                 )
                 bindings = resolve_agent_bindings(cfg, agent_name, slot.project or None)
+                resolved_kiro_agent = bindings.kiro_agent
                 ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
                 new_workspace = ws_name
                 workspace = ws_name
@@ -5522,6 +5527,16 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             slot.workspace = new_workspace
         if slot.project == pre_await_project:
             slot.project = new_project
+        # The SESSION key, not the slot's: a channel-linked slot's turns run on the
+        # channel's session, so `dashboard:<slot>` would advance a generation nothing reads.
+        switched_session_key = effective_session_key(slot)
+        # `agent=` must be in the namespace the REGISTRATION checks, which is the claim's
+        # `kiro_agent or slot.agent` -- an alias name would never match its own target.
+        state.sessions.mark_retire_on_next_claim(
+            switched_session_key,
+            slot.project or CWD_CLEARED,
+            agent=resolved_kiro_agent or agent_name or "kirocrew",
+        )
 
         # Reset session so the next message uses the new agent.
         logger.info(
@@ -5529,7 +5544,15 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         )
         teardown_incomplete = False
         try:
-            await _reset_slot_session(state, slot, _history_key_for(name))
+            # The key above resolves a channel-linked slot onto the channel's LIVE
+            # session, and channel dispatch does not take slot._lock.
+            switch_applied = await _reset_slot_session(
+                state, slot, switched_session_key, skip_if_busy=True
+            )
+            if not switch_applied:
+                # Declined: a turn is live. The switch stays committed (see below), so
+                # the teardown is QUEUED for the next boundary rather than forced.
+                slot._pending_reset_history_key = switched_session_key
         except Exception:
             # The switch is COMMITTED regardless: the reset pops the session
             # before its shutdown can fail, so the new binding is what every
@@ -6870,6 +6893,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         prior_project = slot.project
         slot.workspace = ws_name
         slot.project = default_project_dir(ws_name)
+        # Advanced with the COMMIT, not the reset, and carrying the directory it committed:
+        # a stale start is evicted and RETRIED, and the retry binds this rather than its own.
+        state.sessions.note_project_change(session_key, slot.project or CWD_CLEARED)
         logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
         # skip_if_busy: the total_messages guard above is checked before this
         # await, and message dispatch does not take slot._lock — a first send
@@ -6912,7 +6938,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 # rolling back would advertise the old workspace while the
                 # live process runs the new one. Success without teardown is
                 # the truthful answer.
-                live_serves_target = busy_provider.cwd == slot.project
+                # provider.cwd is REPORTED, so Path-normalized; slot.project is raw.
+                # Compared raw, a trailing slash reads as a different directory.
+                live_serves_target = resolved_cwd(busy_provider.cwd) == resolved_cwd(slot.project)
                 if live_serves_target:
                     logger.info(
                         "Slot %s workspace switch: live session already runs under %r; "
@@ -6927,6 +6955,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                     # guard gives.
                     slot.workspace = prior_workspace
                     slot.project = prior_project
+                    # The switch is REJECTED: an arm still naming the rejected project would
+                    # send the next claim there, so re-point it at what we rolled back to.
+                    state.sessions.note_project_change(session_key, prior_project or CWD_CLEARED)
                     return web.json_response(
                         {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
                     )
@@ -6945,6 +6976,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 elif not reset_ok:
                     slot.workspace = prior_workspace
                     slot.project = prior_project
+                    # The switch is REJECTED: an arm still naming the rejected project would
+                    # send the next claim there, so re-point it at what we rolled back to.
+                    state.sessions.note_project_change(session_key, prior_project or CWD_CLEARED)
                     return web.json_response(
                         {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
                     )
@@ -6958,6 +6992,9 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             # current binding.
             slot.workspace = prior_workspace
             slot.project = prior_project
+            # The switch is REJECTED: an arm still naming the rejected project would
+            # send the next claim there, so re-point it at what we rolled back to.
+            state.sessions.note_project_change(session_key, prior_project or CWD_CLEARED)
             return web.json_response(
                 {"error": "slot session was rebound during the switch", "code": "session_rebound"},
                 status=409,
@@ -7055,7 +7092,15 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # from inside the kiro-cli process group (the set_project MCP tool); an
         # inline reset would killpg() the caller. Consumed in chat_runner.
         if project != old_project:
-            slot._pending_reset_history_key = _history_key_for(name)
+            # A channel-linked slot runs its turns on the channel's own session, so
+            # the unconditional ``dashboard:`` prefix would name a nonexistent
+            # ``dashboard:slack:<ts>``: the teardown would miss the live session and
+            # a later turn would reuse it with the pre-change directory.
+            switched_key = effective_session_key(slot)
+            slot._pending_reset_history_key = switched_key
+            # Arm HERE: the consumer runs behind the eager task's debounce, and a
+            # channel turn in that window states no cwd, so this is its only guard.
+            state.sessions.mark_retire_on_next_claim(switched_key, project or CWD_CLEARED)
             # Speculatively re-create the session rooted at the new project so the
             # cwd change is paid during think-time. The eager task consumes the
             # deferred reset itself, but only when no turn is running — the

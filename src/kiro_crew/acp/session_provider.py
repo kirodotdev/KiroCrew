@@ -688,6 +688,21 @@ class AcpSessionProvider(LLMProvider):
         return self._runtime._work_dir
 
     @property
+    def cwd(self) -> str:
+        """The directory THIS session is bound to, not the runtime's.
+
+        Overrides the ``LLMProvider`` default ("") so reuse validation reads the real
+        path through the public capability rather than probing a private attribute.
+        Reads it off the HANDLE: a shared runtime carries sessions opened against
+        different projects, so answering with the runtime's own directory would report a
+        workspace this session never bound, and reuse validation would evict a live
+        session -- losing its conversation -- for failing to be somewhere it never was.
+        Falls back to the runtime for a handle predating the record, which is the
+        single-session case where the two agree anyway.
+        """
+        return str(getattr(self._handle, "_bound_cwd", "") or self._work_dir)
+
+    @property
     def _permission_mode(self) -> str:
         """Permission mode — always empty for kiro (no CC permission modes)."""
         return ""

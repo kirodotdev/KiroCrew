@@ -740,7 +740,12 @@ export default function ChannelPage() {
               <Btn onClick={async () => {
                 if (!confirm(i18nT('pages.channelPage.this_will_reset_conversation_history_for_all_age'))) return
                 try {
-                  await api.channelClearContext(channel.id, 'all')
+                  const r = await api.channelClearContext(channel.id, 'all')
+                  // A PARTIAL refusal is a 200, so the catch never sees it; reading `busy`
+                  // is what keeps the click honest. Roles are DATA, so no new i18n key.
+                  if (Array.isArray(r?.busy) && r.busy.length > 0) {
+                    alert(i18nT('pages.channelPage.failed_to_clear_context_error', { error: r.busy.join(', ') }))
+                  }
                   const res = await api.channelGet(channel.id)
                   setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
                 } catch (e) { alert(i18nT('pages.channelPage.failed_to_clear_context_error', { error: e instanceof Error ? e.message : i18nT('pages.channelPage.unknown_error') })) }
@@ -827,7 +832,12 @@ export default function ChannelPage() {
                       onClearContext={async () => {
                         if (!confirm(i18nT('pages.channelPage.reset_role_s_llm_session_the_channel_s_shared_me', { role: agent.role }))) return
                         try {
-                          await api.channelClearContext(channel.id, 'agent', agent.id)
+                          const r = await api.channelClearContext(channel.id, 'agent', agent.id)
+                          // Same as the clear-all path: a partial refusal is a 200, so only
+                          // reading `busy` keeps the click honest.
+                          if (Array.isArray(r?.busy) && r.busy.length > 0) {
+                            alert(i18nT('pages.channelPage.failed_to_clear_context_error', { error: r.busy.join(', ') }))
+                          }
                           const res = await api.channelGet(channel.id)
                           setChannels(prev => prev.map(c => c.id === channel.id ? mapChannel(res) : c))
                         } catch (e) { alert(i18nT('pages.channelPage.failed_to_clear_context_error', { error: e instanceof Error ? e.message : i18nT('pages.channelPage.unknown_error') })) }

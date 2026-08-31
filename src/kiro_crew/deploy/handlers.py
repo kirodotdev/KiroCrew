@@ -29,7 +29,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import platform_compat
-from kiro_crew.config.paths import config_dir
+from kiro_crew.config.paths import config_dir, default_workspace_dir
 from kiro_crew.deploy import engine
 from kiro_crew.deploy import iam as iam_mod
 from kiro_crew.deploy import pricing as pricing_mod
@@ -283,7 +283,7 @@ def _allowed_local_roots() -> list[Path]:
                 pass
     # Always allow the agent's own config-dir workspace (e.g. ~/.kiro/crew/workspace).
     try:
-        cdir_ws = config_dir() / "workspace"
+        cdir_ws = default_workspace_dir()
         if cdir_ws.exists() and cdir_ws.resolve() not in roots:
             roots.append(cdir_ws.resolve())
     except OSError:

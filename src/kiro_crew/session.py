@@ -1495,6 +1495,14 @@ class SessionManager:
         """Return whether a live session exists for the folded key."""
         return self._allocation_boundary().has_session(key)
 
+    def mark_retire_on_next_claim(self, key: str, cwd: str, *, agent: str | None = None) -> None:
+        """Mark a live session invalid for reuse without disturbing its turn."""
+        self._allocation_boundary().mark_retire_on_next_claim(key, cwd, agent=agent)
+
+    def note_project_change(self, key: str, cwd: str) -> None:
+        """Supersede any arm from an earlier change, and record the committed directory."""
+        self._allocation_boundary().note_project_change(key, cwd)
+
     def get_provider(self, key: str) -> LLMProvider | None:
         """Return the live provider for a folded key."""
         return self._allocation_boundary().get_provider(key)
@@ -1732,12 +1740,14 @@ class SessionManager:
         sess: "_Session",
         *,
         wait_if_busy: bool = True,
+        cwd: str | None = None,
     ) -> bool:
         """Acquire outside the registry lock and revalidate identity."""
         return await self._allocation_boundary()._reacquire_and_validate(
             key,
             sess,
             wait_if_busy=wait_if_busy,
+            cwd=cwd,
         )
 
     async def _evict_stale_session(self, key: str, sess: "_Session") -> None:

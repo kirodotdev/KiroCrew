@@ -607,7 +607,7 @@ class TestDrainSettlesDelivery:
         ):
             assert await _start_next_queued_turn(state, slot) is True
 
-        slot._last_turn_auth_required = True
+        slot._queue_held = True
         done.set_result(None)
         await asyncio.sleep(0.05)
 
