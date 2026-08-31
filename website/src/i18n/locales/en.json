@@ -4507,6 +4507,10 @@
       "yes_move_it": "Move it"
     },
     "followUpBar": {
+      "recommended": "RECOMMENDED",
+      "recommended_marker_kept": "Clicking the “(recommended) …” option puts it in the composer so the prefix can be removed before sending — unedited, it is sent as written.",
+      "command_shaped_kept": "Some options could run something rather than say it, so they go to the composer instead of being sent — review and edit before sending.",
+      "both_kinds_kept": "Clicking the “(recommended) …” option puts it in the composer so the prefix can be removed — unedited, it is sent as written. Other options here could run something, so they go to the composer too instead of being sent.",
       "scroll_left": "Scroll left",
       "scroll_right": "Scroll right",
       "scroll_suggestions_left": "Scroll suggestions left",

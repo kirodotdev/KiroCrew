@@ -60,7 +60,7 @@ from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
 from kiro_crew.slack.format import (
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
-    extract_options,
+    extract_options_with_recommendation,
     is_wait_identity,
     strip_thinking_tags,
 )
@@ -1149,7 +1149,7 @@ class SlackRenderer(Renderer):
         # Flush any buffered (throttled) stream text before finalizing.
         if self._use_slack_stream:
             await self._flush_stream_buffer()
-        clean_text, options = extract_options(self._accumulated)
+        clean_text, options, _stream_rec = extract_options_with_recommendation(self._accumulated)
         # Trailing control-tag lines (``<!-- keep-visible -->`` and siblings)
         # are protocol: the stream's comment hold kept them off the appended
         # text, and the buffered renders below (no-stream fallback, direct
@@ -1312,7 +1312,12 @@ class SlackRenderer(Renderer):
             except Exception:
                 _options_token = None
         footer_blocks = _append_footer_actions(
-            footer_blocks, options, self.thread_ts, None, None, _options_token
+            footer_blocks,
+            options,
+            self.thread_ts,
+            None,
+            None,
+            _options_token,
         )
         # The footer is decoration EXCEPT when it carries an [OPTIONS] control:
         # the trailer was stripped from the answer, so the choices ride only in

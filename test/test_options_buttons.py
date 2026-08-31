@@ -8,45 +8,45 @@ from kiro_crew.slack.format import (
     OPTIONS_SUBMIT_ACTION,
     build_options_blocks,
     build_options_selected_blocks,
-    extract_options,
+    extract_options_with_recommendation,
 )
 
 
 class TestExtractOptions:
     def test_extracts_choices(self):
         text = "Pick one\n[OPTIONS: A | B | C]"
-        cleaned, choices = extract_options(text)
+        cleaned, choices, _ = extract_options_with_recommendation(text)
         assert choices == ["A", "B", "C"]
         assert "[OPTIONS:" not in cleaned
 
     def test_keeps_text_before_and_after_marker(self):
-        cleaned, choices = extract_options("Pick.\n[OPTIONS: A | B]\nAnytime.")
+        cleaned, choices, _ = extract_options_with_recommendation("Pick.\n[OPTIONS: A | B]\nAnytime.")
         assert cleaned == "Pick.\nAnytime."
         assert choices == ["A", "B"]
 
     def test_keeps_text_after_marker_without_prefix(self):
-        cleaned, choices = extract_options("[OPTIONS: A | B]\nAnytime.")
+        cleaned, choices, _ = extract_options_with_recommendation("[OPTIONS: A | B]\nAnytime.")
         assert cleaned == "Anytime."
         assert choices == ["A", "B"]
 
     def test_keeps_text_before_marker_without_suffix(self):
-        cleaned, choices = extract_options("Pick.\n[OPTIONS: A | B]")
+        cleaned, choices, _ = extract_options_with_recommendation("Pick.\n[OPTIONS: A | B]")
         assert cleaned == "Pick."
         assert choices == ["A", "B"]
 
     def test_no_options_returns_empty(self):
-        cleaned, choices = extract_options("Hello world")
+        cleaned, choices, _ = extract_options_with_recommendation("Hello world")
         assert choices == []
         assert cleaned == "Hello world"
 
     def test_strips_whitespace_from_choices(self):
-        _, choices = extract_options("[OPTIONS:  X |  Y  | Z ]")
+        _, choices, _ = extract_options_with_recommendation("[OPTIONS:  X |  Y  | Z ]")
         assert choices == ["X", "Y", "Z"]
 
     def test_bracket_inside_option_text_survives(self):
         # The closing ']' is anchored to end-of-line, so a literal ']' inside
         # an option (e.g. "Fix [x] logging") must not truncate the body.
-        _, choices = extract_options("[OPTIONS: Fix [x] logging | Skip]")
+        _, choices, _ = extract_options_with_recommendation("[OPTIONS: Fix [x] logging | Skip]")
         assert choices == ["Fix [x] logging", "Skip"]
 
     def test_body_does_not_span_newlines(self):
@@ -55,7 +55,9 @@ class TestExtractOptions:
         # in "]" must NOT match across the newline (which would delete a
         # multi-line span from the visible text and emit bogus pills). The
         # tempered body excludes \n (``[^[\n]``) precisely so this cannot happen.
-        cleaned, choices = extract_options("See [OPTIONS: in my notes\nsummary ]")
+        cleaned, choices, _ = extract_options_with_recommendation(
+            "See [OPTIONS: in my notes\nsummary ]"
+        )
         assert choices == []
         assert cleaned == "See [OPTIONS: in my notes\nsummary ]"
 
@@ -71,7 +73,7 @@ class TestExtractOptions:
         # the pump; see conftest.assert_rejected_without_backtracking for why this
         # is not a 1.0 s wall-clock bound.
         def reject(text: str) -> None:
-            cleaned, choices = extract_options(text)
+            cleaned, choices, _ = extract_options_with_recommendation(text)
             # No terminating ']' → no match, input returned unchanged.
             assert choices == []
             assert cleaned == text
