@@ -740,29 +740,31 @@ class TestLinuxServiceWritesUtf8:
         """
         from kiro_crew.service import linux as svc_linux
 
-        monkeypatch.setenv("USER", "josé")
-        gid_result = MagicMock(returncode=0, stdout="josé\n", stderr="")
+        monkeypatch.setenv("USER", "usuário")
+        gid_result = MagicMock(returncode=0, stdout="usuário\n", stderr="")
         with (
-            patch("kiro_crew.service.common.shutil.which", return_value="/home/josé/bin/kirocrew"),
+            patch(
+                "kiro_crew.service.common.shutil.which", return_value="/home/usuario/bin/kirocrew"
+            ),
             patch("kiro_crew.service.linux.subprocess.run", return_value=gid_result),
-            patch("kiro_crew.service.linux._home_for_user", return_value="/home/josé"),
+            patch("kiro_crew.service.linux._home_for_user", return_value="/home/usuario"),
         ):
             unit = svc_linux.render_unit()
 
         assert not unit.isascii(), "expected the rendered unit to carry the non-ASCII home"
-        assert "/home/josé" in unit
+        assert "User=usuário" in unit
 
     def test_the_unit_write_stages_utf8_bytes(self):
         """``_write_unit_via_sudo`` must hand ``install`` UTF-8 bytes."""
         from kiro_crew.service import linux as svc_linux
 
-        contents = "[Service]\nWorkingDirectory=/home/josé\nEnvironment=USER=josé\n"
+        contents = "[Service]\nWorkingDirectory=/home/usuario\nEnvironment=USER=usuário\n"
         raw = self._capture_staged_bytes(svc_linux._write_unit_via_sudo, contents)
 
         # Assert the ENCODING, not the line terminator: text mode translates
         # newlines on Windows, which this Linux-only module never sees in
         # production but a developer box does.
-        assert "josé".encode("utf-8") in raw
+        assert "usuário".encode("utf-8") in raw
         assert raw.decode("utf-8").replace("\r\n", "\n") == contents
 
     def test_the_install_file_write_stages_utf8_bytes(self, tmp_path):
