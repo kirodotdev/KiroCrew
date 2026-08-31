@@ -14,6 +14,7 @@ import { useIsDark } from '../hooks/useIsDark'
 import { PlainCodeFallback } from './PlainCodeFallback'
 import {
   PIERRE_EXTENSION_OVERRIDES,
+  PIERRE_REGEX_ENGINE,
   PIERRE_THEMES,
   PIERRE_VIRTUALIZER_CONFIG,
   PIERRE_WORKER_POOL_SIZE,
@@ -249,7 +250,7 @@ const workerPool = typeof window === 'undefined' || typeof Worker === 'undefined
             type: 'module',
           }),
       },
-      highlighterOptions: { theme: PIERRE_THEMES },
+      highlighterOptions: { theme: PIERRE_THEMES, preferredHighlighter: PIERRE_REGEX_ENGINE },
     })
 
 /** Hands every descendant the shared pool. Exported because the editor surface

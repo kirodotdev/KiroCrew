@@ -101,6 +101,37 @@ export const PIERRE_EDIT_CARET_ALIGN_CSS = `
  *  how many files tokenize concurrently — four covers a chat message or PR
  *  with several diffs open at once without spawning the library's default 8. */
 export const PIERRE_WORKER_POOL_SIZE = 4
+/** Which regex engine the highlight workers tokenize with.
+ *
+ *  Pierre defaults to `shiki-js`, which runs TextMate grammar patterns through
+ *  `oniguruma-to-es` on V8's own RegExp. That engine has no ceiling on a single
+ *  match: a grammar pattern that backtracks catastrophically grows V8's
+ *  backtracking stack until the renderer is killed, and because that stack is
+ *  an external allocation inside the sandbox reservation the fatal reads as a
+ *  CAGE OOM with an almost empty JS heap — which is why it never looked like a
+ *  highlighter problem:
+ *
+ *      <--- Near heap limit --->
+ *      Heap: used=10.1MB limit=4192.0MB
+ *      Near V8 cage limit; stack trace capture may not succeed
+ *      V8 javascript OOM (CALL_AND_RETRY_LAST).
+ *
+ *      #1 exec              (worker-portable-*.js)   <- EmulatedRegExp.exec
+ *      #2 findNextMatchSync
+ *      #8 _tokenize
+ *      #9 tokenizeLine2
+ *
+ *  `shiki-wasm` is the reference oniguruma build, and it is compiled with
+ *  `DEFAULT_RETRY_LIMIT_IN_MATCH 10000000`, so a pathological match aborts
+ *  instead of running unbounded. The two guards that would otherwise cap this
+ *  are both unavailable to us: the 1000-char `tokenizeMaxLineLength` does not
+ *  apply (exponential backtracking needs only tens of characters), and
+ *  `tokenizeTimeLimit` is hardcoded to `0` — no limit — inside `@pierre/diffs`,
+ *  reachable through no option this module can pass.
+ *
+ *  Cost is a one-time WASM instantiation per worker; both engines are already
+ *  in the worker bundle, so nothing new is fetched. */
+export const PIERRE_REGEX_ENGINE = 'shiki-wasm'
 /** Row windowing for whole-file surfaces.
  *
  *  Pierre only windows rows when a `<Virtualizer>` is an ancestor; without one
