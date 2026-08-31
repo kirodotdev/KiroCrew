@@ -22,6 +22,7 @@ if "kiro_crew.slack.handler" not in sys.modules:
 from kiro_crew.dashboard.handlers import api_send_message, api_slack_profile  # noqa: E402
 from kiro_crew.messaging.link import ChannelLink  # noqa: E402
 from kiro_crew.telegram.client import TELEGRAM_MAX_TEXT  # noqa: E402
+from kiro_crew.validation import CHANNEL_ID_RE, CHANNEL_MAX_LEN  # noqa: E402
 
 
 def _make_app(state) -> web.Application:
@@ -100,6 +101,83 @@ class TestTargetedChannel:
                 data = await resp.json()
                 assert "not in tracked channels" in data["error"]
                 state.notify.assert_not_called()
+
+
+class TestChannelIdIsLengthBounded:
+    """`CHANNEL_ID_RE` is a SHAPE regex, not the full validity contract.
+
+    `^[CDGW][A-Z0-9]+$` has an unbounded `+`, so the length half of the contract
+    lives at the call site as `CHANNEL_MAX_LEN`. Six of the eight production
+    `CHANNEL_ID_RE.match` sites spell that pair out, and all three
+    `FieldSpec("channel", ..., max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE)`
+    declarations pass the bound and the shape as separate parameters — this
+    endpoint was one of the two that matched the shape and never applied the
+    bound.
+
+    Reviewer-counted residual from merged #7084, which added the cap to two
+    sibling checks and whose review named the two it did not reach.
+    """
+
+    @pytest.mark.asyncio
+    async def test_overlength_channel_is_refused_before_any_delivery(self, mock_sel):
+        """The harm: an id one byte over the cap MATCHES the shape regex, so it
+        passed validation and reached the tracked-channel lookup and the
+        transport with an unbounded operator-supplied string."""
+        state = _mock_state(slack_client=MagicMock(), owner_id="U_OWNER")
+        app = _make_app(state)
+        over_cap = "C" + "A" * CHANNEL_MAX_LEN  # 21 chars: matches the regex
+
+        assert CHANNEL_ID_RE.match(over_cap), "fixture must be shape-valid or it proves nothing"
+
+        with patch("kiro_crew.slack.handler.is_tracked_channel") as tracked:
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/send-message",
+                    json={"text": "hello", "channel": over_cap},
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"] == "invalid channel ID format"
+        tracked.assert_not_called()
+        state.notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_channel_at_exactly_the_cap_still_delivers(self, mock_sel):
+        """Negative control, and the one that stops the fix from being an
+        off-by-one: a maximum-length id must still be accepted and delivered."""
+        slack = MagicMock()
+        slack.post_message = AsyncMock(return_value="1712793600.000001")
+        slack.open_dm = AsyncMock()
+        state = _mock_state(slack_client=slack, owner_id="U_OWNER")
+        app = _make_app(state)
+        at_cap = "C" + "A" * (CHANNEL_MAX_LEN - 1)  # exactly CHANNEL_MAX_LEN
+
+        assert len(at_cap) == CHANNEL_MAX_LEN
+
+        with patch("kiro_crew.slack.handler.is_tracked_channel", return_value=True):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/send-message",
+                    json={"text": "hello", "channel": at_cap},
+                )
+
+        assert resp.status == 200
+        slack.post_message.assert_called_once()
+        assert slack.post_message.call_args[0][0] == at_cap
+
+    def test_the_regex_itself_stays_shape_only(self):
+        """Pins the A-vs-B decision so a later pass does not silently move the
+        bound into the pattern.
+
+        `CHANNEL_ID_RE.pattern` is interpolated verbatim into user-facing CLI
+        error text (`cli_commands.py:1036` and `:1093`), so bounding the regex
+        would change a published error string for every caller — beyond the two
+        sites this fixes. The bound therefore stays at the call sites, and the
+        regex keeps accepting an over-length id on its own.
+        """
+        assert CHANNEL_ID_RE.pattern == r"^[CDGW][A-Z0-9]+$"
+        assert CHANNEL_ID_RE.match("C" + "A" * CHANNEL_MAX_LEN)
 
 
 class TestTargetedUser:
