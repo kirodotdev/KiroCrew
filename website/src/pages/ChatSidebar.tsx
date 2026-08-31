@@ -5225,28 +5225,50 @@ function ChatSidebar({
                  *  submenu for the same reason the parent content is bounded — the
                  *  glosses are full sentences and would otherwise stretch it across
                  *  the session list instead of wrapping. */}
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <Ghost size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
-                    <ChevronRight size={13} className="ml-auto text-muted" />
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="max-w-[264px]">
-                    <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }}>
-                      <EyeOff size={14} className="text-muted mt-[3px] shrink-0" />
-                      <span className="flex min-w-0 flex-col gap-px">
-                        <span>{i18nT('components.welcomeView.incognito')}</span>
-                        <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.incognito_desc')}</span>
-                      </span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem className="items-start" data-testid="new-temporary-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('temporary') }}>
-                      <VenetianMask size={14} className="text-muted mt-[3px] shrink-0" />
-                      <span className="flex min-w-0 flex-col gap-px">
-                        <span>{i18nT('components.welcomeView.temporary')}</span>
-                        <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.temporary_desc')}</span>
-                      </span>
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
+                {(() => {
+                  const ephemeralRows = (
+                    <>
+                      <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }}>
+                        <EyeOff size={14} className="text-muted mt-[3px] shrink-0" />
+                        <span className="flex min-w-0 flex-col gap-px">
+                          <span>{i18nT('components.welcomeView.incognito')}</span>
+                          <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.incognito_desc')}</span>
+                        </span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="items-start" data-testid="new-temporary-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('temporary') }}>
+                        <VenetianMask size={14} className="text-muted mt-[3px] shrink-0" />
+                        <span className="flex min-w-0 flex-col gap-px">
+                          <span>{i18nT('components.welcomeView.temporary')}</span>
+                          <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.temporary_desc')}</span>
+                        </span>
+                      </DropdownMenuItem>
+                    </>
+                  )
+                  // A flyout has nowhere to open at phone width (Radix pins a
+                  // submenu to the trigger's side and only shifts it vertically),
+                  // so on a phone the two modes are listed inline under a caption.
+                  if (isMobile) {
+                    return (
+                      <>
+                        <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2">
+                          <Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
+                        </DropdownMenuLabel>
+                        {ephemeralRows}
+                      </>
+                    )
+                  }
+                  return (
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Ghost size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
+                      <ChevronRight size={13} className="ml-auto text-muted" />
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent className="max-w-[264px]">
+                      {ephemeralRows}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  )
+                })()}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => { setFolderModal({ mode: 'create', parentId: '' }) }}>
                   <FolderPlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_folder')}

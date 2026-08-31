@@ -19,6 +19,12 @@
  * Radix DropdownMenu cannot be opened by mouse in jsdom (needs PointerEvent),
  * so the trigger is activated by keyboard — the path jsdom does handle. Submenus
  * open on ArrowRight at their sub-trigger (see ChatSidebarW3Coverage).
+ *
+ * Two more at PHONE width, where the submenu is not a flyout at all: a Radix
+ * submenu pins to the trigger's side and only shifts vertically, so at 390px it
+ * opens past the left viewport edge. The rows are listed inline under a caption
+ * instead — (5) both rows are in the one open menu and the label is no longer a
+ * sub-trigger, and (6) the inline row still creates with its memory mode.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -72,6 +78,17 @@ vi.mock('../api/client', () => ({
   api: new Proxy(mocks as Record<string, unknown>, {
     get: (target, prop: string) => (prop in target ? target[prop] : vi.fn().mockResolvedValue([])),
   }),
+}))
+
+/* `useIsMobile` resolves its media query at MODULE LOAD, so a matchMedia stub
+   installed in this file's body would land after the hoisted import. Mocking the
+   hook itself is both deterministic and flippable per test. Default is DESKTOP,
+   so the flyout tests below read exactly as they did before the phone branch
+   existed. */
+const mobile = vi.hoisted(() => ({ value: false }))
+vi.mock('../hooks/useIsMobile', () => ({
+  MOBILE_BREAKPOINT: 768,
+  useIsMobile: () => mobile.value,
 }))
 
 Object.defineProperty(window, 'matchMedia', {
@@ -136,6 +153,7 @@ async function openEphemeralSubmenu() {
 
 beforeEach(() => {
   localStorage.clear()
+  mobile.value = false
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
   mocks.createChatSlot.mockResolvedValue({ key: 'chat-new-1' })
 })
@@ -192,5 +210,41 @@ describe('create-button caret menu: ephemeral chats', () => {
     fireEvent.click(await screen.findByText('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     expect(mocks.createChatSlot.mock.calls[0][ARG_MEMORY_MODE]).toBeUndefined()
+  })
+
+  it('lists both modes inline under a caption at phone width, with no flyout to open', async () => {
+    mobile.value = true
+    renderSidebar()
+    openCreateMenu()
+
+    // No ArrowRight anywhere: at phone width both rows must already be in the one
+    // open menu, because a Radix submenu pins to the trigger's side and only
+    // shifts vertically — it opens past the left viewport edge and is unreadable.
+    expect(await screen.findByTestId('new-incognito-chat')).toBeInTheDocument()
+    expect(screen.getByTestId('new-temporary-chat')).toBeInTheDocument()
+
+    // The row carrying the label is a CAPTION here, not a sub-trigger. Asserting
+    // only the rows above would stay green if the flyout were left in place with
+    // the rows duplicated inline.
+    const caption = screen.getByText('New ephemeral chat')
+    expect(caption.closest('[role="menuitem"]')).toBeNull()
+    expect(caption.getAttribute('aria-haspopup')).toBeNull()
+  })
+
+  it('creates with memory_mode "temporary" from the inline row at phone width', async () => {
+    // The handlers are shared with the flyout, so this pins that the phone branch
+    // reuses them rather than re-deriving the create call — the memory mode is the
+    // whole feature and must still ride the CREATE.
+    mobile.value = true
+    cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: true }
+    renderSidebar()
+    openCreateMenu()
+
+    fireEvent.click(await screen.findByTestId('new-temporary-chat'))
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
+    const call = mocks.createChatSlot.mock.calls[0]
+    expect(call[ARG_MEMORY_MODE]).toBe('temporary')
+    expect(call[ARG_MODE]).not.toBe('orchestrator')
+    expect(call[ARG_AGENT]).toBe(DEFAULT_AGENT)
   })
 })
