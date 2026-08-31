@@ -275,6 +275,14 @@ class TestCgroupConsumerUnchanged:
                 unittest.mock.patch.object(sb, "_probe_cgroup_scope", return_value=(True, "")),
                 unittest.mock.patch.object(sb, "_reconcile_slice_memory_high_off_thread"),
                 unittest.mock.patch.object(sb, "_cpu_controller_delegated", return_value=True),
+                # Pin the wrapper resolution too: on Windows/macOS there is no
+                # systemd-run, so the unmocked resolver returns None and the
+                # function degrades (argv unchanged) BY DESIGN — this test is
+                # about the argv the Linux path builds, so it must be hermetic
+                # on every OS the suite runs on.
+                unittest.mock.patch.object(
+                    sb.platform_compat, "trusted_system_bin", return_value="/usr/bin/systemd-run"
+                ),
                 unittest.mock.patch(
                     "kiro_crew.config.loader._raw_config",
                     return_value={"resource_limits": raw},
