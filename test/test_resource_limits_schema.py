@@ -275,6 +275,15 @@ class TestCgroupConsumerUnchanged:
                 unittest.mock.patch.object(sb, "_probe_cgroup_scope", return_value=(True, "")),
                 unittest.mock.patch.object(sb, "_reconcile_slice_memory_high_off_thread"),
                 unittest.mock.patch.object(sb, "_cpu_controller_delegated", return_value=True),
+                # #2602 pins the wrapper through ``trusted_system_bin`` before
+                # wrapping; an unresolvable systemd-run (e.g. Windows CI) now
+                # degrades to an unwrapped argv with no ceilings at all. Pin the
+                # resolution so this test keeps exercising the ceiling-emitting
+                # path on every platform, same as the probe mock above.
+                unittest.mock.patch(
+                    "kiro_crew.platform_compat.trusted_system_bin",
+                    return_value="/usr/bin/systemd-run",
+                ),
                 unittest.mock.patch(
                     "kiro_crew.config.loader._raw_config",
                     return_value={"resource_limits": raw},
