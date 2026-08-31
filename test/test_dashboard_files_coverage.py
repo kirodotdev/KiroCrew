@@ -286,14 +286,14 @@ class TestFileWrite:
                 "/api/file-write", data="not json", headers={"Content-Type": "application/json"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "invalid JSON body"
+            assert (await resp.json())["error"] == "invalid JSON"
 
     @pytest.mark.asyncio
     async def test_non_object_body_is_400(self, mock_sel):
         async with TestClient(TestServer(self._client_app())) as client:
             resp = await client.post("/api/file-write", json=["a", "list"])
             assert resp.status == 400
-            assert (await resp.json())["error"] == "invalid JSON body"
+            assert (await resp.json())["error"] == "body must be a JSON object"
 
     @pytest.mark.asyncio
     async def test_schema_violation_is_400(self, mock_sel):
@@ -796,7 +796,7 @@ class TestRevealPath:
                 "/api/reveal", data="{", headers={"Content-Type": "application/json"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "invalid JSON body"
+            assert (await resp.json())["error"] == "invalid JSON"
 
     @pytest.mark.asyncio
     async def test_traversal_in_path_is_400(self, mock_sel):

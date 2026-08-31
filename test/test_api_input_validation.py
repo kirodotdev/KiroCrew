@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from body_stream_helpers import attach_body
 
 from kiro_crew.dashboard.handlers import api_crons_create, api_lessons_create
 
@@ -25,7 +26,9 @@ def _crons_request(body: object) -> MagicMock:
     mock_state.crons.add_job_async = AsyncMock(return_value=mock_job)
     request = MagicMock()
     request.app = {"state": mock_state}
-    request.json = AsyncMock(return_value=body)
+    # api_crons_create reads through read_bounded_json's capped path, which
+    # drains request.content -- feed real bytes, not a mocked json.
+    attach_body(request, body)
     return request
 
 
@@ -40,7 +43,7 @@ def _lessons_request(body: object) -> MagicMock:
     request = MagicMock()
     request.app = {"state": mock_state}
     request.headers = {"X-Session-Key": "dashboard:ui"}
-    request.json = AsyncMock(return_value=body)
+    attach_body(request, body)
     return request
 
 
@@ -128,14 +131,26 @@ class TestLessonsCreateTypeValidation:
 
     @pytest.mark.asyncio
     async def test_oversized_rule_returns_400(self):
-        """A 100KB+ rule exceeds the schema length bound and is rejected."""
-        request = _lessons_request({"rule": "x" * 100_000, "category": "tool"})
+        """A rule over the schema length bound (but under the byte cap) is a 400."""
+        request = _lessons_request({"rule": "x" * 1_000, "category": "tool"})
         with (
             patch("kiro_crew.dashboard.handlers.cron._sel"),
             patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
         ):
             resp = await api_lessons_create(request)
         assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_oversized_body_returns_413(self):
+        """A 100KB+ body now exceeds read_bounded_json's byte cap before any
+        field-level bound is consulted."""
+        request = _lessons_request({"rule": "x" * 100_000, "category": "tool"})
+        with (
+            patch("kiro_crew.dashboard.handlers.cron._sel"),
+            patch("kiro_crew.dashboard.handlers.cron._is_restricted_session", return_value=False),
+        ):
+            resp = await api_lessons_create(request)
+        assert resp.status == 413
 
     @pytest.mark.asyncio
     async def test_non_object_body_returns_400(self):

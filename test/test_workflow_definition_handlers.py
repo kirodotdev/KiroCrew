@@ -320,7 +320,7 @@ async def test_definition_create_rejects_non_object_json() -> None:
         body = await response.json()
 
     assert response.status == 400
-    assert body["code"] == "invalid_json"
+    assert body["code"] == "body_not_object"
 
 
 async def test_definition_create_write_failure_has_machine_readable_code() -> None:

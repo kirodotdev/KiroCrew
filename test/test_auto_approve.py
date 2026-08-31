@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew.dashboard.handlers.taskrunner import (
     api_taskrunner_execute_plan,
@@ -101,34 +102,6 @@ def _plain_provider(text: str = "done"):
 # ══════════════════════════════════════════════════════════════════════
 # (i) default
 # ══════════════════════════════════════════════════════════════════════
-
-
-class _Payload:
-    """Minimal stand-in for the request body stream.
-
-    ``api_taskrunner_start`` and ``api_taskrunner_execute_plan`` read their body
-    through ``_shared.read_bounded_json`` with the shared 64 KB cap, which
-    enforces the ceiling BEFORE decoding by draining ``request.content`` -- so a
-    mocked ``request.json`` alone no longer feeds them.
-    """
-
-    def __init__(self, raw: bytes) -> None:
-        self._raw = raw
-
-    async def iter_chunked(self, n: int):
-        for i in range(0, len(self._raw), n):
-            yield self._raw[i : i + n]
-
-    async def read(self) -> bytes:
-        return self._raw
-
-    def set_read_chunk_size(self, size: int) -> None:
-        return None
-
-    def at_eof(self) -> bool:
-        # ``request.can_read_body`` is ``not payload.at_eof()``, and the
-        # allow_absent handlers branch on it.
-        return not self._raw
 
 
 class TestAutoApproveDefault:
@@ -491,9 +464,11 @@ class TestAutoApproveProvenanceGating:
         }
         req = make_mocked_request(
             "POST", "/api/taskrunner", app=app,
-            payload=_Payload(json.dumps(start_body).encode()),
+            payload=BodyStreamPayload(json.dumps(start_body).encode()),
         )
         req["app"] = request_app  # set by token_auth_middleware; "" == dashboard itself
+        # Kept alive: ``api_taskrunner_start`` reads uncapped (``max_bytes=None``)
+        # and consumes ``request.json()``.
         req.json = AsyncMock(return_value=start_body)
         await api_taskrunner_start(req)
         return runner.start_background.call_args.kwargs["auto_approve"]
@@ -524,10 +499,9 @@ class TestAutoApproveProvenanceGating:
         raw = json.dumps(exec_body).encode()
         req = make_mocked_request(
             "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
-            headers={"Content-Length": str(len(raw))}, payload=_Payload(raw),
+            headers={"Content-Length": str(len(raw))}, payload=BodyStreamPayload(raw),
         )
         req["app"] = request_app
-        req.json = AsyncMock(return_value=exec_body)
         await api_taskrunner_execute_plan(req)
         return runner.execute_plan.call_args.kwargs["auto_approve"]
 
@@ -558,10 +532,9 @@ class TestAutoApproveProvenanceGating:
         raw = json.dumps({"auto_approve": True}).encode()
         req = make_mocked_request(
             "POST", "/api/taskrunner/t1/execute", app=app, match_info={"task_id": "t1"},
-            headers={"Content-Length": str(len(raw))}, payload=_Payload(raw),
+            headers={"Content-Length": str(len(raw))}, payload=BodyStreamPayload(raw),
         )
         req["app"] = ""  # dashboard context → requested trust is honored, so the gate audits
-        req.json = AsyncMock(return_value={"auto_approve": True})
 
         boom = MagicMock()
         boom.log_tool_invocation.side_effect = RuntimeError("sel backend down: SECRET-INTERNAL-DETAIL")
@@ -604,9 +577,11 @@ class TestInlineSpecCleanup:
         app["state"] = SimpleNamespace(task_runner=runner)
         req = make_mocked_request(
             "POST", "/api/taskrunner", app=app,
-            payload=_Payload(json.dumps(body).encode()),
+            payload=BodyStreamPayload(json.dumps(body).encode()),
         )
         req["app"] = ""
+        # Kept alive: ``api_taskrunner_start`` reads uncapped (``max_bytes=None``)
+        # and consumes ``request.json()``.
         req.json = AsyncMock(return_value=body)
         return await api_taskrunner_start(req), runner
 

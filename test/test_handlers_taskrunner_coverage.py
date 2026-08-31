@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK, AcpEvent
 from kiro_crew.dashboard.handlers.taskrunner import (
@@ -99,38 +100,6 @@ def _state(runner: MagicMock | None) -> SimpleNamespace:
     return SimpleNamespace(task_runner=runner)
 
 
-class _Payload:
-    """Minimal stand-in for the request body stream.
-
-    Five of this module's handlers now read their body through
-    ``_shared.read_bounded_json`` with the shared 64 KB cap, which enforces the
-    ceiling BEFORE decoding by draining ``request.content`` incrementally --
-    so a mocked ``request.json`` alone no longer feeds them. Supplying a real
-    payload serves both paths: the capped handlers drain this stream, and the
-    uncapped ones still go through ``request.json()``.
-    """
-
-    def __init__(self, raw: bytes) -> None:
-        self._raw = raw
-
-    async def iter_chunked(self, n: int):
-        for i in range(0, len(self._raw), n):
-            yield self._raw[i : i + n]
-
-    async def read(self) -> bytes:
-        return self._raw
-
-    def set_read_chunk_size(self, size: int) -> None:
-        # ``request.read()`` configures the stream before draining it.
-        return None
-
-    def at_eof(self) -> bool:
-        # ``request.can_read_body`` is ``not payload.at_eof()``, and the
-        # allow_absent handlers branch on it: reporting EOF while bytes are
-        # waiting would make every request look bodyless and silently default.
-        return not self._raw
-
-
 def _request(
     state: Any,
     method: str = "POST",
@@ -162,9 +131,12 @@ def _request(
         app=app,
         match_info=match_info or {},
         headers=headers,
-        payload=_Payload(raw),
+        payload=BodyStreamPayload(raw),
     )
     req["app"] = request_app
+    # Kept alive: the uncapped handlers (``max_bytes=None`` -- start, plan,
+    # update_plan, update_task, from_chat, refine) consume ``request.json()``;
+    # the capped ones drain the payload stream instead.
     if raw_json_error:
         req.json = AsyncMock(side_effect=ValueError("bad json"))  # type: ignore[method-assign]
     elif json_body is not None or body_present:

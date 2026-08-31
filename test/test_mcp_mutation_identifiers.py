@@ -19,14 +19,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew.dashboard.handlers import mcp as h
 
 
 def _req(body: object) -> web.Request:
     app = web.Application()
-    req = make_mocked_request("POST", "/api/mcp/toggle", app=app)
-    req.json = AsyncMock(return_value=body)
+    raw = json.dumps(body).encode()
+    req = make_mocked_request(
+        "POST",
+        "/api/mcp/toggle",
+        app=app,
+        headers={"Content-Length": str(len(raw))},
+        payload=BodyStreamPayload(raw),
+    )
     return req
 
 

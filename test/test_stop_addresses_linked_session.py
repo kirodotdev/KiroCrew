@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
+from body_stream_helpers import BodyStreamPayload
 
 LINKED_KEY = "slack:1730000000.123456"
 
@@ -68,14 +69,20 @@ class _FakeState:
         return 0
 
 
-def _request(state, query=None, caller_app=""):
+def _request(state, query=None, caller_app="", raw: bytes = b""):
     app = web.Application()
     app["state"] = state
     request = MagicMock()
     request.app = app
     request.match_info = {"slot": "test-slot"}
     request.query = query or {}
-    request.json = AsyncMock(return_value={})
+    # The bounded body read consumes these instead of ``request.json``. An
+    # empty ``raw`` reads as "no body sent", which the allow_absent handlers
+    # default to an empty object.
+    request.content = BodyStreamPayload(raw)
+    request.content_length = len(raw)
+    request.can_read_body = bool(raw)
+    request.charset = None
     # The auth middleware stashes the calling app's name here; a dashboard user
     # leaves it absent, which `request.get("app", "")` reads as "".
     request.get = lambda key, default="": caller_app if key == "app" else default
@@ -524,16 +531,18 @@ class TestTheAuthorizedSessionCannotMoveMidFlight:
         slot = _FakeSlot(app="auto-research")
         slot._queue.append({"queue_id": "q1", "content": "next"})
         state = _FakeState(slot)
-        request = _request(state, caller_app="auto-research")
-        request.content_length = 2
+        request = _request(state, caller_app="auto-research", raw=b"{}")
 
-        async def _bind_then_return_body():
-            # Stands in for the concurrent to-chat handler resuming inside this
-            # await; it only assigns the field, exactly as that handler does.
-            slot.linked_session_key = "cron:nightly-report"
-            return {}
+        class _BindingPayload(BodyStreamPayload):
+            # Stands in for the concurrent to-chat handler resuming inside the
+            # awaited body read; it only assigns the field, exactly as that
+            # handler does.
+            async def iter_chunked(self, n: int):
+                slot.linked_session_key = "cron:nightly-report"
+                async for chunk in super().iter_chunked(n):
+                    yield chunk
 
-        request.json = _bind_then_return_body
+        request.content = _BindingPayload(b"{}")
         with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
             mock_sel.return_value.log_tool_invocation = MagicMock()
             mock_sel.return_value.log = MagicMock()

@@ -29,6 +29,7 @@ from kiro_crew.config.loader import (
     _resolve_stub_servers,
 )
 from kiro_crew.config.paths import data_home, kiro_agents_dir
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.env import emit_env
 from kiro_crew.loop_lock import LoopBoundLock
@@ -94,6 +95,14 @@ _KIRO_GLOBAL_SURFACE = "~/.kiro/settings/mcp.json"
 # size) for a single apply call rather than lock-hold time. The
 # dashboard applies at most one change per visible server, so this is generous.
 _MCP_APPLY_MAX_CHANGES = 200
+
+# Byte ceiling for one /api/mcp/apply body. The change count above bounds
+# cardinality but runs only AFTER the body is decoded, so the read itself
+# needs a pre-decode ceiling. Each change is scope flags plus a per-tool
+# toolOverrides map; 1 MB comfortably covers _MCP_APPLY_MAX_CHANGES changes
+# over even a tool-heavy server while still refusing an arbitrarily large
+# body before it is buffered.
+_MCP_APPLY_MAX_BODY_BYTES = 1024 * 1024
 
 # Max server names accepted by one /api/mcp-gateway/servers/stub call. The
 # batch form exists for the UI's "toggle all", whose upper bound is the number of
@@ -1005,17 +1014,10 @@ async def api_mcp_quarantine_clear(request: web.Request) -> web.Response:
     off by hand stays off. It does not mount or unmount anything either -- the
     server was never unmounted (issue #6171).
     """
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    if not isinstance(body, dict):
-        # A JSON array or bare null parses fine and then reaches ``.get`` on the
-        # identifier read, which surfaces as a 500 for what is a malformed
-        # request.
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
-        )
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name, err = _string_identifier(body, "name")
     if err is not None:
         return err
@@ -1255,10 +1257,10 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
     1. Sets ``disabled`` in ``~/.kiro/settings/mcp.json`` (ACP runtime).
     2. Syncs ``tools``/``allowedTools`` in ``kirocrew.json`` (non-ACP mode).
     """
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name, err = _string_identifier(body, "name")
     if err is not None:
         return err
@@ -1321,10 +1323,10 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
     Updates ``disabledTools`` in ``~/.kiro/settings/mcp.json``.
     """
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     server, err = _string_identifier(body, "server")
     if err is not None:
         return err
@@ -1386,10 +1388,10 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
 
 async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     """POST /api/mcp/toggle-all — enable or disable all MCP servers."""
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
 
     async with _get_mcp_lock():
@@ -1433,10 +1435,10 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     on PATH it is also asked to uninstall (best-effort); on a vanilla
     machine ``aim`` is absent and that step is skipped gracefully.
     """
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name, err = _string_identifier(body, "name")
     if err is not None:
         return err
@@ -1556,10 +1558,10 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             status=400,
         )
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     command = body.get("command", "")
     if not command:
@@ -2152,10 +2154,10 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     ``~/.claude/agents/kirocrew.md`` + ``kirocrew.mcp.json``) reflect the
     new merged state.  Returns a summary with per-change outcomes.
     """
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=_MCP_APPLY_MAX_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     changes = body.get("changes")
     if not isinstance(changes, list):
         return web.json_response({"error": "changes must be a list"}, status=400)
@@ -2681,10 +2683,10 @@ async def api_mcp_gateway_enable(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import config_path  # circular import
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # circular import
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         return web.json_response({"error": "enabled must be a boolean"}, status=400)
@@ -3217,14 +3219,10 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
         update_config_locked,
     )
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be an object", "code": "body_not_object"}, status=400
-        )
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name = str(body.get("name", "")).strip()
     raw_names = body.get("names")
     stub = body.get("stub")

@@ -142,7 +142,7 @@ class TestTheReplayParameter:
     def test_the_body_is_read_before_the_busy_guards(self):
         """Source-order guard: reading the body must not widen the teardown race.
 
-        ``await request.json()`` is a suspension whose duration the CLIENT
+        ``await read_bounded_json(...)`` is a suspension whose duration the CLIENT
         controls. Every busy guard below it protects work that can START during a
         suspension — a turn admitted after ``has_active_turn()`` answered False is
         then torn down mid-write by the discard. Parsing the body after the guards
@@ -160,7 +160,7 @@ class TestTheReplayParameter:
         from kiro_crew.dashboard import chat_handlers
 
         src = inspect.getsource(chat_handlers.api_chat_slot_reset_conversation)
-        body_read = src.index("await request.json()")
+        body_read = src.index("await read_bounded_json(")
         first_guard = src.index("state.sessions.get_provider(key)")
         discard = src.index("discard_conversation(key, replay=")
 

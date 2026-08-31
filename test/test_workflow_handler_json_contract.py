@@ -52,7 +52,7 @@ async def test_mutation_handlers_reject_non_object_json(
         body = await response.json()
 
     assert response.status == 400
-    assert body == {"error": "JSON body must be an object", "code": "invalid_json"}
+    assert body == {"error": "body must be a JSON object", "code": "body_not_object"}
     method.assert_not_awaited()
 
 

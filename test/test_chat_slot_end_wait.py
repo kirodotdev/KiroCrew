@@ -174,17 +174,12 @@ class TestChatSlotEndWait:
             "json-null",
         ],
     )
-    async def test_well_formed_non_object_body_returns_400_not_500(
-        self, _patch_sel, raw
-    ):
+    async def test_well_formed_non_object_body_returns_400_not_500(self, _patch_sel, raw):
         """A body that is valid JSON but not an object.
 
-        ``request.json()`` returns it happily, so the ``except`` around the parse
-        never fires — the shape only becomes a problem one line later, at
-        ``.get``, which a list/str/int/bool/None does not have. Left unnormalized
-        that AttributeError escapes the handler as a 500, i.e. an
-        agent-reachable body shape turning a rejected request into a server
-        error. Every shape here has to land on the same 400 the empty body gets.
+        ``read_bounded_json`` owns the shape guard: a list/str/int/bool/None
+        parses cleanly but is refused as ``body_not_object`` before the handler
+        ever calls ``.get`` on it, so no shape can escape as a 500.
         """
         slot = _sleeping_slot()
         state = _mock_state(slot)
@@ -198,7 +193,7 @@ class TestChatSlotEndWait:
             assert resp.status != 500
             assert resp.status == 400
             payload = await resp.json()
-            assert payload["code"] == "wait_id_required"
+            assert payload["code"] == "body_not_object"
 
         # The body reached the handler with a length, so the parse really ran:
         # this is not the content_length==0 short circuit answering 400 for us.

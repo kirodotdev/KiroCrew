@@ -7,17 +7,16 @@ list or an int, so the read raises out of the handler and aiohttp answers
 **500** -- an internal-server error for a request the caller malformed, and one
 that reports nothing a client can act on.
 
-The two contracts already in this module are both kept, because a handler's
-answer to a non-object body should match its answer to a body it could not read
-at all:
+The handlers route through ``read_bounded_json`` (issue #5587), which owns
+both the parse guard and the object-shape guard:
 
-* ``api_cron_update`` and ``api_lessons_delete`` already refuse an unparseable
-  body with 400, so a non-object is refused the same way, with the
-  ``invalid_json`` code the module uses elsewhere.
-* ``api_cron_enable`` and ``api_cron_ack`` already fall back to their defaults
-  when the body cannot be read, so a non-object gets that same tolerance. A
-  scalar carries no fields either way, and answering it with a 500 while
-  answering unreadable bytes with 200 is the asymmetry, not the rule.
+* ``api_cron_update`` and ``api_lessons_delete`` refuse an unparseable body
+  with the helper's 400 ``invalid_json`` and a non-object with 400
+  ``body_not_object``.
+* ``api_cron_enable`` and ``api_cron_ack`` keep their defaults only for an
+  ABSENT body (``allow_absent``): "the client sent nothing" and "the client
+  sent garbage" are different facts, so a body that is present but not an
+  object is a 400; only an absent body defaults.
 """
 
 from __future__ import annotations
@@ -71,7 +70,7 @@ async def test_cron_update_refuses_a_non_object_body(payload) -> None:
         body = await response.json()
 
     assert response.status == 400
-    assert body == {"error": "request body must be a JSON object", "code": "invalid_json"}
+    assert body == {"error": "body must be a JSON object", "code": "body_not_object"}
     update.assert_not_awaited()
 
 
@@ -90,14 +89,29 @@ async def test_cron_update_keeps_the_object_path() -> None:
 
 
 @pytest.mark.parametrize("payload", NON_OBJECT_BODIES)
-async def test_cron_enable_treats_a_non_object_body_as_no_body(payload) -> None:
-    """The tolerant contract: the same answer an unreadable body already gets --
-    the route's default, not a 500."""
+async def test_cron_enable_refuses_a_non_object_body(payload) -> None:
+    """A present non-object body is a 400, not a silent default: only an
+    ABSENT body keeps the route's tolerance (``allow_absent``)."""
     enable = AsyncMock(return_value=True)
     app = _cron_app(api_cron_enable, "/api/crons/{job_id}/enable", enable_job_async=enable)
 
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/api/crons/job-1/enable", data=payload, headers=JSON_HEADERS)
+        body = await response.json()
+
+    assert response.status == 400
+    assert body == {"error": "body must be a JSON object", "code": "body_not_object"}
+    enable.assert_not_awaited()
+
+
+async def test_cron_enable_treats_an_absent_body_as_defaults() -> None:
+    """No body at all still means the route's defaults -- the tolerant half
+    of the old contract that ``allow_absent`` preserves."""
+    enable = AsyncMock(return_value=True)
+    app = _cron_app(api_cron_enable, "/api/crons/{job_id}/enable", enable_job_async=enable)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/crons/job-1/enable")
 
     assert response.status == 200
     enable.assert_awaited_once_with("job-1", enabled=True)
@@ -115,12 +129,26 @@ async def test_cron_enable_still_reads_an_object_body() -> None:
 
 
 @pytest.mark.parametrize("payload", NON_OBJECT_BODIES)
-async def test_cron_ack_treats_a_non_object_body_as_no_body(payload) -> None:
+async def test_cron_ack_refuses_a_non_object_body(payload) -> None:
     ack = AsyncMock(return_value=True)
     app = _cron_app(api_cron_ack, "/api/crons/{job_id}/ack", ack_job_async=ack)
 
     async with TestClient(TestServer(app)) as client:
         response = await client.post("/api/crons/job-1/ack", data=payload, headers=JSON_HEADERS)
+        body = await response.json()
+
+    assert response.status == 400
+    assert body == {"error": "body must be a JSON object", "code": "body_not_object"}
+    ack.assert_not_awaited()
+    app["state"].ack_notification.assert_not_awaited()
+
+
+async def test_cron_ack_treats_an_absent_body_as_defaults() -> None:
+    ack = AsyncMock(return_value=True)
+    app = _cron_app(api_cron_ack, "/api/crons/{job_id}/ack", ack_job_async=ack)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/api/crons/job-1/ack")
 
     assert response.status == 200
     ack.assert_awaited_once_with("job-1", "acknowledged")
@@ -170,7 +198,7 @@ async def test_lessons_delete_refuses_a_non_object_body(payload) -> None:
             body = await response.json()
 
     assert response.status == 400
-    assert body == {"error": "request body must be a JSON object", "code": "invalid_json"}
+    assert body == {"error": "body must be a JSON object", "code": "body_not_object"}
     app["state"].lessons.remove.assert_not_called()
 
 

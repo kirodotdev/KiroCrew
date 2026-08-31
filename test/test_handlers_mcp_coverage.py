@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.mcp_discovery import McpServerInfo
@@ -43,9 +44,19 @@ def _request(
     """Minimal aiohttp request double, matching the suite's existing style."""
     req = MagicMock(spec=web.Request)
     if isinstance(body, Exception):
+        # Malformed body: real undecodable bytes for the streaming (capped)
+        # path, a raising mock for the ``request.json()`` (uncapped) path.
+        raw = b"{not json"
         req.json = AsyncMock(side_effect=body)
     else:
+        raw = json.dumps(body).encode() if body is not None else b""
+        # Kept alive: ``api_mcp_server_detail`` reads uncapped
+        # (``max_bytes=None``) and consumes ``request.json()``.
         req.json = AsyncMock(return_value=body)
+    req.content = BodyStreamPayload(raw)
+    req.content_length = len(raw) if raw else None
+    req.charset = None
+    req.can_read_body = bool(raw)
     req.app = {"state": state if state is not None else _State()}
     req.query = query or {}
     req.match_info = match_info or {}

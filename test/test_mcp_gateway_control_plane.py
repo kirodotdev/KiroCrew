@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
+from body_stream_helpers import attach_body
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -23,7 +24,7 @@ from kiro_crew.slack.gateway import GatewayOrchestrator
 
 def _make_request(state: object, body: dict) -> web.Request:
     req = MagicMock(spec=web.Request)
-    req.json = AsyncMock(return_value=body)
+    attach_body(req, body)
     req.app = {"state": state}
     req.get = lambda key, default=None: default
     return req

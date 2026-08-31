@@ -253,6 +253,87 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_columns_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_drop": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # ---- tranche 3 ----
+    # chat_handlers.py: control-field slot mutations take the cap; the sites
+    # that carry a chat message, queued-edit text, follow-up prompts, or
+    # injected context/note content stay uncapped.
+    "chat_handlers.py::api_chat": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_handlers.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_end_wait": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_handlers.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_reset_conversation": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    "chat_handlers.py::api_chat_slots_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slots_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_reasoning_effort": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    "chat_handlers.py::api_chat_slot_workspace": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_project": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_followup": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_handlers.py::api_chat_slot_resume": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_mode": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_approve": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_handlers.py::api_chat_slot_context": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_handlers.py::api_chat_slot_note": ("None", _UNBOUNDED_USER_CONTENT),
+    # handlers/mcp.py: identifier/flag mutations take the cap; a full server
+    # config (PUT detail) and per-server toolOverrides maps (apply) do not.
+    "handlers/mcp.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp.py::api_mcp_toggle": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp.py::api_mcp_toggle_tool": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp.py::api_mcp_toggle_all": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp.py::api_mcp_remove": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp.py::api_mcp_server_detail": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/mcp.py::_do_mcp_apply": ("_MCP_APPLY_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/mcp.py::api_mcp_gateway_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/mcp.py::api_mcp_gateway_set_stub": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # handlers/cron.py: create/update carry the job's full agent message,
+    # whose MAX_CRON_MESSAGE character bound can exceed the shared 64 KB
+    # default in multibyte UTF-8 -- so they take a per-route ceiling sized to
+    # the field bound; everything else is ids and flags.
+    "handlers/cron.py::api_crons_create": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/cron.py::api_cron_batch_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron.py::api_cron_update": ("_MAX_CRON_BODY_BYTES", _BOUNDED_EXPLICIT),
+    "handlers/cron.py::api_cron_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron.py::api_cron_ack": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron.py::api_lessons_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron.py::api_lessons_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron.py::api_cron_folders_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/cron.py::api_cron_folders_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # handlers/workflows.py: workflow bodies carry a script source or a
+    # free-form intent/input, so only promote (fixed metadata) takes the cap.
+    "handlers/workflows.py::api_workflow_definitions_create": (
+        "None",
+        _UNBOUNDED_USER_CONTENT,
+    ),
+    "handlers/workflows.py::api_workflow_definition_update": (
+        "None",
+        _UNBOUNDED_USER_CONTENT,
+    ),
+    "handlers/workflows.py::api_workflow_definition_run": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/workflows.py::api_workflow_author": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/workflows.py::api_workflow_run": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/workflows.py::api_workflow_run_intent": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/workflows.py::api_workflow_run_promote": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/workflows.py::api_workflow_run_rerun": ("None", _UNBOUNDED_USER_CONTENT),
+    # handlers/files.py: bodies name paths and routing fields -- the file
+    # bytes travel in api_file_write's body, which is the one uncapped site.
+    "handlers/files.py::api_reveal_path": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/files.py::api_outbox_notify": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/files.py::api_slack_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/files.py::api_channel_upload_file": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/files.py::api_workspaces_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/files.py::api_workspaces_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/files.py::api_file_write": ("None", _UNBOUNDED_USER_CONTENT),
+    "handlers/files.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
 }
 
 _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent

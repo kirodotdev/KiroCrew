@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
+from body_stream_helpers import attach_body
 
 from kiro_crew.platform.interfaces import McpScope
 
@@ -23,16 +24,17 @@ class _NoSyncLock:
 
 
 def _make_request(body: dict) -> MagicMock:
-    """Build a fake aiohttp request for the api_mcp_apply handler."""
+    """Build a fake aiohttp request for the api_mcp_apply handler.
+
+    Carries real body bytes: the handler reads through ``read_bounded_json``'s
+    capped path (``_MCP_APPLY_MAX_BODY_BYTES``), which drains
+    ``request.content`` instead of calling ``request.json()``.
+    """
     state = MagicMock()
     state._background_tasks = set()
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
-
-    async def _json() -> dict:
-        return body
-
-    request.json = _json
+    attach_body(request, body)
     return request
 
 
@@ -529,12 +531,30 @@ def _make_stub_request(body: dict) -> MagicMock:
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
     request.get = MagicMock(return_value="dashboard")
-
-    async def _json() -> dict:
-        return body
-
-    request.json = _json
+    attach_body(request, body)
     return request
+
+
+class TestApplyBodyCeiling:
+    @pytest.mark.asyncio
+    async def test_oversized_apply_body_is_413_before_decoding(self):
+        """The declared-length precheck refuses an over-ceiling body outright.
+
+        The change-count cap runs only after decoding, so the byte ceiling is
+        what stops an arbitrarily large body from being buffered whole.
+        """
+        from kiro_crew.dashboard.handlers.mcp import (
+            _MCP_APPLY_MAX_BODY_BYTES,
+            _do_mcp_apply,
+        )
+
+        request = _make_request({"changes": []})
+        request.content_length = _MCP_APPLY_MAX_BODY_BYTES + 1
+
+        resp = await _do_mcp_apply(request)
+
+        assert resp.status == 413
+        assert json.loads(resp.text)["code"] == "payload_too_large"
 
 
 class TestSetStubNameGate:

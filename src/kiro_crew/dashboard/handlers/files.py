@@ -39,7 +39,7 @@ from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir,
 from kiro_crew.dashboard import part_stream, upload_destination
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
-from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+from kiro_crew.dashboard.handlers._shared import _probe_persisted_session, read_bounded_json
 from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState, append_and_surface
 from kiro_crew.doc_parser import extract_text
@@ -126,12 +126,28 @@ def _audit_file_send(
     )
 
 
+def _body_err_code(body_err: web.Response) -> str:
+    """SEL error label for a refused body read.
+
+    Derived from the guard response's machine-readable ``code`` so the audit
+    record distinguishes a parse failure from an oversized body (413
+    ``payload_too_large``) instead of filing every refusal as a JSON error.
+    """
+    try:
+        parsed = json.loads(body_err.text or "")
+    except ValueError:
+        return "invalid_json_body"
+    code = parsed.get("code") if isinstance(parsed, dict) else None
+    return str(code) if code else "invalid_json_body"
+
+
 async def api_reveal_path(request: web.Request) -> web.Response:
     """POST /api/reveal — reveal a file/folder in Finder or open with default app."""
-    try:
-        body = await request.json()
-    except ValueError:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+    # Default cap: the body is a path and an action flag (issue #5587 sweep).
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     path = body.get("path", "")
     action = body.get("action", "reveal")  # "reveal" or "open"
     if not path or ".." in Path(path).parts:
@@ -185,19 +201,20 @@ async def api_reveal_path(request: web.Request) -> web.Response:
 async def api_outbox_notify(request: web.Request) -> web.Response:
     """POST /api/outbox/notify — agent sent a file, notify the user."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except ValueError:
-
+    # Default cap: the body names an outbox file (path, filename, short
+    # description, size) — the file bytes themselves never travel in it.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
             tool_name="file_send",
             tool_kind="notify",
             outcome="denied",
-            error="invalid_json_body",
+            error=_body_err_code(body_err),
         )
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     raw_path = body.get("path", "")
     raw_filename = body.get("filename", "")
@@ -652,11 +669,13 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     if not slack:
         _audit_file_send(leg="slack", outcome="skipped", error="no_slack_client")
         return web.json_response({"ok": True, "skipped": "no_slack"})
-    try:
-        body = await request.json()
-    except ValueError:
-        _audit_file_send(leg="slack", outcome="denied", error="invalid_json_body")
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: the body carries a file path, a filename, and Slack routing
+    # ids — the file bytes are read from disk, never from this body.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        _audit_file_send(leg="slack", outcome="denied", error=_body_err_code(body_err))
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     file_path_raw = body.get("file_path", "")
     filename = body.get("filename", "")
     # Off-loop: the gate reads up to MAX_FILE_BYTES and regex-scans the content
@@ -756,11 +775,13 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     and the Slack leg exactly as before this endpoint existed.
     """
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except ValueError:
-        _audit_file_send(leg="channel", outcome="denied", error="invalid_json_body")
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: same shape as the Slack leg — a path, a filename, and a
+    # short description; the file bytes are read from disk by the gate.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        _audit_file_send(leg="channel", outcome="denied", error=_body_err_code(body_err))
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     def _skip(reason: str) -> web.Response:
         _audit_file_send(leg="channel", outcome="skipped", error=reason)
@@ -1462,10 +1483,11 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
 
     from kiro_crew.validation import WORKSPACE_NAME_RE  # noqa: F811
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: the body is a workspace name plus optional dir/copy_from.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name = body.get("name", "").strip()
     if not name:
         return web.json_response({"error": "Workspace name is required"}, status=400)
@@ -1620,10 +1642,11 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     if name not in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    # Default cap: the body is a single directory field.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     if "dir" in body:
         new_dir = body["dir"]
         _abs = Path(new_dir).expanduser().is_absolute()
@@ -2943,13 +2966,12 @@ async def api_file_write(request: web.Request) -> web.Response:
         validate_tool_args,
     )
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
-
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+    # max_bytes=None: the body carries the file's whole contents, which has no
+    # defensible byte ceiling (issue #5587 sweep).
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     try:
         validate_tool_args(
@@ -3746,18 +3768,17 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         )
         raise
     if request.method == "PUT":
-        try:
-            body = await request.json()
-        except Exception:
+        # Default cap: the body is a fixed set of dashboard toggles and numbers.
+        body, body_err = await read_bounded_json(request)
+        if body_err is not None:
             _sel().log_tool_invocation(
-                session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                session_key="dashboard",
+                tool_name="dashboard_config_write",
+                outcome="failure",
+                error=_body_err_code(body_err),
             )
-            return web.json_response({"error": "invalid JSON"}, status=400)
-        if not isinstance(body, dict):
-            _sel().log_tool_invocation(
-                session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
-            )
-            return web.json_response({"error": "request body must be a JSON object"}, status=400)
+            return body_err
+        assert body is not None  # read_bounded_json returns (dict, None) on success
         _allowed = {"restore_sessions", "restore_window_minutes", "merge_queued_messages", "widget_density", "use_builtin_browser", "verbosity", "quick_send", "session_grid", "tail_fork_enabled", "link_previews", "mcp_app_panel", "auto_open_git_panel", "folder_suggestions_enabled", "session_card_source_links"}
         # One-release backward-compat shim for removed key; delete after all clients update.
         deprecated_ignored_keys = {"tail_fork_head_handling"}

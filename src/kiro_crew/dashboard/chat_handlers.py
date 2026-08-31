@@ -92,6 +92,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     subagents_attached,
 )
+from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -193,10 +194,10 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
 async def api_chat(request: web.Request) -> web.StreamResponse:
     """POST /api/chat — send message to a slot, stream response via SSE."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     message = body.get("message", "").strip()
     agent = body.get("agent", "")
     slot_name = body.get("slot")
@@ -691,7 +692,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # to honour it for widget-origin turns and let the text fall through to a
     # normal, fully-gated _run_chat turn instead. Mode changes and tool
     # approvals live on separate endpoints a widget iframe cannot reach.
-    _widget_origin = bool(user_meta) and user_meta.get("origin") == "widget"
+    # `is not None` (not truthiness): user_meta is normalized to dict-or-None
+    # above, and with the body typed by read_bounded_json, mypy narrows the
+    # Optional only through an explicit None check.
+    _widget_origin = user_meta is not None and user_meta.get("origin") == "widget"
     if (
         getattr(slot, "mode", "") == "orchestrator"
         and message.strip().lower() in ("go", "go all")
@@ -2002,10 +2006,10 @@ _CREATABLE_MODES = ("", "orchestrator", "crew", "design-critique")
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     name = body.get("name")
     agent = body.get("agent", "")
     model = body.get("model", "")
@@ -3182,15 +3186,10 @@ async def api_chat_slot_end_wait(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_end_wait")
     if denied is not None:
         return denied
-    try:
-        body = await request.json() if request.content_length else {}
-    except Exception:
-        body = {}
-    # `request.json()` happily returns a list or a scalar for well-formed JSON
-    # that simply is not an object, and `.get` on one of those raises past the
-    # except above into a 500. Normalize the shape, not just the parse.
-    if not isinstance(body, dict):
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     wait_id = str(body.get("wait_id") or "").strip()
     if not wait_id:
         return web.json_response(
@@ -3261,19 +3260,37 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
 
     # Claim the stop slot synchronously BEFORE the await below: the
     # idempotency guard above is check-then-act, and a concurrent /interrupt
-    # arriving during `await request.json()` would otherwise still see
+    # arriving during the awaited body read below would otherwise still see
     # _stop_state == "idle" and slip past the guard (double stop_turn +
     # double SEL audit for one logical press). /stop is race-safe because it
     # has no await between guard and claim; this makes /interrupt match.
+    prev_auto_run = slot._auto_run
     slot._stop_state = "soft_pending"
     slot._auto_run = False
 
-    # Optionally promote a specific queue item to front
+    # Optionally promote a specific queue item to front. The except is not a
+    # parse guard (read_bounded_json owns that): it rolls the claimed stop
+    # state back when the body read fails in transit, and the refused-body
+    # branch below rolls it back the same way. Both paths also restore
+    # _auto_run: a refused request must not leave orchestrator auto-run
+    # disabled when no interrupt actually happened. The rollback is
+    # conditional on our claim being intact: a concurrent /stop arriving
+    # during the body await may escalate _stop_state (e.g. to "killing"),
+    # and an unconditional reset to "idle" would erase that escalation and
+    # admit another stop while the hard kill is still running.
     try:
-        body = await request.json() if request.content_length else {}
+        body, body_err = await read_bounded_json(request, allow_absent=True)
     except Exception:
-        slot._stop_state = "idle"
+        if slot._stop_state == "soft_pending":
+            slot._stop_state = "idle"
+            slot._auto_run = prev_auto_run
         raise
+    if body_err is not None:
+        if slot._stop_state == "soft_pending":
+            slot._stop_state = "idle"
+            slot._auto_run = prev_auto_run
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     queue_id = body.get("queue_id")
     if queue_id:
         # Wire-side field is `queue_id`; stored items carry `id` (the key
@@ -3390,10 +3407,10 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_edit")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     content = body.get("content")
     if not isinstance(content, str) or not content.strip():
         return web.json_response({"error": "content must be a non-empty string"}, status=400)
@@ -3435,10 +3452,10 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_queue_reorder")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     order = body.get("order")
     if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
         return web.json_response({"error": "order must be a list of queue id strings"}, status=400)
@@ -3720,15 +3737,16 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     # however long a slow body takes to arrive. The guards must be the last thing
     # that happens before the teardown.
     #
-    # A malformed or absent body is not an error. This route took no body before,
-    # so refusing one would break every existing caller for a parameter they do
-    # not send.
+    # An absent body is not an error: this route took no body before, so
+    # refusing one would break every existing caller for a parameter they do
+    # not send. A present-but-malformed body IS refused — "sent nothing" and
+    # "sent garbage" are different facts, and only the first can be defaulted.
     replay = True
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    if isinstance(body, dict) and "replay" in body:
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    if "replay" in body:
         replay = bool(body.get("replay"))
 
     # A turn in flight on the SESSION, which ``slot.running`` cannot see: that
@@ -4114,10 +4132,10 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     Skips the active slot and pinned sessions.
     """
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     max_days = 3
     try:
         max_days = max(1, int(body.get("max_inactive_days", 3)))
@@ -4332,10 +4350,10 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_agent")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     agent_name = body.get("agent", "")
     if agent_name and not _AGENT_NAME_RE.match(agent_name):
         return web.json_response({"error": "invalid agent name"}, status=400)
@@ -4694,10 +4712,10 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_model")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     model_name = _normalize_model(body.get("model", ""))
     reason = _model_rejected_reason(model_name)
     if reason:
@@ -5057,10 +5075,10 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
     ``failed`` and keeps its old model) rather than aborting the whole switch.
     """
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     model_name = _normalize_model(body.get("model", ""))
     reason = _model_rejected_reason(model_name)
     if reason:
@@ -5165,10 +5183,10 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_reasoning_effort")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     effort = body.get("reasoning_effort", "")
     valid_efforts = get_reasoning_effort_values()
     if not isinstance(effort, str) or effort not in valid_efforts:
@@ -5359,10 +5377,10 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_workspace")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     ws_name = body.get("workspace", "default")
     # Block workspace change after conversation has started
     if slot.total_messages > 0:
@@ -5390,10 +5408,10 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_project")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     project = body.get("project", "")
     if not isinstance(project, str):
         return web.json_response({"error": "project must be a string"}, status=400)
@@ -5598,12 +5616,10 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     try:
         cleaned = validate_tool_args(body, SUGGEST_FOLLOWUP_SCHEMA)
     except ValidationError as exc:
@@ -5975,10 +5991,10 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
             error="app cannot access member slots",
         )
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     history_key = body.get("key", name)
 
     # If slot already exists (active session), just return it — no duplicate.
@@ -6545,10 +6561,10 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     denied = deny_non_dashboard_caller(request, "chat_mode")
     if denied is not None:
         return denied
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     mode = body.get("mode", "normal")
     raw_slot = body.get("slot")
     slot_key = raw_slot or None
@@ -6859,10 +6875,10 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     action = body.get("action", "rejected")
     original_action = action
     request_id = body.get("request_id", "")
@@ -7072,10 +7088,10 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     has_ci = "color_index" in body
     has_ch = "color_hex" in body
     ci = body.get("color_index")
@@ -7498,14 +7514,10 @@ async def api_chat_slot_context(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
-        )
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     content = body.get("content", "")
     bad = (
@@ -7625,16 +7637,10 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    # A scalar or array parses cleanly and then makes `.get` raise past the
-    # except above into a 500, so the SHAPE needs its own rejection.
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
-        )
+    body, body_err = await read_bounded_json(request, max_bytes=None)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
 
     content = body.get("content", "")
     bad = (

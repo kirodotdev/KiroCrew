@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from body_stream_helpers import attach_body
 
 from kiro_crew.dashboard.handlers import api_cron_update
 
@@ -26,7 +27,7 @@ def _make_request(body: dict, job_id: str = "abc123") -> MagicMock:
     request = MagicMock()
     request.app = {"state": mock_state}
     request.match_info = {"job_id": job_id}
-    request.json = AsyncMock(return_value=body)
+    attach_body(request, body)
     return request
 
 

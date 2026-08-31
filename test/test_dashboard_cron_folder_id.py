@@ -11,6 +11,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from body_stream_helpers import attach_body
 
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.handlers import api_cron_update, api_crons_create
@@ -27,7 +28,7 @@ def _create_request(body: dict, crons: CronService) -> MagicMock:
     state.crons = crons
     request = MagicMock()
     request.app = {"state": state}
-    request.json = AsyncMock(return_value=body)
+    attach_body(request, body)
     return request
 
 
@@ -81,7 +82,7 @@ class TestCronUpdateFolderId:
         request = MagicMock()
         request.app = {"state": state}
         request.match_info = {"job_id": job_id}
-        request.json = AsyncMock(return_value=body)
+        attach_body(request, body)
         return request
 
     @pytest.mark.asyncio

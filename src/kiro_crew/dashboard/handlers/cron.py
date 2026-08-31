@@ -52,6 +52,7 @@ from ._shared import (
     _is_restricted_session,
     _probe_persisted_session,
     _redact_memory_field,
+    read_bounded_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,15 @@ logger = logging.getLogger(__name__)
 # should retry rather than treat it as a hard failure. See CronService mutators.
 _CRON_BUSY_STATUS = 409
 _CRON_BUSY_BODY = {"error": "cron store busy, please retry", "retryable": True}
+
+# Byte ceiling for a cron create/update body. The message field is bounded at
+# MAX_CRON_MESSAGE characters, and one character costs at most 12 bytes on the
+# wire: a client may send it JSON-escaped, and an astral character escapes to a
+# \uXXXX\uXXXX surrogate pair (12 bytes), wider than raw UTF-8's 4-byte max. So
+# this bounds the largest message the field validator will accept; the 64 KB of
+# headroom covers the remaining short fields. Explicit rather than the shared
+# default because a maximal multibyte message legitimately exceeds 64 KB.
+_MAX_CRON_BODY_BYTES = 12 * MAX_CRON_MESSAGE + 64 * 1024
 
 # Returned when the store cannot be WRITTEN because the last read of it failed
 # (CronStoreUnreadable). 409 for the same reason as busy above -- the request
@@ -230,12 +240,13 @@ async def _resolve_and_supersede(
 async def api_crons_create(request: web.Request) -> web.Response:
     """POST /api/crons — create a cron job."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+    # Per-route cap: the body carries the job's full agent message/prompt text,
+    # whose field bound (MAX_CRON_MESSAGE chars) can exceed the shared 64 KB
+    # default in multibyte UTF-8 -- _MAX_CRON_BODY_BYTES sizes the ceiling to it.
+    body, body_err = await read_bounded_json(request, max_bytes=_MAX_CRON_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     # Type-validate every string field BEFORE calling string methods on it.
     # A JSON array/dict/int in these fields would otherwise raise AttributeError
     # (.strip() on a non-str) -> HTTP 500. validate_string_field enforces
@@ -379,12 +390,11 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     single ``crons`` refresh is pushed after the batch instead of one per id.
     """
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+    # Default cap: the body is a bounded list of short job ids.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     ids = body.get("ids")
     if not isinstance(ids, list) or not ids:
         return web.json_response({"error": "ids must be a non-empty array"}, status=400)
@@ -441,18 +451,16 @@ async def api_cron_update(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    # A syntactically valid scalar or array parses fine and then has no .get,
-    # so the field reads below would raise AttributeError and surface as a 500.
-    # This route already refuses an unparseable body; a non-object is refused
-    # the same way rather than by crashing.
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "request body must be a JSON object", "code": "invalid_json"}, status=400
-        )
+    # Per-route cap: a partial update can carry the job's full agent
+    # message/prompt text, whose field bound (MAX_CRON_MESSAGE chars) can
+    # exceed the shared 64 KB default in multibyte UTF-8. The helper also owns
+    # the non-object 400: a syntactically valid scalar or array parses fine
+    # and then has no .get, so the field reads below would raise
+    # AttributeError and surface as a 500.
+    body, body_err = await read_bounded_json(request, max_bytes=_MAX_CRON_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     kwargs: dict[str, Any] = {}
     for key in (
         "name",
@@ -679,16 +687,13 @@ async def api_cron_enable(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    # This route tolerates a missing or unreadable body and falls back to its
-    # defaults. A scalar or array parses but carries no fields, so it gets the
-    # same tolerance -- reading .get off it would raise AttributeError -> 500,
-    # which is a harsher answer than the one an unparseable body already gets.
-    if not isinstance(body, dict):
-        body = {}
+    # Default cap: the body is a single flag. allow_absent keeps the
+    # missing-body-means-defaults contract; a body that is PRESENT but
+    # malformed is a 400; only an absent body defaults.
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
     try:
         ok = await state.crons.enable_job_async(job_id, enabled=enabled)
@@ -707,12 +712,12 @@ async def api_cron_ack(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if not isinstance(body, dict):
-        body = {}  # same tolerance as an unparseable body; see api_cron_enable
+    # Default cap: the body is a short summary + notification ts. allow_absent
+    # keeps the missing-body-means-defaults contract; see api_cron_enable.
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     summary = body.get("summary", "acknowledged")
     notification_ts = body.get("ts", "")
     try:
@@ -1108,12 +1113,11 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     from kiro_crew.learn import Lesson  # noqa: F811
 
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+    # Default cap: lesson fields are short strings (MAX_SHORT_STRING-bounded).
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     # Block lesson writes from restricted (incognito/temporary/guest) sessions.
     sk = request.headers.get("X-Session-Key", "")
     refusal = await _recognize_session(
@@ -1311,14 +1315,11 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Memory writes are not allowed in this session mode."}, status=403
         )
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response(
-            {"error": "request body must be a JSON object", "code": "invalid_json"}, status=400
-        )
+    # Default cap: the body is a rule substring plus scope/workspace selectors.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     rule_sub = body.get("rule", "").strip()
     if not rule_sub:
         return web.json_response({"error": "rule substring required"}, status=400)
@@ -1450,11 +1451,12 @@ async def api_cron_folders(request: web.Request) -> web.Response:
 async def api_cron_folders_create(request: web.Request) -> web.Response:
     """POST /api/cron-folders — create a new cron folder."""
     state: DashboardState = request.app["state"]
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+    # Default cap: the body is a single short folder name.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    if not isinstance(body.get("name"), str):
         return web.json_response(
             {"error": "name must be a string", "code": "name_required"}, status=400
         )
@@ -1483,11 +1485,12 @@ async def api_cron_folders_update(request: web.Request) -> web.Response:
     folder_id = request.match_info["folder_id"]
     if (_e := _invalid_path_id_response(folder_id, "folder_id")) is not None:
         return _e
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+    # Default cap: the body is a single short folder name.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    if not isinstance(body.get("name"), str):
         return web.json_response(
             {"error": "name must be a string", "code": "name_required"}, status=400
         )
