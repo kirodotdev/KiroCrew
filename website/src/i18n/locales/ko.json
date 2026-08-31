@@ -9760,6 +9760,10 @@
         "copy_text_failed": "복사하지 못했습니다",
         "copy_text_unavailable": "이 환경에서는 클립보드가 차단되어 있습니다. 게시글 텍스트가 선택되어 있으니 Ctrl+C / ⌘C를 누르세요. 편집한 카드 텍스트는 카드에서 직접 복사하세요.",
         "export_failed": "공유 카드를 만들 수 없습니다"
+      },
+      "sectionMarkerRow": {
+        "end_of": "섹션 {{label}} 끝",
+        "end_of_section": "섹션 끝"
       }
     },
     "chatPage": {
@@ -9874,7 +9878,11 @@
       "could_not_generate_title": "제목을 생성할 수 없습니다",
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
-      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다"
+      "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
+      "fork_too_large_error_head": "이 대화는 분기하기에 너무 큽니다. 이전 메시지에 마우스를 올리거나 포커스한 뒤 ‘{{control}}’을 선택하면 더 적은 메시지를 복사합니다.",
+      "fork_too_large_error_tail": "이 대화는 분기하기에 너무 큽니다. 이후 메시지에 마우스를 올리거나 포커스한 뒤 ‘{{control}}’을 선택하면 더 적은 메시지를 복사합니다.",
+      "fork_too_large_offsite_unknown": "‘{{title}}’은 전체를 분기하기에는 너무 큽니다. 유지할 끝에 가까운 메시지에 마우스를 올리거나 포커스한 뒤 ‘{{control}}’을 선택하세요.",
+      "fork_too_large_offsite_compact": "‘{{title}}’은 전체를 복제하기에는 너무 큽니다. 열고 나서, 유지할 끝에 가까운 메시지에 마우스를 올리거나 포커스한 뒤 ‘{{control}}’을 선택하세요."
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",
