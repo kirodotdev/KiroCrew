@@ -193,13 +193,21 @@ non-POSIX (§12). Treat a Windows hub as unverified.
    `http://<dashboard-hostname>:<local>/?token=...` in an iframe, deliberately
    reusing the parent's own hostname so the pane is same-site with the parent and
    `SameSite=Lax` auth cookies are not withheld.
-2. **Warm set.** Up to `warm_set_cap` (default 5) most-recently-used instances
+2. **Warm set.** Up to `warm_set_cap` most-recently-used instances
    stay warm: iframe mounted (hide-not-unmount, so switching never reloads or
-   re-runs the token handshake) with a live tunnel and WebSocket. Exceeding the
+   re-runs the token handshake) with a live tunnel and WebSocket. The default
+   (`0`) is **automatic**: `GET /api/instances` resolves the cap from the live
+   connected count (`resolve_warm_set_cap`, bounded by
+   `WARM_SET_CAP_AUTO_CEILING`), so a crew the operator connected is never
+   evicted; an explicit integer is served verbatim, including one below the
+   connected count. Exceeding the
    cap **evicts the least-recently-used non-active iframe**. Eviction unmounts
    the iframe only: it does NOT disconnect the tunnel or clear `was_connected`,
    so the switcher entry persists and re-warms on the next click. Entries
-   disappear only on an explicit disconnect.
+   disappear only on an explicit disconnect. Note that re-warming re-mints the
+   token and cold-boots the remote SPA, so from the user's seat an eviction is
+   hard to tell apart from a dropped connection — which is why the default
+   tracks the connected count rather than a fixed number.
 3. **Health probe.** While CONNECTED, a per-tunnel loop polls the loopback
    forward every `DEFAULT_PROBE_INTERVAL_SECS` (30s, not user-configurable;
    `<= 0` disables the probe); after `probe_failure_threshold` (3) *consecutive*
@@ -255,7 +263,7 @@ cannot drift.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `instances.enabled` | `false` | Primary opt-in, read at gateway startup. Also gates the CSP `frame-src` `*.localhost` extension. |
-| `instances.warm_set_cap` | `5` | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). Clamped up to 1. |
+| `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks the live connected count so no connected crew is evicted, bounded by an internal ceiling; an explicit value is honoured exactly, including one below the connected count. Negative values fall back to automatic. |
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
 | `instances.ssh_compression` | `true` | Add `-C` to the tunnel argv. See §5.2. |
 | `instances.connect_timeout_secs` | unset (SSH `15.0`, SSM `25.0`) | How long (secs) to wait for the local forward port to accept connections before declaring a connect attempt failed. Hosts behind a ProxyCommand or jump host need longer (the proxy handshake runs before ssh begins the forward). An explicit value applies to both transports, including a value equal to either transport's default. Values below 1 fall back to the transport defaults; values above 120 are clamped to 120. |
@@ -820,7 +828,7 @@ whose current variable parts are all charset-bound literals.
 | Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
 | "local port N was taken while connecting" | The allocator picked a port that something grabbed in the moment before `ssh` bound it. Retry. If it persists, stop whatever keeps taking ports in that range or move `instances.tunnel_base_port` to a quieter one. |
 | Instance keeps dropping | The health probe plus 2-tier self-heal retry over roughly a two-minute window (8 attempts, capped-exponential backoff). Tune `instances.max_recovery_attempts` / `recover_backoff_max_secs` / `probe_failure_threshold`; both recovery values are clamped so they cannot loop indefinitely. If self-heal gives up, diagnosis runs automatically. Check the remote gateway and SSH stability. |
-| A pane vanished from the warm set but its switcher entry is still there | It was LRU-evicted (warm set full). The tunnel is untouched: selecting the crew re-warms it. Raise `instances.warm_set_cap` if you want more panes resident. |
+| A pane vanished from the warm set but its switcher entry is still there | It was LRU-evicted (warm set full). The tunnel is untouched: selecting the crew re-warms it, though the re-mint plus SPA cold boot makes that look like a reconnect. Only an explicit `instances.warm_set_cap` can now be below the connected count — set it to `0` to let the cap track how many crews are connected. |
 | Every token mint fails on one remote, though its gateway is healthy | The remote's `~/.local/bin/kirocrew` probably points at an uninstalled checkout. See §12: the run-marker is what makes mint follow the *running* gateway's install. |
 
 ---

@@ -3157,7 +3157,7 @@
       "enumValues": null,
       "defaultValue": {
         "enabled": false,
-        "warm_set_cap": 5,
+        "warm_set_cap": 0,
         "tunnel_base_port": 7778,
         "ssh_compression": true,
         "connect_timeout_secs": null,
@@ -3190,10 +3190,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Warm Set Cap",
-      "help": "Max number of remote instances kept warm (iframe mounted + tunnel live) at once. Least-recently-used instances beyond this are evicted and reconnected on demand. Bounds memory/socket use (each warm instance is a full dashboard SPA).",
+      "help": "Max number of remote instances kept warm (iframe mounted + tunnel live) at once. Least-recently-used instances beyond this are evicted and reconnected on demand. Bounds memory/socket use (each warm instance is a full dashboard SPA). 0 (the default) is automatic: the cap follows how many crews are currently connected, so a crew you connected is never evicted -- eviction cold-boots the pane and reads as a disconnect, so a fixed cap below the connected count makes tab switching look like a connection flap. Automatic is bounded by an internal ceiling; an explicit value is honoured exactly, including one below the connected count.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 5
+      "defaultValue": 0
     },
     {
       "path": "instances.tunnel_base_port",

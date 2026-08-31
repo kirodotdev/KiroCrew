@@ -16,7 +16,40 @@ from __future__ import annotations
 # WebSocket live) at once. Each warm instance is a full dashboard SPA, so this
 # bounds memory/socket usage; least-recently-used instances beyond the cap are
 # lazily evicted and reconnected on demand.
-DEFAULT_WARM_SET_CAP: int = 5
+#
+# ``WARM_SET_CAP_AUTO`` (0) is the default and means "as many as are connected":
+# the cap is resolved per request from the live connected count (see
+# ``kiro_crew.instances.warm_set.resolve_warm_set_cap``), so a crew the operator
+# deliberately connected is never evicted.
+#
+# Auto is the default because eviction is INDISTINGUISHABLE FROM A DISCONNECT at
+# the pane: the iframe is unmounted, the token is re-minted and the remote SPA
+# cold-boots on the next click (surfacing the error panel outright if readiness
+# misses its timeout). A fixed cap below the connected count therefore turns
+# ordinary tab switching into an apparent connection flap, and the operator has
+# no way to attribute it -- the tunnel is up the whole time. Tracking the
+# connected count removes that class of misconfiguration rather than asking
+# anyone to keep two numbers in sync by hand.
+WARM_SET_CAP_AUTO: int = 0
+DEFAULT_WARM_SET_CAP: int = WARM_SET_CAP_AUTO
+
+# Upper bound on the AUTO-resolved warm set. Auto follows the connected count,
+# which is a statement of user intent and not a resource budget -- a fleet of 30
+# connected crews would otherwise mount 30 dashboard SPAs in one renderer.
+# Beyond this many connected crews eviction resumes, so the worst case stays
+# bounded while the common small-fleet case (the reason auto exists) never
+# evicts. An EXPLICIT integer cap is honoured verbatim and is deliberately not
+# clamped by this: an operator who names a number has made the budget decision
+# themselves, including a number larger than this.
+#
+# 8 is a judgement, not a measurement: comfortably above the 5 this default used
+# to be (so no install gets a tighter warm set than it had), and still in the
+# range a single renderer has been seen to carry. The per-pane cost that bounds
+# it is CPU and worker threads rather than heap -- each pane is a full SPA with
+# its own polling and WebSocket, and a pane the user opens a diff in spawns its
+# own highlighter worker pool (see website/src/main.tsx on why those are no
+# longer spawned eagerly).
+WARM_SET_CAP_AUTO_CEILING: int = 8
 
 # First local loopback port handed out for an SSH ``-L`` forward. The port
 # allocator increments from here, skipping ports already in use and ports the

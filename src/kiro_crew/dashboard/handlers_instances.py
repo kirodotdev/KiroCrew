@@ -50,6 +50,7 @@ from kiro_crew.instances.registry import (
     validate_ttl,
 )
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState
+from kiro_crew.instances.warm_set import resolve_warm_set_cap
 from kiro_crew.sel import sel
 from kiro_crew.validation import sanitize_string
 
@@ -210,6 +211,11 @@ async def api_instances_list(request: web.Request) -> web.Response:
     # instances.json under a threading lock a to_thread worker may hold across
     # its fsync — so every registry touch in these handlers goes off the loop.
     items = [_instance_view(state, i) for i in await asyncio.to_thread(reg.list)]
+    # Resolved here rather than served raw: the automatic mode (0) means "as many
+    # as are connected", and this is the only place that holds both the stored
+    # value and the live per-instance status. The browser therefore always
+    # receives a concrete integer and needs no notion of automatic.
+    connected = sum(1 for i in items if (i.get("status") or {}).get("state") == "connected")
     _audit("list", "success")
     return web.json_response(
         {
@@ -220,7 +226,9 @@ async def api_instances_list(request: web.Request) -> web.Response:
             # active, the UI shows a "restart the gateway to activate" hint.
             "active": getattr(state, "instances_manager", None) is not None,
             "instances": items,
-            "warm_set_cap": KiroCrewConfig.load().instances.warm_set_cap,
+            "warm_set_cap": resolve_warm_set_cap(
+                KiroCrewConfig.load().instances.warm_set_cap, connected
+            ),
         }
     )
 

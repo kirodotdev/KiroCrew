@@ -131,6 +131,19 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         changed_in="#6651",
         new_default_display="unset (automatic: 25s desktop / 90s managed service)",
     ),
+    # instances.warm_set_cap moved from a materialized 5 to 0 (automatic: as many
+    # panes as there are connected crews). A stored 5 keeps evicting the 6th crew,
+    # and eviction is indistinguishable from a disconnect at the pane -- so the
+    # symptom of holding the old default is a connection that looks like it flaps
+    # on tab switch. A stored 5 may equally be a deliberate budget on a
+    # memory-tight machine, so report it rather than rewriting it.
+    SupersededDefault(
+        dotted_key="instances.warm_set_cap",
+        old_default=5,
+        new_default=0,
+        changed_in="#7248",
+        new_default_display="0 (automatic: as many as are connected)",
+    ),
 )
 
 

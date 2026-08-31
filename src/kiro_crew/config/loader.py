@@ -128,6 +128,7 @@ from kiro_crew.instances.constants import MINT_TIMEOUT_FLOOR_SECS as _MINT_TIMEO
 from kiro_crew.instances.constants import (
     RECOVER_BACKOFF_MAX_CEILING_SECS as _RECOVER_BACKOFF_CEILING,
 )
+from kiro_crew.instances.constants import WARM_SET_CAP_AUTO as _WARM_SET_CAP_AUTO
 from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path
 
 # The speech-to-text defaults and the model catalog come from the package that
@@ -5587,7 +5588,12 @@ class InstancesConfig:
             "Max number of remote instances kept warm (iframe mounted + tunnel live) "
             "at once. Least-recently-used instances beyond this are evicted and "
             "reconnected on demand. Bounds memory/socket use (each warm instance is a "
-            "full dashboard SPA).",
+            "full dashboard SPA). 0 (the default) is automatic: the cap follows how "
+            "many crews are currently connected, so a crew you connected is never "
+            "evicted -- eviction cold-boots the pane and reads as a disconnect, so a "
+            "fixed cap below the connected count makes tab switching look like a "
+            "connection flap. Automatic is bounded by an internal ceiling; an explicit "
+            "value is honoured exactly, including one below the connected count.",
         ),
     )
     tunnel_base_port: int = field(
@@ -5666,9 +5672,16 @@ class InstancesConfig:
     )
 
     def __post_init__(self) -> None:
-        if self.warm_set_cap < 1:
-            logger.warning("instances.warm_set_cap %d < 1, using 1", self.warm_set_cap)
-            object.__setattr__(self, "warm_set_cap", 1)
+        if self.warm_set_cap < 0:
+            # 0 is meaningful here (automatic -- track the connected count), so
+            # only a negative value is a misconfiguration, and it falls back to
+            # automatic rather than to 1: a caller who wrote a nonsense number
+            # wanted "enough", not the tightest possible cap.
+            logger.warning(
+                "instances.warm_set_cap %d < 0, using 0 (automatic: track the connected count)",
+                self.warm_set_cap,
+            )
+            object.__setattr__(self, "warm_set_cap", _WARM_SET_CAP_AUTO)
         if not (1 <= self.tunnel_base_port <= 65535):
             logger.warning(
                 "instances.tunnel_base_port %d out of range [1, 65535], using %d",

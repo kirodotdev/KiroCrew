@@ -46,7 +46,9 @@ class TestConfig:
 
         c = InstancesConfig()
         assert c.enabled is False
-        assert c.warm_set_cap == DEFAULT_WARM_SET_CAP == 5
+        # 0 == automatic: the cap follows the connected crew count (resolved per
+        # request by resolve_warm_set_cap), so no connected crew is ever evicted.
+        assert c.warm_set_cap == DEFAULT_WARM_SET_CAP == 0
         assert c.tunnel_base_port == DEFAULT_TUNNEL_BASE_PORT == 7778
         assert DEFAULT_CONNECT_TIMEOUT_SECS == 15.0
         assert c.connect_timeout_secs is None
@@ -56,9 +58,16 @@ class TestConfig:
     def test_clamps_out_of_range(self):
         from kiro_crew.config.loader import InstancesConfig
 
-        c = InstancesConfig(warm_set_cap=0, tunnel_base_port=99999)
-        assert c.warm_set_cap == 1
+        # 0 is a legal value (automatic), so only a negative cap is clamped, and
+        # it falls back to automatic rather than to the tightest possible cap.
+        c = InstancesConfig(warm_set_cap=-3, tunnel_base_port=99999)
+        assert c.warm_set_cap == 0
         assert c.tunnel_base_port == 7778
+
+    def test_zero_warm_set_cap_is_kept_as_automatic(self):
+        from kiro_crew.config.loader import InstancesConfig
+
+        assert InstancesConfig(warm_set_cap=0).warm_set_cap == 0
 
     def test_roundtrip_and_schema(self):
         from kiro_crew.config.loader import KiroCrewConfig
@@ -67,7 +76,7 @@ class TestConfig:
         d = KiroCrewConfig().to_dict()
         assert d["instances"] == {
             "enabled": False,
-            "warm_set_cap": 5,
+            "warm_set_cap": 0,
             "tunnel_base_port": 7778,
             "ssh_compression": True,
             "connect_timeout_secs": None,
@@ -1737,9 +1746,37 @@ class _State:
         self.instances_manager = manager
 
 
-def _enable(tmp_path: Path, monkeypatch, *, enabled=True):
+class _ConnectedMgr:
+    """Manager stub where the named instances report a live tunnel.
+
+    Only the three members ``_status_for`` touches are implemented, which is
+    what the warm-set-cap tests need: the cap is derived from how many instances
+    come back ``connected``.
+    """
+
+    def __init__(self, connected):
+        self._connected = set(connected)
+
+    def status(self, instance_id):
+        if instance_id not in self._connected:
+            return None
+        return types.SimpleNamespace(
+            to_dict=lambda: {"instance_id": instance_id, "state": "connected"}
+        )
+
+    def token_ttl_remaining(self, instance_id):
+        return None
+
+    def last_error(self, instance_id):
+        return None
+
+
+def _enable(tmp_path: Path, monkeypatch, *, enabled=True, warm_set_cap=None):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    (tmp_path / "config.json").write_text(json.dumps({"instances": {"enabled": enabled}}))
+    section: dict = {"enabled": enabled}
+    if warm_set_cap is not None:
+        section["warm_set_cap"] = warm_set_cap
+    (tmp_path / "config.json").write_text(json.dumps({"instances": section}))
     from kiro_crew.config import loader
 
     loader._invalidate_config_cache()
@@ -2080,9 +2117,40 @@ class TestHandlers:
         assert r.status == 201
         r = asyncio.run(handlers.api_instances_list(_FakeReq(state)))
         b = _body(r)
-        assert b["warm_set_cap"] == 5 and len(b["instances"]) == 1
+        # Automatic cap with nothing connected floors at 1 (the active pane is
+        # always warm), so the browser still gets a cap it can honour.
+        assert b["warm_set_cap"] == 1 and len(b["instances"]) == 1
         # no manager on this state => enabled-in-config but not active (needs restart)
         assert b["active"] is False
+
+    def test_automatic_cap_tracks_the_connected_count(self, tmp_path, monkeypatch):
+        """The served cap covers every connected crew, so none is ever evicted.
+
+        Eviction unmounts the pane and cold-boots the remote SPA on the next
+        click, which reads as a disconnect — so a cap below the connected count
+        makes ordinary tab switching look like a connection flap.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        for name in ("a", "b", "c"):
+            reg.add(name=name, ssh_host=f"{name}-alias")
+        state = _State(reg, _ConnectedMgr(["a", "c"]))
+        b = _body(asyncio.run(handlers.api_instances_list(_FakeReq(state))))
+        assert len(b["instances"]) == 3
+        assert b["warm_set_cap"] == 2
+
+    def test_explicit_cap_is_served_even_below_the_connected_count(self, tmp_path, monkeypatch):
+        """An operator's own number is the budget and is not widened for them."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch, warm_set_cap=1)
+        reg = self._reg(tmp_path)
+        for name in ("a", "b"):
+            reg.add(name=name, ssh_host=f"{name}-alias")
+        state = _State(reg, _ConnectedMgr(["a", "b"]))
+        assert _body(asyncio.run(handlers.api_instances_list(_FakeReq(state))))["warm_set_cap"] == 1
 
     def test_list_active_reflects_manager_running(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers

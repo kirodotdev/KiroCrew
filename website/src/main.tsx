@@ -107,9 +107,10 @@ if (import.meta.env.DEV) {
 // NOT in an embedded remote-instance pane. Each warm pane is a full copy of this
 // SPA in its own realm, and every realm that evaluates PierreImpl spawns
 // PIERRE_WORKER_POOL_SIZE workers, each loading its own highlighter bundle + WASM
-// regex engine. With the default warm-set cap that is 4 workers x 5 panes = 20
-// eagerly-spawned workers in one renderer process, and the background panes paint
-// nothing, so 16 of them buy no responsiveness at all. Observed consequence: the
+// regex engine. With a warm-set cap that tracks the connected crews (automatic,
+// bounded at 8) that is 4 workers x up to 8 panes eagerly-spawned in one renderer
+// process, and the background panes paint
+// nothing, so most of them buy no responsiveness at all. Observed consequence: the
 // renderer accumulated 20 DedicatedWorker threads and was killed by a V8 fatal
 // abort raised on one of them, taking the whole window black.
 //
