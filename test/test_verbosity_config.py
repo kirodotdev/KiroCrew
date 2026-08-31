@@ -299,6 +299,84 @@ class TestAnswerOnlyBlock:
         assert "verbatim and complete" in result
         assert "cuts prose, never payload" in result
 
+    def test_the_payload_carve_out_does_not_cover_quoted_evidence(self):
+        """Measured gap this closes: asked "check the logs, what could be
+        wrong", answer_only returned a multi-section report -- log excerpts, a
+        stack trace, a per-crash timeline, a ruled-out list -- and the user
+        could not tell what was broken or what to do. The payload rule was the
+        loophole: log text IS an error string and a file's contents, so
+        "verbatim and complete, never payload" read as licence to paste every
+        line consulted. Payload is scoped to what was ASKED for; quoting to
+        prove a point is evidence, which is explanation and therefore opt-in.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        assert "Payload is what the user asked for or has to act on" in result
+        assert "Material you quote to prove a point is evidence, not payload" in " ".join(
+            result.split()
+        )
+        assert "evidence is opt-in: leave it out and offer it" in result
+
+    def test_the_answer_itself_is_bounded_per_item(self):
+        """The gap the user was papering over by hand. Every length rule in the
+        block governed EXPLANATION -- the one-sentence cap, the cut list, plain
+        words -- and nothing bounded the answer, so a verdict plus
+        recommendations written as three numbered findings with sub-bullets
+        satisfied the whole block. The user ended up appending "use few
+        sentences, one sentence for each" to request after request, which is
+        the missing rule stated in their own words.
+
+        Bounded PER ITEM on purpose, not as a reply total: a total cap would
+        collide with "an ordered multi-step procedure ... stays complete" the
+        way ultra's `numbered lists > 3 items` prohibition already does, and
+        the invariant here is that no rule governs length and omission at once.
+        Per-item scales -- seven steps stay seven steps -- so the two rules are
+        orthogonal.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        one_line = " ".join(result.split())
+        assert "One sentence per thing you are telling them" in result
+        assert "This bounds each item, not the reply" in one_line
+        assert "seven one-sentence steps" in one_line
+        assert "is a report, and the answer is buried inside it" in one_line
+
+    def test_grounding_is_not_the_answer(self):
+        """Third measured shape of the same gap, and the one the payload rule
+        could not reach on its own. Asked why a UI fold never fires, the reply
+        came back as three numbered findings carrying `gateway.py:6979`, a
+        quoted python block, two more `file:line` cites and a leading step
+        count -- the verdict (the flag it depends on is never written) was one
+        clause inside thirty lines of citation. A code reference is genuinely
+        load-bearing for TRUST, which is why the pull toward showing it is
+        strong, and the payload clause protects `paths` and `identifiers`
+        verbatim, so showing it read as required rather than optional. The rule
+        separates the two jobs: grounding is what makes the answer true,
+        exposing the grounding is evidence, and evidence is already opt-in.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        one_line = " ".join(result.split())
+        assert "Verify against the real thing, then answer without showing the work" in one_line
+        assert "only shows that you read it" in result
+        assert "Say what the thing does, not where you found it" in result
+        assert "hand the reference over when the user asks to check it" in one_line
+
+    def test_the_answer_rule_covers_knowing_not_just_receiving(self):
+        """Same measured gap, other half. The rule named three artifact kinds
+        (a change, a command, a value), so a question whose answer is a
+        JUDGEMENT -- what is wrong, which option, whether it is safe -- matched
+        none of them and the model shipped its investigation instead. Every
+        other rule was obeyed: no preamble, no rationale, nothing narrated.
+        Generalised to what the user needs in order to know or to act, with the
+        work that produced it named as explanation, so the rule reaches the
+        next question class without enumerating one.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        one_line = " ".join(result.split())
+        assert "Whatever the user needs in order to know or to act IS the answer" in one_line
+        assert "a verdict" in result
+        assert "The work that produced it" in result
+        assert "Naming your findings is not naming the answer" in result
+        assert "you have not answered" in result
+
     def test_answer_only_turns_itself_off_when_detail_is_requested(self):
         """Detailed explanations are still reachable -- by asking. Without this
         the level is a dead end rather than a default.
@@ -408,13 +486,13 @@ class TestAnswerOnlyBlock:
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
         assert "One clause is enough" in result
 
-    def test_the_undo_rule_is_scoped_to_the_show_it_and_stop_rule(self):
+    def test_the_undo_rule_is_scoped_to_the_lead_with_it_and_stop_rule(self):
         """It is an exception to stopping, not a new general obligation -- a
         non-destructive command still gets handed over bare.
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
         assert "One exception to stopping" in result
-        assert "Show it and stop" in result
+        assert "Lead with it and stop" in result
 
     def test_the_undo_rule_names_the_cost_of_omitting_it(self):
         """Naming the consequence is what makes the model treat a missing undo
