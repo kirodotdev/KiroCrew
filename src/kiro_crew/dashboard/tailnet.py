@@ -327,11 +327,13 @@ class DaemonProbe:
     Exists because :func:`self_dns_name` deliberately collapses every failure to
     ``None`` — right for its caller (which only wants "a name or nothing") and
     useless for an onboarding UI, which has to tell the operator WHICH thing to
-    go fix. The three negatives have three different remedies and must not be
+    go fix. These negatives have different remedies and must not be
     rendered as one "Tailscale not working":
 
     * ``installed=False`` — install Tailscale.
     * ``reachable=False`` — the daemon is not answering; start it.
+    * ``stopped=True`` — the daemon answers but Tailscale is stopped
+      (``BackendState "Stopped"``, e.g. after ``tailscale down``); bring it up.
     * ``logged_in=False`` — signed out; sign in.
     * all true but ``name=""`` — signed in, but MagicDNS is off for the tailnet.
     * ``https_enabled=False`` — the tailnet has not granted certificate
@@ -353,6 +355,12 @@ class DaemonProbe:
     reachable: bool
     logged_in: bool
     detail: str
+    #: ``BackendState "Stopped"``: the daemon answered but Tailscale is stopped,
+    #: so the tailnet is unreachable and nothing can be published or withdrawn.
+    #: A separate field rather than a ``_BACKEND_STATES_NEEDING_LOGIN`` entry
+    #: because the remedy differs — start Tailscale, not sign in — and folding it
+    #: into ``reachable`` would misname the state: the daemon IS answering.
+    stopped: bool = False
     #: Login owning this machine, validated from ``Self.UserID`` -> ``User``.
     #: Kept server-side; the status API does not expose it to the renderer.
     login: str = ""
@@ -410,6 +418,21 @@ def probe_daemon() -> DaemonProbe:
             detail="Tailscale is installed, but its daemon did not answer.",
         )
     backend_state = status.get("BackendState")
+    # "Stopped" is the daemon running with Tailscale down (`tailscale down`), so
+    # it passes the needing-login test below — the machine may well still be
+    # signed in — while nothing on the tailnet can reach this host and no serve
+    # write can take effect. Modeled as its own state, checked first, because a
+    # stopped daemon blocks everything the later branches would send the
+    # operator to fix.
+    if backend_state == "Stopped":
+        return DaemonProbe(
+            name="",
+            installed=True,
+            reachable=True,
+            logged_in=True,
+            detail="Tailscale is stopped, so this machine is not connected to its tailnet.",
+            stopped=True,
+        )
     logged_in = not (
         isinstance(backend_state, str) and backend_state in _BACKEND_STATES_NEEDING_LOGIN
     )

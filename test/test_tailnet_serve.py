@@ -199,6 +199,9 @@ class TestFailureReporting:
             ("must be run as root", "no_permission"),
             ("tailscaled is not running", "daemon_unavailable"),
             ("cannot connect to local tailscaled", "daemon_unavailable"),
+            # The exact wording a stopped daemon fails with (issue #7244);
+            # previously fell through to generic "failed" and no hint fired.
+            ("Tailscale is stopped.", "daemon_unavailable"),
             ("something nobody predicted", "failed"),
         ],
     )
@@ -626,6 +629,41 @@ class TestWithdrawalSafety:
         result, run = self._unpublish_with_state(ServeState(False, False, "no config"))
         assert result.ok
         run.assert_not_called()
+
+    def _unpublish_write_fails(self, stderr: str):
+        cli, run = _patch_cli(return_value=_proc(returncode=1, stderr=stderr))
+        with cli, run, patch.object(
+            tailnet_serve, "serve_state", return_value=ServeState(True, True, "ours")
+        ):
+            return tailnet_serve.unpublish(_PORT)
+
+    def test_failed_withdrawal_against_stopped_daemon_names_failure_and_remedy(self) -> None:
+        """The issue-#7244 silent failure: the daemon's whole answer is
+        "Tailscale is stopped.", which reads like a status line, so without an
+        appended hint the operator cannot tell that nothing was withdrawn. The
+        verbatim daemon words must survive alongside the hint, never be
+        replaced by it."""
+        result = self._unpublish_write_fails("Tailscale is stopped.")
+        assert not result.ok
+        assert result.code == "daemon_unavailable"
+        assert "Tailscale is stopped." in result.detail
+        assert "Nothing was withdrawn" in result.detail
+        assert "tailscale status" in result.detail
+
+    def test_failed_withdrawal_permission_refusal_names_the_remedy(self) -> None:
+        result = self._unpublish_write_fails("access denied: serve config")
+        assert not result.ok
+        assert result.code == "no_permission"
+        assert "access denied: serve config" in result.detail
+        assert "--operator" in result.detail
+
+    def test_failed_withdrawal_with_unclassified_output_stays_verbatim(self) -> None:
+        """No hint branch fires for an unrecognized failure — the daemon's own
+        words remain the whole answer, unchanged from before the hints."""
+        result = self._unpublish_write_fails("something nobody predicted")
+        assert not result.ok
+        assert result.code == "failed"
+        assert result.detail == "something nobody predicted"
 
 
 class TestPublishedDetection:

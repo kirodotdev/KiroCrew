@@ -80,6 +80,7 @@ def _probe(
     logged_in: bool = True,
     https_enabled: bool | None = True,
     detail: str = "",
+    stopped: bool = False,
 ) -> DaemonProbe:
     return DaemonProbe(
         name=name,
@@ -88,6 +89,7 @@ def _probe(
         logged_in=logged_in,
         detail=detail,
         login=login,
+        stopped=stopped,
         https_enabled=https_enabled,
     )
 
@@ -136,6 +138,38 @@ class TestProbeDistinguishesCauses:
         assert p.reachable is True
         assert p.logged_in is False
         assert p.name == ""
+
+    def test_stopped_backend_state_is_its_own_not_usable_state(self) -> None:
+        """``BackendState "Stopped"`` must not read as healthy (issue #7244).
+
+        A stopped daemon answers status reads and is not in the needing-login
+        set, so before this field it passed every probe check and the flow
+        reported a ready tailnet whose URL nothing could reach. The remedy
+        (start Tailscale) differs from signing in, so it is a distinct signal,
+        not a ``logged_in`` overload.
+        """
+        with (
+            patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
+            patch.object(
+                tailnet, "_run_json_detail", return_value=({"BackendState": "Stopped"}, False)
+            ),
+        ):
+            p = tailnet.probe_daemon()
+        assert p.stopped is True
+        assert p.reachable is True  # the daemon DID answer; only Tailscale is down
+        assert p.name == ""
+        assert "stopped" in p.detail.lower()
+
+    def test_running_backend_state_reports_not_stopped(self) -> None:
+        with (
+            patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
+            patch.object(
+                tailnet, "_run_json_detail", return_value=({"BackendState": "Running"}, False)
+            ),
+            patch.object(tailnet, "self_dns_name", return_value=_HOST),
+        ):
+            p = tailnet.probe_daemon()
+        assert p.stopped is False
 
     def test_signed_in_without_name_reports_magicdns_gap(self) -> None:
         """Reachable + logged in + no name is the MagicDNS-off case, and it must be
@@ -337,6 +371,16 @@ class TestStepPrecedence:
 
     def test_unreachable_daemon_is_its_own_step(self) -> None:
         assert _step(probe=_probe(name="", reachable=False, logged_in=False)) == "start_daemon"
+
+    def test_stopped_daemon_derives_start_daemon(self) -> None:
+        assert _step(probe=_probe(name="", stopped=True)) == "start_daemon"
+
+    def test_stopped_daemon_is_never_ready(self) -> None:
+        """The issue-#7244 shape: serve status still returns the stale config
+        with exit 0 while the daemon is stopped, so ``published=True`` arrives
+        alongside a stopped probe — and must not derive ``ready`` (the card
+        would show Active for a URL nothing can reach)."""
+        assert _step(probe=_probe(stopped=True), published=True) == "start_daemon"
 
     def test_signed_out_is_its_own_step(self) -> None:
         assert _step(probe=_probe(name="", logged_in=False)) == "sign_in"

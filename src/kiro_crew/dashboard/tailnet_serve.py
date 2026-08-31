@@ -247,7 +247,18 @@ def _classify(output: str) -> ResultCode:
         return "no_permission"
     if any(
         s in low
-        for s in ("not running", "cannot connect", "connection refused", "logged out", "not logged in")
+        for s in (
+            "not running",
+            "cannot connect",
+            "connection refused",
+            "logged out",
+            "not logged in",
+            # `tailscale serve` against a stopped daemon (`tailscale down`)
+            # fails with exactly "Tailscale is stopped." (issue #7244). The
+            # needle keeps the product name so an unrelated message that merely
+            # ends "... is stopped" is not handed the start-Tailscale remedy.
+            "tailscale is stopped",
+        )
     ):
         return "daemon_unavailable"
     return "failed"
@@ -649,7 +660,25 @@ def unpublish(port: int, *, audit_tool: str = "tailnet_unpublish") -> ServeResul
     if rc != 0:
         said = _daemon_output(out=out, err=err)
         code = _classify(err.strip() or out.strip())
-        return ServeResult(False, code, said or f"tailscale serve exited {rc}")
+        # Mirrors the publish path's hint branch. It matters more here: a failed
+        # withdrawal's verbatim output can read like a status line ("Tailscale
+        # is stopped.") rather than like a failure, so without the appended hint
+        # the operator has no way to tell that nothing was withdrawn (issue
+        # #7244). Hints are appended to — never replace — the daemon's words.
+        hint = ""
+        if code == "no_permission":
+            hint = (
+                " Nothing was withdrawn. Changing serve configuration needs root "
+                "or a standing grant: try `sudo tailscale serve …`, or grant this "
+                "user once with `sudo tailscale set --operator=$USER`."
+            )
+        elif code == "daemon_unavailable":
+            hint = (
+                " Nothing was withdrawn. Check `tailscale status`; the daemon may "
+                "be stopped or logged out — bring Tailscale back up, then turn "
+                "this off again."
+            )
+        return ServeResult(False, code, (said or f"tailscale serve exited {rc}") + hint)
     return ServeResult(
         True, "ok", "The dashboard is no longer published on this machine's tailnet."
     )
