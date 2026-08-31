@@ -317,11 +317,12 @@ async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monke
     assert st._resolve_agent in offloaded or offloaded, "agent resolution must be offloaded"
     assert created.get("agent") == "my-agent"
 
-    # Unhinted: no offload for agent resolution.
+    # Unhinted: no offload for agent resolution. Bundle validation is offloaded on
+    # every request, so the subject here is which FUNCTION was handed to a thread.
     offloaded.clear()
     created2: dict = {}
     await _run_import(st, monkeypatch, _valid(agent=""), created=created2)
-    assert offloaded == [], "an empty agent hint must not cost a thread hop"
+    assert st._resolve_agent not in offloaded, "an empty agent hint must not cost a thread hop"
     assert created2.get("agent") == ""
     monkeypatch.setattr(st.asyncio, "to_thread", real_to_thread)
 
@@ -2903,7 +2904,11 @@ async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
 
     state = _stub_state(st, monkeypatch)
 
-    async def _resolve_then_fill(*_a, **_k):
+    async def _resolve_then_fill(fn, *args, **_k):
+        # Bundle validation is offloaded too; only the agent resolution is the seam
+        # this race is about, so let the other hop through untouched.
+        if fn is st._validate_bundle:
+            return fn(*args)
         # A concurrent import lands while this one is awaiting.
         state._slots.update({f"s{i}": object() for i in range(500)})
         return ""

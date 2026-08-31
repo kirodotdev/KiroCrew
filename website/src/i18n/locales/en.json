@@ -6319,6 +6319,10 @@
       },
       "earlierMessagesBar": {
         "load_earlier_messages": "Load earlier messages"
+      },
+      "sectionMarkerRow": {
+        "end_of": "End of section: {{label}}",
+        "end_of_section": "End of section"
       }
     },
     "chatPage": {

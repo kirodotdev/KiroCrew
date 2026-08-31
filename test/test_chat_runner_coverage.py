@@ -44,12 +44,15 @@ from kiro_crew.acp.types import (
     STOP_REASON_TOOL_STALL,
 )
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard.chat_persistence import _build_history_prefix
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
+from kiro_crew.session_directive import SECTION_MARKER_ROLE
 from kiro_crew.trust_patterns import canonical_non_shell_trust_key, exact_trust_pattern
 
 # ── Shared helpers ────────────────────────────────────────────────────────
@@ -1324,7 +1327,7 @@ class TestFlushSegment:
         assert "AKIAIOSFODNN7EXAMPLE" not in assistants[0]["content"]
 
     def test_a_redacted_connection_string_warns_the_user(self, tmp_path):
-        """The corruption must not be silent.
+        """A redacted connection string must not corrupt a body silently.
 
         Uses the reporter's exact command. The assistant row keeps the mangled
         text (redaction is not weakened), but a notice row now follows it saying
@@ -1380,7 +1383,7 @@ class TestFlushSegment:
 
         `redact_credentials` pass 2 substitutes `[REDACTED: encoded credential]`,
         which is not a substring of the plaintext tag. Counting only the plaintext
-        tag left this segment silently rewritten -- the same failure, just
+        tag leaves this segment silently rewritten -- the same failure, just
         reached by another pass.
         """
         import base64
@@ -2704,6 +2707,68 @@ class TestStartNextQueuedTurn:
         assert len(slot._deferred_notes) == 1, "the note was released into the next stage"
         assert "held" not in [m["content"] for m in slot.messages]
 
+    @pytest.mark.asyncio
+    async def test_a_held_marker_lands_above_a_structural_successors_row(self, tmp_path):
+        """A marker is a BOUNDARY, so it cannot be carried past an intervening turn.
+
+        The origin-tag guard withholds the flush when the next queued entry carries
+        a ``kind`` because a ``/note`` is owed to the next USER turn. That reasoning
+        does not transfer to a marker, which asserts "the previous unit of work
+        ended HERE": holding it until the cron turn has written its rows moves the
+        boundary past content it was never meant to cover.
+        """
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.session_directive_apply import SECTION_MARKER_ROLE
+
+        state, slot = _state(tmp_path), _slot()
+        slot._deferred_notes.append(
+            {
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+                "session": effective_session_key(slot),
+            }
+        )
+        slot.queue_append("cron said hello", kind="cron_notification")
+        state.subagents = None
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        roles = [m["role"] for m in slot.messages]
+        assert SECTION_MARKER_ROLE in roles, "the marker was never written"
+        assert "user" in roles, "fixture: the successor's own row is missing"
+        assert roles.index(SECTION_MARKER_ROLE) < roles.index(
+            "user"
+        ), "the marker landed AFTER the successor, so it marks the wrong boundary"
+
+    @pytest.mark.asyncio
+    async def test_a_plain_note_is_still_withheld_from_a_structural_successor(self, tmp_path):
+        """Negative control for the test above.
+
+        Releasing the marker must not release a ``/note`` sharing the same hold —
+        a fix that simply flushed everything would pass its sibling while
+        delivering a note to a cron turn it is not owed to.
+        """
+        state, slot = _state(tmp_path), _slot()
+        slot._deferred_notes.append({"content": "held-note", "cls": "reconcile-note"})
+        slot.queue_append("cron said hello", kind="cron_notification")
+        state.subagents = None
+
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", return_value=MagicMock()),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+
+        assert "held-note" not in [m["content"] for m in slot.messages]
+        assert any(n["content"] == "held-note" for n in slot._deferred_notes)
+
         # Control: the same fixture with the plan gate CLEAR does flush, so the
         # assertion above measures the stage guard rather than the dequeue hold.
         state2, slot2 = _state(tmp_path), _slot()
@@ -2885,9 +2950,11 @@ class TestFinishQueueCycle:
     async def test_a_held_note_is_withheld_from_an_automatic_synthesis_turn(self, tmp_path):
         """A note is owed to the next USER turn, so synthesis must not drain it.
 
-        Synthesis is dispatched from this same function, so flushing here would
-        hand the held context to a turn the user never asked for. The user-turn
-        seams flush on their own, so withholding cannot lose the note.
+        Synthesis is dispatched from this same function, so flushing the NOTE here
+        would hand its held context to a turn the user never asked for. The
+        user-turn seams flush on their own, so withholding cannot lose the note.
+        The flush is still CALLED, in markers-only mode: a marker is a boundary
+        rather than a message, so it is the one row released at this seam.
         """
         state, slot = _state(tmp_path), _slot()
         state._slots[slot.key] = slot  # a live slot is registered
@@ -2902,7 +2969,8 @@ class TestFinishQueueCycle:
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
-        flush.assert_not_called()
+        # markers_only=True is what withholds the note: anything else would drain it.
+        flush.assert_called_once_with(markers_only=True)
         if slot.task is not None:
             slot.task.cancel()
 
@@ -3518,6 +3586,78 @@ class TestRunChatRecoveryLadders:
         state.sessions.reset.assert_awaited_once()
         assert slot._queue == []
         assert slot._acp_pipe_death_retries == 0
+
+    @pytest.mark.asyncio
+    async def test_a_requeued_turn_makes_a_marker_durable_without_placing_it(self, tmp_path):
+        """Both halves matter and they pull apart. A marker held mid-turn has no durable
+        copy until something writes one, so a restart before the next save drops it. But
+        RELEASING it at this seam appends its row before the re-queued turn's reply, which
+        moves the boundary permanently. So the hold is persisted and the row stays held."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        _set_stream(client, [_complete()])
+        slot._deferred_notes.append(
+            {
+                "content": "\u2014 End of section: item-42 \u2014",
+                "cls": "",
+                "context": None,
+                "session": effective_session_key(slot),
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+            }
+        )
+        saved: list[list[str]] = []
+        persisted: list[str] = []
+
+        async def _spy(_state, saved_slot):
+            saved.append([m.get("role") for m in saved_slot.messages])
+
+        def _persist_spy(_log, _slot_arg, key):
+            persisted.append(key)
+            return True
+
+        slot._empty_response_retries = 0
+        with (
+            _quiet_sel(),
+            patch.object(chat_runner, "save_slot_off_loop", new=_spy),
+            patch.object(chat_runner, "persist_held_markers_sync", new=_persist_spy),
+        ):
+            await chat_runner._run_chat(state, slot, "hello")
+        await _settle(slot)
+
+        assert persisted, "the held marker was never given a durable copy"
+        placed = [m for m in slot.messages if m.get("role") == SECTION_MARKER_ROLE]
+        assert not placed, (
+            "the marker was RELEASED at the re-queue seam, so its row now sits before "
+            f"the re-queued turn's reply: {[m.get('role') for m in slot.messages]}"
+        )
+        assert slot._deferred_notes, "the marker must stay held for the seam that owes it"
+        for roles in saved:
+            assert (
+                SECTION_MARKER_ROLE not in roles
+            ), "a save wrote the marker row ahead of the auto-continued reply"
+
+    @pytest.mark.asyncio
+    async def test_a_requeued_turn_with_nothing_held_still_saves_nothing(self, tmp_path):
+        """The re-queue skips persistence so it cannot bank an empty turn or skew
+        the reliability counters. Only a marker that would otherwise be lost earns
+        a save here, so with nothing held the skip must still hold."""
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        _set_stream(client, [_complete()])
+        saved: list[str] = []
+
+        async def _spy(_state, _slot):
+            saved.append("save")
+
+        slot._empty_response_retries = 0
+        with _quiet_sel(), patch.object(chat_runner, "save_slot_off_loop", new=_spy):
+            await chat_runner._run_chat(state, slot, "hello")
+        await _settle(slot)
+
+        assert saved == [], "an empty re-queue with nothing held must not persist"
 
     @pytest.mark.asyncio
     async def test_a_throttled_compaction_requeues_the_abandoned_message(self, tmp_path):
@@ -4590,9 +4730,156 @@ class TestPromptSubmitTranscriptRead:
 
         assert seen, (
             "no transcript read happened on the prompt-submit path -- this test "
-            "no longer exercises the re-injection probe and would pass vacuously"
+            "does not exercise the re-injection probe and would pass vacuously"
         )
         assert threading.get_ident() not in seen, (
             "the re-injection probe read the transcript on the event-loop thread; "
             "it must go through asyncio.to_thread"
         )
+
+
+class TestReinjectionComparesLikeWithLike:
+    """A persisted structural row must not make a reset session look up to date.
+
+    ``_run_chat`` decides re-injection by comparing the in-memory user/assistant
+    count against the persisted count. Counting EVERY persisted row on the disk
+    side makes the two sides different bases, so two section markers offset one
+    unsaved conversational row: the counts match, the branch is skipped, and the
+    fresh ACP session starts without the row that never reached disk. A tool or
+    error row skews it the same way.
+    """
+
+    @staticmethod
+    def _prompt_of(client) -> str:
+        assert client.stream.call_args is not None, (
+            "the provider was never streamed to -- the turn did not reach the "
+            "prompt-submit path and this test would pass vacuously"
+        )
+        args, kwargs = client.stream.call_args
+        return next(
+            (a for a in list(args) + list(kwargs.values()) if isinstance(a, str) and a),
+            "",
+        )
+
+    @pytest.mark.asyncio
+    async def test_persisted_markers_do_not_suppress_history_reinjection(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        key = slot_history_key(slot)
+        for label in ("— End of section: first item —", "— End of section: second item —"):
+            state.conversation_log.append(key, SECTION_MARKER_ROLE, label)
+        slot.append("assistant", "the unsaved answer", "msg msg-a")
+
+        await _drive(state, slot, "the next question")
+
+        assert "[Previous chat history for this tab" in self._prompt_of(client), (
+            "two persisted markers cancelled the unsaved row, so the reset " "session lost it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_persisted_tool_row_does_not_suppress_it_either(self, tmp_path):
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        state.conversation_log.append(slot_history_key(slot), "tool", "ran a command")
+        slot.append("assistant", "the unsaved answer", "msg msg-a")
+
+        await _drive(state, slot, "the next question")
+
+        assert "[Previous chat history for this tab" in self._prompt_of(client)
+
+    def test_the_prefix_drops_a_marker_and_keeps_an_inject_row(self):
+        """A marker is a BOUNDARY and must not reach a model prompt -- it is kept out
+        of ``RECALL_ROLES`` for that reason. A ``/note``'s visible ``inject`` line is
+        a MESSAGE owed to the next turn, so excluding it would silently lose it after
+        a hard stop. The two must be distinguished, not lumped as 'not conversational'."""
+        slot = _slot()
+        slot.append("user", "a real question", "msg msg-u")
+        slot.append(SECTION_MARKER_ROLE, "— End of section: first item —", "msg msg-m")
+        slot.append("inject", "the held note line", "msg msg-i")
+        slot.append("tool", "ran a command", "msg msg-t")
+        slot.append("assistant", "a real answer", "msg msg-a")
+
+        prefix = _build_history_prefix(slot)
+
+        assert "a real question" in prefix and "a real answer" in prefix
+        assert "End of section:" not in prefix, "a section marker was injected into the prompt"
+        assert "the held note line" in prefix, "a held note line was dropped from re-injection"
+        assert "ran a command" not in prefix, "a tool row reached the prompt"
+
+
+class TestFinishQueueCycleSynthesisSeam:
+    """``_finish_queue_cycle`` withholds the whole flush when it is about to
+    dispatch synthesis, because a ``/note`` is a MESSAGE owed to the next USER
+    turn and synthesis is not one. A marker is a BOUNDARY, so the same withhold
+    carries it past the synthesis rows and marks a seam over content it never
+    covered.
+    """
+
+    @staticmethod
+    def _armed(tmp_path):
+        """A slot with synthesis armed and eligible, plus the state it needs."""
+        state, slot = _state(tmp_path), _slot()
+        slot._pending_synthesis = True
+        slot._subagent_deliveries_inflight = 0
+        state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
+        state._slots[slot.key] = slot
+        return state, slot
+
+    @staticmethod
+    async def _run(slot, state):
+        """Dispatch the cycle and let the synthesis successor write its row."""
+
+        async def _fake_synthesis(_state, s):
+            s.append(role="inject", content="synthesis row", cls="", meta={"k": "synthesis"})
+
+        with (
+            patch.object(chat_runner, "_run_pending_synthesis", _fake_synthesis),
+            patch.object(chat_runner, "maybe_refresh_title", AsyncMock()),
+            patch.object(chat_runner, "generate_session_summary", AsyncMock()),
+        ):
+            chat_runner._finish_queue_cycle(state, slot)
+            task = slot.task
+            if task is not None and not task.done():
+                await task
+
+    @pytest.mark.asyncio
+    async def test_a_held_marker_lands_above_the_synthesis_rows(self, tmp_path):
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+        from kiro_crew.dashboard.session_directive_apply import SECTION_MARKER_ROLE
+
+        state, slot = self._armed(tmp_path)
+        slot._deferred_notes.append(
+            {
+                "content": "— End of section: item-42 —",
+                "cls": "",
+                "context": None,
+                "role": SECTION_MARKER_ROLE,
+                "meta": {"label": "item-42"},
+                "session": effective_session_key(slot),
+            }
+        )
+
+        await self._run(slot, state)
+
+        roles = [m["role"] for m in slot.messages]
+        assert SECTION_MARKER_ROLE in roles, "the marker was never written"
+        assert "inject" in roles, "fixture: the synthesis row is missing"
+        assert roles.index(SECTION_MARKER_ROLE) < roles.index(
+            "inject"
+        ), "the marker landed AFTER the synthesis rows, so it marks the wrong boundary"
+
+    @pytest.mark.asyncio
+    async def test_a_plain_note_is_still_withheld_from_synthesis(self, tmp_path):
+        """Negative control: releasing the marker must not release a ``/note``
+        sharing the same hold. A fix that flushed everything would pass the test
+        above while delivering a note to a turn it is not owed to.
+        """
+        state, slot = self._armed(tmp_path)
+        slot._deferred_notes.append({"content": "held-note", "cls": "reconcile-note"})
+
+        await self._run(slot, state)
+
+        assert "held-note" not in [m["content"] for m in slot.messages]
+        assert any(n["content"] == "held-note" for n in slot._deferred_notes)

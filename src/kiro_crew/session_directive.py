@@ -65,6 +65,7 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
         "suggest_followup",
         "ask_question",
         "reset_conversation",
+        "section_marker",
     }
 )
 
@@ -75,6 +76,10 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
 # session directive. (A downstream fork adjusts this one constant to its own
 # server name.)
 CORE_MCP_SERVER = "kirocrew-core"
+
+#: A chapter break. Deliberately absent from ``RECALL_ROLES``, ``_QUESTION_RETIRING_ROLES``
+#: and ``_PROMPT_ROLES``; ``test_section_marker_directive`` pins all three exclusions.
+SECTION_MARKER_ROLE = "section_marker"
 
 # Marker begins a line; the remainder of that line is the compact-JSON payload
 # ``{"kind": <tool>, "args": {...}}``. Placed on its own trailing line after the

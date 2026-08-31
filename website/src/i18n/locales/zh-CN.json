@@ -9760,6 +9760,10 @@
         "copy_text_failed": "复制失败",
         "copy_text_unavailable": "当前环境禁止写入剪贴板。文案已选中——按 Ctrl+C / ⌘C 复制。你改过的卡片文字请直接从卡片上复制。",
         "export_failed": "无法生成分享卡片"
+      },
+      "sectionMarkerRow": {
+        "end_of": "章节 {{label}} 结束",
+        "end_of_section": "本节结束"
       }
     },
     "chatPage": {

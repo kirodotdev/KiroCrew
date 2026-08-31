@@ -31,6 +31,7 @@ import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
+import SectionMarkerRow from '../pages/chat/SectionMarkerRow'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { resolveTransientNotice } from '../pages/chat/transientNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
@@ -41,6 +42,7 @@ import MessageErrorBoundary from '../components/MessageErrorBoundary'
 import { renderUserContent } from '../pages/chat/ChatPageMessageContent'
 import type { ChatMessage } from '../types'
 import { fmtMessageTime, fmtMessageTimeFull } from '../pages/chat/messageTime'
+import { fmtDateFields } from '../i18n/format'
 import { turnHadPolicyBlock } from './turnPolicyBlock'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { isRejectedDecision } from '../utils/approvalDecision'
@@ -92,6 +94,26 @@ export interface MessageRenderer {
 export function formatTs(ts?: string): string | undefined {
   if (!ts) return undefined
   return fmtMessageTime(ts) || undefined
+}
+
+export function formatTsPrecise(ts?: string): string | undefined {
+  // Seconds, because every marker a turn held is released at one seam and so shares a
+  // minute. Unparseable input yields nothing: the formatter's dash would render as a stamp.
+  if (!ts) return undefined
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return undefined
+  const now = new Date()
+  const sameYear = d.getFullYear() === now.getFullYear()
+  // Multi-day sessions are the point: a bare clock renders two same-label markers
+  // identically, moving the only field that tells them apart onto hover.
+  const sameDay = sameYear && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+  return fmtDateFields(d, {
+    ...(sameDay ? {} : { month: 'short', day: 'numeric' }),
+    ...(sameYear ? {} : { year: 'numeric' }),
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }) || undefined
 }
 
 /**
@@ -524,6 +546,24 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     id: 'nudge',
     roles: ['nudge'],
     render: (m, ctx) => ctx.row(<NudgeCard message={m} disclosureKey={ctx.key} />),
+  },
+  {
+    // In the DEFAULT registry, not a host override: an unclaimed role resolves
+    // to undefined here and draws NOTHING, so a host entry would miss surfaces.
+    id: 'section_marker',
+    roles: ['section_marker'],
+    render: (m, ctx) => {
+      const label = m.meta?.label as string | undefined
+      return ctx.row(
+        <SectionMarkerRow
+          label={label}
+          fallback={m.content}
+          time={formatTsPrecise(m.ts)}
+          timeTitle={fmtMessageTimeFull(m.ts)}
+        />,
+        true,
+      )
+    },
   },
 ]
 

@@ -115,6 +115,7 @@ from kiro_crew.dashboard.chat_utils import (
     parse_workflow_command,
     remember_slack_options,
     slack_mirror_is_paused,
+    slot_history_key,
     user_text_span,
 )
 from kiro_crew.dashboard.handlers import (
@@ -133,6 +134,11 @@ from kiro_crew.dashboard.handlers.usage import (
 from kiro_crew.dashboard.session_directive_apply import (
     QUESTION_CARD_SHOWN_PREFIX,
     apply_session_directive,
+)
+from kiro_crew.dashboard.slot_buffers import (
+    DeferredHoldFull,
+    DeferredHoldRebound,
+    persist_held_markers_sync,
 )
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
@@ -5750,6 +5756,23 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         )
 
 
+def _next_queued_is_recovery_continuation(slot: _ChatSlot) -> bool:
+    """Whether the head of the queue continues THIS turn rather than succeeding it.
+
+    An empty-response recovery re-queue carries ``SYNTHETIC_RECOVERY_KIND``: the reply
+    it produces is the one a pending boundary CLOSES, not the first row of the next
+    unit of work. Releasing a held marker ahead of it would therefore place the
+    boundary one row too early, and permanently — the row is in the transcript.
+
+    Distinct from the origin-tag withhold beside it, which asks whether the successor
+    is a USER turn. A cron notification IS a successor whose rows a boundary precedes;
+    this one is not a successor at all.
+    """
+    if not slot._queue:
+        return False
+    return str(slot._queue[0].get("kind") or "") == SYNTHETIC_RECOVERY_KIND
+
+
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
@@ -5771,9 +5794,15 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # plain user message carries no `kind`, so this site would release the note
     # into stage N+1 before the dequeue gate ever holds that message back.
     # _stage_loop's exit flush is the seam that delivers it.
-    if not slot._in_stage_execution and not (slot._queue and slot._queue[0].get("kind")):
+    # A recovery re-queue is skipped whole: it CONTINUES this turn, so neither class is
+    # due -- the marker would land before the reply it closes, the note before a non-user turn.
+    if not slot._in_stage_execution and not _next_queued_is_recovery_continuation(slot):
+        # A marker is exempt from the origin-tag withhold: a note is a MESSAGE owed
+        # to the next user turn, but a marker is a BOUNDARY, so holding it past the
+        # successor moves the seam over rows it never covered.
+        structural_next = bool(slot._queue and slot._queue[0].get("kind"))
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=structural_next)
         except Exception:
             # Everything below this point is the successor handoff -- the dequeue,
             # the row append and spawn_guarded_turn. A raise here would return
@@ -6253,9 +6282,11 @@ def _finish_queue_cycle(
     # stage of a plan -- this function runs per stage, from inside each stage's own
     # _run_chat finally, while _in_stage_execution is still set. Each has a later
     # seam that flushes: the cycle after synthesis, _stage_loop's exit for a plan.
-    if not will_synthesize and not slot._in_stage_execution:
+    if not slot._in_stage_execution:
+        # A marker is exempt from the synthesis withhold: a note is a MESSAGE owed
+        # to the next user turn, but a marker is a BOUNDARY that must not move.
         try:
-            slot.flush_deferred_notes()
+            slot.flush_deferred_notes(markers_only=will_synthesize)
         except Exception:
             # Below this are the two ways a cycle ends: the synthesis dispatch and
             # the terminal append("done") / slot.task = None / chat_done. A raise
@@ -7289,6 +7320,9 @@ async def _run_chat(
         # The enclosing finally compare-and-clears only an identity this turn
         # actually published.
         slot._active_turn_session_key = session_key
+        # The hold guard pins a write to the TRANSCRIPT authorized at enqueue, which
+        # is not the session key: an unbound channel slot resolves a phantom one.
+        slot._active_turn_history_key = slot_history_key(slot)
 
         # Resolve agent bindings early so we pass the correct kiro-cli
         # agent name (e.g. "kirocrew") instead of the KiroCrew slot name
@@ -9084,6 +9118,17 @@ async def _run_chat(
                                 session_key,
                                 event.tool_call_id,
                             )
+                        # Tell the CALLER too: the log and SEL row above reach an
+                        # operator, so to the agent a drop read as success.
+                        _out = _redact_tool_field(
+                            session_directive.strip_marker(_out)
+                            + (
+                                "\n\n[Not applied: this build could not verify the "
+                                "call's identity, so the session directive was "
+                                "ignored rather than applied.]"
+                            )
+                        )
+                        _dir_consumed_out[event.tool_call_id] = _out
                 if not _dir_tool and event.tool_call_id in _dir_consumed_out:
                     # A LATER frame for a directive we already consumed: replay
                     # the output we produced instead of letting the raw marker
@@ -12110,8 +12155,70 @@ async def _run_chat(
             )
             # Attach accumulated file changes to last assistant message before persist
             _flush_file_changes(slot)
+            # A marker must be IN this save, not merely appended after it: `append`
+            # only marks the slot dirty, so an exit before the 5s flush loses the row.
+            # A compaction recovery has queued a CONTINUATION whose reply is still to come,
+            # so releasing here would write the seam ahead of rows it never covered.
+            if _recovering_compaction:
+                _compaction_log = getattr(state, "conversation_log", None)
+                if _compaction_log is not None:
+                    try:
+                        await asyncio.to_thread(
+                            persist_held_markers_sync,
+                            _compaction_log,
+                            slot,
+                            getattr(slot, "_active_turn_history_key", "") or slot_history_key(slot),
+                        )
+                    except (DeferredHoldFull, DeferredHoldRebound) as exc:
+                        logger.warning(
+                            "Slot %s could not persist a held marker before a compaction "
+                            "continuation (%s); the row stays held and undurable until "
+                            "the next save",
+                            slot.key,
+                            type(exc).__name__,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Slot %s could not persist a held marker before a compaction "
+                            "continuation; the row stays held",
+                            slot.key,
+                        )
+            else:
+                try:
+                    slot.flush_deferred_notes(markers_only=True)
+                except Exception:
+                    logger.exception(
+                        "Slot %s could not flush a held marker before the turn save; "
+                        "the row stays held for the end-of-cycle flush",
+                        slot.key,
+                    )
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
+        else:
+            # PERSIST, never release: this turn is about to be re-queued and its reply
+            # appended, so a released row would sit before it and move the boundary.
+            _conversation_log = getattr(state, "conversation_log", None)
+            if _conversation_log is not None:
+                try:
+                    await asyncio.to_thread(
+                        persist_held_markers_sync,
+                        _conversation_log,
+                        slot,
+                        getattr(slot, "_active_turn_history_key", "") or slot_history_key(slot),
+                    )
+                except (DeferredHoldFull, DeferredHoldRebound) as exc:
+                    logger.warning(
+                        "Slot %s could not persist a held marker before a re-queued turn "
+                        "(%s); the row stays held and undurable until the next save",
+                        slot.key,
+                        type(exc).__name__,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Slot %s could not persist a held marker before a re-queued turn; "
+                        "the row stays held for the seam that owes it",
+                        slot.key,
+                    )
         # Reset ALL retry budgets once the cycle completes (success OR the
         # terminal second-empty error) so each new user turn gets fresh budgets.
         # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:
@@ -13429,6 +13536,7 @@ async def _run_chat(
             # has something to retire.
             if slot._active_turn_session_key == session_key:
                 slot._active_turn_session_key = ""
+                slot._active_turn_history_key = ""
         # End-of-turn fallback: catches set_project and reset_conversation calls
         # that fired mid-turn, after the start-of-turn consume already ran. This
         # is the ONLY caller that may consume a queued conversation discard —
