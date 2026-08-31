@@ -6878,11 +6878,21 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // panel's opening drag, so each instance is disabled while the other's panel
   // is on screen.
   const drawerDragging = useDrawerSwipe(chatContainerRef, {
-    enabled: isMobile && !embedded && sideOverlayPhase === 'closed',
+    // Gated on the sibling not being OPEN, not on it having finished closing.
+    // The two panels exclude each other because one's closing direction is the
+    // other's opening direction — a hazard that lasts only while the sibling is
+    // actually open. Requiring `'closed'` also held the gate shut for the whole
+    // slide out, so a swipe dismissing one panel could not be followed straight
+    // away by a swipe revealing the other.
+    enabled: isMobile && !embedded && sideOverlayPhase !== 'open',
     travel: drawerTravel,
     open: mobileSessions,
     x: drawerX,
     onGestureOpen: beginDrawerDrag,
+    // Committed to closing: mark it now so the sibling's gate opens immediately.
+    // 'closing' rather than 'closed' because the panel is still on screen and
+    // `drawerMounted` keys on that — unmounting here would cut the slide short.
+    onCommit: open => { if (!open) { drawerPhaseRef.current = 'closing'; setDrawerPhase('closing') } },
     onSettle: open => { if (!open) { drawerPhaseRef.current = 'closed'; setDrawerPhase('closed') } },
   })
   // Right-hand side panel, same gesture mirrored. Not bound when the actbar
@@ -6890,11 +6900,18 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // there the store's mount predicate refuses to keep the panel open, so a
   // committed drag would be undone by the effect above on the next render.
   useDrawerSwipe(chatContainerRef, {
-    enabled: isMobile && !embedded && !activitySlot && !search.isOpen && drawerPhase === 'closed',
+    enabled: isMobile && !embedded && !activitySlot && !search.isOpen && drawerPhase !== 'open',
     side: 'right',
     open: sideOverlayPhase === 'open',
     x: sideOverlayX,
     onGestureOpen: beginSideOverlayDrag,
+    // See the left instance: the sibling's gate has to open at commit time, and
+    // 'closing' keeps this panel mounted for the rest of its slide.
+    onCommit: open => {
+      if (open) return
+      sideOverlayPhaseRef.current = 'closing'
+      setSideOverlayPhase('closing')
+    },
     onSettle: open => {
       // Committed: publish to the store, which is what keeps the panel open
       // across a re-render and remembers it for this chat. The effect above sees

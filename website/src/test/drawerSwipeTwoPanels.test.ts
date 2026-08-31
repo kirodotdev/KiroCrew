@@ -18,6 +18,7 @@
  */
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { motionValue } from 'framer-motion'
+import * as React from 'react'
 import { useDrawerSwipe } from '../hooks/useDrawerSwipe'
 
 function touch(type: string, clientX: number, clientY = 0, timeStamp = 0): TouchEvent {
@@ -132,5 +133,74 @@ describe('useDrawerSwipe — two panels sharing one element', () => {
     fire(touch('touchmove', 206, 60))   // dy dominates
     expect(openLeft).not.toHaveBeenCalled()
     expect(openRight).not.toHaveBeenCalled()
+  })
+
+  // ── Handing over mid-settle ────────────────────────────────────────────────
+  // The gate above is stated as "while a panel is on screen", but the consumer
+  // spells it as a PHASE, and a phase that only reaches 'closed' when the slide
+  // finishes keeps the far instance unbound for the whole ~300ms. So a swipe
+  // that dismissed one panel could not be followed straight away by a swipe
+  // revealing the other — the user had to wait out an animation.
+  //
+  // These two model the consumer's own state machine rather than a static
+  // boolean: 'open' | 'closing' | 'closed', gated on `!== 'open'`, with the
+  // release decision arriving via `onCommit` instead of `onSettle`.
+  type Phase = 'open' | 'closing' | 'closed'
+
+  function mountPhased(initial: { left: Phase; right: Phase }) {
+    const seen = { left: initial.left, right: initial.right }
+    const view = renderHook(() => {
+      const [left, setLeft] = React.useState<Phase>(initial.left)
+      const [right, setRight] = React.useState<Phase>(initial.right)
+      seen.left = left
+      seen.right = right
+      useDrawerSwipe(ref, {
+        enabled: right !== 'open',
+        side: 'left',
+        open: left === 'open',
+        x: leftX,
+        onGestureOpen: () => { setLeft('open'); openLeft() },
+        onCommit: open => { if (!open) setLeft('closing') },
+        onSettle: open => { if (!open) setLeft('closed'); settleLeft(open) },
+      })
+      useDrawerSwipe(ref, {
+        enabled: left !== 'open',
+        side: 'right',
+        open: right === 'open',
+        x: rightX,
+        onGestureOpen: () => { setRight('open'); openRight() },
+        onCommit: open => { if (!open) setRight('closing') },
+        onSettle: open => { if (!open) setRight('closed'); settleRight(open) },
+      })
+    })
+    return { view, seen }
+  }
+
+  it('the RIGHT panel arms immediately after the left is swiped shut, mid-settle', () => {
+    leftX.set(0)
+    const { seen } = mountPhased({ left: 'open', right: 'closed' })
+    // Swipe the open left drawer shut and release.
+    fire(touch('touchstart', 300, 0, 0))
+    fire(touch('touchmove', 100, 0, 200))
+    fire(touch('touchend', 100, 0, 400))
+    // Still sliding out — NOT yet arrived.
+    expect(seen.left).toBe('closing')
+    expect(settleLeft).not.toHaveBeenCalled()
+    // A new leftward drag, without waiting for the slide: the right panel opens.
+    fire(touch('touchstart', 300, 0, 500))
+    fire(touch('touchmove', 240, 0, 516))
+    expect(openRight).toHaveBeenCalledTimes(1)
+    expect(rightX.get()).toBeLessThan(W)
+  })
+
+  it('while a panel is genuinely OPEN the far instance stays unbound', () => {
+    // The control: the exclusion still has to hold for the case it exists for —
+    // an open panel's closing drag is the other's opening drag.
+    leftX.set(0)
+    mountPhased({ left: 'open', right: 'closed' })
+    fire(touch('touchstart', 300, 0, 0))
+    fire(touch('touchmove', 240, 0, 16))
+    expect(openRight).not.toHaveBeenCalled()
+    expect(rightX.get()).toBe(W)
   })
 })

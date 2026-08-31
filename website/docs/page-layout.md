@@ -596,6 +596,26 @@ activity panel (all three with gestures), and the notification sheet (no gesture
 portaled). Only the chat page declares a claim, because it is the only one that binds
 its own gesture inside the shell.
 
+**Two sibling instances exclude each other on INTENT, not on arrival.** The chat page
+binds `useDrawerSwipe` twice on one element — sessions drawer on the left, side panel on
+the right. While both are closed, DIRECTION separates them: each rejects the drag that
+would open the other. Once one is open it cannot, because that panel's closing drag is
+the other's opening drag, so each instance is `enabled` only while its sibling is not
+open.
+
+Spell that gate as `phase !== 'open'`, never `phase === 'closed'`, and give the consumer
+the release decision through `onCommit` rather than `onSettle`. `onSettle` deliberately
+waits for the settle animation so a consumer cannot unmount a panel mid-slide, which
+makes it the wrong signal for a gate: keyed on arrival, the exclusion stayed shut for the
+whole ~300ms slide, so a swipe that dismissed one panel could not be followed straight
+away by a swipe revealing the other — the user had to wait out an animation they had
+already finished driving. The hazard lasts exactly as long as the sibling is OPEN.
+
+A committed close therefore parks the phase at `'closing'`, not `'closed'`: the panel is
+still on screen and its mount predicate keys on `!== 'closed'`, so writing `'closed'`
+here would cut the slide short. That also matches what a tap-driven close already did,
+which is why the chrome derived from the phase does not change timing.
+
 ### A panel that gains a gesture must be bound LIVE to its offset
 
 A panel moved only by a tap may serialize its offset at render time —

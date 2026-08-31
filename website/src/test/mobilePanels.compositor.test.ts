@@ -118,15 +118,39 @@ describe('both mobile chat panels — one element, two gestures', () => {
     expect(bindings.find(b => b.includes('x: drawerX'))).not.toContain("side: 'right'")
   })
 
-  it('each gesture is gated on the OTHER panel being off screen', () => {
+  it('each gesture is gated on the OTHER panel not being OPEN', () => {
     // Direction separates the two while both are closed, but not once one is
     // open: that panel's closing drag is the other's opening drag. Losing
     // either half of this cross-gate makes a dismissal open the opposite panel
     // — see drawerSwipeTwoPanels.test.ts for the behaviour itself.
+    //
+    // The predicate is `!== 'open'` rather than `=== 'closed'` on purpose. The
+    // hazard lasts exactly as long as the sibling is open; a gate that waited
+    // for `'closed'` also stayed shut through the whole slide out, so a swipe
+    // dismissing one panel could not be followed straight away by a swipe
+    // revealing the other. `'closing'` must therefore pass.
     const left = bindings.find(b => b.includes('x: drawerX')) as string
     const right = bindings.find(b => b.includes('x: sideOverlayX')) as string
-    expect(left).toMatch(/enabled:.*sideOverlayPhase === 'closed'/)
-    expect(right).toMatch(/enabled:.*drawerPhase === 'closed'/)
+    expect(left).toMatch(/enabled:.*sideOverlayPhase !== 'open'/)
+    expect(right).toMatch(/enabled:.*drawerPhase !== 'open'/)
+  })
+
+  it('each gesture reports its release at COMMIT time, not only on arrival', () => {
+    // `onSettle` fires from the settle animation's completion callback, so it
+    // cannot open the sibling's gate any earlier than the animation ends. The
+    // handoff above depends on `onCommit` carrying the decision immediately and
+    // parking the phase at 'closing' — which keeps the panel mounted for the
+    // rest of its travel, unlike 'closed'.
+    //
+    // Matched against the binding with COMMENTS STRIPPED, and against the setter
+    // call rather than a bare quoted word: the prose in these options mentions
+    // both phase names, so a looser pattern is satisfied by the explanation
+    // instead of the code it describes.
+    const code = (b: string) => b.replace(/\/\/[^\n]*/g, '')
+    for (const b of bindings) {
+      expect(code(b)).toMatch(/onCommit:/)
+      expect(code(b)).toMatch(/set\w*Phase\('closing'\)/)
+    }
   })
 
   it('the right gesture stays out of surfaces that would undo it', () => {

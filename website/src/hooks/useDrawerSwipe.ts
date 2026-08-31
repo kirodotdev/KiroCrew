@@ -807,12 +807,25 @@ interface DrawerSwipeOptions {
   /** Released. `open` is the state the panel settled into, reported only once
    *  the settle animation has finished so an unmount cannot cut it short. */
   onSettle: (open: boolean) => void
+  /**
+   * Released, reported at the moment the release DECISION is made rather than
+   * when the panel finishes arriving.
+   *
+   * `onSettle` deliberately waits for the animation so a consumer cannot unmount
+   * the panel mid-slide, but that makes it the wrong signal for anything gating
+   * on intent. Two sibling instances sharing one element exclude each other
+   * (one panel's closing direction is the other's opening direction), and a gate
+   * keyed on arrival stays shut for the whole ~200-300ms slide — so a swipe that
+   * dismissed one panel could not be followed straight away by a swipe revealing
+   * the other. This fires ~300ms earlier and carries the same boolean.
+   */
+  onCommit?: (open: boolean) => void
 }
 
 /** @returns whether a drag currently owns the panel (suppress transitions). */
 export function useDrawerSwipe(
   ref: React.RefObject<HTMLElement | null>,
-  { enabled, side = 'left', travel, open, x, onGestureOpen, onSettle }: DrawerSwipeOptions,
+  { enabled, side = 'left', travel, open, x, onGestureOpen, onSettle, onCommit }: DrawerSwipeOptions,
 ): boolean {
   const [dragging, setDragging] = useState(false)
 
@@ -847,6 +860,8 @@ export function useDrawerSwipe(
   onGestureOpenRef.current = onGestureOpen
   const onSettleRef = useRef(onSettle)
   onSettleRef.current = onSettle
+  const onCommitRef = useRef(onCommit)
+  onCommitRef.current = onCommit
   const travelRef = useRef(travel)
   travelRef.current = travel
 
@@ -1223,6 +1238,10 @@ export function useDrawerSwipe(
       // restarting from rest: it decelerates from the finger's own speed, and a
       // harder flick arrives sooner. A hold-and-release already zeroed `v`
       // above, which is exactly the case with no momentum to carry.
+      // Announce the decision before the slide, so a consumer gating on intent
+      // (a sibling instance's mutual exclusion) opens up now rather than in
+      // ~300ms. `onSettle` still reports arrival, which is what may unmount.
+      onCommitRef.current?.(target)
       settle(target ? 0 : closedOffset(), target, v)
     }
 
