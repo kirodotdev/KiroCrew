@@ -152,3 +152,6 @@ SESSION_SUMMARY.md
 # Internal migration worklog — deliberately untracked (contains pre-scrub notes)
 MOCHI_MIGRATION.md
 website/.vitest-reports/
+
+# Skill eval A/B outputs (regenerated per run; not review artifacts)
+evals/*/iteration-*/
