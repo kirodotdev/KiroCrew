@@ -340,6 +340,138 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         print(f"      Fix: kirocrew agent reset-model{flag}   (clears the pin, tracks the default)")
 
 
+def _doctor_default_binding(
+    cfg: KiroCrewConfig,
+    project_dir: str,
+    issues: list[str],
+    *,
+    gated_off: "frozenset[str] | None" = None,
+) -> None:
+    """Verify the default crew's bound agent template exists and is whole.
+
+    Every new session lands on the default crew, and its ``kiro_agent`` binding
+    is dispatched verbatim (``resolve_agent_bindings`` -> ``session/set_mode``)
+    with no existence check anywhere before kiro-cli answers. Two silent
+    failure modes follow, both typically left behind by a migration that
+    carried config.json over from an install whose template names differ:
+
+    * the bound template resolves to NO spec — every session fails at start
+      with kiro-cli's missing-mode error, and the repair that error names for
+      KiroCrew-owned specs (``kirocrew setup --agent-only --clean``) can never
+      restore a template setup does not generate;
+    * the bound template EXISTS but does not carry the always-on managed MCP
+      servers — sessions run, but without the lessons/memory and cron tools
+      those servers provide (``learn_add``, ``cron_add``, ...), and nothing
+      reports it: the managed-MCP refresh rewrites only KiroCrew-owned specs,
+      and the MCP Tools section below inspects ``kirocrew.json``, a file such
+      a session never loads.
+
+    Read-only by design: the bound spec is not KiroCrew's file, so doctor
+    names the fix instead of writing into it — the same reason the refresh
+    loop skips it. Silent when the binding is the built-in ``kirocrew``
+    template (the Agent and MCP Tools sections already cover that spec) and
+    when the Model section has already reported the binding as invalid free
+    text.
+
+    Only the DEFAULT crew is checked. A non-default crew may bind a project
+    agent that resolves only against that crew's own working directory, which
+    doctor cannot see; reporting those would be guessing. The default binding
+    is resolved with doctor's own project scope — exactly the view
+    ``resolve_agent_bindings`` has for a session started here.
+
+    Template resolution mirrors what kiro-cli itself dispatches (the
+    ``_scan_materialized_agents`` rule): a spec's declared ``name`` wins, and
+    the filename stem counts only when the spec declares no name — a file
+    whose stem matches but which declares a DIFFERENT name is listed by
+    kiro-cli under that other name, so counting it here would report a
+    dispatchable template kiro-cli does not actually know.
+    """
+    try:
+        bindings = resolve_agent_bindings(cfg)
+        bound = bindings.kiro_agent or "kirocrew"
+    except Exception:  # noqa: BLE001 — the Model section reports resolution failures
+        return
+    if not isinstance(bound, str) or not _AGENT_NAME_RE.match(bound):
+        # Free-text binding: the Model section already reported it, and the
+        # value is unsafe to join into a path — nothing more to add here.
+        return
+    if bound == "kirocrew":
+        return
+
+    print("\nCrew Binding")
+    print(f"  default:     binds template {_safe_display(bound)}")
+
+    agents_dir = _agents_dir()
+    spec_path: Path | None = None
+    spec_data: dict | None = None
+    scope = ""
+    fallback: tuple[Path, dict] | None = None
+    try:
+        candidates = sorted(agents_dir.glob("*.json"))
+    except OSError:
+        candidates = []
+    for candidate in candidates:
+        data = _read_agent_spec(candidate, operation="doctor", source="cli")
+        if not isinstance(data, dict):
+            continue
+        if data.get("name") == bound:
+            spec_path, spec_data = candidate, data
+            break
+        if candidate.stem == bound and not data.get("name") and fallback is None:
+            fallback = (candidate, data)
+    if spec_path is None and fallback is not None:
+        spec_path, spec_data = fallback
+
+    if spec_path is None and project_dir:
+        # kiro-cli resolves --agent against <project>/.kiro/agents FIRST, so a
+        # project-scoped spec makes this binding work for sessions started
+        # here. Resolved through the same helper the Model section uses.
+        proj_spec = next(
+            (p for p in project_agent_files(project_dir) if project_agent_name(p) == bound),
+            None,
+        )
+        if proj_spec is not None:
+            data = _read_agent_spec(proj_spec, operation="doctor", source="cli")
+            if isinstance(data, dict):
+                spec_path, spec_data = proj_spec, data
+                scope = " (project scope)"
+
+    if spec_path is None:
+        print(
+            f"  template:    ❌ no spec in {agents_dir} declares or is named {_safe_display(bound)}"
+        )
+        print("               every new session on the default crew fails at start;")
+        print("               `kirocrew setup --agent-only --clean` regenerates only")
+        print("               KiroCrew's own specs, so it cannot restore this one.")
+        print("      Fix: re-point the default crew's Agent Template to an installed")
+        print("           agent (dashboard -> Agents), or restore the spec file.")
+        issues.append("default crew binds a missing agent template")
+        return
+
+    print(f"  template:    ✅ {_safe_display(str(spec_path))}{scope}")
+    mcps = spec_data.get("mcpServers") if isinstance(spec_data, dict) else None
+    if not isinstance(mcps, dict):
+        mcps = {}
+    if gated_off is None:
+        gated_off = _doctor_gated_off_mcps()
+    # Same presence rule the MCP Tools section applies to kirocrew.json: every
+    # always-on server whose gate is open must be in mcpServers; a gated-off
+    # server is deliberately absent from every emitted spec and never counted.
+    missing = [name for name in _ALWAYS_ON_MCPS if name not in gated_off and name not in mcps]
+    if not missing:
+        print("  mcpServers:  ✅ managed servers present")
+        return
+    refs = ", ".join(f"@{name}" for name in missing)
+    print(f"  mcpServers:  ⚠️  missing {refs}")
+    print("               sessions on the default crew run without the tools those")
+    print("               servers provide (lessons/memory such as learn_add, cron")
+    print("               scheduling, ...); the managed-MCP refresh rewrites only")
+    print("               KiroCrew-owned specs, so this template never heals on its own.")
+    print("      Fix: bind the default crew back to 'kirocrew' (dashboard -> Agents),")
+    print("           or add the managed mcpServers entries to the spec yourself.")
+    issues.append("default crew template lacks managed MCP servers")
+
+
 def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     """Return the OS-appropriate Fix hint (brew on macOS, winget on Windows,
     else Linux guidance).
@@ -2669,6 +2801,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # agent.model, and the whole point here is that the global is not
     # necessarily what a new session gets.
     _doctor_effective_model(cfg, proj, issues)
+
+    # ── Default crew binding (stale template left by a migration) ──
+    # After the Model section, deliberately: that section prints the bound
+    # name; this one verifies the binding actually dispatches, and reports the
+    # capability loss when it dispatches a spec KiroCrew never refreshes.
+    _doctor_default_binding(cfg, proj, issues)
 
     # ── Stored defaults a release has since changed (#5244) ──
     render_doctor_section(issues)

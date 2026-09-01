@@ -156,6 +156,39 @@ class TestFormatRuntimeRpcError:
         err = {"code": -32603, "message": "Internal error", "data": f"Mode '{'a' * 200}' not found"}
         assert _format_runtime_rpc_error(err).startswith("RPC error: ")
 
+    def test_non_owned_template_does_not_prescribe_setup(self, tmp_path):
+        # A stale crew binding — config.json carried over from an install whose
+        # template names differ — dispatches a spec `kirocrew setup` never
+        # generates. Prescribing setup there sends the user through a repair
+        # that provably cannot work: setup rewrites only the OWNED spec files,
+        # so the missing template stays missing and every turn keeps failing.
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "Mode 'oldclaw' not found",
+        }
+        with patch("kiro_crew.acp.runtime.kiro_agents_dir", return_value=tmp_path):
+            text = _format_runtime_rpc_error(err)
+
+        assert "'oldclaw.json'" in text  # still names the file that is missing
+        assert str(tmp_path) in text  # still names where it was looked for
+        assert "setup --agent-only --clean" not in text  # cannot repair this
+        assert "Agent Template" in text  # names the real fix: the binding
+        assert "-32603" not in text and "Mode" not in text  # no protocol noise
+
+    def test_owned_background_spec_still_prescribes_setup(self, tmp_path):
+        # The boundary case next to the branch: every owned filename except the
+        # two the parametrized test covers must keep the setup repair, since
+        # setup DOES regenerate those.
+        err = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "Mode 'kirocrew-heartbeat' not found",
+        }
+        with patch("kiro_crew.acp.runtime.kiro_agents_dir", return_value=tmp_path):
+            text = _format_runtime_rpc_error(err)
+        assert "kirocrew setup --agent-only --clean" in text
+
 
 class TestGatewayInstallVerification:
     """Boot-time visibility when the install leaves no usable spec."""

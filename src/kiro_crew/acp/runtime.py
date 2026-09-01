@@ -85,6 +85,7 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
 )
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
@@ -332,16 +333,39 @@ def _format_runtime_rpc_error(error: object) -> str:
     concept, reads as a backend bug, and hides that the cause is a local file and
     the fix is one command. Every other shape falls through to the raw dict, so a
     shape nobody has classified is surfaced rather than swallowed.
+
+    The repair hint depends on WHICH spec is missing. ``kirocrew setup
+    --agent-only --clean`` regenerates only the specs KiroCrew itself owns
+    (:data:`~kiro_crew.agent_files.OWNED_KIRO_AGENT_FILES`), so it is named only
+    for those. Any other name reached this error through a session or crew
+    BINDING to a template that does not exist — typically config.json carried
+    over from an install whose template names differ — and re-running setup can
+    never restore it; prescribing setup there sends the user through a repair
+    that provably cannot work, and the real fix (re-point the binding) is never
+    named. See ``cli_doctor._doctor_default_binding``, which reports the same
+    state before a session has to fail.
     """
     if isinstance(error, dict):
         match = _MODE_NOT_FOUND_RE.search(str(error.get("data", "") or ""))
         if match:
             name = match.group("name")
-            return (
+            head = (
                 f"Agent spec '{name}' is not installed: kiro-cli found no "
-                f"'{name}.json' in {kiro_agents_dir()}. Every turn fails until it "
-                f"is restored — repair with `kirocrew setup --agent-only --clean`, "
-                f"then restart the gateway."
+                f"'{name}.json' in {kiro_agents_dir()}. "
+            )
+            if f"{name}.json" in OWNED_KIRO_AGENT_FILES:
+                return head + (
+                    "Every turn fails until it is restored — repair with "
+                    "`kirocrew setup --agent-only --clean`, then restart the "
+                    "gateway."
+                )
+            return head + (
+                f"Every turn fails until the binding is fixed — '{name}' is "
+                f"not a spec `kirocrew setup` generates, so setup cannot "
+                f"restore it. A session or crew is bound to an agent template "
+                f"that does not exist (often left behind by a migration): "
+                f"re-point its Agent Template to an installed agent in the "
+                f"dashboard, or restore '{name}.json' yourself."
             )
     return f"RPC error: {error}"
 

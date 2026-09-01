@@ -2261,3 +2261,140 @@ class TestCronHealth:
         self._run(monkeypatch, tmp_path)
 
         assert path.read_bytes() == before, "doctor must not mutate crons.json"
+
+
+class TestDefaultCrewBinding:
+    """`kirocrew doctor`'s Crew Binding section.
+
+    Every new session lands on the default crew, and its ``kiro_agent`` binding
+    is dispatched verbatim with no existence check before kiro-cli answers. A
+    migrated config.json that carried a foreign template name over therefore
+    either fails every session at start (no spec) or silently runs without the
+    managed MCP servers (stale spec) — the reported field symptom being
+    ``learn_add`` no longer persisting lessons. This section makes both states
+    visible before a session has to fail, and names a fix that actually works
+    (the missing-mode error historically prescribed ``setup --agent-only
+    --clean``, which regenerates only KiroCrew-owned specs and can never
+    restore a foreign template).
+    """
+
+    _ALL_MANAGED = {
+        "kirocrew-core": {"command": "kirocrew", "args": ["mcp-core"]},
+        "kirocrew-cron": {"command": "kirocrew", "args": ["mcp-cron"]},
+        "kirocrew-computer": {"command": "kirocrew", "args": ["mcp-computer"]},
+    }
+
+    @pytest.fixture(autouse=True)
+    def _isolated_agents_dir(self, tmp_path, monkeypatch):
+        self._agents = tmp_path / "agents"
+        self._agents.mkdir()
+        monkeypatch.setattr(cli_doctor, "KIRO_AGENTS_DIR", self._agents)
+
+    def _cfg(self, bound: str):
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agents["default"] = KiroCrewAgentConfig(
+            kiro_agent=bound, workspace="default", memory_store="default"
+        )
+        cfg.default_agent = "default"
+        return cfg
+
+    def _write_spec(self, filename: str, body: dict) -> Path:
+        spec = self._agents / filename
+        spec.write_text(json.dumps(body), encoding="utf-8")
+        return spec
+
+    def _run(self, bound: str, *, gated_off=frozenset()) -> list[str]:
+        issues: list[str] = []
+        cli_doctor._doctor_default_binding(self._cfg(bound), "", issues, gated_off=gated_off)
+        return issues
+
+    def test_builtin_binding_is_silent(self, capsys) -> None:
+        # The Agent and MCP Tools sections already cover kirocrew.json; a
+        # healthy default install must not gain a section.
+        issues = self._run("kirocrew")
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    def test_empty_binding_resolves_to_builtin_and_is_silent(self, capsys) -> None:
+        issues = self._run("")
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    def test_missing_template_names_a_fix_that_works(self, capsys) -> None:
+        # The reported field symptom: config.json migrated from an install
+        # whose template names differ, agents dir has no such spec. Every
+        # session fails at start, and re-running setup cannot help.
+        issues = self._run("oldclaw")
+        out = capsys.readouterr().out
+        assert "❌" in out
+        assert "'oldclaw'" in out
+        assert "cannot restore this one" in out
+        assert "Agent Template" in out  # the real fix: re-point the binding
+        assert issues == ["default crew binds a missing agent template"]
+
+    def test_declared_name_wins_over_filename(self, capsys) -> None:
+        # kiro-cli lists agents by declared name, so a spec registered under a
+        # namespaced filename must still satisfy the binding.
+        self._write_spec(
+            "someapp--oldclaw.json",
+            {"name": "oldclaw", "mcpServers": dict(self._ALL_MANAGED)},
+        )
+        issues = self._run("oldclaw")
+        out = capsys.readouterr().out
+        assert "template:    ✅" in out
+        assert "mcpServers:  ✅" in out
+        assert issues == []
+
+    def test_stem_matching_spec_declaring_another_name_is_not_dispatchable(self, capsys) -> None:
+        # `oldclaw.json` declaring name "other" is listed by kiro-cli as
+        # "other" — counting the stem here would report a template kiro-cli
+        # does not actually know.
+        self._write_spec(
+            "oldclaw.json",
+            {"name": "other", "mcpServers": dict(self._ALL_MANAGED)},
+        )
+        issues = self._run("oldclaw")
+        assert "❌" in capsys.readouterr().out
+        assert issues == ["default crew binds a missing agent template"]
+
+    def test_stale_template_without_managed_servers_reports_capability_loss(
+        self, capsys
+    ) -> None:
+        # The learn_add symptom: the template exists (sessions run), but the
+        # managed servers are absent and the refresh loop never touches a spec
+        # KiroCrew does not own — so it never heals on its own.
+        self._write_spec("oldclaw.json", {"mcpServers": {"something-else": {"command": "x"}}})
+        issues = self._run("oldclaw")
+        out = capsys.readouterr().out
+        assert "template:    ✅" in out
+        assert "@kirocrew-core" in out
+        assert "learn_add" in out
+        assert issues == ["default crew template lacks managed MCP servers"]
+
+    def test_gated_off_server_absence_is_healthy(self, capsys) -> None:
+        # Spec emission consults the same gate and deliberately omits a
+        # gated-off server, so its absence must not be reported.
+        body = {k: v for k, v in self._ALL_MANAGED.items() if k != "kirocrew-computer"}
+        self._write_spec("oldclaw.json", {"mcpServers": body})
+        issues = self._run("oldclaw", gated_off=frozenset({"kirocrew-computer"}))
+        out = capsys.readouterr().out
+        assert "mcpServers:  ✅" in out
+        assert issues == []
+
+    def test_invalid_binding_grammar_is_left_to_the_model_section(self, capsys) -> None:
+        # The Model section already reports invalid free text, and the value is
+        # unsafe to join into a path — this section must stay silent.
+        issues = self._run("../evil")
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    def test_check_is_read_only(self, capsys) -> None:
+        # Doctor names the fix; it never writes into a spec it does not own.
+        spec = self._write_spec("oldclaw.json", {"mcpServers": {}})
+        before = spec.read_bytes()
+        self._run("oldclaw")
+        capsys.readouterr()
+        assert spec.read_bytes() == before, "doctor must not mutate a bound spec"
