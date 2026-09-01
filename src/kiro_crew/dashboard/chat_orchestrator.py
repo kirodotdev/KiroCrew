@@ -12,7 +12,11 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.context_management import OrchestrationTracker
-from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
+from kiro_crew.dashboard.chat_runner import (
+    _POSTTOKEN_RECOVER_MSG,
+    _run_chat,
+    _start_next_queued_turn,
+)
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.dashboard.turn_dispatch import _bounded_turn
 from kiro_crew.hooks import safe_read_file
@@ -476,7 +480,21 @@ async def _stage_loop(
             )
 
             # Build focused context and execute
+            # Snapshot before context preparation: stage 2+ reads prior results
+            # off-thread, and a Stop can press+resolve during that await while
+            # point-in-time state returns to idle. The same monotonic snapshot is
+            # carried through initial turn, continuation, subagent wait, and capture.
+            _stage_stop_generation = slot._stop_generation
+
+            def _abort_if_stop_generation_changed() -> bool:
+                if slot._stop_generation == _stage_stop_generation:
+                    return False
+                tracker.abort_round(stage_num)
+                return True
+
             context = await _build_stage_context(slot, tracker, stage_idx)
+            if _abort_if_stop_generation_changed() or _orchestration_stopped(slot, tracker):
+                break
             context, _ = redact_exfiltration_urls(context)
             context, _ = redact_credentials(context)
             sel().log(
@@ -523,23 +541,60 @@ async def _stage_loop(
                 # in the tracker, so skip the ceiling entirely rather than
                 # passing 0, which would cut every stage instantly.
                 _turn_timeout = tracker.stage_timeout_seconds
-                if _turn_timeout:
-                    await _bounded_turn(
-                        _run_chat(
-                            state,
-                            slot,
-                            context,
-                            _directive_user_origin=False,
-                        ),
-                        _turn_timeout,
-                    )
-                else:
-                    await _run_chat(
+                _turn_loop = asyncio.get_running_loop()
+                _turn_deadline = _turn_loop.time() + _turn_timeout if _turn_timeout else None
+
+                async def _run_stage_message(
+                    stage_message: str, *, synthetic: bool = False
+                ) -> None:
+                    remaining = None
+                    if _turn_deadline is not None:
+                        remaining = _turn_deadline - _turn_loop.time()
+                        if remaining <= 0:
+                            raise TimeoutError
+                    turn = _run_chat(
                         state,
                         slot,
-                        context,
+                        stage_message,
+                        _synthetic_payload=synthetic,
                         _directive_user_origin=False,
                     )
+                    if remaining is not None:
+                        await _bounded_turn(turn, remaining)
+                    else:
+                        await turn
+
+                await _run_stage_message(context)
+                if _abort_if_stop_generation_changed():
+                    break
+                if (
+                    slot._last_stop_reason == "provider_budget_artifact"
+                    and slot._stop_generation == _stage_stop_generation
+                    and not _orchestration_stopped(slot, tracker)
+                ):
+                    logger.warning(
+                        "Stage %d returned a provider budget artifact for slot %s; "
+                        "running one synchronous continuation before result capture",
+                        stage_num,
+                        slot.key,
+                    )
+                    slot._posttoken_retry_used = True
+                    await _run_stage_message(_POSTTOKEN_RECOVER_MSG, synthetic=True)
+                    if _abort_if_stop_generation_changed() or _orchestration_stopped(slot, tracker):
+                        break
+                    if slot._last_stop_reason == "provider_budget_artifact":
+                        slot._auto_run = False
+                        tracker.abort_round(stage_num)
+                        artifact_msg = (
+                            f"⚠️ Stage {stage_num} returned an internal model status twice. "
+                            "Auto-run stopped before marking the stage complete."
+                        )
+                        slot.append("assistant", artifact_msg, "msg msg-a")
+                        state.broadcast_ws(
+                            "chat_append",
+                            {"slot": slot.key, "html": artifact_msg, "cls": "msg msg-a"},
+                        )
+                        break
             except (asyncio.TimeoutError, TimeoutError):
                 # `_bounded_turn` raises builtin TimeoutError; on 3.10
                 # asyncio.TimeoutError is a DIFFERENT class, so catch both (the
@@ -776,7 +831,7 @@ async def _stage_loop(
                 )
                 break
 
-            if _orchestration_stopped(slot, tracker):
+            if _abort_if_stop_generation_changed() or _orchestration_stopped(slot, tracker):
                 break
 
             # Capture result to disk

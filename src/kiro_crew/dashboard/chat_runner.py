@@ -295,6 +295,32 @@ def _empty_auto_continue_enabled() -> bool:
         return True
 
 
+# Some model backends occasionally emit their private context-budget reminder as
+# answer text at the end of a long turn. It is not user-authored metadata and
+# must never become a persisted assistant message. Keep this deliberately exact:
+# ordinary discussion of tokens, quoted text, and code samples must survive.
+# The final alternative covers the observed chunk-concatenation shape where the
+# banner and the real answer arrive with no separator (``...leftDone...``).
+_PROVIDER_BUDGET_BANNER_RE = re.compile(
+    r"\A[ \t]*You have [0-9][0-9,]* weighted tokens left(?:[.!])?"
+    r"(?:[ \t]*(?:\r?\n)+[ \t]*|[ \t]*\Z|(?=[A-Z]))"
+)
+_STOP_REASON_PROVIDER_BUDGET_ARTIFACT = "provider_budget_artifact"
+
+
+def _strip_provider_budget_banner(text: str) -> tuple[str, bool]:
+    """Remove one leading provider-only weighted-token banner.
+
+    Returns ``(clean_text, removed)``. A leading-only rule is intentional: the
+    provider artifact arrives before answer prose, while the same words later in
+    an answer can be legitimate user-facing discussion.
+    """
+    match = _PROVIDER_BUDGET_BANNER_RE.match(text or "")
+    if match is None:
+        return text, False
+    return text[match.end() :], True
+
+
 # Consumption contract carried inside every pending-context frame, between the
 # opening delimiter and the injected content. One sentence, imperative, because
 # it is re-sent on every turn that drains context: it must be cheap and it must
@@ -2661,6 +2687,7 @@ def _flush_segment(
     *,
     broadcast: bool = True,
     quiet_persist: bool = False,
+    strip_provider_banner: bool = False,
 ) -> None:
     """Finalize current text block as a segment and persist it.
 
@@ -2708,6 +2735,11 @@ def _flush_segment(
     # turn normally takes — so skipping it leaks the whole stream on any slot
     # that is not asked for another turn.
     slot.release_pending_chunks()
+    if strip_provider_banner:
+        assistant_text, stripped_budget_banner = _strip_provider_budget_banner(assistant_text)
+        if stripped_budget_banner:
+            logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+
     # Redact the accumulated text
     redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
     for w in exfil_warnings:
@@ -2715,6 +2747,24 @@ def _flush_segment(
     redacted, cred_warnings = redact_credentials(redacted)
     for w in cred_warnings:
         logger.warning("Credential redacted in chat segment: %s", w)
+
+    # Without regeneration state, an opted-in banner-only segment has no
+    # user-facing text to persist. Regeneration is different: fall through so
+    # the normal assistant-message path consumes and attaches pending variants;
+    # returning here would let its done callback discard the prior answers.
+    if not redacted and not slot._pending_variants:
+        file_changes = getattr(slot, "_file_changes", None)
+        if isinstance(file_changes, list) and file_changes:
+            # Keep turn-local stats/file chips off the preceding assistant row.
+            # Non-broadcast: the live streaming banner is reconciled separately
+            # by the authoritative empty frame at turn completion.
+            slot.append("assistant", "", "msg msg-a", broadcast=False)
+        for ev in trailing_stop_events:
+            slot.messages.append(ev)
+        if broadcast:
+            state.broadcast_ws("chat_segment", {"slot": slot.key})
+        return
+
     # Persist as assistant message. Broadcast is kept enabled so that
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
@@ -8486,6 +8536,44 @@ async def _run_chat(
                 # valid, so the same call re-sends the real counts as-is.
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
 
+        # A model backend may leak its private weighted-token budget reminder as
+        # answer text. Strip it before plan detection, persistence, Stop hooks,
+        # and cross-surface delivery. If it was the whole final segment, finalize
+        # away the already-streamed chunks and recover below with a CONTINUE
+        # instruction rather than replaying any completed tools.
+        raw_assistant_text = assistant_text
+        _provider_artifact_context = (
+            _turn_tool_calls > 0 or slot._in_stage_execution or message == _POSTTOKEN_RECOVER_MSG
+        ) and "weighted tokens left" not in message.lower()
+        if _provider_artifact_context:
+            assistant_text, _provider_budget_banner = _strip_provider_budget_banner(assistant_text)
+        else:
+            _provider_budget_banner = False
+        _recovering_provider_artifact = bool(_provider_budget_banner and not assistant_text)
+        if _provider_budget_banner:
+            _wsred.reset()
+            if assistant_text:
+                logger.warning("Suppressed provider budget banner for slot %s", slot.key)
+            else:
+                had_pending_variants = bool(slot._pending_variants)
+                _flush_segment(
+                    state,
+                    slot,
+                    raw_assistant_text,
+                    broadcast=False,
+                    strip_provider_banner=True,
+                )
+                if not had_pending_variants:
+                    # The live client may already hold the streamed banner. An
+                    # authoritative empty assistant frame replaces that streaming
+                    # row before the queue boundary's chat_segment can finalize or
+                    # speak it; the continuation's chat_done refresh removes the
+                    # temporary empty row because no such row is persisted server-side.
+                    state.broadcast_ws(
+                        "chat_message",
+                        {"slot": slot.key, "role": "assistant", "content": ""},
+                    )
+
         if assistant_text:
             # ── Plan format validation (planning turn only) ─────
             # `_orch_planning` excludes stage-execution turns, so a stage turn
@@ -8568,6 +8656,45 @@ async def _run_chat(
                 "Response declined by the model. Try rephrasing your request.",
                 "msg msg-err",
             )
+        elif _provider_budget_banner:
+            # The banner is provider metadata, not a user-facing answer. Publish
+            # a structural stop reason so stage execution can retry synchronously
+            # before result capture; ordinary chat resumes exactly once on the
+            # SAME live conversation using the established post-token continuation.
+            slot._last_stop_reason = _STOP_REASON_PROVIDER_BUDGET_ARTIFACT
+            _can_recover_budget_banner = (
+                _stop_reason == STOP_REASON_END_TURN
+                and _prompt_depth == 0
+                and not slot._in_stage_execution
+                and not _refusal_reasons
+                and not _should_suppress_requeue(slot)
+                and getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+                and not _has_user_queued_followup(slot)
+                and not getattr(slot, "_pending_steers", None)
+                and not slot._posttoken_retry_used
+            )
+            if _can_recover_budget_banner:
+                slot._posttoken_retry_used = True
+                _queue_recovery(
+                    0,
+                    _POSTTOKEN_RECOVER_MSG,
+                    kind=SYNTHETIC_RECOVERY_KIND,
+                    payload=RecoveryPayload.CONTINUATION,
+                )
+            elif (
+                not slot._in_stage_execution
+                and _stop_reason != STOP_REASON_CANCELLED
+                and not _should_suppress_requeue(slot)
+            ):
+                # One retry is the hard bound. If the recovery itself produces
+                # the same artifact, do not loop; make the missing answer explicit.
+                slot.append(
+                    "notice",
+                    "ℹ️ The model returned an internal status instead of an answer. "
+                    "The automatic continuation is unavailable or already spent — "
+                    "press Continue to finish the request.",
+                    "msg msg-info",
+                )
         elif (
             _stop_reason != STOP_REASON_CANCELLED
             and not _produced_visible_output
@@ -8911,11 +9038,17 @@ async def _run_chat(
             await save_slot_off_loop(state, slot)
         # Reset ALL retry budgets once the cycle completes (success OR the
         # terminal second-empty error) so each new user turn gets fresh budgets.
-        # Guarded by _retrying_empty, _recovering_promise and _noticed_leak:
-        # neither a re-queue nor an unacted turn is a landed turn, so all must
-        # preserve the counters (an unacted turn that reset budgets would also
-        # mask the transient-failure retry accounting).
-        if not _retrying_empty and not _recovering_promise and not _noticed_leak:
+        # Guarded by _retrying_empty, _recovering_promise,
+        # _recovering_provider_artifact and _noticed_leak: neither a re-queue nor
+        # an unacted turn is a landed turn, so all must preserve the counters
+        # (an unacted turn that reset budgets would also mask the transient-failure
+        # retry accounting).
+        if (
+            not _retrying_empty
+            and not _recovering_promise
+            and not _recovering_provider_artifact
+            and not _noticed_leak
+        ):
             # A non-zero stall budget reaching this reset on an OK turn is a
             # COMPLETED recovery cycle: the stall branches return early, so the
             # only way here with an armed budget is the synthetic recovery turn
@@ -8976,7 +9109,12 @@ async def _run_chat(
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for slot %s", slot.key)
-        elif not _retrying_empty and not _recovering_promise and not _noticed_leak:
+        elif (
+            not _retrying_empty
+            and not _recovering_promise
+            and not _recovering_provider_artifact
+            and not _noticed_leak
+        ):
             _maybe_consolidate(state, slot)
         state.sessions.check_context_usage(session_key, client)
         pct = client.context_usage_pct()
@@ -8985,6 +9123,7 @@ async def _run_chat(
             _stop_reason != STOP_REASON_CANCELLED
             and not _retrying_empty
             and not _recovering_promise
+            and not _recovering_provider_artifact
             and not _noticed_leak
         ):
             # An unacted turn (promise-only, or a tool call leaked as text) is

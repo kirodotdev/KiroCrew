@@ -122,6 +122,16 @@ class OrchestrationTracker:
             self._stage_start = time.monotonic()
         return self._stage_rounds[stage] >= MAX_STAGE_ROUNDS
 
+    def abort_round(self, stage: int) -> None:
+        """Forget an interrupted stage attempt so the next Go retries it.
+
+        Called only when a monotonic Stop-generation change proves the current
+        attempt was interrupted before result capture. Earlier completed stages,
+        result pointers, failures, and escalation history remain authoritative.
+        """
+        self._stage_rounds.pop(stage, None)
+        self._stage_start = 0.0
+
     def is_stage_timed_out(self) -> bool:
         """True if current stage has exceeded the timeout."""
         if not self._stage_start or not self._stage_timeout:
