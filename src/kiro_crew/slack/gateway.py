@@ -4783,10 +4783,17 @@ class GatewayOrchestrator:
                 return result_text
             except Exception as exc:
                 # Attempt one retry for ACP process death before any dedup / alert.
+                # Test the typed signal first; keep substring fallback for
+                # older message spellings that do not raise AcpProcessDied.
                 exc_msg = str(exc).lower()
                 if (
-                    isinstance(exc, AcpError)
-                    and ("not running" in exc_msg or "process exited" in exc_msg)
+                    (
+                        isinstance(exc, AcpProcessDied)
+                        or (
+                            isinstance(exc, AcpError)
+                            and ("not running" in exc_msg or "process exited" in exc_msg)
+                        )
+                    )
                     and not getattr(job, "_acp_retried", False)
                     and self.sessions is not None
                 ):
