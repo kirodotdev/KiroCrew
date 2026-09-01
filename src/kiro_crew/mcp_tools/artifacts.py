@@ -76,7 +76,13 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "slug": {
                         "type": "string",
-                        "description": "Optional explicit slug (lowercase, digits, hyphens). Auto-derived from name when omitted.",
+                        "description": (
+                            "Optional explicit slug (lowercase, digits, hyphens). "
+                            "A taken or malformed slug is REFUSED, never renamed — "
+                            "call artifact_update on the existing slug to version "
+                            "it in place. Omit to derive one from name and let a "
+                            "collision resolve by suffixing (-2, -3, ...)."
+                        ),
                     },
                     "kind": {
                         "type": "string",
