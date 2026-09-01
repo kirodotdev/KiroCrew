@@ -271,6 +271,37 @@ jobs:
           python3 scripts/check_focus_cue.py --test
           python3 scripts/check_focus_cue.py
 
+  feature-map-lint:
+    name: Feature Map Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials retained: feature-map-lint/Check the feature map covers the features this change adds runs `git fetch origin`
+      # against the same remote, through the shared diff-base resolver script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the feature map covers the features this change adds
+        # Structural, not line-scoped, and that is the whole design. A feature
+        # arrives as a FILE appearing under the pages or handlers tree, or a route
+        # entry appearing in the router — so those are what demand a map row.
+        # Editing an existing page is how a feature changes BEHAVIOR, which the map
+        # deliberately does not describe, so an edit-only diff never fires. A gate
+        # that asked for a map review on every UI fix would produce a map nobody
+        # reads. Contract: docs/feature-map/README.md
+        env:
+          # `base.sha` for the same reason as the brand gate above: the merge ref
+          # this run checks out was computed against that exact commit.
+          FEATURE_MAP_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          FEATURE_MAP_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$FEATURE_MAP_BASE_REF" 'the feature-map gate')" || exit 1
+          export FEATURE_MAP_BASE_REF
+          # Self-test first: it plants one probe per trigger rule, so a widened or
+          # narrowed rule fails here instead of shipping a gate that asks for a map
+          # update on every edit — or never asks at all.
+          python3 scripts/check_feature_map.py --test
+          python3 scripts/check_feature_map.py
+
   changelog-history:
     name: Changelog History Gate
     runs-on: ubuntu-latest
