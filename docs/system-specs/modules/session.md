@@ -475,9 +475,16 @@ Three properties the route holds, each of which fails silently if broken:
   turn on the session with no dashboard task behind it (an inbound channel
   message, which `slot.running` cannot see), a turn mid-write, a plan between
   stages, and children still running after their parent's turn ended.
-  `has_active_turn` inherits the reload route's edge: a turn holding the
-  per-session semaphore before its prompt is in flight is not seen. Matching the
-  sibling is deliberate — two notions of "busy" for one teardown drift apart.
+  The four probes above are best-effort fast paths; the authoritative guard is
+  the fifth, `discard_conversation(..., skip_if_busy=True)`, which probes the
+  per-session SEMAPHORE atomically with the session pop and refuses with the
+  same `turn_in_flight` 409. It closes the edge the fast paths share: a turn
+  holding the semaphore before its prompt is in flight is invisible to
+  `has_active_turn`. This is the same contract the sibling reload route rests
+  on, so the two teardowns keep one notion of "busy". Of the route's refusal
+  paths, only the atomic one emits a SEL `denied` record — it is the sole
+  refusal that occurs after the route has committed to the teardown; the
+  fast-path 409s are pre-checks and stay unlogged, as they are on the sibling.
 
 Authorization is `_app_cancel_denied`, not a slot-ownership check, and that
 distinction is load-bearing: `get_or_create_slot` resolves `linked_session_key`
