@@ -242,13 +242,16 @@ class LarkClient:
         """Sync P2ImMessageReceiveV1 handler injected into the WS dispatcher."""
         event = getattr(data, "event", None)
         if event is None:
+            logger.info("Feishu inbound dropped: frame has no event")
             return
         message = getattr(event, "message", None)
         if message is None:
+            logger.info("Feishu inbound dropped: event has no message")
             return
 
         msg_id: str = message.message_id or ""
         if not msg_id:
+            logger.info("Feishu inbound dropped: message has no message_id")
             return
 
         # NOTE: redelivery dedup deliberately does NOT happen here. Everything
@@ -260,19 +263,33 @@ class LarkClient:
         # after authorization instead.
 
         # Only handle plain-text messages for now.
-        if (message.message_type or "") != "text":
+        message_type = message.message_type or ""
+        if message_type != "text":
+            logger.info(
+                "Feishu inbound dropped: unsupported message_type=%r (message_id=%s)",
+                message_type,
+                msg_id,
+            )
             return
 
         sender = getattr(event, "sender", None)
         sid = getattr(sender, "sender_id", None) if sender else None
         open_id: str = (getattr(sid, "open_id", None) or "") if sid else ""
         if not open_id:
+            logger.info(
+                "Feishu inbound dropped: sender has no open_id (message_id=%s)",
+                msg_id,
+            )
             return
 
         try:
             content = json.loads(message.content or "{}")
             raw_text: str = content.get("text", "").strip()
         except Exception:
+            logger.info(
+                "Feishu inbound dropped: message content is not valid JSON (message_id=%s)",
+                msg_id,
+            )
             return
 
         # Feishu sends mentions as opaque placeholders (``@_user_1``) with the
@@ -283,6 +300,11 @@ class LarkClient:
         # which is what keeps a bare "@bot" from driving an empty turn.
         mention_free = _AT_RE.sub("", raw_text).strip()
         if not mention_free:
+            logger.info(
+                "Feishu inbound dropped: message body is mention-only "
+                "(no instruction) (message_id=%s)",
+                msg_id,
+            )
             return
         # NOT ``mention_free``: that deletes every placeholder, which would read
         # "@bot /new @alice" as the bare command "/new" and reset the
@@ -290,6 +312,10 @@ class LarkClient:
         command_body = _command_body(raw_text)
         text = _resolve_mentions(raw_text, getattr(message, "mentions", None)).strip()
         if not text:
+            logger.info(
+                "Feishu inbound dropped: resolved text is empty (message_id=%s)",
+                msg_id,
+            )
             return
 
         inbound = LarkInbound(
