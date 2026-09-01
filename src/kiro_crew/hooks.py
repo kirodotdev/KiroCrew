@@ -3006,6 +3006,121 @@ def safe_read_file_bytes_nolink(
                 pass
 
 
+def _install_by_exchange(
+    dfd: int,
+    held_fd: int,
+    tmp_name: str,
+    base: str,
+    path: str,
+    src_state: tuple[int, int] | None,
+    base_hash: str,
+    max_bytes: int | None,
+) -> str | None:
+    """Install the staged payload over *base* as a compare-and-swap.
+
+    Exchange the two names atomically, so the inode that *base* named an
+    instant ago is not destroyed but moved INTO the staging name, where it can
+    be inspected. The replace stands (``"ok"``) only when the displaced inode
+    is the verified one -- the one *held_fd* still holds open, so its number
+    cannot have been recycled -- AND its bytes, re-read through that same
+    descriptor now, still hash to *base_hash*. The identity check alone is
+    not enough: an in-place rewrite of the same length with a restored
+    timestamp changes the content while leaving ``(st_dev, st_ino)`` and
+    ``(st_mtime_ns, st_size)`` identical, and only the bytes can tell. The
+    stat pair is kept as a cheap pre-filter, so the re-read happens only when
+    metadata claims nothing moved. On any mismatch the exchange is undone and
+    the answer is ``"conflict"`` -- the newer file was never gone, not even for
+    the duration of the check. The caller then disposes of the staging name as
+    it would any spent stage (``"ok"``: the displaced verified inode;
+    ``"conflict"``: the payload).
+
+    Returns ``None`` when the filesystem turns out to have no exchange (the
+    call answers ENOSYS/EINVAL/EOPNOTSUPP), so the caller can take its plain
+    rename with the residual window that path documents. Returns
+    ``"preserved"`` in the one failure that must not be cleaned up: the
+    exchange succeeded, the displaced inode was NOT the verified one, and the
+    exchange BACK failed. The newer content then sits under the staging name
+    and the caller's payload under *base*. No further rename is attempted --
+    without the exchange a rename is unconditional, so a writer landing on
+    the original name meanwhile would be overwritten -- and unlinking the
+    stage would destroy the very file this protocol exists to protect. That
+    state is logged at ERROR with both names; the caller reports it as a
+    conflict and leaves both files for the user.
+    """
+    try:
+        platform_compat.rename_exchange(tmp_name, base, dir_fd=dfd)
+    except NotImplementedError:
+        return None
+    # Exchanged: `base` is the payload, `tmp_name` is whatever `base` held.
+    verified: os.stat_result | None
+    displaced: os.stat_result | None
+    try:
+        verified = os.fstat(held_fd)
+        displaced = os.stat(tmp_name, dir_fd=dfd, follow_symlinks=False)
+    except OSError:
+        verified = displaced = None
+    same_inode = (
+        verified is not None
+        and displaced is not None
+        and (displaced.st_dev, displaced.st_ino) == (verified.st_dev, verified.st_ino)
+    )
+    same_state = displaced is not None and (
+        src_state is None or (displaced.st_mtime_ns, displaced.st_size) == src_state
+    )
+    if same_inode and same_state and _fd_content_matches(held_fd, base_hash, max_bytes):
+        return "ok"
+    logger.warning(
+        "refusing source write to %r: the file changed on disk in the instant before the "
+        "install (concurrent save); the newer content is being put back",
+        path,
+    )
+    try:
+        platform_compat.rename_exchange(tmp_name, base, dir_fd=dfd)
+    except (NotImplementedError, OSError) as exc:
+        # The exchange back failed. The newer content sits under the staging
+        # name and the stale payload at the original name. NO further rename
+        # is attempted: without the exchange, a rename is unconditional, and a
+        # writer landing on the original name between any check and that
+        # rename would be overwritten -- the exact loss this protocol exists
+        # to prevent. Both names are left as they are, the state is reported
+        # loudly, and the caller answers conflict so the client refetches
+        # rather than believing its save applied.
+        logger.error(
+            "could not restore %r after a lost compare-and-swap (%s): the newer content is "
+            "preserved under the staging name %r in the same directory and the stale payload "
+            "is at the original name; resolve by hand",
+            path,
+            exc,
+            tmp_name,
+        )
+        return "preserved"
+    return "conflict"
+
+
+def _fd_content_matches(fd: int, expected_sha256: str, max_bytes: int | None) -> bool:
+    """Re-read *fd* from offset 0 and report whether its bytes hash to *expected_sha256*.
+
+    Bounded by *max_bytes* like the verifying read: a file that grew past the cap
+    cannot match. Any read error is a mismatch -- the caller treats it as a lost
+    compare-and-swap, the safe direction.
+    """
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        digest = _hashlib.sha256()
+        seen = 0
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            seen += len(chunk)
+            if max_bytes is not None and seen > max_bytes:
+                return False
+            digest.update(chunk)
+    except OSError:
+        return False
+    return digest.hexdigest() == expected_sha256
+
+
 def _pinned_replace(
     raw: str,
     content: str,
@@ -3257,12 +3372,25 @@ def _pinned_replace(
                 return "refused"
             src_xattrs = []
 
-    # POSIX: the descriptor's job is done -- the staged rename below is pinned by
-    # the directory fd instead, and holding a second handle buys nothing.
-    try:
-        os.close(fd)
-    except OSError:
-        pass
+    # POSIX: the staged rename below is pinned by the directory fd instead, so
+    # the file descriptor's validation job is done. It is HELD OPEN, though, for
+    # a verifying caller that will install by exchange: the exchange's identity
+    # check compares the displaced inode's (st_dev, st_ino) with the verified
+    # one, and an inode NUMBER is only a stable identity while something
+    # references the inode -- once freed it can be handed to a new file, so an
+    # unlink-and-recreate writer that also preserves size and mtime would pass
+    # the check with its own newer content and lose it to the cleanup. Keeping
+    # this descriptor open pins the verified inode for the whole install; it
+    # is closed in the cleanup below. The unverified caller has no exchange and
+    # releases it here.
+    held_fd = -1
+    if base_hash is not None and use_dir_fd and platform_compat.RENAME_EXCHANGE_AVAILABLE:
+        held_fd = fd
+    else:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
     dfd = -1
     created = False
@@ -3315,12 +3443,22 @@ def _pinned_replace(
                     "the validated file",
                     path,
                 )
-                # "refused" in BOTH modes: this predicate is the ancestor-swap
-                # security guard (see the comment above), and auditing a
-                # hostile swap under the benign concurrent-save code would
-                # blind the SEL trail. The two post-staging re-checks below
-                # own the benign-concurrency vocabulary.
-                return "refused"
+                # The predicate cannot tell a hostile ancestor swap from a
+                # benign concurrent save: an editor's own atomic save installs
+                # a NEW inode under the same name, and both land here as "the
+                # validated inode is not what the name resolves to". The
+                # WARNING above is written identically for both, so the audit
+                # trail records the swap either way; only the caller-facing
+                # verdict is split, exactly as the post-staging twin of this
+                # check does below. A VERIFYING caller (base_hash set) must
+                # hear "conflict": to it, "refused" means "the file itself
+                # cannot be replaced and no competing writer exists", which it
+                # answers by keeping the stale edit and demoting the link --
+                # so a swap in this window would be reported as applied
+                # instead of answering the 409 the compare-and-swap promises.
+                # The unverified caller has no conflict vocabulary and keeps
+                # "refused".
+                return "conflict" if base_hash is not None else "refused"
             tfd = os.open(
                 tmp_name,
                 os.O_WRONLY
@@ -3391,7 +3529,7 @@ def _pinned_replace(
             os.fsync(tfd)
         finally:
             os.close(tfd)
-        # LAST-MOMENT re-check, immediately before the rename.
+        # LAST-MOMENT re-check, immediately before the install.
         #
         # rename() replaces whatever the name points at RIGHT NOW, and the
         # earlier identity check ran before the payload was staged -- a write
@@ -3402,11 +3540,19 @@ def _pinned_replace(
         # the staged write" to the few instructions below, and a detected change
         # REFUSES rather than clobbers.
         #
-        # This is a narrowing, not a guarantee: a genuine compare-and-swap
-        # rename needs renameat2(RENAME_EXCHANGE), which the stdlib does not
-        # expose (and which is Linux-only). The remaining window cannot be
-        # closed with os.rename, so the caller keeps its own snapshot and the
-        # user's newer file wins -- the safe direction.
+        # On its own this is a narrowing, not a guarantee: os.rename has no
+        # conditional form, so a swap landing between this stat and the rename
+        # is still replaced. For a VERIFYING caller the install below closes
+        # that too, where the platform can: it installs by atomic EXCHANGE
+        # (renameat2 RENAME_EXCHANGE / renameatx_np RENAME_SWAP), which moves
+        # the displaced inode into the staging name instead of destroying it,
+        # then inspects that inode -- if it is not the one whose bytes were
+        # hashed, the exchange is undone and the answer is "conflict"; the
+        # newer file is never lost, not even for the duration of the check.
+        # Where no exchange exists (Windows; old glibc; some network mounts)
+        # the plain rename remains, with the residual window it has always
+        # had, and the caller keeps its own snapshot so the safe direction is
+        # preserved.
         try:
             pre = (
                 os.stat(base, dir_fd=dfd, follow_symlinks=False)
@@ -3434,6 +3580,27 @@ def _pinned_replace(
                 path,
             )
             return "conflict"
+        if held_fd >= 0:
+            assert base_hash is not None  # held_fd is set only for a verifying caller
+            verdict = _install_by_exchange(
+                dfd, held_fd, tmp_name, base, path, src_state, base_hash, max_bytes
+            )
+            if verdict == "preserved":
+                # The exchange back failed: the newer content sits under the
+                # staging name and MUST NOT be unlinked by the cleanup below; the
+                # stale payload stays at the original name (no rename can move
+                # it safely). Both are reported for the user.
+                created = False
+                return "conflict"
+            if verdict is not None:
+                # "ok": the staging name now holds the displaced (verified) inode,
+                # and the cleanup below unlinks it -- the disposal a replace
+                # implies. "conflict": exchanged back, so the staging name holds
+                # the payload again and the cleanup unlinks that instead; the
+                # newer file was never touched.
+                return verdict
+            # None: no exchange on this filesystem after all; fall through to
+            # the plain rename with its documented residual window.
         if use_dir_fd:
             os.rename(tmp_name, base, src_dir_fd=dfd, dst_dir_fd=dfd)
         else:
@@ -3452,6 +3619,14 @@ def _pinned_replace(
                     os.unlink(tmp_name, dir_fd=dfd)
                 else:
                     os.unlink(os.path.join(parent, tmp_name))
+            except OSError:
+                pass
+        # Released only after the cleanup above: while it is open the verified
+        # inode cannot be recycled, so the exchange's identity check (and the
+        # unlink of the displaced inode it authorises) refer to the same file.
+        if held_fd >= 0:
+            try:
+                os.close(held_fd)
             except OSError:
                 pass
         if dfd >= 0:

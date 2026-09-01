@@ -3160,9 +3160,11 @@ async def _handle_report_status(request: web.Request) -> web.Response:
     slug = row["report_artifact_slug"]
     if not slug:
         return web.json_response({"slug": None})
-    # Verify the artifact still exists so the UI never offers a dead link.
+    # Verify the artifact still exists so the UI never offers a dead link. Off
+    # the loop: the probe is a meta.json read, and constructing the store is
+    # filesystem work too (root, content-token key).
     try:
-        ArtifactStore().get(slug)
+        await asyncio.to_thread(lambda: ArtifactStore().get(slug))
     except ArtifactNotFoundError:
         return web.json_response({"slug": None})
     except Exception:
@@ -3239,7 +3241,6 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
     # publishable artifact (HTML-escaping does NOT remove leaked credentials /
     # exfil URLs — that's this step). Applied uniformly to both paths.
     html = _redact_finding({"v": html})["v"]
-    store = ArtifactStore()
     safe_q = _redact_finding({"v": question})["v"]
     name = f"Research: {safe_q[:50]}"
     # Reuse-or-create so repeated exports update ONE artifact (new version)
@@ -3247,31 +3248,43 @@ async def _handle_to_artifact(request: web.Request) -> web.Response:
     # stored slug if the artifact still exists — if the user deleted it, fall
     # through to create and re-bind a new slug.
     existing_slug = row["report_artifact_slug"]
-    art = None
-    regenerated = False
-    if existing_slug:
-        try:
-            store.get(existing_slug)  # existence probe
-            art = store.update(
-                existing_slug,
-                content=html,
+
+    def _store_report() -> tuple[Any, bool]:
+        # Off the event loop, like this handler's own DB writes below: the
+        # store's write path stages through pinned directory syscalls and an
+        # atomic rename, and on slow storage that would stall the whole
+        # gateway. Construction is in here too: ``ArtifactStore()`` resolves
+        # and creates its root and loads the content-token key at construction.
+        store = ArtifactStore()
+        if existing_slug:
+            try:
+                store.get(existing_slug)  # existence probe
+                return (
+                    store.update(
+                        existing_slug,
+                        content=html,
+                        name=name,
+                        description=f"Research findings for campaign {cid}",
+                        actor="agent",
+                        snapshot=True,
+                    ),
+                    True,
+                )
+            except ArtifactNotFoundError:
+                pass  # stored slug is dead — create a fresh one below
+        return (
+            store.create(
                 name=name,
+                content=html,
+                kind="html",
+                source="subagent",
                 description=f"Research findings for campaign {cid}",
-                actor="agent",
-                snapshot=True,
-            )
-            regenerated = True
-        except ArtifactNotFoundError:
-            art = None  # stored slug is dead — create a fresh one below
-    if art is None:
-        art = store.create(
-            name=name,
-            content=html,
-            kind="html",
-            source="subagent",
-            description=f"Research findings for campaign {cid}",
-            tags=["research"],
+                tags=["research"],
+            ),
+            False,
         )
+
+    art, regenerated = await asyncio.to_thread(_store_report)
     # Persist the slug so the next export regenerates this same artifact and
     # the UI can show "View report" upfront.
     if art.slug != existing_slug:
