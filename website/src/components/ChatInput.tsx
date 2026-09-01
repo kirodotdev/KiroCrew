@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, use
 import { markComposerResize } from '../utils/composerResize'
 import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff, PenLine, ChevronsDownUp, ChevronsUpDown, MoreHorizontal } from 'lucide-react'
 import SketchDialog from './SketchDialog'
+import AppIcon from './AppIcon'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -522,6 +523,23 @@ interface ChatInputProps {
   onAgentClick?: (rect: DOMRect) => void
   onModelClick?: (rect: DOMRect) => void
   onProjectClick?: (rect: DOMRect) => void
+  /** App-contributed session controls (contributes.sessionControls in app.json). */
+  sessionControls?: {
+    key: string
+    label: string
+    icon?: string
+    /** True while this control's popover is open. */
+    active?: boolean
+    /**
+     * App-reported per-session state. `ok` tints the chip with --ok so a
+     * configured control is visible without opening it; `warn` uses --warn.
+     * Absent for apps that declare no status route — the original appearance.
+     */
+    state?: 'ok' | 'warn' | 'none'
+    /** Replaces the tooltip when the app explains its state. */
+    statusTooltip?: string
+  }[]
+  onSessionControlClick?: (key: string, rect: DOMRect) => void
   contextPct?: number
   contextUsedTokens?: number
   contextWindowTokens?: number
@@ -906,6 +924,8 @@ function ChatInput({
   onAgentClick,
   onModelClick,
   onProjectClick,
+  sessionControls,
+  onSessionControlClick,
   contextPct,
   contextUsedTokens,
   contextWindowTokens,
@@ -4322,8 +4342,79 @@ function ChatInput({
           most of the collapse — the assembly gave back 57px with the shelf still
           mounted against 89px without it, at a 1500x950 viewport — so keeping it
           would have shipped a "reclaim the space" control that reclaimed little. */}
-      {!showGhost && !composerCollapsed && (onProjectClick || (onModelClick && modelName)) && (
+      {!showGhost &&
+        !composerCollapsed &&
+        (onProjectClick ||
+          (onModelClick && modelName) ||
+          // An app-contributed chip is reason enough to draw the shelf. Without
+          // this the chip is silently invisible whenever no other pill happens
+          // to be present — the control is declared, mounted and unreachable.
+          !!sessionControls?.length) && (
         <div ref={shelfRef} className="pt-1 flex items-center gap-2 min-w-0">
+          {/* App-contributed session controls live in their OWN group, not
+              beside the agent/project chips. `max-two-buttons-per-row`
+              (AUTOSDE.yaml, blocking) caps a horizontal group at 2 action
+              controls and forbids an already-exempt 3+ group from growing —
+              and the chip group next door already carries 5 on main. Its own
+              separated region is the rule's stated exemption ("the cap is
+              per visual group, not per component"), and keeps the per-app
+              status tint that one collapsed kebab would hide. Bounded at 2
+              by MAX_INLINE_SESSION_CONTROLS so this group sits AT the cap. */}
+          {!!sessionControls?.length && (
+            <div className="flex items-center gap-2 min-w-0 shrink-0 pr-2 border-r border-border">
+          {(sessionControls || []).map(sc => {
+            /* State must not be carried by colour alone: `ok` and `warn` differ
+               only by tint, which a colourblind user cannot separate and a
+               screen reader never sees at all. Fold it into the accessible name,
+               and APPEND the app's own tooltip rather than replacing the label —
+               the label is what identifies the control, so it has to survive
+               whatever the app reports about it. */
+            const stateWord =
+              sc.state === 'warn'
+                ? i18nT('components.chatInput.session_control_needs_attention')
+                : sc.state === 'ok'
+                  ? i18nT('components.chatInput.session_control_ready')
+                  : ''
+            const detail = sc.statusTooltip || stateWord
+            const chipName = detail
+              ? i18nT('components.chatInput.session_control_chip_label', {
+                  label: sc.label,
+                  detail,
+                })
+              : sc.label
+            return (
+            <button
+              key={sc.key}
+              /* No `font-mono`: same reasoning as the agent chip below — a
+                 control label is a label, not code, and pinning `var(--mono)`
+                 would make the shelf ignore the user's Font Family setting. */
+              className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer ${
+                /* Open wins, so the chip you are pointing at always reads as
+                   the active one; otherwise the app's own state colours it. */
+                sc.active
+                  ? 'text-accent'
+                  : sc.state === 'ok'
+                    ? 'text-ok'
+                    : sc.state === 'warn'
+                      ? 'text-warn'
+                      : 'text-muted hover:text-text'
+              }`}
+              onClick={e => onSessionControlClick?.(sc.key, e.currentTarget.getBoundingClientRect())}
+              // Marks the chip as part of its own popover for dismissal
+              // purposes: mousedown fires before click, so without this the
+              // host's outside-click closes the popover and the chip's toggle
+              // then re-opens it — a flicker instead of a dismissal.
+              data-session-control-chip=""
+              title={chipName}
+              aria-label={chipName}
+            >
+              <AppIcon icon={sc.icon} size={13} />
+              {!shelfCompact && <span className="truncate max-w-[140px]">{sc.label}</span>}
+            </button>
+            )
+          })}
+            </div>
+          )}
           <div className="flex items-center gap-2 min-w-0 flex-1">
           {onAgentClick && agentName && (
             /* Chrome type: an agent name is a label, not code. `font-mono` would

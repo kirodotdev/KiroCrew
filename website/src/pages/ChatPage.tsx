@@ -234,6 +234,9 @@ import {
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
 
 import ChatInput from '../components/ChatInput'
+import SessionControlHost from '../components/SessionControlHost'
+import { useSessionControls, useSessionControlStatuses } from '../hooks/useSessionControls'
+import type { ChatFolder } from '../types'
 import ErrorNotice from '../components/ErrorNotice'
 import ChatDropOverlay, { useChatFileDrop } from '../components/ChatDropOverlay'
 import SessionGridView from '../components/SessionGridView'
@@ -5711,6 +5714,58 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [activeSlot, dispatch, setPendingProject])
 
   const currentSlot = slots.find(s => s.key === activeSlot)
+  // App-contributed session controls (contributes.sessionControls). Discovered once;
+  // openSessionControl holds the composite `${app}:${id}` key of the open one
+  // plus the slot it was opened in, so at most one control popover is mounted
+  // at a time, and only against the chat it was opened for.
+  const { controls: sessionControls, error: sessionControlsError } = useSessionControls()
+  const [openSessionControl, setOpenSessionControl] =
+    useState<{ key: string; slot: string } | null>(null)
+  const [sessionControlRect, setSessionControlRect] = useState<DOMRect | null>(null)
+  // Re-poll a control's status when its popover closes: that is when the user
+  // has most likely just changed the thing the chip reports. React Query owns
+  // the cache, so this is an invalidation rather than a token the hook watches.
+  const refreshSessionControlStatuses = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['session-control-status'] })
+  }, [queryClient])
+  // Drop the open-control state when the chat changes. Correctness does not
+  // depend on this effect: the host render is gated on the captured opening
+  // slot matching activeSlot, so the committed render after a chat switch
+  // mounts nothing against the new session. This only resets the state so the
+  // control does not reappear if the user switches back to the original chat.
+  useEffect(() => {
+    setOpenSessionControl(null)
+  }, [activeSlot])
+  // Folder names for the session-control context. Shares the sidebar's own
+  // ['chat-folders'] cache, so this costs no extra request.
+  const { data: chatFoldersRaw, error: chatFoldersError } = useQuery<ChatFolder[]>({
+    queryKey: ['chat-folders'],
+    // Guard the call, not just its rejection: a partially-mocked `api` (tests,
+    // or any future trimmed surface) would throw synchronously here and take
+    // the whole chat page down. A folder name is a label — never worth that.
+    queryFn: () =>
+      typeof api?.chatFolders === 'function' ? api.chatFolders() : Promise.resolve([]),
+  })
+  // Normalize the shape, not just the absence: a generic fetch mock (or a
+  // future payload change) can resolve to a non-array, and `= []` only covers
+  // undefined — which crashed the whole chat page on `.find`.
+  const chatFolders: ChatFolder[] = Array.isArray(chatFoldersRaw) ? chatFoldersRaw : []
+  const activeFolderName =
+    chatFolders.find(f => f.id === currentSlot?.folder_id)?.name || ''
+  // The session IDENTITY, not the display slot. `activeSlot` is the slot id
+  // (`chat-2`); the key the rest of the system stores session-scoped state under
+  // is `dashboard:<slot>` — the same derivation MobileConnectModal, ChatInput's
+  // skill slot and workflows/runModel use. Handing an app the bare slot would
+  // key its per-session state on a string nothing else uses, which is precisely
+  // the mis-binding this feature exists to remove.
+  const sessionControlKey = activeSlot ? `dashboard:${activeSlot}` : ''
+  const { statuses: sessionControlStatuses, error: sessionControlStatusError } =
+    useSessionControlStatuses(
+      sessionControls,
+      sessionControlKey,
+      currentSlot?.folder_id || '',
+      activeFolderName,
+    )
   // One source for both same-meaning markers in the agent pop-up: the row's check and
   // the default-agent row's label. Reading the slot twice let them disagree.
   // A peer-bound session falls back to the PEER's default, never this machine's:
@@ -9711,30 +9766,67 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               )}
               <ChatInput
               aboveComposer={
-                /* In-flow tip inside the composer's own width wrapper: shares
+                <>
+                  {/* Session-control failures surface HERE, beside the chips they
+                      are about, rather than on the chat. Both hooks fail closed —
+                      a failed `/api/apps` renders no chips, a failed status probe
+                      renders a stateless one — and either is indistinguishable
+                      from "no app declares a control", so without this the user
+                      sees a feature silently missing and has nothing to act on.
+                      One notice covers both: they are the same feature to the
+                      user, and the composer shares a row with the message input.
+                      `askAgent` is on because nothing here holds an unsaved
+                      draft, and a failed app-list or status route is squarely
+                      something the agent can investigate.
+
+                      The folder query rides along rather than getting its own
+                      banner: it feeds the folder NAME handed to each control, and
+                      on `/embed/chat` no sidebar is mounted to consume the shared
+                      ['chat-folders'] cache — so this is the only place its
+                      failure can be seen at all. It is gated on a control
+                      actually existing, though: with no chips on screen a folder
+                      failure is not a session-control problem, and calling it one
+                      would put an unexplained notice on every composer. */}
+                  {(sessionControlsError
+                    || sessionControlStatusError
+                    || (chatFoldersError && sessionControls.length > 0)) && (
+                    <div className="pt-1.5" key="session-controls-error">
+                      <ErrorNotice
+                        title={i18nT('components.sessionControlHost.controls_unavailable')}
+                        message={
+                          (sessionControlsError || sessionControlStatusError || chatFoldersError)
+                            ?.message
+                        }
+                        askAgent
+                        variant="inline"
+                      />
+                    </div>
+                  )}
+                  {/* In-flow tip inside the composer's own width wrapper: shares
                    the composer's exact box geometry (Raymond 2026-07-21: tip
                    width must always match the input box) while still pushing
                    chat content up like QueueStack (team decision: never cover
                    thinking/output; queue and question card keep priority via
                    tipSuppressed). ChatInput renders this slot LAST in the
                    above-composer stack, so the card stays flush against the
-                   input box and an options row sits above it. */
-                <AnimatePresence>
-                  {folderSuggestion && activeSlot ? (
-                    <div className="pt-1.5" key="folder-suggestion">
-                      <FolderSuggestionCard
-                        folderName={folderSuggestion.folderName}
-                        breadcrumb={folderSuggestion.breadcrumb}
-                        onAccept={folderSuggestionAccept}
-                        onDecline={folderSuggestionDecline}
-                      />
-                    </div>
-                  ) : activeTip && (
-                    <div className="pt-1.5" key="tip">
-                      <TipCard tip={activeTip} onDismiss={dismissTip} />
-                    </div>
-                  )}
-                </AnimatePresence>
+                   input box and an options row sits above it. */}
+                  <AnimatePresence>
+                    {folderSuggestion && activeSlot ? (
+                      <div className="pt-1.5" key="folder-suggestion">
+                        <FolderSuggestionCard
+                          folderName={folderSuggestion.folderName}
+                          breadcrumb={folderSuggestion.breadcrumb}
+                          onAccept={folderSuggestionAccept}
+                          onDecline={folderSuggestionDecline}
+                        />
+                      </div>
+                    ) : activeTip && (
+                      <div className="pt-1.5" key="tip">
+                        <TipCard tip={activeTip} onDismiss={dismissTip} />
+                      </div>
+                    )}
+                  </AnimatePresence>
+                </>
               }
               value={input}
               onChange={setInput}
@@ -9857,6 +9949,30 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onProjectClick={(rect) => {
                 setProjectBtnRect(rect)
                 setProjectPickerOpen(o => !o)
+              }}
+              sessionControls={sessionControls.map(sc => ({
+                key: sc.key,
+                label: sc.label,
+                icon: sc.icon,
+                active: openSessionControl?.key === sc.key && openSessionControl.slot === activeSlot,
+                state: sessionControlStatuses[sc.key]?.state,
+                statusTooltip: sessionControlStatuses[sc.key]?.tooltip,
+              }))}
+              onSessionControlClick={(key, rect) => {
+                setSessionControlRect(rect)
+                // Two independent setState calls, not one updater with a side
+                // effect: React may run an updater twice (StrictMode does in
+                // dev), which would bump the refresh token twice per toggle and
+                // fire a redundant status poll.
+                if (openSessionControl?.key === key) {
+                  setOpenSessionControl(null)
+                  refreshSessionControlStatuses()
+                } else {
+                  // Capture the slot the control is opened in: the host render
+                  // is gated on it still matching activeSlot, so a chat switch
+                  // can never mount the control against the next session.
+                  setOpenSessionControl({ key, slot: activeSlot })
+                }
               }}
               contextPct={contextPct}
               contextUsedTokens={contextTokens?.used}
@@ -10045,6 +10161,46 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               anchorRect={projectBtnRect}
               onSelect={path => { setProject(path); setProjectPickerOpen(false) }}
             />
+            {/* App-contributed session control popover — triggered from input bar.
+                Only the open one is mounted, so an app's control costs nothing
+                while closed. Render is gated on the slot the control was opened
+                in: on a chat switch the committed render where activeSlot has
+                already moved would otherwise mount a fresh control (the host
+                keys on session) bound to the NEW chat, and a control that
+                writes per-session state on mount would write to the wrong
+                chat. The clearing effect above runs too late to prevent that
+                render — this gate is the correctness guard. */}
+            {(() => {
+              const sc =
+                openSessionControl && openSessionControl.slot === activeSlot
+                  ? sessionControls.find(c => c.key === openSessionControl.key)
+                  : null
+              if (!sc) return null
+              return (
+                <SessionControlHost
+                  /* Keyed on the control, and load-bearing: the host's error
+                     boundary holds `state.error`, and nothing clears it on a
+                     prop change. Unkeyed, React reuses the one instance across
+                     controls, so opening B after A crashed would show B the
+                     stale error and never mount it. The key makes switching
+                     controls a remount, which is the only thing that resets the
+                     boundary. Do not remove it. */
+                  key={sc.key}
+                  control={sc}
+                  anchorRect={sessionControlRect}
+                  onClose={() => {
+                    setOpenSessionControl(null)
+                    refreshSessionControlStatuses()
+                  }}
+                  session={{
+                    sessionKey: sessionControlKey,
+                    folderId: currentSlot?.folder_id || '',
+                    folderName: activeFolderName,
+                    cwd: currentSlot?.project || '',
+                  }}
+                />
+              )
+            })()}
             {/* Reasoning effort dropdown portal */}
             {reasoningEffortDropdown && reasoningEffortBtnRect && activeSlot && provider.capabilities.reasoningEffort && modelSupportsEffort(shownModel === 'auto' ? '' : shownModel) && createPortal(
               <div ref={reasoningEffortDropdownRef} className="fixed z-[9999] animate-slide-up" style={(() => { const left = Math.max(8, Math.min(reasoningEffortBtnRect.left, window.innerWidth - 220)); return { bottom: window.innerHeight - reasoningEffortBtnRect.top + 4, left: isMobile ? 8 : left, ...(isMobile ? { right: 8, maxWidth: 'calc(100vw - 16px)' } : {}) } })()}>

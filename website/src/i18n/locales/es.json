@@ -5710,7 +5710,10 @@
       "sketch_desc": "Dibuja un boceto; adjunta una imagen y su fuente editable",
       "optimize_failed": "No se pudo optimizar el prompt. Se restauró tu texto original.",
       "optimize_failed_elsewhere": "No se pudo optimizar el prompt que iniciaste en otra sesión. Su texto original se restauró allí.",
-      "more_actions": "Más acciones"
+      "more_actions": "Más acciones",
+      "session_control_needs_attention": "Requiere atención",
+      "session_control_ready": "Listo",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -8021,6 +8024,16 @@
     },
     "pinSurfaceButton": {
       "pin_limit_reached": "Máximo {{n}} elementos fijados en la barra lateral: quita uno primero"
+    },
+    "sessionControlHost": {
+      "controls_unavailable": "Controles de sesión no disponibles",
+      "failed": "Error en {{label}}",
+      "chat_unaffected": "Tu chat no se ve afectado: solo este control dejó de funcionar.",
+      "retry": "Reintentar",
+      "retry_loading": "Reintentar la carga de {{label}}",
+      "could_not_load": "No se pudo cargar {{label}}",
+      "loading": "Cargando {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

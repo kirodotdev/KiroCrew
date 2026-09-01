@@ -5620,7 +5620,10 @@
       "sketch_desc": "Skizze zeichnen; hängt ein Bild plus bearbeitbare Quelle an",
       "optimize_failed": "Der Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde wiederhergestellt.",
       "optimize_failed_elsewhere": "Der in einer anderen Sitzung gestartete Prompt konnte nicht optimiert werden. Der ursprüngliche Text wurde dort wiederhergestellt.",
-      "more_actions": "Weitere Aktionen"
+      "more_actions": "Weitere Aktionen",
+      "session_control_needs_attention": "Aktion erforderlich",
+      "session_control_ready": "Bereit",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -7914,6 +7917,16 @@
     },
     "pinSurfaceButton": {
       "pin_limit_reached": "Maximal {{n}} Anheftungen in der Seitenleiste - zuerst eine lösen"
+    },
+    "sessionControlHost": {
+      "controls_unavailable": "Sitzungssteuerelemente nicht verfügbar",
+      "failed": "{{label}} fehlgeschlagen",
+      "chat_unaffected": "Ihr Chat ist nicht betroffen – nur dieses Steuerelement funktioniert nicht mehr.",
+      "retry": "Wiederholen",
+      "retry_loading": "{{label}} erneut laden",
+      "could_not_load": "{{label}} konnte nicht geladen werden",
+      "loading": "{{label}} wird geladen…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

@@ -5530,7 +5530,10 @@
       "sketch_desc": "画个草图；会附上图片和可编辑源文件",
       "optimize_failed": "无法优化提示词。已恢复原始文本。",
       "optimize_failed_elsewhere": "无法优化在另一个会话中发起的提示词。原始文本已在该会话中恢复。",
-      "more_actions": "更多操作"
+      "more_actions": "更多操作",
+      "session_control_needs_attention": "需要处理",
+      "session_control_ready": "就绪",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -7807,6 +7810,16 @@
     },
     "pinSurfaceButton": {
       "pin_limit_reached": "侧边栏最多置顶 {{n}} 项 - 请先取消置顶一项"
+    },
+    "sessionControlHost": {
+      "controls_unavailable": "会话控件不可用",
+      "failed": "{{label}} 失败",
+      "chat_unaffected": "聊天不受影响——仅此控件停止工作。",
+      "retry": "重试",
+      "retry_loading": "重试加载 {{label}}",
+      "could_not_load": "无法加载 {{label}}",
+      "loading": "正在加载 {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

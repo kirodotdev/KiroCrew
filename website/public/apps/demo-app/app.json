@@ -19,5 +19,15 @@
   "permissions": {
     "api": ["/api/agents", "/api/status"],
     "events": ["agent:status"]
+  },
+  "contributes": {
+    "sessionControls": [
+      {
+        "id": "demo-session",
+        "entryPoint": "session-control.mjs",
+        "label": "Demo session control",
+        "icon": "Tag"
+      }
+    ]
   }
 }

@@ -1,21 +1,21 @@
 ---
 title: App Session Controls — a composer seam for per-chat app state
-status: in-progress
+status: accepted
 author: omerrubi
 created: 2026-08-31
 last-audited: 2026-09-01
 audited-at: 1d705a03f
 doc-pr:
-implementation-prs: []
+implementation-prs: [7573]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: App Session Controls — a composer seam for per-chat app state
 
-- Status: in-progress — the design below is implemented and tested on an active
-  branch, but no PR is open yet. Nothing is on main. §4 describes code that
-  exists; §5 and §9 describe what has not been decided.
+- Status: accepted — this document ships in the same PR as its implementation
+  (#7573), so §4 describes code that lands with it rather than code on a branch.
+  §5 and §9 describe what has not been decided.
 - Author: omerrubi
 - Created: 2026-08-31
 - Related: `rfc-navigation-placement-seam.md` (the sibling problem — a manifest
@@ -28,7 +28,7 @@ superseded-by: []
 
 ## Summary
 
-Add `ui.sessionControls[]` to the app manifest, and the composer-bar host that
+Add `contributes.sessionControls[]` to the app manifest, and the composer-bar host that
 renders it. An app declares a compact control; the dashboard renders it as a chip
 beside the agent, model and project chips, and hands the control **the active
 session's identity** when the user opens it. An optional `statusPath` lets the
@@ -48,7 +48,7 @@ Verified on main `1d705a03f` (2026-09-01):
   `website/src/app-sdk/index.ts` is `{ name, version, permissions }`, and `AppApi`
   is five HTTP verbs. The chat modules the SDK exports do carry a slot key — but
   always one the **app itself supplies**: `ChatEmbed` and `ChatPanel` take
-  `slotKey` as a prop (`ChatEmbed.tsx:22`, `ChatPanel.tsx:18`), and
+  `slotKey` as a prop, and
   `useChatSession` derives one from a path the app passes in. Grepping the
   chat/session modules for `activeSession` or `currentSession` returns nothing.
   There is no host→app channel for the session on screen; every existing path is
@@ -58,14 +58,14 @@ Verified on main `1d705a03f` (2026-09-01):
   "workspace-scoped chat session management for apps" and takes a
   `workspacePath` the app supplies. Its slot is a deterministic function of that
   input: `const slotName = appName + '-' + hashStr(workspacePath)`
-  (`website/src/app-sdk/useChatSession.ts:67`). So it answers *"a session for this
+  (`slotName` in `website/src/app-sdk/useChatSession.ts`). So it answers *"a session for this
   path, creating one if needed"*. It cannot answer *"the session on screen right
   now"*, and no amount of calling it will.
 
 - **The manifest's UI surfaces are all session-blind.** `UIConfig`
-  (`src/kiro_crew/apps/manifest.py:476`) declares `entry`, `pages`, `overlays`
+  (`UIConfig` in `src/kiro_crew/apps/manifest.py`) declares `entry`, `pages`, `overlays`
   and `sidebar`. A `UIPage` is routed and full-surface; a `UIOverlay`
-  (`manifest.py:422`) is explicitly *"not routed: it floats above whatever the
+  (`UIOverlay`) is explicitly *"not routed: it floats above whatever the
   user is looking at"*, and its required `replaces` field names a host slot the
   app **takes over** while enabled. None of the four carries a session.
 
@@ -108,9 +108,10 @@ belongs beside them, and nowhere else.
 
 ## 4. Design
 
-### 4.1 Manifest — `ui.sessionControls[]`
+### 4.1 Manifest — `contributes.sessionControls[]`
 
-`UISessionControl` joins `UIConfig`, alongside the four existing UI fields:
+`SessionControlContribution` joins `Contributes`, alongside the contributed
+commands #7423 established there:
 
 | Field | Meaning |
 |---|---|
@@ -118,12 +119,11 @@ belongs beside them, and nowhere else.
 | `entryPoint` | ESM bundle path relative to `ui/` |
 | `label` | Accessible name, and the chip tooltip |
 | `icon` | lucide icon name |
-| `placement` | `"session-bar"` (the only value today) |
 | `statusPath` | Optional backend route reporting per-session chip state |
 
 Validation, enforced at install:
 
-- `MAX_SESSION_CONTROLS_PER_APP = 2` (`manifest.py:483`). A cap rather than an
+- `MAX_SESSION_CONTROLS_PER_APP = 2` (`manifest.py`). A cap rather than an
   unbounded list, because the composer is a fixed-width surface shared with the
   host's own chips. This bounds one manifest; §4.2 bounds the bar.
 - `id` must match `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
@@ -139,9 +139,13 @@ declaring the same `id` cannot collide.
 
 - A resolver turns the installed-app list into resolved controls, dropping
   duplicate keys and sorting by key for a stable render order.
-- **The composer renders at most three chips in total**, across all apps:
-  `MAX_INLINE_SESSION_CONTROLS = 3` (`website/src/hooks/useSessionControls.ts:30`),
-  applied as `out.slice(0, MAX_INLINE_SESSION_CONTROLS)` (`:186`). Controls past
+- **The composer renders at most two chips in total**, across all apps:
+  `MAX_INLINE_SESSION_CONTROLS = 2` (`website/src/hooks/useSessionControls.ts`),
+  applied as `out.slice(0, MAX_INLINE_SESSION_CONTROLS)` in `useSessionControls`. Two rather
+  than three because the chips render in their own separated region and
+  `max-two-buttons-per-row` (`website/AUTOSDE.yaml`, `blocking: true`) caps a
+  horizontal group at two action controls, so the region sits at the cap
+  rather than over it. Controls past
   the cap are **dropped, not overflowed**. That is a deliberate trade recorded in
   the code — the bar competes with the message input for one row, so an overflow
   menu is a follow-up and a dropped chip beats a composer that cannot be typed
@@ -162,7 +166,7 @@ declaring the same `id` cannot collide.
 
 **The props contract.** This is the public interface an app author codes
 against — `SessionControlContext` in
-`website/src/components/SessionControlHost.tsx:33`:
+`website/src/components/SessionControlHost.tsx`:
 
 ```ts
 export interface SessionControlContext {
@@ -178,9 +182,6 @@ export interface SessionControlContext {
   folderName?: string
   /** Working directory recorded for the session, when known. */
   cwd: string
-  agent: string
-  model: string
-  workspace: string
 }
 ```
 
@@ -190,13 +191,23 @@ committing a change.
 
 ### 4.3 Optional status — `statusPath`
 
-When declared, the host GETs `<backend.routes>/<statusPath>` with `session_key`
+When declared, the host GETs `<the app's own route base>/<statusPath>` with
+`session_key`
 always, `folder_id` when the chat is in a folder, and `folder_name` alongside it
 when known — a control holding a per-folder setting cannot answer without the
 folder, and a brand-new chat is exactly the case where it has no record of its
 own to fall back on. It reads `{ state, tooltip }`, where `state` is `ok` |
 `warn` | `none`; the chip tints with `--ok` or `--warn` respectively
-(`ChatInput.tsx:416-420`) and the tooltip is length-bounded.
+(the `sessionControls` chip render in `ChatInput.tsx`) and the tooltip is length-bounded.
+
+The route base is derived from the manifest, not declared: an app with
+`backend.entryPoint` runs its own backend process and is reverse-proxied at
+`/apps/<app>/api/`, while one with only `backend.hooks.routes` is registered
+in-gateway under `/api/apps/<app>/`. Both prefixes are constructed host-side from
+the app name, so `statusPath` remains the only app-authored segment. Picking one
+prefix for both was a real defect found in review — the hook prefix answers `502
+no reachable backend` for a process-backed app, which the chip would render as a
+permanently stateless control with nothing saying why.
 
 A control with no `statusPath` is never polled, and no poll is issued before a
 session exists. Polling **fails closed**: a third-party app that is down is not
@@ -220,7 +231,7 @@ the schema releasable on its own.
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | **S1** | Manifest schema + validation | `sessionControls` round-trips through `to_dict`/`from_dict`; the per-app cap is enforced; a bad `id` or `statusPath` is reported by `validate()` and does not raise; existing `pages` validation is unchanged |
-| **S2** | Resolver, host, composer chips | A declared control renders one chip, up to the global cap of three; opening it mounts the module in a dialog whose accessible name carries control and app; an app declaring none produces zero DOM change and zero requests |
+| **S2** | Resolver, host, composer chips | A declared control renders one chip, up to the global cap of two; opening it mounts the module in a dialog whose accessible name carries control and app; an app declaring none produces zero DOM change and zero requests |
 | **S3** | `statusPath` polling | A control with `statusPath` reflects `ok`/`warn`/`none`; one with none issues no request; a traversal or cross-origin `statusPath` is refused before any fetch |
 
 S3 is independently abandonable: without it the seam still works, and chips
@@ -231,16 +242,18 @@ simply carry no state until opened.
 The change is additive in both directions.
 
 - **An app that declares nothing is unaffected.** `UIConfig.from_dict` reads
-  `data.get("sessionControls", [])` (`manifest.py:610`), so a manifest without
+  `data.get("sessionControls", [])` (`manifest.py`), so a manifest without
   the key parses to an empty list and behaves exactly as before — no chip, no
   request, no DOM change.
 - **No existing manifest changes on disk.** `to_dict` emits the key only when
-  non-empty (`manifest.py:590`), so re-serializing an existing app's manifest
+  non-empty (`SessionControlContribution.to_dict`), so re-serializing an existing app's manifest
   produces byte-identical output.
 - **An older gateway ignores the field rather than failing.** `sessionControls`
-  is nested inside `ui`, and `UIConfig.from_dict` reads only the keys it knows,
-  so a build predating this change parses such a manifest without error and
-  simply renders no chip. An app can therefore declare a control and still
+  is nested inside `contributes`, and `Contributes.from_dict` reads only the keys
+  it knows, so a build predating this change parses such a manifest without error
+  and simply renders no chip. A build predating the `contributes` block itself
+  keeps the whole object in `extra` untouched, which is the same outcome by a
+  different route. An app can therefore declare a control and still
   install on an older host, degraded but working. This is also why the capability
   should be probed rather than gated on a version number.
 - **No wire or storage format changes.** The status route is a new GET on a path
@@ -249,7 +262,7 @@ The change is additive in both directions.
 ## 7. Security model
 
 - **`statusPath` is app-scoped and validated at three layers.** The backend
-  regex bounds charset and length at install (`manifest.py:1424`); the frontend
+  regex bounds charset and length at install (`_SESSION_CONTROL_STATUS_PATH_RE`); the frontend
   resolver independently refuses a path that would traverse into another app, go
   protocol-relative, reach another origin, or corrupt the appended query string,
   failing closed to an empty path; and the API client refuses again before the
@@ -259,10 +272,10 @@ The change is additive in both directions.
 - **No new privilege.** A control runs under its app's existing declared
   allowlist via `AppApiProvider`. Status polling is a GET to a route the app
   already declares in `backend.routes`.
-- **Bounded cost.** The bound that matters is the **global** cap of three
-  (§4.2), not the per-app cap of two: the per-app cap bounds one manifest, and
-  only the global cap bounds the bar and the number of pollers however many apps
-  are installed.
+- **Bounded cost.** The bound that matters is the **global** cap of two (§4.2).
+  It is the same number as the per-app cap but does different work: the per-app
+  cap bounds one manifest, and only the global cap bounds the bar and the number
+  of pollers however many apps are installed.
 - **The session key is given to an app the user installed and enabled**, and only
   for the session on screen. It is not a capability to enumerate other sessions:
   the host passes one identity, and the app has no listing route it did not
@@ -270,8 +283,9 @@ The change is additive in both directions.
 
 ## 8. Non-goals
 
-- Not a general-purpose composer plugin API. One placement value ships
-  (`session-bar`); more require their own argument.
+- Not a general-purpose composer plugin API. One surface ships — the composer
+  session bar. A second would need its own argument, and the manifest field to
+  select between them is deliberately deferred until there is one (§9.4).
 - Not a replacement for `ui.pages`. A control is compact and session-scoped;
   anything larger stays a page.
 - No cross-app state, and no host-mediated write path. A chip's only way to
@@ -287,19 +301,34 @@ The change is additive in both directions.
    this seam wait on that translation path, or ship untranslated labels and adopt
    it when it exists? Shipping first is what the implementation does today.
 2. **The global cap drops silently — should it overflow instead?** The composer
-   is capped at three controls and anything past the cap is dropped
-   (`useSessionControls.ts:186`), which the code itself flags as a follow-up. A
-   user with four contributing apps has one control that is simply absent, with
+   is capped at two controls and anything past the cap is dropped
+   (`useSessionControls`), which the code itself flags as a follow-up. A
+   user with three contributing apps has one control that is simply absent, with
    nothing disclosing it. An overflow menu, or at minimum a disclosure, is the
    open question — not whether a global cap should exist.
 3. **Should status be pushed rather than polled?** `rfc-local-notification-bus.md`
    has a bus whose Phase 2 is wired with no producer. A control's status change is
    a plausible producer, and would retire the poll.
-4. **Is `placement` premature?** It has one legal value. It exists so a second
-   surface does not need a breaking manifest change, but a field with one value
-   is also a field nobody has had to think about yet.
+4. **How does a second surface get selected?** An earlier draft shipped a
+   `placement` field for this, with `session-bar` as its only legal value. It was
+   removed before merge: nothing branched on it, so it was manifest schema —
+   which cannot be withdrawn once apps write it — bought against a surface that
+   does not exist. Adding a field when the second surface arrives is a
+   backward-compatible change; removing one is not. The same reasoning removed
+   `agent`, `model` and `workspace` from the props contract in §4.3.
 
 ## 10. Alternatives considered
+
+**Declare it under `ui` instead of `contributes`.** Rejected — and this is the
+namespace the seam first shipped with, so the correction is recorded rather than
+quietly applied. `Contributes` draws the line in its own docstring: `ui` is where
+an app declares surfaces of its OWN, while a contribution is a row inside a
+surface the host renders and controls. A composer chip is the second kind — the
+dashboard owns the bar, orders the chips and enforces the cap; the app supplies a
+row. #7423 established the block for exactly that, and #7955 / #7975 are defining
+fields in the same place. Because a manifest field cannot be withdrawn once apps
+write it (the §9.4 argument, applied to this seam), the namespace is settled once
+here rather than a PR at a time.
 
 **Reuse `ui.overlays`.** Rejected on two counts, both structural. An overlay's
 `replaces` field is required and names a host slot the app **takes over**, so the

@@ -170,6 +170,7 @@ Third-party and builtin apps that add their own pages, crons and MCP tools.
 | Installed app page | An app's own UI, served by the app | `/apps/:name` | `pages/AppPage.tsx` | app-owned | `POST /api/apps/{name}/token`, `POST /api/apps/{name}/open` |
 | App migration | Move an app's data after a packaging change | `/apps/migrate/:name` | `pages/MigrationPage.tsx` | `src/kiro_crew/apps/routes.py` | `DELETE /api/apps/{name}/migrate-cleanup` |
 | Builtin app surfaces | Top-level routes builtin apps claim | `/<app>` via the `/:builtinApp` catch-all | `apps/builtinRegistry.ts` → per-app page | per-app `backend/routes.py` | `POST /api/apps/<app>/...` per app |
+| App session controls | A compact per-chat control an app contributes to the composer, handed the active session's identity | Chip in the composer bar of any chat, when an enabled app declares `contributes.sessionControls` — no route of its own | `hooks/useSessionControls.ts`, `components/SessionControlHost.tsx`, `components/ChatInput.tsx` (chips), `pages/ChatPage.tsx` (wiring) | `src/kiro_crew/apps/manifest.py` (declaration + validation); the status route is app-owned | `GET /api/apps`, `GET /api/apps/{name}/{statusPath}` (in-gateway) or `GET /apps/{name}/api/{statusPath}` (process-backed) |
 
 `apps/builtinRegistry.ts` is the path→component table for builtin surfaces
 (22 entries: Worlds, Channels, Auto Improvement, Auto Research, AWS Control,

@@ -5620,7 +5620,10 @@
       "sketch_desc": "স্কেচ আঁকুন; ছবি এবং সম্পাদনাযোগ্য উৎস সংযুক্ত করে",
       "optimize_failed": "প্রম্পট অপ্টিমাইজ করা যায়নি। আপনার মূল লেখা পুনরুদ্ধার করা হয়েছে।",
       "optimize_failed_elsewhere": "অন্য সেশনে শুরু করা প্রম্পট অপ্টিমাইজ করা যায়নি। সেখানে মূল লেখা পুনরুদ্ধার করা হয়েছে।",
-      "more_actions": "আরও অ্যাকশন"
+      "more_actions": "আরও অ্যাকশন",
+      "session_control_needs_attention": "নজর দেওয়া দরকার",
+      "session_control_ready": "প্রস্তুত",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",
@@ -7914,6 +7917,16 @@
     },
     "pinSurfaceButton": {
       "pin_limit_reached": "সাইডবারে সর্বোচ্চ {{n}}টি পিন - প্রথমে একটি আনপিন করুন"
+    },
+    "sessionControlHost": {
+      "controls_unavailable": "সেশন নিয়ন্ত্রণ অনুপলব্ধ",
+      "failed": "{{label}} ব্যর্থ হয়েছে",
+      "chat_unaffected": "আপনার চ্যাট অপ্রভাবিত — শুধু এই নিয়ন্ত্রণটি কাজ করা বন্ধ করেছে।",
+      "retry": "পুনরায় চেষ্টা করুন",
+      "retry_loading": "{{label}} লোড করার পুনরায় চেষ্টা করুন",
+      "could_not_load": "{{label}} লোড করা যায়নি",
+      "loading": "{{label}} লোড হচ্ছে…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

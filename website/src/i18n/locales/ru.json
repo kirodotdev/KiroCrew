@@ -5800,7 +5800,10 @@
       "sketch_desc": "Нарисуйте эскиз; прикрепляет изображение и его редактируемый исходник",
       "optimize_failed": "Не удалось оптимизировать промпт. Исходный текст восстановлен.",
       "optimize_failed_elsewhere": "Не удалось оптимизировать промпт, запущенный в другой сессии. Исходный текст восстановлен там.",
-      "more_actions": "Другие действия"
+      "more_actions": "Другие действия",
+      "session_control_needs_attention": "Требует внимания",
+      "session_control_ready": "Готово",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Список агентов",
@@ -8128,6 +8131,16 @@
     },
     "pinSurfaceButton": {
       "pin_limit_reached": "Не более {{n}} закреплённых элементов на боковой панели - сначала открепите один"
+    },
+    "sessionControlHost": {
+      "controls_unavailable": "Элементы управления сеансом недоступны",
+      "failed": "Сбой {{label}}",
+      "chat_unaffected": "Это не влияет на чат — перестал работать только этот элемент управления.",
+      "retry": "Повторить",
+      "retry_loading": "Повторить загрузку {{label}}",
+      "could_not_load": "Не удалось загрузить {{label}}",
+      "loading": "Загрузка {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {
