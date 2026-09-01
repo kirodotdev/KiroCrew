@@ -171,6 +171,25 @@ def _clamp(value: Any, limit: int = _MAX_TEXT) -> str:
     return value[:limit]
 
 
+def _clamp_tallied(value: Any, limit: int, label: str, lost: dict[str, int]) -> str:
+    """:func:`_clamp`, recording a truncation into *lost* under *label*.
+
+    A wrong-typed value is NOT tallied: resetting it to the default is the
+    documented coercion contract, not a loss. Only a string the caller gave
+    us in full and we shortened counts.
+    """
+    if isinstance(value, str) and len(value) > limit:
+        lost[label] = lost.get(label, 0) + 1
+    return _clamp(value, limit)
+
+
+def _lost_summary(lost: dict[str, int]) -> str:
+    """Render the tally as one line, widest loss first."""
+    return "; ".join(
+        f"{label} x{count}" for label, count in sorted(lost.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+
+
 @contextmanager
 def _locked(dir_path: Path) -> Iterator[None]:
     """Bounded cross-process exclusive lock over one ledger directory.
@@ -215,36 +234,64 @@ def _empty_state() -> dict[str, Any]:
     }
 
 
-def _coerce_state(raw: Any) -> dict[str, Any]:
+def _coerce_state(raw: Any, source: str = "") -> dict[str, Any]:
     """Fold whatever is on disk into a well-typed state record.
 
     Unknown fields are preserved (forward compatibility for a newer writer);
     known fields with the wrong type are reset to their defaults. Never raises.
+
+    Every cap this applies DISCARDS caller data, and ``record`` writes the
+    coerced record straight back, so a value that overflowed once is gone for
+    good. The reader already WARNs when it discards a whole file over
+    ``_MAX_STATE_BYTES``; a partial discard is the same loss in a smaller
+    quantity and is reported the same way. One line per read, not one per
+    field, and it is self-limiting: the write-back means the next read of the
+    same record finds nothing left to trim.
     """
     state = _empty_state()
     if not isinstance(raw, dict):
         return state
+    lost: dict[str, int] = {}
     extra = {k: v for k, v in raw.items() if k not in state}
     for key in ("goal", "phase", "next", "created_at", "last_progress_at", "finished_at"):
         if isinstance(raw.get(key), str):
-            state[key] = _clamp(raw[key])
+            state[key] = _clamp_tallied(raw[key], _MAX_TEXT, f"{key} truncated", lost)
     if isinstance(raw.get("tried"), list):
         tried: list[dict[str, str]] = []
         for item in raw["tried"]:
             if isinstance(item, dict) and isinstance(item.get("approach"), str):
                 tried.append(
                     {
-                        "approach": _clamp(item["approach"]),
-                        "rejected_because": _clamp(item.get("rejected_because", "")),
-                        "at": _clamp(item.get("at", ""), 64),
+                        "approach": _clamp_tallied(
+                            item["approach"], _MAX_TEXT, "tried[].approach truncated", lost
+                        ),
+                        "rejected_because": _clamp_tallied(
+                            item.get("rejected_because", ""),
+                            _MAX_TEXT,
+                            "tried[].rejected_because truncated",
+                            lost,
+                        ),
+                        "at": _clamp_tallied(item.get("at", ""), 64, "tried[].at truncated", lost),
                     }
                 )
+        if len(tried) > _MAX_TRIED:
+            lost[f"oldest tried[] aged out (cap {_MAX_TRIED})"] = len(tried) - _MAX_TRIED
         state["tried"] = tried[-_MAX_TRIED:]
     if isinstance(raw.get("artifacts"), dict):
         arts: dict[str, str] = {}
         for k, v in raw["artifacts"].items():
-            if isinstance(k, str) and isinstance(v, str) and len(arts) < _MAX_ARTIFACTS:
-                arts[_clamp(k, 128)] = _clamp(v)
+            if not isinstance(k, str) or not isinstance(v, str):
+                continue  # wrong type: the documented reset, not a loss
+            if len(arts) >= _MAX_ARTIFACTS:
+                # Which ones survive is insertion order, so the drop is
+                # arbitrary from the writer's point of view.
+                lost[f"artifacts dropped (cap {_MAX_ARTIFACTS})"] = (
+                    lost.get(f"artifacts dropped (cap {_MAX_ARTIFACTS})", 0) + 1
+                )
+                continue
+            arts[_clamp_tallied(k, 128, "artifact key truncated", lost)] = _clamp_tallied(
+                v, _MAX_TEXT, "artifact value truncated", lost
+            )
         state["artifacts"] = arts
     if isinstance(raw.get("events"), list):
         events: list[dict[str, str]] = []
@@ -252,16 +299,28 @@ def _coerce_state(raw: Any) -> dict[str, Any]:
             if isinstance(item, dict) and isinstance(item.get("text"), str):
                 events.append(
                     {
-                        "ts": _clamp(item.get("ts", ""), 64),
-                        "kind": _clamp(item.get("kind", ""), 32),
-                        "text": _clamp(item["text"]),
+                        "ts": _clamp_tallied(item.get("ts", ""), 64, "events[].ts truncated", lost),
+                        "kind": _clamp_tallied(
+                            item.get("kind", ""), 32, "events[].kind truncated", lost
+                        ),
+                        "text": _clamp_tallied(
+                            item["text"], _MAX_TEXT, "events[].text truncated", lost
+                        ),
                     }
                 )
+        if len(events) > _MAX_EVENTS:
+            lost[f"oldest events[] aged out (cap {_MAX_EVENTS})"] = len(events) - _MAX_EVENTS
         state["events"] = events[-_MAX_EVENTS:]
     schema = raw.get("schema")
     if isinstance(schema, int) and not isinstance(schema, bool) and schema > 0:
         state["schema"] = schema
     state.update(extra)
+    if lost:
+        logger.warning(
+            "ledger state coerced with data loss%s: %s",
+            f" ({source})" if source else "",
+            _lost_summary(lost),
+        )
     return state
 
 
@@ -274,7 +333,7 @@ def _read_state_unlocked(dir_path: Path) -> dict[str, Any]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return _empty_state()
-    return _coerce_state(raw)
+    return _coerce_state(raw, source=dir_path.name)
 
 
 def read_state(slot_key: str) -> dict[str, Any]:
