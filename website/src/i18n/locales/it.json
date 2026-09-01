@@ -7120,6 +7120,8 @@
       "trust_needed_hint": "Da questo progetto. Selezionala per esaminarla e considerare attendibile la cartella."
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "Impossibile caricare i comandi — Ctrl+Invio invia il messaggio",
+      "commands_load_failed_enter_sends": "Impossibile caricare i comandi — Invio invia il messaggio",
       "desc_agent": "Cambia o gestisci l’agente attivo",
       "desc_changelog": "Mostra il changelog della versione",
       "desc_chat": "Salva o carica una sessione di chat",
@@ -7149,6 +7151,7 @@
       "desc_tools": "Mostra gli strumenti disponibili",
       "desc_usage": "Mostra informazioni su fatturazione e utilizzo",
       "desc_workflow": "Elenca o esegui un workflow salvato per nome",
+      "loading_commands": "Caricamento dei comandi…",
       "no_matching_commands_ctrl_enter_sends": "Nessun comando corrispondente — Ctrl+Invio invia il messaggio",
       "no_matching_commands_enter_sends": "Nessun comando corrispondente — Invio invia il messaggio"
     },

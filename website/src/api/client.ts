@@ -33,6 +33,12 @@ import { withDeadline } from '../lib/withDeadline'
  *  the 9.76s case that still completed and cuts off the pathological ones.
  *  Rationale in the CR description. */
 export const SKILLS_TIMEOUT_MS = 15_000
+
+/** Deadline for `api.slashCommands`. Same value as the `$`-menu's above, for the
+ *  same reason and against the same gateway: both menus are composer affordances
+ *  whose fetch blocks Enter while it is unsettled, so a divergent bound here
+ *  would only be a second number to explain. Rationale in the CR description. */
+export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 import { installApiTransport } from './apiTransport'
 import type { SessionSummary } from '../types/sessionSummary'
 import { queryClient } from './queryClient'
@@ -2421,7 +2427,11 @@ export const api = {
   models: () => fetch('/api/models').then(j),
   effortLevels: (slot?: string) =>
     fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
-  slashCommands: () => fetch('/api/slash-commands').then(j),
+  // Bounded HERE, not per initiator: react-query dedupes on the key, so the
+  // weakest initiator would otherwise decide whether the promise is bounded.
+  slashCommands: (signal?: AbortSignal) =>
+    withDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, s =>
+      fetch('/api/slash-commands', { signal: s }).then(j)),
   chatSlotAgent: (slot: string, agent: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent }).then(j) as Promise<{ ok?: boolean; agent?: string; workspace?: string }>,
   chatSlotModel: (slot: string, model: string) =>

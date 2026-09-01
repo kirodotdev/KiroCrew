@@ -6910,6 +6910,8 @@
       "trust_needed_hint": "このプロジェクトのスキルです。選択すると内容を確認してフォルダーを信頼できます。"
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "コマンドを読み込めませんでした — Ctrl+Enter でメッセージを送信します",
+      "commands_load_failed_enter_sends": "コマンドを読み込めませんでした — Enter でメッセージを送信します",
       "desc_agent": "アクティブなエージェントを切り替えるか管理する",
       "desc_changelog": "リリースチェンジログを表示する",
       "desc_chat": "チャットセッションを保存または読み込む",
@@ -6939,6 +6941,7 @@
       "desc_tools": "利用可能なツールを表示する",
       "desc_usage": "課金と使用情報を表示する",
       "desc_workflow": "保存済みワークフローを名前で一覧表示または実行する",
+      "loading_commands": "コマンドを読み込み中…",
       "no_matching_commands_ctrl_enter_sends": "一致するコマンドがありません — Ctrl+Enter でメッセージを送信します",
       "no_matching_commands_enter_sends": "一致するコマンドがありません — Enter でメッセージを送信します"
     },

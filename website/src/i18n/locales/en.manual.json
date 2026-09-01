@@ -2408,6 +2408,8 @@
       "title_md": "Medium width"
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "Couldn't load commands — Ctrl+Enter sends the message",
+      "commands_load_failed_enter_sends": "Couldn't load commands — Enter sends the message",
       "desc_agent": "Switch or manage the active agent",
       "desc_changelog": "Show the release changelog",
       "desc_chat": "Save or load a chat session",
@@ -2437,6 +2439,7 @@
       "desc_tools": "Show available tools",
       "desc_usage": "Show billing and usage information",
       "desc_workflow": "List or run a saved workflow by name",
+      "loading_commands": "Loading commands…",
       "no_matching_commands_ctrl_enter_sends": "No matching commands — Ctrl+Enter sends the message",
       "no_matching_commands_enter_sends": "No matching commands — Enter sends the message"
     },

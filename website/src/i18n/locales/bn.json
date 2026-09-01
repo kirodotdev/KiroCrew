@@ -7015,6 +7015,8 @@
       "trust_needed_hint": "এই প্রকল্প থেকে। যাচাই করে ফোল্ডার বিশ্বাস করতে এটি বেছে নাও।"
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "কমান্ড লোড করা যায়নি — Ctrl+Enter বার্তা পাঠাবে",
+      "commands_load_failed_enter_sends": "কমান্ড লোড করা যায়নি — Enter বার্তা পাঠাবে",
       "desc_agent": "সক্রিয় এজেন্ট বদলাও বা পরিচালনা করো",
       "desc_changelog": "রিলিজ চেঞ্জলগ দেখাও",
       "desc_chat": "একটি চ্যাট সেশন সেভ বা লোড করো",
@@ -7044,6 +7046,7 @@
       "desc_tools": "যে টুলগুলো আছে তা দেখাও",
       "desc_usage": "বিলিং আর ব্যবহারের তথ্য দেখাও",
       "desc_workflow": "নাম দিয়ে সংরক্ষিত ওয়ার্কফ্লো দেখাও বা চালাও",
+      "loading_commands": "কমান্ড লোড হচ্ছে…",
       "no_matching_commands_ctrl_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Ctrl+Enter বার্তা পাঠাবে",
       "no_matching_commands_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Enter বার্তা পাঠাবে"
     },

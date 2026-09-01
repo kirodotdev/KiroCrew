@@ -7015,6 +7015,8 @@
       "trust_needed_hint": "Aus diesem Projekt. Auswählen, um zu prüfen und dem Ordner zu vertrauen."
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "Befehle konnten nicht geladen werden — Ctrl+Enter sendet die Nachricht",
+      "commands_load_failed_enter_sends": "Befehle konnten nicht geladen werden — Enter sendet die Nachricht",
       "desc_agent": "Aktiven Agenten wechseln oder verwalten",
       "desc_changelog": "Das Änderungsprotokoll der Version anzeigen",
       "desc_chat": "Eine Chat-Sitzung speichern oder laden",
@@ -7044,6 +7046,7 @@
       "desc_tools": "Verfügbare Werkzeuge anzeigen",
       "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen",
       "desc_workflow": "Gespeicherte Workflows nach Namen auflisten oder ausführen",
+      "loading_commands": "Befehle werden geladen…",
       "no_matching_commands_ctrl_enter_sends": "Keine passenden Befehle — Ctrl+Enter sendet die Nachricht",
       "no_matching_commands_enter_sends": "Keine passenden Befehle — Enter sendet die Nachricht"
     },

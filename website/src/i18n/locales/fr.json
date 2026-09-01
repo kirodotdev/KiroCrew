@@ -7120,6 +7120,8 @@
       "trust_needed_hint": "De ce projet. Sélectionne-la pour l’examiner et approuver le dossier."
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "Impossible de charger les commandes — Ctrl+Enter envoie le message",
+      "commands_load_failed_enter_sends": "Impossible de charger les commandes — Enter envoie le message",
       "desc_agent": "Changer ou gérer l’agent actif",
       "desc_changelog": "Afficher le journal des modifications de la version",
       "desc_chat": "Enregistrer ou charger une session de chat",
@@ -7149,6 +7151,7 @@
       "desc_tools": "Afficher les outils disponibles",
       "desc_usage": "Afficher les informations de facturation et d’utilisation",
       "desc_workflow": "Lister ou exécuter un workflow enregistré par son nom",
+      "loading_commands": "Chargement des commandes…",
       "no_matching_commands_ctrl_enter_sends": "Aucune commande correspondante — Ctrl+Enter envoie le message",
       "no_matching_commands_enter_sends": "Aucune commande correspondante — Enter envoie le message"
     },

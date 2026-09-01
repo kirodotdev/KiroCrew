@@ -6910,6 +6910,8 @@
       "trust_needed_hint": "이 프로젝트의 스킬입니다. 선택하면 내용을 확인하고 폴더를 신뢰할 수 있습니다."
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "명령을 불러올 수 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "commands_load_failed_enter_sends": "명령을 불러올 수 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
       "desc_agent": "활성 에이전트를 전환하거나 관리합니다",
       "desc_changelog": "릴리스 변경 로그를 표시합니다",
       "desc_chat": "채팅 세션을 저장하거나 불러옵니다",
@@ -6939,6 +6941,7 @@
       "desc_tools": "사용할 수 있는 도구를 표시합니다",
       "desc_usage": "청구 및 사용량 정보를 표시합니다",
       "desc_workflow": "저장된 워크플로를 이름으로 나열하거나 실행합니다",
+      "loading_commands": "명령을 불러오는 중…",
       "no_matching_commands_ctrl_enter_sends": "일치하는 명령 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_commands_enter_sends": "일치하는 명령 없음 — Enter 키를 누르면 메시지가 전송됩니다"
     },

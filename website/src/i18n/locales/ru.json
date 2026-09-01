@@ -7225,6 +7225,8 @@
       "trust_needed_hint": "Из этого проекта. Выбери его, чтобы просмотреть и доверять папке."
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "Не удалось загрузить команды — Ctrl+Enter отправит сообщение",
+      "commands_load_failed_enter_sends": "Не удалось загрузить команды — Enter отправит сообщение",
       "desc_agent": "Переключить активного агента или управлять им",
       "desc_changelog": "Показать журнал изменений версии",
       "desc_chat": "Сохранить или загрузить сессию чата",
@@ -7254,6 +7256,7 @@
       "desc_tools": "Показать доступные инструменты",
       "desc_usage": "Показать сведения о биллинге и расходе",
       "desc_workflow": "Показать или запустить сохранённый процесс по имени",
+      "loading_commands": "Загрузка команд…",
       "no_matching_commands_ctrl_enter_sends": "Нет подходящих команд — Ctrl+Enter отправит сообщение",
       "no_matching_commands_enter_sends": "Нет подходящих команд — Enter отправит сообщение"
     },

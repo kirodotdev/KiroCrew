@@ -7015,6 +7015,8 @@
       "trust_needed_hint": "इस प्रोजेक्ट से। इसे चुनो ताकि जाँच कर फ़ोल्डर पर भरोसा कर सको।"
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "कमांड लोड नहीं हो सके — Ctrl+Enter संदेश भेज देगा",
+      "commands_load_failed_enter_sends": "कमांड लोड नहीं हो सके — Enter संदेश भेज देगा",
       "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",
       "desc_changelog": "रिलीज़ चेंजलॉग दिखाएँ",
       "desc_chat": "चैट सत्र सहेजें या लोड करें",
@@ -7044,6 +7046,7 @@
       "desc_tools": "उपलब्ध टूल दिखाएँ",
       "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ",
       "desc_workflow": "सहेजे गए वर्कफ़्लो को नाम से सूचीबद्ध करें या चलाएँ",
+      "loading_commands": "कमांड लोड हो रहे हैं…",
       "no_matching_commands_ctrl_enter_sends": "कोई मेल खाता कमांड नहीं — Ctrl+Enter संदेश भेज देगा",
       "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा"
     },

@@ -6910,6 +6910,8 @@
       "trust_needed_hint": "来自此项目。选择它即可查看并信任此文件夹。"
     },
     "slashCommandMenu": {
+      "commands_load_failed_ctrl_enter_sends": "无法加载命令 —— 按 Ctrl+Enter 直接发送消息",
+      "commands_load_failed_enter_sends": "无法加载命令 —— 按 Enter 直接发送消息",
       "desc_agent": "切换或管理当前代理",
       "desc_changelog": "显示版本更新日志",
       "desc_chat": "保存或加载聊天会话",
@@ -6939,6 +6941,7 @@
       "desc_tools": "显示可用工具",
       "desc_usage": "显示计费和用量信息",
       "desc_workflow": "按名称列出或运行已保存的工作流",
+      "loading_commands": "正在加载命令…",
       "no_matching_commands_ctrl_enter_sends": "无匹配的命令 —— 按 Ctrl+Enter 直接发送消息",
       "no_matching_commands_enter_sends": "无匹配的命令 —— 按 Enter 直接发送消息"
     },
