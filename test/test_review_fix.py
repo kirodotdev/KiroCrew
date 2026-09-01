@@ -109,8 +109,7 @@ def test_default_groups_own_a_file_once_so_patches_cannot_overlap():
 
     groups = build_review_fix_groups(findings, None)
 
-    assert [(group.group_id, group.finding_keys, group.affected_files)
-            for group in groups] == [
+    assert [(group.group_id, group.finding_keys, group.affected_files) for group in groups] == [
         # group ids stay sequential in order of first appearance of each file.
         ("group-1", ["a1", "a2"], ["a.py"]),
         ("group-2", ["b1"], ["b.py"]),

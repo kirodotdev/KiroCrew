@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import stat
 import subprocess
@@ -21,7 +22,16 @@ _ROUTES = _APP_ROOT / "backend" / "routes.py"
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
-_rmtree = shutil.rmtree
+
+def _retry_readonly_removal(func, path, _exc_info):
+    """Let ``rmtree`` remove git's read-only object files on Windows."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _rmtree(path):
+    """rmtree that tolerates read-only files (Windows loose git objects)."""
+    shutil.rmtree(path, onerror=_retry_readonly_removal)
 
 
 def _load_routes_module():
@@ -443,7 +453,7 @@ class TestReReviewReconcileScopeGuard(unittest.IsolatedAsyncioTestCase):
         result = await self._review(session)
 
         self.assertEqual(result["status"], "completed")
-        by_status = {}
+        by_status: dict = {}
         for item in result["findings"]:
             by_status.setdefault(item["status"], []).append(item)
         # The fresh finding inherited the old disposition...
