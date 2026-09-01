@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -954,7 +955,11 @@ def _campaign_transition_lock(campaign_id: str) -> asyncio.Lock:
     return lock
 
 
-async def _settle_before_cancellation(task: "asyncio.Task[Any]") -> Any:
+async def _settle_before_cancellation(
+    task: "asyncio.Task[Any]",
+    *,
+    on_settled: "Callable[[asyncio.Task[Any]], None] | None" = None,
+) -> Any:
     """Await *task* and guarantee it SETTLES before cancellation propagates
     out of this coroutine.
 
@@ -964,6 +969,12 @@ async def _settle_before_cancellation(task: "asyncio.Task[Any]") -> Any:
     DELETE interleave and have its directory resurrected by the worker's
     ``mkdir``. Mirrors the shield-and-settle discipline of the terminal
     settlement in the watchdog path.
+
+    When *on_settled* is provided, it is invoked with the now-settled *task*
+    on the cancellation path only — after the settle loop and before the
+    original cancellation is re-raised — so a caller can retrieve and report
+    the worker outcome without letting it replace the shutdown cancellation.
+    When it is None the helper just re-raises the cancellation as before.
     """
     try:
         return await asyncio.shield(task)
@@ -978,6 +989,8 @@ async def _settle_before_cancellation(task: "asyncio.Task[Any]") -> Any:
             except Exception:
                 # The worker failed; the cancellation below still wins.
                 break
+        if on_settled is not None:
+            on_settled(task)
         raise cancelled
 
 
@@ -1479,26 +1492,11 @@ async def _settle_campaign_from_watchdog(
             await _remove_terminating_loop()
             _emit_sse({"type": status.value, "campaign_id": campaign_id})
 
-    settlement = asyncio.create_task(_settle())
-    try:
-        await asyncio.shield(settlement)
-    except asyncio.CancelledError as cancelled:
-        # Status persistence and loop removal are one terminal transition. A
-        # shutdown cancellation after SQLite commits must not leave an active
-        # persisted loop that start() can re-arm for a terminal campaign.
-        while not settlement.done():
-            try:
-                await asyncio.shield(settlement)
-            except asyncio.CancelledError:
-                # Repeated shutdown cancellation must not cancel the cleanup
-                # task or let the watchdog resume its polling loop.
-                continue
-            except Exception:
-                # Retrieve and report the worker failure below without letting
-                # it replace the watchdog's shutdown cancellation.
-                break
+    def _report_terminal_settlement(settled: "asyncio.Task[Any]") -> None:
+        # Retrieve and report the worker failure without letting it replace the
+        # watchdog's shutdown cancellation.
         try:
-            settlement.result()
+            settled.result()
         except asyncio.CancelledError:
             logger.error("auto_research terminal settlement was cancelled")
         except Exception:
@@ -1506,7 +1504,13 @@ async def _settle_campaign_from_watchdog(
             # campaign remains non-terminal and its active loop can retry after
             # restart instead of leaving shutdown stuck in the watchdog loop.
             logger.exception("auto_research terminal settlement failed during shutdown")
-        raise cancelled
+
+    # Status persistence and loop removal are one terminal transition. A
+    # shutdown cancellation after SQLite commits must not leave an active
+    # persisted loop that start() can re-arm for a terminal campaign, so settle
+    # the cleanup task before the cancellation propagates.
+    settlement = asyncio.create_task(_settle())
+    await _settle_before_cancellation(settlement, on_settled=_report_terminal_settlement)
 
 
 async def _watchdog_loop(app: web.Application | None = None) -> None:
