@@ -5763,8 +5763,10 @@
       "no_matches_enter_sends": "कोई मेल खाती फ़ाइल नहीं — Enter संदेश भेज देगा",
       "open_in_viewer": "व्यूअर में खोलें",
       "remove_folder": "फ़ोल्डर हटाएँ",
-      "searching": "खोज रहे हैं…",
-      "type_2_chars_to_search_files": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें…"
+      "searching_ctrl_enter_held": "खोज रहे हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
+      "searching_enter_held": "खोज रहे हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
+      "type_2_chars_to_search_files_ctrl_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
+      "type_2_chars_to_search_files_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा"
     },
     "fileRenderers": {
       "download": "डाउनलोड करें",
@@ -7018,8 +7020,8 @@
       "title": "भरोसेमंद प्रोजेक्ट फ़ोल्डर"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "स्किल लोड हो रही हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; भेजें बटन का उपयोग करें",
-      "loading_skills_enter_held": "स्किल लोड हो रही हैं… — Enter अभी संदेश नहीं भेजेगा; भेजें बटन का उपयोग करें",
+      "loading_skills_ctrl_enter_held": "स्किल लोड हो रही हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
+      "loading_skills_enter_held": "स्किल लोड हो रही हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "no_matching_skills": "कोई मेल खाती स्किल नहीं",
       "no_matching_skills_ctrl_enter_sends": "कोई मेल खाती स्किल नहीं — Ctrl+Enter संदेश भेज देगा",
       "no_matching_skills_enter_sends": "कोई मेल खाती स्किल नहीं — Enter संदेश भेज देगा",
@@ -7065,7 +7067,8 @@
       "desc_tools": "उपलब्ध टूल दिखाएँ",
       "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ",
       "desc_workflow": "सहेजे गए वर्कफ़्लो को नाम से सूचीबद्ध करें या चलाएँ",
-      "loading_commands": "कमांड लोड हो रहे हैं…",
+      "loading_commands_ctrl_enter_held": "कमांड लोड हो रही हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
+      "loading_commands_enter_held": "कमांड लोड हो रही हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "no_matching_commands_ctrl_enter_sends": "कोई मेल खाता कमांड नहीं — Ctrl+Enter संदेश भेज देगा",
       "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा"
     },

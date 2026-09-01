@@ -5668,8 +5668,10 @@
       "no_matches_enter_sends": "一致するファイルがありません — Enter でメッセージを送信します",
       "open_in_viewer": "ビューアで開く",
       "remove_folder": "フォルダーを削除",
-      "searching": "検索中…",
-      "type_2_chars_to_search_files": "ファイルとフォルダーを検索するには 2 文字以上入力してください…"
+      "searching_ctrl_enter_held": "検索中… — Ctrl+Enter ではまだ送信されません。Esc を押して閉じると、Ctrl+Enter でメッセージを送信できます",
+      "searching_enter_held": "検索中… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
+      "type_2_chars_to_search_files_ctrl_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Ctrl+Enter ではまだ送信されません。Esc を押して閉じると、Ctrl+Enter でメッセージを送信できます",
+      "type_2_chars_to_search_files_enter_held": "ファイルとフォルダーを検索するには 2 文字以上入力してください… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます"
     },
     "fileRenderers": {
       "download": "ダウンロード",
@@ -6913,8 +6915,8 @@
       "title": "信頼済みのプロジェクトフォルダー"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "スキルを読み込み中… — Ctrl+Enter ではまだ送信されません。送信ボタンを使用してください",
-      "loading_skills_enter_held": "スキルを読み込み中… — Enter ではまだ送信されません。送信ボタンを使用してください",
+      "loading_skills_ctrl_enter_held": "スキルを読み込み中… — Ctrl+Enter ではまだ送信されません。Esc を押して閉じると、Ctrl+Enter でメッセージを送信できます",
+      "loading_skills_enter_held": "スキルを読み込み中… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
       "no_matching_skills": "一致するスキルがありません",
       "no_matching_skills_ctrl_enter_sends": "一致するスキルがありません — Ctrl+Enter でメッセージを送信します",
       "no_matching_skills_enter_sends": "一致するスキルがありません — Enter でメッセージを送信します",
@@ -6960,7 +6962,8 @@
       "desc_tools": "利用可能なツールを表示する",
       "desc_usage": "課金と使用情報を表示する",
       "desc_workflow": "保存済みワークフローを名前で一覧表示または実行する",
-      "loading_commands": "コマンドを読み込み中…",
+      "loading_commands_ctrl_enter_held": "コマンドを読み込み中… — Ctrl+Enter ではまだ送信されません。Esc を押して閉じると、Ctrl+Enter でメッセージを送信できます",
+      "loading_commands_enter_held": "コマンドを読み込み中… — Enter ではまだ送信されません。Esc を押して閉じると、Enter でメッセージを送信できます",
       "no_matching_commands_ctrl_enter_sends": "一致するコマンドがありません — Ctrl+Enter でメッセージを送信します",
       "no_matching_commands_enter_sends": "一致するコマンドがありません — Enter でメッセージを送信します"
     },

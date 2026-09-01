@@ -200,7 +200,7 @@ export default function SkillPickerMenu({
 
   if (!open || !anchorRef.current) return null
 
-  const { top, left, width, maxHeight } = menuGeometry(
+  const { above, top, bottom, left, width, maxHeight } = menuGeometry(
     anchorRef.current, results.length, 48, showScopeFooter ? SCOPE_FOOTER_H : 0,
   )
 
@@ -264,7 +264,7 @@ export default function SkillPickerMenu({
     // stays in the accessibility tree and in `title`.
     <div
       className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg py-1 animate-slide-up flex flex-col"
-      style={{ top, left, width: Math.min(width, 460), maxHeight }}
+      style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 460), maxHeight }}
     >
       <div
         role="listbox"

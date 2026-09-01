@@ -168,7 +168,7 @@ describe('SlashCommandMenu zero-match key release', () => {
     const onClose = vi.fn()
     render(<Harness input="/xyz" onSelect={onSelect} onClose={onClose} />)
     await waitFor(() => expect(mockApi.slashCommands).toHaveBeenCalled())
-    expect(await screen.findByText('Loading commands…')).toBeInTheDocument()
+    expect(await screen.findByText(/Loading commands…/)).toBeInTheDocument()
     expect(screen.queryByText(/No matching commands/)).not.toBeInTheDocument()
     expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
     expect(onClose).not.toHaveBeenCalled()

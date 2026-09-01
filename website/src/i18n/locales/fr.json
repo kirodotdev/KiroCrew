@@ -5858,8 +5858,10 @@
       "no_matches_enter_sends": "Aucun fichier correspondant — Enter envoie le message",
       "open_in_viewer": "Ouvrir dans la visionneuse",
       "remove_folder": "Retirer le dossier",
-      "searching": "Recherche…",
-      "type_2_chars_to_search_files": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers…"
+      "searching_ctrl_enter_held": "Recherche… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
+      "searching_enter_held": "Recherche… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
+      "type_2_chars_to_search_files_enter_held": "Saisissez 2 caractères ou plus pour rechercher des fichiers et dossiers… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message"
     },
     "fileRenderers": {
       "download": "Télécharger",
@@ -7123,8 +7125,8 @@
       "title": "Dossiers de projet approuvés"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "Chargement des compétences… — Ctrl+Enter n’envoie pas encore ; utilisez le bouton Envoyer",
-      "loading_skills_enter_held": "Chargement des compétences… — Enter n’envoie pas encore ; utilisez le bouton Envoyer",
+      "loading_skills_ctrl_enter_held": "Chargement des compétences… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
+      "loading_skills_enter_held": "Chargement des compétences… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "no_matching_skills": "Aucune compétence correspondante",
       "no_matching_skills_ctrl_enter_sends": "Aucune compétence correspondante — Ctrl+Enter envoie le message",
       "no_matching_skills_enter_sends": "Aucune compétence correspondante — Enter envoie le message",
@@ -7170,7 +7172,8 @@
       "desc_tools": "Afficher les outils disponibles",
       "desc_usage": "Afficher les informations de facturation et d’utilisation",
       "desc_workflow": "Lister ou exécuter un workflow enregistré par son nom",
-      "loading_commands": "Chargement des commandes…",
+      "loading_commands_ctrl_enter_held": "Chargement des commandes… — Ctrl+Enter n’envoie pas encore ; appuyez sur Esc, puis Ctrl+Enter envoie le message",
+      "loading_commands_enter_held": "Chargement des commandes… — Enter n’envoie pas encore ; appuyez sur Esc, puis Enter envoie le message",
       "no_matching_commands_ctrl_enter_sends": "Aucune commande correspondante — Ctrl+Enter envoie le message",
       "no_matching_commands_enter_sends": "Aucune commande correspondante — Enter envoie le message"
     },

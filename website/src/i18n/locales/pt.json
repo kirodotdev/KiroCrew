@@ -5858,8 +5858,10 @@
       "no_matches_enter_sends": "Nenhum arquivo correspondente — Enter envia a mensagem",
       "open_in_viewer": "Abrir no visualizador",
       "remove_folder": "Remover pasta",
-      "searching": "Pesquisando…",
-      "type_2_chars_to_search_files": "Digite 2+ caracteres para pesquisar arquivos e pastas…"
+      "searching_ctrl_enter_held": "Pesquisando… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
+      "searching_enter_held": "Pesquisando… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Digite 2+ caracteres para pesquisar arquivos e pastas… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
+      "type_2_chars_to_search_files_enter_held": "Digite 2+ caracteres para pesquisar arquivos e pastas… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem"
     },
     "fileRenderers": {
       "download": "Baixar",
@@ -7123,8 +7125,8 @@
       "title": "Pastas de projeto confiáveis"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "Carregando habilidades… — Ctrl+Enter ainda não envia; use o botão Enviar",
-      "loading_skills_enter_held": "Carregando habilidades… — Enter ainda não envia; use o botão Enviar",
+      "loading_skills_ctrl_enter_held": "Carregando habilidades… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
+      "loading_skills_enter_held": "Carregando habilidades… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
       "no_matching_skills": "Nenhuma habilidade correspondente",
       "no_matching_skills_ctrl_enter_sends": "Nenhuma habilidade correspondente — Ctrl+Enter envia a mensagem",
       "no_matching_skills_enter_sends": "Nenhuma habilidade correspondente — Enter envia a mensagem",
@@ -7170,7 +7172,8 @@
       "desc_tools": "Mostrar as ferramentas disponíveis",
       "desc_usage": "Mostrar informações de cobrança e uso",
       "desc_workflow": "Listar ou executar um fluxo salvo pelo nome",
-      "loading_commands": "Carregando comandos…",
+      "loading_commands_ctrl_enter_held": "Carregando comandos… — Ctrl+Enter ainda não envia; pressione Esc e depois Ctrl+Enter envia a mensagem",
+      "loading_commands_enter_held": "Carregando comandos… — Enter ainda não envia; pressione Esc e depois Enter envia a mensagem",
       "no_matching_commands_ctrl_enter_sends": "Nenhum comando correspondente — Ctrl+Enter envia a mensagem",
       "no_matching_commands_enter_sends": "Nenhum comando correspondente — Enter envia a mensagem"
     },

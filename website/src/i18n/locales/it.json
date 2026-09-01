@@ -5858,8 +5858,10 @@
       "no_matches_enter_sends": "Nessun file corrispondente — Invio invia il messaggio",
       "open_in_viewer": "Apri nel visualizzatore",
       "remove_folder": "Rimuovi cartella",
-      "searching": "Ricerca in corso…",
-      "type_2_chars_to_search_files": "Digita almeno 2 caratteri per cercare file e cartelle…"
+      "searching_ctrl_enter_held": "Ricerca in corso… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
+      "searching_enter_held": "Ricerca in corso… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
+      "type_2_chars_to_search_files_enter_held": "Digita almeno 2 caratteri per cercare file e cartelle… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio"
     },
     "fileRenderers": {
       "download": "Scarica",
@@ -7123,8 +7125,8 @@
       "title": "Cartelle di progetto attendibili"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "Caricamento delle skill… — Ctrl+Invio non invia ancora; usa il pulsante Invia",
-      "loading_skills_enter_held": "Caricamento delle skill… — Invio non invia ancora; usa il pulsante Invia",
+      "loading_skills_ctrl_enter_held": "Caricamento delle skill… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
+      "loading_skills_enter_held": "Caricamento delle skill… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
       "no_matching_skills": "Nessuna skill corrispondente",
       "no_matching_skills_ctrl_enter_sends": "Nessuna skill corrispondente — Ctrl+Invio invia il messaggio",
       "no_matching_skills_enter_sends": "Nessuna skill corrispondente — Invio invia il messaggio",
@@ -7170,7 +7172,8 @@
       "desc_tools": "Mostra gli strumenti disponibili",
       "desc_usage": "Mostra informazioni su fatturazione e utilizzo",
       "desc_workflow": "Elenca o esegui un workflow salvato per nome",
-      "loading_commands": "Caricamento dei comandi…",
+      "loading_commands_ctrl_enter_held": "Caricamento dei comandi… — Ctrl+Invio non invia ancora; premi Esc, poi Ctrl+Invio invia il messaggio",
+      "loading_commands_enter_held": "Caricamento dei comandi… — Invio non invia ancora; premi Esc, poi Invio invia il messaggio",
       "no_matching_commands_ctrl_enter_sends": "Nessun comando corrispondente — Ctrl+Invio invia il messaggio",
       "no_matching_commands_enter_sends": "Nessun comando corrispondente — Invio invia il messaggio"
     },

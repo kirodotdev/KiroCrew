@@ -18,6 +18,17 @@ describe('menuGeometry', () => {
     expect(g.maxHeight).toBe(MENU_MAX_HEIGHT)
   })
 
+  it('places an opens-above menu by `bottom`, independent of the row estimate', () => {
+    // A zero-row announcement's wrapped height varies by locale and width, which
+    // no count*rowH estimate predicts; pinning the bottom edge makes it moot.
+    const zeroRow = menuGeometry(anchorAt(500), 0, 48)
+    expect(zeroRow.above).toBe(true)
+    expect(zeroRow.bottom).toBe(window.innerHeight - 500 + 4)
+    // The property `top` placement lacked: the anchor does not move with count.
+    expect(menuGeometry(anchorAt(500), 3, 48).bottom).toBe(zeroRow.bottom)
+    expect(menuGeometry(anchorAt(500), 3, 48, 28).bottom).toBe(zeroRow.bottom)
+  })
+
   it('budgets extraH into an above-anchor menu: the top edge shifts up by exactly extraH', () => {
     // Non-row chrome (e.g. the skill picker's pinned scope footer) must move
     // the menu's top edge up, not overhang the anchor/composer below it.

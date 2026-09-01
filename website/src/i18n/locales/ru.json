@@ -5953,8 +5953,10 @@
       "no_matches_enter_sends": "Нет подходящих файлов — Enter отправит сообщение",
       "open_in_viewer": "Открыть в просмотрщике",
       "remove_folder": "Удалить папку",
-      "searching": "Поиск…",
-      "type_2_chars_to_search_files": "Введите 2+ символа для поиска файлов и папок…"
+      "searching_ctrl_enter_held": "Поиск… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
+      "searching_enter_held": "Поиск… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Введите 2+ символа для поиска файлов и папок… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
+      "type_2_chars_to_search_files_enter_held": "Введите 2+ символа для поиска файлов и папок… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение"
     },
     "fileRenderers": {
       "download": "Скачать",
@@ -7228,8 +7230,8 @@
       "title": "Доверенные папки проектов"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "Загрузка навыков… — Ctrl+Enter пока не отправляет; используйте кнопку «Отправить»",
-      "loading_skills_enter_held": "Загрузка навыков… — Enter пока не отправляет; используйте кнопку «Отправить»",
+      "loading_skills_ctrl_enter_held": "Загрузка навыков… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
+      "loading_skills_enter_held": "Загрузка навыков… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
       "no_matching_skills": "Нет подходящих навыков",
       "no_matching_skills_ctrl_enter_sends": "Нет подходящих навыков — Ctrl+Enter отправит сообщение",
       "no_matching_skills_enter_sends": "Нет подходящих навыков — Enter отправит сообщение",
@@ -7275,7 +7277,8 @@
       "desc_tools": "Показать доступные инструменты",
       "desc_usage": "Показать сведения о биллинге и расходе",
       "desc_workflow": "Показать или запустить сохранённый процесс по имени",
-      "loading_commands": "Загрузка команд…",
+      "loading_commands_ctrl_enter_held": "Загрузка команд… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
+      "loading_commands_enter_held": "Загрузка команд… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
       "no_matching_commands_ctrl_enter_sends": "Нет подходящих команд — Ctrl+Enter отправит сообщение",
       "no_matching_commands_enter_sends": "Нет подходящих команд — Enter отправит сообщение"
     },

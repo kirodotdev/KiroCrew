@@ -5763,8 +5763,10 @@
       "no_matches_enter_sends": "Keine passenden Dateien — Enter sendet die Nachricht",
       "open_in_viewer": "Im Betrachter öffnen",
       "remove_folder": "Ordner entfernen",
-      "searching": "Wird gesucht…",
-      "type_2_chars_to_search_files": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen…"
+      "searching_ctrl_enter_held": "Wird gesucht… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
+      "searching_enter_held": "Wird gesucht… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
+      "type_2_chars_to_search_files_enter_held": "Geben Sie 2+ Zeichen ein, um Dateien und Ordner zu suchen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht"
     },
     "fileRenderers": {
       "download": "Herunterladen",
@@ -7018,8 +7020,8 @@
       "title": "Vertraute Projektordner"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "Skills werden geladen… — Ctrl+Enter sendet noch nicht; nutze die Schaltfläche Senden",
-      "loading_skills_enter_held": "Skills werden geladen… — Enter sendet noch nicht; nutze die Schaltfläche Senden",
+      "loading_skills_ctrl_enter_held": "Skills werden geladen… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
+      "loading_skills_enter_held": "Skills werden geladen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
       "no_matching_skills": "Keine passenden Skills",
       "no_matching_skills_ctrl_enter_sends": "Keine passenden Skills — Ctrl+Enter sendet die Nachricht",
       "no_matching_skills_enter_sends": "Keine passenden Skills — Enter sendet die Nachricht",
@@ -7065,7 +7067,8 @@
       "desc_tools": "Verfügbare Werkzeuge anzeigen",
       "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen",
       "desc_workflow": "Gespeicherte Workflows nach Namen auflisten oder ausführen",
-      "loading_commands": "Befehle werden geladen…",
+      "loading_commands_ctrl_enter_held": "Befehle werden geladen… — Ctrl+Enter sendet noch nicht; drücken Sie Esc, dann sendet Ctrl+Enter die Nachricht",
+      "loading_commands_enter_held": "Befehle werden geladen… — Enter sendet noch nicht; drücken Sie Esc, dann sendet Enter die Nachricht",
       "no_matching_commands_ctrl_enter_sends": "Keine passenden Befehle — Ctrl+Enter sendet die Nachricht",
       "no_matching_commands_enter_sends": "Keine passenden Befehle — Enter sendet die Nachricht"
     },

@@ -5858,8 +5858,10 @@
       "no_matches_enter_sends": "No hay archivos coincidentes: Enter envía el mensaje",
       "open_in_viewer": "Abrir en el visor",
       "remove_folder": "Quitar carpeta",
-      "searching": "Buscando…",
-      "type_2_chars_to_search_files": "Escribe 2+ caracteres para buscar archivos y carpetas…"
+      "searching_ctrl_enter_held": "Buscando…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
+      "searching_enter_held": "Buscando…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Escribe 2+ caracteres para buscar archivos y carpetas…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
+      "type_2_chars_to_search_files_enter_held": "Escribe 2+ caracteres para buscar archivos y carpetas…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje"
     },
     "fileRenderers": {
       "download": "Descargar",
@@ -7123,8 +7125,8 @@
       "title": "Carpetas de proyecto de confianza"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "Cargando skills…: Ctrl+Enter aún no envía; usa el botón Enviar",
-      "loading_skills_enter_held": "Cargando skills…: Enter aún no envía; usa el botón Enviar",
+      "loading_skills_ctrl_enter_held": "Cargando skills…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
+      "loading_skills_enter_held": "Cargando skills…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
       "no_matching_skills": "No hay skills coincidentes",
       "no_matching_skills_ctrl_enter_sends": "No hay skills coincidentes: Ctrl+Enter envía el mensaje",
       "no_matching_skills_enter_sends": "No hay skills coincidentes: Enter envía el mensaje",
@@ -7170,7 +7172,8 @@
       "desc_tools": "Mostrar las herramientas disponibles",
       "desc_usage": "Mostrar la información de facturación y de uso",
       "desc_workflow": "Mostrar o ejecutar un flujo guardado por nombre",
-      "loading_commands": "Cargando comandos…",
+      "loading_commands_ctrl_enter_held": "Cargando comandos…: Ctrl+Enter aún no envía; pulsa Esc y luego Ctrl+Enter envía el mensaje",
+      "loading_commands_enter_held": "Cargando comandos…: Enter aún no envía; pulsa Esc y luego Enter envía el mensaje",
       "no_matching_commands_ctrl_enter_sends": "No hay comandos coincidentes: Ctrl+Enter envía el mensaje",
       "no_matching_commands_enter_sends": "No hay comandos coincidentes: Enter envía el mensaje"
     },

@@ -5763,8 +5763,10 @@
       "no_matches_enter_sends": "কোনো মিলে যাওয়া ফাইল নেই — Enter বার্তা পাঠাবে",
       "open_in_viewer": "ভিউয়ারে খুলুন",
       "remove_folder": "ফোল্ডার সরান",
-      "searching": "খোঁজা হচ্ছে…",
-      "type_2_chars_to_search_files": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন…"
+      "searching_ctrl_enter_held": "খোঁজা হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
+      "searching_enter_held": "খোঁজা হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
+      "type_2_chars_to_search_files_ctrl_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
+      "type_2_chars_to_search_files_enter_held": "ফাইল ও ফোল্ডার খুঁজতে 2+ অক্ষর টাইপ করুন… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে"
     },
     "fileRenderers": {
       "download": "ডাউনলোড",
@@ -7018,8 +7020,8 @@
       "title": "বিশ্বস্ত প্রজেক্ট ফোল্ডার"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "স্কিল লোড হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; পাঠান বোতাম ব্যবহার করুন",
-      "loading_skills_enter_held": "স্কিল লোড হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; পাঠান বোতাম ব্যবহার করুন",
+      "loading_skills_ctrl_enter_held": "স্কিল লোড হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
+      "loading_skills_enter_held": "স্কিল লোড হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
       "no_matching_skills": "মিলে যাওয়া কোনো স্কিল নেই",
       "no_matching_skills_ctrl_enter_sends": "মিলে যাওয়া কোনো স্কিল নেই — Ctrl+Enter বার্তা পাঠাবে",
       "no_matching_skills_enter_sends": "মিলে যাওয়া কোনো স্কিল নেই — Enter বার্তা পাঠাবে",
@@ -7065,7 +7067,8 @@
       "desc_tools": "যে টুলগুলো আছে তা দেখাও",
       "desc_usage": "বিলিং আর ব্যবহারের তথ্য দেখাও",
       "desc_workflow": "নাম দিয়ে সংরক্ষিত ওয়ার্কফ্লো দেখাও বা চালাও",
-      "loading_commands": "কমান্ড লোড হচ্ছে…",
+      "loading_commands_ctrl_enter_held": "কমান্ড লোড হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Ctrl+Enter বার্তা পাঠাবে",
+      "loading_commands_enter_held": "কমান্ড লোড হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; Esc চাপুন, তারপর Enter বার্তা পাঠাবে",
       "no_matching_commands_ctrl_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Ctrl+Enter বার্তা পাঠাবে",
       "no_matching_commands_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Enter বার্তা পাঠাবে"
     },

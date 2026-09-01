@@ -5668,8 +5668,10 @@
       "no_matches_enter_sends": "일치하는 파일이 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
       "open_in_viewer": "뷰어에서 열기",
       "remove_folder": "폴더 제거",
-      "searching": "검색 중…",
-      "type_2_chars_to_search_files": "파일 및 폴더를 검색하려면 2자 이상 입력하세요…"
+      "searching_ctrl_enter_held": "검색 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "searching_enter_held": "검색 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
+      "type_2_chars_to_search_files_ctrl_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "type_2_chars_to_search_files_enter_held": "파일 및 폴더를 검색하려면 2자 이상 입력하세요… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다"
     },
     "fileRenderers": {
       "download": "다운로드",
@@ -6913,8 +6915,8 @@
       "title": "신뢰하는 프로젝트 폴더"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "스킬을 불러오는 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. 전송 버튼을 사용하세요",
-      "loading_skills_enter_held": "스킬을 불러오는 중… — Enter 키로는 아직 전송되지 않습니다. 전송 버튼을 사용하세요",
+      "loading_skills_ctrl_enter_held": "스킬을 불러오는 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "loading_skills_enter_held": "스킬을 불러오는 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_skills": "일치하는 스킬 없음",
       "no_matching_skills_ctrl_enter_sends": "일치하는 스킬 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_skills_enter_sends": "일치하는 스킬 없음 — Enter 키를 누르면 메시지가 전송됩니다",
@@ -6960,7 +6962,8 @@
       "desc_tools": "사용할 수 있는 도구를 표시합니다",
       "desc_usage": "청구 및 사용량 정보를 표시합니다",
       "desc_workflow": "저장된 워크플로를 이름으로 나열하거나 실행합니다",
-      "loading_commands": "명령을 불러오는 중…",
+      "loading_commands_ctrl_enter_held": "명령을 불러오는 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "loading_commands_enter_held": "명령을 불러오는 중… — Enter 키로는 아직 전송되지 않습니다. Esc 키를 누른 뒤 Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_commands_ctrl_enter_sends": "일치하는 명령 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_commands_enter_sends": "일치하는 명령 없음 — Enter 키를 누르면 메시지가 전송됩니다"
     },

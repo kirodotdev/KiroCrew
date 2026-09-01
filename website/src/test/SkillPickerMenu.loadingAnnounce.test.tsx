@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useRef } from 'react'
+import { useRef, useState, useEffect } from 'react'
 
 /* ── Mock api/client BEFORE the component imports ── */
 const mockApi = vi.hoisted(() => ({ skills: vi.fn() }))
@@ -25,12 +25,24 @@ import type { SendMode } from '../pages/chat/ChatSettings'
  * that it is unchanged.
  */
 
-function Harness({ query = '', open = true, onSelect = vi.fn(), onClose = vi.fn(), sendOnEnter }: {
+function Harness({ query = '', open = true, onSelect = vi.fn(), onClose = vi.fn(), sendOnEnter, anchorTop }: {
   query?: string; open?: boolean; onSelect?: (i: { leaf: string; key: string }) => void
-  onClose?: () => void; sendOnEnter?: SendMode
+  onClose?: () => void; sendOnEnter?: SendMode; anchorTop?: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
+  const [, tick] = useState(0)
+  useEffect(() => {
+    // jsdom reports an all-zero rect, which reads as "no room above". Stub it so
+    // the opens-above branch under test is the one that runs.
+    if (anchorTop != null && ref.current) {
+      ref.current.getBoundingClientRect = () => ({
+        top: anchorTop, left: 40, width: 600, height: 44, bottom: anchorTop + 44,
+        right: 640, x: 40, y: anchorTop, toJSON: () => ({}),
+      }) as DOMRect
+    }
+    tick(1)
+  }, [anchorTop])
   return (
     <QueryClientProvider client={qc}>
       <div>
@@ -51,6 +63,18 @@ beforeEach(() => { vi.clearAllMocks() })
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('SkillPickerMenu — the loading branch announces that the send key will not send yet', () => {
+  it('pins the menu by its bottom edge so the announcement cannot cover the composer', async () => {
+    // This picker's declared change is copy, but it shares the geometry helper,
+    // so the placement change reaches it too — pinned here rather than implied.
+    mockApi.skills.mockImplementation(neverSettles())
+    render(<Harness anchorTop={500} />)
+    // The positioned element is the OUTER portal; role="listbox" is an inner
+    // node here (see the component's own note), so select by the style carrier.
+    const portal = (await screen.findByRole('status')).closest('div[style]') as HTMLElement
+    expect(portal.style.bottom).toBe(`${window.innerHeight - 500 + 4}px`)
+    expect(portal.style.top).toBe('')
+  })
+
   it('renders the loading state as a live region, not a mute div', async () => {
     mockApi.skills.mockImplementation(neverSettles())
     render(<Harness query="grill" />)
@@ -62,7 +86,7 @@ describe('SkillPickerMenu — the loading branch announces that the send key wil
     mockApi.skills.mockImplementation(neverSettles())
     render(<Harness query="grill" />)
     expect(await screen.findByRole('status'))
-      .toHaveTextContent('Loading skills… — Enter won’t send yet; use the Send button')
+      .toHaveTextContent('Loading skills… — Enter won’t send yet; press Esc, then Enter sends the message')
   })
 
   it('names Ctrl+Enter instead when that is the send binding', async () => {
@@ -71,7 +95,7 @@ describe('SkillPickerMenu — the loading branch announces that the send key wil
     mockApi.skills.mockImplementation(neverSettles())
     render(<Harness query="grill" sendOnEnter="ctrl-enter" />)
     expect(await screen.findByRole('status'))
-      .toHaveTextContent('Loading skills… — Ctrl+Enter won’t send yet; use the Send button')
+      .toHaveTextContent('Loading skills… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message')
   })
 
   it('NEGATIVE CONTROL: still swallows Enter while loading, and chooses nothing', async () => {

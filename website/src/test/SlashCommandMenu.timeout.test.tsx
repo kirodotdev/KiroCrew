@@ -110,6 +110,6 @@ describe('SlashCommandMenu — a timed-out commands fetch', () => {
     render(<Harness input="/compact" client={qc} />)
     expect(await screen.findByText('/compact')).toBeInTheDocument()
     await waitFor(() => expect(mockApi.slashCommands).toHaveBeenCalled())
-    expect(screen.queryByText('Loading commands…')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Loading commands…/)).not.toBeInTheDocument()
   })
 })

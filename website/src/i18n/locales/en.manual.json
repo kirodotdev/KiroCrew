@@ -1258,6 +1258,10 @@
       "setup_timeout": "Phone access did not reach a ready state. Re-check the setup, then try again."
     },
     "filePickerMenu": {
+      "type_2_chars_to_search_files_enter_held": "Type 2+ chars to search files and folders… — Enter won’t send yet; press Esc, then Enter sends the message",
+      "type_2_chars_to_search_files_ctrl_enter_held": "Type 2+ chars to search files and folders… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
+      "searching_enter_held": "Searching… — Enter won’t send yet; press Esc, then Enter sends the message",
+      "searching_ctrl_enter_held": "Searching… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
       "no_matches_enter_sends": "No matching files — Enter sends the message"
     },
@@ -2194,8 +2198,8 @@
       "root": "(root)"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "Loading skills… — Ctrl+Enter won’t send yet; use the Send button",
-      "loading_skills_enter_held": "Loading skills… — Enter won’t send yet; use the Send button",
+      "loading_skills_ctrl_enter_held": "Loading skills… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
+      "loading_skills_enter_held": "Loading skills… — Enter won’t send yet; press Esc, then Enter sends the message",
       "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
       "no_matching_skills_enter_sends": "No matching skills — Enter sends the message",
       "no_skills_mapped_to_agent": "No skills mapped to {{agent}}",
@@ -2416,6 +2420,8 @@
       "title_md": "Medium width"
     },
     "slashCommandMenu": {
+      "loading_commands_enter_held": "Loading commands… — Enter won’t send yet; press Esc, then Enter sends the message",
+      "loading_commands_ctrl_enter_held": "Loading commands… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "commands_load_failed_ctrl_enter_sends": "Couldn't load commands — Ctrl+Enter sends the message",
       "commands_load_failed_enter_sends": "Couldn't load commands — Enter sends the message",
       "desc_agent": "Switch or manage the active agent",
@@ -2447,7 +2453,6 @@
       "desc_tools": "Show available tools",
       "desc_usage": "Show billing and usage information",
       "desc_workflow": "List or run a saved workflow by name",
-      "loading_commands": "Loading commands…",
       "no_matching_commands_ctrl_enter_sends": "No matching commands — Ctrl+Enter sends the message",
       "no_matching_commands_enter_sends": "No matching commands — Enter sends the message"
     },

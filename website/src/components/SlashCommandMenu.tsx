@@ -222,7 +222,8 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
   // Render nothing until it lands, whether or not a refetch is in flight.
   if (displayed.length === 0 && filtered.length > 0) return null
 
-  const { top, left, width, maxHeight } = menuGeometry(anchorRef.current, Math.max(displayed.length, 1), 40)
+  const { above, top, bottom, left, width, maxHeight } =
+    menuGeometry(anchorRef.current, Math.max(displayed.length, 1), 40)
 
   /** Copy for the zero-row state. A settled ERROR is not a zero-match: both
    *  release Enter, but "No matching commands" asserts the live list was read
@@ -238,11 +239,17 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
         ? 'components.slashCommandMenu.no_matching_commands_ctrl_enter_sends'
         : 'components.slashCommandMenu.no_matching_commands_enter_sends')
 
+  // While the fetch is in flight the release gate is still closed, so the send
+  // key is swallowed here — name that hold instead of leaving it mute.
+  const loadingKey = sendOnEnter === 'ctrl-enter'
+    ? 'components.slashCommandMenu.loading_commands_ctrl_enter_held'
+    : 'components.slashCommandMenu.loading_commands_enter_held'
+
   return createPortal(
     <div
       className="fixed z-[9999] bg-card border border-border rounded-lg shadow-lg overflow-y-auto py-1 animate-slide-up"
       role="listbox"
-      style={{ top, left, width: Math.min(width, 380), maxHeight }}
+      style={{ ...(above ? { bottom } : { top }), left, width: Math.min(width, 380), maxHeight }}
     >
       {displayed.length === 0
         // Settled zero-match: Enter's meaning flips (pick → send), and the
@@ -251,7 +258,7 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
         // Named per the composer's send binding ('ctrl-enter' → bare Enter is
         // a newline); role="status" so screen-reader users hear the flip too.
         ? (isFetching
-            ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.slashCommandMenu.loading_commands')}</div>
+            ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(loadingKey)}</div>
             : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(emptyKey)}</div>)
         : displayed.map((cmd, i) => (
         <button

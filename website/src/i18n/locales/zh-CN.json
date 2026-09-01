@@ -5668,8 +5668,10 @@
       "no_matches_enter_sends": "没有匹配的文件 —— 按 Enter 直接发送消息",
       "open_in_viewer": "在查看器中打开",
       "remove_folder": "移除文件夹",
-      "searching": "搜索中…",
-      "type_2_chars_to_search_files": "输入 2 个以上字符搜索文件和文件夹…"
+      "searching_ctrl_enter_held": "搜索中… —— 按 Ctrl+Enter 暂时不会发送，按 Esc 关闭后可按 Ctrl+Enter 直接发送消息",
+      "searching_enter_held": "搜索中… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息",
+      "type_2_chars_to_search_files_ctrl_enter_held": "输入 2 个以上字符搜索文件和文件夹… —— 按 Ctrl+Enter 暂时不会发送，按 Esc 关闭后可按 Ctrl+Enter 直接发送消息",
+      "type_2_chars_to_search_files_enter_held": "输入 2 个以上字符搜索文件和文件夹… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息"
     },
     "fileRenderers": {
       "download": "下载",
@@ -6913,8 +6915,8 @@
       "title": "受信任的项目文件夹"
     },
     "skillPickerMenu": {
-      "loading_skills_ctrl_enter_held": "正在加载技能… —— 按 Ctrl+Enter 暂时不会发送，请使用发送按钮",
-      "loading_skills_enter_held": "正在加载技能… —— 按 Enter 暂时不会发送，请使用发送按钮",
+      "loading_skills_ctrl_enter_held": "正在加载技能… —— 按 Ctrl+Enter 暂时不会发送，按 Esc 关闭后可按 Ctrl+Enter 直接发送消息",
+      "loading_skills_enter_held": "正在加载技能… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息",
       "no_matching_skills": "无匹配的技能",
       "no_matching_skills_ctrl_enter_sends": "无匹配的技能 —— 按 Ctrl+Enter 直接发送消息",
       "no_matching_skills_enter_sends": "无匹配的技能 —— 按 Enter 直接发送消息",
@@ -6960,7 +6962,8 @@
       "desc_tools": "显示可用工具",
       "desc_usage": "显示计费和用量信息",
       "desc_workflow": "按名称列出或运行已保存的工作流",
-      "loading_commands": "正在加载命令…",
+      "loading_commands_ctrl_enter_held": "正在加载命令… —— 按 Ctrl+Enter 暂时不会发送，按 Esc 关闭后可按 Ctrl+Enter 直接发送消息",
+      "loading_commands_enter_held": "正在加载命令… —— 按 Enter 暂时不会发送，按 Esc 关闭后可按 Enter 直接发送消息",
       "no_matching_commands_ctrl_enter_sends": "无匹配的命令 —— 按 Ctrl+Enter 直接发送消息",
       "no_matching_commands_enter_sends": "无匹配的命令 —— 按 Enter 直接发送消息"
     },
