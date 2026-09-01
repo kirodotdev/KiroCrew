@@ -592,6 +592,9 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
         "/api/spawn",
         "/api/chat",
+        # ACP selector discovery uses the same loopback internal-secret path.
+        "/api/models",
+        "/api/effort-levels",
         "/api/lessons",
         "/api/crons",  # CLI cron trigger; prefix covers all sub-routes (consistent with spawn/taskrunner)
         "/api/taskrunner",
