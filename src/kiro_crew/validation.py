@@ -110,9 +110,10 @@ ALLOWED_LESSON_SCOPES = frozenset({"global", "workspace"})
 # Allowed cron schedule kinds
 ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 
-# Allowed hook events
+# Allowed hook events for the registration API. Diverges INTENTIONALLY from
+# agent._VALID_HOOK_EVENTS: kiro-cli rejects an event name it does not know.
 ALLOWED_HOOK_EVENTS = frozenset(
-    {"AgentSpawn", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
+    {"AgentSpawn", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionLaneChanged"}
 )
 
 # Valid agent name pattern (alphanumeric, hyphens, underscores)
