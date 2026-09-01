@@ -8060,6 +8060,10 @@
       "raw": "रॉ",
       "render_the_markdown_headings_lists_tables_links": "मार्कडाउन रेंडर करें - शीर्षक, सूचियाँ, तालिकाएँ, लिंक",
       "show_the_exact_markdown_source": "बिल्कुल वैसा मार्कडाउन सोर्स दिखाएँ"
+    },
+    "fileMenuContributions": {
+      "app_actions": "ऐप कार्रवाइयाँ",
+      "contributed_by": "ऐप: {{app}}"
     }
   },
   "hooks": {

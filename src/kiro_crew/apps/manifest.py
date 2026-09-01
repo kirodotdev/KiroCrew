@@ -12,8 +12,10 @@ app-specific fields.
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 import sys
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -1307,6 +1309,169 @@ _PANEL_TAB_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 #: truncation the app author is never told about.
 _MAX_PANEL_TABS_PER_APP = 8
 
+#: Most file-menu rows one app may contribute, mirroring `MAX_FILE_MENU_ITEMS_PER_APP`
+#: in `fileMenuContributions.tsx`. Lower than the command cap because these rows are not
+#: a searchable list: every one of them lands in three menus a reader opens by hand, and
+#: a menu long enough to scroll is worse than a missing row. Enforced on both sides --
+#: a cap only the manifest enforces truncates silently in the menu instead.
+_MAX_FILE_MENU_ITEMS_PER_APP = 10
+
+#: The file-menu surfaces a contributed row may attach to. Data rather than a branch, so
+#: adding a surface is this line plus a render site, never an evaluator edit.
+FILE_MENU_SURFACES = frozenset({"file-overflow", "tree-context", "folder-row"})
+
+#: The node kinds a `when.kinds` filter may name.
+_FILE_MENU_KINDS = frozenset({"file", "dir"})
+
+
+#: First path segments under ``/api/apps/<app>/`` that CORE owns rather than the app.
+#: Being inside the app's own namespace is therefore NOT sufficient for an app-declared
+#: endpoint: core mounts its own handlers in that namespace, so a manifest naming one
+#: would pass the prefix test and have the host POST to a core handler with the reader's
+#: own session -- on a row the reader clicked, believing it belonged to the app.
+#:
+#: Enumerated from the core registrations of that namespace, which are the only place
+#: this list can be derived from:
+#:
+#: * ``apps/routes.py`` ``setup_routes`` -- ``manifest``, ``config``, and the lifecycle
+#:   verbs ``uninstall`` (whose ``uninstall/preview`` child is covered by the segment),
+#:   ``update``, ``enable``, ``disable``, ``open``, ``dev``, ``migrate-cleanup``
+#: * ``dashboard/routes/system.py`` -- ``token``
+#: * ``apps/job_routes.py`` -- ``_jobs``
+#:
+#: A NEW core route mounted under ``/api/apps/{name}/`` MUST be added here in the same
+#: commit, or an app can claim it; ``test_file_menu_items.py`` scans those sources and
+#: fails on a segment this set is missing. Mirrored by ``CORE_APP_ROUTE_SEGMENTS`` in
+#: ``website/src/apps/fileMenuContributions.tsx``, the dispatch-time floor for a manifest
+#: that reached the dashboard without passing install validation.
+CORE_APP_ROUTE_SEGMENTS = frozenset(
+    {
+        "_jobs",
+        "config",
+        "dev",
+        "disable",
+        "enable",
+        "manifest",
+        "migrate-cleanup",
+        "open",
+        "token",
+        "uninstall",
+        "update",
+    }
+)
+
+#: Splits a path tail at the first segment boundary, query, or fragment. The router
+#: matches on the PATH alone, so ``/api/apps/foo/uninstall?x=1`` reaches the core
+#: uninstall handler; comparing the raw tail would let a query smuggle a reserved
+#: segment past :data:`CORE_APP_ROUTE_SEGMENTS`.
+_SEGMENT_BOUNDARY_RE = re.compile(r"[/?#]")
+
+
+#: Characters an app-declared endpoint may contain, as an ALLOWLIST.
+#:
+#: A blocklist loses this argument one character at a time. Two separate bypasses of
+#: :func:`app_endpoint_allowed` were exactly that shape: the browser's URL parser STRIPS
+#: U+0009/000A/000D while ``fetch`` builds the request, so ``/api/apps/foo/uninstall\n``
+#: read as the segment ``"uninstall\n"`` here and arrived at core's uninstall handler;
+#: and it treats ``\`` as a path separator for http(s), so ``/api/apps/foo/.\uninstall``
+#: read as one opaque segment here and normalized to ``/api/apps/foo/uninstall`` there.
+#: Both are the same defect -- a character the PARSER reinterprets after this check
+#: accepted it -- and there is no reason to believe the set is now enumerated.
+#:
+#: So the shape is inverted: unreserved characters (:rfc:`3986` §2.3), the delimiters a
+#: real declared endpoint needs (``/``, ``?``, ``#``, ``=``, ``&``, ``+``, ``,``, ``:``,
+#: ``@``, ``!``, ``$``, ``'``, ``(``, ``)``, ``*``, ``;``), and nothing else. ``\``,
+#: every C0 control, DEL, space, and the characters a parser may rewrite or a header may
+#: fold on are all outside it without being named.
+#: ``\Z``, not ``$``: Python's ``$`` also matches immediately BEFORE a trailing newline,
+#: so ``"…/uninstall\n"`` would satisfy a ``$``-anchored pattern and sail through the one
+#: bypass this exists to close. The TypeScript mirror needs no equivalent -- JavaScript's
+#: ``$`` without the ``m`` flag is a true end anchor -- which is exactly the kind of
+#: per-language difference a "mirrored" pair hides, so it is stated on both sides.
+_ENDPOINT_ALLOWED_RE = re.compile(r"^[A-Za-z0-9\-._~/?#=&+,:@!$'()*;]+\Z")
+
+
+def app_endpoint_allowed(
+    app_name: str, endpoint: str, *, allow_proxy_namespace: bool = False
+) -> bool:
+    """Whether an app-declared endpoint routes inside that app's own namespace (§9.3).
+
+    The one implementation of this allowlist. Every place a manifest hands the host a URL
+    to call -- ``publishProvider.endpoint``, ``contributes.fileMenuItems[].endpoint`` --
+    checks it here, because a second copy of a security control is free to drift from the
+    first and the drift is invisible until something is let through.
+
+    ``allow_proxy_namespace`` additionally admits ``/apps/<app>/api/``, the reverse-proxy
+    prefix a PROCESS-backed app is served under. It is the caller's decision because each
+    caller documents its own contract: a contributed row must reach a process-backed app,
+    while the publish-provider registry names ``/api/apps/<app>/`` in its refusal message
+    and keeps that narrower shape. Defaulting it off means adding a caller cannot widen an
+    existing surface by accident.
+
+    Three properties do the work, and each is easy to lose when rewritten from memory:
+    normalization happens BEFORE the prefix test, so ``/api/apps/foo/../../shutdown``
+    cannot escape the namespace; the prefix carries a trailing slash, so a sibling app
+    (``/api/apps/foobar/x``) cannot pass ``foo``'s allowlist on a bare ``startswith``;
+    and the first segment BELOW the prefix is refused when core owns it, because the app's
+    own namespace is where core mounts the lifecycle routes
+    (:data:`CORE_APP_ROUTE_SEGMENTS`).
+    """
+    if not app_name or not endpoint:
+        return False
+    # A RESERVED path segment is never an app's own namespace, whatever an app is called.
+    # `/api/apps/registries/refresh` and `/api/apps/registry/install` are shared literal
+    # routes registered BEFORE the `/api/apps/{name}` catch-all, and the first segment
+    # below the prefix (`refresh`, `install`) is not a per-app lifecycle name, so
+    # :data:`CORE_APP_ROUTE_SEGMENTS` does not cover them.
+    #
+    # Reserving the NAME is explicitly forward-looking (see
+    # :data:`RESERVED_APP_PATH_SEGMENTS`): it stops new apps claiming one but leaves an
+    # already-published app so named, and the token_auth carve-out that constrains such an
+    # app governs an APP's own token, not a row a reader clicks with their own session.
+    # This is the check that has to refuse it.
+    if app_name in RESERVED_APP_PATH_SEGMENTS:
+        return False
+    decoded = urllib.parse.unquote(endpoint)
+    # Character allowlist FIRST, before anything else reads the path: see
+    # :data:`_ENDPOINT_ALLOWED_RE` for why this is an allowlist and not a set of named
+    # refusals. Applied after ``unquote`` so a percent-encoded ``%5c`` or ``%0a`` is
+    # judged as the character it becomes, not as the escape.
+    if not _ENDPOINT_ALLOWED_RE.match(decoded):
+        return False
+    normalized = posixpath.normpath(decoded)
+    if ".." in decoded or normalized != decoded.rstrip("/"):
+        return False
+    # BOTH documented app namespaces, but only when the CALLER's contract covers the
+    # second one: which namespace an app owns is not its choice — one declaring
+    # ``backend.entryPoint`` runs its own process and is reverse-proxied at
+    # ``/apps/<app>/api/`` (``routes.py`` ``handle_app_api_proxy``), while one declaring
+    # only ``backend.hooks.routes`` is registered in-gateway under ``/api/apps/<app>/``.
+    # Admitting just the in-gateway form refused every process-backed app's contribution
+    # at install, so those apps could not contribute a row at all.
+    #
+    # It is a per-caller flag rather than a blanket widening because this is the ONE
+    # shared endpoint check (see ``test_app_endpoint_allowed_is_the_one_shared_check``)
+    # and its other caller, the publish-provider registry in ``routes.py``, states
+    # ``/api/apps/<app>/`` as its contract in its own refusal message. Widening the
+    # helper for everyone would have broadened that surface silently.
+    #
+    # The core-owned reserved segments apply to the IN-GATEWAY prefix only: the proxy
+    # namespace forwards wholesale into the app's own process, so nothing core serves
+    # lives under it and a reserved name there is the app's own route.
+    prefixes: list[tuple[str, frozenset[str]]] = [
+        (f"/api/apps/{app_name}/", CORE_APP_ROUTE_SEGMENTS),
+    ]
+    if allow_proxy_namespace:
+        prefixes.append((f"/apps/{app_name}/api/", frozenset()))
+    for prefix, reserved in prefixes:
+        if not (normalized + "/").startswith(prefix):
+            continue
+        # The bare namespace root yields "" (removeprefix is a no-op on `/api/apps/foo`,
+        # whose split then starts with the leading slash), which no core route claims.
+        segment = _SEGMENT_BOUNDARY_RE.split(normalized.removeprefix(prefix), 1)[0]
+        return segment not in reserved
+    return False
+
 
 def _mirrored_len(text: str) -> int:
     """Length in UTF-16 code units -- what JavaScript's ``.length`` counts.
@@ -1757,6 +1922,166 @@ class PanelTabConfig:
 
 
 @dataclass
+class FileMenuWhen:
+    """Declarative visibility predicate for a contributed file-menu row.
+
+    Evaluated by the host, never a live callback across the app boundary -- an app
+    bundle is loaded at runtime and cannot register a function into a menu the host
+    renders. An empty field is "no constraint on this axis"; every present field must
+    match (AND), and the same predicate is mirrored in ``fileMenuContributions.tsx``
+    because the host decides visibility on both the render and the dispatch side.
+    """
+
+    #: Lowercase, dot-stripped extensions: ``["md", "py"]``.
+    extensions: list[str] = field(default_factory=list)
+    #: Subset of :data:`_FILE_MENU_KINDS`.
+    kinds: list[str] = field(default_factory=list)
+    #: Whether ``extensions`` / ``kinds`` were present but not lists. Same reason as
+    #: ``CommandArgument.bad_hosts``: coercing to ``[]`` does not mean "no opinion", it
+    #: means "match everything", so an author who wrote a restriction would silently get
+    #: none. Not serialized.
+    bad_fields: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.extensions:
+            d["extensions"] = self.extensions
+        if self.kinds:
+            d["kinds"] = self.kinds
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FileMenuWhen:
+        ext_raw = data.get("extensions", [])
+        kinds_raw = data.get("kinds", [])
+        return cls(
+            # A leading dot is normalized off so `.md` and `md` name the same file, and
+            # the case is folded here so the render side can compare literally.
+            extensions=[
+                str(e).lower().lstrip(".")
+                for e in (ext_raw if isinstance(ext_raw, list) else [])
+                if e
+            ],
+            kinds=[str(k) for k in (kinds_raw if isinstance(kinds_raw, list) else []) if k],
+            bad_fields=("extensions" in data and not isinstance(ext_raw, list))
+            or ("kinds" in data and not isinstance(kinds_raw, list)),
+        )
+
+
+@dataclass
+class FileMenuItemConfig:
+    """One row an app contributes to a file, tree, or folder menu.
+
+    Endpoint-dispatched like :class:`CommandContribution` is prompt-dispatched: the host
+    reads this declaration, renders the row itself, and POSTs the file's PATH to
+    ``endpoint`` when the row is activated. It never imports app code and holds no live
+    callback, which is what makes the seam reachable by an app installed at runtime
+    rather than only by a build-time composition root.
+    """
+
+    id: str = ""
+    #: Row label. An app-owned literal: the host has no catalog key for a row it does
+    #: not know about.
+    label: str = ""
+    #: Icon name resolved against the host's icon set (see ``AppIcon``).
+    icon: str = ""
+    #: The app's own route the row POSTs to, under ``/api/apps/<app>/``. The allowlist
+    #: is enforced by the host at dispatch, not by this structural check.
+    endpoint: str = ""
+    surfaces: list[str] = field(default_factory=list)
+    when: FileMenuWhen = field(default_factory=FileMenuWhen)
+    #: Whether ``surfaces`` was present but not a list -- an erased restriction rather
+    #: than an absent one, so it is refused instead of coerced. Not serialized.
+    bad_surfaces: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.label:
+            d["label"] = self.label
+        if self.icon:
+            d["icon"] = self.icon
+        if self.endpoint:
+            d["endpoint"] = self.endpoint
+        if self.surfaces:
+            d["surfaces"] = self.surfaces
+        when_d = self.when.to_dict()
+        if when_d:
+            d["when"] = when_d
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FileMenuItemConfig:
+        when_raw = data.get("when", {})
+        surfaces_raw = data.get("surfaces", [])
+        return cls(
+            id=str(data.get("id", "")),
+            label=str(data.get("label", "")),
+            icon=str(data.get("icon", "")),
+            endpoint=str(data.get("endpoint", "")),
+            surfaces=[
+                str(s) for s in (surfaces_raw if isinstance(surfaces_raw, list) else []) if s
+            ],
+            when=(
+                FileMenuWhen.from_dict(when_raw)
+                if isinstance(when_raw, dict)
+                else FileMenuWhen(bad_fields=True)
+            ),
+            bad_surfaces="surfaces" in data and not isinstance(surfaces_raw, list),
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.fileMenuItems[{self.id or '?'}]"
+        if not self.id:
+            errors.append("contributes.fileMenuItems: entry missing id")
+        elif not _COMMAND_SLUG_RE.fullmatch(self.id):
+            # Shares the command slug's grammar deliberately: both are app-owned ids
+            # mirrored by a frontend regex, and two patterns that must agree while being
+            # spelled separately is the exact drift that grammar's comment already names.
+            errors.append(f"{where}: id must be a lowercase kebab slug")
+        if not self.label:
+            errors.append(f"{where}: missing label")
+        elif _mirrored_len(self.label) > _MAX_TITLE:
+            errors.append(
+                f"{where}: label exceeds {_MAX_TITLE} characters ({_mirrored_len(self.label)})"
+            )
+        if _mirrored_len(self.icon) > _MAX_TITLE:
+            errors.append(
+                f"{where}: icon exceeds {_MAX_TITLE} characters ({_mirrored_len(self.icon)})"
+            )
+        if not self.endpoint:
+            errors.append(f"{where}: missing endpoint")
+        if self.bad_surfaces:
+            errors.append(
+                f"{where}: surfaces must be an array -- a non-array value passes as empty "
+                "and the row then appears in no menu, with no error its author can see"
+            )
+        elif not self.surfaces:
+            errors.append(f"{where}: must name at least one surface")
+        for surface in self.surfaces:
+            if surface not in FILE_MENU_SURFACES:
+                errors.append(
+                    f"{where}: unknown surface {surface!r} "
+                    f"(expected one of {sorted(FILE_MENU_SURFACES)})"
+                )
+        if self.when.bad_fields:
+            errors.append(
+                f"{where}: when.extensions and when.kinds must be arrays -- a non-array "
+                "value passes as unfiltered, so the row would show everywhere the author "
+                "meant to restrict it"
+            )
+        for node_kind in self.when.kinds:
+            if node_kind not in _FILE_MENU_KINDS:
+                errors.append(
+                    f"{where}: when.kinds has unknown kind {node_kind!r} "
+                    f"(expected one of {sorted(_FILE_MENU_KINDS)})"
+                )
+        return errors
+
+
+@dataclass
 class Contributes:
     """What an app adds to host surfaces it does not own.
 
@@ -1772,6 +2097,11 @@ class Contributes:
     #: is still a contribution rather than ``ui``: the strip, the persistence and the
     #: mounting are the host's, and the app only says which body to put in one slot.
     panelTabs: list[PanelTabConfig] = field(default_factory=list)  # noqa: N815
+    #: Rows an app adds to the file-editor overflow, workspace-tree context, and folder
+    #: menus. Same contract as ``commands`` two fields up -- declared, host-rendered,
+    #: dispatched to the app's own endpoint -- so it carries the same malformed-input
+    #: flags rather than coercing quietly.
+    fileMenuItems: list[FileMenuItemConfig] = field(default_factory=list)  # noqa: N815
     #: Whether the source manifest's ``commands`` was present but not a list. Same reason
     #: as ``CommandArgument.bad_hosts``: coercing to ``[]`` is indistinguishable from a
     #: deliberate empty list, so the declaration would pass validation and then vanish
@@ -1800,6 +2130,11 @@ class Contributes:
     #: error, which reads exactly like an app that simply has no panel. Not serialized.
     bad_panel_tabs: bool = False
     dropped_panel_tabs: int = 0
+    #: ``fileMenuItems`` present but not a list. Not serialized.
+    bad_file_menu_items: bool = False
+    #: How many entries of a well-formed ``fileMenuItems`` array were not objects. Not
+    #: serialized.
+    dropped_file_menu_items: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1816,6 +2151,10 @@ class Contributes:
         kept_tabs = [t for t in tabs if t]
         if kept_tabs:
             d["panelTabs"] = kept_tabs
+        items = [i.to_dict() for i in self.fileMenuItems]
+        kept_items = [i for i in items if i]
+        if kept_items:
+            d["fileMenuItems"] = kept_items
         return d
 
     @classmethod
@@ -1843,9 +2182,14 @@ class Contributes:
         )
         tabs_raw = data.get("panelTabs", [])
         tab_entries = tabs_raw if isinstance(tabs_raw, list) else []
+        items_raw = data.get("fileMenuItems", [])
+        item_entries = items_raw if isinstance(items_raw, list) else []
         return cls(
             commands=[CommandContribution.from_dict(c) for c in entries if isinstance(c, dict)],
             panelTabs=[PanelTabConfig.from_dict(t) for t in tab_entries if isinstance(t, dict)],
+            fileMenuItems=[
+                FileMenuItemConfig.from_dict(i) for i in item_entries if isinstance(i, dict)
+            ],
             bad_commands="commands" in data and not isinstance(raw, list),
             dropped_commands=sum(1 for c in entries if not isinstance(c, dict)),
             sessionControls=controls,
@@ -1853,6 +2197,8 @@ class Contributes:
             and not isinstance(raw_controls, list),
             bad_panel_tabs="panelTabs" in data and not isinstance(tabs_raw, list),
             dropped_panel_tabs=sum(1 for t in tab_entries if not isinstance(t, dict)),
+            bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
+            dropped_file_menu_items=sum(1 for i in item_entries if not isinstance(i, dict)),
         )
 
     def validate(self) -> list[str]:
@@ -1933,6 +2279,34 @@ class Contributes:
                     # second is unreachable and the first answers for both.
                     errors.append(f"contributes.panelTabs: duplicate id {tab.id!r}")
                 tab_ids.add(tab.id)
+        if self.bad_file_menu_items:
+            errors.append(
+                "contributes.fileMenuItems must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any rows"
+            )
+        if self.dropped_file_menu_items:
+            errors.append(
+                f"contributes.fileMenuItems: {self.dropped_file_menu_items} entr"
+                f"{'y' if self.dropped_file_menu_items == 1 else 'ies'} "
+                "must be an object -- a non-object entry is filtered out before "
+                "validation, so the app installs with the remaining rows and its "
+                "author is never told one was dropped"
+            )
+        if len(self.fileMenuItems) > _MAX_FILE_MENU_ITEMS_PER_APP:
+            errors.append(
+                f"contributes.fileMenuItems: {len(self.fileMenuItems)} items exceeds the "
+                f"limit of {_MAX_FILE_MENU_ITEMS_PER_APP}"
+            )
+        seen_items: set[str] = set()
+        for item in self.fileMenuItems:
+            errors.extend(item.validate())
+            if item.id:
+                if item.id in seen_items:
+                    # Two rows with one id: the dispatch key is the id, so the second
+                    # row's activation would target the first row's endpoint.
+                    errors.append(f"contributes.fileMenuItems: duplicate id {item.id!r}")
+                seen_items.add(item.id)
         return errors
 
 
@@ -2222,9 +2596,25 @@ class AppManifest:
         # Notification channel validation (RFC Phase 2: 8-channel cap, kebab ids)
         errors.extend(self.notifications.validate())
 
-        # Contributed commands and panel tabs: ids, caps, prompt/argument
-        # agreement, matcher kind, entry paths.
+        # Contributed commands, panel tabs and file-menu rows: ids, caps,
+        # prompt/argument agreement, matcher kind, entry paths, and the file-menu
+        # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
+
+        # A contributed row's endpoint is checked against the app's OWN namespace here,
+        # where the name is known -- refusing it at install is what keeps a declaration
+        # naming a core route (`/api/shutdown`) from ever reaching the dashboard, which
+        # would POST to it with the reader's session on a row the reader clicked.
+        for item in self.contributes.fileMenuItems:
+            if item.endpoint and not app_endpoint_allowed(
+                self.name, item.endpoint, allow_proxy_namespace=True
+            ):
+                errors.append(
+                    f"contributes.fileMenuItems[{item.id or '?'}]: endpoint "
+                    f"{item.endpoint!r} must route under /api/apps/{self.name}/ "
+                    f"or /apps/{self.name}/api/ "
+                    "(no traversal, no other app's namespace, no core route)"
+                )
 
         return errors
 
@@ -2261,6 +2651,7 @@ class AppManifest:
             self.contributes.commands
             or self.contributes.sessionControls
             or self.contributes.panelTabs
+            or self.contributes.fileMenuItems
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -2280,7 +2671,9 @@ class AppManifest:
             #
             # List order preserved, so reordering is a signature-relevant change.
             # Included only when non-empty, so manifests signed before contributions
-            # existed keep producing the identical payload.
+            # existed keep producing the identical payload -- and an app contributing
+            # only commands produces the same bytes it did before panel tabs and file
+            # menus existed.
             #
             # `panelTabs` is in the guard for a sharper version of the same reason: a
             # tab's `entry` names an ESM module the AppHost imports and RUNS in the
@@ -2288,6 +2681,11 @@ class AppManifest:
             # panelTabs-ONLY manifest out of the payload entirely, so its `entry` was
             # the one part of a signed app an attacker could repoint with the signature
             # still verifying.
+            #
+            # A contributed file-menu row is covered for the same reason at one remove:
+            # its `endpoint` is where the host POSTs the path of a file the reader picked,
+            # so rewriting it on a signed app redirects that dispatch while every visible
+            # character of the row, and the signature, stay exactly as published.
             body["contributes"] = self.contributes.to_dict()
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 

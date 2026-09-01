@@ -7967,6 +7967,10 @@
       "raw": "[Ŕàẁ ·····]",
       "render_the_markdown_headings_lists_tables_links": "[Ŕèñðèŕ ţĥè ɱàŕķðøẁñ - ĥèàðìñğş, ĺìşţş, ţàƀĺèş, ĺìñķş ··················]",
       "show_the_exact_markdown_source": "[Şĥøẁ ţĥè èẋàçţ ɱàŕķðøẁñ şøùŕçè ·····················]"
+    },
+    "fileMenuContributions": {
+      "app_actions": "[Àþþ àçţìøñş ··········]",
+      "contributed_by": "[Àþþ: {{app}} ········]"
     }
   },
   "hooks": {

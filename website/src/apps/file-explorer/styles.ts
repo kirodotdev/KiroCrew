@@ -10,7 +10,7 @@ export const FE_CSS = `
 .mc-fe-tab { display:inline-flex; align-items:center; gap:4px; padding:6px 8px 6px 10px; border:1px solid var(--border); border-bottom:none; border-radius:6px 6px 0 0; background:var(--card); color:var(--muted); cursor:pointer; user-select:none; transition:background .12s, color .12s; flex-shrink:0; }
 .mc-fe-tab.is-active { background:var(--bg); color:var(--text); border-color:var(--border); }
 .mc-fe-tab.is-current-folder { border-bottom-color:var(--bg); }
-.mc-fe-tab-label { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px; }
+.mc-fe-tab-label { font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; max-width:200px; }
 .mc-fe-tab-close { display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:3px; opacity:.5; flex-shrink:0; }
 .mc-fe-tab-close:hover { opacity:1; background:color-mix(in srgb, var(--text) 12%, transparent); }
 .mc-fe-tab-new { display:inline-flex; align-items:center; justify-content:center; padding:6px 10px; background:transparent; border:none; color:var(--muted); cursor:pointer; border-radius:4px; flex-shrink:0; }

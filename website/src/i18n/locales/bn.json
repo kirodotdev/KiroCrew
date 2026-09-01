@@ -8060,6 +8060,10 @@
       "raw": "মূল",
       "render_the_markdown_headings_lists_tables_links": "মার্কডাউন রেন্ডার করুন - শিরোনাম, তালিকা, টেবিল, লিঙ্ক",
       "show_the_exact_markdown_source": "হুবহু মার্কডাউন সোর্স দেখান"
+    },
+    "fileMenuContributions": {
+      "app_actions": "অ্যাপ ক্রিয়া",
+      "contributed_by": "অ্যাপ: {{app}}"
     }
   },
   "hooks": {

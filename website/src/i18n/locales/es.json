@@ -8170,6 +8170,10 @@
       "raw": "Sin formato",
       "render_the_markdown_headings_lists_tables_links": "Renderizar el markdown: encabezados, listas, tablas, enlaces",
       "show_the_exact_markdown_source": "Mostrar el código markdown exacto"
+    },
+    "fileMenuContributions": {
+      "app_actions": "Acciones de la aplicación",
+      "contributed_by": "Aplicación: {{app}}"
     }
   },
   "hooks": {

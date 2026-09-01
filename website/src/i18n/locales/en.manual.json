@@ -2823,6 +2823,10 @@
       "raw": "Raw",
       "render_the_markdown_headings_lists_tables_links": "Render the markdown - headings, lists, tables, links",
       "show_the_exact_markdown_source": "Show the exact markdown source"
+    },
+    "fileMenuContributions": {
+      "app_actions": "App actions",
+      "contributed_by": "App: {{app}}"
     }
   },
   "hooks": {

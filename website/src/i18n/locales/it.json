@@ -8170,6 +8170,10 @@
       "raw": "Grezzo",
       "render_the_markdown_headings_lists_tables_links": "Visualizza il markdown - titoli, elenchi, tabelle, link",
       "show_the_exact_markdown_source": "Mostra il sorgente markdown esatto"
+    },
+    "fileMenuContributions": {
+      "app_actions": "Azioni dell'app",
+      "contributed_by": "App: {{app}}"
     }
   },
   "hooks": {

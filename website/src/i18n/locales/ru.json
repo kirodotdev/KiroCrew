@@ -8280,6 +8280,10 @@
       "raw": "Исходник",
       "render_the_markdown_headings_lists_tables_links": "Отобразить markdown - заголовки, списки, таблицы, ссылки",
       "show_the_exact_markdown_source": "Показать точный исходный markdown"
+    },
+    "fileMenuContributions": {
+      "app_actions": "Действия приложения",
+      "contributed_by": "Приложение: {{app}}"
     }
   },
   "hooks": {

@@ -7950,6 +7950,10 @@
       "raw": "生",
       "render_the_markdown_headings_lists_tables_links": "マークダウンを描画します - 見出し、リスト、表、リンク",
       "show_the_exact_markdown_source": "正確なマークダウンソースを表示します"
+    },
+    "fileMenuContributions": {
+      "app_actions": "アプリの操作",
+      "contributed_by": "アプリ: {{app}}"
     }
   },
   "hooks": {

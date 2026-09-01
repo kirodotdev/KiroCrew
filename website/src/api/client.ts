@@ -1575,7 +1575,13 @@ const projectHeader = (projectKey?: string): HeadersInit | undefined =>
 
 const get = (url: string, sessionKey?: string, signal?: AbortSignal) =>
   fetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) })
-const post = (url: string, body?: object, sessionKey?: string, extra?: HeadersInit) =>
+const post = (
+  url: string,
+  body?: object,
+  sessionKey?: string,
+  extra?: HeadersInit,
+  redirect?: RequestRedirect,
+) =>
   trackArtifactWrite(url, fetch(url, {
     method: 'POST',
     // sessionKey overrides the shared `dashboard:ui` placeholder with the REAL
@@ -1585,6 +1591,11 @@ const post = (url: string, body?: object, sessionKey?: string, extra?: HeadersIn
     // of a specific chat slot must pass it.
     // `extra` carries a per-call precondition header (a view the server must
     // still agree with) without every caller re-implementing the header merge.
+    // `redirect` is for a caller whose URL is not core's to choose: a validated
+    // target that answers 3xx would otherwise be followed automatically, and the
+    // check that approved the FIRST url never sees the second. Defaulted so no
+    // existing caller changes behaviour.
+    ...(redirect ? { redirect } : {}),
     headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra },
     body: body ? JSON.stringify(body) : undefined,
   }))
@@ -3916,6 +3927,34 @@ export const api = {
   researchReport: (id: string) => get("/api/apps/auto-research/campaigns/" + id + "/report").then(j),
   researchDelete: (id: string) => del("/api/apps/auto-research/campaigns/" + id).then(j),
 
+  // Activate a file-menu row an installed app contributed. The declarations ride on
+  // `GET /api/apps` (see `fileMenuContributions.ts`) rather than an endpoint of their
+  // own, so only the dispatch lives here: core POSTs the file's path to the row's own
+  // endpoint and never imports app code.
+  //
+  // `sessionKey` is the OWNING SLOT (`dashboard:<slot>`), supplied by the shared
+  // dispatcher. It rides the header rather than the body because the server's
+  // restricted-session gate reads the header, and the body is the app-facing contract
+  // documented in the manifest reference.
+  //
+  // `redirect: 'error'` is what makes the endpoint allowlist mean anything. The URL is
+  // the APP's to choose, and it is validated once, before the request; `fetch` follows a
+  // 3xx by default, and a 307 preserves the method, the body AND this header, so an
+  // approved endpoint answering `307 /api/apps/<victim>/disable` would have the reader's
+  // own session disable another app on a row they merely clicked. Refusing to follow
+  // keeps the checked url the only url.
+  invokeFileMenuItem: async (
+    item: { id: string; endpoint: string },
+    ctx: FileMenuContext,
+    sessionKey?: string,
+  ) => {
+    const r = await post(item.endpoint, { item_id: item.id, ...ctx }, sessionKey, undefined, 'error')
+    checkSessionExpired(r)
+    if (r.ok) { removeAuthBanner(); return r.json() }
+    const errText = await r.text()
+    throw new ApiError(r.status, errText || `HTTP ${r.status}`)
+  },
+
   artifactTeardown: (slug: string) => post(`/api/deploy/teardown/${slug}`, { confirm: true }).then(j),
   publishProviders: () => get('/api/publish-providers').then(j) as Promise<{ providers: AppPublishProvider[] }>,
   /** Publish through a CORE-registry destination, resolved by its registry name.
@@ -3974,4 +4013,23 @@ export interface AppPublishProvider {
   configured: boolean
   setupRoute: string
   endpoint: string
+}
+
+/** The surfaces a contributed file-menu row can appear on. */
+export type FileMenuSurface = 'file-overflow' | 'tree-context' | 'folder-row'
+
+/**
+ * What core POSTs to a row's endpoint when it is activated.
+ *
+ * The PATH only — deliberately never file CONTENT. A contributed row is declared in a
+ * manifest and needs no permission to exist, so shipping the bytes with the activation
+ * would hand any app that declares one the contents of whatever file the reader clicked,
+ * with no install-time declaration and no consent step. An app that needs the bytes reads
+ * them through a route its own `permissions` cover.
+ */
+export interface FileMenuContext {
+  surface: FileMenuSurface
+  path: string
+  kind?: 'file' | 'dir'
+  root?: string
 }

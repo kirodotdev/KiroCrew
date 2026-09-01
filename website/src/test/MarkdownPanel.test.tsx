@@ -4,6 +4,8 @@ import { readSource } from './readSource'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { store } from '../store'
+import { ThemeProvider } from '../hooks/useTheme'
 import { OverflowMenu, breadcrumbSegments, FileHeaderBreadcrumb } from '../components/MarkdownPanel'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
@@ -14,6 +16,10 @@ vi.mock('../api/client', () => ({
     artifact: vi.fn(),
     createArtifact: vi.fn(),
     revealPath: vi.fn(),
+    // The contributed-row seam subscribes to `['apps']` without fetching, and
+    // dispatches an activation through `invokeFileMenuItem`.
+    listApps: vi.fn(),
+    invokeFileMenuItem: vi.fn().mockResolvedValue({}),
   },
   // revealOrOpen branches its failure wording on `err instanceof ApiError`, so
   // the mock must export a real class — a bare object would make `instanceof`
@@ -40,9 +46,15 @@ vi.mock('../hooks/useBranding', () => ({
 
 const writeText = vi.fn()
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+// ThemeProvider mirrors the shipped tree (`main.tsx` mounts it above the whole
+// app): a contributed row's icon renders through `AppIcon`, which reads
+// `useTheme()` to pick its light/dark asset, so the harness needs the same
+// context the real mount sites already sit inside.
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <MemoryRouter>
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>{children}</ThemeProvider>
+    </QueryClientProvider>
   </MemoryRouter>
 )
 
@@ -529,5 +541,114 @@ describe('MarkdownPanel line-reveal effect', () => {
   it('reads the host callback through a ref instead of depending on it', () => {
     expect(effect).toContain('onRevealConsumedRef.current?.()')
     expect(effect).not.toMatch(/\bonRevealConsumed\?\.\(\)/)
+  })
+})
+
+describe('OverflowMenu — app-contributed rows (contributes.fileMenuItems)', () => {
+  const DECL = {
+    id: 'send',
+    label: 'Send to store',
+    icon: 'Package',
+    endpoint: '/api/apps/doc-store/send',
+    surfaces: ['file-overflow'],
+  }
+  const seedApps = (decls: unknown = [DECL], over: Record<string, unknown> = {}) =>
+    queryClient.setQueryData(['apps'], [
+      { name: 'doc-store', enabled: true, manifest: { contributes: { fileMenuItems: decls } } , ...over },
+    ])
+
+  const openWith = (filePath = '/tmp/hello.txt') => {
+    render(<OverflowMenu filePath={filePath} content={'line one\n'} />, { wrapper })
+    fireEvent.click(screen.getAllByRole('button')[0])
+  }
+
+  it('adds no row and no separator when no app contributes — the stock build is inert', () => {
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: /^Send to store\b/ })).not.toBeInTheDocument()
+  })
+
+  it('renders a contributed row and POSTs the PATH only, never the file content', () => {
+    seedApps()
+    openWith('/tmp/notes.md')
+
+    // The dispatcher reads the owning slot from the store, so name one for this case.
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-md' })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+    expect(api.invokeFileMenuItem).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'send', app: 'doc-store' }),
+      { surface: 'file-overflow', path: '/tmp/notes.md', kind: 'file' },
+      // The owning slot, so the server's restricted-session gate applies to a
+      // contributed row exactly as it does to this menu's own save and promote rows.
+      // Asserted on EVERY surface, not just one: the placeholder it replaces fails open.
+      'dashboard:slot-md',
+    )
+    // The content prop is in scope at the call site; it must not be shipped.
+    expect(vi.mocked(api.invokeFileMenuItem).mock.calls[0][1]).not.toHaveProperty('content')
+  })
+
+  it('renders contributed rows LAST, after the core view/location groups', () => {
+    seedApps()
+    openWith()
+    const labels = screen.getAllByRole('menuitem').map(el => el.textContent?.trim())
+    const contributed = labels.findIndex(l => l?.startsWith('Send to store'))
+    expect(contributed).toBe(labels.length - 1)
+    // Specifically: below Copy path / Download rather than spliced above them.
+    expect(contributed).toBeGreaterThan(
+      labels.findIndex(l => l === i18nT('components.markdownPanel.copy_path')),
+    )
+  })
+
+  it('attributes the contributed row to its app, so it cannot pass as a core action', () => {
+    // A row's label is app-owned and never checked against the core vocabulary, so an app
+    // may call its row "Download" and sit one separator below the real Download. The
+    // visible owner is what lets a reader tell that clicking it POSTs the path elsewhere.
+    seedApps()
+    openWith()
+    const row = screen.getByRole('menuitem', { name: /^Send to store\b/ })
+    expect(row.textContent).toContain('doc-store')
+    // Part of the accessible NAME too, not decoration a screen reader skips.
+    expect(row).toHaveAccessibleName(/doc-store/)
+  })
+
+  it('is keyboard-navigable like every other row', () => {
+    seedApps()
+    openWith()
+    // `data-option` is what useListboxKeyboard treats as navigable; without it the
+    // row renders but arrows skip straight past it.
+    const row = screen.getByRole('menuitem', { name: /^Send to store\b/ })
+    expect(row).toHaveAttribute('data-option')
+  })
+
+  it('honours the when predicate, so a markdown-only row is absent on a .txt file', () => {
+    seedApps([{ ...DECL, when: { extensions: ['md'] } }])
+    openWith('/tmp/hello.txt')
+    expect(screen.queryByRole('menuitem', { name: /^Send to store\b/ })).not.toBeInTheDocument()
+  })
+
+  it('renders more than one contributed row', () => {
+    seedApps([DECL, { ...DECL, id: 'archive', label: 'Archive' }])
+    openWith()
+    expect(screen.getByRole('menuitem', { name: /^Send to store\b/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /^Archive\b/ })).toBeInTheDocument()
+  })
+
+  it('contributes nothing from a disabled app', () => {
+    seedApps([DECL], { enabled: false })
+    openWith()
+    expect(screen.queryByRole('menuitem', { name: /^Send to store\b/ })).not.toBeInTheDocument()
+  })
+
+  it('reports a rejected dispatch through the panel own onError', async () => {
+    // `errors-use-error-notice`: the menu closes on select, so an endpoint refusal that
+    // only reached the console would leave the reader with a row that did nothing. The
+    // panel renders this string through the shared ErrorNotice it already owns.
+    vi.mocked(api.invokeFileMenuItem).mockRejectedValueOnce(new Error('endpoint refused'))
+    const onError = vi.fn()
+    seedApps()
+    render(<OverflowMenu filePath="/tmp/notes.md" content={''} onError={onError} />, { wrapper })
+    fireEvent.click(screen.getAllByRole('button')[0])
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Send to store\b/ }))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('endpoint refused'))
   })
 })

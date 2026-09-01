@@ -8060,6 +8060,10 @@
       "raw": "Roh",
       "render_the_markdown_headings_lists_tables_links": "Markdown rendern - Überschriften, Listen, Tabellen, Links",
       "show_the_exact_markdown_source": "Den exakten Markdown-Quelltext anzeigen"
+    },
+    "fileMenuContributions": {
+      "app_actions": "App-Aktionen",
+      "contributed_by": "App: {{app}}"
     }
   },
   "hooks": {

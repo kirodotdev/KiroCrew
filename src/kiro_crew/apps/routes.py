@@ -14,13 +14,11 @@ import json
 import logging
 import mimetypes
 import os
-import posixpath
 import re
 import shutil
 import stat
 import sys
 import time
-import urllib.parse
 from email.utils import formatdate
 from functools import partial
 from pathlib import Path
@@ -82,7 +80,7 @@ from kiro_crew.apps.manager import (
     uninstall_app,
     update_app,
 )
-from kiro_crew.apps.manifest import Dependencies, PlatformConfig
+from kiro_crew.apps.manifest import Dependencies, PlatformConfig, app_endpoint_allowed
 from kiro_crew.apps.official_category_order import forget_cache as forget_category_order_cache
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
@@ -409,25 +407,17 @@ def collect_publish_providers(
             continue
         app_name = str(app.get("name", ""))
         endpoint = str(pp["endpoint"])
-        # Endpoint allowlist: must route within the app's own namespace.
-        # Normalize BEFORE checking to prevent dot-segment traversal
-        # (e.g. "/api/apps/foo/../../shutdown" bypassing prefix check).
-        decoded_endpoint = urllib.parse.unquote(endpoint)
-        normalized_endpoint = posixpath.normpath(decoded_endpoint)
-        allowed_prefix = f"/api/apps/{app_name}/"
-        if (
-            ".." in decoded_endpoint
-            or normalized_endpoint != decoded_endpoint.rstrip("/")
-            # Boundary-safe prefix check: appending "/" prevents a sibling-app
-            # collision ("/api/apps/foobar/x" passing app "foo"'s allowlist).
-            or not (normalized_endpoint + "/").startswith(allowed_prefix)
-        ):
+        # Endpoint allowlist: must route within the app's own namespace. The check lives
+        # in `manifest.app_endpoint_allowed` because more than one contribution type
+        # declares an endpoint, and two copies of one security control drift apart
+        # invisibly -- the traversal and sibling-prefix guards are documented there.
+        if not app_endpoint_allowed(app_name, endpoint):
             logger.warning(
                 "publish provider for app %r declares non-conforming endpoint %r "
                 "(must start with %r, no traversal) — dropping",
                 app_name,
                 endpoint,
-                allowed_prefix,
+                f"/api/apps/{app_name}/",
             )
             continue
         providers.append(

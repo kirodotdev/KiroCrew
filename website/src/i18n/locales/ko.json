@@ -7950,6 +7950,10 @@
       "raw": "원문",
       "render_the_markdown_headings_lists_tables_links": "마크다운을 렌더링합니다 - 제목, 목록, 표, 링크",
       "show_the_exact_markdown_source": "정확한 마크다운 원문을 표시합니다"
+    },
+    "fileMenuContributions": {
+      "app_actions": "앱 작업",
+      "contributed_by": "앱: {{app}}"
     }
   },
   "hooks": {
