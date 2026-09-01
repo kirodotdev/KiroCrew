@@ -595,10 +595,15 @@ class TestResetPaths:
         assert done.exception() is not None
 
     def test_reset_state_unlinks_claude_settings_and_survives_pipe_errors(self, tmp_path):
-        client = _client(tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client = _client(
+            tmp_path, acp_backend=ACP_BACKEND_CLAUDE, permission_mode="bypassPermissions"
+        )
+        # Written the way a real session writes it, because the cleanup is now
+        # scoped to what this session seeded: a settings.local.json Crew never
+        # touched belongs to the user's project and is left alone.
+        client._write_claude_local_settings()
         stale = tmp_path / ".claude" / "settings.local.json"
-        stale.parent.mkdir(parents=True)
-        stale.write_text('{"permissions": {"defaultMode": "bypassPermissions"}}')
+        assert stale.exists()
 
         proc = MagicMock()
         proc.stdin.close.side_effect = OSError("already closed")

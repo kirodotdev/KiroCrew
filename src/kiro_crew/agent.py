@@ -999,6 +999,49 @@ def _extra_mcp_servers() -> dict[str, dict]:
     return dict(extra) if extra else {}
 
 
+def managed_mcp_spec_entry(name: str) -> dict[str, Any] | None:
+    """The kiro-spec ``mcpServers`` entry a fresh build would emit for *name*.
+
+    One entry, resolved live (``invocation_fn`` + the pinned data home), for a
+    consumer that needs a single managed server without rebuilding the whole
+    config. ``None`` when *name* is not managed, when it is ``opt_in`` (an
+    assignable set is granted by a spec, never minted here) or when its
+    ``spec_gate`` is closed — the same predicate the two spec writers use, so a
+    caller cannot resurrect a server emission withholds.
+
+    ``autoApprove`` is deliberately NOT carried, unlike the emit loop in
+    :func:`build_agent_config`. The flag is kiro-cli's local approval, and the
+    one caller here (the claude MCP translation, :mod:`kiro_crew.acp.session_mcp`)
+    targets a backend whose nearest equivalent — a ``permissions.allow`` entry —
+    means Claude never asks, so the call never reaches Crew's gate. Emitting the
+    entry un-approved keeps every call gated.
+
+    Never raises: an invocation that cannot be resolved yields ``None``, because
+    the caller is on a spawn path where no MCP server is better than no session.
+    """
+    spec = _MANAGED_MCP_SERVERS.get(name)
+    if not isinstance(spec, dict):
+        return None
+    if not _mcp_server_emission_eligible(name, spec):
+        return None
+    try:
+        if "invocation_fn" in spec:
+            cmd, args = spec["invocation_fn"]()
+        else:
+            cmd = spec.get("command") or spec["command_fn"]()
+            args = list(spec["args"])
+    except Exception:
+        logger.warning("cannot resolve invocation for managed MCP server %r", name, exc_info=True)
+        return None
+    if not cmd:
+        return None
+    entry: dict[str, Any] = {"command": cmd, "args": list(args)}
+    env = _managed_mcp_env()
+    if env:
+        entry["env"] = env
+    return entry
+
+
 def _extra_mcp_scope_globals() -> list[Path]:
     """Provider-global MCP config files contributed by the edition (CPP seam).
 

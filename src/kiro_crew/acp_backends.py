@@ -60,6 +60,23 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
     }
 )
 
+# ── Capability: where a harness gets its MCP servers ──
+
+#: Harnesses that receive their MCP servers as a PER-SESSION array on
+#: ``session/new`` / ``session/load`` instead of reading an agent file.
+#:
+#: kiro-cli (and KAS, which is kiro-cli's relay) is handed ``--agent`` and loads
+#: the spec itself, so Crew passes it an empty array — a duplicate there would
+#: shadow the spec's own entries. claude-agent-acp reads no agent file at all, so
+#: the array is the ENTIRE MCP surface of the session: an empty one means the
+#: harness works while every Crew tool is silently absent.
+#:
+#: A membership set rather than ``_is_claude`` because this is a property of the
+#: transport, not of Anthropic: any ACP adapter that does not read Crew's agent
+#: spec belongs here, and the next such harness should join the set rather than
+#: add a second branch at the call site (harness-parity H6).
+ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
+
 # ── The selectable registry ──
 
 #: What the public edition ships.

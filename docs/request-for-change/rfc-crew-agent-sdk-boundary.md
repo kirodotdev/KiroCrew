@@ -219,7 +219,7 @@ kinds of undeclared hole:
 | Kind | Count | Failure mode when the companion omits it |
 |---|---|---|
 | `getattr`-by-name seams whose target the core never defines — `getattr(self, "_write_claude_local_settings", None)` (`acp/client.py:2742`, `:3351`) | 2 | Silent: no permission mode, and the context window collapses from 1M to 200K |
-| Methods returning a neutral value purely so a companion can override them — `_claude_session_mcp_servers() -> []` (`acp/client.py:2335-2346`) is the type case | 6 | Silent: a CC session gets **zero MCP tools**, as the docstring itself states |
+| Methods returning a neutral value purely so a companion can override them — `_session_mcp_servers() -> []` (`acp/client.py:2335-2346`) is the type case | 6 | Silent: a CC session gets **zero MCP tools**, as the docstring itself states |
 | `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`session.py:170`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
 | Defensive attribute probes across the provider boundary (`session_pid.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
 | Comment clusters naming the companion or a deleted module as the supplier of behaviour | 19 | The seam's real contract lives in prose |
@@ -231,6 +231,17 @@ None of the three hole kinds is declared in a Protocol, none is type-checked, an
 none fails loudly when forgotten. That is the concrete cost this RFC's driver
 contract is meant to replace, and it is why §6 exists as a contract rather than as
 a list of observations.
+
+The census above is the state that motivated this RFC. Two of its rows have since
+been **closed in the core** rather than by a companion, because CC became
+selectable in a public build and a silent hole is not something a selectable
+provider can carry: the core defines `_write_claude_local_settings` itself
+(permission mode, the `availableModels` allowlist that keeps a 1M-window id from
+collapsing back to 200K, and the resolved model), and
+`_session_mcp_servers()` returns a real array translated from the
+materialized kiro agent spec (`acp/session_mcp.py`). The shape argument is
+untouched: both are still undeclared overridable methods rather than a typed
+extension point, which is what PR 3 lands.
 
 ## 3. Goals
 
@@ -756,8 +767,10 @@ belongs to PR 6, not here.
 `SessionCapabilities` on every session, and the presence-tested role protocols of
 §5.3 declared as `runtime_checkable`. This PR also lands the two promoted
 host-contract contracts: a declared per-session `mcp_servers` extension point on
-`SessionRequest`, replacing the `_claude_session_mcp_servers() -> []` override
-hole, and `writes_own_transcripts` + `AgentSupervisor.cleanup_session` as the
+`SessionRequest`, replacing the `_session_mcp_servers()` override hole (the
+core now implements that method, so what PR 3 removes is the untyped override
+seam, not the behaviour), and `writes_own_transcripts` +
+`AgentSupervisor.cleanup_session` as the
 declared home of transcript ownership.
 
 Six of the seven `ACP_BACKENDS_*` frozensets stop being read outside the driver.

@@ -25,6 +25,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_SESSION_MCP_ARRAY,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     selectable_backends,
@@ -178,12 +179,23 @@ KAS_CLIENT_CAPABILITIES: dict = {
 # Values written into a per-session settings.local.json
 # ``permissions.defaultMode`` for the ``ACP_BACKEND_CLAUDE`` backend.
 # ``default`` = per-tool approval; ``auto`` = the SDK auto-accept mode
-# (Auto-mode / permission-UI parity). Nothing in the base client writes that file
-# today — it is an edition override — so these are defined here to give the
-# client's ``permission_mode`` kwarg and any writer one canonical vocabulary
-# rather than duplicating string literals.
+# (Auto-mode / permission-UI parity). ``AcpClient._write_claude_local_settings``
+# is the writer; these exist so it and the client's ``permission_mode`` kwarg
+# share one vocabulary rather than duplicating string literals.
 CC_PERMISSION_MODE_DEFAULT = "default"
 CC_PERMISSION_MODE_AUTO = "auto"
+# NOT a mode Crew ever selects, and never written: it is the one value the
+# adapter treats as "never call the host back at all", which would take a claude
+# session out of the host gate entirely. Named so that value has one spelling
+# here rather than a literal at each guard.
+#
+# It does NOT describe an inherited file. The settings writer is create-or-decline
+# and never READS a file it did not author, so a ``bypassPermissions`` already
+# sitting in a user's own ``settings.local.json`` (or in ``~/.claude``) is neither
+# detected nor stripped -- that session's tool calls do not reach the host gate.
+# That is the disclosed boundary recorded on ``_write_claude_local_settings``, not
+# something this constant closes.
+CC_PERMISSION_MODE_BYPASS = "bypassPermissions"
 
 # ── ACP Session Update Types ──
 

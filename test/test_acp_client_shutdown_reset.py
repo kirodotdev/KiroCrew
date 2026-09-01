@@ -16,9 +16,12 @@ client right after: ``AcpWorker`` (``knowledge/llm_pool.py``) and
 and set their reference to ``None``. So a skipped reset is permanent.
 
 The effect asserted here is the one with a security shape: for the claude
-backend ``_reset_state`` deletes ``.claude/settings.local.json``, which exists
-only to carry ``bypassPermissions`` for the live session. These tests use a real
-work directory and a real file rather than asserting a mock was called.
+backend ``_reset_state`` undoes the session's ``.claude/settings.local.json``
+seed, which is what carries ``bypassPermissions`` for the live session. These
+tests use a real work directory and a real file rather than asserting a mock was
+called. The seed is written through ``_write_claude_local_settings`` because the
+cleanup is scoped to what the session itself wrote -- a project file Crew never
+touched is the user's and is left in place.
 """
 
 from __future__ import annotations
@@ -33,12 +36,12 @@ from kiro_crew.acp.client import ACP_BACKEND_CLAUDE, AcpClient
 
 def _claude_client(tmp_path):
     """A client whose reset has one plainly observable effect on disk."""
-    client = AcpClient(work_dir=tmp_path)
+    client = AcpClient(work_dir=tmp_path, permission_mode="bypassPermissions")
     # `_is_claude` is a read-only property over the backend seam.
     client._acp_backend = ACP_BACKEND_CLAUDE
+    client._write_claude_local_settings()
     settings = tmp_path / ".claude" / "settings.local.json"
-    settings.parent.mkdir(parents=True, exist_ok=True)
-    settings.write_text('{"permissions": "bypassPermissions"}', encoding="utf-8")
+    assert settings.exists()
     # No live child: the reset's PID bookkeeping is not what these pin.
     client._process = None
     client._pid = None
