@@ -474,6 +474,134 @@ async def test_cancel_live_cancellable_run_is_200_cancelling(
 
 
 # ---------------------------------------------------------------------------
+# 9b: a requested cancel survives a fresh read (issue #7589)
+# ---------------------------------------------------------------------------
+
+
+def _parked_cancellable(sdk: JobSDK, kind: str = "slow") -> tuple[threading.Event, threading.Event]:
+    """Register a cancellable runner whose next checkpoint is far away.
+
+    It does NOT poll ``handle.cancelled`` until the returned ``release`` is set,
+    which holds the request window open deterministically. Racing a runner that
+    exits the moment it is cancelled is what would make these flaky, and the
+    window is the whole subject: for a runner that checkpoints minutes apart it
+    is minutes long.
+    """
+    started = threading.Event()
+    release = threading.Event()
+
+    def _runner(handle: Any, **params: Any) -> None:
+        started.set()
+        release.wait(timeout=_DEADLINE)
+
+    sdk.register(kind, _runner, cancellable=True)
+    return started, release
+
+
+@pytest.mark.asyncio
+async def test_requested_cancel_is_visible_to_a_later_read_of_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """A GET after the cancel — a reload, a second tab, a fresh mount.
+
+    Holding the cancel response was previously the ONLY way to know a cancel had
+    been asked for: ``_public_view`` served no such field, so any client that
+    re-read the run saw ``running`` and no evidence the button had worked.
+    """
+    _setup_guards(tmp_path, monkeypatch)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
+            # A brand-new read, holding nothing from the cancel call.
+            resp = await client.get(f"{_base()}/{rid}")
+            assert resp.status == 200
+            run = (await resp.json())["run"]
+        assert run["cancelling"] is True
+        # Still running: the worker has not reached its checkpoint. Both facts
+        # are served together, which is what lets a UI say "cancelling…".
+        assert run["status"] == js.RUNNING
+    finally:
+        release.set()
+    assert _wait_terminal(sdk, rid).status == js.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_requested_cancel_is_visible_in_the_active_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``active`` is what a fresh mount adopts, so it must carry the request too."""
+    _setup_guards(tmp_path, monkeypatch)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
+            resp = await client.get(f"{_base()}/active")
+            assert resp.status == 200
+            runs = (await resp.json())["runs"]
+        adopted = [r for r in runs if r["run_id"] == rid]
+        assert len(adopted) == 1
+        assert adopted[0]["cancelling"] is True
+    finally:
+        release.set()
+    assert _wait_terminal(sdk, rid).status == js.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_a_run_nobody_cancelled_reads_not_cancelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """The flag is derived, not decoration: an untouched run must read false."""
+    _setup_guards(tmp_path, monkeypatch)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
+        assert run["cancelling"] is False
+        assert run["status"] == js.RUNNING
+    finally:
+        release.set()
+    _wait_terminal(sdk, rid)
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_cancel_is_no_longer_cancelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """Once the status carries the answer, nothing is pending.
+
+    Without the terminal guard a read landing between the worker's write and the
+    live entry being dropped would serve ``status: cancelled`` and
+    ``cancelling: true`` together — the same cancel both finished and still
+    outstanding.
+    """
+    _setup_guards(tmp_path, monkeypatch)
+    started, release = _parked_cancellable(sdk)
+    rid = sdk.start("slow")
+    try:
+        assert started.wait(timeout=_DEADLINE), "runner never started"
+        _wait_status(sdk, rid, js.RUNNING)
+        async with TestClient(TestServer(_make_app())) as client:
+            assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
+            release.set()
+            assert _wait_terminal(sdk, rid).status == js.CANCELLED
+            run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
+        assert run["status"] == js.CANCELLED
+        assert run["cancelling"] is False
+    finally:
+        release.set()
+
+
+# ---------------------------------------------------------------------------
 # 10: restricted session refused on a mutation
 # ---------------------------------------------------------------------------
 

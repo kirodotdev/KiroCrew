@@ -277,6 +277,80 @@ class TestCancellation:
 
 
 # ---------------------------------------------------------------------------
+# 5b. cancelling_ids — the read side of "cancel writes nothing"
+# ---------------------------------------------------------------------------
+
+
+class TestCancellingIds:
+    """A requested cancel must be readable before the worker records it.
+
+    ``cancel`` writes nothing on purpose, so the request used to exist only in
+    the response to the cancel call itself. These pin the derived read that makes
+    it survive a fresh read of the record instead.
+    """
+
+    def test_request_is_reported_until_the_worker_records_it(self, sdk: JobSDK) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def runner(h, **kw):
+            # A checkpoint deliberately far away: this runner does not poll
+            # ``h.cancelled`` until the test lets it. That holds the request
+            # window open deterministically rather than racing a worker that
+            # would settle before the assertion runs.
+            started.set()
+            release.wait(5.0)
+            return {}
+
+        sdk.register("slow", runner, cancellable=True)
+        run_id = sdk.start("slow")
+        try:
+            assert started.wait(5.0)
+            # Nothing has been asked for yet.
+            assert sdk.cancelling_ids() == frozenset()
+            assert sdk.cancel(run_id) is True
+            # Requested, and readable while the RECORD still says running --
+            # which is exactly what a fresh mount has to be able to see.
+            assert run_id in sdk.cancelling_ids()
+            record = sdk.get(run_id)
+            assert record is not None and record.status == RUNNING
+        finally:
+            # In FINALLY: an assertion failing above must not park this worker
+            # for the rest of the session.
+            release.set()
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == CANCELLED
+        # The worker recorded the outcome and the live entry is gone, so the
+        # status now carries the answer and nothing is pending.
+        assert sdk.cancelling_ids() == frozenset()
+
+    def test_a_refused_cancel_reports_nothing(self, sdk: JobSDK) -> None:
+        """The snapshot follows the ACCEPTED request, not the attempt.
+
+        A live run that was never declared cancellable refuses ``cancel``, so no
+        event is set and nothing may claim a cancel is under way.
+        """
+        started = threading.Event()
+        release = threading.Event()
+
+        def runner(h, **kw):
+            started.set()
+            release.wait(5.0)
+            return {}
+
+        sdk.register("plain", runner)  # cancellable=False, the default
+        run_id = sdk.start("plain")
+        try:
+            assert started.wait(5.0)
+            assert sdk.cancel(run_id) is False
+            assert sdk.cancelling_ids() == frozenset()
+        finally:
+            release.set()
+        run = _wait_terminal(sdk, run_id)
+        assert run.status == DONE
+
+
+# ---------------------------------------------------------------------------
 # 6. dedupe_key
 # ---------------------------------------------------------------------------
 
