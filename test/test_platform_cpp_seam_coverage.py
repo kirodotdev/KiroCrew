@@ -28,6 +28,14 @@ individual methods on fields that are otherwise live (today: the unread
 Consumption sites are discovered by **static analysis of the real source tree**
 (``ast``), not from a hand-maintained list — a list would itself rot. See
 :func:`_find_seam_reads`.
+
+The same shape guards the one accessor that opts OUT of the fail-closed contract.
+``context.installed_context()`` answers ``None`` instead of refusing to compose,
+which is safe only where the caller's no-context answer is already the
+conservative one — a property of the CALLER, so the function cannot check it.
+Every call site must appear in ``context.PEEK_CALLERS`` with that reason
+(:class:`TestInstalledContextPeeks`), and an entry whose call site is gone fails
+too, so the map cannot outlive the callers it permits.
 """
 
 from __future__ import annotations
@@ -36,7 +44,7 @@ import ast
 import dataclasses
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import pytest
 
@@ -53,6 +61,7 @@ from kiro_crew.platform import (
 from kiro_crew.platform.context import (
     _RESERVED_DEFAULT_ADAPTERS,
     _RESERVED_WARNED,
+    PEEK_CALLERS,
     PlatformContext,
     _reserved_slot_is_default,
 )
@@ -197,6 +206,100 @@ def _find_method_reads(field_names: Set[str]) -> Dict[str, List[str]]:
                     f"{_rel(path)}:{node.lineno}"
                 )
     return method_reads
+
+
+# ── installed_context() peek discovery ──
+#
+# The peek scan differs from the seam scan above in one deliberate way: it does
+# NOT exclude ``platform/``. A seam READ inside the platform package is plumbing,
+# but a peek inside it is a real bypass of the module's own fail-closed contract
+# (``redact_log_via_context`` and ``governance.active_policy_distribution`` are
+# both in there), so excluding the directory would hide two of today's three
+# callers and make the gate pass while permitting exactly what it forbids.
+_PEEK_FUNC = "installed_context"
+
+
+def _peek_scanned_files() -> List[Path]:
+    """Every ``.py`` under ``src/kiro_crew`` except vendored third-party source."""
+    return [
+        path
+        for path in sorted(_SRC_ROOT.rglob("*.py"))
+        if "_vendor" not in path.relative_to(_SRC_ROOT).parts
+    ]
+
+
+def _module_key(path: Path) -> str:
+    """``src/kiro_crew/platform/context.py`` → ``platform/context.py``."""
+    return path.relative_to(_SRC_ROOT).as_posix()
+
+
+def _calls_with_scope(tree: ast.AST) -> Iterator[Tuple[str, ast.Call]]:
+    """Yield ``(enclosing-scope-qualname, Call)`` for every call in *tree*.
+
+    The scope is the dotted chain of enclosing ``def``/``class`` names, so a peek
+    is attributed to the function a reader would name it by. Manual descent rather
+    than ``ast.walk`` because ``walk`` discards the nesting the attribution needs.
+    """
+
+    def _descend(node: ast.AST, scope: Tuple[str, ...]) -> Iterator[Tuple[str, ast.Call]]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                yield from _descend(child, scope + (child.name,))
+                continue
+            if isinstance(child, ast.Call):
+                yield ".".join(scope), child
+            yield from _descend(child, scope)
+
+    yield from _descend(tree, ())
+
+
+def _is_peek_call(node: ast.Call) -> bool:
+    """True for ``installed_context()`` and ``<module>.installed_context()``."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id == _PEEK_FUNC
+    if isinstance(func, ast.Attribute):
+        return func.attr == _PEEK_FUNC
+    return False
+
+
+def _peeks_in_source(source: str, module: str) -> Dict[str, List[str]]:
+    """Map ``"<module>::<function>"`` → ``["<module>:LINE", ...]`` for one file.
+
+    Split out from :func:`_find_installed_context_peeks` so the scanner can be
+    exercised against a synthetic source string — the coherence guard that keeps
+    the gate from passing because it silently found nothing.
+    """
+    peeks: Dict[str, List[str]] = {}
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
+        return peeks
+    for scope, node in _calls_with_scope(tree):
+        if not _is_peek_call(node):
+            continue
+        peeks.setdefault(f"{module}::{scope or '<module>'}", []).append(f"{module}:{node.lineno}")
+    return peeks
+
+
+def _find_installed_context_peeks() -> Dict[str, List[str]]:
+    """Every ``installed_context()`` call site in the package, keyed by caller."""
+    peeks: Dict[str, List[str]] = {}
+    for path in _peek_scanned_files():
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:  # pragma: no cover - defensive
+            continue
+        if _PEEK_FUNC not in source:  # cheap pre-filter before the parse
+            continue
+        for key, sites in _peeks_in_source(source, _module_key(path)).items():
+            peeks.setdefault(key, []).extend(sites)
+    return peeks
+
+
+@pytest.fixture(scope="module")
+def peek_sites() -> Dict[str, List[str]]:
+    return _find_installed_context_peeks()
 
 
 @pytest.fixture(scope="module")
@@ -414,6 +517,94 @@ class TestReservedMethodCoverage:
                 assert "no core call site" in reason, (
                     f"RESERVED_METHODS[{field!r}][{method!r}] must state " "'no core call site'"
                 )
+
+
+# ── The peek gate: installed_context() callers are declared, or the build fails ──
+
+
+class TestInstalledContextPeeks:
+    """``installed_context()`` opts out of the fail-closed contract; its callers
+    must say why that is safe for them, in a map a reviewer sees."""
+
+    def test_scanner_detects_a_synthetic_peek(self) -> None:
+        """Guard against a vacuous gate.
+
+        Both arms below pass trivially if the scanner finds nothing, so pin the
+        two call shapes and the scope attribution against source we control.
+        """
+        found = _peeks_in_source(
+            "\n".join(
+                (
+                    "from kiro_crew.platform.context import installed_context",
+                    "def outer():",
+                    "    return installed_context()",
+                    "class C:",
+                    "    def m(self):",
+                    "        return pc.installed_context()",
+                    "def unrelated():",
+                    "    return current_context()",
+                )
+            ),
+            "synthetic.py",
+        )
+        assert set(found) == {"synthetic.py::outer", "synthetic.py::C.m"}, found
+
+    def test_scanner_finds_the_real_call_sites(self, peek_sites) -> None:
+        """The scan must see the live tree, not an empty one."""
+        assert peek_sites, "peek scanner found no installed_context() call site at all"
+        assert "security.py::_exempt_exact_hosts" in peek_sites, sorted(peek_sites)
+
+    def test_scanner_does_not_count_the_definition(self, peek_sites) -> None:
+        """``def installed_context()`` is not a call — the accessor is not its own
+        caller, and counting it would let the map self-justify."""
+        assert f"platform/context.py::{_PEEK_FUNC}" not in peek_sites
+
+    def test_every_peek_is_declared(self, peek_sites) -> None:
+        """An undeclared peek fails HERE.
+
+        Adding a caller now costs a ``PEEK_CALLERS`` entry stating why ITS
+        no-context answer is the conservative one — the question that decides
+        whether skipping the fail-closed path is safe, and the one a docstring
+        could only ask politely.
+        """
+        undeclared = {key: sites for key, sites in peek_sites.items() if key not in PEEK_CALLERS}
+        assert not undeclared, (
+            f"undeclared installed_context() caller(s): {undeclared}. This accessor "
+            "answers None instead of refusing to compose, so it is safe ONLY where "
+            "the no-context answer is already the conservative one. Add an entry to "
+            "kiro_crew.platform.context.PEEK_CALLERS stating why that holds for this "
+            "caller, or use current_context() and take the fail-closed error."
+        )
+
+    def test_declared_peeks_still_have_a_call_site(self, peek_sites) -> None:
+        """A permission must not outlive the caller it was written for.
+
+        Without this arm a deleted or renamed caller leaves behind an entry that
+        reads as a reviewed decision, and the next author points at it as
+        precedent for a call site nobody examined.
+        """
+        stale = sorted(key for key in PEEK_CALLERS if key not in peek_sites)
+        assert not stale, (
+            f"PEEK_CALLERS entries with no matching call site: {stale}. The caller was "
+            "removed or renamed — delete the entry (or re-key it) so the map keeps "
+            f"describing the real callers. Live sites: {sorted(peek_sites)}"
+        )
+
+    def test_peek_justifications_answer_the_question(self) -> None:
+        """Each reason must actually address the no-context answer, greppably."""
+        for key, reason in PEEK_CALLERS.items():
+            assert "no-context answer" in reason, (
+                f"PEEK_CALLERS[{key!r}] must state what the 'no-context answer' is, "
+                "so the justification addresses the contract it bypasses"
+            )
+            assert len(reason) > 60, f"PEEK_CALLERS[{key!r}] reason is too terse"
+
+    def test_peek_keys_name_real_modules(self) -> None:
+        """A key that names no file could never match a site, in either arm."""
+        missing = sorted(
+            key for key in PEEK_CALLERS if not (_SRC_ROOT / key.split("::", 1)[0]).is_file()
+        )
+        assert not missing, f"PEEK_CALLERS keys naming non-existent module(s): {missing}"
 
 
 # ── The runtime signal: composing into a reserved slot is loud ──

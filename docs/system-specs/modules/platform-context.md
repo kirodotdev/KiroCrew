@@ -102,11 +102,22 @@ Core code reads adapters directly when it has the context, or via
 
 `installed_context()` returns the INSTALLED context or `None` as a bare
 attribute read — it never resolves, never raises, and does no I/O. Use it ONLY
-where the answer for "no context" is already the conservative one (the
-exempt-host lookup below is the one such caller), because it skips the config
-load and entry-point discovery that `current_context()` performs on every call
-while unbooted. A caller that must honour a companion's policy has to go through
-`current_context()` and take the fail-closed `PlatformCompositionError`.
+where the answer for "no context" is already the conservative one, because it
+skips the config load and entry-point discovery that `current_context()`
+performs on every call while unbooted. A caller that must honour a companion's
+policy has to go through `current_context()` and take the fail-closed
+`PlatformCompositionError`.
+
+Whether the no-context answer is conservative is a property of the CALLER, so
+the accessor cannot check it and this paragraph cannot enforce it — while it was
+the only guard, the caller set grew from one to three and the sentence here still
+said "the one such caller". Every call site is therefore declared in
+`context.PEEK_CALLERS` with that reason, and `test_platform_cpp_seam_coverage.py`
+fails the build on an undeclared peek AND on an entry whose call site is gone.
+Today's three: the exempt-host lookup (below), `redact_log_via_context` (above),
+and `governance.active_policy_distribution`. The gate is a review forcing
+function, not a proof — it cannot verify that a written justification is true,
+only that one was written where a reviewer will read it.
 
 ## Boot sequence
 

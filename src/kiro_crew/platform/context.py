@@ -417,6 +417,67 @@ def set_context(ctx: PlatformContext) -> None:
     _install(ctx)
 
 
+# ── Declared no-I/O peek callers ──
+#
+# ``installed_context()`` is the one context accessor that does NOT take the
+# fail-closed path: where ``current_context()`` refuses to compose open-source
+# defaults on a non-standalone host, the peek simply answers ``None``.  That is
+# safe only where the no-context answer is already the conservative one — and
+# that is a property of the CALLER, not of this function, so the function cannot
+# check it.
+#
+# For a while nothing did.  The contract lived in the docstring below and in
+# ``docs/system-specs/modules/platform-context.md``, and the caller set grew from
+# one to three with nothing objecting — the spec sentence naming "the one such
+# caller" was still describing a set of three.
+#
+# So the caller set is declared HERE and gated by
+# ``test_platform_cpp_seam_coverage.py``, the same declared-map-plus-AST-scan
+# shape :data:`RESERVED_SLOTS` uses, rot-proof in both directions:
+#
+#   1. Every call site of ``installed_context()`` in the package must appear in
+#      this map.  A new peek fails the build until its author writes down why ITS
+#      no-context answer is conservative — the review question the docstring
+#      could only ask politely.
+#   2. Every entry must still have a real call site.  A caller that is deleted or
+#      renamed takes its entry with it, so the map cannot decay into a list of
+#      permissions nobody exercises.
+#
+# The gate is a forcing function, not a proof: it cannot verify that a written
+# justification is TRUE.  What it removes is the silent path — adding a peek now
+# costs a diff to the very file whose fail-closed contract is being bypassed, and
+# every justification lands in front of a reviewer.
+#
+# Keys are ``"<path under src/kiro_crew>::<enclosing function>"``.  Each value
+# must contain the phrase ``no-context answer`` so the justification is greppable
+# and cannot dodge the question it exists to answer.
+PEEK_CALLERS: "dict[str, str]" = {
+    "security.py::_exempt_exact_hosts": (
+        "no-context answer is the empty exempt-host set, which means MORE "
+        "redaction: every host runs the base64-blob / query-length heuristics. "
+        "The lookup can only ever RELAX those heuristics, never the hard-"
+        "credential floor, so an absent context cannot be the reason a "
+        "credential survives — it is stricter than any companion-supplied "
+        "exemption list could be."
+    ),
+    "platform/context.py::redact_log_via_context": (
+        "no-context answer is the full OSS baseline redaction pass, which is "
+        "byte-for-byte what each of these log sites did before adopting the "
+        "helper. Nothing in that state evidences a companion whose policy is "
+        "being skipped; the genuine downgrade case — a context IS installed and "
+        "its policy failed to compose — is handled separately by withholding "
+        "the line's text (LOG_WITHHELD_PLACEHOLDER)."
+    ),
+    "platform/governance.py::active_policy_distribution": (
+        "no-context answer is an unconfigured PolicyDistribution, i.e. no "
+        "central fetch. It is reached only when boot never installed a context, "
+        "and then this process holds no ceiling to refresh and runs no refresher "
+        "against one; it is also exactly what this function's own except-branch "
+        "returns, so the peek cannot produce an answer its error path would not."
+    ),
+}
+
+
 def installed_context() -> Optional[PlatformContext]:
     """The INSTALLED context, or ``None``. Never resolves, never raises, no I/O.
 
@@ -431,6 +492,11 @@ def installed_context() -> Optional[PlatformContext]:
     Use this ONLY where the no-context answer is already the conservative one.
     A caller that must honour a companion's policy has to go through
     ``current_context()`` and take the fail-closed error.
+
+    Every call site must be declared in :data:`PEEK_CALLERS` with the reason its
+    no-context answer is conservative; ``test_platform_cpp_seam_coverage.py``
+    fails the build on an undeclared peek, and on a declaration whose call site
+    is gone.
     """
     return _ACTIVE
 
