@@ -530,6 +530,81 @@ class TestApprovalModes:
         ), msgs
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "label,result_kwargs",
+        [
+            # asyncio.TimeoutError branch of run_script_hook: no exit_code is set,
+            # so the dataclass default (-1) stands and `error` carries the reason.
+            (
+                "timeout",
+                {"exit_code": -1, "error": "Timed out after 3s", "stderr": "", "stdout": ""},
+            ),
+            # Generic exception branch: same shape, exception text on `error`.
+            (
+                "crash",
+                {"exit_code": -1, "error": "boom", "stderr": "", "stdout": ""},
+            ),
+            # /bin/sh could not exec the hook command at all.
+            (
+                "missing binary",
+                {"exit_code": 127, "error": "", "stderr": "", "stdout": ""},
+            ),
+        ],
+    )
+    async def test_auto_approve_blocked_when_pretooluse_hook_delivers_no_verdict(
+        self, tmp_path, label, result_kwargs
+    ):
+        """A PreToolUse hook that cannot render a verdict must fail CLOSED.
+
+        Timeout, crash, and missing-binary all leave an exit code that is neither
+        0 nor 2. Treating those as "no opinion" means slowing, breaking, or
+        deleting a deny hook silently disables the policy it enforces, so the
+        auto-approve path must reject the tool instead of proceeding.
+        """
+        cb = _context_builder(ToolHookResult.auto_approve())
+        hook_store = _make_hook_store()
+        hook_store.fire = AsyncMock(
+            return_value=[MagicMock(hook_name="policy-gate", **result_kwargs)]
+        )
+        state, client = _make_state(tmp_path, context_builder=cb, hook_store=hook_store)
+        slot = _make_slot()
+        _set_stream(client, [_permission_event(), _complete_event()])
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+
+        client.reject_tool.assert_called_once()
+        client.approve_tool.assert_not_called()
+        msgs = _tool_messages(slot)
+        assert any(
+            "hook blocked" in m.get("content", "").lower() for m in msgs
+        ), (label, msgs)
+
+    @pytest.mark.asyncio
+    async def test_auto_approve_allowed_when_pretooluse_hook_exits_zero(self, tmp_path):
+        """Exit 0 is a delivered "allow" verdict and must still approve.
+
+        Pins the fail-closed branch to non-0/2 exits only, so a healthy hook that
+        approves silently is not caught by it.
+        """
+        cb = _context_builder(ToolHookResult.auto_approve())
+        hook_store = _make_hook_store()
+        hook_store.fire = AsyncMock(
+            return_value=[
+                MagicMock(exit_code=0, stdout="", stderr="", error="", hook_name="policy-gate")
+            ]
+        )
+        state, client = _make_state(tmp_path, context_builder=cb, hook_store=hook_store)
+        slot = _make_slot()
+        _set_stream(client, [_permission_event(), _complete_event()])
+
+        with _patch_stats():
+            await _run_chat(state, slot, "hello")
+
+        client.approve_tool.assert_called_once()
+        client.reject_tool.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_auto_approve_deny_by_default_on_unexpected_hook_output(self, tmp_path):
         """Non-list/None hook return must reject the tool (deny-by-default)."""
         cb = _context_builder(ToolHookResult.auto_approve())

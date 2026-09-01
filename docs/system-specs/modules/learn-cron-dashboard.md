@@ -1571,7 +1571,9 @@ The Agents page context window section shows per-session info:
 When `_run_chat` refuses a tool call for a **recoverable, system-side** reason —
 a host-gate policy deny (`hooks.on_tool_call` → `TOOL_DENY`), the read-only
 bash safety gate (`is_read_only_bash` / `unsafe_bash_reason`), or a PreToolUse
-script hook block (`exit 2` → `BLOCKED:<hook>:<stderr>`) — kiro-cli ends the
+script hook block (`exit 2` → `BLOCKED:<hook>:<stderr>`, or any other nonzero
+exit → `BLOCKED:<hook>:<error>`, since only 0 and 2 are verdicts a gate can
+deliver) — kiro-cli ends the
 turn early by emitting the attribution-free marker `Tool uses were interrupted,
 waiting for the next user prompt`. Without recovery, the reason reaches only the
 dashboard pill and SEL audit log, so the model cannot adapt.
