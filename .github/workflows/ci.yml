@@ -657,6 +657,20 @@ jobs:
           REDUCED: ${{ steps.scope.outputs.reduced }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
         run: |
+          # Take the `python` problem matcher registered by actions/setup-python
+          # out of scope before pytest writes a line. Its pattern is a traceback
+          # frame followed by `raise SomeError('msg')`, matched anywhere in the
+          # log -- including inside pytest's warnings summary. MEASURED on the six
+          # jobs in #7296: it matched a warning traceback every time and a pytest
+          # failure not once, so every red was annotated `Event loop is closed`
+          # at asyncio/base_events.py's line 545 while the tests that actually
+          # failed were named in no annotation at all, and four unrelated PRs
+          # were misdiagnosed as an event-loop teardown flake. conftest.py's
+          # `pytest_terminal_summary` now emits the annotations from pytest's own
+          # report objects; this keeps a louder wrong answer off the check run.
+          # Not `add-problem-matchers: false`: that input does not exist on this
+          # action pin, and passing it only adds an "Unexpected input(s)" warning.
+          echo "::remove-matcher owner=python::"
           # Reduced scope (frontend-only diff): run just the cross-surface
           # files, still sharded, with coverage off -- a subset's coverage is
           # not comparable to the repo floor, so Coverage Combine/Gate skip the
@@ -785,6 +799,10 @@ jobs:
         # uninterpretable one at the 40-minute cap.
         shell: bash
         run: |
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
           pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
             --splits "$SHARD_COUNT" --group ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
@@ -846,6 +864,10 @@ jobs:
       - name: Assert the macOS peer-identity canary runs (not skipped)
         run: |
           set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
           pytest -v -n0 --no-cov --timeout=120 \
             "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
             | tee canary.log
@@ -928,6 +950,10 @@ jobs:
         # `coverage-combine` taught to consume it, which couples the coverage gate to a
         # job it does not depend on today. Separate change; the omit carries the pointer.
         run: |
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
           pytest -q --timeout=180 --no-cov \
             test/test_script_hooks.py \
             test/test_cron_script.py \

@@ -2526,3 +2526,151 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "cwd=<a directory under tmp_path> to the spawn, and scope any assertion "
         "about the file to where that child actually ran."
     )
+
+
+# ── Check-run annotations that name the failing test (issue #7296) ──────────
+#
+# A red shard is read from its check run's ANNOTATIONS, not from the log: that
+# is what the PR page shows, what a fork contributor sees, and all that survives
+# in a triage report. Nothing in this repo wrote one, so the annotations came
+# from the `python` problem matcher that `actions/setup-python` registers by
+# default, whose pattern is a traceback frame (`File "...", line N, in f`)
+# followed by `raise SomeError('msg')`.
+#
+# MEASURED on the six Backend Tests jobs cited in #7296: that pattern matched
+# pytest's WARNINGS SUMMARY every time and a pytest failure not once. All six
+# reds were annotated only `Event loop is closed` at line 545 -- which is
+# `asyncio/base_events.py:545` inside `_check_closed`, reached from a
+# `PytestUnraisableExceptionWarning` about a garbage-collected coroutine, i.e. a
+# WARNING. The reds themselves were ordinary named failures (a `git add`
+# timeout, a missing diag.jsonl, sandbox-dependent project tests) and appeared
+# in no annotation at all. Four unrelated PRs were triaged as an event-loop
+# teardown flake on the strength of that, and the class had been "fixed" four
+# times before.
+#
+# Replacing the matcher with a better matcher is not the fix. `--color=yes` is
+# in the addopts, so the summary line a matcher would have to scrape reads
+# `\x1b[31mFAILED\x1b[0m test/x.py::\x1b[1mtest_y\x1b[0m - AssertionError: ...`
+# with escape sequences INSIDE the node id. The report objects already carry the
+# path, the line and the node id as data, so the annotation is emitted from them
+# here and nothing is parsed back out of rendered output.
+
+#: Failures that get their own annotation before the rest are only counted.
+#: GitHub keeps a bounded number per check run and drops the excess with no
+#: notice, so past this point the annotation list stops being something anyone
+#: reads and the short test summary in the log is the better artifact.
+_MAX_ANNOTATED_FAILURES = 10
+
+#: Annotation messages are cut to this many characters. A full assertion diff is
+#: a page long, does not fit the check-run UI, and is already in the log.
+_MAX_ANNOTATION_CHARS = 400
+
+
+def _gha_escape(value: str, *, is_property: bool) -> str:
+    """Escape *value* for a GitHub Actions workflow command.
+
+    The runner splits a command on ``,`` and on ``::``, and every pytest node id
+    contains ``::`` -- unescaped, the annotation is truncated at the first one
+    and names the FILE instead of the test, which is most of the defect this
+    exists to fix. Property values need the two structural characters escaped on
+    top of the data set, per the workflow-commands spec.
+    """
+    escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    if is_property:
+        escaped = escaped.replace(":", "%3A").replace(",", "%2C")
+    return escaped
+
+
+def _report_location(report: object) -> tuple[str, int | None]:
+    """Repository-relative path and 1-based line for *report*, best effort.
+
+    ``report.location`` is a ``(path, lineno, domain)`` triple whose line is
+    0-BASED, while an annotation line is 1-based. A collection error carries no
+    line at all, and a guessed one points the reader at the wrong statement, so
+    ``None`` means "omit ``line=``" rather than "line 1".
+    """
+    location = getattr(report, "location", None) or ()
+    path = location[0] if len(location) >= 1 and isinstance(location[0], str) else ""
+    if not path:
+        path = str(getattr(report, "fspath", "") or "")
+    raw_line = location[1] if len(location) >= 2 else None
+    line = raw_line + 1 if isinstance(raw_line, int) and raw_line >= 0 else None
+    return path, line
+
+
+def _cut(reason: str) -> str:
+    """*reason* trimmed to :data:`_MAX_ANNOTATION_CHARS`."""
+    reason = reason.strip()
+    if len(reason) > _MAX_ANNOTATION_CHARS:
+        return reason[: _MAX_ANNOTATION_CHARS - 3] + "..."
+    return reason
+
+
+def _failure_reason(report: object) -> str:
+    """One-line reason for *report*, cut to :data:`_MAX_ANNOTATION_CHARS`.
+
+    Prefers the line pytest marks with ``E`` in the first column, which is the
+    error itself. ``longrepr.reprcrash.message`` looks like the obvious source
+    and is right for an assertion, but for a FIXTURE error it is the preamble --
+    MEASURED, an annotation built from it reads ``file <path>, line 5`` and
+    spends its whole width saying nothing, while the ``E`` line two rows down
+    says ``fixture 'x' not found``. Source lines in the same block are indented,
+    so anchoring at column 0 does not mistake a statement for the verdict.
+
+    ``reprcrash`` is the fallback, then the first rendered line; a report with
+    none of the three still gets an annotation, because the node id was the part
+    that was missing.
+    """
+    rendered = str(getattr(report, "longreprtext", "") or "")
+    for raw in rendered.splitlines():
+        if raw.startswith("E ") and raw[1:].strip():
+            return _cut(raw[1:])
+    crash = getattr(getattr(report, "longrepr", None), "reprcrash", None)
+    reason = str(getattr(crash, "message", "") or "")
+    if not reason.strip():
+        reason = rendered
+    lines = [line for line in reason.strip().splitlines() if line.strip()]
+    if not lines:
+        return "no failure detail in the report"
+    return _cut(lines[0])
+
+
+def pytest_terminal_summary(
+    terminalreporter: object, exitstatus: int, config: pytest.Config
+) -> None:
+    """Emit one ``::error`` annotation per failing test. See the note above.
+
+    Controller-only: under xdist a worker's reports are sent back and counted
+    here, so annotating from the worker too would double every line. Gated on
+    ``GITHUB_ACTIONS`` because outside Actions these lines are noise nothing
+    interprets, and a green run writes nothing at all.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    if hasattr(config, "workerinput"):  # pragma: no cover - xdist worker
+        return
+    stats = getattr(terminalreporter, "stats", None) or {}
+    reports = [report for key in ("failed", "error") for report in stats.get(key, [])]
+    if not reports:
+        return
+    write = getattr(terminalreporter, "write_line", None)
+    if write is None:  # pragma: no cover - no terminal reporter (e.g. -p no:terminal)
+        return
+    for report in reports[:_MAX_ANNOTATED_FAILURES]:
+        nodeid = str(getattr(report, "nodeid", "") or "") or "<unknown test>"
+        path, line = _report_location(report)
+        properties = []
+        if path:
+            properties.append(f"file={_gha_escape(path, is_property=True)}")
+        if line is not None:
+            properties.append(f"line={line}")
+        properties.append(f"title={_gha_escape(nodeid, is_property=True)}")
+        message = _gha_escape(f"{nodeid} - {_failure_reason(report)}", is_property=False)
+        write(f"::error {','.join(properties)}::{message}")
+    hidden = len(reports) - _MAX_ANNOTATED_FAILURES
+    if hidden > 0:
+        write(
+            f"::notice::{len(reports)} tests failed or errored on this job; the first "
+            f"{_MAX_ANNOTATED_FAILURES} are annotated. The remaining {hidden} are in "
+            "this job's short test summary."
+        )

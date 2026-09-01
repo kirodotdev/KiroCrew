@@ -123,6 +123,11 @@ jobs:
           # deselect list any more: if the sysctl is reverted, those tests skip
           # themselves on `skipif(not userns_available())` and the rest of the suite
           # still runs -- which is what ci.yml's sharded matrix relies on too.
+          # Same as ci.yml's pytest jobs (#7296): the `python` problem matcher
+          # actions/setup-python registers annotates any traceback in the log,
+          # including one printed inside a pytest warning, and never matches a
+          # pytest failure. conftest.py emits the real annotations instead.
+          echo "::remove-matcher owner=python::"
           pytest -q -n auto --timeout=120 --no-cov
 
   resolve-promotion:

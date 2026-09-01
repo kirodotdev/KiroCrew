@@ -58,6 +58,11 @@ jobs:
         # durations now; the tests inside them that need a namespace sandbox skip here
         # (this runner has none) and a skip is measured as the near-zero it is.
         run: |
+          # Same as ci.yml's pytest jobs (#7296): the `python` problem matcher
+          # actions/setup-python registers annotates any traceback in the log,
+          # including one printed inside a pytest warning, and never matches a
+          # pytest failure. conftest.py emits the real annotations instead.
+          echo "::remove-matcher owner=python::"
           pytest -q -n auto --timeout=120 --no-cov --store-durations || true
           test -f .test_durations || { echo "::error::no .test_durations produced"; exit 1; }
 
