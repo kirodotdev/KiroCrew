@@ -7,7 +7,7 @@ import { setPendingInput, switchSlot } from '../../store/chatSlice'
 import { api, ApiError } from '../../api/client'
 import { Card, CardTitle, Btn, Badge, SearchInput, EmptyState } from '../../components/ui'
 import Modal from '../../components/Modal'
-import PromptForm, { assemblePromptContent, parsePromptContent, type PromptFormData, type PromptScope } from '../../components/PromptForm'
+import PromptForm, { PROMPT_FILENAME_MAX_BYTES, assemblePromptContent, parsePromptContent, promptNameProblem, type PromptFormData, type PromptScope } from '../../components/PromptForm'
 import InfoTip from '../../components/InfoTip'
 import ListDetailBack from '../../components/ListDetailBack'
 import { parseErrorCode } from '../../utils/errorReport'
@@ -108,13 +108,23 @@ export default function PromptsTab() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [mutationError, setMutationError] = useState('')
 
-  // A write's own error text is the server's, and two codes need translating
-  // before a user can act on them: `no_active_project` says "no active project
-  // for local scope", but the control they chose is labelled "This project" and
-  // the word "local" appears nowhere in this UI; `content_conflict` names a
-  // compare-and-swap the user never saw. Every other code's prose is already
-  // actionable, so this maps the exceptions rather than building a table that
-  // would drift from the handler.
+  // A write's own error text is the server's, and four codes need translating
+  // before a user can act on them. Two name the mechanism rather than the
+  // control: `no_active_project` says "no active project for local scope", but
+  // the control they chose is labelled "This project" and the word "local"
+  // appears nowhere in this UI; `content_conflict` names a compare-and-swap the
+  // user never saw. The other two are the create path's own refusals of a
+  // typed name -- `invalid_name` when nothing survives sanitizing,
+  // `name_too_long` when the filename exceeds the byte cap -- and both answer
+  // in English without saying which rule was broken. A name of characters
+  // outside a-z0-9 earns the first and a multi-byte name earns the second at a
+  // third of the length an ASCII one would, so the user least likely to read
+  // the English prose is the one most likely to be shown it. The form now
+  // catches both client-side, but that sanitizer is a mirror rather than the
+  // authority, so these stay the honest answer for a name the preview accepted
+  // and the server did not. Every other code's prose is already actionable, so
+  // this maps the exceptions rather than building a table that would drift from
+  // the handler.
   const writeError = (e: Error) => {
     const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
     // The conflict copy tells the user to reopen the prompt, so the same-row
@@ -124,7 +134,11 @@ export default function PromptsTab() {
       ? i18nT('pages.overview.promptsTab.no_active_project_hint')
       : code === 'content_conflict'
         ? i18nT('pages.overview.promptsTab.content_conflict_hint')
-        : e.message)
+        : code === 'invalid_name'
+          ? i18nT('pages.overview.promptsTab.invalid_name_hint')
+          : code === 'name_too_long'
+            ? i18nT('pages.overview.promptsTab.name_too_long_hint', { max: PROMPT_FILENAME_MAX_BYTES })
+            : e.message)
   }
 
   // Prefix-invalidates the list AND every cached detail (['prompts', <key>]).
@@ -545,7 +559,13 @@ export default function PromptsTab() {
         if (createDirty() && !confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes'))) return
         setCreating(false); setMutationError('')
       }}>{i18nT('pages.overview.promptsTab.cancel')}</Btn>
-      <Btn primary disabled={!createForm.name.trim() || !createForm.body.trim() || createPrompt.isPending} onClick={() => createPrompt.mutate(createForm)}>{i18nT('pages.overview.promptsTab.create')}</Btn>
+      {/* Gated on the rule the SERVER applies, not on `.trim()`: a name whose
+          every character is outside a-z0-9 is non-empty here but empty there,
+          and a multi-byte name can exceed the filename byte cap while looking
+          short — both used to be sent as requests that could only 400. The
+          form's hint says which rule the name broke, which is what keeps a
+          disabled button from being a dead end. */}
+      <Btn primary disabled={!createForm.name.trim() || promptNameProblem(createForm.name) !== null || !createForm.body.trim() || createPrompt.isPending} onClick={() => createPrompt.mutate(createForm)}>{i18nT('pages.overview.promptsTab.create')}</Btn>
     </>}>
       <PromptForm data={createForm} onChange={setCreateForm} />
       {mutationError && <p className="text-danger text-[12px] mt-2">{mutationError}</p>}
