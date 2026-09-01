@@ -3534,6 +3534,39 @@ const chatSlice = createSlice({
       }
       if (!confirm(state.messages)) confirm(state.slotMessages[safeKey(slot)])
     },
+    /** Resolve an optimistic steer bubble against the steer POST's own receipt.
+     *
+     *  `meta.steer` draws the "Steered into the running turn" badge, so it is an
+     *  affirmative claim, and only `steered: true` makes it true. `queued: true`
+     *  means the text sits in the slot queue, and EVERY arm reporting it has
+     *  already broadcast a `queue_push` — including the turn teardown, which is
+     *  why the requeued arm does not re-broadcast. That card owns the text, so
+     *  the bubble is REMOVED or the same message renders twice. A receipt with
+     *  neither flag raced `chat_done` onto a new turn: only the flag drops.
+     *
+     *  Both modes need the bubble still `optimistic` — once an echo or
+     *  `confirmOptimisticSend` cleared that, the server owns the row. Scans BOTH
+     *  arrays as `confirmOptimisticSend` does; `sendId` is unique per send. */
+    resolveOptimisticSteer(state, action: PayloadAction<{ slot: string; sendId: string; outcome: 'queued' | 'turn' }>) {
+      const { slot, sendId, outcome } = action.payload
+      if (isUnsafeKey(slot)) return
+      const resolve = (msgs: ChatMessage[] | undefined): boolean => {
+        if (!msgs) return false
+        const floor = Math.max(0, msgs.length - RECONCILE_WINDOW)
+        for (let i = msgs.length - 1; i >= floor; i--) {
+          const m = msgs[i]
+          if (m.role !== 'user' || m.meta?.sendId !== sendId) continue
+          if (!m.meta?.steer || !m.meta?.optimistic) return true
+          if (outcome === 'queued') { msgs.splice(i, 1); return true }
+          const meta = { ...(m.meta || {}) }
+          delete meta.steer
+          m.meta = meta
+          return true
+        }
+        return false
+      }
+      if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
+    },
     /** Age the slot's folder-suggestion card by one delivered user send, and
      *  drop it once it has had its run (> FOLDER_SUGGESTION_MAX_TURNS).
      *
@@ -5670,7 +5703,7 @@ const chatSlice = createSlice({
 
 export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearUnresumableResume, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
-  removeThinking, confirmOptimisticSend, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
+  removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,

@@ -1060,7 +1060,7 @@ describe('sendChat theme consent', () => {
 
   it('steerChat always injects into the running turn', async () => {
     await api.steerChat('now', 'chat-1')
-    expect(call().url).toBe('/api/chat')
+    expect(call().url).toBe('/api/chat?ws=1')
     expect(call().body).toEqual({ message: 'now', slot: 'chat-1', steer: true })
   })
 })

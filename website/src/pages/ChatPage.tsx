@@ -34,7 +34,7 @@ import {
   selectSubagent,
   setActiveSlot, truncateAfterIndex, replaceMessages,
   requestStop, pendingQuestionFor, captureStatelessCard, clearFollowupCard, dismissFollowupItem, clearFolderSuggestion, ageFolderSuggestion,
-  retireStatelessQuestion, capturePendingAskId, confirmOptimisticSend,
+  retireStatelessQuestion, capturePendingAskId, confirmOptimisticSend, resolveOptimisticSteer,
   requestSlotReveal,
   mcpAppKey,
 } from '../store/chatSlice'
@@ -1393,12 +1393,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // short-circuits `slot.model or agent_model` and would override a template or
   // global pin the user did configure.
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
-  // Mid-turn steer is a POST write, so it goes through useMutation for
-  // consistent error/loading-state handling (fire-and-forget: no onSuccess).
+  // NOT fire-and-forget: the receipt is the only thing that knows whether the
+  // text reached the running turn, and the optimistic bubble asserts that it did.
   const steerMutation = useMutation({
-    mutationFn: ({ text, sendId }: { text: string; sendId?: string }) => api.steerChat(text, activeSlot!, sendId),
-    // eslint-disable-next-line no-console -- fire-and-forget mutation with no onSuccess and no toast: a rejected steer is otherwise indistinguishable from one the agent ignored
+    mutationFn: ({ text, sendId, slot }: { text: string; sendId?: string; slot: string }) => api.steerChat(text, slot, sendId),
+    // eslint-disable-next-line no-console -- no toast for a rejected steer, which is otherwise indistinguishable from one the agent ignored
     onError: (e) => { console.error('steer failed', e) },
+    onSuccess: (body, { sendId, slot }) => {
+      if (!sendId || !slot) return
+      const receipt = (body ?? {}) as { ok?: boolean; steered?: boolean; queued?: boolean }
+      // `steered` is the one shape the badge's claim is true for; an unreadable
+      // body confirms nothing, so it must not rewrite the bubble either.
+      if (receipt.steered || !receipt.ok) return
+      dispatch(resolveOptimisticSteer({ slot, sendId, outcome: receipt.queued ? 'queued' : 'turn' }))
+    },
   })
   const [reasoningEffortDropdown, setReasoningEffortDropdown] = useState(false)
   const [reasoningEffortBtnRect, setReasoningEffortBtnRect] = useState<DOMRect | null>(null)
@@ -6382,7 +6390,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // whichever path the server took (#6075).
     const steerSendId = mintSendId()
     dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot })
     // Staged session references are deliberately NOT part of steering: neither
     // carried into the payload nor cleared. `steerMutation`'s onError only logs,
     // so anything cleared here is gone for good — text, attachments and pastes
