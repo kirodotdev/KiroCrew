@@ -127,7 +127,10 @@ describe('TranscriptScrollShell DOM contract', () => {
 })
 
 describe('ChatPage invocation: slot membership and prop threading', () => {
-  const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+  // The invocation lives with the page's chrome, which ChatPageView owns; the page
+  // itself is composition only. Following the code costs this suite nothing —
+  // every pin below is unchanged, including the exactly-one-invocation pin.
+  const src = readFileSync(resolve(__dirname, '../pages/chat/ChatPageView.tsx'), 'utf8')
   const open = src.indexOf('<TranscriptScrollShell')
   const close = src.indexOf('</TranscriptScrollShell>')
   const inv = src.slice(open, close)

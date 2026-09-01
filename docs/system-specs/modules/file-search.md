@@ -131,7 +131,9 @@ shows literally — the same trade-off inline file mentions make.
 | `website/src/components/FilePickerMenu.tsx` | Picker UI, `kind` propagation, trailing-slash insertion |
 | `website/src/components/ChatInput.tsx` | Composer wiring, pending file/folder preview strip |
 | `website/src/utils/fileTokens.ts` | Attachment-marker owner: file AND dir token parse/serialize/resolve |
-| `website/src/pages/ChatPage.tsx` | Token-derived staging, send/steer serialization, bubble chips |
+| `website/src/pages/chat/useChatPageComposerController.tsx` | Token-derived staging |
+| `website/src/pages/chat/useChatPageActionsController.ts` | Send/steer serialization |
+| `website/src/pages/chat/ChatPageMessageContent.tsx` | Bubble chips |
 
 ## Tests
 

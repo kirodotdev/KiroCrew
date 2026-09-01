@@ -835,13 +835,15 @@ and send.
 **Chat parity** — the panel embeds the same `ChatPage` component as `/chat`
 (`embedded` + `embedMode="chat"` for the single-session chrome), so follow-up
 option chips, question cards, steer-send, tool groups and regenerate are
-identical by construction. A `noUrlSync` prop gates ChatPage's one URL-write
-effect: the host route `/artifacts/:slug` owns the URL, and an in-place
+identical by construction. A `noUrlSync` prop gates
+`useChatPageSessionController.ts`'s one URL-write effect: the host route
+`/artifacts/:slug` owns the URL, and an in-place
 `navigate` would swap the host route out from under the panel.
 
 **Composer staging** — "Ask agent to address" routes into the bound session and
 *stages* (never auto-sends) its message through the existing `writePrefill`
-sessionStorage channel ChatPage already consumes on slot activation.
+sessionStorage channel `useChatPageComposerController.tsx` already consumes on
+slot activation.
 
 ## Roadmap
 

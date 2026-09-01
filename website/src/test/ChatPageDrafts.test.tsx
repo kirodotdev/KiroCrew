@@ -399,35 +399,38 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
 })
 
 // the per-slot draft fix relies on a load-bearing effect ORDER --
-// ALL THREE per-composer persist effects (text, files, pastes) must be declared
+// ALL FOUR per-composer persist effects (text, files, pastes, session refs) must be declared
 // before the effect that advances composerSlotRef.current. React runs effects
 // in declaration order, so if the advance ran first a persist effect batched
 // with a slot switch would see the already-advanced ref and smear the outgoing
 // slot's value onto the incoming one. A behavioral test can't reach this (RTL
 // flushes effects between a keystroke and a dispatch, so the two never share a
 // commit); this static source-order assertion does, and goes red the instant
-// someone reorders the effects or moves the advance up. All three persist
-// writes are asserted (not just text) because the advance now guards all three.
+// someone reorders the effects or moves the advance up. All four persist
+// writes are asserted (not just text) because the advance now guards all four.
 describe('ChatPage composerSlotRef effect ordering', () => {
-  it('declares all three composer-persist effects before advancing composerSlotRef', () => {
-    // Deliberately brittle: this matches exact code substrings from ChatPage.tsx
+  it('declares all four composer-persist effects before advancing composerSlotRef', () => {
+    // Deliberately brittle: this matches exact code substrings from the composer controller
     // to lock a load-bearing effect-declaration order. An innocuous rename/reformat
     // will trip it. The fix is to UPDATE the substrings below to the new form,
     // never to delete the guard (the ordering invariant it protects is real).
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    const src = readFileSync(resolve(here, '../pages/chat/useChatPageComposerController.tsx'), 'utf8')
     const textIdx = src.indexOf('setDraft(drafts.current, s, input)')
     const fileIdx = src.indexOf('setFileDraft(fileDrafts.current, s, pendingFiles)')
     const pasteIdx = src.indexOf('setPasteDraft(pasteDrafts.current, s, pasteBlocks)')
+    const sessionRefIdx = src.indexOf('setSessionRefDraft(sessionRefDrafts.current, s, pendingSessions)')
     const advanceIdx = src.indexOf('composerSlotRef.current = activeSlot')
     expect(textIdx, 'text-persist effect (setDraft off composerSlotRef) not found').toBeGreaterThan(-1)
     expect(fileIdx, 'file-persist effect (setFileDraft off composerSlotRef) not found').toBeGreaterThan(-1)
     expect(pasteIdx, 'paste-persist effect (setPasteDraft off composerSlotRef) not found').toBeGreaterThan(-1)
+    expect(sessionRefIdx, 'session-ref persist effect (setSessionRefDraft off composerSlotRef) not found').toBeGreaterThan(-1)
     expect(advanceIdx, 'composerSlotRef advance not found').toBeGreaterThan(-1)
     const order = 'persist effect must be declared BEFORE the composerSlotRef advance (draft-smear guard). If effects moved, UPDATE the substrings; do not delete this guard.'
     expect(textIdx, order).toBeLessThan(advanceIdx)
     expect(fileIdx, order).toBeLessThan(advanceIdx)
     expect(pasteIdx, order).toBeLessThan(advanceIdx)
+    expect(sessionRefIdx, order).toBeLessThan(advanceIdx)
   })
 
   // Symptom B (send routing to the slot the user already left) can't be covered
@@ -441,7 +444,7 @@ describe('ChatPage composerSlotRef effect ordering', () => {
     // Same brittle-by-design string match: if the send-target lines are renamed,
     // UPDATE the substrings to the new form; do not delete this guard.
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    const src = readFileSync(resolve(here, '../pages/chat/useChatPageActionsController.ts'), 'utf8')
     expect(src, 'uiSlot must be read from the activeSlot ref').toContain('const uiSlot = activeSlotRef.current')
     expect(src, 'send target must resolve from uiSlot').toContain('let slot = targetSlot ?? uiSlot')
     expect(src, 'send target must NOT fall back to the stale closure activeSlot').not.toContain('let slot = targetSlot ?? activeSlot')
@@ -853,5 +856,39 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
       expect(restored).toContain('first message')    // failed payload recovered
       expect(restored.indexOf('second thought')).toBeLessThan(restored.indexOf('first message'))
     })
+  })
+
+  it('restores a failed in-flight send only to its origin slot after switching away', async () => {
+    const { api } = await import('../api/client')
+    let rejectSend: (e: Error) => void = () => {}
+    vi.mocked(api.sendChat).mockImplementationOnce(
+      () => new Promise((_res, rej) => { rejectSend = rej }) as unknown as Promise<Response>,
+    )
+
+    const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
+    await renderAndWaitForInput(store)
+    const input = screen.getByLabelText('Message input') as HTMLTextAreaElement
+
+    await act(async () => { fireEvent.change(input, { target: { value: 'failed message for A' } }) })
+    await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+
+    // The request still belongs to A even though the live composer now belongs
+    // to B. Recovery is durable for the origin, but must not splice A's payload
+    // into the slot currently on screen.
+    await act(async () => { store.dispatch(setActiveSlot('slot-b')) })
+    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(''))
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'new work for B' } })
+    })
+    await act(async () => { rejectSend(new Error('Network error')) })
+
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+      expect(saved['slot-a']).toBe('failed message for A')
+      expect(saved['slot-b']).toBe('new work for B')
+    })
+    expect(store.getState().chat.activeSlot).toBe('slot-b')
+    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('new work for B')
   })
 })

@@ -231,7 +231,7 @@ describe('an abort is distinguishable from a real failure', () => {
   it('is guarded at the pin-jump call site before the unavailable notice', async () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
-    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    const src = fs.readFileSync(path.resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
 
     // The catch must return on an abort BEFORE reaching the notice.
     const guard = src.indexOf('if (isSupersededPagingRejection(err)) return')
@@ -243,12 +243,13 @@ describe('an abort is distinguishable from a real failure', () => {
   it('picks the notice from the entry point, so the earlier-messages row avoids pin copy', async () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
-    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    const src = fs.readFileSync(path.resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
+    const pageSrc = fs.readFileSync(path.resolve(__dirname, '../pages/chat/ChatPageView.tsx'), 'utf8')
 
     // Both entry points must tag themselves; `origin` is a required field, so a
     // future caller that forgets cannot silently inherit pin wording.
     expect(src).toContain("origin: 'pin'")
-    expect(src).toContain("origin: 'earlier'")
+    expect(pageSrc).toContain("origin: 'earlier'")
     expect(src).toContain("pendingPinnedJump.origin === 'earlier'")
     expect(src).toContain("i18nT('components.chatPane.earlier_messages_unavailable')")
 
@@ -268,7 +269,7 @@ describe('an abort is distinguishable from a real failure', () => {
   it('keeps the pin entry point on its own copy, so the transient string cannot regress it', async () => {
     const fs = await import('node:fs')
     const path = await import('node:path')
-    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    const src = fs.readFileSync(path.resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
 
     // The transient string is scoped to the earlier-messages origin; the pin
     // origin has no paging-error string, so it falls back to its own wording.

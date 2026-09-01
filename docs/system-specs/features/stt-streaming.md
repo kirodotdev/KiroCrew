@@ -111,7 +111,7 @@ mic -> AudioWorklet (16 kHz mono Int16 PCM) -> WebSocket /api/ws/stt
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Chooses streaming or batch, owns mic and device selection |
-| Composer wiring | `website/src/pages/ChatPage.tsx` | Splices the live region into the input box |
+| Composer wiring | `website/src/pages/chat/useChatPageComposerController.tsx` | Splices the live region into the input box |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Settings UI | `website/src/pages/settings/SttSettings.tsx` | Enable, provider, model, language, and the streaming knobs |
 
@@ -432,7 +432,7 @@ either one is a race.
 
 ## Frozen-prefix behaviour
 
-`ChatPage.tsx` snapshots the composer's contents and the caret on the first
+`useChatPageComposerController.tsx` snapshots the composer's contents and the caret on the first
 `partial` of an utterance. Later partials replace only the live region after that
 snapshot, so anything the user typed before speaking survives, and the caret does
 not jump. The snapshot clears on the final, so the next utterance starts from the

@@ -108,12 +108,13 @@ describe('TurnBlock — memo survives a flush-shaped host re-render', () => {
 describe('ChatPage renderMessage dep hygiene', () => {
   it('renderMessage does not depend on flush-volatile positional state', () => {
     const src = readFileSync(
-      path.join(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+      path.join(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
     const depMatch = src.match(/\}, (\[[^\]]*handleFileOpen[^\]]*\])\)\n\n  \/\/ Hoisted out of the row map/)
     expect(depMatch, 'renderMessage dep array not found — update this ratchet if the anchor moved').toBeTruthy()
     const deps = depMatch![1]
+    const depNames = new Set(deps.slice(1, -1).split(',').map(dep => dep.trim()))
     for (const banned of ['messages', 'visibleIndexMap', 'lastTextIdx', 'slotState']) {
-      expect(deps.includes(banned), `"${banned}" is back in renderMessage's deps — read it through its ref instead`).toBe(false)
+      expect(depNames.has(banned), `"${banned}" is back in renderMessage's deps — read it through its ref instead`).toBe(false)
     }
   })
 })

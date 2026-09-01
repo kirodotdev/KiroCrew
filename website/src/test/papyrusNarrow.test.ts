@@ -73,7 +73,7 @@ describe('papyrus at phone widths', () => {
   })
 
   it('keeps the viewport-anchored sessions opener out of an embedded host', async () => {
-    const s = await readFile(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+    const s = await readFile(join(__dirname, '..', 'pages', 'chat', 'ChatPageView.tsx'), 'utf8')
     // The floating opener is `fixed top-[42px] left-2`, i.e. anchored to the
     // VIEWPORT rather than to the host's pane, so inside Papyrus's co-author panel
     // it lands on the toolbar's back button -- two overlapping tap targets on the

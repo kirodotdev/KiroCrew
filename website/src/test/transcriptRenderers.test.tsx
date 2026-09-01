@@ -233,16 +233,22 @@ describe('rows the defaults already draw correctly are left to them', () => {
 describe('the single-chat surface renders from THIS row set', () => {
   // Until chat-core P5-b the single-chat surface rendered from its own inline
   // role chain, so this module was a SECOND row set that had to agree with it,
-  // and the guard here pinned that agreement role by role. ChatPage now
+  // and the guard here pinned that agreement role by role. The chat page now
   // dispatches through the app-sdk registry and SPREADS this factory into its
   // host list (RFC chat-core extraction, P5), so agreement is by construction:
   // a row added here reaches the page and every pane at once, and a page-only
   // row is an explicit entry AFTER the spread. What can still drift is the
   // spread itself -- so pin that, not the roles.
-  const chatPageSrc = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+  //
+  // The host list lives in the transcript controller, which owns the page's
+  // row dispatch; the page composes it.
+  const chatPageSrc = readFileSync(
+    join(__dirname, '..', 'pages', 'chat', 'useChatPageTranscriptController.tsx'),
+    'utf8',
+  )
 
-  it('ChatPage spreads createTranscriptRenderers into its host list, ahead of its page-only rows', () => {
-    expect(chatPageSrc).toMatch(/import \{ createTranscriptRenderers \} from '\.\/chat\/transcriptRenderers'/)
+  it('the transcript controller spreads createTranscriptRenderers into its host list, ahead of its page-only rows', () => {
+    expect(chatPageSrc).toMatch(/import \{ createTranscriptRenderers \} from '\.\/transcriptRenderers'/)
     const list = chatPageSrc.indexOf('const renderers = mergeRenderers([')
     const spread = chatPageSrc.indexOf('...shared,', list)
     const bubble = chatPageSrc.indexOf('\n      bubble,\n    ])', list)
@@ -252,7 +258,7 @@ describe('the single-chat surface renders from THIS row set', () => {
     expect(chatPageSrc).toMatch(/const shared = createTranscriptRenderers\(\{/)
   })
 
-  it('ChatPage keeps no private copy of a row this set draws', () => {
+  it('the transcript controller keeps no private copy of a row this set draws', () => {
     // A page entry reusing one of this set's ids would shadow the shared row
     // on the page only -- the fork the spread exists to end. Zero exceptions:
     // the page's one behavioural difference (an unparseable file row falls to

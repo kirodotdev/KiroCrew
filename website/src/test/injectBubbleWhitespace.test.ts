@@ -11,12 +11,12 @@ import { resolve } from 'node:path'
  * together, which is why `softBreaks` is asserted with it.
  *
  * Source rather than render, and only for the transcript copy: it is inline JSX
- * inside a very large component with no seam that mounts an inject row alone.
- * The app-sdk row registry carries the same bubble and is already asserted by
- * real rendering against that live registry; the layout itself is measured in a
- * real browser by the matching capture runner.
+ * inside the transcript controller's row renderer, with no seam that mounts an
+ * inject row alone. The app-sdk row registry carries the same bubble and is
+ * already asserted by real rendering against that live registry; the layout
+ * itself is measured in a real browser by the matching capture runner.
  */
-const SURFACE = 'src/pages/ChatPage.tsx'
+const SURFACE = 'src/pages/chat/useChatPageTranscriptController.tsx'
 
 /** The inject row is the only warn-tinted bubble, so this identifies it. */
 const MARKER = 'bg-warn-subtle'

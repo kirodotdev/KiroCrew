@@ -12,7 +12,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route, useLocation, useSearchParams, useNavigate } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { switchSlot } from '../store/chatSlice'
-import { sseSlots } from '../store/dashboardSlice'
+import { sseConnected, sseSlots } from '../store/dashboardSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
@@ -114,6 +114,7 @@ function renderChatPage(opts: {
   /** Full history stack; the last entry is where the app starts. Overrides `route`. */
   entries?: string[]
   mode?: string
+  connected?: boolean
   activeSlot?: string | null
   slots?: ChatSlot[]
   /** Render the companion-panel variant on a HOST route (see the noUrlSync suite). */
@@ -126,11 +127,11 @@ function renderChatPage(opts: {
    *  false with a populated list only to model the pre-arrival window. */
   slotsLoaded?: boolean
 }) {
-  const { route = '/chat', entries, mode, activeSlot = null, slots = [], hostEmbed,
+  const { route = '/chat', entries, mode, connected = true, activeSlot = null, slots = [], hostEmbed,
           messages = [], slotCursorKey = null, slotsLoaded = slots.length > 0 } = opts
   const preload: PreloadState = {
     dashboard: {
-      status: { platform: 'darwin' }, connected: true, slots, slotsLoaded, approvalMode: 'normal',
+      status: { platform: 'darwin' }, connected, slots, slotsLoaded, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -265,7 +266,7 @@ describe('ChatPage ?sid= + ?msg= deep link across a slot switch', () => {
  */
 describe('paging-failure notice by jump origin', () => {
   const GONE = /no longer/i
-  const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+  const src = readFileSync(resolve(__dirname, '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
 
   it('routes the link origin to the retry copy, not to the not-found writer', () => {
     expect(src).toContain("pendingPinnedJump.origin === 'earlier' || pendingPinnedJump.origin === 'link'")
@@ -394,6 +395,40 @@ describe('ChatPage ?sid= URL parameter', () => {
       await act(async () => { store.dispatch(sseSlots(slots)) })
       await vi.advanceTimersByTimeAsync(5100)
       expect(screen.getByText(/session "chat-9-900" not found/i)).toBeTruthy()
+      vi.useRealTimers()
+    })
+
+    it('keeps an offline deep link pending past the timeout and activates it once on reconnect', async () => {
+      vi.useFakeTimers()
+      const { store } = renderChatPage({
+        route: '/chat?sid=chat-2-200',
+        connected: false,
+        activeSlot: 'chat-1-100',
+        slots,
+      })
+
+      // Five seconds is a reachability timeout, not a wall-clock deadline for
+      // an offline tab. Burning it here would clear the only remembered target,
+      // paint a false "not found", and make reconnect fall back to chat-1.
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(store.getState().chat.activeSlot).toBe('chat-1-100')
+      expect(screen.queryByText(/session "chat-2-200" not found/i)).toBeNull()
+      expect(detailCalls()).not.toContain('chat-2-200')
+
+      await act(async () => {
+        store.dispatch(sseConnected())
+        await vi.advanceTimersByTimeAsync(1)
+        await Promise.resolve()
+      })
+
+      expect(store.getState().chat.activeSlot).toBe('chat-2-200')
+      expect(detailCalls().filter(key => key === 'chat-2-200')).toHaveLength(1)
+      // Reconnect must also retire the pending-link timeout. Advancing another
+      // full window catches a stale timer that would report failure after the
+      // target was already activated (or try to activate it a second time).
+      await vi.advanceTimersByTimeAsync(5100)
+      expect(screen.queryByText(/session "chat-2-200" not found/i)).toBeNull()
+      expect(detailCalls().filter(key => key === 'chat-2-200')).toHaveLength(1)
       vi.useRealTimers()
     })
   })

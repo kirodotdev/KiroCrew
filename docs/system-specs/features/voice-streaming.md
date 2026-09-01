@@ -49,8 +49,9 @@ plays the queue one item at a time. `voice_complete` also updates the Redux
 
 ## Interruption
 
-`ChatPage` dispatches `voice-stop` when it sends a message, and its Speak
-handler dispatches the same event while audio is playing. `useWebSocket` maps
+`useChatPageActionsController.ts` dispatches `voice-stop` when it sends a
+message, and `ChatPage`'s Speak handler dispatches the same event while audio is
+playing. `useWebSocket` maps
 the event to `stopVoice()`, which pauses the active audio element, revokes
 queued blob URLs, clears the queue, and sets `voiceMutedRef`.
 

@@ -33,7 +33,7 @@ import { resolve } from 'node:path'
  * into a paint order, and the invariant is the comparison BETWEEN them.
  */
 const SRC = (p: string) => readFileSync(resolve(__dirname, '..', p), 'utf8')
-const CHAT_PAGE = SRC('pages/ChatPage.tsx')
+const CHAT_PAGE = SRC('pages/chat/ChatPageView.tsx')
 
 /** The mask every child of the stack has to outrank. */
 const MASK_Z = /className="bg-gradient-to-t from-bg from-\[\d+%\] to-transparent pointer-events-none relative z-\[(\d+)\]"/.exec(CHAT_PAGE)
@@ -65,9 +65,9 @@ describe('composer status stack outranks the transcript bottom mask', () => {
     // A regex that silently stopped matching would make the ordering assertions
     // below pass on `undefined > undefined` vacuity, so failing loudly here is
     // what gives the rest of the file its meaning.
-    expect(MASK_Z, 'transcript bottom mask className not found in ChatPage.tsx').not.toBeNull()
-    expect(COMPOSER_Z, 'inputAreaRef wrapper not found in ChatPage.tsx').not.toBeNull()
-    expect(STACK, 'composer-status-stack block not found in ChatPage.tsx').not.toBeNull()
+    expect(MASK_Z, 'transcript bottom mask className not found in ChatPageView.tsx').not.toBeNull()
+    expect(COMPOSER_Z, 'inputAreaRef wrapper not found in ChatPageView.tsx').not.toBeNull()
+    expect(STACK, 'composer-status-stack block not found in ChatPageView.tsx').not.toBeNull()
   })
 
   it('renders exactly the children this file has checked, and no others', () => {

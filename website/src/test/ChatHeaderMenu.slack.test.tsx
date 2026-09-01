@@ -52,7 +52,7 @@ vi.mock('../api/client', () => ({
 import type { RootState } from '../store'
 import type { ChatSlot, SessionLink } from '../types'
 import { api } from '../api/client'
-import { ChatHeaderMenu } from '../pages/ChatPage'
+import { ChatHeaderMenu } from '../pages/chat/ChatPageMessageContent'
 
 const dashboardState = {
   status: {}, connected: true, slots: [], approvalMode: 'normal',

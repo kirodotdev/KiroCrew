@@ -81,11 +81,19 @@ describe('earlierAffordanceInView', () => {
 })
 
 describe('every automatic older trigger is gated on it', () => {
-  const SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+  // The transcript controller owns all four triggers and the admission ref they
+  // read; the page hosts it. Reading the owning module keeps each clause pinned
+  // to the code it is about instead of to whichever file the page happens to be.
+  const SRC = readFileSync(
+    join(__dirname, '..', 'pages', 'chat', 'useChatPageTranscriptController.tsx'),
+    'utf8',
+  )
 
   it('the top sentinel checks it first', () => {
     const i = SRC.indexOf('const handleTopReached = useCallback(')
-    const body = SRC.slice(i, SRC.indexOf('}, [dispatch, earlierBarInView])', i))
+    // Prefix of the deps list, not the whole array: the gate is what this pins,
+    // and a dep added for an unrelated reason must not read as a violation.
+    const body = SRC.slice(i, SRC.indexOf('}, [dispatch, earlierBarInView', i))
     expect(body).toMatch(/if \(!earlierBarInView\(\)\) return/)
     // Before the geometry test, so a transient cannot reach it at all. Anchored on
     // the CALL, not the bare name: the handler's comments discuss the predicate by

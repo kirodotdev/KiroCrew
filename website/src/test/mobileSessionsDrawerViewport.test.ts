@@ -21,6 +21,11 @@ const src = async (p: string) =>
 // numbers, where a `calc(env(…))` string would be neither parseable by happy-dom
 // nor a shape the i18n literal gate accepts. Pinned in the same source-text style
 // the sibling geometry guards use, so a revert fails loudly.
+//
+// Two owners, one clause each: the page reads the viewport and derives the covered
+// band (it owns the drawer's mint/spend pair and phase machine, and ChatPageView
+// declares no hooks of its own), while the two boxes those numbers inset are
+// rendered by ChatPageView. Each assertion reads the module that owns its clause.
 describe('mobile sessions drawer overlay', () => {
   it('consumes the shared visual-viewport hook', async () => {
     const s = await src('pages/ChatPage.tsx')
@@ -35,7 +40,7 @@ describe('mobile sessions drawer overlay', () => {
   })
 
   it('insets the scrim to the visible band without restating inset-0', async () => {
-    const s = await src('pages/ChatPage.tsx')
+    const s = await src('pages/chat/ChatPageView.tsx')
     // The class list is untouched — `inset-0` still spans the layout viewport, and
     // the margins pull both block edges in to what the user can actually see.
     expect(s).toMatch(/className="fixed inset-0 z-\[46\]/)
@@ -50,14 +55,14 @@ describe('mobile sessions drawer overlay', () => {
     // assertions into comparisons against `undefined`. Deliberately the RAW
     // source: a comment is exactly what this measures, so stripping comments
     // first would make the assertion unfailable.
-    const s = await raw('pages/ChatPage.tsx')
+    const s = await raw('pages/chat/ChatPageView.tsx')
     expect(s).toMatch(/key="sessions-backdrop"[\s\S]{0,240}?z-\[46\]/)
   })
 
   it('insets the panel with visual-viewport margins, keeping its safe-area edges', async () => {
-    const s = await src('pages/ChatPage.tsx')
+    const s = await src('pages/chat/ChatPageView.tsx')
     // Scoped to the sessions drawer's OverlayDrawer element, not the whole file:
-    // OTHER mobile surfaces in ChatPage (the floating open-sessions button, the
+    // OTHER mobile surfaces in the view (the floating open-sessions button, the
     // right-side inline overlay) also carry `top-safe-offset-[42px]`, so a
     // file-wide match would not tell this panel apart from them.
     const start = s.indexOf('<OverlayDrawer open=')

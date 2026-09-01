@@ -33,7 +33,7 @@ The chat input collapses a large paste into an inline `[ Paste #N · M lines ]` 
 
 - `promptOptimizer` defaults to enabled, but a host can disable the feature. `SideChat` does so because it does not provide the cross-slot result route; `ChatInput.paste.test.tsx` pins that the opt-out covers the shortcut.
 - The textarea overlay and `readOnly` state are scoped to the slot that started the request. `optimizePendingRef` still prevents a second request from another displayed slot, so a pending mutation cannot clobber its own lifecycle state.
-- `optimizeSlotRef` binds a completion to its originating slot. When a host provides `onOptimizeResult` and the user changes slots, `ChatInput` passes the result or the original fallback to that callback; `ChatPage.handleOptimizeResult` persists it in the originating draft. `ChatInput.test.tsx` pins that a late completion cannot overwrite the visible different slot.
+- `optimizeSlotRef` binds a completion to its originating slot. When a host provides `onOptimizeResult` and the user changes slots, `ChatInput` passes the result or the original fallback to that callback; `useChatPageResourcesController.tsx::handleOptimizeResult` persists it in the originating draft. `ChatInput.test.tsx` pins that a late completion cannot overwrite the visible different slot.
 - Before an in-place write, `setTextUndoable` compares the current trimmed draft with the submitted draft and drops a mismatch rather than clobbering a later edit. It attempts `document.execCommand('insertText')`, verifies the resulting DOM value, and reconciles through `onChange` when the browser does not insert; `ChatInput.optimizeWriteback.test.tsx` pins those fallback paths and the undo-history boundary.
 
 ## Config
@@ -45,7 +45,7 @@ There is no persisted optimizer setting. `ChatInput` enables `promptOptimizer` b
 - `src/kiro_crew/dashboard/handlers/optimizer.py`: endpoint, system prompt, paste-block assembly, input screening, output redaction, and placeholder guard.
 - `src/kiro_crew/dashboard/routes/chat.py`: optimizer route registration.
 - `website/src/components/ChatInput.tsx`: capability gate, shortcut, mutation, slot routing, and verified write-back.
-- `website/src/pages/ChatPage.tsx`: persistence of a late cross-slot result into its originating draft.
+- `website/src/pages/chat/useChatPageResourcesController.tsx`: persistence of a late cross-slot result into its originating draft.
 - `website/src/utils/pasteTokens.ts`: placeholder format and the `PasteBlock` model shared with the backend regex.
 - `test/test_optimizer.py`: backend behavior, context bound, paste forwarding, placeholder preservation, and injection-screening cases.
 - `website/src/test/ChatInput.optimizeWriteback.test.tsx`: verified write-back fallback and undo-boundary cases.

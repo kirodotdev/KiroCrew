@@ -14,9 +14,9 @@
  *     rendering is covered by AssistantMessage.test.tsx.
  *
  *  2. The window-event listeners: `mc-config-changed` (chat-settings reload),
- *     `toggle-pin-chat-sidebar`, and `mc:run-in-terminal` (both the non-string
- *     guard and the PTY-never-connects timeout that reports failure back to the
- *     code block).
+ *     `toggle-pin-chat-sidebar`, `kirocrew-tool-call` (foreground browser
+ *     auto-open), and `mc:run-in-terminal` (both the non-string guard and the
+ *     PTY-never-connects timeout that reports failure back to the code block).
  *
  *  3. The welcome-state "Continue a previous chat?" suggestion list and
  *     `handleResumeSession`, reached by pre-filling the composer through the
@@ -521,6 +521,23 @@ describe('ChatPage window-event listeners', () => {
     const first = localStorage.getItem('mc-sidebar-pinned')
     act(() => { window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) })
     await waitFor(() => expect(localStorage.getItem('mc-sidebar-pinned')).not.toBe(first))
+  })
+
+  it('opens the Browser panel when the foreground session starts a playwright-cli command', async () => {
+    const { store } = await renderTurn()
+    expect(store.getState().chat.activityOpen).toBe(false)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('kirocrew-tool-call', {
+        detail: {
+          slot: 'chat-1',
+          is_shell: true,
+          input_preview: 'playwright-cli open https://example.test',
+        },
+      }))
+    })
+
+    await waitFor(() => expect(store.getState().chat.activityOpen).toBe(true))
   })
 
   it('ignores a run-in-terminal request that carries no command', async () => {

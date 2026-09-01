@@ -336,15 +336,16 @@ describe('RecoveryCard', () => {
  * behaviour is covered above.
  */
 describe('ChatPage – recovery card wiring', () => {
-  const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../pages/ChatPage.tsx'), 'utf8')
+  const src = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../pages/chat/useChatPageTranscriptController.tsx'), 'utf8')
 
   it('imports the card and its shared resolver', () => {
     // Since chat-core P5-b the recovery row is a shared dashboard entry
-    // (pages/chat/transcriptRenderers.tsx) that ChatPage spreads into its host
-    // list, so the imports live in the factory and the page imports the factory.
+    // (pages/chat/transcriptRenderers.tsx) that the transcript controller
+    // spreads into its host list, so the imports live in the factory and the
+    // controller imports the factory.
     const factory = readFileSync(resolve(__dirname, '../pages/chat/transcriptRenderers.tsx'), 'utf8')
     expect(factory).toMatch(/import\s+RecoveryCard\s*,\s*\{\s*resolveInjectCard\s*\}\s*from\s*['"]\.\/RecoveryCard['"]/)
-    expect(src).toMatch(/import \{ createTranscriptRenderers \} from '\.\/chat\/transcriptRenderers'/)
+    expect(src).toMatch(/import \{ createTranscriptRenderers \} from '\.\/transcriptRenderers'/)
   })
 
   it('routes inject rows through the shared resolver to the card', () => {
@@ -354,8 +355,9 @@ describe('ChatPage – recovery card wiring', () => {
   })
 
   it('checks for a card BEFORE the generic inject bubble renders', () => {
-    // Since chat-core P5-b the page spreads the dashboard's shared row set
-    // (pages/chat/transcriptRenderers.tsx) into its host list, and precedence
+    // Since chat-core P5-b the transcript controller spreads the dashboard's
+    // shared row set (pages/chat/transcriptRenderers.tsx) into its host list,
+    // and precedence
     // is list order. The generic bubble entry (which paints any injected text
     // as a full-width warning bubble) is the LAST entry; the shared set --
     // which carries the `recovery_inject` shape entry -- must be spread before

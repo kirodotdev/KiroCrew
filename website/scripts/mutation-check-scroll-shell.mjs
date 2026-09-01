@@ -37,8 +37,13 @@ const parses = (src) => {
 }
 
 // The shell region may live in ChatPage or, post-extraction, in the shell
-// component; mutate whichever file currently holds each region's anchors.
-const FILES = ['src/pages/ChatPage.tsx', 'src/pages/chat/TranscriptScrollShell.tsx'].map(f => resolve(f))
+// component and the view that invokes it; mutate whichever file currently holds
+// each region's anchors.
+const FILES = [
+  'src/pages/ChatPage.tsx',
+  'src/pages/chat/ChatPageView.tsx',
+  'src/pages/chat/TranscriptScrollShell.tsx',
+].map(f => resolve(f))
 const SUITES = [
   'src/test/ChatPage.scrollShell.recipe.test.tsx',
   'src/test/ChatPage.scrollShell.render.test.tsx',
@@ -55,9 +60,10 @@ const END = 'Status chrome never claims'
  *  line is load-bearing code, so the anchor choice cannot exempt it. */
 const REGIONS = [
   { name: 'header-fade', start: '<EdgeFade side="top"', end: '{/* Fold sentinel' },
-  // The shell IMPORT on the page — one line, but deleting it is precisely the
-  // "extraction silently undone" mutation, so it gets its own region.
-  { name: 'shell-import', start: "import TranscriptScrollShell", end: 'import { useVirtualChat' },
+  // The shell IMPORT in the invoking view — one line, but deleting it is precisely
+  // the "extraction silently undone" mutation, so it gets its own region. The end
+  // anchor is simply the next import, which keeps the region to that one line.
+  { name: 'shell-import', start: "import TranscriptScrollShell", end: "import FolderSuggestionCard" },
   // The prop-plumbing seam the split invented: the wiring interface, the
   // component signature, and the destructured parameter list. This block did
   // not exist pre-extraction — anchoring the skeleton region below it would

@@ -23,7 +23,8 @@ export interface PaginateOlderInput {
  *  - `loadingOlder` closes this gate mid-fetch, and the thunk's own `condition`
  *    refuses a second dispatch besides.
  */
-export function shouldPaginateOlder({ loadingOlder, slotHasMore }: PaginateOlderInput): boolean {  return !loadingOlder && slotHasMore
+export function shouldPaginateOlder({ loadingOlder, slotHasMore }: PaginateOlderInput): boolean {
+  return !loadingOlder && slotHasMore
 }
 
 export interface ForkEligibilityInput {
