@@ -218,6 +218,7 @@ from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
     PlatformCompositionError,
     current_context,
+    redact_log_via_context,
     redact_via_context,
     safe_context_call,
 )
@@ -5297,9 +5298,18 @@ class GatewayOrchestrator:
             # Only notify when task is complete — suppress delivery for
             # incomplete tasks (HEARTBEAT_KEEP) to avoid spamming every cycle.
             if is_keep_response(result_safe):
+                # Gate-side LOG line, so it takes the context spelling: a host with
+                # a companion loaded must not have this text scanned with the
+                # weaker OSS pass. Truncation comes AFTER redaction — the
+                # invariant #7424 established, and the one
+                # ``redact_log_via_context`` hands to its callers by contract:
+                # slicing first would leave a credential as an unmatchable
+                # fragment. The sibling below stays on ``redact_and_truncate``
+                # because it feeds a DELIVERY, not a log, and the two want
+                # different failure modes on a non-composable host.
                 logger.info(
                     "Heartbeat task incomplete, suppressing delivery: %s",
-                    redact_and_truncate(task_text, 80),
+                    redact_log_via_context(task_text)[:80],
                 )
             else:
                 task_safe = redact_and_truncate(task_text, 100)
