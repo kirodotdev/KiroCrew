@@ -535,7 +535,8 @@ class TestCronCallbackDashboardChat:
         ) as mock_inject:
             _run_callback(gateway, job, stream_result="silent output")
             mock_inject.assert_called_once_with(
-                gateway.dashboard_state, job, "silent output", context_reading=ANY
+                gateway.dashboard_state, job, "silent output", history=ANY,
+                context_reading=ANY,
             )
 
     def test_silent_cron_no_slot_does_not_inject(self) -> None:

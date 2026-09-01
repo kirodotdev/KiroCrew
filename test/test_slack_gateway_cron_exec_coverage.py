@@ -44,6 +44,7 @@ import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.cron import CronJob, CronStoreBusy
+from kiro_crew.dashboard import chat_persistence
 from kiro_crew.slack import gateway as gw
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -1132,11 +1133,45 @@ class TestDeliverScriptResult:
         orch.dashboard_state = _mock_dashboard_state()
         job = _job(script="probes.py:check", session_key="dashboard:chat-gone")
         result = {"status": "report", "message": "orphaned"}
-        with patch.object(gw, "_rehydrate_slot_from_history", MagicMock(return_value=None)):
+        with patch.object(gw, "rehydrate_slot_from_history_async", AsyncMock(return_value=None)):
             async with _cron_cb(orch, script_result=result) as cb:
                 assert await cb(job) == "orphaned"
         orch.dashboard_state.notify.assert_called_once()
         assert orch.dashboard_state.notify.call_args[0][2] == "orphaned"
+
+    @pytest.mark.asyncio
+    async def test_rehydration_reads_the_transcript_off_the_loop(self):
+        """A slot-miss must not parse the transcript on the event loop.
+
+        Issue #7408: the sync ``_rehydrate_slot_from_history`` used here read and
+        JSON-parsed the whole transcript inline (100-300 ms on a large store),
+        stalling every other session's frames. The async form hoists that read
+        into a worker thread, where ``get_running_loop()`` raises -- which is
+        what this asserts, rather than trusting the call's name.
+        """
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.dashboard_state.conversation_log = MagicMock()
+        threads: list[bool] = []
+
+        def _prefetch(*_a: Any, **_kw: Any) -> tuple[Any, ...]:
+            try:
+                asyncio.get_running_loop()
+                threads.append(True)  # on the loop -- the defect
+            except RuntimeError:
+                threads.append(False)  # in a worker thread -- correct
+            return ({}, True, None, {}, None)
+
+        job = _job(script="probes.py:check", session_key="dashboard:chat-cold")
+        result = {"status": "report", "message": "cold session"}
+        with patch.object(chat_persistence, "_prefetch_rehydrate_inputs", _prefetch):
+            async with _cron_cb(orch, script_result=result) as cb:
+                assert await cb(job) == "cold session"
+        assert threads, (
+            "the off-loop prefetch never ran: either the read is happening inline "
+            "on the loop again (the #7408 defect) or this seam moved"
+        )
+        assert threads == [False], f"transcript read ran on the event loop: {threads}"
 
     @pytest.mark.asyncio
     async def test_report_without_session_key_notifies(self):

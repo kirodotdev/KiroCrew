@@ -610,7 +610,7 @@ class TestSendMessage:
         with patch(
             "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
         ) as mock_run, patch(
-            "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history"
+            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -655,7 +655,7 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history"
+            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -717,7 +717,7 @@ class TestSendMessage:
         with patch(
             "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
         ) as mock_run, patch(
-            "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history",
+            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
             return_value=mock_slot,
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
@@ -743,6 +743,52 @@ class TestSendMessage:
                 state.notify.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_send_message_session_origin_rehydrate_reads_off_the_loop(self):
+        """The cold-slot rehydration must not parse the transcript on the loop.
+
+        Issue #7408: this handler called the SYNCHRONOUS rehydrate, which read and
+        JSON-parsed the whole transcript inline -- 100-300 ms on a large store,
+        stalling every other request. Asserted by thread identity rather than by
+        the name of the function called, so the guarantee survives a rename.
+        """
+        from kiro_crew.dashboard import chat_persistence
+
+        state = _mock_state()
+        state.get_slot = MagicMock(return_value=None)
+        state.conversation_log = MagicMock()
+        state._slots = {}
+        mock_job = MagicMock()
+        mock_job.id = "abc12345"
+        mock_job.name = "test-cron"
+        mock_job.session_key = "dashboard:chat-1-1712793600"
+        state.crons.list_jobs = MagicMock(return_value=[mock_job])
+        app = _make_send_app(state)
+        seen: list[int] = []
+
+        def _prefetch(*_a, **_kw):
+            seen.append(threading.get_ident())
+            # messages=None means "nothing persisted", so the handler falls back to
+            # the notification path -- keeping this test about the read's location.
+            return ({}, True, None, {}, None)
+
+        with patch.object(chat_persistence, "_prefetch_rehydrate_inputs", _prefetch):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/send-message",
+                    json={"text": "update", "session": "origin", "caller_session": "cron:abc12345"},
+                )
+                assert resp.status == 200
+
+        assert seen, (
+            "the off-loop prefetch never ran: either the read is happening inline "
+            "on the loop again (the #7408 defect) or this seam moved"
+        )
+        assert threading.get_ident() not in seen, (
+            "the transcript was read on the event-loop thread; the handler must "
+            "await rehydrate_slot_from_history_async"
+        )
+
+    @pytest.mark.asyncio
     async def test_send_message_session_origin_rehydrate_returns_none_falls_back(self):
         """When get_slot returns None AND rehydrate returns None (no persisted
         session on disk), fall back to normal delivery (notification + optional
@@ -757,7 +803,7 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history", return_value=None
+            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async", return_value=None
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -812,7 +858,7 @@ class TestSendMessage:
         app = _make_send_app(state)
         with patch(
             "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch("kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history"):
+        ) as mock_run, patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -835,7 +881,7 @@ class TestSendMessage:
         state.get_slot = MagicMock()
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history"
+            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
@@ -873,7 +919,7 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history"
+            "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(

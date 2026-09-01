@@ -79,7 +79,34 @@ def _make_job(job_id="abc123", name="test-cron", last_result="Hello world"):
     return job
 
 
+def _inject(state, job, result_text, **kw):
+    """The injection, with the transcript read its async callers now prefetch.
+
+    ``history`` is a required parameter in production so that no async caller can
+    leave the whole-transcript parse on the event loop (issue #7408). These tests
+    drive the function synchronously, where a blocking read is the caller's own
+    cost, so the read that used to live inside the injection lives here instead.
+    """
+    kw.setdefault(
+        "history",
+        state.conversation_log.read_messages(f"cron:{job.id}") if state.conversation_log else [],
+    )
+    inject_cron_result_to_dashboard(state, job, result_text, **kw)
+
+
 class TestInjectCronResultToDashboard:
+    def test_history_is_required_so_the_read_cannot_land_on_the_loop(self):
+        """Omitting the prefetch is a TypeError at the call, not a production stall.
+
+        Four of the five defects issue #7408 fixed were async callers that simply
+        did not pass ``history=``, leaving this synchronous function to parse the
+        whole transcript on the event loop. The parameter has no default so that
+        omission cannot compile, rather than being caught by a convention in a
+        spec file.
+        """
+        with pytest.raises(TypeError, match="history"):
+            inject_cron_result_to_dashboard(_make_state(), _make_job(), "result")
+
     def test_slot_is_tagged_cron_not_user(self):
         """A cron result is the job's output, not something the person typed.
 
@@ -91,7 +118,7 @@ class TestInjectCronResultToDashboard:
 
         state = _make_state()
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "result")
+        _inject(state, job, "result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert slot._origin == SlotOrigin.CRON
         assert slot._origin != SlotOrigin.USER
@@ -99,14 +126,14 @@ class TestInjectCronResultToDashboard:
     def test_sets_linked_session_key(self):
         state = _make_state()
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "result")
+        _inject(state, job, "result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert slot.linked_session_key == f"cron:{job.id}"
 
     def test_sets_title_from_job_name(self):
         state = _make_state()
         job = _make_job(name="daily-standup")
-        inject_cron_result_to_dashboard(state, job, "result")
+        _inject(state, job, "result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert "daily-standup" in slot.title
 
@@ -117,7 +144,7 @@ class TestInjectCronResultToDashboard:
         ]
         state = _make_state(history_messages=history)
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "result")
+        _inject(state, job, "result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         # History (2) + result (1) = 3 messages
         assert len(slot.messages) == 3
@@ -128,7 +155,7 @@ class TestInjectCronResultToDashboard:
         history = [{"role": "assistant", "content": f"msg{i}"} for i in range(100)]
         state = _make_state(history_messages=history)
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "result")
+        _inject(state, job, "result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         # 50 from history + 1 result = 51
         assert len(slot.messages) == 51
@@ -137,8 +164,8 @@ class TestInjectCronResultToDashboard:
         history = [{"role": "assistant", "content": "old"}]
         state = _make_state(history_messages=history)
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "result1")
-        inject_cron_result_to_dashboard(state, job, "result2")
+        _inject(state, job, "result1")
+        _inject(state, job, "result2")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         # history(1) + result1(1) + result2(1) = 3 (no re-hydration)
         assert len(slot.messages) == 3
@@ -146,8 +173,8 @@ class TestInjectCronResultToDashboard:
     def test_dedup_prevents_duplicate_result(self):
         state = _make_state()
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "same result")
-        inject_cron_result_to_dashboard(state, job, "same result")
+        _inject(state, job, "same result")
+        _inject(state, job, "same result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         # Only 1 message — dedup prevents second identical inject
         assert len(slot.messages) == 1
@@ -155,7 +182,7 @@ class TestInjectCronResultToDashboard:
     def test_empty_result_creates_slot_without_message(self):
         state = _make_state()
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "")
+        _inject(state, job, "")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert slot.linked_session_key == f"cron:{job.id}"
         assert len(slot.messages) == 0
@@ -163,7 +190,7 @@ class TestInjectCronResultToDashboard:
     def test_pushes_slots_update(self):
         state = _make_state()
         job = _make_job()
-        inject_cron_result_to_dashboard(state, job, "result")
+        _inject(state, job, "result")
         state.push_slots_update.assert_called_once()
 
     def test_publishes_the_tab_to_the_surface_registry(self):
@@ -185,7 +212,7 @@ class TestInjectCronResultToDashboard:
         try:
             state = _make_state()
             job = _make_job(job_id="188f71e5")
-            inject_cron_result_to_dashboard(state, job, "result")
+            _inject(state, job, "result")
             assert has_dashboard_surface("cron:188f71e5") is True
             assert dashboard_slot_key("cron:188f71e5") == "cron-188f71e5"
         finally:
@@ -200,7 +227,7 @@ class TestPersistsResultToConversationLog:
     def test_appends_result_to_conversation_log_under_linked_key(self):
         state = _make_state()
         job = _make_job(job_id="job1", name="my-cron")
-        inject_cron_result_to_dashboard(state, job, "the result")
+        _inject(state, job, "the result")
         # Persistence now goes through the atomic append_if_absent (the dup
         # check runs UNDER the session lock, not as a separate unlocked probe).
         assert state.conversation_log.append_if_absent.call_count == 1
@@ -223,7 +250,7 @@ class TestPersistsResultToConversationLog:
         # test_history_locking_remediation::TestAppendIfAbsent.)
         state = _make_state()
         job = _make_job(job_id="job2", name="my-cron")
-        inject_cron_result_to_dashboard(state, job, "the result")
+        _inject(state, job, "the result")
         state.conversation_log.append_if_absent.assert_called_once()
         state.conversation_log.append.assert_not_called()
 
@@ -233,7 +260,7 @@ class TestPersistsResultToConversationLog:
         # slot-detail read unable to reconcile the two copies as one message.
         state = _make_state()
         job = _make_job(job_id="job5", name="my-cron")
-        inject_cron_result_to_dashboard(state, job, "the result")
+        _inject(state, job, "the result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         window_mid = slot.messages[-1]["meta"]["mid"]
         kwargs = state.conversation_log.append_if_absent.call_args.kwargs
@@ -242,7 +269,7 @@ class TestPersistsResultToConversationLog:
     def test_empty_result_does_not_persist(self):
         state = _make_state()
         job = _make_job(job_id="job3")
-        inject_cron_result_to_dashboard(state, job, "")
+        _inject(state, job, "")
         state.conversation_log.append_if_absent.assert_not_called()
         state.conversation_log.append.assert_not_called()
 
@@ -251,7 +278,7 @@ class TestPersistsResultToConversationLog:
         state.conversation_log = None
         job = _make_job(job_id="job4")
         # Must not raise when conversation_log is unavailable.
-        inject_cron_result_to_dashboard(state, job, "result")
+        _inject(state, job, "result")
         slot = state.get_or_create_slot(name=f"cron-{job.id}")
         assert len(slot.messages) == 1
 

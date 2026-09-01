@@ -1420,7 +1420,7 @@ class TestChannelTextIsNotTheNotificationText:
         with (
             _governance(True),
             patch(
-                "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history",
+                "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
                 return_value=None,
             ),
         ):

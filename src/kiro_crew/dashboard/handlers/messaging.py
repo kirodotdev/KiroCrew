@@ -41,7 +41,7 @@ from kiro_crew.dashboard.channel_folders import (
     ensure_channel_folder,
     stored_folder_name,
 )
-from kiro_crew.dashboard.chat_persistence import _rehydrate_slot_from_history
+from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_utils import (
     CRON_NOTIFICATION_KIND,
     _remove_queued_by_id,
@@ -2075,7 +2075,7 @@ async def api_send_message(request: web.Request) -> web.Response:
         # "Origin reachable" = one of:
         #   - Hot: slot in state._slots (user has the tab open) → fast path
         #   - Cold: slot not loaded but JSONL exists without closed=true →
-        #     _rehydrate_slot_from_history restores it from disk, tab reappears
+        #     rehydrate_slot_from_history_async restores it from disk, tab reappears
         #
         # "Origin unreachable" = any of:
         #   - User clicked ✕ on the tab (closed=true in JSONL metadata) —
@@ -2124,15 +2124,17 @@ async def api_send_message(request: web.Request) -> web.Response:
             slot_key, job_name = _resolve_session_target(state, target_session, caller_session)
             if slot_key:
                 # Resolve the origin slot. get_slot is the hot path (fast,
-                # O(1) dict lookup). On miss, _rehydrate_slot_from_history
-                # restores from disk if the session exists and isn't closed.
+                # O(1) dict lookup). On miss, rehydrate_slot_from_history_async
+                # restores from disk if the session exists and isn't closed,
+                # with the transcript read on a worker thread so a large store
+                # does not stall the loop for every other request.
                 # Truly-gone sessions (never persisted, deleted, or closed)
                 # return None and delivery falls through to the Slack DM
                 # path below — no phantom empty tab is ever created.
                 slot = state.get_slot(slot_key)
                 was_loaded = slot is not None
                 if slot is None:
-                    slot = _rehydrate_slot_from_history(state, slot_key)
+                    slot = await rehydrate_slot_from_history_async(state, slot_key)
                 logger.info(
                     "send_message session=origin resolved slot_key=%s job=%s was_loaded=%s rehydrated=%s",
                     slot_key,

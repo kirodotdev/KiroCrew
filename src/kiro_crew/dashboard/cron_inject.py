@@ -6,6 +6,7 @@ gateway.py and dashboard.handlers.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import TYPE_CHECKING, Any
 
@@ -68,10 +69,27 @@ def context_meter_reading(client: object) -> dict[str, Any] | None:
 
 def inject_cron_result_to_dashboard(
     state: DashboardState, job: "CronJob", result_text: str,
-    history: list[dict[str, Any]] | None = None,
+    *,
+    history: list[dict[str, Any]] | None,
     context_reading: dict[str, Any] | None = None,
 ) -> None:
     """Inject cron result into linked dashboard chat slot (shared by to-chat and auto-inject).
+
+    ``history`` is the ``cron:{id}`` transcript, hydrated into the slot the first
+    time this binds one. It is REQUIRED and has no default on purpose: this
+    function is synchronous and every caller is async, so a default would let a
+    caller silently hand the whole-transcript parse back to the event loop --
+    the defect issue #7408 fixed at five sites, four of which were exactly that
+    omission. Without a default, forgetting it is a ``TypeError`` at the call,
+    not a stall in production. Async callers get the value from
+    :func:`prefetch_cron_history`; a sync caller must read it itself and own the
+    blocking cost.
+
+    ``None`` is legal and means "the injection will not need it" -- the state
+    :func:`prefetch_cron_history` skips its read in. It cannot mean a lost
+    hydration, because the only state that consumes ``history`` is an unlinked
+    slot, and the sole writer of ``linked_session_key`` for a cron slot is the
+    line below, which runs in this same synchronous block.
 
     ``context_reading`` is the run's context-meter reading captured by
     :func:`context_meter_reading` while the cron's provider was still resident.
@@ -94,11 +112,7 @@ def inject_cron_result_to_dashboard(
     slot.title = f"Cron: {safe_name}"
     if not slot.linked_session_key:
         slot.linked_session_key = f"cron:{job.id}"
-        if history is None:
-            messages = state.conversation_log.read_messages(f"cron:{job.id}") if state.conversation_log else []
-        else:
-            messages = history
-        hydrate_slot_from_history(slot, messages)
+        hydrate_slot_from_history(slot, history or [])
     # Publish the (possibly just-created) tab to the dashboard-surface registry
     # BEFORE anything routes against it. Every gate that asks "does this session
     # have a tab?" — dashboard_slot_key for sub-agent event routing and
@@ -165,6 +179,31 @@ def inject_cron_result_to_dashboard(
             payload["reset"] = True
         state.broadcast_context_usage(slot.key, payload)
     state.push_slots_update()
+
+
+async def prefetch_cron_history(
+    state: DashboardState, job_id: str
+) -> list[dict[str, Any]] | None:
+    """Off-loop read of the ``cron:{id}`` transcript for the injection above.
+
+    :func:`inject_cron_result_to_dashboard` is synchronous and hydrates a
+    newly linked slot from the transcript, which means reading and parsing the
+    whole file (100-300 ms on a large store). Its ``history`` parameter is
+    required precisely so an async caller cannot leave that read to it; this is
+    the helper that produces the value, on a worker thread.
+
+    Returns ``None`` (read skipped, nothing added to the caller's cost) when the
+    slot already exists AND is already linked, because that is exactly the state
+    in which the injection does not consume ``history`` at all. ``None`` is a
+    legal value for the parameter, so the skip needs no special handling at the
+    call site.
+    """
+    if state.conversation_log is None:
+        return None
+    slot = state.get_slot(f"cron-{job_id}")
+    if slot is not None and slot.linked_session_key:
+        return None
+    return await asyncio.to_thread(state.conversation_log.read_messages, f"cron:{job_id}")
 
 
 def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None:

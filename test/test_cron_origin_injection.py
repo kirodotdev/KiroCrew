@@ -149,7 +149,8 @@ async def test_resolved_key_with_no_live_slot_falls_back_to_bell(mock_sel):
     it posts a notification."""
     state = _state_with_job(slot=None)
     with patch(
-        "kiro_crew.dashboard.handlers.messaging._rehydrate_slot_from_history", return_value=None
+        "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
+        return_value=None,
     ):
         async with TestClient(TestServer(_make_app(state))) as c:
             resp = await c.post(

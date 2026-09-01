@@ -13,6 +13,7 @@ slot with no resident provider and get the stale reading the run recorded.
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ from kiro_crew.acp.types import AcpPromptStats
 from kiro_crew.dashboard.cron_inject import (
     context_meter_reading,
     inject_cron_result_to_dashboard,
+    prefetch_cron_history,
 )
 from kiro_crew.providers.acp import AcpProvider
 
@@ -45,6 +47,21 @@ def _make_job(job_id="abc123", name="test-cron"):
     job.name = name
     job.agent_id = ""
     return job
+
+
+def _inject(state, job, result_text, **kw):
+    """The injection, with the transcript read its async callers now prefetch.
+
+    ``history`` is a required parameter in production so that no async caller can
+    leave the whole-transcript parse on the event loop (issue #7408). These tests
+    drive the function synchronously, where a blocking read is the caller's own
+    cost, so the read that used to live inside the injection lives here instead.
+    """
+    kw.setdefault(
+        "history",
+        state.conversation_log.read_messages(f"cron:{job.id}") if state.conversation_log else [],
+    )
+    inject_cron_result_to_dashboard(state, job, result_text, **kw)
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +124,7 @@ def test_inject_records_reading_via_single_writer():
     state.get_or_create_slot.return_value = slot
     state.conversation_log = None
 
-    inject_cron_result_to_dashboard(
+    _inject(
         state, _make_job(), "result",
         context_reading={"pct": 61.2, "used_tokens": 122400, "window_tokens": 200000},
     )
@@ -130,7 +147,7 @@ def test_inject_pct_only_reading_signals_reset():
     state.get_or_create_slot.return_value = slot
     state.conversation_log = None
 
-    inject_cron_result_to_dashboard(
+    _inject(
         state, _make_job(), "result", context_reading={"pct": 33.0}
     )
 
@@ -150,7 +167,7 @@ def test_inject_without_reading_records_nothing():
     state.get_or_create_slot.return_value = slot
     state.conversation_log = None
 
-    inject_cron_result_to_dashboard(state, _make_job(), "result")
+    _inject(state, _make_job(), "result")
 
     state.broadcast_context_usage.assert_not_called()
 
@@ -166,7 +183,7 @@ async def test_cron_slot_opens_with_stale_reading_not_zero(tmp_path):
     state = _make_state(tmp_path)
     state.sessions.get_provider = MagicMock(return_value=None)
 
-    inject_cron_result_to_dashboard(
+    _inject(
         state, _make_job(), "cron result",
         context_reading={"pct": 57.3, "used_tokens": 114600, "window_tokens": 200000},
     )
@@ -191,7 +208,7 @@ async def test_cron_slot_reading_survives_model_check(tmp_path):
     state = _make_state(tmp_path)
     state.sessions.get_provider = MagicMock(return_value=None)
 
-    inject_cron_result_to_dashboard(
+    _inject(
         state, _make_job(job_id="xyz789"), "cron result",
         context_reading={"pct": 12.5},
     )
@@ -199,3 +216,83 @@ async def test_cron_slot_reading_survives_model_check(tmp_path):
     snapshot = state._context_snapshots["cron-xyz789"]
     assert snapshot["pct"] == 12.5
     assert snapshot["model"] == slot.model
+
+
+# -- prefetch_cron_history: the injection's transcript read, off the loop ----
+
+
+def _log_recording(rows: list[dict], seen: list[int]) -> MagicMock:
+    """A conversation log whose ``read_messages`` records its calling thread."""
+
+    def _read(key: str) -> list[dict]:
+        seen.append(threading.get_ident())
+        return rows
+
+    log = MagicMock()
+    log.read_messages = MagicMock(side_effect=_read)
+    return log
+
+
+@pytest.mark.asyncio
+async def test_prefetch_reads_off_the_loop_when_the_slot_is_unlinked():
+    """An unlinked slot means the injection WILL read, so the read is hoisted.
+
+    Issue #7408: the sync injection reads ``cron:{id}`` itself in that case, and
+    on an async caller that parse ran on the event loop. Thread identity is the
+    assertion, not the presence of an ``await``.
+    """
+    seen: list[int] = []
+    rows = [{"role": "assistant", "content": "earlier run"}]
+    state = MagicMock()
+    state.conversation_log = _log_recording(rows, seen)
+    slot = MagicMock()
+    slot.linked_session_key = ""
+    state.get_slot = MagicMock(return_value=slot)
+
+    assert await prefetch_cron_history(state, "abc123") == rows
+    assert seen, "the transcript was never read"
+    assert threading.get_ident() not in seen, (
+        "the cron transcript was parsed on the event-loop thread"
+    )
+    state.get_slot.assert_called_once_with("cron-abc123")
+
+
+@pytest.mark.asyncio
+async def test_prefetch_reads_when_the_slot_does_not_exist_yet():
+    """No slot yet: the injection creates one, links it, and consumes history."""
+    seen: list[int] = []
+    state = MagicMock()
+    state.conversation_log = _log_recording([], seen)
+    state.get_slot = MagicMock(return_value=None)
+
+    assert await prefetch_cron_history(state, "abc123") == []
+    assert threading.get_ident() not in seen
+
+
+@pytest.mark.asyncio
+async def test_prefetch_skips_the_read_for_an_already_linked_slot():
+    """A linked slot never reaches the injection's read, so nothing is read.
+
+    Skipping matters: these callers fire on every suppressed and every silent
+    run, and an unconditional prefetch would add a whole-transcript parse whose
+    result is discarded.
+    """
+    seen: list[int] = []
+    state = MagicMock()
+    state.conversation_log = _log_recording([], seen)
+    slot = MagicMock()
+    slot.linked_session_key = "cron:abc123"
+    state.get_slot = MagicMock(return_value=slot)
+
+    assert await prefetch_cron_history(state, "abc123") is None
+    assert seen == []
+    state.conversation_log.read_messages.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prefetch_returns_none_without_a_conversation_log():
+    """No log configured is the injection's own ``[]`` case -- nothing to read."""
+    state = MagicMock()
+    state.conversation_log = None
+
+    assert await prefetch_cron_history(state, "abc123") is None

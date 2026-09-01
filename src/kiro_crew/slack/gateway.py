@@ -112,10 +112,10 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.cron_inject import (
     context_meter_reading,
     inject_cron_result_to_dashboard,
+    prefetch_cron_history,
 )
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import compose_nudge_body
-from kiro_crew.dashboard.handlers.messaging import _rehydrate_slot_from_history
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
@@ -3236,7 +3236,12 @@ class GatewayOrchestrator:
                     slot_key = job.session_key.removeprefix("dashboard:")
                     slot = self.dashboard_state.get_slot(slot_key)
                     if slot is None:
-                        slot = _rehydrate_slot_from_history(self.dashboard_state, slot_key)
+                        # Async form: the sync one parses the whole transcript on
+                        # the loop, which stalls every other session's frames on
+                        # a large store.
+                        slot = await rehydrate_slot_from_history_async(
+                            self.dashboard_state, slot_key
+                        )
                     label = redact(job.name)
                     if slot:
                         wrapped = f'[Cron notification: "{label}"]\n{message}\n[/Cron notification]'
@@ -4582,6 +4587,7 @@ class GatewayOrchestrator:
                                 self.dashboard_state,
                                 job,
                                 result_text,
+                                history=await prefetch_cron_history(self.dashboard_state, job.id),
                                 context_reading=_ctx_reading,
                             )
                         return result_text
@@ -4606,6 +4612,7 @@ class GatewayOrchestrator:
                             self.dashboard_state,
                             job,
                             result_text,
+                            history=await prefetch_cron_history(self.dashboard_state, job.id),
                             context_reading=_ctx_reading,
                         )
                     return result_text

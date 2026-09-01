@@ -3631,3 +3631,41 @@ class TestAppAgentDispatchGuard:
             await chat_runner._eager_spawn(state, slot)
 
         state.sessions.get_or_create.assert_not_awaited()
+
+
+class TestPromptSubmitTranscriptRead:
+    """The re-injection probe's transcript read must not run on the loop.
+
+    ``_run_chat`` compares the in-memory message count against the on-disk one to
+    decide whether a reset session needs its history re-injected. That disk count
+    comes from ``read_messages``, which parses the whole transcript -- 100-300 ms
+    on a large store, on the hottest path there is (issue #7408).
+    """
+
+    @pytest.mark.asyncio
+    async def test_disk_count_read_runs_off_the_loop_thread(self, tmp_path, monkeypatch):
+        state, client = _runner_state(tmp_path)
+        _set_stream(client, [_complete()])
+        slot = _slot()
+        # A non-empty in-memory window is what arms the probe; without it the
+        # branch holding the read is skipped and the test would pass vacuously.
+        slot.append("user", "an earlier turn", "msg msg-u")
+        seen: list[int] = []
+        real_read = ConversationLog.read_messages
+
+        def recording(self, key):  # noqa: ANN001 -- test double
+            seen.append(threading.get_ident())
+            return real_read(self, key)
+
+        monkeypatch.setattr(ConversationLog, "read_messages", recording)
+
+        await _drive(state, slot, "hello")
+
+        assert seen, (
+            "no transcript read happened on the prompt-submit path -- this test "
+            "no longer exercises the re-injection probe and would pass vacuously"
+        )
+        assert threading.get_ident() not in seen, (
+            "the re-injection probe read the transcript on the event-loop thread; "
+            "it must go through asyncio.to_thread"
+        )
