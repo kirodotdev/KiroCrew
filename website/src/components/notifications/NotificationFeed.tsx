@@ -231,7 +231,13 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
         className={`px-2 py-1 rounded-md text-[12px] font-medium cursor-pointer border border-dashed transition-all font-body ${showMuted ? 'bg-bg-hover text-text border-border-strong' : 'bg-transparent text-muted border-border hover:text-text hover:border-border-strong'}`}
         onClick={() => setShowMuted(v => !v)}
       >
-        <BellOff className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.muted_count', { count: silencedCount })}
+        {/* The label names the ACTION the press performs, not the state the rows
+            are in: "Muted (3)" left it ambiguous whether pressing reveals muted
+            rows or mutes something. Both halves keep the count in parentheses so
+            neither needs a plural form. */}
+        <BellOff className="lucide-inline" /> {showMuted
+          ? i18nT('components.notifications.notificationFeed.hide_muted_count', { count: silencedCount })
+          : i18nT('components.notifications.notificationFeed.show_muted_count', { count: silencedCount })}
       </button>
     </div>
   ) : null

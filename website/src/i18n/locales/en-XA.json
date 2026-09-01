@@ -6065,9 +6065,10 @@
         "search": "[Şèàŕçĥ… ···········]",
         "activity_will_appear_here": "[Àçţìṽìţý ẁìĺĺ àþþèàŕ ĥèŕè ··················]",
         "expand_grouped_notifications": "[Èẋþàñð {{count}} ğŕøùþèð ñøţìƒìçàţìøñş: {{title}} ················]",
-        "muted_count": "[Ṁùţèð ({{count}}) ············]",
+        "hide_muted_count": "[Ĥìðè ɱùţèð ({{count}}) ············]",
         "open_notification": "[Øþèñ ñøţìƒìçàţìøñ: {{title}} ·················]",
         "show_less": "[Şĥøẁ ĺèşş ··············]",
+        "show_muted_count": "[Şĥøẁ ɱùţèð ({{count}}) ············]",
         "try_a_different_search": "[Ţŕý à ðìƒƒèŕèñţ şèàŕçĥ ···············]"
       },
       "notifMeta": {

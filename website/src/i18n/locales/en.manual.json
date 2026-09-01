@@ -1989,9 +1989,10 @@
       "notificationFeed": {
         "activity_will_appear_here": "Activity will appear here",
         "expand_grouped_notifications": "Expand {{count}} grouped notifications: {{title}}",
-        "muted_count": "Muted ({{count}})",
+        "hide_muted_count": "Hide muted ({{count}})",
         "open_notification": "Open notification: {{title}}",
         "show_less": "Show less",
+        "show_muted_count": "Show muted ({{count}})",
         "try_a_different_search": "Try a different search"
       }
     },
