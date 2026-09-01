@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import {
@@ -703,6 +703,34 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // provider, flashing a previous attempt's URL that no listener can redeem.
     gcTime: 0,
   })
+
+  /** Latched by the premint effect below, so one page visit warms once. */
+  const premintFiredRef = useRef(false)
+  // Warm every mintable provider's approval URL once, ahead of any click, so a
+  // Connect serves a URL the warm table already holds instead of paying a cold
+  // spawn. This is the documented caller for POST /api/connections/premint.
+  //
+  // Keyed on `servicesEnabled` rather than mount, because the flag arrives with
+  // the config query: the page's FIRST render is always gated-off, so a `[]`
+  // effect would warm on every install that never opted in. Gated for the same
+  // reason as the status feed above — behind a closed flag the gallery offers no
+  // card to connect, and warming would spawn a process for a surface that has no
+  // Connect button.
+  //
+  // The ref guards StrictMode's development double-invoke (an in-flight request
+  // is not cancellable, so a teardown flag cannot un-spawn the first activation).
+  // It is per-mount by design: a later remount from navigation may warm again,
+  // which the engine's warm reuse makes cheap, and suppressing it across visits
+  // would pin the first visit's grant state for the whole session.
+  useEffect(() => {
+    if (!servicesEnabled || premintFiredRef.current) return
+    premintFiredRef.current = true
+    // Strictly fire-and-forget: nothing here reaches render, and the response is
+    // never a verdict (a card's state stays its own mint feed). Every failure is
+    // swallowed on purpose — a non-owner dashboard session is denied by design,
+    // and a cold mint on Connect is the intended fallback either way.
+    void api.connectionsPremint().catch(() => undefined)
+  }, [servicesEnabled])
 
   useEffect(() => {
     // Decided BEFORE any setState: a state updater runs on a later render, so

@@ -2686,6 +2686,17 @@ export const api = {
     post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
   connectionsMintState: (slug: string) =>
     fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
+  // Warm every mintable provider's URL in one activation, so a later Connect
+  // serves a URL the warm table already holds instead of paying a cold spawn.
+  // Deliberately BODYLESS: what is mintable is a fact about the user's registry
+  // and grant state, never a caller's choice, and the bound on what may be
+  // spawned stays on the server's side of the wire. `preminting` names the
+  // providers warming was STARTED for, which is why it can answer before any of
+  // them holds a URL — a card's verdict remains its mint state, never this.
+  // Owner-gated, so a non-owner session rejects (403); the caller is expected to
+  // treat that as "no warm table", not as an error worth showing.
+  connectionsPremint: () =>
+    post('/api/connections/premint').then(j) as Promise<{ ok: boolean; preminting: string[] }>,
   // Authorization verdict + first-connect time per visible provider. Additive to
   // the mint feed above; never mints.
   connectionsStatus: () =>
