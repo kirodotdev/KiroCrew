@@ -26,6 +26,14 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
 
 
+#: Every reader below decodes one ``.jsonl`` line at a time and then reads a
+#: field off it. ``json.JSONDecodeError`` covers the line that will not parse;
+#: it does NOT cover a line that parses to something other than an object
+#: (``[]``, ``"text"``, ``12``, ``null``), which reaches ``.get`` and raises
+#: ``AttributeError`` -- abandoning the read, and every valid row after the bad
+#: one, on an error none of these callers expect. So a decode is followed by a
+#: shape check, exactly as ``read_file_change_messages`` already does for the
+#: same rows of the same files.
 _HISTORY_LOGGER = logging.getLogger("kiro_crew.history")
 
 
@@ -149,6 +157,8 @@ class TranscriptReadProjection:
                         try:
                             data = json.loads(line.strip())
                         except ValueError:
+                            continue
+                        if not isinstance(data, dict):
                             continue
                         if data.get(
                             "_type"
@@ -410,6 +420,8 @@ class TranscriptReadProjection:
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(data, dict):
+                    continue
                 if data.get("_type") != "metadata":
                     messages.append(data)
 
@@ -501,6 +513,8 @@ class TranscriptReadProjection:
                     data = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(data, dict):
+                    continue
                 if data.get("_type") == "metadata":
                     continue
                 if roles and data.get("role") not in roles:
@@ -563,6 +577,8 @@ class TranscriptReadProjection:
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict):
                     continue
                 if data.get("_type") == "metadata":
                     continue
@@ -802,6 +818,8 @@ class SessionMetadataProjection:
                 metadata = json.loads(lines[0])
             except json.JSONDecodeError:
                 return
+            if not isinstance(metadata, dict):
+                return
             if metadata.get("_type") != "metadata":
                 return
         else:
@@ -863,6 +881,8 @@ class SessionMetadataProjection:
             try:
                 metadata = json.loads(lines[0])
             except json.JSONDecodeError:
+                return
+            if not isinstance(metadata, dict):
                 return
             if metadata.get("_type") != "metadata" or "closed" not in metadata:
                 return
