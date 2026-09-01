@@ -31,6 +31,14 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_server import HttpGatewayBackend, prompt_blocks_to_text
 from kiro_crew.acp_server.http_backend import AcpGatewayError
 from kiro_crew.acp_server.server import AcpAgentServer, PromptRequest, SessionSink, _Session
+from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS
+
+
+class TestSelectorEndpointAuthorization:
+    def test_selector_discovery_allows_internal_secret(self) -> None:
+        assert "/api/models" in _MIXED_INTERNAL_API_PATHS
+        assert "/api/effort-levels" in _MIXED_INTERNAL_API_PATHS
+
 
 # ── prompt block conversion (R5) ──
 
@@ -525,6 +533,78 @@ class TestHttpGatewayBackend:
             and params["update"].get("sessionUpdate") == "tool_call"
         )
         assert update["locations"] == [{"path": "/ok"}]
+
+    async def test_tool_update_refreshes_locations_on_same_call_id(self) -> None:
+        # Streamed refinement: kiro-cli's Read tool emits an empty tool_call
+        # then a tool_call_update carrying path/start_line. The refinement
+        # must reach Zed as session/update tool_call_update against the SAME
+        # gw-N id so the follow-along jumps to the right line.
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        sink = _RecordingSink()
+        await backend._translate(
+            {"type": "tool", "content": "read", "tool_call_id": "toolu_abc"},
+            "s",
+            sink,
+        )
+        await backend._translate(
+            {
+                "type": "tool_update",
+                "tool_call_id": "toolu_abc",
+                "locations": [{"path": "/abs/main.py", "line": 42}],
+            },
+            "s",
+            sink,
+        )
+        updates = [
+            params["update"]
+            for method, params in sink.transport.notifications
+            if method == METHOD_SESSION_UPDATE
+        ]
+        assert any(
+            u.get("sessionUpdate") == "tool_call_update"
+            and u.get("toolCallId") == "gw-1"
+            and u.get("locations") == [{"path": "/abs/main.py", "line": 42}]
+            for u in updates
+        ), updates
+
+    async def test_tool_update_unknown_call_id_is_dropped(self) -> None:
+        # A stray refinement (e.g. gateway restarted mid-turn) has no gw-N
+        # to correlate against; landing it on the wrong tool card would
+        # silently move Zed's cursor to an unrelated file. Drop it.
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        sink = _RecordingSink()
+        await backend._translate(
+            {
+                "type": "tool_update",
+                "tool_call_id": "toolu_never_seen",
+                "locations": [{"path": "/abs/x.py", "line": 1}],
+            },
+            "s",
+            sink,
+        )
+        updates = [
+            params["update"]
+            for method, params in sink.transport.notifications
+            if method == METHOD_SESSION_UPDATE
+        ]
+        assert not any(u.get("sessionUpdate") == "tool_call_update" for u in updates), updates
+
+    async def test_tool_update_missing_call_id_is_dropped(self) -> None:
+        # A tool_update chunk with no tool_call_id cannot address any prior
+        # tool call, so drop it rather than misroute the follow-along.
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        sink = _RecordingSink()
+        await backend._translate(
+            {"type": "tool_update", "locations": [{"path": "/abs/x.py", "line": 1}]},
+            "s",
+            sink,
+        )
+        updates = [
+            params["update"]
+            for method, params in sink.transport.notifications
+            if method == METHOD_SESSION_UPDATE
+        ]
+        assert not any(u.get("sessionUpdate") == "tool_call_update" for u in updates), updates
 
     async def test_permission_rejection_answers_rejected(self) -> None:
         runner, base, app = await _start_stub()

@@ -300,3 +300,40 @@ class TestBuildStreamChunkLocations:
         }
         payload = json.loads(chat_utils._build_stream_chunk(msg))
         assert "locations" not in payload
+
+    def test_tool_update_role_forwards_locations(self) -> None:
+        # Streamed refinement: chat_runner enqueues a role="tool_update" SSE
+        # frame carrying the refined locations. It must reach http_backend
+        # with the same shape as the initial tool frame so the follow-along
+        # jumps to path:line rather than staying at the top of the buffer.
+        msg = {
+            "role": "tool_update",
+            "content": "",
+            "cls": "",
+            "ts": "",
+            "meta": {
+                "tool_call_id": "toolu_bdrk_1",
+                "locations": [{"path": "/abs/main.py", "line": 100}],
+            },
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert payload["type"] == "tool_update"
+        assert payload["locations"] == [{"path": "/abs/main.py", "line": 100}]
+        assert payload["tool_call_id"] == "toolu_bdrk_1"
+
+    def test_tool_frame_carries_tool_call_id(self) -> None:
+        # http_backend needs the source tool_call_id at the top level so a
+        # later tool_update can be correlated against the gw-N it emitted.
+        msg = {
+            "role": "tool",
+            "content": "🔧 edit main.py",
+            "cls": "msg msg-tool",
+            "ts": "",
+            "meta": {
+                "tool_call_id": "toolu_bdrk_2",
+                "kind": "edit",
+                "locations": [{"path": "/abs/main.py"}],
+            },
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert payload["tool_call_id"] == "toolu_bdrk_2"

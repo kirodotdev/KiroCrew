@@ -24,14 +24,88 @@ class TestKiroCliFileTools:
         result = extract_tool_locations("fs_read", {"path": "/abs/main.py", "start_line": 42})
         assert result == [{"path": "/abs/main.py", "line": 42}]
 
-    def test_str_replace_carries_no_line(self) -> None:
-        # A search-and-replace edit doesn't have a fixed line — the follow
-        # should land on the file, and the editor's own cursor placement wins.
+    def test_str_replace_absent_file_stays_path_only(self, tmp_path: Any) -> None:
+        # oldStr on a path that doesn't exist: the derivation gives up and we
+        # emit path only, so the editor at least opens the file.
         result = extract_tool_locations(
             "str_replace",
-            {"path": "/abs/a.py", "oldStr": "x", "newStr": "y"},
+            {"path": str(tmp_path / "missing.py"), "oldStr": "x", "newStr": "y"},
         )
-        assert result == [{"path": "/abs/a.py"}]
+        assert result == [{"path": str(tmp_path / "missing.py")}]
+
+    def test_str_replace_first_match_line(self, tmp_path: Any) -> None:
+        # oldStr on a real file: line = 1-based line of the first match so the
+        # editor scrolls to the change site rather than the top of the buffer.
+        target = tmp_path / "a.py"
+        target.write_text("alpha\nbeta\ngamma\ndelta\n")
+        result = extract_tool_locations(
+            "str_replace",
+            {"path": str(target), "oldStr": "gamma", "newStr": "GAMMA"},
+        )
+        assert result == [{"path": str(target), "line": 3}]
+
+    def test_str_replace_first_of_multiple_matches(self, tmp_path: Any) -> None:
+        # A repeated oldStr locks to the first occurrence — that's where an
+        # unambiguous single-replace lands, so it's the useful scroll target.
+        target = tmp_path / "b.py"
+        target.write_text("x\nfoo\ny\nfoo\nz\n")
+        result = extract_tool_locations(
+            "str_replace",
+            {"path": str(target), "oldStr": "foo", "newStr": "FOO"},
+        )
+        assert result == [{"path": str(target), "line": 2}]
+
+    def test_str_replace_multiline_oldstr_uses_first_line(self, tmp_path: Any) -> None:
+        # Multi-line oldStr: derivation keys off the first line, not the whole
+        # block, so the editor scrolls to the top of the match.
+        target = tmp_path / "c.py"
+        target.write_text("preface\nOLD_HEAD\nOLD_TAIL\nsuffix\n")
+        result = extract_tool_locations(
+            "str_replace",
+            {
+                "path": str(target),
+                "oldStr": "OLD_HEAD\nOLD_TAIL",
+                "newStr": "NEW",
+            },
+        )
+        assert result == [{"path": str(target), "line": 2}]
+
+    def test_str_replace_no_match_stays_path_only(self, tmp_path: Any) -> None:
+        # An oldStr that doesn't appear in the file: cannot land on a false
+        # line, so we drop back to path-only rather than guess.
+        target = tmp_path / "d.py"
+        target.write_text("alpha\nbeta\n")
+        result = extract_tool_locations(
+            "str_replace",
+            {"path": str(target), "oldStr": "not-in-file", "newStr": "x"},
+        )
+        assert result == [{"path": str(target)}]
+
+    def test_explicit_line_wins_over_edit_derivation(self, tmp_path: Any) -> None:
+        # If the params carry a real line (e.g. an editor-emitted variant),
+        # never re-derive — the source-of-truth line beats a first-match guess.
+        target = tmp_path / "e.py"
+        target.write_text("foo\nfoo\nfoo\n")
+        result = extract_tool_locations(
+            "Edit",
+            {"path": str(target), "line": 3, "oldStr": "foo", "newStr": "bar"},
+        )
+        assert result == [{"path": str(target), "line": 3}]
+
+    def test_oversized_edit_target_stays_path_only(self, tmp_path: Any) -> None:
+        # Ceiling on the disk read prevents a runaway open on huge files
+        # (would stall the SSE emit hot path for every subscriber).
+        target = tmp_path / "big.log"
+        # One byte over the ceiling; the exact ceiling stays hidden from tests
+        # so a future tweak of the constant doesn't churn the assertion.
+        from kiro_crew.acp_server import locations as _loc
+
+        target.write_bytes(b"x" * (_loc._MAX_EDIT_FILE_BYTES + 1))
+        result = extract_tool_locations(
+            "str_replace",
+            {"path": str(target), "oldStr": "x", "newStr": "y"},
+        )
+        assert result == [{"path": str(target)}]
 
 
 class TestAnthropicStyleTools:

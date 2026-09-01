@@ -6475,7 +6475,7 @@ async def _run_chat(
                     # with the same tool_call_id, and we don't want to
                     # overwrite that post-approval marker. Preserve whatever
                     # leading icon (🔧/✅/🚫) the existing message has.
-                    _meta_patch: dict[str, str] = {}
+                    _meta_patch: dict[str, Any] = {}
                     if _input_upd:
                         _meta_patch["input"] = _input_upd
                     # A refinement is the only event carrying the purpose when the
@@ -6485,6 +6485,32 @@ async def _run_chat(
                     # so a live-only fix would lose the purpose on the next reload.
                     if _purpose_upd:
                         _meta_patch["purpose"] = _purpose_upd
+                    # Editor follow-along: kiro-cli streams the Read tool_call
+                    # with empty rawInput and delivers path/start_line only on
+                    # this refinement, so _tool_meta() at the initial event saw
+                    # nothing to extract. Recompute here and patch persisted
+                    # meta so history replay carries it, plus enqueue a
+                    # wire-only tool_update SSE frame so an already-connected
+                    # ACP client (Zed) emits session/update tool_call_update
+                    # with the refined locations.
+                    _locations_upd = extract_tool_locations(
+                        getattr(event, "tool_name", "") or "",
+                        getattr(event, "raw_tool_params", None),
+                    )
+                    if _locations_upd:
+                        _meta_patch["locations"] = _locations_upd
+                        _tool_update_frame: dict[str, Any] = {
+                            "role": "tool_update",
+                            "content": "",
+                            "cls": "",
+                            "ts": "",
+                            "meta": {
+                                "tool_call_id": _tcid_upd,
+                                "locations": _locations_upd,
+                            },
+                        }
+                        slot._pending.append(_tool_update_frame)
+                        slot.event.set()
                     _patched = False
                     _patched_content: str | None = None
                     for m in reversed(slot.messages):

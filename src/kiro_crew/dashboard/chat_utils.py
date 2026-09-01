@@ -210,6 +210,16 @@ def _build_stream_chunk(msg: dict) -> str:
         payload["meta"] = meta
     if locations:
         payload["locations"] = locations
+    # Tool call correlation for ACP session/update: the http_backend needs to
+    # map a refinement (role="tool_update") back to the original tool_call so
+    # its send_tool_call_update targets the same gw-N ID. Cheaper than
+    # exposing the whole msg meta and stays scoped to the two roles that need it.
+    if msg.get("role") in ("tool", "tool_update"):
+        msg_meta = msg.get("meta")
+        if isinstance(msg_meta, dict):
+            tcid = msg_meta.get("tool_call_id")
+            if isinstance(tcid, str) and tcid:
+                payload["tool_call_id"] = tcid
     return json.dumps(payload)
 
 
@@ -220,7 +230,7 @@ def _tool_locations_from_meta(msg: dict) -> list[dict[str, Any]] | None:
     the SSE frame. Absolute paths only (schema requirement); relative paths
     are dropped rather than propagated to the editor.
     """
-    if msg.get("role") != "tool":
+    if msg.get("role") not in ("tool", "tool_update"):
         return None
     meta = msg.get("meta")
     if not isinstance(meta, dict):

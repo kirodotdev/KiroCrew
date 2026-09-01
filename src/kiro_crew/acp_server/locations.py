@@ -32,6 +32,17 @@ _PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filename")
 #: filesystem servers — treat any non-positive value as "no line".
 _LINE_KEYS: tuple[str, ...] = ("line", "start_line", "line_number", "offset")
 
+#: Keys under which Edit-style tools carry the "before" text of a match. When
+#: no explicit line is present, we locate the first line of the first match in
+#: the target file so the editor scrolls to the change site rather than
+#: sitting at the top of the buffer.
+_OLD_TEXT_KEYS: tuple[str, ...] = ("oldStr", "old_str", "oldText", "old_text")
+
+#: Ceiling for the best-effort file read behind :func:`_derive_line_from_edit`.
+#: An Edit that targets a file bigger than this is almost certainly a mistake,
+#: and eating the disk I/O in the SSE-emit path would stall the response.
+_MAX_EDIT_FILE_BYTES = 1_000_000
+
 _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -84,6 +95,52 @@ def _first_line(params: dict[str, Any]) -> int | None:
         if line is not None:
             return line
     return None
+
+
+def _derive_line_from_edit(path: str, params: dict[str, Any]) -> int | None:
+    """Locate the first line of an Edit's ``oldStr`` match in *path*.
+
+    kiro-cli's built-in Edit tool identifies the change site by ``oldStr`` /
+    ``newStr`` rather than a line number, so a raw location extraction gives
+    the editor only ``{path}`` and follow-along opens the file at line 1. Read
+    the target once and find the first-match line so the cursor lands on the
+    edit instead.
+
+    Best-effort: any I/O failure, oversized file, or non-match returns None so
+    the caller falls back to the path-only location and the editor at least
+    opens the file. The ceiling caps the disk read since this runs in the
+    SSE-emit hot path — a runaway open on a multi-GB file would stall the
+    stream for every subscriber.
+    """
+    for key in _OLD_TEXT_KEYS:
+        value = params.get(key)
+        if isinstance(value, str) and value:
+            old_text = value
+            break
+    else:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    if st.st_size > _MAX_EDIT_FILE_BYTES:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError:
+        return None
+    # First line of oldStr is what a reader cares about; deeper lines of a
+    # multi-line block are visually adjacent when the editor scrolls.
+    first_line = old_text.split("\n", 1)[0]
+    if not first_line:
+        return None
+    idx = content.find(first_line)
+    if idx < 0:
+        return None
+    # 1-based line number of the match. count() of '\n' before the index is
+    # the zero-based line, +1 for the schema's 1-based convention.
+    return content.count("\n", 0, idx) + 1
 
 
 def _first_path(params: dict[str, Any]) -> str | None:
@@ -145,7 +202,10 @@ def extract_tool_locations(
             return out
         return []
 
-    return [_location(path, _first_line(raw_params))]
+    line = _first_line(raw_params)
+    if line is None:
+        line = _derive_line_from_edit(path, raw_params)
+    return [_location(path, line)]
 
 
 #: Tool names that never carry a follow-along target. Membership is

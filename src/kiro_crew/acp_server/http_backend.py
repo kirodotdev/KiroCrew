@@ -220,6 +220,12 @@ class HttpGatewayBackend:
         # a pre-existing slot it merely loaded/resumed.
         self._mcp_sessions: set[str] = set()
         self._tool_seq = 0
+        # Correlate a refinement (SSE ctype="tool_update") back to the gw-N ID
+        # emitted for the initial tool_call so send_tool_call_update targets
+        # the same call. Kiro-cli streams tool params over two events for some
+        # tools (e.g. fs_read: empty initial rawInput + populated refinement),
+        # so the follow-along locations only arrive on the second event.
+        self._tool_id_map: dict[str, str] = {}
 
     # ── lifecycle ──
 
@@ -586,10 +592,35 @@ class HttpGatewayBackend:
         elif ctype == "tool":
             title = (text.split("\n", 1)[0] or "Tool")[:120]
             self._tool_seq += 1
+            gw_id = f"gw-{self._tool_seq}"
+            original_id = chunk.get("tool_call_id")
+            if isinstance(original_id, str) and original_id:
+                # Cap the map so a runaway session cannot grow it unbounded.
+                if len(self._tool_id_map) > 4096:
+                    self._tool_id_map.clear()
+                self._tool_id_map[original_id] = gw_id
             await sink.send_tool_call(
-                f"gw-{self._tool_seq}",
+                gw_id,
                 title,
                 "other",
+                status="completed",
+                locations=_sanitize_locations(chunk.get("locations")),
+            )
+        elif ctype == "tool_update":
+            # Refinement of a prior tool_call — kiro-cli fills in rawInput on a
+            # second event for streamed tools (fs_read). Emit a session/update
+            # tool_call_update with the refined locations so the editor's
+            # follow-along jumps to path:line. Skip silently if we never saw
+            # the original (e.g. gateway restarted mid-turn): a stray update
+            # with a wrong-shaped ID would land Zed on the wrong tool card.
+            original_id = chunk.get("tool_call_id")
+            if not isinstance(original_id, str) or not original_id:
+                return
+            mapped_id = self._tool_id_map.get(original_id)
+            if not mapped_id:
+                return
+            await sink.send_tool_call_update(
+                mapped_id,
                 status="completed",
                 locations=_sanitize_locations(chunk.get("locations")),
             )
