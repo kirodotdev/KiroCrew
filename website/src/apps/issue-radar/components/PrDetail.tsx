@@ -39,7 +39,7 @@ import { DropdownMenuItem } from '../../../components/ui/dropdown-menu'
 import ListDetailBack from '../../../components/ListDetailBack'
 import { useIssueRadar } from '../context'
 import { useTitleScrolledOut } from '../lib/useTitleScrolledOut'
-import { relativeTimeOrDate, asArray, detailPollMs } from '../lib/format'
+import { relativeTimeOrDate, asArray, detailPollMs, resolveAiLanguage } from '../lib/format'
 import {
   issueRadarApi,
   type PullRequest, type TimelineEvent, type PrCheck, type DetailLabel,
@@ -524,6 +524,7 @@ function AutoReviewChecks(
 export default function PrDetail({ pull }: { pull: PullRequest }) {
   const {
     active, colorByName, memberRoleByLogin, canWrite, refreshPrefs, listDetail, refStack,
+    aiLanguage,
   } = useIssueRadar()
   const scopeKey = repoScopeKey(active)
   // GitLab calls these merge requests; the whole pane's copy follows the ref.
@@ -660,12 +661,15 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
   // you ask (the card's regenerate button), with its age shown so you can tell
   // whether it predates the latest activity.
   const aiRefreshRef = useRef(false)
+  // The resolved AI-output language is part of the key: a summary fetched under
+  // one language must not be replayed from the client cache under another.
+  const aiLang = resolveAiLanguage(aiLanguage)
   const aiQuery = useQuery({
-    queryKey: ['issue-radar', 'pull-ai', scopeKey, pull.number],
+    queryKey: ['issue-radar', 'pull-ai', scopeKey, pull.number, aiLang],
     queryFn: () => {
       const useRefresh = aiRefreshRef.current
       aiRefreshRef.current = false
-      return issueRadarApi.pullAi(active, pull.number, { refresh: useRefresh })
+      return issueRadarApi.pullAi(active, pull.number, aiLang, { refresh: useRefresh })
     },
     enabled: Boolean(detail),
     // The server owns freshness (its input fingerprint decides whether a request

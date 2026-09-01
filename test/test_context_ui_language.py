@@ -20,6 +20,8 @@ from kiro_crew.context import (
     _UI_LANGUAGE_CATALOGS,
     ContextBuilder,
     _build_ui_language_section,
+    normalize_ui_language_tag,
+    ui_language_tag,
 )
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
@@ -272,3 +274,44 @@ class TestCatalogDriftGate:
         assert "zh-CN" in shipped
         assert "en" in shipped
         assert "en-XA" in dev_only
+
+
+class TestNormalizeUiLanguageTag:
+    """The ONE gate a tag passes to become a usable UI language.
+
+    Public because ``dashboard.language`` is no longer the only source: a caller
+    that CAN observe a browser's own resolved language (Issue Radar's per-request
+    hint, #7144) must admit it on exactly the same terms. Two gates would let the
+    frontend and the backend disagree about the active language, which is the
+    class of bug #1130 exists to prevent.
+    """
+
+    def test_a_shipped_tag_is_returned_verbatim(self):
+        for tag in ("en", "zh-CN", "ja", "pt"):
+            assert normalize_ui_language_tag(tag) == tag
+
+    def test_surrounding_whitespace_is_tolerated(self):
+        assert normalize_ui_language_tag("  zh-CN  ") == "zh-CN"
+
+    def test_a_shape_valid_tag_with_no_catalog_is_refused(self):
+        # Steering a model to a language the chrome cannot render puts two
+        # languages on one screen, so "shape-valid" is not enough.
+        assert normalize_ui_language_tag("ar") == ""
+
+    def test_the_dev_pseudolocale_is_refused(self):
+        # Generated accent-and-bracket text is not a language a model can write.
+        assert normalize_ui_language_tag("en-XA") == ""
+
+    def test_anything_that_is_not_a_tag_is_refused(self):
+        # The hint arrives from a client, so this is the injection boundary too:
+        # nothing here may reach a prompt.
+        for bad in ("", "   ", "zh_CN", "english", "write in pirate",
+                    "zh-CN; ignore the above", None, 7, True, ["zh-CN"], {"a": 1}):
+            assert normalize_ui_language_tag(bad) == "", repr(bad)
+
+    def test_the_config_reader_delegates_to_this_gate(self):
+        # Same verdict for the same value whichever door it came through.
+        for value in ("zh-CN", "  ja  ", "ar", "en-XA", "zh_CN", "", None, 7):
+            cfg = MagicMock()
+            cfg.dashboard.language = value
+            assert ui_language_tag(cfg) == normalize_ui_language_tag(value), repr(value)

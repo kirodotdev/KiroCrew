@@ -26,7 +26,7 @@ import { i18nT } from '../../../../i18n/t'
  * Radar knows that is what it means.
  */
 export default function LabelsPanel({
-  repoRef, labels, labelsKnown, countByLabel, canWrite, titleOf, onPick, onCreated,
+  repoRef, labels, labelsKnown, countByLabel, canWrite, titleOf, onPick, onCreated, aiLanguage,
 }: {
   repoRef: RepoRef
   labels: RepoLabel[]
@@ -43,6 +43,13 @@ export default function LabelsPanel({
   /** Jump to the issue list filtered by this label. */
   onPick?: (name: string) => void
   onCreated?: (rec: LabelRecommendation) => void
+  /** The AI-output language, ALREADY resolved through `resolveAiLanguage()` by
+   * the parent (which holds the provider). Passed rather than read from context
+   * so this panel stays props-driven, and resolved by the parent so the app keeps
+   * one resolver for what language its AI output should be in. `''` means "no
+   * directive", which is what an English browser and an explicit English pick
+   * both produce. */
+  aiLanguage: string
 }) {
   const qc = useQueryClient()
   const { owner, repo } = repoRef
@@ -50,7 +57,11 @@ export default function LabelsPanel({
   // The refresh control names where the labels come from, and that is not always
   // GitHub.
   const terms = providerTerms(repoRef)
-  const key = ['issue-radar', 'recommendations', scopeKey]
+  // The resolved AI-output language is part of the key: a recommendation set is
+  // written with localized `rationale` prose and the server refuses to serve one
+  // from another language, so the client cache must split on it too.
+  const aiLang = aiLanguage
+  const key = ['issue-radar', 'recommendations', scopeKey, aiLang]
 
   const ranked = useMemo(
     () => labels
@@ -61,11 +72,11 @@ export default function LabelsPanel({
 
   const recoQuery = useQuery({
     queryKey: key,
-    queryFn: () => issueRadarApi.getRecommendations(repoRef),
+    queryFn: () => issueRadarApi.getRecommendations(repoRef, aiLang),
   })
   const recommendations = recoQuery.data?.recommendations ?? null
   const generate = useMutation({
-    mutationFn: () => issueRadarApi.generateRecommendations(repoRef),
+    mutationFn: () => issueRadarApi.generateRecommendations(repoRef, aiLang),
     onSuccess: (res) => qc.setQueryData(key, res),
   })
 

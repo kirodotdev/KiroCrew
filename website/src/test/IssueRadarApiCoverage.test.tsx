@@ -218,8 +218,8 @@ describe('list query flags', () => {
     ['issueDetail', (refresh?: boolean) => issueRadarApi.issueDetail(REF, 7, refresh === undefined ? undefined : { refresh })],
     ['pullDetail', (refresh?: boolean) => issueRadarApi.pullDetail(REF, 7, refresh === undefined ? undefined : { refresh })],
     ['refSummary', (refresh?: boolean) => issueRadarApi.refSummary(REF, 7, refresh === undefined ? undefined : { refresh })],
-    ['issueAi', (refresh?: boolean) => issueRadarApi.issueAi(REF, 7, refresh === undefined ? undefined : { refresh })],
-    ['pullAi', (refresh?: boolean) => issueRadarApi.pullAi(REF, 7, refresh === undefined ? undefined : { refresh })],
+    ['issueAi', (refresh?: boolean) => issueRadarApi.issueAi(REF, 7, '', refresh === undefined ? undefined : { refresh })],
+    ['pullAi', (refresh?: boolean) => issueRadarApi.pullAi(REF, 7, '', refresh === undefined ? undefined : { refresh })],
   ] as const)('%s sets refresh only when asked, and always sends the number', async (_name, call) => {
     fetchMock.mockResolvedValue(jsonResponse(200, {}))
     await call(undefined)

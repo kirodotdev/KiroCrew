@@ -443,10 +443,12 @@ describe('IssueDetail — header and first paint', () => {
     expect(api.issueDetail.mock.calls[1][2]).toEqual({ refresh: true })
 
     await waitFor(() => expect(api.issueAi).toHaveBeenCalledTimes(1))
-    expect(api.issueAi.mock.calls[0][2]).toEqual({ refresh: false })
+    // arg 2 is the resolved AI-output language, arg 3 the refresh opts.
+    expect(api.issueAi.mock.calls[0][2]).toBe('')
+    expect(api.issueAi.mock.calls[0][3]).toEqual({ refresh: false })
     await user.click(screen.getByRole('button', { name: 'regenerate-ai' }))
     await waitFor(() => expect(api.issueAi).toHaveBeenCalledTimes(2))
-    expect(api.issueAi.mock.calls[1][2]).toEqual({ refresh: true })
+    expect(api.issueAi.mock.calls[1][3]).toEqual({ refresh: true })
   })
 })
 
