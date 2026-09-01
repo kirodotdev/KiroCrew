@@ -23,8 +23,9 @@ keeps its own (possibly session-scoped) redactor.
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Callable
+
+from kiro_crew.preview_text import drop_format_chars
 
 _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -78,13 +79,12 @@ def _strip_format_chars(text: str) -> str:
     ZWJ, word joiner, bidi controls, BOM, soft hyphen) and contains nothing a
     reader can see.
 
-    The ASCII fast path is sound, not an approximation: the ASCII range holds no
-    ``Cf`` code point at all (the C0 controls are ``Cc``), so ordinary traffic
-    never pays for the per-character walk.
+    Delegates to :func:`kiro_crew.preview_text.drop_format_chars`, the one
+    implementation of the Cf drop (its docstring carries the fast-path
+    soundness argument), so the display-safety canonicalizer and the preview
+    stripper cannot drift apart on which characters count as invisible.
     """
-    if text.isascii():
-        return text
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    return drop_format_chars(text)
 
 
 def canonicalize_display(text: str) -> str:

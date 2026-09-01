@@ -15,6 +15,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { ReactElement } from 'react'
 import type { ChatMessage } from '../types'
 import {
   defaultMessageRenderers,
@@ -22,6 +23,7 @@ import {
   mergeRenderers,
   resolveRenderer,
   type MessageRenderer,
+  type MessageRenderContext,
 } from '../app-sdk/messageRenderers'
 
 const msg = (role: string, over: Partial<ChatMessage> = {}): ChatMessage =>
@@ -81,6 +83,61 @@ describe('default registry reproduces the old role chain', () => {
   it('gives every entry a unique id, so an override cannot be ambiguous', () => {
     const ids = defaultMessageRenderers.map(r => r.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe('invisible-only assistant rows', () => {
+  const baseCtx = (over: Partial<MessageRenderContext> = {}): MessageRenderContext => ({
+    index: 0,
+    messages: [],
+    running: false,
+    key: 'k',
+    hideCardOwnedOAuth: false,
+    autoDeniedIds: new Set<string>(),
+    wrapper: children => children,
+    row: children => children,
+    ...over,
+  })
+
+  it('draws nothing for a ZWSP-only assistant row (quiet monitor-cycle reply)', () => {
+    const m = msg('assistant', { content: '\u200b' })
+    const entry = resolveRenderer(m, defaultMessageRenderers)
+    expect(entry?.id).toBe('assistant')
+    // The skip fires before the context is read — same shape the undrawn
+    // roles use above.
+    expect(entry!.render(m, {} as never)).toBeNull()
+  })
+
+  it('still draws a streaming row whose text has not arrived yet', () => {
+    const m = msg('streaming', { content: '\u200b' })
+    const entry = resolveRenderer(m, defaultMessageRenderers)!
+    expect(entry.render(m, baseCtx({ messages: [m], running: true }))).not.toBeNull()
+  })
+
+  it('moves the turn footer past a hidden trailing row to the last drawn reply', () => {
+    const real = msg('assistant', { content: 'real answer' })
+    const zwsp = msg('assistant', { content: '\u200b' })
+    const messages = [msg('user', { content: 'q' }), real, zwsp]
+    const entry = resolveRenderer(real, defaultMessageRenderers)!
+    const node = entry.render(real, baseCtx({ index: 1, messages })) as ReactElement<{
+      children: ReactElement<{ showFooter?: boolean }>
+    }>
+    // Identity wrapper: node is the bubble div, its child the AssistantMessage.
+    expect(node.props.children.props.showFooter).toBe(true)
+  })
+
+  it('keeps a ZWSP-only row with file-change chips and passes the chips through', () => {
+    // The chips are the row's content: hiding it would hide them, and
+    // rendering it without the prop would draw the empty bubble the chips
+    // were supposed to justify.
+    const changes = [{ path: 'a.ts' }]
+    const m = msg('assistant', { content: '\u200b', meta: { file_changes: changes } })
+    const entry = resolveRenderer(m, defaultMessageRenderers)!
+    const node = entry.render(m, baseCtx({ messages: [m] })) as ReactElement<{
+      children: ReactElement<{ fileChanges?: unknown }>
+    }>
+    expect(node).not.toBeNull()
+    expect(node.props.children.props.fileChanges).toBe(changes)
   })
 })
 
