@@ -3669,3 +3669,59 @@ class TestPromptSubmitTranscriptRead:
             "the re-injection probe read the transcript on the event-loop thread; "
             "it must go through asyncio.to_thread"
         )
+
+
+class TestToolMetaLocations:
+    """``_tool_meta`` must fold in ACP ``ToolCallLocation`` entries for Zed follow-along."""
+
+    def test_file_tool_carries_locations(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-1",
+            title="edit main.py",
+            tool_kind="edit",
+            tool_name="str_replace",
+            raw_tool_params={"path": "/abs/main.py", "oldStr": "a", "newStr": "b"},
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert meta["locations"] == [{"path": "/abs/main.py"}]
+
+    def test_shell_tool_omits_locations(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-2",
+            title="bash",
+            tool_kind="execute",
+            tool_name="execute_bash",
+            raw_tool_params={"command": "cat /tmp/x"},
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert "locations" not in meta
+
+    def test_missing_raw_params_omits_locations(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-3",
+            title="unknown",
+            tool_kind="other",
+            tool_name="",
+            raw_tool_params=None,
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert "locations" not in meta
+
+    def test_fs_read_carries_start_line(self) -> None:
+        event = LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-loc-4",
+            title="read",
+            tool_kind="read",
+            tool_name="fs_read",
+            raw_tool_params={"path": "/abs/x.py", "start_line": 42},
+        )
+        meta = chat_runner._tool_meta(event)
+        assert meta is not None
+        assert meta["locations"] == [{"path": "/abs/x.py", "line": 42}]

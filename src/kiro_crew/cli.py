@@ -92,7 +92,7 @@ _PROJECT_MARKERS = ("skills", "src/kiro_crew")
 # nested inside a jail re-exec (that would exhaust user namespaces); it composes
 # isolation by other means.  The public edition's JailProvider has no backend, so
 # this set only matters once a companion supplies a real one.
-_JAILED_COMMANDS = frozenset({"chat", "run", "consolidate", "eval"})
+_JAILED_COMMANDS = frozenset({"acp", "chat", "run", "consolidate", "eval"})
 
 # Env marker the gate sets BEFORE a successful re-exec into the jail.  The jailed
 # CHILD re-runs ``main`` (and so the gate) for the same command; without this
@@ -1169,6 +1169,23 @@ Examples:
     chat_parser.add_argument("-m", "--message", help="Single message (non-interactive)")
     chat_parser.add_argument("--model", help="Model to use (default: from config)")
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
+
+    acp_parser = sub.add_parser(
+        "acp",
+        help="Serve the Agent Client Protocol to an editor over stdio",
+        parents=[_jail_opts],
+    )
+    acp_parser.add_argument("--agent", help="Agent to use (default: from config)")
+    acp_parser.add_argument("--verbose", action="store_true", help="Debug logging to stderr")
+    acp_parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help="Run an isolated in-process session instead of proxying to the gateway",
+    )
+    acp_parser.add_argument(
+        "--gateway-url",
+        help="Gateway base URL (default: loopback KIROCREW_PORT)",
+    )
 
     # doctor
     _doctor_parser = cli_help.add_command(sub, "doctor")
@@ -2579,11 +2596,17 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     # process into an isolation jail BEFORE any agent/credential work starts.  The
     # public DefaultJailProvider has no backend → pure fall-through (the command
     # runs in-process exactly as today).  See ``_jail_reexec_gate``.
-    if args.command in _JAILED_COMMANDS:
+    if args.command in _JAILED_COMMANDS and not (
+        args.command == "acp" and not getattr(args, "standalone", False)
+    ):
         _jail_reexec_gate(args.command, getattr(args, "no_jail", False))
 
     if args.command == "chat":
         _run_chat(args.message, args.model, agent=getattr(args, "agent", None))
+    elif args.command == "acp":
+        from kiro_crew.cli_acp import run_acp
+
+        run_acp(args)
     elif args.command == "gateway":
         # Seam-supplied pre-launch checks (CPP IdentityProvider seam). Runs
         # HERE in the gateway dispatch — not in boot_platform (which runs for

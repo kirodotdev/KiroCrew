@@ -3066,6 +3066,7 @@ class _ChatSlot:
         "_native_subagent_output",
         "_pending_steers",
         "_steer_delivery_ids",
+        "session_mcp_servers",
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
@@ -3639,6 +3640,9 @@ class _ChatSlot:
         # persisted from one the running turn consumed — a distinction the bare
         # text cannot make.
         self._steer_delivery_ids: dict[str, str] = {}
+        # Canonical ACP stdio server configs supplied by the editor for this slot.
+        # The model-side provider owns their lifecycle; the dashboard stores only data.
+        self.session_mcp_servers: list[dict[str, Any]] = []
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so

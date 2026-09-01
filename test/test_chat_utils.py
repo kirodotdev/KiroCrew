@@ -226,3 +226,114 @@ class TestRedactToolField:
     def test_purpose_limit(self):
         result = _redact_tool_field("x" * 10_000, limit=8_000)
         assert "[truncated at 8,000 bytes]" in result
+
+
+class TestBuildStreamChunkLocations:
+    """SSE `type: "tool"` frames carry ``locations`` from meta for Zed follow-along."""
+
+    def test_locations_are_serialized_on_tool_frames(self) -> None:
+        msg = {
+            "role": "tool",
+            "content": "🔧 edit main.py",
+            "cls": "msg msg-tool",
+            "ts": "2026-09-01T18:00:00Z",
+            "meta": {
+                "tool_call_id": "t-1",
+                "kind": "edit",
+                "locations": [{"path": "/abs/main.py", "line": 42}],
+            },
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert payload["type"] == "tool"
+        assert payload["locations"] == [{"path": "/abs/main.py", "line": 42}]
+
+    def test_locations_absent_when_meta_omits_them(self) -> None:
+        msg = {
+            "role": "tool",
+            "content": "🔧 run tests",
+            "cls": "msg msg-tool",
+            "ts": "",
+            "meta": {"tool_call_id": "t-2", "kind": "execute"},
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert "locations" not in payload
+
+    def test_non_tool_role_never_emits_locations(self) -> None:
+        # Even if a permission carries locations in cls-encoded meta, we never
+        # forward them on a role that isn't `tool`.
+        msg = {
+            "role": "chunk",
+            "content": "hello",
+            "cls": "",
+            "ts": "",
+            "meta": {"locations": [{"path": "/tmp/a"}]},
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert "locations" not in payload
+
+    def test_malformed_locations_are_dropped(self) -> None:
+        msg = {
+            "role": "tool",
+            "content": "x",
+            "cls": "msg msg-tool",
+            "ts": "",
+            "meta": {
+                "locations": [
+                    {"path": ""},  # empty path
+                    {"path": 42},  # non-string
+                    "not a dict",  # not a dict
+                    {"nope": "/a"},  # no path key
+                    {"path": "/ok", "line": -3},  # bad line dropped, path kept
+                ],
+            },
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert payload["locations"] == [{"path": "/ok"}]
+
+    def test_empty_locations_list_omits_key(self) -> None:
+        msg = {
+            "role": "tool",
+            "content": "x",
+            "cls": "msg msg-tool",
+            "ts": "",
+            "meta": {"locations": []},
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert "locations" not in payload
+
+    def test_tool_update_role_forwards_locations(self) -> None:
+        # Streamed refinement: chat_runner enqueues a role="tool_update" SSE
+        # frame carrying the refined locations. It must reach http_backend
+        # with the same shape as the initial tool frame so the follow-along
+        # jumps to path:line rather than staying at the top of the buffer.
+        msg = {
+            "role": "tool_update",
+            "content": "",
+            "cls": "",
+            "ts": "",
+            "meta": {
+                "tool_call_id": "toolu_bdrk_1",
+                "locations": [{"path": "/abs/main.py", "line": 100}],
+            },
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert payload["type"] == "tool_update"
+        assert payload["locations"] == [{"path": "/abs/main.py", "line": 100}]
+        assert payload["tool_call_id"] == "toolu_bdrk_1"
+
+    def test_tool_frame_carries_tool_call_id(self) -> None:
+        # http_backend needs the source tool_call_id at the top level so a
+        # later tool_update can be correlated against the gw-N it emitted.
+        msg = {
+            "role": "tool",
+            "content": "🔧 edit main.py",
+            "cls": "msg msg-tool",
+            "ts": "",
+            "meta": {
+                "tool_call_id": "toolu_bdrk_2",
+                "kind": "edit",
+                "locations": [{"path": "/abs/main.py"}],
+            },
+        }
+        payload = json.loads(chat_utils._build_stream_chunk(msg))
+        assert payload["tool_call_id"] == "toolu_bdrk_2"

@@ -164,7 +164,10 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
         if len(encoded) > limit:
             # errors="ignore" cleanly drops a partial trailing multi-byte
             # sequence at the cut point.
-            text = encoded[:limit].decode("utf-8", errors="ignore") + f"\n… [truncated at {limit:,} bytes]"
+            text = (
+                encoded[:limit].decode("utf-8", errors="ignore")
+                + f"\n… [truncated at {limit:,} bytes]"
+            )
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
@@ -191,11 +194,68 @@ def _build_stream_chunk(msg: dict) -> str:
         cls_val, _ = redact_credentials(cls_val)
     else:
         cls_val = _redact_deep(cls_val)
-    return json.dumps(
-        {"type": msg.get("role", ""), "content": content, "ts": msg.get("ts", ""),
-         "cls": cls_val,
-         **({"meta": meta} if meta else {})}
-    )
+    # Editor follow-along ("Zed follows the agent") reads ``locations`` on
+    # role=tool frames; the runner stashes them in the message's meta at the
+    # append site (chat_runner._tool_locations) so both the SSE stream and
+    # historical replay carry the same structured hint. Absent on any other
+    # role because those frames never carry a follow-along target.
+    locations = _tool_locations_from_meta(msg)
+    payload: dict[str, Any] = {
+        "type": msg.get("role", ""),
+        "content": content,
+        "ts": msg.get("ts", ""),
+        "cls": cls_val,
+    }
+    if meta:
+        payload["meta"] = meta
+    if locations:
+        payload["locations"] = locations
+    # Tool call correlation for ACP session/update: the http_backend needs to
+    # map a refinement (role="tool_update") back to the original tool_call so
+    # its send_tool_call_update targets the same gw-N ID. Cheaper than
+    # exposing the whole msg meta and stays scoped to the two roles that need it.
+    if msg.get("role") in ("tool", "tool_update"):
+        msg_meta = msg.get("meta")
+        if isinstance(msg_meta, dict):
+            tcid = msg_meta.get("tool_call_id")
+            if isinstance(tcid, str) and tcid:
+                payload["tool_call_id"] = tcid
+    return json.dumps(payload)
+
+
+def _tool_locations_from_meta(msg: dict) -> list[dict[str, Any]] | None:
+    """Return sanitized ``ToolCallLocation`` entries from a tool message's meta.
+
+    Rejects malformed entries silently — a bad locations list must not corrupt
+    the SSE frame. Absolute paths only (schema requirement); relative paths
+    are dropped rather than propagated to the editor.
+    """
+    if msg.get("role") not in ("tool", "tool_update"):
+        return None
+    meta = msg.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("locations")
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        # Redact the path itself — an editor still needs an unredacted absolute
+        # path to open the file, but URL/credential fragments that snuck into
+        # a display path must not ride to the client on this side channel.
+        path, _ = redact_exfiltration_urls(path)
+        path, _ = redact_credentials(path)
+        cleaned: dict[str, Any] = {"path": path}
+        line = entry.get("line")
+        if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+            cleaned["line"] = line
+        out.append(cleaned)
+    return out or None
 
 
 # Deprecated -1m model aliases → base model (Anthropic 1M GA, April 2026)
@@ -371,7 +431,11 @@ def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEven
     state.broadcast_ws(
         "tool_call",
         {
-            "slot": slot.key, "tool": title, "kind": kind, "auto": True, "tool_call_id": tcid,
+            "slot": slot.key,
+            "tool": title,
+            "kind": kind,
+            "auto": True,
+            "tool_call_id": tcid,
             "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
             "input_preview": _redact_tool_field(event.tool_input),
         },
@@ -379,9 +443,7 @@ def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEven
     return title
 
 
-def _append_compaction_notice(
-    state: DashboardState, slot: _ChatSlot, msg_text: str
-) -> None:
+def _append_compaction_notice(state: DashboardState, slot: _ChatSlot, msg_text: str) -> None:
     """Append a compaction status notice as an assistant message and broadcast it.
 
     The notice is tagged ``kind="compaction"`` so the dashboard can tell it apart
@@ -527,7 +589,7 @@ def _history_key_for(slot_key: str) -> str:
     if slot_key.startswith("dashboard:"):
         return slot_key
     while slot_key.startswith("dashboard_"):
-        slot_key = slot_key[len("dashboard_"):]
+        slot_key = slot_key[len("dashboard_") :]
     return f"dashboard:{slot_key}"
 
 
@@ -558,9 +620,7 @@ def dashboard_slot_key(session_key: str) -> str:
         # (``cron:<job_id>``), so the surface gate is checked against both
         # spellings. Whichever matched, the displaying tab is the job's own.
         job_id = session_key.removeprefix("cron:").split(":", 1)[0]
-        if not (
-            has_dashboard_surface(session_key) or has_dashboard_surface(f"cron:{job_id}")
-        ):
+        if not (has_dashboard_surface(session_key) or has_dashboard_surface(f"cron:{job_id}")):
             return ""
         return _normalize_slot_key(f"cron-{job_id}")
     if not has_dashboard_surface(session_key):
@@ -1319,7 +1379,7 @@ def _maybe_inject_persona(
         and isinstance(theme_consent_sha, str)
         and THEME_CONSENT_SHA_RE.fullmatch(theme_consent_sha)
     ):
-        text = _installed_theme_persona(color_theme[len("custom-"):])
+        text = _installed_theme_persona(color_theme[len("custom-") :])
         if text:
             actual = hashlib.sha256(text.encode("utf-8")).hexdigest()
             if hmac.compare_digest(actual, theme_consent_sha):
@@ -1355,8 +1415,10 @@ def _maybe_consolidate(state, slot) -> None:
         state.consolidator.maybe_consolidate(effective_session_key(slot))
     elif state.consolidator and slot.is_restricted:
         sel().log_api_access(
-            caller=f"dashboard:{slot.key}", operation="consolidate",
-            outcome="denied", source="dashboard",
+            caller=f"dashboard:{slot.key}",
+            operation="consolidate",
+            outcome="denied",
+            source="dashboard",
             resources="restricted_session_block",
         )
 
@@ -1604,10 +1666,7 @@ _APPROVAL_GATED_RE = re.compile(
     # delete it now" is as gated as "If you approve ...". Bias toward reject is
     # safe here (a false reject just lands normally); the #2696 GPT round widened
     # this from the pronoun list after "If CI passes ..." slipped through.
-    r"\bif\b"
-    r"|\bjust\s+say\s+the\s+word\b"
-    r"|\bwant\s+me\s+to\b"
-    r"|\bshall\s+i\b"
+    r"\bif\b" r"|\bjust\s+say\s+the\s+word\b" r"|\bwant\s+me\s+to\b" r"|\bshall\s+i\b"
     # Consent DEFERRAL: the action is gated on the user's approval/confirmation,
     # even when the sentence reads as "I'll ... now" ("I'll wait for your approval
     # before I delete it right now"). The earlier list only caught "with your
@@ -2235,7 +2294,7 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
                 break
             to_merge.append(item)
         if len(to_merge) > 1:
-            del slot._queue[:len(to_merge)]
+            del slot._queue[: len(to_merge)]
             merged = "\n\n".join(item["content"] for item in to_merge)
             return f"[{len(to_merge)} queued messages merged]\n\n{merged}", to_merge
     item = slot.queue_pop(0)

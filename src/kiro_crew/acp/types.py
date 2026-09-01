@@ -57,6 +57,8 @@ METHOD_SESSION_UPDATE = "session/update"
 METHOD_METADATA = "_kiro.dev/metadata"
 METHOD_COMMANDS_EXECUTE = "_kiro.dev/commands/execute"
 METHOD_SESSION_LOAD = "session/load"
+METHOD_SESSION_LIST = "session/list"
+METHOD_SESSION_RESUME = "session/resume"
 # kiro-cli extension: evict a session from the multiplexed process, freeing its
 # transcript/context + reaping its MCP children. Without this the shared
 # kiro-cli process retains every session's state for its whole lifetime, so RSS
@@ -232,6 +234,15 @@ KAS_CLIENT_CAPABILITIES: dict = {
 CC_PERMISSION_MODE_DEFAULT = "default"
 CC_PERMISSION_MODE_AUTO = "auto"
 
+# Agent-role selector vocabulary served to ACP editors. Model selection uses
+# session/set_config_option; reasoning effort uses session/set_mode.
+CONFIG_OPTION_MODEL = "model"
+CONFIG_CATEGORY_MODEL = "model"
+CONFIG_OPTION_TYPE_SELECT = "select"
+CONFIG_OPTION_TYPE_BOOLEAN = "boolean"
+SESSION_MODE_DEFAULT_ID = "default"
+SESSION_MODE_DEFAULT_NAME = "Default"
+
 # ── ACP Session Update Types ──
 
 UPDATE_USER_MESSAGE_CHUNK = "user_message_chunk"
@@ -282,6 +293,21 @@ OUTCOME_SELECTED = "selected"
 OUTCOME_CANCELLED = "cancelled"
 OPTION_ALLOW_ONCE = "allow_once"
 OPTION_ALLOW_ALWAYS = "allow_always"
+OPTION_REJECT_ONCE = "reject_once"
+OPTION_REJECT_ALWAYS = "reject_always"
+
+# Shared JSON-RPC 2.0 errors for both client and agent roles.
+JSONRPC_PARSE_ERROR = -32700
+JSONRPC_INVALID_REQUEST = -32600
+JSONRPC_METHOD_NOT_FOUND = -32601
+JSONRPC_INVALID_PARAMS = -32602
+JSONRPC_INTERNAL_ERROR = -32603
+
+# ACP agent capabilities advertised during initialize.
+CAP_LOAD_SESSION = "loadSession"
+CAP_SESSION_CAPABILITIES = "sessionCapabilities"
+CAP_SESSION_LIST = "list"
+CAP_SESSION_RESUME = "resume"
 
 # ── Stop Reasons ──
 
@@ -309,6 +335,18 @@ STOP_REASON_TOOL_STALL = "error: tool stall"
 # it deliberately triggers NO retry — the user-visible compaction notice
 # already explains what happened, and this only releases the slot.
 STOP_REASON_COMPACTION_FAILED = "error: compaction failed"
+
+# Stop reasons permitted by the public ACP v1 session/prompt schema. Internal
+# recovery sentinels are never emitted to an editor.
+ACP_VALID_STOP_REASONS = frozenset(
+    {
+        STOP_REASON_END_TURN,
+        "max_tokens",
+        "max_turn_requests",
+        STOP_REASON_REFUSAL,
+        STOP_REASON_CANCELLED,
+    }
+)
 
 # ── Approval Modes ──
 

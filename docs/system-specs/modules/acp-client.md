@@ -4,6 +4,18 @@
 
 The ACP layer spans **five** modules: the legacy per-session client (`acp/client.py`, one subprocess per session), the multiplexed runtime (`acp/runtime.py`, one subprocess fanned out to N sessions), the per-session handle (`acp/session_handle.py`, one `sessionId` + queue + prompt/approve/reject loop), a shared dispatch parser (`acp/_dispatch.py`, pure frame-shaping/redaction helpers all paths route through), and the session provider (`acp/session_provider.py`, `AcpSessionProvider` adapting an `AcpSessionHandle` to the `LLMProvider` ABC so runtime-backed sessions are interchangeable with `AcpClient`). All are JSON-RPC 2.0 over stdio for `kiro-cli acp` or `claude-agent-acp`, managing subprocess lifecycle, session initialization, prompt streaming, and tool permissions. All protocol constants in `acp/types.py`.
 
+## Gateway-backed ACP session listing
+
+The agent-role server in `acp_server/http_backend.py` exposes dashboard chat
+slots through `session/list`. A request with `cwd` scopes results to that project
+and preserves most-recent-first ordering by `updatedAt`.
+
+Project filtering compares canonical filesystem paths (`realpath` plus platform
+case normalization), not raw strings. Logical and symlinked workspace paths
+therefore match their physical path without rewriting the original `cwd` stored
+on the slot. If canonicalization fails, only an exact raw-string match is
+accepted, so unrelated projects are never included.
+
 ## Backend Selection
 
 `AcpClient(acp_backend=...)` selects which subprocess to launch:

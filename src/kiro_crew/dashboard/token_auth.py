@@ -2101,8 +2101,12 @@ def token_auth_middleware(
         accepts a session pin the main flow would refuse.
         """
         cookie_name = f"mc_token_{_cookie_port_from_host(request, _port)}"
+        header_token = request.headers.get("X-Presigned-Token") or ""
         query_token = request.query.get("token") or ""
         cookie_token = request.cookies.get(cookie_name, "")
+        if header_token:
+            valid, uid, reason, app = validate_token_with_app(header_token, use_session_exp=True)
+            return valid, uid, reason, app, header_token
         if not query_token and not cookie_token:
             return False, "", "no token", "", ""
         if query_token:
@@ -2145,7 +2149,8 @@ def token_auth_middleware(
             tailnet_trust is not None
             and tailnet_trust.enforces_identity
             and (
-                bool(request.query.get("token"))
+                bool(request.headers.get("X-Presigned-Token"))
+                or bool(request.query.get("token"))
                 or any(c.startswith(("mc_token_", "mc_refresh_")) for c in request.cookies)
             )
         ):
@@ -2601,7 +2606,7 @@ def token_auth_middleware(
 
         # Extract token from query param or cookie
         cookie_name = f"mc_token_{_cookie_port_from_host(request, port)}"
-        token = request.query.get("token") or ""
+        token = request.headers.get("X-Presigned-Token") or request.query.get("token") or ""
         from_cookie = False
         if not token:
             token = request.cookies.get(cookie_name, "")

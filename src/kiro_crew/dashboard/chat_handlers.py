@@ -5305,6 +5305,64 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "project": project})
 
 
+async def api_chat_slot_mcp(request: web.Request) -> web.Response:
+    """Register the ACP editor's stdio MCP server set for one slot."""
+    # Deferred to keep dashboard imports independent from acp_server package setup.
+    from kiro_crew.acp_server.mcp_config import (
+        McpConfigError,
+        parse_mcp_servers,
+        servers_to_acp_dicts,
+    )
+
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    denied = deny_non_dashboard_caller(request, "chat_slot_mcp")
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "request must be an object", "code": "invalid_request"},
+            status=400,
+        )
+
+    raw = body.get("servers")
+    requested = len(raw) if isinstance(raw, list) else 0
+    try:
+        servers = parse_mcp_servers(raw)
+    except McpConfigError as exc:
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="chat_slot_mcp",
+            outcome="denied",
+            resources=f"slot={name} requested={requested}",
+            error=str(exc),
+        )
+        return web.json_response({"error": str(exc), "code": "invalid_mcp_servers"}, status=400)
+
+    names = [server.name for server in servers]
+    slot.session_mcp_servers = servers_to_acp_dicts(servers)
+    logger.info(
+        "Slot %s registered %d ACP MCP server(s): %s",
+        name,
+        len(servers),
+        ", ".join(names) or "(cleared)",
+    )
+    sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="chat_slot_mcp",
+        outcome="allowed",
+        resources=f"slot={name} servers={','.join(names)}",
+    )
+    return web.json_response({"ok": True, "servers": names})
+
+
 # Fields carried per follow-up item on the wire. Kept explicit so a future
 # schema addition has to be added here deliberately rather than leaking
 # whatever the model happened to send into the broadcast payload.
