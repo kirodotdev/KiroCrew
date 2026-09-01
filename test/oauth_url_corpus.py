@@ -182,6 +182,20 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         "&code_challenge_method=S256",
     ),
+    # Figma MCP consent page (issuer api.figma.com, consent on www.figma.com;
+    # RFC 8414 metadata via RFC 9728 discovery on mcp.figma.com/mcp).
+    # developers.figma.com/docs/figma-mcp-server/
+    (
+        "figma-mcp",
+        "https://www.figma.com/oauth/mcp"
+        "?client_id=fig_abcDEF1234567890"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A55089%2Fcallback"
+        "&response_type=code"
+        "&scope=mcp%3Aconnect"
+        "&state=af0ifjsldkjZx9yW8vU"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256",
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate

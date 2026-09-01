@@ -285,7 +285,7 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("gitlab.com", "/oauth/authorize"),
         ("mcp.auth.mail.superhuman.com", "/oauth2/authorize"),
         ("mcp.linear.app", "/authorize"),
-        # Maintainer-verified 2026-09-01 via RFC 8414 metadata at
+        # Maintainer-verified via RFC 8414 metadata at
         # https://mcp.miro.com/.well-known/oauth-authorization-server
         # (authorization_endpoint: https://mcp.miro.com/authorize), matching the
         # reporter's independent RFC 8414 read in issue #7578. Not (yet) a
@@ -294,6 +294,14 @@ _OAUTH_AUTHORIZATION_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("mcp.miro.com", "/authorize"),
         ("mcp.notion.com", "/authorize"),
         ("vercel.com", "/oauth/authorize"),
+        # Figma's MCP authorization server (issuer https://api.figma.com) hosts
+        # its consent page on www.figma.com. Independently corroborated by the
+        # maintainer's operator via RFC 9728 protected-resource discovery on
+        # https://mcp.figma.com/mcp (authorization_servers -> api.figma.com)
+        # and its RFC 8414 metadata, which advertises
+        # authorization_endpoint https://www.figma.com/oauth/mcp — the consent
+        # host is the main web property by the provider's own design.
+        ("www.figma.com", "/oauth/mcp"),
     }
 )
 
