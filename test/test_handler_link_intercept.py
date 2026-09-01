@@ -277,7 +277,7 @@ class TestLinkedThreadIntercept:
         slot.key = "slot1"
         slot._queue = []
 
-        def queue_append(content, *, meta=None, directive_user_origin):
+        def queue_append(content, *, meta=None, directive_user_origin, **_kw):
             assert directive_user_origin is True
             # The linked-thread enqueue stamps the admission-time containment
             # snapshot (#5911) so the drain can re-assert it at delivery.

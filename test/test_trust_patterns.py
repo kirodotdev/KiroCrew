@@ -68,6 +68,8 @@ async def _test_auth_middleware(request, handler):
         request["app"] = ""
     if "user" not in request:
         request["user"] = "local-app"
+    if "is_dashboard_user" not in request:
+        request["is_dashboard_user"] = not request["app"]
     return await handler(request)
 
 

@@ -357,6 +357,8 @@ class WhatsAppDispatcher:
                     scope, sk, provider, unprompted=unprompted
                 ),
                 audit_caller=f"whatsapp:{inbound.user_id}",
+                principal_raw_id=inbound.user_id,
+                exclusive_principal=not group,
             ),
             sessions=self.sessions,
             ctx_builder=self.ctx_builder,

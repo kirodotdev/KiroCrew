@@ -513,7 +513,11 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   including consumer ownership, bounded release, restore, and corruption logging.
 - `slot_queue_repository.py` — queued-turn mutation plus the subagent delivery
   ledger, including stable delivery identities, replay recovery, and bounded
-  orphan bookkeeping.
+  orphan bookkeeping. `queue_append` / `queue_insert` / `queue_edit_by_id`
+  stamp `_principal_surface` / `_principal_raw_id` on the queue item only when
+  both identity fields are set; an edit that omits either field pops leftover
+  principal metadata so drain cannot bind the previous speaker. `_ChatSlot`
+  remains the caller-facing facade and forwards those kwargs.
 - `slot_projection.py` — read-only source-link indexing/cache and the exact public
   slot-summary projection consumed by REST and WebSocket clients.
 - `slot_registry.py` — live-slot, session, and Slack-link lookup; construction

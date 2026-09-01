@@ -236,6 +236,12 @@ class InboundMessage:
     thread_id: str | None = None
     attachments: list[Any] = field(default_factory=list)
     is_mention: bool = False
+    #: Trusted provenance from the injector, not the message text. Real
+    #: inbound and human button presses leave this True so the dispatcher
+    #: binds ``{channel}+{user_id}``. Unattended synthetics (AutoNudge)
+    #: set it False; a user-typed ``[auto-nudge cycle N]`` prefix is not
+    #: a bind signal and still binds.
+    bind_principal: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {

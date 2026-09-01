@@ -207,6 +207,9 @@ class IMessageDispatcher:
                 ),
                 notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                 audit_caller=f"imessage:{redact_handle(handle)}",
+                principal_raw_id=handle,
+                # Transport refuses group chats, so a turn here is 1:1.
+                exclusive_principal=True,
                 after_persist=_surface_new_session,
             ),
             sessions=self.sessions,

@@ -271,6 +271,10 @@ class WeComDispatcher:
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
                     audit_caller=f"wecom:{userid}",
+                    principal_raw_id=userid,
+                    # Transport refuses group traffic, so a WeCom turn
+                    # that reaches here is a 1:1 chat.
+                    exclusive_principal=True,
                     after_persist=_surface_new_session,
                 ),
                 sessions=self.sessions,

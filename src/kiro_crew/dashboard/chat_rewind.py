@@ -26,7 +26,11 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
-from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_runner import (
+    _run_chat,
+    dashboard_principal_kwargs,
+    dashboard_user_origin,
+)
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
@@ -263,7 +267,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 state,
                 slot,
                 redacted_content,
-                _directive_user_origin=not bool(request_app),
+                _directive_user_origin=dashboard_user_origin(request),
+                **dashboard_principal_kwargs(
+                    state, user_origin=dashboard_user_origin(request), request=request
+                ),
             )
         )
         slot.task = task
