@@ -35,10 +35,10 @@ class TestSessionsSearchHandler:
     @pytest.mark.asyncio
     async def test_matches_content(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        log.append("alpha", "user", "discussed CR-1234567 today")
+        log.append("alpha", "user", "discussed TICKET-1234567 today")
         log.append("beta", "user", "unrelated")
         async with TestClient(TestServer(_make_app(log))) as client:
-            resp = await client.get("/api/sessions/search?q=CR-1234567")
+            resp = await client.get("/api/sessions/search?q=TICKET-1234567")
             keys = [s["key"] for s in (await resp.json())["sessions"]]
             assert keys == ["alpha"]
 

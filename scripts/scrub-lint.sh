@@ -31,6 +31,26 @@ dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
 if [[ "${1:-}" == "--test" ]]; then
   dim "Running self-test..."
   MARKER_FILE="src/__scrub_test_marker.py"
+  TEST_MARKER_FILE="test/__scrub_test_marker.py"
+  ALLOWED_MARKER_FILE="test/__scrub_test_marker_allowed.py"
+
+  # The probe paths are fixed (the allowlist anchors to one of them), so refuse
+  # to run if any already exists: planting would truncate a file this process
+  # does not own — leftover residue from an aborted run, or a concurrent
+  # self-test's live probe. -L catches what -e misses: a DANGLING symlink at a
+  # probe path would be followed by the redirection, creating its target
+  # outside the checkout while cleanup removed only the link.
+  for f in "$MARKER_FILE" "$TEST_MARKER_FILE" "$ALLOWED_MARKER_FILE"; do
+    if [[ -e "$f" || -L "$f" ]]; then
+      red "SELF-TEST ABORT: $f already exists — refusing to overwrite it."
+      red "  Remove it (or wait for a concurrent self-test to finish) and re-run."
+      exit 1
+    fi
+  done
+  # Remove the probes on EVERY exit, interrupts included: residue under test/
+  # is collected by pytest, and residue at the allowlisted path is the one file
+  # the gate is blind to — the only residue that could be committed CI-green.
+  trap 'rm -f "$MARKER_FILE" "$TEST_MARKER_FILE" "$ALLOWED_MARKER_FILE"' EXIT
 
   # Plant markers that should each trigger the scan. One probe per pattern
   # FAMILY, so a typo that silently breaks a family is caught here rather than
@@ -59,8 +79,42 @@ if [[ "${1:-}" == "--test" ]]; then
     fi
     rm -f "$MARKER_FILE"
   done
+  # The narrow ``test/`` passes need probes planted UNDER test/: a marker there
+  # exercises the test-tree pass wiring itself, which a probe under src/
+  # (already caught by check 1's broad pattern) cannot.
+  TEST_PROBES=(
+    'review-url|# test marker: see code.amazon.com/reviews/example'
+    'review-id|# test marker: review CR-1200456'
+  )
+  for probe in "${TEST_PROBES[@]}"; do
+    probe_label="${probe%%|*}"
+    probe_line="${probe#*|}"
+    printf '%s\n' "$probe_line" > "$TEST_MARKER_FILE"
+    if "$SELF" --no-history >/dev/null 2>&1 </dev/null; then
+      red "SELF-TEST FAIL: planted $probe_label marker under test/ was not detected"
+      probe_fail=1
+    else
+      green "  ✓ Planted $probe_label marker under test/ correctly detected"
+    fi
+    rm -f "$TEST_MARKER_FILE"
+  done
+  # An allowlisted entry must still pass: the allowlist carries a line-anchored
+  # entry for THIS marker file and id, so the same review-id shape planted there
+  # is filtered out. Judge by whether the OUTPUT names the marker file, not by
+  # the child's whole-run exit code — an unrelated failure elsewhere in the tree
+  # (alias file present locally, an identity or credential hit) would otherwise
+  # be misreported as this probe's failure. Same style as the clean-tree block
+  # below, and for the same reason.
+  printf '%s\n' '# test marker: review CR-9999999' > "$ALLOWED_MARKER_FILE"
+  allowed_output=$("$SELF" --no-history 2>&1 </dev/null || true)
+  if echo "$allowed_output" | grep -q "__scrub_test_marker_allowed"; then
+    red "SELF-TEST FAIL: allowlisted review-id marker under test/ was reported"
+    probe_fail=1
+  else
+    green "  ✓ Allowlisted review-id marker under test/ correctly ignored"
+  fi
+  rm -f "$ALLOWED_MARKER_FILE"
   if [[ $probe_fail -ne 0 ]]; then
-    rm -f "$MARKER_FILE"
     exit 1
   fi
 
@@ -86,7 +140,19 @@ fi
 # ---------------------------------------------------------------------------
 dim "[1/5] Scanning working tree for internal markers..."
 
-INTERNAL_PATTERN='amazon\.com|a2z\.com|aws\.dev|\.amazon\.|code\.amazon|t\.corp|sim\.amazon|isengard|phonetool|midway-auth|mwinit|brazil ws|brazil-build|brazil-runtime|brazil-pkg-cache|meshclaw|Mesh-[0-9]|AVP-[0-9]|account.?[0-9]{12}|CR-[0-9]{6,}|\bP[0-9]{6,}\b'
+# Internal code-review markers — the review host and the review-id shape — are
+# needed in two working-tree scans: as alternatives of check 1's broad pattern
+# (as always) and by a narrow ``test/`` pass further down (see the ARCC pass for
+# why ``test/`` gets narrow per-class passes instead of the broad pattern).
+# Defined once so those two scans cannot drift apart. The git-history scan
+# (check 5) keeps its own copies of these literals: HISTORY_PATTERN scans commit
+# metadata, is tracked as a separate sign-off-gated task, and is deliberately
+# not restructured here.
+REVIEW_PATTERN='code\.amazon|CR-[0-9]{6,}'
+
+INTERNAL_PATTERN='amazon\.com|a2z\.com|aws\.dev|\.amazon\.|t\.corp|sim\.amazon|isengard|phonetool|midway-auth|mwinit|brazil ws|brazil-build|brazil-runtime|brazil-pkg-cache|meshclaw|Mesh-[0-9]|AVP-[0-9]|account.?[0-9]{12}|\bP[0-9]{6,}\b'
+
+INTERNAL_PATTERN="$INTERNAL_PATTERN|$REVIEW_PATTERN"
 
 # The internal package manager (AIM) needs a NARROW pattern, not a bare word:
 # ``--aim``/``bg-aim``/``text-aim`` is an unrelated CSS color token used ~40
@@ -133,6 +199,22 @@ arcc_test_matches=$(grep -rniE "$ARCC_PATTERN" test/ \
   --include='*.py' --include='*.md' --include='*.json' 2>/dev/null || true)
 matches=$(printf '%s\n%s\n' "$matches" "$arcc_test_matches")
 matches=$(echo "$matches" | grep -v '^$' || true)
+
+# Internal code-review markers get the same narrow treatment — the third
+# instance of the pattern the ARCC comment above describes. Check 1's broad
+# pattern already carries the review host and the review-id shape (via
+# REVIEW_PATTERN above), but check 1 never scans ``test/``, and the passes that
+# do (the ARCC pass above, the identity scan below) match neither alternative —
+# so a review URL or review id under ``test/`` was reported by no pass at all.
+# A legitimate review-id-shaped FIXTURE under ``test/`` takes a line-anchored
+# allowlist entry; an incidental one is better reshaped to a non-matching
+# token (e.g. ``TICKET-1234567``).
+review_test_matches=$(grep -rniE "$REVIEW_PATTERN" test/ \
+  --include='*.py' --include='*.md' --include='*.json' 2>/dev/null || true)
+matches=$(printf '%s\n%s\n' "$matches" "$review_test_matches")
+# Dedupe: a test/ line can match more than one narrow pass (ARCC + review) and
+# would otherwise be reported and counted twice.
+matches=$(echo "$matches" | grep -v '^$' | awk '!seen[$0]++' || true)
 
 # Filter out allowlisted paths
 if [[ -f "$ALLOWLIST" ]]; then

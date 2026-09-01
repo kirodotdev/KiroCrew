@@ -554,9 +554,9 @@ class TestSearchSessions:
 
     def test_matches_content(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        log.append("alpha", "user", "discussed CR-1234567 today")
+        log.append("alpha", "user", "discussed TICKET-1234567 today")
         log.append("beta", "user", "unrelated chat")
-        results = log.search_sessions("CR-1234567")
+        results = log.search_sessions("TICKET-1234567")
         keys = [s["key"] for s in results]
         assert keys == ["alpha"]
 

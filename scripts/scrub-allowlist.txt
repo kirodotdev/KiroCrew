@@ -61,6 +61,15 @@ AGENTS.md:.*device-posture tunnels
 scripts/scrub-lint.sh
 scripts/scrub-allowlist.txt
 
+# Self-test fixture for the review-marker test/ pass: the file exists only
+# while ``./scripts/scrub-lint.sh --test`` runs, planted to prove that an
+# allowlisted entry is honoured. Anchored to the WHOLE reported line
+# (^path:lineno:exact-probe-text$), so the only line this can ever drop is the
+# harmless probe text itself — a line that carries the review id PLUS any other
+# content (an internal URL, a real marker) does not match and still fails the
+# gate, and so does any other marker in this path.
+^test/__scrub_test_marker_allowed\.py:[0-9]*:# test marker: review CR-9999999$
+
 # Security path-blocklists: ``.midway`` is blocked so the agent cannot read a
 # credential dir an enterprise companion may create (a security feature, kept).
 website/src/utils/safePath.ts:.*\.midway
