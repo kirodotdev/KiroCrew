@@ -334,8 +334,9 @@ class TestTagVocabulary:
         app = _make_tags_app(state)
         call_order: list[str] = []
 
-        async def _tracking_save(st, slot, *, force=False, best_effort=True):
+        async def _tracking_save(st, slot, **kwargs):
             call_order.append("save_slot")
+            return True  # a committed save — None would read as the refusal
 
         original_write = __import__(
             "kiro_crew.dashboard.chat_tags", fromlist=["_write_tags_snapshot"]
@@ -416,6 +417,7 @@ class TestTagVocabulary:
                 saves.append(slot_arg.key)
                 if slot_arg.key == "s1":
                     raise IOError("disk full")
+                return True  # a committed save — None would read as the refusal
 
             with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", _partial_failing_save):
                 resp = await client.delete(f"/api/chat/tags/{tag['id']}")
