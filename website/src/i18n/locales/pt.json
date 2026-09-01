@@ -6352,6 +6352,8 @@
       "download_d": "Baixar (d)",
       "download_image": "Baixar imagem",
       "generating_diagram": "gerando diagrama…",
+      "image_failed_to_load": "Falha ao carregar a imagem",
+      "image_file_no_longer_exists": "O arquivo de imagem não existe mais",
       "reset_zoom": "Redefinir zoom (0)",
       "zoom_in": "Ampliar (+)",
       "zoom_out": "Reduzir (-)",

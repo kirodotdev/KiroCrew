@@ -6450,6 +6450,8 @@
       "download_d": "Скачать (d)",
       "download_image": "Скачать изображение",
       "generating_diagram": "создание диаграммы…",
+      "image_failed_to_load": "Не удалось загрузить изображение",
+      "image_file_no_longer_exists": "Файл изображения больше не существует",
       "reset_zoom": "Сбросить масштаб (0)",
       "zoom_in": "Увеличить (+)",
       "zoom_out": "Уменьшить (-)",

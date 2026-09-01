@@ -6156,6 +6156,8 @@
       "download_d": "다운로드 (d)",
       "download_image": "이미지 다운로드",
       "generating_diagram": "다이어그램을 생성하는 중…",
+      "image_failed_to_load": "이미지를 불러오지 못했습니다",
+      "image_file_no_longer_exists": "이미지 파일이 더 이상 존재하지 않습니다",
       "reset_zoom": "확대/축소 초기화 (0)",
       "zoom_in": "확대 (+)",
       "zoom_out": "축소 (-)",

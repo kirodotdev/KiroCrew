@@ -6254,6 +6254,8 @@
       "download_d": "ডাউনলোড (d)",
       "download_image": "ছবি ডাউনলোড করুন",
       "generating_diagram": "ডায়াগ্রাম তৈরি হচ্ছে…",
+      "image_failed_to_load": "ছবি লোড করা যায়নি",
+      "image_file_no_longer_exists": "ছবির ফাইলটি আর নেই",
       "reset_zoom": "জুম রিসেট করুন (0)",
       "zoom_in": "জুম ইন (+)",
       "zoom_out": "জুম আউট (-)",

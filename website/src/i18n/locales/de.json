@@ -6254,6 +6254,8 @@
       "download_d": "Herunterladen (d)",
       "download_image": "Bild herunterladen",
       "generating_diagram": "Diagramm wird erstellt…",
+      "image_failed_to_load": "Bild konnte nicht geladen werden",
+      "image_file_no_longer_exists": "Bilddatei existiert nicht mehr",
       "reset_zoom": "Zoom zurücksetzen (0)",
       "zoom_in": "Vergrößern (+)",
       "zoom_out": "Verkleinern (-)",

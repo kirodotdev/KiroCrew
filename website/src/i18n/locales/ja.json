@@ -6156,6 +6156,8 @@
       "download_d": "ダウンロード (d)",
       "download_image": "画像をダウンロード",
       "generating_diagram": "ダイアグラムを生成中…",
+      "image_failed_to_load": "画像を読み込めませんでした",
+      "image_file_no_longer_exists": "画像ファイルはもう存在しません",
       "reset_zoom": "ズームをリセット (0)",
       "zoom_in": "ズームイン (+)",
       "zoom_out": "ズームアウト (-)",
