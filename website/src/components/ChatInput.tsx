@@ -1584,7 +1584,14 @@ function ChatInput({
   // Reset manual height when input is cleared (new message sent)
   const prevValueRef = useRef(value)
   useEffect(() => {
-    if (prevValueRef.current && !value) resetHeight()
+    if (prevValueRef.current && !value) {
+      resetHeight()
+      // Picker open state is derived only in the textarea's own onChange, so the
+      // parent-driven send-clear would otherwise leave a stale menu open.
+      setSlashMenuOpen(false)
+      setFilePickerOpen(false); setFileQuery('')
+      setSkillPickerOpen(false); setSkillQuery('')
+    }
     // Exit history mode when value diverges from the recalled message
     // (user edited it, or the send pipeline cleared it).
     if (historyIdxRef.current !== -1 && value !== sentMessages?.[historyIdxRef.current]) {
@@ -1593,6 +1600,14 @@ function ChatInput({
     }
     prevValueRef.current = value
   }, [value, resetHeight, sentMessages])
+
+  // ChatInput is one instance shared by every slot, so a switch would carry the
+  // previous tab's menu over; an unsent draft never hits the clear above.
+  useEffect(() => {
+    setSlashMenuOpen(false)
+    setFilePickerOpen(false); setFileQuery('')
+    setSkillPickerOpen(false); setSkillQuery('')
+  }, [slotId])
 
   // Record undo snapshots as the controlled value changes.
   useEffect(() => {
