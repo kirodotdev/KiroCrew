@@ -1158,7 +1158,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     queryFn: () => api.artifacts({}),
   })
 
-  const artifacts = data?.artifacts || []
+  // Memoized so hooks depending on `artifacts` (the undo-bar useCallback and
+  // the tag/starred useMemos) see a stable reference between fetches — the
+  // bare `|| []` fallback minted a fresh array every render, which the
+  // exhaustive-deps rule flags once per consuming hook.
+  const artifacts = useMemo(() => data?.artifacts || [], [data?.artifacts])
 
   // ── Drag-move undo ────────────────────────────────────────────────────────
   // The offer's whole lifecycle — pending until the server acks, one-way to
