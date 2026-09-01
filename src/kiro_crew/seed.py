@@ -94,6 +94,56 @@ def _fixtures_root() -> Path:
     return Path(str(_resource_files("kiro_crew") / _FIXTURES_PKG))
 
 
+# Metadata file every fixture carries at its root. ``fixture_summary`` reads its
+# ``description`` so a listing can describe a fixture without opening its tree.
+FIXTURE_MANIFEST = "fixture.yaml"
+
+
+def available_fixtures() -> list[str]:
+    """Names of every shipped fixture, sorted.
+
+    Single source of truth for "which scenarios exist": the unknown-fixture
+    error below, ``kirocrew pod scenarios``, and the parametrized
+    fixture-validation test all read it, so a fixture directory added to the
+    package is discovered by all three without a second list to update.
+    Dot-prefixed directories are skipped so a staging or editor directory
+    inside the tree never presents itself as a scenario.
+    """
+    root = _fixtures_root()
+    try:
+        return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        # A missing or unreadable fixtures tree is reported by the caller that
+        # needs a specific fixture (``_resolve_fixture`` raises a guardrail
+        # error naming it); a LISTING degrades to empty rather than raising, so
+        # ``pod scenarios`` on a broken install still prints something useful.
+        return []
+
+
+def fixture_summary(name: str) -> str:
+    """One-line description of fixture *name*, or ``""`` when it has none.
+
+    Reads ``description`` from the fixture's ``fixture.yaml`` and collapses it
+    to its first non-empty line: the shipped manifests use a multi-paragraph
+    block scalar, and a listing wants one row per fixture. Any failure to read
+    or parse answers ``""`` — a description is documentation, so a malformed
+    manifest must not break a listing. Fixture VALIDATION is a test's job (see
+    ``test_pod_seed_scenarios.py``), which is why nothing is raised here.
+    """
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        data = yaml.safe_load((_fixtures_root() / name / FIXTURE_MANIFEST).read_text())
+    except Exception:  # noqa: BLE001 — a listing must never fail on one bad manifest.
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for line in str(data.get("description") or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
 def _resolve_fixture(name: str) -> Path:
     """Return the path to fixture ``name``, or raise ``SeedError``.
 
@@ -135,9 +185,7 @@ def _resolve_fixture(name: str) -> Path:
         # ``src/kiro_crew/tests_fixtures/`` or the PRD. Sorted for stable
         # test assertions and so ``empty`` / ``minimal`` / ``rich`` land
         # in the obvious order.
-        available = sorted(
-            p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
-        )
+        available = available_fixtures()
         available_str = ", ".join(available) if available else "(none)"
         raise SeedError(
             f"unknown fixture: {name!r}. Available fixtures: {available_str}.",
@@ -418,9 +466,7 @@ def seed_cmd(args) -> int:  # noqa: ANN001 — argparse.Namespace at call site
         # ``target_set`` records presence-only (captured pre-``seed()``) —
         # never the raw path, which would leak ``$HOME``-derived info.
         # ``replace`` records whether the rmtree path was taken.
-        resources=(
-            f"fixture={fixture!r} target_set={target_set} replace={replace}"
-        ),
+        resources=(f"fixture={fixture!r} target_set={target_set} replace={replace}"),
     )
     return EXIT_OK
 
@@ -462,6 +508,4 @@ def _safe_audit(*, outcome: str, resources: str) -> None:
             resources=resources,
         )
     except Exception:  # noqa: BLE001 — audit must never fail the tool.
-        logging.getLogger(__name__).warning(
-            "seed: SEL audit emit failed", exc_info=True
-        )
+        logging.getLogger(__name__).warning("seed: SEL audit emit failed", exc_info=True)

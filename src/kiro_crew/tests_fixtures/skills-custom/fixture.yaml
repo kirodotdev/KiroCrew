@@ -1,0 +1,7 @@
+schema-version: 2026-04-28
+fixture-name: skills-custom
+description: |
+  One live user skill plus one candidate awaiting review under
+  skills/auto/.pending/, with the .meta.json the pending list reads. Exercises
+  the Skills tab's live-vs-pending split and the approve/dismiss path without
+  touching the builtin skills that ship in the package.

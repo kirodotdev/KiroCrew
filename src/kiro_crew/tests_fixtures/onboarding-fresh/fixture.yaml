@@ -1,0 +1,8 @@
+schema-version: 2026-04-28
+fixture-name: onboarding-fresh
+description: |
+  A true first-run home: onboarded=false, no sessions, no crons, no memory,
+  and an otherwise-default config. Distinct from ``empty`` -- that one has no
+  config at all, so the gateway writes its own defaults -- because this pins the
+  one flag the onboarding flow branches on, which is what makes the wizard
+  reproducible instead of incidental.

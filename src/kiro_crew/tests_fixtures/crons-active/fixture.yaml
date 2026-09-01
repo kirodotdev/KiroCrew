@@ -1,0 +1,8 @@
+schema-version: 2026-04-28
+fixture-name: crons-active
+description: |
+  Three cron jobs in one home: two active on different expressions and one
+  paused. Enough for the Schedules panel and the enabled/paused filter to be
+  non-empty on first boot. No script cron ships here: a script path is resolved
+  with expanduser, so any literal would point at the operator's real home rather
+  than the pod's isolated one.

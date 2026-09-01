@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video]
+# pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video] [--no-suppress-first-run]
 #
 # Run the full e2e flow for ONE worktree against an ISOLATED pod instance,
 # never touching the live gateway:
@@ -20,7 +20,8 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------- args ----
-NAME="" ; KEEP=0 ; NO_STOP=0 ; RUN_API=1 ; RUN_FE=1 ; VIDEO=0
+NAME="" ; KEEP=0 ; NO_STOP=0 ; RUN_API=1 ; RUN_FE=1 ; VIDEO=0 ; SEED=""
+NO_SUPPRESS_FIRST_RUN=0
 for a in "$@"; do
   case "$a" in
     --keep)     KEEP=1 ;;
@@ -28,11 +29,17 @@ for a in "$@"; do
     --api-only) RUN_FE=0 ;;
     --fe-only)  RUN_API=0 ;;
     --video)    VIDEO=1 ;;
+    # Documented in SKILL.md and accepted by pod-playwright.py; without this
+    # arm the catch-all below rejects the documented spelling with exit 64.
+    --no-suppress-first-run) NO_SUPPRESS_FIRST_RUN=1 ;;
+    # `--seed=<scenario>` only. The loop never shifts, so a space-separated
+    # value would be swallowed as the worktree NAME instead.
+    --seed=*)   SEED="${a#--seed=}" ;;
     -*)         echo "unknown flag: $a" >&2; exit 64 ;;
     *)          NAME="$a" ;;
   esac
 done
-[ -n "$NAME" ] || { echo "usage: pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video]" >&2; exit 64; }
+[ -n "$NAME" ] || { echo "usage: pod-e2e.sh <worktree-name> [--keep] [--no-stop] [--api-only] [--fe-only] [--video] [--no-suppress-first-run] [--seed=<scenario>]" >&2; exit 64; }
 # Pod names are [a-zA-Z0-9._-] without leading dots — reject anything that
 # could traverse paths (slashes, '..') before NAME is used in any path.
 case "$NAME" in
@@ -40,6 +47,13 @@ case "$NAME" in
 esac
 if ! printf '%s' "$NAME" | grep -Eq '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'; then
   echo "FATAL: invalid worktree name: '$NAME'" >&2; exit 64
+fi
+# A scenario is a bare fixture NAME, never a path. `pod up` refuses an unknown
+# name with the available list, so this only rejects the path-shaped spellings
+# before the value is used — the same reject-before-use posture as NAME above.
+if [ -n "$SEED" ] && ! printf '%s' "$SEED" | grep -Eq '^[a-z0-9][a-z0-9._-]*$'; then
+  echo "FATAL: --seed takes a scenario NAME (see 'kirocrew pod scenarios'), not a path: '$SEED'" >&2
+  exit 64
 fi
 
 # ---------------------------------------------------------------- paths ---
@@ -248,10 +262,16 @@ except Exception:
 
 if [ "$_pod_is_up" = "yes" ]; then
   log "pod '$NAME' already up — reusing (won't stop on exit)"
+  # A reused pod is not re-seeded: its HOME already holds state, and replacing
+  # that mid-suite would delete whatever the running pod has recorded. Say so,
+  # because a silently-ignored --seed reads as a seeding bug.
+  [ -n "$SEED" ] && log "note: --seed=$SEED ignored — '$NAME' is already up (down it first to re-seed)"
   ALREADY_UP=1
   POD_JSON="$_pod_status_json"
 else
-  POD_JSON=$("$KIROCREW_CLI" pod up "$NAME" --json 2>"$ARTIFACT_DIR/pod-up.log")
+  _up_args=(pod up "$NAME" --json)
+  [ -n "$SEED" ] && _up_args+=(--seed "$SEED")
+  POD_JSON=$("$KIROCREW_CLI" "${_up_args[@]}" 2>"$ARTIFACT_DIR/pod-up.log")
   if [ $? -ne 0 ]; then
     fail "up — pod failed to start (see $ARTIFACT_DIR/pod-up.log)"
     echo ""; echo "=== POD-E2E SUMMARY ==="; printf '%s\n' "${RESULTS[@]}"
@@ -397,6 +417,7 @@ if [ "$RUN_FE" -eq 1 ] && [ "$HEALTHY" -eq 1 ]; then
     PW_ARGS=("$PW_RUNNER" --base-url "$BASE_URL" --artifact-dir "$ARTIFACT_DIR" --checkout "$CHECKOUT")
     PW_ARGS+=(--teardown-timeout "${POD_E2E_TEARDOWN_TIMEOUT:-30}")
     [ "$VIDEO" -eq 1 ] && PW_ARGS+=(--video)
+    [ "$NO_SUPPRESS_FIRST_RUN" -eq 1 ] && PW_ARGS+=(--no-suppress-first-run)
     # Declarative manifest parse: extract ONLY the PLAYWRIGHT_SPEC value.
     # The manifest is branch-controlled — never source/eval it on the host.
     PLAYWRIGHT_SPEC=""

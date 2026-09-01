@@ -1,0 +1,7 @@
+schema-version: 2026-04-28
+fixture-name: apps-installed
+description: |
+  One locally-installed app with the app.json manifest and the
+  installed.json record the app manager persists (origin=local,
+  resources=gateway, lifecycle=gateway), plus its data dir. Enough for the App
+  Store's installed list and the uninstall path to have a non-builtin subject.

@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "fixture-healthy": {
+      "command": "python3",
+      "args": [
+        "-c",
+        "print('fixture stdio server')"
+      ],
+      "env": {}
+    },
+    "fixture-broken": {
+      "command": "kirocrew-fixture-missing-binary",
+      "args": [],
+      "env": {
+        "FIXTURE_API_TOKEN": "PLACEHOLDER-NOT-A-REAL-TOKEN"
+      },
+      "disabled": true
+    }
+  }
+}
