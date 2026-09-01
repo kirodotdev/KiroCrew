@@ -342,6 +342,37 @@ class TestPromptTurn:
         await h.stop()
 
 
+class TestSessionInfoWireFormat:
+    """Editors refresh session metadata from standard session_info updates."""
+
+    @pytest.mark.asyncio
+    async def test_send_session_info_forwards_title_on_wire(self) -> None:
+        async def handler(_req: PromptRequest, sink: SessionSink) -> str:
+            await sink.send_session_info("Renamed session")
+            return STOP_REASON_END_TURN
+
+        h = _Harness(handler)
+        await h.start()
+        sid = await _new_session(h)
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": []},
+            }
+        )
+        update = await h.wait_for(
+            lambda f: f.get("method") == METHOD_SESSION_UPDATE
+            and f.get("params", {}).get("update", {}).get("sessionUpdate") == "session_info_update"
+        )
+        assert update["params"]["update"] == {
+            "sessionUpdate": "session_info_update",
+            "title": "Renamed session",
+        }
+        await h.stop()
+
+
 class TestToolCallLocationsWireFormat:
     """Zed follows the agent by watching the ``locations`` key on tool_call frames."""
 

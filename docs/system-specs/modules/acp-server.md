@@ -47,6 +47,13 @@ local `X-Internal-Secret` only when the configured gateway URL is loopback. A
 non-loopback gateway requires an explicit presigned token, so an operator-supplied
 URL can never receive the host's internal IPC credential.
 
+While connected, the adapter also holds an authenticated `/api/ws` subscription.
+A dashboard `slot_title` frame for a session the ACP process registered becomes the
+standard `session/update` `session_info_update` notification, so an editor refreshes
+the title when the dashboard auto-titler or an operator renames the same session.
+Malformed frames and titles for unregistered slots are ignored; a closed WebSocket
+reconnects without interrupting active prompt SSE streams.
+
 `--standalone` is an offline diagnostic fallback that runs turns through an
 in-process `SessionManager` (`gateway.make_prompt_handler`); those turns are not
 visible in the dashboard. The ACP-specific code never reads or mutates session

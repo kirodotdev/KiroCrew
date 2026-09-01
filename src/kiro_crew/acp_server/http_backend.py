@@ -9,7 +9,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import quote, urlparse
 
 import aiohttp
@@ -49,6 +49,11 @@ SESSION_PREFIX = "acp"
 # read has no total timeout; only connect/probe calls are bounded.
 _PROBE_TIMEOUT = 10.0
 _STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=_PROBE_TIMEOUT)
+
+# The adapter reconnects after a transient dashboard WebSocket failure without
+# interrupting the independent prompt SSE stream.
+_TITLE_WS_RECONNECT_DELAY_SECS = 1.0
+_TITLE_WS_CLOSE_TIMEOUT_SECS = 1.0
 
 # Aggregate wall-clock ceiling for hosting/validating one session's whole MCP
 # set. Bounds session/new setup even if a server hangs its handshake; the
@@ -226,11 +231,15 @@ class HttpGatewayBackend:
         # tools (e.g. fs_read: empty initial rawInput + populated refinement),
         # so the follow-along locations only arrive on the second event.
         self._tool_id_map: dict[str, str] = {}
+        self._session_info_handler: Callable[[str, str], Awaitable[None]] | None = None
+        self._title_events_task: asyncio.Task[None] | None = None
+        self._closing = False
 
     # ── lifecycle ──
 
     async def open(self) -> None:
         """Load credentials and confirm the gateway is reachable."""
+        self._closing = False
         if not self._token:
             host = urlparse(self._base_url).hostname or ""
             if not is_loopback(host):
@@ -261,8 +270,15 @@ class HttpGatewayBackend:
                     f"gateway at {self._base_url} answered {resp.status} — is it running?"
                 )
         logger.info("gateway reachable at %s", self._base_url)
+        self._start_title_events()
 
     async def close(self) -> None:
+        self._closing = True
+        if self._title_events_task is not None:
+            self._title_events_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._title_events_task
+            self._title_events_task = None
         # Adapter EOF cleanup. Clear the MCP config on every slot THIS adapter
         # registered servers on (owned configs) so a disconnected editor never
         # leaves client-supplied MCP servers registered on a shared dashboard
@@ -279,6 +295,78 @@ class HttpGatewayBackend:
         if self._session is not None:
             await self._session.close()
             self._session = None
+
+    def set_session_info_handler(self, handler: Callable[[str, str], Awaitable[None]]) -> None:
+        """Forward live dashboard title changes to the owning ACP server."""
+        self._session_info_handler = handler
+        self._start_title_events()
+
+    def _start_title_events(self) -> None:
+        if (
+            self._session is not None
+            and self._session_info_handler is not None
+            and self._title_events_task is None
+            and not self._closing
+        ):
+            self._title_events_task = asyncio.create_task(
+                self._watch_title_events(), name="acp-dashboard-title-events"
+            )
+
+    def _ws_url(self) -> str:
+        parsed = urlparse(self._base_url)
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        return parsed._replace(scheme=scheme, path=f"{parsed.path.rstrip('/')}/api/ws").geturl()
+
+    async def _watch_title_events(self) -> None:
+        """Keep the adapter subscribed to dashboard title events."""
+        while not self._closing and self._session is not None:
+            try:
+                ws = await asyncio.wait_for(
+                    self._session.ws_connect(
+                        self._ws_url(),
+                        headers=self._headers({"Origin": self._base_url}),
+                        heartbeat=30,
+                        timeout=aiohttp.ClientWSTimeout(
+                            ws_receive=None, ws_close=_TITLE_WS_CLOSE_TIMEOUT_SECS
+                        ),
+                    ),
+                    timeout=_PROBE_TIMEOUT,
+                )
+                try:
+                    async for message in ws:
+                        if message.type is aiohttp.WSMsgType.TEXT:
+                            await self._handle_title_event(message.data)
+                        elif message.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                            break
+                finally:
+                    await ws.close()
+            except asyncio.CancelledError:
+                raise
+            except aiohttp.ClientError:
+                logger.debug("dashboard title WebSocket disconnected", exc_info=True)
+            if not self._closing:
+                await asyncio.sleep(_TITLE_WS_RECONNECT_DELAY_SECS)
+
+    async def _handle_title_event(self, raw: str) -> None:
+        """Translate one dashboard slot_title WebSocket frame into ACP metadata."""
+        try:
+            frame = json.loads(raw)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(frame, dict) or frame.get("type") != "slot_title":
+            return
+        data = frame.get("data")
+        if not isinstance(data, dict):
+            return
+        session_id = data.get("key")
+        title = data.get("title")
+        if (
+            isinstance(session_id, str)
+            and session_id
+            and isinstance(title, str)
+            and self._session_info_handler is not None
+        ):
+            await self._session_info_handler(session_id, title)
 
     # ── SessionBackend ──
 

@@ -176,6 +176,19 @@ class TestBackendWiring:
         assert "acp-slot-1" in srv._sessions
 
     @pytest.mark.asyncio
+    async def test_session_info_is_forwarded_only_for_registered_session(self) -> None:
+        srv, tr = _server(backend=_FakeBackend())
+        srv._sessions["acp-slot-1"] = _Session(session_id="acp-slot-1")
+        await srv._handle_session_info("acp-slot-1", "Fresh title")
+        await srv._handle_session_info("other-slot", "Do not leak")
+        updates = [
+            params["update"]
+            for method, params in tr.notifications
+            if method == METHOD_SESSION_UPDATE
+        ]
+        assert updates == [{"sessionUpdate": "session_info_update", "title": "Fresh title"}]
+
+    @pytest.mark.asyncio
     async def test_session_new_mints_uuid_without_backend(self) -> None:
         srv, tr = _server(backend=None)
         await srv._handle_session_new({"cwd": "/repo"}, 2)
@@ -246,6 +259,8 @@ def _make_stub_app() -> web.Application:
     app["approvals"] = []  # (slot, request_id, action)
     app["stops"] = []
     app["approve_events"] = {}
+    app["title_events"] = asyncio.Queue()
+    app["title_ws_connected"] = asyncio.Event()
 
     async def slots_list(_request: web.Request) -> web.Response:
         # GET returns a bare JSON list, matching serialize_slots().
@@ -345,6 +360,29 @@ def _make_stub_app() -> web.Application:
         await resp.write(b"data: [DONE]\n\n")
         return resp
 
+    async def title_events(_request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(_request)
+        app["title_ws_connected"].set()
+        try:
+            while not ws.closed:
+                title_event = asyncio.create_task(app["title_events"].get())
+                client_message = asyncio.create_task(ws.receive())
+                done, pending = await asyncio.wait(
+                    {title_event, client_message}, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                if title_event in done:
+                    await ws.send_json(title_event.result())
+                else:
+                    break
+        except asyncio.CancelledError:
+            raise
+        return ws
+
+    app.router.add_get("/api/ws", title_events)
     app.router.add_get("/api/chat/slots", slots_list)
     app.router.add_post("/api/chat/slots", slot_create)
     app.router.add_post("/api/chat/slots/{slot}/project", slot_project)
@@ -391,6 +429,44 @@ class TestGatewayCredentialBoundary:
 
 @pytest.mark.asyncio
 class TestHttpGatewayBackend:
+    async def test_dashboard_title_event_forwards_to_handler(self) -> None:
+        runner, base, app = await _start_stub()
+        backend = HttpGatewayBackend(base, agent="")
+        received: list[tuple[str, str]] = []
+        delivered = asyncio.Event()
+
+        async def on_title(session_id: str, title: str) -> None:
+            received.append((session_id, title))
+            delivered.set()
+
+        try:
+            await backend.open()
+            backend.set_session_info_handler(on_title)
+            await asyncio.wait_for(app["title_ws_connected"].wait(), timeout=2)
+            await app["title_events"].put(
+                {"type": "slot_title", "data": {"key": "acp-slot-1", "title": "Fresh title"}}
+            )
+            await asyncio.wait_for(delivered.wait(), timeout=2)
+            assert received == [("acp-slot-1", "Fresh title")]
+        finally:
+            await backend.close()
+            await runner.cleanup()
+
+    async def test_title_handler_ignores_malformed_or_unrelated_events(self) -> None:
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        received: list[tuple[str, str]] = []
+
+        async def on_title(session_id: str, title: str) -> None:
+            received.append((session_id, title))
+
+        backend.set_session_info_handler(on_title)
+        await backend._handle_title_event("not json")
+        await backend._handle_title_event(json.dumps({"type": "slots", "data": {}}))
+        await backend._handle_title_event(
+            json.dumps({"type": "slot_title", "data": {"key": "acp-slot-1"}})
+        )
+        assert received == []
+
     async def test_create_session_scopes_project(self) -> None:
         runner, base, app = await _start_stub()
         backend = HttpGatewayBackend(base, agent="")

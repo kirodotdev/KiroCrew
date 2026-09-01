@@ -52,6 +52,7 @@ from kiro_crew.acp.types import (
     UPDATE_AVAILABLE_COMMANDS,
     UPDATE_CONFIG_OPTION,
     UPDATE_CURRENT_MODE,
+    UPDATE_SESSION_INFO,
     UPDATE_TOOL_CALL,
     UPDATE_TOOL_CALL_UPDATE,
     UPDATE_USER_MESSAGE_CHUNK,
@@ -298,6 +299,10 @@ class SessionSink:
             }
         )
 
+    async def send_session_info(self, title: str) -> None:
+        """Publish the current dashboard title through ACP's metadata update."""
+        await self._update({"sessionUpdate": UPDATE_SESSION_INFO, "title": title})
+
     async def send_options(self, options: list[str]) -> None:
         """Send structured Kiro Crew reply options through namespaced ACP metadata."""
         if not options:
@@ -452,6 +457,10 @@ class SessionBackend(Protocol):
       mode and return the refreshed snapshot; raise to signal an internal failure.
     * ``set_session_config_option(session_id, config_id, value) -> SelectorState``
       — apply a config option (e.g. model) and return the refreshed snapshot.
+    * ``set_session_info_handler(handler)`` — register an async
+      ``(session_id, title)`` callback for live backing-session metadata updates.
+      The HTTP backend uses it to forward dashboard ``slot_title`` WebSocket
+      events through standard ACP ``session_info_update`` notifications.
     """
 
     supports_load: bool
@@ -510,10 +519,19 @@ class AcpAgentServer:
         # Retain refs to fire-and-forget backend-cancel tasks so they are not
         # garbage-collected mid-flight (asyncio only weakly references them).
         self._cancel_tasks: set[asyncio.Task[None]] = set()
+        subscribe = getattr(self._backend, "set_session_info_handler", None)
+        if callable(subscribe):
+            subscribe(self._handle_session_info)
 
     async def serve(self) -> None:
         """Run until the editor closes the pipe."""
         await self._transport.run(self._on_request, self._on_notification)
+
+    async def _handle_session_info(self, session_id: str, title: str) -> None:
+        """Forward dashboard metadata only to a session this ACP process owns."""
+        session = self._sessions.get(session_id)
+        if session is not None:
+            await SessionSink(self._transport, session).send_session_info(title)
 
     # ── dispatch ──
 
