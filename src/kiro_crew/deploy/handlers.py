@@ -2217,8 +2217,12 @@ async def _handle_teardown(request: web.Request) -> web.Response:
 
     slug = request.match_info.get("slug", "")
     # ── Load artifact read-only FIRST to get metadata for manifest expiry ──
+    # The store is resolved INSIDE the worker callable: constructing it does
+    # filesystem work, so binding ``get_default_store().get`` on the loop
+    # would run that work on the loop for a request that arrives before the
+    # post-bind warm-up has built it.
     try:
-        art = await asyncio.to_thread(get_default_store().get, slug)
+        art = await asyncio.to_thread(lambda: get_default_store().get(slug))
     except ArtifactNotFoundError as exc:
         _audit("teardown", slug, "error", error=str(exc))
         return web.json_response({"error": str(exc)}, status=404)
@@ -2303,7 +2307,7 @@ async def _handle_teardown(request: web.Request) -> web.Response:
 
     # ── NOW tombstone the artifact (manifest is already expired) ──
     try:
-        art = await asyncio.to_thread(get_default_store().mark_webapp_expired, slug)
+        art = await asyncio.to_thread(lambda: get_default_store().mark_webapp_expired(slug))
     except ArtifactNotFoundError as exc:
         _audit("teardown", slug, "error", error=str(exc))
         return web.json_response({"error": str(exc)}, status=404)

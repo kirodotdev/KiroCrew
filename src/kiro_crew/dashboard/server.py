@@ -3583,6 +3583,37 @@ def _register_connections_warm_lifecycle(app: web.Application, state: DashboardS
     app.on_cleanup.append(_connections_warm_shutdown)
 
 
+def _kick_artifact_store(state: DashboardState) -> None:
+    """Build the process-wide artifact store on a worker thread, post-bind.
+
+    ``ArtifactStore()`` does filesystem work at construction -- it resolves and
+    creates its root and loads (or, once, creates and fsyncs) the key the
+    optimistic-concurrency token is minted under. Neither belongs in front of
+    the listener (no-new-work-on-gateway-boot-path) nor on a handler's turn
+    (no-blocking-call-on-event-loop), so it runs here, in a thread, once
+    requests are already being served; a handler that arrives first simply
+    constructs the store itself, as before. A failure is logged and left to
+    that first handler to surface.
+    """
+
+    async def _build() -> None:
+        def _in_thread() -> None:
+            # Deferred like the scavenge's import: resolving the module on the
+            # loop would stall in-flight requests.
+            from kiro_crew.artifacts import get_default_store
+
+            get_default_store()
+
+        try:
+            await asyncio.to_thread(_in_thread)
+        except Exception:  # noqa: BLE001 — the first handler re-raises this to its caller
+            logger.warning("Artifact store warm-up failed", exc_info=True)
+
+    task = asyncio.create_task(_build())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _kick_connections_warm_scavenge(state: DashboardState) -> None:
     """Start the crash-residue scavenge as a tracked background task, post-bind.
 
@@ -5659,6 +5690,7 @@ async def start_dashboard(
     # (no-new-work-on-gateway-boot-path).
     _kick_workflow_initialization(state)
     _kick_connections_warm_scavenge(state)
+    _kick_artifact_store(state)
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
     # Same shape for the knowledge store's writer-locked orphan sweep: it left
@@ -6608,6 +6640,7 @@ async def start_api_server(
     # import before the bind).
     _kick_workflow_initialization(state)
     _kick_connections_warm_scavenge(state)
+    _kick_artifact_store(state)
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
 

@@ -20,7 +20,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import fts5_segment_for_index, sqlite3
-from kiro_crew.artifacts import get_default_store
+from kiro_crew.artifacts import ArtifactStore, get_default_store, get_default_store_async
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.dashboard import part_stream
@@ -184,6 +184,17 @@ def _store(request: web.Request):
     return request.app["state"].knowledge_store
 
 
+async def _artifact_store_async() -> ArtifactStore:
+    """The default artifact store, for use from a coroutine.
+
+    Constructing it does filesystem work, so a caller that arrives before the
+    gateway's post-bind warm-up must not build it on the loop. Forwards this
+    module's ``get_default_store`` name so a test that replaces it keeps its
+    substitute.
+    """
+    return await get_default_store_async(get_default_store)
+
+
 def _pipeline(request: web.Request):
     return request.app.get("knowledge_pipeline")
 
@@ -260,7 +271,7 @@ async def _start_artifact_ingest_async(app: web.Application, cfg: KiroCrewConfig
         return
     pipeline = app["knowledge_pipeline"]
     kinds = set(cfg.knowledge.auto_ingest_artifact_kinds)
-    art_store = get_default_store()
+    art_store = await _artifact_store_async()
     sync = ArtifactKnowledgeSync(
         art_store=art_store,
         pipeline=pipeline,
@@ -287,7 +298,7 @@ async def _stop_artifact_ingest(app: web.Application) -> None:
     if sync is None:
         return
     try:
-        get_default_store().set_change_listener(None)
+        (await _artifact_store_async()).set_change_listener(None)
     except Exception:
         logger.warning("artifact auto-ingest: listener detach failed", exc_info=True)
 

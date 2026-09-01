@@ -12,6 +12,7 @@ filesystem write lands under ``tmp_path``.
 
 from __future__ import annotations
 
+import errno
 import json
 import ntpath
 import os
@@ -2746,6 +2747,520 @@ class TestVerifiedReplaceFileNolink:
             == "ok"
         )
         assert _stat.S_IMODE(os.stat(f).st_mode) == 0o600
+
+    def test_atomic_replace_after_the_final_stat_is_a_conflict_and_the_newer_file_wins(
+        self, tmp_path, monkeypatch
+    ):
+        """The window os.rename cannot close: an external editor's atomic save
+        lands AFTER the last-moment stat and BEFORE the install. With a plain
+        rename the stale payload overwrites the newer file and the call reports
+        success; with the exchange install the displaced inode is inspected,
+        found not to be the verified one, exchanged straight back, and the
+        verdict is ``conflict`` -- the newer bytes were never gone and there is
+        no staging residue. The race is injected at the stat itself, so this
+        test fails against a plain-rename install rather than going vacuous."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_stat = os.stat
+        seen = {"dir_fd_stats": 0}
+
+        def stat_then_race(*a, **kw):
+            result = real_stat(*a, **kw)
+            # dir_fd stats of the target: the first is the pre-staging identity
+            # check, the second is the last-moment re-check before the install.
+            if kw.get("dir_fd") is not None and a and a[0] == "a.txt":
+                seen["dir_fd_stats"] += 1
+                if seen["dir_fd_stats"] == 2:
+                    newer = tmp_path / "a.txt.editor-tmp"
+                    newer.write_text("NEWER FROM AN EDITOR", encoding="utf-8")
+                    os.replace(newer, f)  # new inode under the same name
+            return result
+
+        monkeypatch.setattr(os, "stat", stat_then_race)
+        out = verified_replace_file_nolink(
+            str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+        )
+        monkeypatch.undo()
+        assert seen["dir_fd_stats"] >= 2, "the race never ran — the test would be vacuous"
+        assert out == "conflict"
+        assert f.read_text(encoding="utf-8") == "NEWER FROM AN EDITOR"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"], "no staging residue"
+
+    def test_verified_inode_is_held_open_through_the_exchange_so_its_number_cannot_recycle(
+        self, tmp_path, monkeypatch
+    ):
+        """An inode NUMBER identifies a file only while something references the
+        inode; once freed it can be handed to a new file. A writer that
+        unlinks and recreates the source -- preserving size and mtime, as
+        ``cp -p`` or a metadata-preserving editor does -- could then be accepted
+        by a (dev, ino) + (mtime, size) check as the verified file and lose its
+        newer content to the cleanup. The verified descriptor is therefore held
+        open until the displaced inode has been judged. Witnessed two ways: the
+        exchange runs while that descriptor is still open on the verified
+        inode, and the unlink-and-recreate race is answered ``conflict`` with
+        the newer file intact."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        verified_ino = os.stat(f).st_ino
+        verified_mtime = os.stat(f).st_mtime_ns
+        real_stat = os.stat
+        seen = {"dir_fd_stats": 0}
+
+        def stat_then_recreate(*a, **kw):
+            result = real_stat(*a, **kw)
+            if kw.get("dir_fd") is not None and a and a[0] == "a.txt":
+                seen["dir_fd_stats"] += 1
+                if seen["dir_fd_stats"] == 2:
+                    # Unlink + recreate with the SAME size and mtime.
+                    os.unlink(f)
+                    f.write_text("EGAB", encoding="utf-8")  # 4 bytes, like BASE
+                    st = real_stat(f)
+                    os.utime(f, ns=(st.st_atime_ns, verified_mtime))
+            return result
+
+        real_exchange = platform_compat.rename_exchange
+        pinned: dict[str, object] = {}
+        proc_fds = os.path.isdir("/proc/self/fd")
+
+        def exchange_spy(a, b, *, dir_fd):
+            # At exchange time the verified inode must still be referenced by an
+            # open descriptor of this process -- that is what makes its number
+            # a stable identity. Find it among our own fds.
+            for fd_name in os.listdir("/proc/self/fd") if proc_fds else []:
+                try:
+                    st = os.fstat(int(fd_name))
+                except OSError:
+                    continue
+                if st.st_ino == verified_ino and _stat.S_ISREG(st.st_mode):
+                    pinned["held"] = True
+                    break
+            return real_exchange(a, b, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "stat", stat_then_recreate)
+        monkeypatch.setattr(hooks_mod.platform_compat, "rename_exchange", exchange_spy)
+        out = verified_replace_file_nolink(
+            str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+        )
+        monkeypatch.undo()
+        assert seen["dir_fd_stats"] >= 2, "the race never ran — the test would be vacuous"
+        if proc_fds:
+            assert pinned.get("held"), "the verified inode was not held open at exchange time"
+        assert out == "conflict"
+        assert f.read_text(encoding="utf-8") == "EGAB", "the recreated newer file wins"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"], "no staging residue"
+
+    def test_same_inode_same_length_rewrite_with_restored_mtime_after_the_stat_is_a_conflict(
+        self, tmp_path, monkeypatch
+    ):
+        """The case metadata cannot see: an in-place rewrite of the SAME length
+        whose mtime is then restored (``touch -r`` / a metadata-preserving
+        tool) leaves (st_dev, st_ino) and (st_mtime_ns, st_size) identical.
+        Only the bytes tell, so the exchange install re-hashes the displaced
+        inode through the held descriptor and answers ``conflict`` when it no
+        longer matches the verified base -- the newer bytes win."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        mtime = os.stat(f).st_mtime_ns
+        real_stat = os.stat
+        seen = {"dir_fd_stats": 0}
+
+        def stat_then_rewrite_in_place(*a, **kw):
+            result = real_stat(*a, **kw)
+            if kw.get("dir_fd") is not None and a and a[0] == "a.txt":
+                seen["dir_fd_stats"] += 1
+                if seen["dir_fd_stats"] == 2:
+                    with open(f, "r+b") as fh:
+                        fh.write(b"EGAB")  # same length, same inode
+                        fh.truncate()
+                    st = real_stat(f)
+                    os.utime(f, ns=(st.st_atime_ns, mtime))  # restored timestamp
+            return result
+
+        monkeypatch.setattr(os, "stat", stat_then_rewrite_in_place)
+        out = verified_replace_file_nolink(
+            str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+        )
+        monkeypatch.undo()
+        assert seen["dir_fd_stats"] >= 2, "the race never ran — the test would be vacuous"
+        assert out == "conflict"
+        assert f.read_text(encoding="utf-8") == "EGAB", "the newer bytes win"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"], "no staging residue"
+
+    def test_exchange_install_disposes_of_the_displaced_verified_inode(self, tmp_path):
+        """The happy path through the exchange: the payload lands, the inode it
+        displaced is the verified one, and it is unlinked as the spent stage."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        before = os.stat(f).st_ino
+        out = verified_replace_file_nolink(str(f), "NEW", self._sha("BASE"), max_bytes=1_000_000)
+        assert out == "ok"
+        assert f.read_text(encoding="utf-8") == "NEW"
+        assert os.stat(f).st_ino != before, "a replace installs a new inode"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+
+    def test_filesystem_without_exchange_falls_back_to_the_plain_rename(
+        self, tmp_path, monkeypatch
+    ):
+        """A mount that answers ENOSYS/EINVAL to the exchange keeps the
+        documented plain-rename install rather than failing closed."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+
+        def no_exchange(a, b, *, dir_fd):
+            raise NotImplementedError("filesystem lacks atomic rename exchange")
+
+        monkeypatch.setattr(hooks_mod.platform_compat, "rename_exchange", no_exchange)
+        out = verified_replace_file_nolink(str(f), "NEW", self._sha("BASE"), max_bytes=1_000_000)
+        monkeypatch.undo()
+        assert out == "ok"
+        assert f.read_text(encoding="utf-8") == "NEW"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+
+    def test_exchange_failing_with_an_unmapped_errno_falls_back_to_the_plain_rename(
+        self, tmp_path, monkeypatch
+    ):
+        """The shim maps only the no-exchange errnos to ``NotImplementedError``;
+        any other ``OSError`` from the first exchange (EXDEV, EBUSY, EPERM) has
+        moved nothing, so it takes the same plain-rename install as a mount with
+        no exchange. Escaping instead reads as ``refused``, which for a
+        verifying caller installs the store copy and demotes the pointer while
+        the save reports as applied."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+
+        def exchange_refused_by_the_mount(a, b, *, dir_fd):
+            raise OSError(errno.EXDEV, "exchange across layers")
+
+        monkeypatch.setattr(
+            hooks_mod.platform_compat, "rename_exchange", exchange_refused_by_the_mount
+        )
+        out = verified_replace_file_nolink(str(f), "NEW", self._sha("BASE"), max_bytes=1_000_000)
+        monkeypatch.undo()
+        assert out == "ok"
+        assert f.read_text(encoding="utf-8") == "NEW"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"]
+
+    def test_failed_swap_back_preserves_both_files_and_never_renames_again(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The one failure the protocol must not clean up: the exchange lands,
+        the displaced inode is a concurrent writer's newer file, and the
+        exchange BACK fails. Without the exchange no rename is conditional, so
+        nothing further is attempted: the newer content stays under the staging
+        name (never unlinked), the stale payload stays at the original name,
+        the state is logged at ERROR with both names, and the verdict is
+        ``conflict`` so the client refetches instead of trusting its save."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_exchange = platform_compat.rename_exchange
+        real_rename = os.rename
+        renames: list[tuple] = []
+        calls = {"n": 0}
+
+        def race_then_fail_swap_back(a, b, *, dir_fd):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                newer = tmp_path / "a.txt.editor-tmp"
+                newer.write_text("NEWER", encoding="utf-8")
+                os.replace(newer, f)
+                return real_exchange(a, b, dir_fd=dir_fd)
+            raise OSError(5, "I/O error")  # the swap back
+
+        def recording_rename(src, dst, *a, **kw):
+            if kw.get("src_dir_fd") is not None:
+                renames.append((src, dst))
+            return real_rename(src, dst, *a, **kw)
+
+        monkeypatch.setattr(hooks_mod.platform_compat, "rename_exchange", race_then_fail_swap_back)
+        monkeypatch.setattr(os, "rename", recording_rename)
+        monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {recording_rename})
+        with caplog.at_level("ERROR"):
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
+        monkeypatch.undo()
+        assert calls["n"] == 2
+        assert out == "conflict"
+        assert renames == [], "no rename is attempted once the exchange is gone"
+        names = sorted(p.name for p in tmp_path.iterdir())
+        assert len(names) == 2 and "a.txt" in names, names
+        assert f.read_text(encoding="utf-8") == "STALE EDIT", "stale payload left at the name"
+        staged = next(p for p in tmp_path.iterdir() if p.name != "a.txt")
+        assert staged.read_text(encoding="utf-8") == "NEWER", "newer content preserved"
+        assert "preserved under the staging name" in caplog.text
+
+    def test_failed_swap_back_leaves_a_third_writer_untouched(self, tmp_path, monkeypatch, caplog):
+        """Exchange back fails AND another writer lands on the original name in
+        the same instant. Because nothing is renamed after a failed exchange
+        back, that writer's content is never touched; the displaced content is
+        still preserved under the staging name."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_exchange = platform_compat.rename_exchange
+        calls = {"n": 0}
+
+        def race_then_fail_swap_back_then_third_writer(a, b, *, dir_fd):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                newer = tmp_path / "a.txt.editor-tmp"
+                newer.write_text("NEWER", encoding="utf-8")
+                os.replace(newer, f)
+                return real_exchange(a, b, dir_fd=dir_fd)
+            third = tmp_path / "a.txt.third-tmp"
+            third.write_text("NEWEST", encoding="utf-8")
+            os.replace(third, f)
+            raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(
+            hooks_mod.platform_compat, "rename_exchange", race_then_fail_swap_back_then_third_writer
+        )
+        with caplog.at_level("ERROR"):
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
+        monkeypatch.undo()
+        assert calls["n"] == 2
+        assert out == "conflict"
+        assert f.read_text(encoding="utf-8") == "NEWEST", "the third writer is never clobbered"
+        staged = next(p for p in tmp_path.iterdir() if p.name != "a.txt")
+        assert staged.read_text(encoding="utf-8") == "NEWER", "displaced content preserved"
+
+    def test_a_writer_landing_during_the_swap_back_is_exchanged_back_again_not_unlinked(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Writer B triggers the conflict; writer C replaces the original name
+        between the check and the exchange back. That exchange back SUCCEEDS,
+        but what it moves under the staging name is C's file, not the payload
+        (C's replace already unlinked the payload's name) -- and the cleanup
+        that disposes of a spent stage would unlink C's save. The stage is
+        therefore checked by identity against the held payload descriptor;
+        since it is not the payload, one more exchange puts C's save back at
+        the original name, B's displaced content stays under the staging
+        name, and NOTHING is unlinked. Fails against the prior code, which
+        took the stage for the payload and unlinked C's save."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_exchange = platform_compat.rename_exchange
+        calls = {"n": 0}
+
+        def race_then_third_writer_lands_before_the_swap_back(a, b, *, dir_fd):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                newer = tmp_path / "a.txt.editor-tmp"
+                newer.write_text("NEWER", encoding="utf-8")
+                os.replace(newer, f)
+            elif calls["n"] == 2:
+                # Between the conflict check and the exchange back.
+                third = tmp_path / "a.txt.third-tmp"
+                third.write_text("NEWEST", encoding="utf-8")
+                os.replace(third, f)
+            return real_exchange(a, b, dir_fd=dir_fd)
+
+        monkeypatch.setattr(
+            hooks_mod.platform_compat,
+            "rename_exchange",
+            race_then_third_writer_lands_before_the_swap_back,
+        )
+        with caplog.at_level("ERROR"):
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
+        monkeypatch.undo()
+        assert calls["n"] == 3, "install, swap back, and one more exchange for the third writer"
+        assert out == "conflict"
+        assert f.read_text(encoding="utf-8") == "NEWEST", "the third writer's save survives"
+        others = [p for p in tmp_path.iterdir() if p.name != "a.txt"]
+        assert len(others) == 1, "nothing was unlinked"
+        assert others[0].read_text(encoding="utf-8") == "NEWER", "displaced content preserved"
+        assert any("another save landed" in r.getMessage() for r in caplog.records)
+
+    def test_an_in_place_rewrite_of_the_payload_during_the_swap_back_is_not_unlinked(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Writer B triggers the conflict; writer C then rewrites the file at
+        the original name IN PLACE (truncate-and-write) while the payload sits
+        there. That keeps the payload's inode identity but changes its bytes,
+        so the exchange back moves C's save under the staging name with an
+        identity that still matches the held payload descriptor. Identity
+        alone would authorise the unlink; the bytes are re-read through that
+        descriptor and do not match the payload, so C's save is exchanged back to the
+        original name and B's displaced content stays under the stage. Fails
+        against identity-only cleanup, which unlinked C's save."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_exchange = platform_compat.rename_exchange
+        calls = {"n": 0}
+
+        def race_then_in_place_rewrite_before_the_swap_back(a, b, *, dir_fd):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                newer = tmp_path / "a.txt.editor-tmp"
+                newer.write_text("NEWER", encoding="utf-8")
+                os.replace(newer, f)
+            elif calls["n"] == 2:
+                # The payload is at the original name; rewrite it in place.
+                with open(f, "w", encoding="utf-8") as fh:
+                    fh.write("NEWEST")
+            return real_exchange(a, b, dir_fd=dir_fd)
+
+        monkeypatch.setattr(
+            hooks_mod.platform_compat,
+            "rename_exchange",
+            race_then_in_place_rewrite_before_the_swap_back,
+        )
+        with caplog.at_level("ERROR"):
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
+        monkeypatch.undo()
+        assert calls["n"] == 3
+        assert out == "conflict"
+        assert f.read_text(encoding="utf-8") == "NEWEST", "the in-place writer's save survives"
+        others = [p for p in tmp_path.iterdir() if p.name != "a.txt"]
+        assert len(others) == 1, "nothing was unlinked"
+        assert others[0].read_text(encoding="utf-8") == "NEWER", "displaced content preserved"
+
+    def test_a_failed_restore_of_the_later_save_preserves_both_files(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Same third-writer race, but the exchange that puts C's save back at
+        the original name raises. C's save then sits under the staging name and
+        B's displaced content at the original name; both are kept and reported,
+        nothing is renamed by plain rename and nothing is unlinked."""
+        from kiro_crew import platform_compat
+
+        if not platform_compat.RENAME_EXCHANGE_AVAILABLE:
+            pytest.skip("no atomic rename exchange on this platform")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_exchange = platform_compat.rename_exchange
+        calls = {"n": 0}
+
+        def third_writer_then_the_restore_fails(a, b, *, dir_fd):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                newer = tmp_path / "a.txt.editor-tmp"
+                newer.write_text("NEWER", encoding="utf-8")
+                os.replace(newer, f)
+            elif calls["n"] == 2:
+                third = tmp_path / "a.txt.third-tmp"
+                third.write_text("NEWEST", encoding="utf-8")
+                os.replace(third, f)
+            else:
+                raise OSError(5, "I/O error")
+            return real_exchange(a, b, dir_fd=dir_fd)
+
+        monkeypatch.setattr(
+            hooks_mod.platform_compat, "rename_exchange", third_writer_then_the_restore_fails
+        )
+        with caplog.at_level("ERROR"):
+            out = verified_replace_file_nolink(
+                str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000
+            )
+        monkeypatch.undo()
+        assert calls["n"] == 3
+        assert out == "conflict"
+        contents = {p.read_text(encoding="utf-8") for p in tmp_path.iterdir()}
+        assert contents == {"NEWER", "NEWEST"}, "both saves kept; C's replace consumed the payload"
+        assert any("a later save is preserved" in r.getMessage() for r in caplog.records)
+
+    def test_atomic_replace_before_staging_is_a_conflict_not_refused(self, tmp_path, monkeypatch):
+        """An external editor's atomic save (temp-and-rename, NEW inode) landing
+        after the base hash was verified but BEFORE the payload is staged trips
+        the pinned-parent identity re-check. For a verifying caller that has to
+        read as ``conflict``: ``refused`` is the verdict for "unwritable, no
+        competing writer", which the caller answers by keeping the stale edit
+        and demoting the link -- a lost update reported as applied. The
+        post-staging twin of the check already says ``conflict``; this pins the
+        pre-staging one to the same vocabulary."""
+        if not (
+            getattr(os, "O_DIRECTORY", 0)
+            and os.open in os.supports_dir_fd
+            and os.rename in os.supports_dir_fd
+        ):
+            pytest.skip("pre-staging identity re-check exists only on the dir-fd path")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_fd_path = hooks_mod._fd_real_path
+        calls = {"n": 0}
+
+        def replace_on_dir_check(fd):
+            # Call 1 validates the file descriptor (before the hash is read);
+            # call 2 validates the DIRECTORY descriptor, immediately before the
+            # pinned identity re-check -- squarely inside the verify-to-stage
+            # window. The editor's save lands there.
+            calls["n"] += 1
+            if calls["n"] == 2:
+                newer = tmp_path / "a.txt.editor-tmp"
+                newer.write_text("NEWER FROM AN EDITOR", encoding="utf-8")
+                os.replace(newer, f)  # new inode under the same name
+            return real_fd_path(fd)
+
+        monkeypatch.setattr(hooks_mod, "_fd_real_path", replace_on_dir_check)
+        out = verified_replace_file_nolink(
+            str(f), "STALE EDIT", self._sha("BASE"), max_bytes=1_000_000, within_root=str(tmp_path)
+        )
+        monkeypatch.undo()
+        assert calls["n"] >= 2, "the race never ran — the test would be vacuous"
+        assert out == "conflict"
+        assert f.read_text(encoding="utf-8") == "NEWER FROM AN EDITOR"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt"], "no staging residue"
+
+    def test_unverified_caller_keeps_refused_on_the_pre_staging_swap(self, tmp_path, monkeypatch):
+        """The unverified entry point has no conflict vocabulary: the same swap
+        stays ``refused`` there (False from the bool wrapper), and the newer
+        file still wins."""
+        if not (
+            getattr(os, "O_DIRECTORY", 0)
+            and os.open in os.supports_dir_fd
+            and os.rename in os.supports_dir_fd
+        ):
+            pytest.skip("pre-staging identity re-check exists only on the dir-fd path")
+        f = _write(tmp_path / "a.txt", "BASE")
+        real_fd_path = hooks_mod._fd_real_path
+        calls = {"n": 0}
+
+        def replace_on_dir_check(fd):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                newer = tmp_path / "a.txt.editor-tmp"
+                newer.write_text("NEWER", encoding="utf-8")
+                os.replace(newer, f)
+            return real_fd_path(fd)
+
+        monkeypatch.setattr(hooks_mod, "_fd_real_path", replace_on_dir_check)
+        assert safe_write_file_nolink(str(f), "STALE", within_root=str(tmp_path)) is False
+        monkeypatch.undo()
+        assert calls["n"] >= 2
+        assert f.read_text(encoding="utf-8") == "NEWER"
 
     def test_a_malformed_base_hash_is_refused_not_skipped(self, tmp_path):
         """Deny-by-default: an unverifiable base refuses — it must never skip
