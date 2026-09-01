@@ -816,7 +816,11 @@ def test_frontmatter_value_resolves_block_scalars():
         "  a, b\n"
         "---\n\n## Steps\n"
     )
-    assert H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs."
+    assert (
+        H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
+    )
+    # `triggers` uses `|-`, whose strip chomping drops the trailing break, so it is
+    # unaffected by #7097 -- the pair keeps the two modes visibly distinct here.
     assert H._frontmatter_value(body, "triggers") == "a, b"
     # An empty block resolves to "" rather than the indicator character.
     assert H._frontmatter_value("---\ndescription: >\nname: x\n---\nbody", "description") == ""

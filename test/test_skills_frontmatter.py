@@ -59,7 +59,7 @@ class TestFoldedBlockScalar:
             )
         )
         assert meta["description"] == (
-            "Render rich HTML inline via mcwidget tags with theme-aware styling."
+            "Render rich HTML inline via mcwidget tags with theme-aware styling.\n"
         )
         # Surrounding keys still parse normally.
         assert meta["name"] == "my-skill"
@@ -72,23 +72,26 @@ class TestFoldedBlockScalar:
         assert meta["description"] == "first line second line"
 
     def test_folded_with_chomping_keep(self, tmp_path):
+        # Keep preserves the trailing break that strip drops -- the two spellings above
+        # and below used to return the SAME string, which is what made the chomping
+        # modifier decorative. See #7097.
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: >+\n  first line\n  second line")
         )
-        assert meta["description"] == "first line second line"
+        assert meta["description"] == "first line second line\n"
 
     def test_folded_blank_line_is_paragraph_break(self, tmp_path):
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: >\n  para one\n\n  para two")
         )
-        assert meta["description"] == "para one\npara two"
+        assert meta["description"] == "para one\npara two\n"
 
     def test_folded_preserves_consecutive_blank_count(self, tmp_path):
         # k blank lines fold to k newlines, not to a single separator.
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: >\n  para one\n\n\n  para two")
         )
-        assert meta["description"] == "para one\n\npara two"
+        assert meta["description"] == "para one\n\npara two\n"
 
     def test_folded_keeps_more_indented_line_breaks(self, tmp_path):
         # Breaks adjacent to a more-indented line are not folded, so nested
@@ -103,7 +106,7 @@ class TestFoldedBlockScalar:
                 "  outro line",
             )
         )
-        assert meta["description"] == "intro line\n  - item one\n  - item two\noutro line"
+        assert meta["description"] == "intro line\n  - item one\n  - item two\noutro line\n"
 
     def test_folded_blank_next_to_more_indented_keeps_separator_break(self, tmp_path):
         # Between plain lines the separator break folds away (k blanks -> k
@@ -120,13 +123,13 @@ class TestFoldedBlockScalar:
                 "  plain outro",
             )
         )
-        assert meta["description"] == "plain intro\n\n  indented detail\n\nplain outro"
+        assert meta["description"] == "plain intro\n\n  indented detail\n\nplain outro\n"
 
     def test_folded_at_end_of_frontmatter(self, tmp_path):
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "name: my-skill\ndescription: >\n  trailing block value")
         )
-        assert meta["description"] == "trailing block value"
+        assert meta["description"] == "trailing block value\n"
 
     def test_empty_folded_block_is_empty_string(self, tmp_path):
         # An indicator with no continuation lines resolves to "", never ">".
@@ -140,7 +143,7 @@ class TestLiteralBlockScalar:
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: |\n  line one\n  line two")
         )
-        assert meta["description"] == "line one\nline two"
+        assert meta["description"] == "line one\nline two\n"
 
     def test_literal_with_chomping_strip(self, tmp_path):
         meta = SkillsLoader._parse_frontmatter(
@@ -149,24 +152,30 @@ class TestLiteralBlockScalar:
         assert meta["description"] == "line one\nline two"
 
     def test_literal_with_chomping_keep(self, tmp_path):
+        # As with the folded pair, keep preserves the trailing break strip drops. The two
+        # used to return the same string, which is what made the modifier decorative.
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: |+\n  line one\n  line two")
         )
-        assert meta["description"] == "line one\nline two"
+        assert meta["description"] == "line one\nline two\n"
 
     def test_literal_keeps_relative_indentation(self, tmp_path):
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: |\n  outer\n    nested detail")
         )
-        assert meta["description"] == "outer\n  nested detail"
+        assert meta["description"] == "outer\n  nested detail\n"
 
     def test_literal_leading_blank_line_keeps_relative_indentation(self, tmp_path):
         # Indent is derived from the first NON-BLANK line, so a blank line
         # right after the indicator must not flatten nested indentation.
+        #
+        # The leading break itself is now PRESERVED (#7097): no YAML chomping mode
+        # removes a leading break, and the fold's old trailing `.strip()` was what
+        # dropped it. The indentation claim this test exists for is unaffected.
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: |\n\n  outer\n    nested detail")
         )
-        assert meta["description"] == "outer\n  nested detail"
+        assert meta["description"] == "\nouter\n  nested detail\n"
 
 
 class TestBlockScalarBoundaries:
@@ -179,7 +188,7 @@ class TestBlockScalarBoundaries:
                 "description: >\n  Steps: do x then y\nname: my-skill",
             )
         )
-        assert meta["description"] == "Steps: do x then y"
+        assert meta["description"] == "Steps: do x then y\n"
         assert "Steps" not in meta
         assert meta["name"] == "my-skill"
 
@@ -190,7 +199,7 @@ class TestBlockScalarBoundaries:
                 "description: >\n  the description\nalways: true\ntriggers: a, b",
             )
         )
-        assert meta["description"] == "the description"
+        assert meta["description"] == "the description\n"
         assert meta["always"] == "true"
         assert meta["triggers"] == "a, b"
 
@@ -198,7 +207,7 @@ class TestBlockScalarBoundaries:
         meta = SkillsLoader._parse_frontmatter(
             _write(tmp_path, "description: >\n  the description\n\nname: my-skill")
         )
-        assert meta["description"] == "the description"
+        assert meta["description"] == "the description\n"
         assert meta["name"] == "my-skill"
 
     def test_indicator_like_prose_value_kept_verbatim(self, tmp_path):
