@@ -10900,7 +10900,13 @@
       "filter_hooks": "Filtrer les hooks…",
       "hook_name": "Nom du hook",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Les hooks exécutent des commandes shell sur les événements de chat : AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Les hooks d’outils acceptent des motifs de correspondance pour filtrer par nom d’outil.",
+      "matcher_lane_pill_gloss": "colonne du tableau",
+      "hook_test_governance_repair": "Un profil de gouvernance interdit les script hooks. Active capabilities.script_hooks dans le profil actif pour que ce hook puisse s'exécuter.",
+      "matcher_lane_never_fires_typed": "Ce champ compare des identifiants de tag, donc un hook enregistré ainsi ne se déclenche jamais. Pour obtenir l'identifiant, lance le hook une fois avec un matcher vide et lis KIROCREW_HOOK_CONTEXT. ({{shape}})",
+      "matcher_lane_scope": "Seul un déplacement que tu fais toi-même dans le tableau de bord le déclenche, jamais celui d'une app ou d'une automatisation.",
+      "matcher_lane_hint": "Laisse vide pour déclencher à chaque changement de colonne du tableau : chaque exécution reçoit les colonnes ajoutées et retirées dans KIROCREW_HOOK_CONTEXT, le script peut donc trancher lui-même.",
+      "matcher_placeholder_lane_empty": "Correspondance (facultatif)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Les hooks exécutent des commandes shell sur les événements de chat : AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Les hooks d'outil prennent en charge des motifs de filtrage par nom d'outil ; SessionLaneChanged se déclenche lorsque la colonne du tableau d'une session change.",
       "last_run": "Dernière exécution",
       "loading": "Chargement…",
       "matcher": "Correspondance",
@@ -10936,7 +10942,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Réessayer",
       "show_last_error": "Afficher la dernière erreur de {{name}}",
-      "test_failed_for": "Échec du test pour {{name}}"
+      "test_failed_for": "Échec du test pour {{name}}",
+      "matcher_lane_automatic": "Les colonnes automatiques (En cours, Inactive, Approbation requise, T'attend) ne le déclenchent jamais."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Un identifiant unique pour cet espace de travail. Les agents référencent les espaces de travail par leur nom.",

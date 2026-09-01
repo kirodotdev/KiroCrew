@@ -10588,7 +10588,13 @@
       "filter_hooks": "筛选钩子…",
       "hook_name": "钩子名称",
       "hooks": "钩子",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "钩子在聊天事件发生时运行 shell 命令：AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop。工具钩子支持用匹配器模式按工具名筛选。",
+      "matcher_lane_pill_gloss": "看板列",
+      "hook_test_governance_repair": "治理配置文件禁止了脚本钩子。要让此钩子能够运行，请在当前配置文件中开启 capabilities.script_hooks。",
+      "matcher_lane_never_fires_typed": "此字段比对标签 ID，因此这样保存的钩子永远不会触发。要知道 ID，先用空匹配器运行一次，再看 KIROCREW_HOOK_CONTEXT。({{shape}})",
+      "matcher_lane_scope": "只有你在仪表板中亲自移动才会触发它，应用或自动化的移动不会。",
+      "matcher_lane_hint": "留空则在看板列每次变化时触发：每次运行都会在 KIROCREW_HOOK_CONTEXT 中得到新增和移除的列，因此脚本可以自行判断。",
+      "matcher_placeholder_lane_empty": "匹配器（可选）",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "钩子在聊天事件时运行 shell 命令：AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged。工具钩子支持按工具名称过滤的匹配模式；SessionLaneChanged 在会话的看板列变更时触发。",
       "last_run": "上次运行",
       "loading": "正在加载…",
       "matcher": "匹配器",
@@ -10624,7 +10630,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "重试",
       "show_last_error": "显示 {{name}} 的最近错误",
-      "test_failed_for": "{{name}} 测试失败"
+      "test_failed_for": "{{name}} 测试失败",
+      "matcher_lane_automatic": "自动列（进行中、空闲、待审批、等你回应）不会触发它。"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "此工作区的唯一标识符。代理通过名称引用工作区。",

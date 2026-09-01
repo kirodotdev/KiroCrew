@@ -77,6 +77,7 @@ from kiro_crew.dashboard.chat_runner import (
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_tags import (
     _bump_slot_tags_revision,
+    _dispatch_lane_changed,
     tags_write_lock,
     validate_folder_tag_ids,
 )
@@ -2806,6 +2807,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                         # the inherited list must not ship under that same one.
                         if appended:
                             _bump_slot_tags_revision(slot)
+                        lane_after = list(slot.tags)
+                    # Closing-order step 1. This handler already runs under a dashboard request,
+                    # so the permit gate applies unchanged and needs no new authorization rule.
+                    await _dispatch_lane_changed(state, slot.key, [], lane_after, request=request)
         # A slot with no project filed into a project-linked folder inherits
         # from the nearest configured ancestor before its first broadcast. The
         # server owns this fallback because the client folder cache can be

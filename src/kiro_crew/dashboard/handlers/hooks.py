@@ -308,7 +308,10 @@ async def api_hook_test(request: web.Request) -> web.Response:
     """POST /api/hooks/{hook_id}/test — execute hook and return output."""
     # circular import: kiro_crew.hooks pulls dashboard state at module load, so
     # this handler defers the import to call time (matches _get_hook_store above).
-    from kiro_crew.hooks import HOOK_EVENT_STOP, run_script_hook  # noqa: F811
+    from kiro_crew.hooks import (  # noqa: F811
+        HOOK_EVENT_SESSION_LANE_CHANGED,
+        HOOK_EVENT_STOP,
+    )
     from kiro_crew.platform import redact_via_context
 
     store = _get_hook_store(request.app["state"])
@@ -334,7 +337,27 @@ async def api_hook_test(request: web.Request) -> web.Response:
             "cwd": os.getcwd(),
             "assistant_text": context,
         }
-    result = await run_script_hook(hook, context, hook_event)
+    elif hook.event == HOOK_EVENT_SESSION_LANE_CHANGED:
+        # Mirror fire()'s stamped defaults: that stamping lives inside fire(), which
+        # this endpoint bypasses, so a lane hook tested here would read no keys at all.
+        hook_event = {
+            "hook_event_name": hook.event,
+            "cwd": os.getcwd(),
+            "slot": "",
+            "added": [],
+            "removed": [],
+        }
+    # This hook came from `store.get`, so running it directly would mutate the stored object
+    # on the event loop while a fire folds into it.
+    # parent_session_key: without it run_script_hook resolves sk="" and governance falls back
+    # to ceiling-only, so a profile that denies script_hooks would not be applied to a test.
+    hook_event = dict(hook_event or {"hook_event_name": hook.event, "cwd": os.getcwd()})
+    # An app token permitted for this route is not the dashboard, and an app bind outranks the
+    # surface, so thread the verified app and claim the dashboard key only when none is bound.
+    caller_app = str(request.get("app", "") or "")
+    hook_event["parent_app"] = caller_app
+    hook_event["parent_session_key"] = f"app:{caller_app}" if caller_app else "dashboard:hook_test"
+    result = await store.run_one_and_fold(hook, context, hook_event)
     _sel().log_tool_invocation(
         session_key="dashboard:hook_test",
         agent="kirocrew",

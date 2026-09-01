@@ -4311,7 +4311,13 @@
       "errors": "Errors",
       "failed_to_load": "Failed to load {{section}}",
       "failed_to_load_hooks": "Failed to load hooks: {{error}}",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks run shell commands on chat events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Tool hooks support matcher patterns to filter by tool name.",
+      "matcher_lane_pill_gloss": "board column",
+      "hook_test_governance_repair": "A governance profile denies script hooks. Enable capabilities.script_hooks in the active profile to let this hook run.",
+      "matcher_lane_never_fires_typed": "This field compares tag IDs, so a hook saved this way is never going to fire. No screen shows a tag ID yet: run the hook once with an empty matcher and read the ID out of KIROCREW_HOOK_CONTEXT. A firing matcher looks like {{shape}}.",
+      "matcher_lane_scope": "Only a move you make in the dashboard fires it, never one an app or an automation makes.",
+      "matcher_lane_hint": "Leave empty to fire on any move between columns you created: each run gets the added and removed columns in KIROCREW_HOOK_CONTEXT, so the script can branch on them.",
+      "matcher_placeholder_lane_empty": "Matcher (optional)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks run shell commands on lifecycle events: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Tool hooks support matcher patterns to filter by tool name; SessionLaneChanged fires when a session's board column changes.",
       "matcher_mode": "Matcher mode",
       "matcher_optional_e_g_deploy": "Matcher (optional, e.g. *deploy*)",
       "matcher_tool_filter_e_g_fs_write_git": "Matcher (tool filter, e.g. fs_write, @git/*)",
@@ -4329,7 +4335,8 @@
       "test_failed": "Test failed",
       "retry": "Retry",
       "show_last_error": "Show last error for {{name}}",
-      "test_failed_for": "Test failed for {{name}}"
+      "test_failed_for": "Test failed for {{name}}",
+      "matcher_lane_automatic": "The automatic columns — Working, Idle, Needs approval, Waiting on you — never fire it."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "A unique identifier for this workspace. Agents reference workspaces by name.",

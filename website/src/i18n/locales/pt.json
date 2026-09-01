@@ -10900,7 +10900,13 @@
       "filter_hooks": "Filtrar hooks…",
       "hook_name": "Nome do hook",
       "hooks": "Hooks",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "Hooks executam comandos de shell em eventos de chat: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Hooks de ferramenta aceitam padrões de correspondência para filtrar por nome da ferramenta.",
+      "matcher_lane_pill_gloss": "coluna do quadro",
+      "hook_test_governance_repair": "Um perfil de governance recusa script hooks. Ative capabilities.script_hooks no perfil ativo para que este hook possa correr.",
+      "matcher_lane_never_fires_typed": "Este campo compara IDs de etiqueta, portanto um hook guardado assim nunca dispara. Para obter o ID, execute o hook uma vez com o matcher vazio e leia KIROCREW_HOOK_CONTEXT. ({{shape}})",
+      "matcher_lane_scope": "Só um movimento que você faz no painel o dispara, nunca um feito por uma app ou automação.",
+      "matcher_lane_hint": "Deixe vazio para disparar a cada mudança de coluna do quadro: cada execução recebe as colunas adicionadas e removidas em KIROCREW_HOOK_CONTEXT, portanto o script pode decidir sozinho.",
+      "matcher_placeholder_lane_empty": "Correspondência (opcional)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "Os hooks executam comandos de shell em eventos de chat: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged. Os hooks de ferramenta aceitam padrões de correspondência para filtrar por nome da ferramenta; SessionLaneChanged é acionado quando a coluna do painel de uma sessão muda.",
       "last_run": "Última execução",
       "loading": "Carregando…",
       "matcher": "Correspondência",
@@ -10936,7 +10942,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "Tentar novamente",
       "show_last_error": "Mostrar o último erro de {{name}}",
-      "test_failed_for": "Falha no teste de {{name}}"
+      "test_failed_for": "Falha no teste de {{name}}",
+      "matcher_lane_automatic": "As colunas automáticas (Trabalhando, Inativa, Precisa de aprovação, Esperando por você) nunca o disparam."
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "Um identificador único para este workspace. Agentes referenciam workspaces pelo nome.",

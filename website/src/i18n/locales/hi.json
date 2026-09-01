@@ -10744,7 +10744,13 @@
       "filter_hooks": "हुक फ़िल्टर करें…",
       "hook_name": "हुक का नाम",
       "hooks": "हुक",
-      "hooks_run_shell_commands_on_chat_events_agentspa": "हुक चैट इवेंट पर शेल कमांड चलाते हैं: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop। टूल हुक में टूल के नाम से फ़िल्टर करने के लिए मैचर पैटर्न का समर्थन है।",
+      "matcher_lane_pill_gloss": "बोर्ड कॉलम",
+      "hook_test_governance_repair": "कोई गवर्नेंस प्रोफाइल स्क्रिप्ट हुक रोकती है। इस हुक को चलाने के लिए सक्रिय प्रोफाइल में capabilities.script_hooks चालू करो।",
+      "matcher_lane_never_fires_typed": "यह फील्ड टैग ID मिलाता है, इसलिए ऐसे सेव किया हुक कभी नहीं चलेगा। ID पाने के लिए हुक को खाली मैचर के साथ एक बार चलाओ और KIROCREW_HOOK_CONTEXT देखो। ({{shape}})",
+      "matcher_lane_scope": "सिर्फ़ डैशबोर्ड में तुमसे किया गया बदलाव इसे चलाता है, किसी ऐप या ऑटोमेशन का नहीं।",
+      "matcher_lane_hint": "हर बोर्ड कॉलम बदलाव पर चलाने के लिए खाली रखो: हर रन को KIROCREW_HOOK_CONTEXT में जुड़े और हटे कॉलम मिलते हैं, तो स्क्रिप्ट खुद तय कर सकती है।",
+      "matcher_placeholder_lane_empty": "मैचर (वैकल्पिक)",
+      "hooks_run_shell_commands_on_chat_events_agentspa": "हुक्स चैट घटनाओं पर शेल कमांड चलाते हैं: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionLaneChanged। टूल हुक्स टूल के नाम से फ़िल्टर करने के लिए मैचर पैटर्न समर्थित करते हैं; SessionLaneChanged तब चलता है जब किसी सत्र की बोर्ड स्तंभ बदलती है।",
       "last_run": "आख़िरी रन",
       "loading": "लोड हो रहा है…",
       "matcher": "मैचर",
@@ -10780,7 +10786,8 @@
       "skills_inert_warning": "These skills can't fire on this configuration: {{skills}}. To save, switch to UserPromptSubmit or AgentSpawn without a command — or remove the skills.",
       "retry": "फिर कोशिश करें",
       "show_last_error": "{{name}} की पिछली त्रुटि दिखाएँ",
-      "test_failed_for": "{{name}} के लिए परीक्षण विफल"
+      "test_failed_for": "{{name}} के लिए परीक्षण विफल",
+      "matcher_lane_automatic": "स्वतः बनने वाले कॉलम — काम चल रहा है, निष्क्रिय, अनुमोदन चाहिए, तुम्हारी प्रतीक्षा — इसे कभी नहीं चलाते।"
     },
     "kiroCrewAgentsPage": {
       "a_unique_identifier_for_this_workspace_agents_re": "इस वर्कस्पेस के लिए एक अनूठा पहचानकर्ता। एजेंट वर्कस्पेस को नाम से संदर्भित करते हैं।",

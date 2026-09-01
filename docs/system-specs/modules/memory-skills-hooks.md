@@ -3853,6 +3853,54 @@ undeclared key resolves to allow, so a script hook runs unconfined by default
 `sandbox.min_level` floor is pinned, the hook's `SandboxUnavailableError`
 surfaces as the result's `error`, naming the setting.
 
+**A run whose START cannot be recorded does not happen.** A `SessionLaneChanged` run writes a
+`started` invocation row before the command; every script-hook run writes an outcome row on every
+completion path; and the two fail in
+OPPOSITE directions on purpose. The `started` row is `critical=True`: written synchronously,
+audit-or-DENY, and when it cannot be persisted the run is refused. Outcome rows stay fail-soft,
+because by the time one is written the command has already run and refusing proves nothing. The
+split follows SEL's criterion, ATTENDEDNESS: that hook fires with nobody watching.
+
+The refusal does **not** reuse the PreToolUse BLOCK signal. `exit_code=2` means "block the tool", so
+returning it on a filesystem fault would dress an audit failure as a policy decision; a refused run
+returns `-1` with `last_error` = "Refused: the run's audit record could not be written".
+
+`TestTheStartRowGatesTheRun` pins that an unwritable log refuses a warm run;
+`TestAColdAuditLogStopsTheRun` pins the same for a cold one and that no command is spawned; and
+`TestARefusedRunIsNotAPolicyBlock` pins that the refusal never surfaces as exit 2.
+
+**What a degraded audit subsystem costs, and why it differs per event:** the gate follows
+ATTENDEDNESS, which is SEL's own criterion, not blast radius and not symmetry.
+
+`SessionLaneChanged` dispatches off the request path with nobody watching, so an unrecordable run is
+REFUSED rather than executed untraced — availability traded for auditability, deliberately. The five
+turn-lifecycle events fire inside an attended turn, so they file no `started` row at all: nothing
+would read it, and writing one would charge every turn a synchronous critical write to no end. The
+two concerns are kept apart on purpose —
+`_audit_gate_row` reports whether the row landed and NEVER claims a record it does not have, while
+`run_script_hook` owns the availability decision, because only the caller knows whether anyone is
+watching. A writer that returned success on a failed write would be an audit-control gap whatever
+the caller then did with it. Extending refusal to them would have traded a
+`PreToolUse` guard hook's availability for consistency rather than for any reported defect, and a
+refused `PreToolUse` returns `-1`, which reads as *allow* — the guard would stop guarding silently at
+exactly the moment auditing was already broken.
+
+A lost OUTCOME row is soft on every event — reported on the hook as `last_error` carrying
+`(audit row not recorded)` while the run itself stands. So what ships is "an audit outage stops the
+UNATTENDED hook and is visible", never "an audit outage lets an unattended run proceed unrecorded"
+and never "an audit outage disarms an attended guard".
+
+**Why the criterion is a named set and not an equality.** `UNATTENDED_HOOK_EVENTS` sits beside
+`HOOK_EVENTS` and holds one member today, which is deliberate rather than premature: the two forms
+fail in opposite directions. With a set, an unattended event added later and never enrolled is
+visibly absent at a declaration whose whole purpose is to list them, and the omission costs an
+ungated run of a NEW event. With `hook.event == HOOK_EVENT_SESSION_LANE_CHANGED` buried in
+`run_script_hook`, the same omission is invisible and fails permissive — the event runs untraced,
+which is precisely the outcome the gate exists to prevent. This is the repo's own rule for
+capability identity (harness-parity H5/H6: positive comparison against a named constant or
+membership in a named set, and a capability granted by opt-in membership so nothing inherits it by
+omission), applied to the one property that is a security control here.
+
 ### `safe_read_file(path: str) -> str`
 
 Central guarded file read. Resolves the path via `expanduser().resolve()`, checks against
@@ -3871,6 +3919,399 @@ paths that are *not* sensitive (e.g. the kiro-cli SQLite auth store under `~/.lo
 sibling `emit_internal_read_audit(read_id)` — same audit + fail-closed contract, gated by its own
 `_AUDIT_ONLY_READ_IDS` registry. Adding an allowlist entry is a security-review event; the bytes
 never reach an LLM/agent surface.
+
+### `SessionLaneChanged` — board-lane transitions (`_fire_session_lane_changed`)
+
+Fires when a chat session's **status** tags change through a session-level tag
+transition, so an automation can react to a board lane transition as it happens
+rather than on a timer.
+
+**What it buys, stated exactly: latency, not the removal of reconciliation.**
+Reaction is no longer bounded by a poll interval, and the delta is computed once
+here instead of by every consumer. It does NOT retire the polling loop for a
+subscriber that needs certainty: the v1 delivery bar below is at-most-once and
+in-memory, so such a subscriber still re-reads the board. A subscriber that can
+tolerate a missed transition can drop its timer; one doing irreversible work
+cannot, and gains only latency.
+
+**Which writers fire it — the contract, stated exactly.** "Status tags changed" is
+not true of every site that assigns `slot.tags`; several assign it while no
+transition is happening, and treating them alike would make the event fire on
+process start. The coverage is deliberate and enumerated here so the contract does
+not overpromise:
+
+| site | fires | why |
+|---------------------------------------------|-------|--------------------------------------------------|
+| `chat_tags.api_chat_slot_tags` (PUT tags) | yes | direct session-level tag edit |
+| `chat_tags.api_chat_slot_drop` (drag-drop) | yes | lane reassignment |
+| `chat_tags.api_chat_tag_delete` (strip loop) | yes | deleting a status tag means every holder LEFT that lane |
+| `chat_auto_tag.maybe_auto_tag` | no | never writes status tags at all |
+| `chat_fork` slot copy | no | populates a NEW slot; no session changed lane |
+| `chat_persistence` load / restore paths | no | hydration from disk, not a transition — firing here would fire on startup |
+| `chat_handlers` slot recreate | no | same: restore, not a transition |
+| folder inheritance on slot CREATE (`chat_handlers`, the `validate_folder_tag_ids` apply) | **yes — closing-order step 1** | the tags land on a slot that did not exist a moment earlier, so there is no lane to move FROM; a subscriber watching for arrival in a lane does want a session created directly in it, and `added` / `removed` express exactly that (`added=[id]`, `removed=[]`). It emits because the create handler already runs under a dashboard request, so `_lane_dispatch_is_permitted` applies unchanged and no new authorization rule is needed |
+| folder inheritance on RESTORE (`channel_slots`, persisted `folder_id` branch) | **no — correct not to fire** | this is hydration: the branch runs when a persisted `folder_id` means the filing ALREADY happened. Firing would re-announce every filed session on every restart, so a close-out hook would run again for work long finished — a spurious fire is worse than a missed one here |
+| first channel-slot filing (`channel_slots.surface_channel_session`, birth branch) | **no — known gap, deferred not justified** | creation-only inheritance, the same shape as the dashboard create path: a real arrival that does not fire. Same reason as the create row above — the fix belongs with the choke point, not bolted onto a third caller |
+| agent-driven state transitions | **n/a on this base** | no agent path writes a status tag here; when one exists it is a lane change and should fire, so read this table as the writers that EXIST, not as a closed set |
+| **any writer above, called with an APP token** | **no — deliberate** | `_lane_dispatch_is_permitted` admits the OWNER's dashboard identity only, so an app-driven lane move writes the tag and fires nothing — see below |
+| **any writer above, called by a NON-OWNER dashboard token** | **no — deliberate** | the same gate. `app == ""` marks every confirmed dashboard token, and Slack's dashboard link hands one to an allow-listed user too, so the claim alone would let a non-owner cause an operator's shell command to run. The refusal is audited as `non-owner dashboard caller` |
+
+**What this promises, stated as a limit rather than a feature.** Add the rows up and the
+event fires for **tag edits made through the dashboard's own tag API, and nothing else**.
+A session can therefore enter a lane with no fire at all — by being filed into a folder
+that carries a status tag, by channel-slot filing, or by any caller holding an app token.
+A subscriber that must not miss an arrival cannot treat this event as complete and still
+has to reconcile; the event shortens the polling interval rather than removing the poll.
+
+That is the shape the choke-point section of the RFC argues against, and it ships this way
+knowingly: the three silent writers append to `slot.tags` on paths that do not reach a
+`chat_tags` writer, and routing them through one emitter is the rework that section
+describes. Until that lands, this table — not the event's name — is the contract.
+
+**The permit decision is made at the writer, not passed to the dispatcher.**
+`dispatch_session_lane_changed_bulk(hook_store, *, items)` takes no permit argument: an
+earlier revision made it a REQUIRED keyword so a writer could not reach dispatch without
+answering the app-caller question, and that was withdrawn — the dispatcher never read it
+for anything but a refusal it could make no decision about. Each writer instead calls
+`_lane_dispatch_allowed`, which is the precondition in ONE spelling: it asks whether any
+enabled `SessionLaneChanged` hook is registered and whether this caller is permitted, in
+that order, and no writer calls either underlying helper directly. A writer that
+remembered only one half would dispatch either to nobody or for a caller the gate would
+have refused, so the pair being spelled once is the point. The two shapes the sites need
+are preserved above it: the PUT and drop writers return early on a refusal, while the
+deletion writer keeps it as a guarded condition because the folder cleanup below has to
+run even when the dispatch is refused. The gate stays in the dashboard writer rather than
+moving into `hooks` because it reads `request["app"]`, which `hooks` has no business
+seeing, and because moving it would re-order the audit relative to the no-op guard that
+keeps a label-only edit from auditing a refusal it could never fire.
+
+**A FIFTH writer forgetting the call is caught by a test, not by this table.**
+`TestWriterConventionHasOneSpelling` asserts that each underlying helper is reachable
+from exactly one place — the shared predicate — and that every writer consults the
+predicate, so drift fails the build rather than needing a reviewer to notice it. The
+writer table below still enumerates every writer that exists, but it documents rather
+than polices.
+
+**Who fires it is a second condition, independent of the site.** Every "yes" row
+above holds only for the DASHBOARD user. A request carrying an app token takes the
+same code path, and its tag write still applies, but the hook dispatch is skipped.
+The reason is governance, not caution: dispatching for an app caller would run a
+hook command under a profile that is not its own. The event CAN carry a verified app
+identity — `parent_app` on the hook event, which the run path threads into
+`governance_permits(app=...)` so an app bind outranks the surface — but
+`_fire_session_lane_changed` is reached from the tag write and is handed no app to
+thread, so there is nothing to resolve against and the honest answer is to skip.
+(The `/api/hooks/{id}/test` endpoint IS handed one, on `request["app"]`, and threads
+it; that is why the same app-profile denial is enforced there rather than bypassed.)
+Skipping is silent to the caller (the write is authorized) but
+NOT silent to audit: the gate records a `denied` decision naming the app under
+`operation="hooks.session_lane_changed"`, so a refusal is distinguishable from an app
+that simply never changed a lane, while a PERMITTED dispatch is audited where it can
+actually do something — once per hook that runs, in `run_script_hook`, rather than once
+per lane drag. The check is
+fail-closed — an ABSENT claim means the caller is not a confirmed dashboard caller,
+which is also a denial (the middleware may not have run, or it ran and left the
+claim absent for a person), and the dashboard user is recognised by an explicit
+empty claim rather than by falsiness.
+
+The rollback paths in the PUT and drop writers deliberately do not fire: a refused
+write is rolled back, so no transition occurred. The tag-delete strip is the
+exception and fires on both branches, because there the in-memory strip stands even
+when the persist is refused — the id is already gone from the vocabulary, so the
+session really has left the lane either way.
+
+The folder-inheritance gap is **not fixed here**: filing is a different endpoint
+family with its own write path, and instrumenting it belongs with that surface
+rather than bolted onto the tag writers. A hook that must catch lane membership
+acquired by filing cannot rely on this event today.
+
+The **app-token gap is the same shape and belongs beside it**: an app moving a session
+with an app token takes the identical writer, so the tag is written and no event fires.
+Both matter to the motivating subscriber in the same way — one closing a ticket when a
+session reaches Done sees only dashboard-driven and non-filing transitions, so it must
+reconcile against the board rather than treat the stream as the complete set of arrivals,
+exactly as the at-most-once delivery bar already requires of it.
+
+
+**Why the name is LANE-scoped, not tag-general.** The event name is the one part of
+this surface that can never be corrected: once a hook subscribes, renaming is a
+breaking change for that hook, and unlike a payload key there is no additive way to
+migrate it. The firing contract is status-tags-only, so a tag-general name would
+promise more than the event delivers — and it would make the obvious future
+widening (fire on ALL tag changes) a BREAKING change rather than an additive one:
+every no-matcher subscriber would silently begin receiving auto-tag noise from
+`maybe_auto_tag`, which writes non-status tags routinely. Under a lane-scoped name
+that widening is a NEW event (`SessionTagsChanged`, still unused) beside this one,
+and existing subscribers are untouched. The name was deliberately narrowed before
+merge for exactly that reason; widening the contract later must add an event rather
+than redefine this one.
+
+**This section is the event's compatibility surface.** The payload keys and the matcher token grammar are what a registered hook binds to, so changing either
+breaks existing hooks — they are documented here rather than left to be inferred
+from the first subscriber.
+
+**It ships with ZERO registered subscribers, and that is the cheapest moment it
+will ever have.** The event name, the four payload keys and the token grammar are a
+one-way door: every one of them becomes a compatibility obligation the instant a
+hook binds to it, and today nothing does, so the surface is still free to change.
+That is inherent to adding any hook event rather than a defect of this one — but it
+is the reason the contract is written down BEFORE a subscriber exists rather than
+after, and the reason the name was narrowed pre-merge. Reviewers judging this
+surface should treat now as the last point at which a correction is free; the
+status-only scoping is what keeps the expected future widening additive.
+
+**Payload (stdin JSON).** All three keys are stamped unconditionally, so a hook that
+always reads one never `KeyError`s on an addition-only or removal-only change:
+
+| key | meaning |
+|-----------|--------------------------------------------------|
+| `slot` | the session key whose tags changed |
+| `added` | **status** tag ids added by this transition |
+| `removed` | **status** tag ids removed by this transition |
+
+`added` and `removed` are **status-only**, not the raw set difference. A single tag
+edit can bundle a lane change with a plain-label change, and emitting the whole
+delta would put `added:<label>` in the matcher context — letting a hook match a
+non-status tag, which contradicts the status-only firing contract above. There is no
+`tags` key: a subscriber needing the session's full current state re-reads the live
+store, because dispatch is off the request path and the board can move again first.
+
+Filtering the delta cannot make it empty. The fire gate compares the status-only
+sets, so a dispatch happens only when they differ — the symmetric difference then
+holds at least one id. This is load-bearing rather than incidental: `fire` consults
+a matcher only when the context is non-empty, so an empty delta would skip matcher
+filtering and run EVERY hook registered for the event, the opposite of the intent.
+
+The **delta** is the point: with `tags` alone every consumer would have to persist
+its own prior snapshot to answer "was Done just added?", which moves the diffing
+into every subscriber instead of doing it once here.
+
+**Where a run's status becomes visible to readers.** Readers are served an immutable
+snapshot, so a hook run mutating `last_status` / `last_run` / `run_count` on the live
+object reaches no reader until an unrelated write republishes — the Test endpoint hit
+exactly that, showing stale run status after a click. Both run paths therefore run a
+private copy and fold the difference back through `_merge_run_bookkeeping`, which
+republishes once it has applied it: the fire loop folds its whole batch at the end, and
+`run_one_and_fold` folds a single run in a `finally`, so a timeout, error or
+cancellation is covered by the same guarantee. The fold runs **off the event loop**,
+because publishing takes the store mutex while a CRUD writer holds that same mutex
+across its file lock and fsync.
+
+**Matcher grammar** (built by the module-private `_session_lane_matcher_context`,
+which lives beside `HOOK_EVENT_SESSION_LANE_CHANGED` because the GRAMMAR is the
+event's contract, not the writer's; the builder has no caller outside `hooks.py`,
+since the fire derives the context itself). Tokens are **direction-tagged** and carry the tag **id only**:
+
+```
+added:<id>;  removed:<id>;
+```
+
+Direction is in the grammar because the motivating case is "a session **entered**
+Done"; an untagged context cannot express it, since an `<id>` matcher would fire on
+leaving the lane too.
+
+**A bare lane id matches NOTHING.** The default matcher mode is `glob` and
+matching is **whole-string** `fnmatch`, so a selector must carry wildcards:
+
+| intent            | `glob` selector   | `contains` selector |
+|-------------------|-------------------|---------------------|
+| entered a lane    | `*added:<id>;*`   | `added:<id>;`       |
+| left a lane       | `*removed:<id>;*` | `removed:<id>;`     |
+| any movement      | `*:<id>;*`        | `:<id>;`            |
+
+**Both bounds of the id are load-bearing, not decoration.** Matching is `fnmatch`
+against the whole context, so a selector must pin the id at each end or it matches a
+DIFFERENT lane and the hook that runs belongs to someone else — for a close-out hook,
+an irreversible action on the wrong session.
+
+- The trailing `;` stops a selector for a short id also matching every longer id it
+  **prefixes**: without it `*added:abc*` fires on `added:abcdef;`.
+- The leading `:` stops it matching an id it is a **suffix** of: `*abc;*` fires on
+  `added:xabc;`, because that token ends with the same `abc;`. The direction-tagged
+  rows get this bound for free from `added:`/`removed:`, which is why only the
+  direction-free row has to spell the `:` out.
+
+Neither bound is forgeable: `:` and `;` are both outside the id allowlist
+(`[a-z0-9_-]+`), so no id can contain either. Two generated ids are the same length
+`uuid4().hex[:12]` and can neither prefix nor suffix each other, but `tags.json` is
+hand-editable and legacy artifacts exist — the same path the token validator guards.
+
+**Why the validator is an allowlist and not a separator screen.** `:` and `;` are
+rejected inside an id so it cannot forge its own bounds, but refusing only the
+separators still admits glob metacharacters, and the grammar is consumed by `fnmatch`:
+an id of `*` would make the selector written for it match EVERY lane change and run
+that tag's hook on sessions it was never registered for. Enumerating the safe
+characters refuses that whole class instead of the separators that happened to be
+foreseen. The allowlist is lower-case only, because `_context_matches` folds case and
+an upper-case id would otherwise admit two spellings of one token.
+
+**Why ids and not display names.** Emitting `added:<name>` alongside the id read
+better — an author could write `*added:In_Review*` for a lane shown as "In Review" —
+but it put a user-controlled string into a structural grammar and cost more than it
+bought. Whitespace divides tokens and `:` divides a direction from its value, so a
+name had to be escaped or one lane could forge another lane's token; a collapsing
+sanitizer turned out to be many-to-one (`In Review`, `In:Review` and a literal
+`In_Review` all became `In_Review`), which fires a destructive close-out hook for
+the **wrong** lane, so the escape had to be injective; and the resulting spelling
+(`*added:In_20Review*`) would have been frozen contract from the first subscriber
+onward. Ids already select a lane, contain no separator to escape, and are stable
+across renames, so a matcher keeps working when a lane is relabelled.
+
+The sequencing is settled by the asymmetry: adding name tokens later is **additive**,
+removing them later is **breaking**, and this event ships with zero subscribers — so
+leaving that grammar unfrozen costs nothing today. A subscriber wanting the
+human-readable label reads `added`/`removed` from the payload and resolves the
+ids it finds there; the follow-up event-picker UI can resolve a name to an id when
+composing the matcher.
+
+An id is **validated, not escaped**: ids are `uuid4().hex[:12]`, but `tags.json` is
+persisted state a human can edit, so an id carrying whitespace or `:` is skipped
+rather than tokenized. That degrades matching for that one tag instead of splitting
+into two tokens or forging the opposite direction.
+
+**Contract limits, all deliberate:**
+
+- **Status tags only.** `chat_auto_tag.maybe_auto_tag` writes non-status tags
+  routinely and never writes status ones, so firing on every tag would make the
+  event chatty for the board-lane case that motivates it while adding nothing.
+- **Informational — a hook cannot veto.** Exit code 2 blocks a `PreToolUse` call;
+  this event ignores it. By the time it fires the write is applied and the drag has
+  happened, so a veto would make the board unusable when a hook breaks rather than
+  preventing anything. A refused or rolled-back write never fires it.
+- **Dispatch is off the request path.** Deltas go onto ONE bounded FIFO queue
+  (`_LANE_QUEUE_MAXSIZE`, 512) drained by ONE worker, so delivery is totally ordered —
+  which subsumes the per-session order this event promises. A 4-shard pool keyed on a
+  digest of the slot key was tried and withdrawn: it bought cross-session latency
+  isolation that this event's own at-most-once contract already tolerates, at the cost
+  of four queues, four workers and a hashing rule to document and test.
+  **The v1 delivery bar is deliberately at-most-once and in-memory.** A gateway
+  restart drops whatever is still queued, and an overflow past the bound is
+  dropped and audited. A subscriber doing irreversible work -- closing a ticket when a
+  session reaches Done -- MUST therefore reconcile against the board rather than treat
+  the stream as complete. That is the accepted v1 bar, not an oversight: making the
+  channel durable means persisting a queue and defining redelivery semantics, which is
+  its own change. A slow hook delays every later fire, bounded by the
+  1-300s hook timeout, which is within the same bar.
+  **Subscribers resolve at DRAIN, from the live store, as every other event does.** A
+  queued delta carries the transition, not a subscriber list. A hook registered between
+  the enqueue and the drain therefore receives that transition, and one removed in the
+  same window does not — both within the same at-most-once bar. An
+  earlier revision froze the eligible set at enqueue and deep-copied each definition;
+  that guarded a window only reachable by someone who can already edit `hooks.json`,
+  and therefore already has arbitrary hook execution on the next transition, so the
+  three mechanisms it cost bought no boundary. The `capabilities.script_hooks` gate is
+  still re-checked per execution at drain, and a denial there refuses the run.
+  **Re-entrancy provenance is deferred to a later revision, on the same v1 bar.** No
+  `origin` or `hook_reentry_depth` key is carried today, so a hook whose own action moves
+  a session's status produces a further transition that the payload does not mark as
+  self-induced. Deferring is safe because the payload keys are additive: adding either
+  field later neither breaks a subscriber reading the current shape nor changes an
+  existing key's meaning. Until then a subscriber that writes back to the board is
+  responsible for its own loop-breaking, exactly as the at-most-once bar above makes it
+  responsible for reconciliation.
+  Concurrency is bounded by the
+  worker count, because each dispatch can spawn a hook subprocess and an
+  unbounded scheduler would be an fd/process-exhaustion path. A burst — several
+  cards dragged at once, or a status tag deleted across many holders — is
+  **absorbed, not shed**. Only an overflow past the bound is **dropped and
+  audited** (SEL `outcome=rejected`), and a dropped dispatch means the hook did
+  not run.
+  **A drop is observable in two places, not one:** besides the SEL record it emits
+  a `logger.warning` naming how many of the batch's items were dropped and the
+  queue bound. That
+  matters because the contract puts reconciliation on the hook author — an author
+  auditing "did my close-out run?" can read the gateway log directly and does not
+  need SEL access to see that a drop occurred.
+- **A lane DELETION enqueues one delta per holder.** Deleting a status tag strips
+  it from every session holding it, and each of those is a real transition, so
+  each gets its own queue entry rather than being folded into one task. The fold
+  existed only to survive the in-flight cap this design replaced; the queue
+  absorbs the fan-out instead, so the deletion path is now the same path as every
+  other transition. The per-event payload shape is unchanged: a subscriber still
+  receives one event per session. The alternative this still refuses is awaiting
+  the fires in the writer, which lets a broken hook hang an admin endpoint. One
+  failing fire is isolated so it cannot strand the remaining sessions.
+- **Delivery is ORDERED PER SESSION, unordered across sessions.** A slot key always
+  enters the same queue, and that queue is a FIFO drained by one worker, so a
+  session's own transitions arrive in the order they happened — a close-out hook
+  cannot observe "entered Done" after the session has already left it. That
+  guarantee is deliberate rather than incidental: the motivating subscriber acts
+  irreversibly, and acting on the wrong one of an enter/leave pair is worse than
+  acting late. It is pinned by `test_one_session_keeps_its_own_order`. Order is NOT
+  promised BETWEEN sessions, and there is no latency isolation between them either:
+  one queue means a hook that hangs holds up every session's fires behind it, bounded
+  by that hook's own timeout. **The payload is a DELTA, never a state snapshot.** It
+  carries `slot`/`added`/`removed` and nothing more: an earlier revision also sent a
+  `tags` list holding the post-change set, and it was dropped before the first
+  subscriber bound. Because dispatch is off the request path the board can move again
+  before the hook runs, so such a list could only ever answer "what did this
+  transition land on", never "what is true NOW" — while being shaped exactly like an
+  answer to the latter. A subscriber needing current state re-reads the live store.
+  Stated here because the motivating use runs irreversible effects, and because a
+  payload key the spec tells you to distrust is worse than no key at all.
+- **Delivery is AT MOST ONCE — a missed event is invisible outside SEL.** There is
+  no retry and no persistence: a dispatch is lost if it overflows the bound, if
+  the process restarts with deltas still queued, or if the hook itself fails. Because the
+  motivating use is close-out automation, whose non-arrival looks exactly like a
+  hook that ran and chose to do nothing, a subscriber that needs certainty must
+  reconcile against the board rather than treat this event as a ledger. Stated as
+  bluntly as the veto limit above, because it is as load-bearing.
+- **The lane permit gate audits DENIALS; a permitted dispatch is audited per hook RUN.**
+  `_lane_dispatch_is_permitted` records `outcome="denied"` under
+  `hooks.session_lane_changed` for a caller carrying no dashboard claim, and records
+  nothing on the allow arm. The permitted decision is not un-audited: it is recorded
+  where the privileged thing happens, by `_audit_governance_hook_decision` in
+  `run_script_hook`, once per hook that actually runs and under the same
+  `capabilities.script_hooks` scope as that path's existing `denied` row — so the two
+  outcomes filter as one queryable pair. It is written for EVERY permitted run, attended
+  events included: they are the common path, and a grant that executes a command with no
+  permission-decision row leaves the trail unable to say what was allowed. The row earns
+  its place on its own: read alone,
+  a governance log holding only refusals cannot distinguish a run that was permitted from
+  one that never reached the gate, so it cannot say what was allowed to execute. The
+  consuming query is named: filter SEL on `scope == "capabilities.script_hooks"` over an
+  incident window and group by `decision` — `allowed` rows answer "which hook commands did
+  execute under this profile", which the `denied` rows alone cannot, and the pair's counts
+  reconcile against `hook:<name>` tool invocations to expose a run that bypassed the gate.
+  Recording it at the gate as well was carried and withdrawn: it filed a
+  third row for one decision, on every lane drag, including the default shipping state
+  where no hook can run and nothing could consume the dispatch. The writers additionally
+  skip the gate unless an enabled `SessionLaneChanged` hook is registered, so a refusal
+  is never audited for a lane change that could not have fired; that check reads the
+  store's in-memory list and never resolves `capabilities.script_hooks`, because
+  resolving it walks `profiles/` and must not happen on a tag write.
+- **Only ids are tokenized, and an id must match the `[a-z0-9_-]+` allowlist, so nothing user-controlled reaches the grammar.**
+  Whitespace separates tokens and `:` separates a direction from its value, so a tag
+  NAME reaching a token raw could forge either: a lane named `removed:done` would
+  emit `added:removed:done` and fire a `*removed:done*` cleanup hook on a session
+  that just ENTERED a lane, and `done x` would split and forge a match for a
+  different lane called `done`. Escaping names was tried and dropped as a
+  subtraction: the escape had to be *injective* (collapsing separator runs to `_`
+  made `In Review`, `In:Review` and a literal `In_Review` share one token, firing a
+  destructive hook for the wrong lane), and its spelling would then be frozen
+  contract. Dropping name tokens removes that surface instead of guarding it — see
+  the matcher-grammar section above for the sequencing argument. Ids are
+  `uuid4().hex[:12]` and carry no separator, but are **validated** anyway because
+  `tags.json` is persisted state: a malformed id is skipped, never rewritten.
+- **Three event allowlists diverge intentionally.** The event is in
+  `hooks.HOOK_EVENTS` (dispatchable) and `validation.ALLOWED_HOOK_EVENTS`
+  (registrable through the hook create/update API), and deliberately **absent**
+  from `agent._VALID_HOOK_EVENTS` — kiro-cli rejects a generated agent config
+  naming an event it does not know. A test pins all three memberships together
+  with this rationale, so the divergence cannot be "fixed" by syncing them.
+
+**Known deferral (partially mitigated here).** Resolving the `capabilities.script_hooks`
+gate walks `profiles/` synchronously, so any `async` caller resolving it inline stalls the
+event loop for that walk — a `no-blocking-call-on-event-loop` violation reachable from lane
+dispatch. Both `async` call sites in `hooks.py` therefore await ONE seam,
+`_script_hooks_capability_denied_async`, which hops to a thread. Unconditional, not keyed on
+the event: scoping it to `SessionLaneChanged` was tried and withdrawn, because it put an
+equality branch in shared dispatch that every future event would grow while leaving the
+other events stalling anyway. Centralised in one wrapper rather than a hop at each call
+site, because it remains a CALLER-side workaround: the cause-level remedy is non-blocking
+resolution, or a cached fingerprint, in the owning module — and when that lands there is one
+seam to delete instead of a hop per caller. Synchronous callers outside this module still
+resolve inline and still stall.
 
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)
 

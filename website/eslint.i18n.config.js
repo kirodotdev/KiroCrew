@@ -1347,6 +1347,15 @@ export default [
     },
   },
 
+  // HOOK LIFECYCLE EVENT NAMES ONLY: matched BY VALUE against the backend allowlist,
+  // so a translated one is rejected by the API. Extracted so the page keeps its gate.
+  {
+    files: ['src/pages/hookEventWireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // SEARCH-KEYWORD SYNONYMS ONLY: a manual overlay of extra query terms merged
   // into the Settings search corpus so a query like "dark mode" finds a setting
   // whose label does not contain those words. Every value is a term matched
