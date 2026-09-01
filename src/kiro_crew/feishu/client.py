@@ -259,8 +259,11 @@ class LarkClient:
         # message can be evicted from. Dedup lives in ``receive`` immediately
         # after authorization instead.
 
-        # Only handle plain-text messages for now.
-        if (message.message_type or "") != "text":
+        # Only handle plain-text messages for now. Record the platform type so
+        # an intentional drop is distinguishable from a broken WS connection.
+        message_type = message.message_type or "<missing>"
+        if message_type != "text":
+            logger.info("Feishu inbound ignored unsupported message type: %s", message_type)
             return
 
         sender = getattr(event, "sender", None)

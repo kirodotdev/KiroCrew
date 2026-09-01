@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import pathlib
 import sys
 import threading
@@ -622,7 +623,7 @@ class TestHandleReceiveV1:
         assert inbound.chat_id == "chat-99"
 
     @pytest.mark.asyncio
-    async def test_non_text_message_type_ignored(self) -> None:
+    async def test_non_text_message_type_ignored(self, caplog: pytest.LogCaptureFixture) -> None:
         from kiro_crew.feishu.client import LarkClient
 
         received: list[Any] = []
@@ -634,10 +635,12 @@ class TestHandleReceiveV1:
         client._loop = asyncio.get_running_loop()
 
         data = _make_event(message_id="img-1", message_type="image")
-        client._handle_receive_v1(data)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.feishu.client"):
+            client._handle_receive_v1(data)
         await asyncio.sleep(0.05)
 
         assert len(received) == 0
+        assert caplog.messages == ["Feishu inbound ignored unsupported message type: image"]
 
     @pytest.mark.asyncio
     async def test_no_open_id_ignored(self) -> None:
