@@ -637,11 +637,12 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
 
     Destination and authorization come from the shared oracle
     (:func:`kiro_crew.dashboard.upload_destination.resolve_slack`), which holds
-    this leg's ladder — request-named channel, session-map-linked thread,
-    owner-DM fallback, tracked-channel authorization — next to the non-Slack
-    leg's, so the two cannot drift apart rung by rung (issue #6060). What stays
-    here is what only this leg can answer: the Slack client, its upload verb,
-    and the response shapes.
+    this leg's ladder — the ``channels``-scope governance vet, the
+    restricted-session ceiling, then a request-named channel, a
+    session-map-linked thread, or the owner-DM fallback with its tracked-channel
+    authorization — next to the non-Slack leg's, so the two cannot drift apart
+    rung by rung (issue #6060). What stays here is what only this leg can
+    answer: the Slack client, its upload verb, and the response shapes.
 
     The client-presence check stays AHEAD of the body parse, where it shipped: a
     gateway with no Slack client answers ``skipped: no_slack`` even for a
@@ -667,9 +668,10 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
     if error_resp is not None:
         return error_resp
     assert resolved is not None and raw is not None  # narrowed by the gate
-    # ``is_tracked_channel`` is handed to the oracle rather than imported there:
-    # one binding site, and the module stays free of the Slack handler's config
-    # dependency (same contract as ``persisted_probe`` below).
+    # ``is_tracked_channel`` and the persisted-transcript probe are handed to the
+    # oracle rather than imported there: one binding site, and the module stays
+    # free of both the Slack handler's config dependency and the ``dashboard``
+    # package ``messaging.upload_gate`` may not import.
     destination = await upload_destination.resolve_slack(
         state,
         slack,
@@ -677,6 +679,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         requested_channel=body.get("channel", ""),
         thread_ts=body.get("thread_ts"),
         tracked_probe=is_tracked_channel,
+        persisted_probe=_probe_persisted_session,
     )
     if isinstance(destination, upload_destination.Refusal):
         _audit_file_send(

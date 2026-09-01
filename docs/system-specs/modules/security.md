@@ -1970,3 +1970,26 @@ window that broadcasts at a channel root. Restoring proper *threaded* delivery
 for warm-pool Slack sessions (by writing the HMAC sidecar at warm-pool claim
 time) is a delivery-quality follow-up, not an audience-safety gate — the
 disclosure hazard is closed by the refuse-on-unresolved rule above.
+
+#### Slack Upload Authorization Rungs (`file_send`)
+
+Both `file_send` legs resolve their destination through one oracle (`dashboard/upload_destination`), and both run the same two ceilings there before any destination work:
+
+| Rung | Predicate | Denial |
+|------|-----------|--------|
+| `channels`-scope governance | `upload_destination._slack_egress_permitted` → `vet_and_audit("channels", "slack", fail_closed=True)` | `403` `channels_governance_denied`, SEL governance decision recorded for grant AND denial |
+| Restricted-session ceiling | `upload_gate.uploads_restricted(channel_type="slack")` — the predicate the channel leg and the Telegram/Discord renderers' extraction path share | `403` `restricted_session`, SEL-audited by the shared predicate |
+
+On the Slack leg both are **direct calls**, not registry entries. Slack is deliberately absent from `channel_transports` (its dedicated client and streaming path are not registered), so it never reaches the shared send ladder that applies the governance vet for every other channel — the same situation `chat_compaction_notice._channel_egress_permitted` already resolves the same way. Registering Slack to reach the ladder would change what the registry means; a direct call to the audited seam does not.
+
+Why this leg needs them most: Slack is the broadest-audience surface (a tracked channel can be company-visible) and the only leg whose destination a REQUEST can name (`body["channel"]`, falling back to the session-map link then the owner DM), while the channel leg's destination comes exclusively from the caller's own session-map entry. Without these rungs an incognito/temporary session that refuses to write a transcript, read memory or save a title still uploaded local file bytes into a Slack channel or DM, and a profile denying the `channels` scope refused a Telegram upload while allowing a Slack one.
+
+**They precede destination resolution.** A denied caller never opens an owner DM and never reads the session map, so a refusal leaks nothing about where the file would have gone. (The shared admission gate — containment, MIME allowlist, content scans — still runs ahead of the oracle on both legs.)
+
+**The restricted rung restores the durable flags first.** For a channel-native key the ceiling reads `privacy_mode`'s process-local trackers, which only an INBOUND channel message populates. A turn no inbound message drove — a cron, a webhook-resumed session, a monitor/auto-nudge re-injection, an explicit `file_send` — would otherwise read empty trackers after a gateway restart and ship the bytes the user's `!incognito` forbids. `uploads_restricted` therefore calls `privacy_mode.hydrate` before consulting them, the same canonical restore `_is_restricted_session` uses, so the fix lands once for every caller of the shared predicate (both `file_send` legs and the renderers' extraction path) rather than per leg.
+
+**Sessionless callers are not muted.** The owner-DM fallback serves callers with no session of their own (a cron, the heartbeat, an out-of-band host action). An empty `X-Session-Key` is vetted under `HOST_SESSION_KEY` (`_host`), for the same reason `handlers.messaging` uses that sentinel on its channel legs: an empty key classifies as `unknown` and matches no profile at all, so vetting under it would make host-side governance inert here, while `_host` is the stable bind target operators attach it to. The restricted rung reads no slot and no channel privacy mode for such a key, so it answers permitted. Net effect on an ungoverned host: unchanged.
+
+**Identity asymmetry is inherited, not widened.** The Slack leg resolves its caller LENIENTLY (`_resolve_session_key()`, including the `/proc` ancestor walk) while the channel leg is handed the strict key. Both rungs read that same lenient key; neither introduces a new identity source.
+
+**Denials are refusals, not skips.** Both answer `403` with a machine-readable `code`, so the MCP tool surfaces "Slack upload failed" rather than reporting success for a file that never left. This differs deliberately from the channel leg, where "cannot deliver here" is the common case and a skip is correct.

@@ -1411,6 +1411,64 @@ class TestUploadGate:
         dispatcher, _, _ = _dispatcher({1})
         assert await dispatcher._uploads_restricted("telegram:kirocrew:direct:1") is False
 
+    @pytest.mark.asyncio
+    async def test_a_persisted_mode_survives_an_empty_tracker(self, tmp_path) -> None:
+        # The restart case. The privacy trackers are process-local and only an
+        # INBOUND channel message populates them, so a turn no inbound message
+        # drove — a cron, a webhook resume, a monitor/auto-nudge re-injection, an
+        # explicit file_send — reaches this gate with empty trackers even though
+        # the user's !incognito is on disk. Without the durable restore the gate
+        # reads "unrestricted" and the bytes leave the session that forbade them.
+        from kiro_crew.messaging import privacy_mode
+        from kiro_crew.messaging.upload_gate import uploads_restricted
+        from kiro_crew.session_map import SessionMap
+
+        key = "telegram:kirocrew:direct:1"
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            sm = SessionMap()
+        # ``set_flag`` -> ``_save`` schedules a debounced ``_flush_async`` task on
+        # THIS test's loop, so the retirement has to be in a ``finally``: loop
+        # teardown would otherwise destroy it mid-write ("Task was destroyed but
+        # it is pending"), leaking a failure into whichever test runs next.
+        try:
+            sm.set_flag(key, privacy_mode.MODE_INCOGNITO, True)
+            privacy_mode.reset()  # the empty process-local view a restart leaves
+            state = SimpleNamespace(sessions=SimpleNamespace(_session_map=sm))
+
+            assert (
+                await uploads_restricted(
+                    state,
+                    key,
+                    channel_type="telegram",
+                    persisted_probe=lambda _slot: (False, None),
+                )
+                is True
+            )
+        finally:
+            await sm.aclose()
+
+    @pytest.mark.asyncio
+    async def test_an_unflagged_channel_key_stays_allowed_after_the_restore(self, tmp_path) -> None:
+        # The restore must not turn the common case into a refusal: a conversation
+        # with no durable flag is still permitted.
+        from kiro_crew.messaging import privacy_mode
+        from kiro_crew.messaging.upload_gate import uploads_restricted
+        from kiro_crew.session_map import SessionMap
+
+        privacy_mode.reset()
+        with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
+            state = SimpleNamespace(sessions=SimpleNamespace(_session_map=SessionMap()))
+
+        assert (
+            await uploads_restricted(
+                state,
+                "telegram:kirocrew:direct:1",
+                channel_type="telegram",
+                persisted_probe=lambda _slot: (False, None),
+            )
+            is False
+        )
+
     @pytest.mark.parametrize("restricted", [True, False])
     @pytest.mark.asyncio
     async def test_a_live_dashboard_slot_decides(self, restricted: bool) -> None:
@@ -3350,7 +3408,13 @@ class TestPrivacyModeEnforcement:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(privacy_mode, "hydrate", lambda s, k: seen.append(k))
             await d.handle_message(_dm("hello"))
-        assert seen == [d._session_key(("direct", "7"))]
+        # Asserted as a SET: what matters is which key is restored and that the
+        # pre-rotation one never is. The restore is idempotent and every gate that
+        # reads the process-local trackers runs it, so pinning a call count here
+        # would fail on a second gate joining the turn rather than on the key
+        # being wrong.
+        assert seen, "the inbound path must restore the durable flags"
+        assert set(seen) == {d._session_key(("direct", "7"))}
 
 
 class TestPollingLoopAck:
