@@ -16,7 +16,40 @@ try:
 except ImportError:
     import sqlite3
 
+from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
+
 logger = logging.getLogger(__name__)
+
+# Every query in this module funnels through the ``db`` property, so one check
+# there covers every caller at any stack depth -- including the ones a lexical
+# ``async def`` scan cannot see, which is why this guard exists (#7078, the
+# interprocedural half of #3057).
+#
+# Both narrowings below are temporary and exist for the same reason: this store
+# still has 85 recorded on-loop callers -- the whole of
+# ``.github/sync-io-in-async-baseline.txt``, all of it knowledge paths, owned by
+# the cleanup at #7019.
+#
+# * ``strict_env=STORE_STRICT_ENV`` keeps this store off the SHARED
+#   ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch, which ``setup.py``'s ``test_e2e``
+#   and ``ci.yml`` already export into the e2e gateway for history's clean
+#   surface. On the shared flag, the on-loop ``/api/knowledge/stats`` and
+#   ``/api/knowledge/namespaces`` handlers would raise and 500 the e2e run.
+# * ``dev_mode_arms_strict=False`` keeps a developer gateway from raising on that
+#   same backlog, which would report tracked work as a regression and push the
+#   developer to unset ``KIROCREW_DEV_MODE`` -- silencing history.py's guard too.
+#
+# When #7019 empties that baseline, delete both arguments and this store joins
+# the shared switch.
+_ON_LOOP_DB_GUARD = OnLoopDBGuard(
+    label="knowledge store",
+    remedy=(
+        "Offload the call (await asyncio.to_thread(...), or a named lane from "
+        "kiro_crew.executors) so the busy wait runs off the loop."
+    ),
+    strict_env=STORE_STRICT_ENV,
+    dev_mode_arms_strict=False,
+)
 
 
 class KnowledgeBundleError(ValueError):
@@ -285,6 +318,7 @@ class KnowledgeStore:
     @property
     def db(self) -> sqlite3.Connection:
         """The calling thread's connection, created lazily on first use."""
+        _ON_LOOP_DB_GUARD.check()
         conn = getattr(self._thread_local, "conn", None)
         if conn is None:
             conn = self._connect()

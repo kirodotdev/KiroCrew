@@ -42,9 +42,9 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
-from kiro_crew.history import on_loop_persist_strict
 from kiro_crew.knowledge.llm_pool import LLMPool
 from kiro_crew.llm_helpers import _extract_json_of_type
+from kiro_crew.on_loop_db import OnLoopDBGuard
 from kiro_crew.platform_compat import is_link_or_junction, unlink_link_or_junction
 
 try:
@@ -203,48 +203,24 @@ def _safe_campaign_dir(campaign_id: str) -> Path | None:
 # --- Database ---
 
 
-class OnLoopDBError(RuntimeError):
-    """A campaigns-DB connection was opened on the event loop under strict mode."""
-
-
-_ON_LOOP_DB_WARN_INTERVAL_S = 60.0
-_on_loop_db_warn_last = 0.0
-
-
-def _check_on_loop_db_discipline() -> None:
-    """Enforce (strict) or diagnose (production) an on-loop ``_get_db`` entry.
-
-    Called at the top of :func:`_get_db`. No running event loop means the
-    caller is already off-loop (worker thread / executor / CLI) — the common,
-    correct case — and this is a no-op.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return  # off-loop: the sanctioned path — nothing to flag
-    if on_loop_persist_strict():
-        raise OnLoopDBError(
-            "auto_research campaigns DB opened on the event loop; the 30s "
-            "busy timeout means one lock wait can stall the loop past the "
-            "watchdog budget and kill the gateway. Offload the DB section "
-            "(asyncio.to_thread / run_in_executor) like the surrounding "
-            "handlers do."
-        )
-    global _on_loop_db_warn_last
-    now = time.monotonic()
-    if now - _on_loop_db_warn_last >= _ON_LOOP_DB_WARN_INTERVAL_S:
-        _on_loop_db_warn_last = now
-        logger.warning(
-            "auto_research: _get_db() ran ON the event loop without "
-            "offloading; a contended write here blocks every task (including "
-            "the watchdog heartbeat) for up to 30s. Route it through "
-            "asyncio.to_thread / run_in_executor.",
-            stack_info=True,
-        )
+# The campaigns DB carries a 30s busy timeout, so one on-loop lock wait can
+# outlast the 25s loop-stall watchdog budget and kill the gateway. #7039
+# offloaded all six call sites and added this guard; it now uses the shared
+# implementation in ``kiro_crew.on_loop_db``. Defaults are deliberate: this
+# surface IS fully offloaded, so it stays on the shared
+# ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch (which the e2e harness exports) and
+# keeps the dev-mode arm, where a raise means genuinely new drift.
+_ON_LOOP_DB_GUARD = OnLoopDBGuard(
+    label="auto_research campaigns DB",
+    remedy=(
+        "Offload the DB section (asyncio.to_thread / run_in_executor) like the "
+        "surrounding handlers do."
+    ),
+)
 
 
 def _get_db() -> sqlite3.Connection:
-    _check_on_loop_db_discipline()
+    _ON_LOOP_DB_GUARD.check()
     dbp = db_path()
     dbp.parent.mkdir(parents=True, exist_ok=True)
     # Explicit 30s busy timeout (vs the 5s driver default). The research worker
