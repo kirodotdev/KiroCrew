@@ -41,6 +41,7 @@ from kiro_crew.embeddings import (
 from kiro_crew.executors import embed_executor, run_in_embed_pool
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -49,7 +50,7 @@ from kiro_crew.sandbox import (
     wrap_argv,
     wrap_argv_async,
 )
-from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import _get_memory, _is_restricted_session, _redact_memory_field, read_bounded_json
 from .cron import _recognize_session
@@ -73,7 +74,7 @@ _history_write_lock = LoopBoundLock()
 _MODEL_LOAD_TIMEOUT_SECS = 600.0
 
 # Log-line budget for pip/ensurepip stderr in the warnings below. The bound is
-# applied by redact_and_truncate AFTER redaction runs over the FULL decoded
+# a slice applied AFTER redact_log_via_context runs over the FULL decoded
 # stderr, so a credential straddling the boundary cannot survive as an
 # unredacted fragment (the redact-before-bound invariant; see security.py).
 _PIP_STDERR_LOG_CHARS = 500
@@ -908,7 +909,7 @@ async def _ensure_pip_available() -> tuple[bool, str]:
         if proc.returncode != 0:
             logger.warning(
                 "ensurepip bootstrap failed: %s",
-                redact_and_truncate(stderr.decode(errors="replace"), _PIP_STDERR_LOG_CHARS),
+                redact_log_via_context(stderr.decode(errors="replace"))[:_PIP_STDERR_LOG_CHARS],
             )
             return False, "pip bootstrap (ensurepip) failed"
         importlib.invalidate_caches()
@@ -1062,9 +1063,9 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                     if proc.returncode != 0:
                         logger.warning(
                             "faiss-cpu install failed: %s",
-                            redact_and_truncate(
-                                stderr.decode(errors="replace"), _PIP_STDERR_LOG_CHARS
-                            ),
+                            redact_log_via_context(stderr.decode(errors="replace"))[
+                                :_PIP_STDERR_LOG_CHARS
+                            ],
                         )
                         _embedding_setup_status = {
                             "step": "idle",
