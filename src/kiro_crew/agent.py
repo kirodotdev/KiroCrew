@@ -999,6 +999,53 @@ def _extra_mcp_servers() -> dict[str, dict]:
     return dict(extra) if extra else {}
 
 
+def _is_managed_gateway_leftover(spec: Any) -> bool:
+    """True only for a persisted AgentCore Gateway URL leftover.
+
+    Inject never writes a ``command`` under the reserved name. A
+    command-shaped server is the operator's and must survive rebuild.
+    Any AgentCore Gateway URL under the reserved name is a leftover,
+    including rows that carry headers or other extras: those fields
+    would otherwise keep a bearer invocable after a profile denial.
+    Other remotes under the reserved name stay. A non-object entry
+    is not a positively matched leftover.
+    """
+    if not isinstance(spec, dict):
+        return False
+    command = spec.get("command")
+    if isinstance(command, str) and command.strip():
+        return False
+    from kiro_crew.platform.agentcore_sigv4 import is_agentcore_gateway_url
+
+    url = spec.get("url")
+    return isinstance(url, str) and is_agentcore_gateway_url(url)
+
+
+def _merge_edition_mcp(mcp: dict[str, Any]) -> None:
+    """Merge edition extras and retract a persisted managed Gateway entry.
+
+    Extras are ADD-only (setdefault) after secret keys are stripped so a
+    companion ``Authorization`` header cannot land in kirocrew.json. The
+    Gateway is session-injected, never written into the agent file, so a
+    profile that disabled AgentCore cannot inherit it from ``--agent``.
+    Only a positively identified leftover (an AgentCore Gateway URL
+    with no command) is retracted. Other URL-only remotes under the
+    reserved name stay. Login withhold of other remotes is a later PR.
+    """
+    from kiro_crew.platform.agentcore_gateway import (
+        GATEWAY_SERVER_NAME,
+        strip_secret_spec_keys,
+    )
+
+    for name, spec in _extra_mcp_servers().items():
+        if name == GATEWAY_SERVER_NAME or not isinstance(spec, dict):
+            continue
+        mcp.setdefault(name, strip_secret_spec_keys(spec))
+    leftover = mcp.get(GATEWAY_SERVER_NAME)
+    if leftover is None or _is_managed_gateway_leftover(leftover):
+        mcp.pop(GATEWAY_SERVER_NAME, None)
+
+
 def _extra_mcp_scope_globals() -> list[Path]:
     """Provider-global MCP config files contributed by the edition (CPP seam).
 
@@ -2214,8 +2261,7 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     # contributes {} (unchanged), the Amazon companion adds the internal MCP server etc.
     # Entries are already kiro-spec-shaped, so we only extend the map — no spec
     # restructuring, deny_unknown_fields invariant preserved.
-    for name, spec in _extra_mcp_servers().items():
-        mcp.setdefault(name, dict(spec))
+    _merge_edition_mcp(mcp)
 
     # Default-model tracking ("managed" vs frozen) is recorded in the
     # agent_state sidecar by the install path (rebuild_agent_config), never as
@@ -2347,12 +2393,7 @@ def _refresh_dynamic_fields(config: dict, *, gated_off: "frozenset[str] | None" 
         if "autoApprove" in spec and is_new:
             entry["autoApprove"] = list(spec["autoApprove"])
 
-    # Edition-contributed MCP servers (PlatformContext).  ADD-only: only seed a
-    # server the user doesn't already have, so user customizations on a refresh
-    # are preserved.  Standalone contributes {} (unchanged); Amazon adds
-    # the internal MCP server etc.  Already kiro-spec-shaped — no restructuring.
-    for name, extra_spec in _extra_mcp_servers().items():
-        mcp.setdefault(name, dict(extra_spec))
+    _merge_edition_mcp(mcp)
 
     # Security: hooks always from bundled config.
     # Hard-fail if bundled defaults are missing — deny-by-default.

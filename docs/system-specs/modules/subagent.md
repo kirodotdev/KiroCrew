@@ -677,11 +677,15 @@ Decision + lifecycle:
 - `SubagentManager._should_use_session_sharing(info)` gates the path: config flag
   on, parent session eligible (`SessionManager.is_session_sharing_eligible`), and
   no backend-specific overrides (`model` / `allowed_tools` / `bare`).
-- `_create_shared_session()` resolves the parent's `AcpRuntime` via
+- `_create_shared_session()` (facade) delegates to
+  `RunEventCoordinator._create_shared_session_impl` in
+  `subagent_manager/run.py`. That impl resolves the parent's `AcpRuntime` via
   `_get_parent_runtime()` (falling back to `SessionManager.get_subagent_runtime()`
-  — a companion runtime), calls `runtime.create_session()`, and wraps the handle
-  in `AcpSessionProvider`. `SubagentInfo._session_sharing` / `_shared_provider`
-  record the shared path.
+  — a companion runtime), calls `runtime.create_session()` with
+  `crew_agent=agent or ""` and `session_key` so AgentCore identity binds the
+  child to this session rather than inheriting the parent's leftover claim,
+  and wraps the handle in `AcpSessionProvider`. `SubagentInfo._session_sharing`
+  / `_shared_provider` record the shared path.
 - On any failure the code falls back transparently to the legacy
   per-process path (`get_or_create`).
 - Cleanup (`_run` finally + `_force_reap`) calls `_shared_provider.shutdown()` to

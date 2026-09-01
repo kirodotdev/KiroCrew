@@ -637,6 +637,7 @@ class AcpProvider(LLMProvider):
                     resume_sid,
                     cwd=work_dir,
                     agent=agent or None,
+                    session_key=getattr(self._client, "_session_key", "") or "",
                 )
                 if attempt:
                     logger.info(
@@ -838,6 +839,7 @@ class AcpProvider(LLMProvider):
                     handle = await runtime.create_session(
                         cwd=work_dir,
                         agent=agent or None,
+                        session_key=getattr(self._client, "_session_key", "") or "",
                     )
                 except AcpRuntimeError as exc:
                     if runtime.saw_not_logged_in():

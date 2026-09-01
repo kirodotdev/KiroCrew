@@ -104,6 +104,7 @@ class AcpSessionProvider(LLMProvider):
         new_handle = await self._runtime.create_session(
             cwd=self._runtime._work_dir,
             agent=self._runtime._agent or None,
+            session_key=self._session_key,
         )
         # Re-apply the configured non-default model to the fresh session. A new
         # session/new reverts to the agent-config default model, so a warm worker

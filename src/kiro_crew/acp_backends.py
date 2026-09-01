@@ -54,6 +54,13 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
     }
 )
 
+# Backends allowed to receive the AgentCore SigV4 Gateway inject on
+# session/new. Workload posture signs with the instance role; a harness
+# that is not a member must not inherit that bearer (harness-parity H6/H7/H8).
+# KAS and the dormant Claude seam are not members — they have no reviewed
+# inject path. Stated as opt-in membership, never ``not is_claude``.
+ACP_BACKENDS_AGENTCORE_GATEWAY: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO})
+
 # ── The selectable registry ──
 
 #: What the public edition ships.

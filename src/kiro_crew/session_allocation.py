@@ -536,7 +536,12 @@ class SessionAllocationService:
             parent_session_key, agent=agent, cwd=cwd
         )
         try:
-            handle = await runtime.create_session(cwd=cwd or None, agent=agent or None)
+            handle = await runtime.create_session(
+                cwd=cwd or None,
+                agent=agent or None,
+                crew_agent=agent or "",
+                session_key=key,
+            )
         except AcpWorkspaceBindingError:
             return await owner.get_or_create(
                 key,

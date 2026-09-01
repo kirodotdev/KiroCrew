@@ -108,11 +108,23 @@ optional `KIROCREW_AGENTCORE_GATEWAY_URL` from `--agentcore-gateway-url`.
 Default `none` is the historical launch. Destroying the stack deletes the
 identity. The launcher Policy.json grows only the control-plane
 create/delete/tag verbs — never `InvokeGateway`. The extra can fetch
-`GetWorkloadAccessToken*` on the box. A later stack PR rewrites
-workload `gateway_mcp_spec` onto a localhost SigV4 proxy so kiro-cli
-can `InvokeGateway`; this PR does not start that proxy and does not
-inject MCP. The extra does not create the Gateway or its targets —
-the operator supplies an existing MCP URL.
+`GetWorkloadAccessToken*` on the box. Workload `gateway_mcp_spec`
+rewrites onto a localhost SigV4 proxy so kiro-cli can `InvokeGateway`
+(preferred listen port `18765`, overridable with
+`KIROCREW_AGENTCORE_PROXY_PORT`). A failure after that hop has
+flushed response headers closes the connection; it does not emit a
+second 502 onto the MCP body. Inbound reads are socket-timed and the
+listener admits at most ``PROXY_MAX_INFLIGHT`` concurrent handlers so
+an incomplete upload cannot pin a thread forever. Catalog
+`tools/list` through that proxy (`agentcore_inspect._mcp_post`)
+uses `loopback_urlopen` so `HTTP_PROXY` cannot receive
+`X-Kirocrew-Proxy-*` credentials. Each hop also refuses a
+session key that is no longer registered (shared-runtime leftover
+headers after child teardown), except `HOST_SESSION_KEY`. Catalog
+reads at most
+`TOOLS_LIST_MAX_BYTES + 1`, and rejects an oversized
+body rather than buffering an unbounded MCP reply. The extra does not create the
+Gateway or its targets — the operator supplies an existing MCP URL.
 
 See-and-configure on the dashboard is a later stack PR
 (`GET`/`PUT /api/agentcore/identity`, Settings → Security → Agent identity).

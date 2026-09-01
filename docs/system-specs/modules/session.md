@@ -423,9 +423,39 @@ pass `{channel_type, provider_user_id}` the same way without a second
 session key. `tool_input` cannot supply `subject` / `userId` —
 `reject_tool_input_identity` refuses those kwargs.
 
-Gateway inbound attach (sidecar / SigV4) is a later stack PR. The
-principal must already be known *before* `session/new` so that layer
-can write the sidecar first.
+Workload Gateway MCP is injected only on `session/new` as the live
+loopback SigV4 listen URL. The default Kiro transport is `AcpRuntime`
+(`create_session` / `load_session`); `AcpClient._pooled_mcp_servers`
+is the same inject for the leftover client path. It is never written
+into the agent file.
+The unsigned https Gateway hostname is never injected. Rebuild
+retracts a persisted `agentcore-gateway` row whenever the URL is a
+managed AgentCore Gateway hostname
+(`*.gateway.bedrock-agentcore.<region>.amazonaws.com`), including rows
+that carry headers or other extras — those fields would otherwise keep
+a leftover bearer invocable after a profile denial. An operator
+URL-only remote that is not that hostname, or a command-shaped entry
+under that name, stays.
+Each hop re-checks the calling session's profile ∩ policy **after
+the request body is read, immediately before signing**, so a stalled
+upload cannot keep a permit that was revoked mid-body. It signs only
+when the composed posture is `workload`, and requires **this hop's**
+proxy upstream (not the process-wide replacement listener) to still
+match the ceiling Gateway URL — a stalled request on A cannot
+authorize against B and then sign to A. A session key that is no
+longer registered on a live `SessionManager` is refused even when
+its profile would still permit (shared-runtime leftover headers
+after a child teardown); `HOST_SESSION_KEY` (`_host`) is the
+owner-dashboard catalog path and is never an ACP session. A missing session header
+or unbound proxy token is 401 and SEL-audited
+(`agentcore.sigv4_proxy`, denied) before the response is sent.
+Shared-runtime
+children (`create_session` / `load_session`) inject Gateway under
+the session's `crew_agent` argument, not the parent runtime's
+identity; subagent and task-runner callers pass the child agent. `login` uses JWT
+inbound, not instance IAM. The principal must already be known *before*
+`session/new` so a later login sidecar can attach on the first human
+turn. Login inbound sidecars are a later stack PR.
 
 ## Stop Orchestration
 

@@ -57,6 +57,7 @@ from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_AGENTCORE_GATEWAY,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
@@ -2442,8 +2443,22 @@ class AcpClient:
         agent spec, so injecting the stubs here is what actually pools the
         servers — nothing is written to the user's project or to
         ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
+
+        Workload-posture AgentCore Gateway injects the live loopback SigV4
+        listen URL so session/new outranks a stale agent-file port after a
+        gateway restart; the unsigned Gateway hostname is never injected.
+        Login sidecars are a later PR. HTTP elements are
+        ``{name, type: http, url, headers}`` so kiro-cli deserializes them.
         """
-        return pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
+        servers = pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
+        if self._session_key and self.backend in ACP_BACKENDS_AGENTCORE_GATEWAY:
+            from kiro_crew.platform.agentcore_gateway import session_gateway_servers
+
+            servers = [
+                *servers,
+                *session_gateway_servers(self._session_key, agent=self._agent or ""),
+            ]
+        return servers
 
     def _claude_session_mcp_servers(self) -> list:
         """MCP server array passed to a claude ``session/new`` / ``session/load``.
