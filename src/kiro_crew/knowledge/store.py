@@ -18,6 +18,8 @@ except ImportError:
 
 from kiro_crew.on_loop_db import STORE_STRICT_ENV, OnLoopDBGuard
 
+from .._sqlite_compat import fts5_cjk_match_groups, fts5_segment_for_index
+
 logger = logging.getLogger(__name__)
 
 # Every query in this module funnels through the ``db`` property, so one check
@@ -50,6 +52,12 @@ _ON_LOOP_DB_GUARD = OnLoopDBGuard(
     strict_env=STORE_STRICT_ENV,
     dev_mode_arms_strict=False,
 )
+
+# Bumped when the *term representation* stored in ``items_fts`` changes, which a
+# schema probe cannot detect: the CREATE statement is identical either way, only
+# the text handed to the index differs. Version 1 segments CJK characters
+# (fts5_segment_for_index) so a word inside a spaceless run is addressable.
+FTS_INDEX_VERSION = 1
 
 
 class KnowledgeBundleError(ValueError):
@@ -341,6 +349,25 @@ class KnowledgeStore:
         # concurrent readers alongside a single writer, and busy_timeout
         # serializes rare cross-thread writes.
         self._thread_local = threading.local()
+        # The FTS index rebuild is deliberately NOT done here. This constructor
+        # runs on the event-loop thread (see the note above), and a rebuild is
+        # data-scaled, so doing it here would stall the gateway at boot for the
+        # length of a full reindex. It is triggered instead by the first reader
+        # -- `ensure_fts_index_current` -- which by the same note always runs on
+        # a worker thread.
+        #
+        # Guards the rebuild ONLY, so two reader threads in this process do not
+        # each start one. Deliberately not taken on the FTS write path: the
+        # rebuild acquires this and then SQLite's writer lock, so a writer that
+        # held SQLite's and waited on this one would invert the order and
+        # deadlock until busy_timeout. Writes are serialized by SQLite alone --
+        # see `_fts_terms_segmented`.
+        self._fts_lock = threading.Lock()
+        self._fts_index_current = False
+        # Which term representation `items_fts` currently holds: True once it is
+        # known to be CJK-segmented, None while unknown. Never cached as False --
+        # see `_fts_terms_segmented`.
+        self._fts_segmented: bool | None = None
         self.graph = SimpleDiGraph()
         self._init_schema()
         self._migrate()
@@ -736,7 +763,7 @@ class KnowledgeStore:
         # restart and then re-created as active by auto-discovery, silently
         # un-pausing it. The row is user-registered configuration, not derived
         # data, so only its items are reclaimable.
-        self.db.execute("BEGIN")
+        self.db.execute("BEGIN IMMEDIATE")
         try:
             orphan_sources_q = (
                 "SELECT id FROM sources WHERE id NOT IN (SELECT DISTINCT source_id FROM items WHERE source_id IS NOT NULL) "
@@ -816,7 +843,7 @@ class KnowledgeStore:
         item_id = str(uuid4())
         now = datetime.now().isoformat()
         tags_json = json.dumps(tags or [])
-        self.db.execute("BEGIN")
+        self.db.execute("BEGIN IMMEDIATE")
         try:
             self.db.execute(
                 "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, created_at, updated_at) "
@@ -824,9 +851,7 @@ class KnowledgeStore:
                 (item_id, title, content, item_type, source_id, chunk_index, namespace, summary, tags_json, embedding, content_hash, now, now))
             # Sync FTS: get the rowid of the inserted item
             rowid = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()[0]
-            self.db.execute(
-                "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-                (rowid, title, content, tags_json))
+            self._fts_index(rowid, title, content, tags_json)
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -863,18 +888,18 @@ class KnowledgeStore:
             ).fetchone()
         cols = ", ".join(f"{k} = ?" for k in safe)
         vals = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in safe.values()]
-        self.db.execute("BEGIN")
+        self.db.execute("BEGIN IMMEDIATE")
         try:
             self.db.execute(f"UPDATE items SET {cols} WHERE id = ?", (*vals, item_id))  # noqa: S608
             # Sync FTS: delete with OLD values, insert with NEW values
             if old_row:
-                self.db.execute("INSERT INTO items_fts (items_fts, rowid, title, content, tags) VALUES ('delete', ?, ?, ?, ?)",
-                                (old_row["rowid"], old_row["title"], old_row["content"], old_row["tags"]))
+                self._fts_unindex(old_row["rowid"], old_row["title"],
+                                  old_row["content"], old_row["tags"])
                 new_row = self.db.execute(
                     "SELECT title, content, tags FROM items WHERE id = ?", (item_id,)
                 ).fetchone()
-                self.db.execute("INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-                                (old_row["rowid"], new_row["title"], new_row["content"], new_row["tags"]))
+                self._fts_index(old_row["rowid"], new_row["title"],
+                                new_row["content"], new_row["tags"])
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -884,15 +909,14 @@ class KnowledgeStore:
         """Delete item and its dependents without commit/graph reload (for batch use)."""
         row = self.db.execute("SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)).fetchone()
         if row:
-            self.db.execute("INSERT INTO items_fts (items_fts, rowid, title, content, tags) VALUES ('delete', ?, ?, ?, ?)",
-                            (row["rowid"], row["title"], row["content"], row["tags"]))
+            self._fts_unindex(row["rowid"], row["title"], row["content"], row["tags"])
         self.db.execute("DELETE FROM source_locations WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM mentions WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM entity_relations WHERE source_item_id = ?", (item_id,))
         self.db.execute("DELETE FROM items WHERE id = ?", (item_id,))
 
     def delete_item(self, item_id):
-        self.db.execute("BEGIN")
+        self.db.execute("BEGIN IMMEDIATE")
         try:
             self._delete_item_cascade(item_id)
             self._prune_orphan_entities()
@@ -1045,7 +1069,7 @@ class KnowledgeStore:
         """
         if not item_ids:
             return
-        self.db.execute("BEGIN")
+        self.db.execute("BEGIN IMMEDIATE")
         try:
             self.delete_items_batch_in_txn(item_ids, owner_source_id)
             self.db.execute("COMMIT")
@@ -1278,10 +1302,8 @@ class KnowledgeStore:
                 for row in self.db.execute(
                         f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
                         doomed).fetchall():
-                    self.db.execute(
-                        "INSERT INTO items_fts (items_fts, rowid, title, content, tags) "
-                        "VALUES ('delete', ?, ?, ?, ?)",
-                        (row["rowid"], row["title"], row["content"], row["tags"]))
+                    self._fts_unindex(row["rowid"], row["title"],
+                                      row["content"], row["tags"])
                 self.db.execute(
                     f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed)  # noqa: S608
                 self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
@@ -1341,7 +1363,189 @@ class KnowledgeStore:
             raise
         self._load_graph()
 
+    _FTS_REBUILD_BATCH = 500
+
+    def ensure_fts_index_current(self) -> None:
+        """Rebuild ``items_fts`` if it holds a stale term representation.
+
+        Called by each of the three FTS readers before it matches --
+        :meth:`search_items_fts`, ``HybridRetriever._keyword_search``, and the
+        dashboard's entity-items lookup. Deliberately NOT called
+        from ``__init__``: the constructor runs on the event-loop thread, and a
+        rebuild is proportional to corpus size, so migrating there would stall
+        the gateway at boot for a large legacy library. All three readers run on
+        a worker thread
+        (``run_in_embed_pool`` / ``asyncio.to_thread``), so the one-time cost
+        lands on the first search instead of on startup.
+
+        Steady state is a single boolean check. The first caller takes the lock
+        and does the work; concurrent readers wait rather than each starting
+        their own rebuild.
+
+        **A migration that cannot get the writer lock is not a search failure.**
+        The rebuild opens ``BEGIN IMMEDIATE``, so a concurrent long import can
+        hold the lock past ``busy_timeout`` and raise ``OperationalError``.
+        Every caller is a reader whose own query already degrades to "no keyword
+        hits" on that error, and letting it escape from here instead turns a
+        transient lock into an HTTP 500 -- one that the dashboard's entity lookup
+        does not even guard. So a lock failure leaves the index at its old
+        representation and returns: the read that follows finds legacy terms,
+        which costs the CJK recall this PR restores for that one request and
+        nothing else, and ``_fts_index_current`` stays False so the next reader
+        retries. Only lock/contention errors are absorbed -- a corrupt database
+        raises ``DatabaseError``, which is not caught here.
+        """
+        if self._fts_index_current:
+            return
+        with self._fts_lock:
+            if self._fts_index_current:
+                return
+            try:
+                self._migrate_fts_index()
+            except sqlite3.OperationalError:
+                logger.warning(
+                    "knowledge: FTS index migration could not take the writer lock; "
+                    "serving the legacy index for now and retrying on the next read",
+                    exc_info=True)
+                return
+            self._fts_index_current = True
+
+    def _migrate_fts_index(self) -> None:
+        """Re-index ``items_fts`` when its stored term representation is stale.
+
+        Gated on ``PRAGMA user_version`` rather than a schema probe, because the
+        ``CREATE VIRTUAL TABLE`` text is identical before and after: what changed
+        is the text handed to the index, which SQLite does not record anywhere.
+        ``user_version`` is otherwise unused by this database.
+
+        Ordering matters. The version is bumped only after the whole rebuild
+        commits, so a crash or a kill part-way through leaves the marker at its
+        old value and the next open starts over. A partially rebuilt index is
+        therefore always transient, never a resting state.
+        """
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= FTS_INDEX_VERSION:
+            self._fts_segmented = True
+            return
+        rows = self.db.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+        if rows:
+            logger.info(
+                "knowledge: re-indexing %d item(s) for FTS index format v%d "
+                "(CJK-segmented terms)", rows, FTS_INDEX_VERSION)
+        # IMMEDIATE so the writer lock is held for the whole rebuild: that is what
+        # stops a concurrent writer from reading the old representation and then
+        # writing terms the migrated index cannot match.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            # 'delete-all' is the documented reset for an external-content table:
+            # it drops the index without touching `items`, which holds the data.
+            self.db.execute("INSERT INTO items_fts (items_fts) VALUES ('delete-all')")
+            # Declared before the re-insert, not after: the rows below are written
+            # through _fts_index, which asks _fts_terms_segmented what to write,
+            # and PRAGMA user_version is still the old value until this
+            # transaction commits.
+            self._fts_segmented = True
+            last = 0
+            while True:
+                batch = self.db.execute(
+                    "SELECT rowid, title, content, tags FROM items "
+                    "WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                    (last, self._FTS_REBUILD_BATCH)).fetchall()
+                if not batch:
+                    break
+                for row in batch:
+                    self._fts_index(row["rowid"], row["title"], row["content"], row["tags"])
+                    last = row["rowid"]
+            self.db.execute(f"PRAGMA user_version = {FTS_INDEX_VERSION:d}")
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            # The index is back to whatever it held before, so the declaration
+            # has to go back to unknown rather than to False -- another process
+            # may have migrated the same database meanwhile.
+            self._fts_segmented = None
+            raise
+
+    def _fts_terms_segmented(self) -> bool:
+        """Whether ``items_fts`` currently holds CJK-segmented terms.
+
+        A writer must use the representation the index already holds, because
+        FTS5's ``'delete'`` subtracts the exact terms it is handed: handing
+        segmented terms to a not-yet-migrated index raises
+        ``DatabaseError: database disk image is malformed``. A legacy database
+        has legitimate writers before any reader can migrate it -- the orphan
+        reclaim in ``_migrate`` runs inside the constructor, and the startup
+        watcher sweep can update or delete an item before the first search --
+        so "segment unconditionally" is not available.
+
+        **Serialized by SQLite's writer lock, not by a Python lock.** Every
+        caller reads this from inside a ``BEGIN IMMEDIATE`` transaction, and the
+        rebuild flips it from inside one too. SQLite admits one writer at a time,
+        so a reader of this value already excludes the only thing that can change
+        it -- across processes as well as threads, which a Python lock could not
+        do. Taking a Python lock here instead would invert against SQLite's:
+        a writer holding SQLite's lock would wait on Python's while the
+        rebuilding reader holds Python's and waits on SQLite's.
+
+        A True answer is latched, since ``user_version`` only ever increases, so
+        the steady state costs nothing. A False answer is deliberately NOT
+        cached: another process (an MCP tool server on the same database) may
+        migrate it at any time, and a cached False would have this process keep
+        writing raw terms into a migrated index.
+        """
+        if self._fts_segmented:
+            return True
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= FTS_INDEX_VERSION:
+            self._fts_segmented = True
+        return bool(self._fts_segmented)
+
+    def _fts_terms(self, title, content, tags) -> tuple[str, str, str]:
+        """The three column values as this database's index represents them."""
+        values = (title or "", content or "", tags or "")
+        if not self._fts_terms_segmented():
+            return values
+        return (
+            fts5_segment_for_index(values[0]),
+            fts5_segment_for_index(values[1]),
+            fts5_segment_for_index(values[2]),
+        )
+
+    def _fts_index(self, rowid, title, content, tags) -> None:
+        """Index one item's row in the representation the index holds.
+
+        The single write path into ``items_fts``. Centralised because the
+        representation is not a per-call-site choice: an index built from
+        segmented text and probed with un-segmented text does not match, and the
+        reverse raises.
+
+        Holds no Python lock, by design -- see ``_fts_terms_segmented``. Callers
+        must already own SQLite's writer lock (``BEGIN IMMEDIATE``).
+        """
+        self.db.execute(
+            "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
+            (rowid, *self._fts_terms(title, content, tags)))
+
+    def _fts_unindex(self, rowid, title, content, tags) -> None:
+        """Remove one item's row from ``items_fts``.
+
+        FTS5's ``'delete'`` command subtracts the terms it is given, so it has to
+        be given the same text that was indexed. Passing the wrong
+        representation either leaves the original terms in the index -- which
+        keeps serving deleted or superseded content as live hits, and which
+        ``'integrity-check'`` does not flag -- or raises
+        ``database disk image is malformed`` outright.
+
+        Holds no Python lock, by design -- see ``_fts_terms_segmented``. Callers
+        must already own SQLite's writer lock (``BEGIN IMMEDIATE``).
+        """
+        self.db.execute(
+            "INSERT INTO items_fts (items_fts, rowid, title, content, tags) "
+            "VALUES ('delete', ?, ?, ?, ?)",
+            (rowid, *self._fts_terms(title, content, tags)))
+
     def search_items_fts(self, query, limit=10, offset=0) -> list:
+        self.ensure_fts_index_current()
         safe = self._sanitize_fts5(query)
         if not safe:
             return []
@@ -1357,8 +1561,16 @@ class KnowledgeStore:
 
     @staticmethod
     def _sanitize_fts5(query: str) -> str:
-        tokens = query.split()
-        return " ".join('"' + t.replace('"', '""') + '"' for t in tokens if t)
+        """Escape user input for FTS5 MATCH, ANDing the query's tokens.
+
+        Tokens stay individually quoted so the user's input can never contribute
+        FTS5 operators. CJK runs expand to their adjacent-character phrases
+        (``fts5_cjk_match_groups``) because a spaceless run is one whitespace
+        token but several words; non-CJK input is unchanged. The join is AND:
+        this is the store's direct-search surface, where every typed word is
+        taken as deliberate.
+        """
+        return " AND ".join(fts5_cjk_match_groups(query))
 
     def add_entity(self, name, entity_type, description=None, aliases=None) -> str:
         eid = str(uuid4())
@@ -1709,7 +1921,7 @@ class KnowledgeStore:
         entities_created = 0
         relations_rebuilt = 0
         now = datetime.now().isoformat()
-        self.db.execute("BEGIN")
+        self.db.execute("BEGIN IMMEDIATE")
         try:
             for src in bundle.get("sources", []):
                 # Restore the status from the COLUMN, which ``export_all`` ships
@@ -1758,9 +1970,8 @@ class KnowledgeStore:
                     items_imported += 1
                     row = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item["id"],)).fetchone()
                     if row:
-                        self.db.execute(
-                            "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-                            (row[0], item["title"], item["content"], item.get("tags", "[]")))
+                        self._fts_index(row[0], item["title"], item["content"],
+                                        item.get("tags", "[]"))
             for ent in bundle.get("entities", []):
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "

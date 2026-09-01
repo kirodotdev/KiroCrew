@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from aiohttp import web
 
-from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew._sqlite_compat import fts5_segment_for_index, sqlite3
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.dashboard import part_stream
@@ -576,14 +576,35 @@ async def get_entity_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities/by-name/{name}/items -- items containing entity."""
     store = _store(request)
     name = request.match_info["name"]
-    # Search items via FTS5 for the entity name
-    sanitized = name.replace('"', '""')
-    rows = store.db.execute(
+    rows = await asyncio.to_thread(_entity_items_rows, store, name)
+    return web.json_response([store._serialize_item(r) for r in rows])
+
+
+def _entity_items_rows(store, name: str) -> list:
+    """FTS lookup for an entity name. Runs on a worker thread, never the loop.
+
+    Off-loop for two reasons: a legacy database migrates its FTS index on first
+    read (`ensure_fts_index_current`), which is data-scaled, and the query itself
+    is sqlite I/O.
+
+    The name is matched as ONE FTS5 phrase over the segmented text, which is what
+    an entity name is -- a contiguous string, not a bag of words. For a name with
+    no CJK this is byte-identical to quoting the name directly, so a multi-word
+    ASCII entity ("New York") still requires those words adjacent rather than
+    merely both present. For a CJK name the segmentation makes the phrase address
+    the individual characters the index stores, which quoting the whole run
+    cannot.
+    """
+    store.ensure_fts_index_current()
+    segmented = fts5_segment_for_index(name).strip()
+    if not segmented:
+        return []
+    phrase = '"' + segmented.replace('"', '""') + '"'
+    return store.db.execute(
         "SELECT i.* FROM items i JOIN items_fts f ON i.rowid = f.rowid "
         "WHERE items_fts MATCH ? AND i.status = 'active' ORDER BY i.updated_at DESC LIMIT 50",
-        (f'"{sanitized}"',),
+        (phrase,),
     ).fetchall()
-    return web.json_response([store._serialize_item(r) for r in rows])
 
 
 async def get_related_items(request: web.Request) -> web.Response:

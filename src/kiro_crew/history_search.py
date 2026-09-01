@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
+from kiro_crew._sqlite_compat import is_cjk_char, script_runs
 from kiro_crew.jsonl_util import bounded_records
 
 if TYPE_CHECKING:
@@ -80,16 +81,14 @@ def _is_cjk_char(ch: str) -> bool:
     already arrive as ordinary whitespace tokens and the substring rule serves
     them; segmenting them would change Korean ranking to fix a failure nobody
     has reported. Likewise not full-width forms, punctuation, or symbols.
+
+    The ranges themselves live in :mod:`kiro_crew._sqlite_compat`, which the
+    knowledge FTS dialect also segments by, so the set has ONE owner: two
+    hand-maintained copies of it drifted apart silently, and this module and that
+    one must agree on what "a spaceless script" means or the same query segments
+    differently in session search and knowledge search.
     """
-    cp = ord(ch)
-    return (
-        0x4E00 <= cp <= 0x9FFF  # CJK Unified Ideographs
-        or 0x3400 <= cp <= 0x4DBF  # CJK Extension A
-        or 0x20000 <= cp <= 0x2EBEF  # CJK Extensions B..F (astral)
-        or 0xF900 <= cp <= 0xFAFF  # CJK Compatibility Ideographs
-        or 0x3040 <= cp <= 0x30FF  # Hiragana + Katakana
-        or 0x31F0 <= cp <= 0x31FF  # Katakana Phonetic Extensions
-    )
+    return is_cjk_char(ch)
 
 
 class SearchNeedle(NamedTuple):
@@ -171,16 +170,12 @@ def count_needle(needle: SearchNeedle, folded_text: str) -> int:
     return total
 
 
-def _script_runs(token: str) -> Iterator[tuple[str, bool]]:
-    """Yield ``(run, is_cjk)`` maximal same-script runs of *token*, in order."""
-    start = 0
-    cur = _is_cjk_char(token[0])
-    for i in range(1, len(token)):
-        nxt = _is_cjk_char(token[i])
-        if nxt != cur:
-            yield token[start:i], cur
-            start, cur = i, nxt
-    yield token[start:], cur
+# One owner for splitting text into same-script runs. The name stays because
+# `history.py` re-exports it as part of its facade; only the duplicated body is
+# gone. The shared version returns a list instead of yielding, which the single
+# caller below (a plain `for`) cannot tell apart, and it tolerates an empty
+# string where this copy raised IndexError on `token[0]`.
+_script_runs = script_runs
 
 
 # Words that only NAME a reference type in front of its number ("PR 4411",
