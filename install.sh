@@ -10,7 +10,8 @@
 #   bash install.sh
 #
 # Options:
-#   --voice   Install optional voice extras (pip install -e .[voice])
+#   --voice      Install optional voice extras (pip install -e .[voice])
+#   --agentcore  Install AgentCore token-vending extra (pip install -e .[agentcore])
 #   --mise    Use mise (https://mise.jdx.dev) for Python and Node.js
 #             instead of system package managers. Does not modify your
 #             global mise config.
@@ -27,10 +28,12 @@ unset PYTHONPATH PYTHONHOME
 # ── Parse arguments ──
 USE_MISE=0
 WITH_VOICE=0
+WITH_AGENTCORE=0
 for _arg in "$@"; do
     case "$_arg" in
         --mise)  USE_MISE=1 ;;
         --voice) WITH_VOICE=1 ;;
+        --agentcore) WITH_AGENTCORE=1 ;;
         *) echo "Error: unknown argument '$_arg'" >&2; exit 1 ;;
     esac
 done
@@ -430,9 +433,21 @@ fi
 info "Installing Python package…"
 
 _pip_target="."
+_extras=""
 if [ "$WITH_VOICE" -eq 1 ]; then
-    _pip_target=".[voice]"
+    _extras="voice"
     detail "Including voice extras (.[voice])"
+fi
+if [ "$WITH_AGENTCORE" -eq 1 ]; then
+    if [ -n "$_extras" ]; then
+        _extras="${_extras},agentcore"
+    else
+        _extras="agentcore"
+    fi
+    detail "Including AgentCore extras (.[agentcore])"
+fi
+if [ -n "$_extras" ]; then
+    _pip_target=".[${_extras}]"
 fi
 
 _pip_log="$(mktemp)"
