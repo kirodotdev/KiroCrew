@@ -2350,6 +2350,19 @@ class TestRestart:
         return MagicMock(pid=pid, poll=MagicMock(return_value=None))
 
     @pytest.fixture(autouse=True)
+    def _no_active_service(self):
+        # The denied-service branch consults ``is_service_active()`` after a
+        # refused ``restart_service()``. The real implementation shells out to
+        # systemctl/launchctl, so an unmocked call would make these tests
+        # depend on whether the BUILD HOST runs a kirocrew service. Pin it
+        # False; the denied-branch tests override it per-test.
+        with patch(
+            "kiro_crew.cli_server.service_controller.is_service_active",
+            return_value=False,
+        ):
+            yield
+
+    @pytest.fixture(autouse=True)
     def _tool_available(self):
         # ``_restart`` enters ``_stop`` when the port-lookup tool is ABSENT
         # (find_listening_pids() returns [] both for "nothing listening" and
@@ -2385,6 +2398,80 @@ class TestRestart:
         # And must not poke at the port lookup (the supervisor owns the lifecycle).
         mock_ports.assert_not_called()
         assert "Restarted" in capsys.readouterr().out
+
+    def test_active_service_restart_denied_fails_loud_with_remedy(self, capsys):
+        # A system-scope unit refuses an unprivileged `systemctl restart`
+        # ("Interactive authentication required"), while the unit stays
+        # active. Falling through to the listener path is a silent no-op on a
+        # unix-socket deployment: nothing listens on TCP, so nothing is
+        # stopped, and the ORIGINAL gateway keeps running while the command
+        # reads like a restart. The command must instead fail loudly and name
+        # the privileged command the operator has to run themselves.
+        from kiro_crew import cli_server
+
+        mock_sel = MagicMock()
+
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
+                return_value=True,
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.manual_restart_hint",
+                return_value="sudo systemctl restart kirocrew",
+            ),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids") as mock_ports,
+            patch("kiro_crew.cli_server._stop") as mock_stop,
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_server._restart(None)
+
+        assert exc.value.code == 1
+        # The listener fallback must never be entered: it cannot see a
+        # unix-socket service gateway and would spawn a doomed competitor.
+        mock_ports.assert_not_called()
+        mock_stop.assert_not_called()
+        mock_spawn.assert_not_called()
+        out = capsys.readouterr().out
+        assert "NOT restarted" in out
+        assert "sudo systemctl restart kirocrew" in out
+        audit = mock_sel.log_api_access.call_args.kwargs
+        assert audit["outcome"] == "denied"
+        assert "reason=service_restart_denied" in audit["resources"]
+
+    def test_inactive_service_still_falls_through_after_refused_restart(self):
+        # ``restart_service()`` returning False because NO service is active
+        # must keep taking the foreground path — the denied diagnostic is only
+        # for a unit that is active right now yet refused the restart.
+        from kiro_crew import cli_server
+
+        with (
+            self._mock_sel(),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
+                return_value=False,
+            ),
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                return_value=[],
+            ),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(4321),
+            ) as mock_spawn,
+        ):
+            cli_server._restart(None)
+        mock_spawn.assert_called_once()
 
     def test_no_service_no_running_gateway_spawns_fresh(self, capsys):
         # Restart should be tolerant of a crashed gateway: if the user runs
@@ -2841,6 +2928,12 @@ class TestRestartReadinessVerdict:
             patch("kiro_crew.cli_server.sel", return_value=mock_sel),
             patch(
                 "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=False,
+            ),
+            # Keep the denied-service branch out of these verdict tests (and
+            # keep them off the host's real systemctl/launchctl state).
+            patch(
+                "kiro_crew.cli_server.service_controller.is_service_active",
                 return_value=False,
             ),
             patch(

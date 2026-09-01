@@ -888,7 +888,12 @@ def _restart(cli_port: int | None = None) -> None:
 
     1. If a systemd/launchd service is active AND the caller did not
        explicitly request a specific port, ask the platform to restart
-       it (``systemctl restart`` / ``launchctl unload + load``).
+       it (``systemctl restart`` / ``launchctl kickstart -k``). When the
+       service manager REFUSES that restart while the unit is still active
+       (system-scope unit, unprivileged caller / polkit denial), fail loudly
+       naming the privileged command the operator must run — never fall
+       through to the listener path, which cannot see a service gateway
+       bound to a unix socket and would misreport the outcome.
     2. Otherwise, SIGTERM the foreground gateway via the existing
        lsof+SIGTERM path used by ``kirocrew stop``, then spawn a
        detached replacement and **verify it is serving** before reporting
@@ -902,17 +907,47 @@ def _restart(cli_port: int | None = None) -> None:
     short-circuiting through it would target the wrong gateway.
     """
     port = resolve_client_port(cli_port)
-    if cli_port is None and service_controller.restart_service():
-        sel().log_api_access(
-            caller="cli",
-            operation="gateway_restart",
-            outcome="allowed",
-            source="cli",
-            resources=f"port={port} via=service",
-        )
-        print("✅ Restarted kirocrew service.")
-        _print_token_url(port)
-        return
+    if cli_port is None:
+        if service_controller.restart_service():
+            sel().log_api_access(
+                caller="cli",
+                operation="gateway_restart",
+                outcome="allowed",
+                source="cli",
+                resources=f"port={port} via=service",
+            )
+            print("✅ Restarted kirocrew service.")
+            _print_token_url(port)
+            return
+        if service_controller.is_service_active():
+            # The service manager refused the restart while the unit is active
+            # RIGHT NOW — the system-scope unit needs root/polkit privileges
+            # this process does not have ("Interactive authentication
+            # required"). Falling through to the listener path would be worse
+            # than failing: on a unix-socket deployment nothing listens on TCP,
+            # so the fallback finds nothing to stop, spawns a competitor the
+            # KIROCREW_HOME lock refuses, and the original gateway keeps
+            # running while the command's outcome reads like a restart. Name
+            # the privileged command the operator must run instead. The
+            # active-check runs AFTER the refused restart so a service that
+            # merely stopped in between still falls through below.
+            hint = service_controller.manual_restart_hint()
+            sel().log_api_access(
+                caller="cli",
+                operation="gateway_restart",
+                outcome="denied",
+                source="cli",
+                resources=f"port={port} via=service reason=service_restart_denied",
+            )
+            print(
+                "❌ A kirocrew service is installed and running, but the service "
+                "manager refused to restart it.\n"
+                "   This process lacks the privileges the service's scope "
+                "requires — the gateway was NOT restarted.\n"
+                "   Run the restart yourself:\n"
+                f"       {hint}"
+            )
+            sys.exit(1)
 
     # No service active — bounce the foreground gateway and detach a fresh one.
     # Reuse _stop() for the SIGTERM path so behavior stays in sync if _stop
