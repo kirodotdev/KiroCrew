@@ -89,6 +89,55 @@ def write_state(state: dict[str, Any]) -> None:
     atomic_write(path, json.dumps(state, indent=1))
 
 
+class _StateUnreadable(OSError):
+    """The state document exists but could not be read.
+
+    A distinct type so :func:`_record_run` can say WHICH half of its
+    read-modify-write failed. Both halves reach it as an ``OSError`` and the two
+    are not interchangeable to whoever reads the log: "could not be read" sends
+    that reader to check permissions and file handles, which is the wrong place
+    to look when the truth is that the read was fine and ``write_state`` hit a
+    full disk.
+
+    It stays an ``OSError`` SUBCLASS deliberately. The other caller of
+    :func:`_locked_state_update` -- :func:`set_nightly`, which lets the error
+    reach its handler -- keeps behaving exactly as before this split, so nothing
+    outside this module has to learn the new type to stay correct.
+    """
+
+
+def _read_state_for_update() -> dict[str, Any]:
+    """The state document a read-modify-write is allowed to publish over.
+
+    :func:`read_state` is a DISPLAY read: every failure collapses to ``{}`` so a
+    render never crashes on a state file it could not load. That reading is
+    wrong as the BASE of a mutation, because :func:`_locked_state_update` writes
+    the whole document back -- an empty base there does not mean "no fields to
+    carry forward", it means "replace every account's nightly toggle and run
+    history with this one field". The sidecar lock does not help: it serializes
+    writers, and the loss happens inside it.
+
+    Only the missing file is a failure where ``{}`` is the truth (nothing has
+    been written yet). An unreadable one -- a transient EACCES/EIO, a scanner
+    holding the handle on Windows -- is state we still have, so the error is
+    allowed to propagate and the mutation is abandoned rather than published
+    over state nobody read.
+
+    Corruption keeps its existing repair-on-write behaviour, which is a
+    deliberate decision documented on :func:`_account_state`: a document that
+    parsed to nothing usable carries nothing to lose.
+    """
+    try:
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    except OSError as exc:
+        raise _StateUnreadable(
+            exc.errno, exc.strerror or "state file could not be read", exc.filename
+        ) from exc
+    return data if isinstance(data, dict) else {}
+
+
 def _locked_state_update(mutate) -> Any:
     """Read-modify-write the state file under the sidecar lock.
 
@@ -96,12 +145,16 @@ def _locked_state_update(mutate) -> Any:
     nightly loop); an unlocked read-modify-write would let the later atomic
     write silently discard the earlier run record. Same sidecar-lock shape
     as the share ledger.
+
+    Raises ``OSError`` when the existing state could not be read; see
+    :func:`_read_state_for_update` for why that is not collapsed to an empty
+    document here.
     """
     lock_path = _state_path().with_suffix(".lock")
     _state_path().parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
-            state = read_state()
+            state = _read_state_for_update()
             result = mutate(state)
             write_state(state)
     return result
@@ -125,7 +178,132 @@ def _account_state(state: dict[str, Any], account: str) -> dict[str, Any]:
     return entry
 
 
+#: Runs whose archive reached the bucket but whose state write did not land,
+#: held for the life of THIS process. :func:`last_runs` merges them in, and that
+#: is the whole point: it is what stops :func:`due_for_nightly` re-firing the
+#: unattended loop on a stamp that was never persisted. See :func:`_record_run`.
+#:
+#: Keyed by the state FILE as well as the account and kind. An entry is a claim
+#: about one state document -- "this file is missing a run it should have" -- so it
+#: must never answer for a different one. Production resolves a single fixed path
+#: (``app_data_dir`` is ``app_dir(name) / "data"``, and nothing repoints it), so
+#: this is not guarding a live scenario; what it buys is that the tests are
+#: hermetic by construction instead of through a reset hook every future test has
+#: to remember to call. :func:`_state_key` resolves the element without raising.
+#:
+#: Bounded by the accounts the owner has actually connected times the two backup
+#: kinds, and an entry is dropped as soon as one write for that key succeeds.
+_unpersisted_runs: dict[tuple[str, str, str], dict[str, Any]] = {}
+_unpersisted_lock = threading.Lock()
+
+
+def _state_key() -> str:
+    """The state-file element of a :data:`_unpersisted_runs` key, without raising.
+
+    :func:`_state_path` is NOT a pure path join. It goes through
+    :func:`app_data_dir`, whose last statement is
+    ``mkdir(parents=True, exist_ok=True)``, so merely resolving the path raises
+    ``OSError`` on a read-only filesystem, on EACCES/ENOSPC, or when a parent
+    path is a file. Those are precisely the conditions this overlay exists to
+    survive, which makes an unguarded key derivation self-defeating:
+    :func:`_record_run` derives the key from INSIDE its own except handler, where
+    an exception would 500 a request whose archive is already in the bucket --
+    the exact defect this change exists to remove, reintroduced one layer in.
+    The read is already guarded (:func:`read_state` swallows ``OSError``), so
+    without this the failure is absorbed once and then raised by the very next
+    statement.
+
+    A failure returns a SENTINEL rather than skipping the work. Skipping would
+    drop the held record in exactly the case the hold exists for. One sentinel is
+    consistent for the life of the process, so the overlay still answers
+    :func:`last_runs`, the completed upload still reports, and no caller raises.
+
+    All three key sites go through here rather than each guarding itself: one
+    place to reason about, and one place a future edit cannot forget.
+    """
+    try:
+        return str(_state_path())
+    except OSError:
+        return ""
+
+
+def _remember_unpersisted(account: str, kind: str, record: dict[str, Any]) -> None:
+    with _unpersisted_lock:
+        _unpersisted_runs[(_state_key(), account, kind)] = record
+
+
+def _forget_unpersisted(account: str, kind: str, persisted_at: str) -> None:
+    """Drop the held entry once a write for the same key has persisted.
+
+    Conditional, not unconditional, and the condition is the point. This runs
+    AFTER the sidecar lock is released, so another run for the same key can fail
+    its write and cache a NEWER record inside the window between this run's write
+    and this pop; an unconditional pop would evict that record, and the panel
+    would then report the older archive as the last run while the newer upload
+    has no record anywhere.
+
+    Taking the sidecar lock for the pop would not fix it. The matching
+    :func:`_remember_unpersisted` also runs outside that lock, and more
+    fundamentally two gateway processes hold SEPARATE in-memory caches, so no
+    file lock can serialize one process's pop against the other's cache. The
+    invariant that holds in both cases is monotonic: never evict a record
+    STRICTLY NEWER than the one just persisted.
+
+    An EQUAL stamp evicts. Two back-to-back runs can stamp identically where the
+    clock is coarse -- Windows granularity is far above a microsecond -- and
+    keeping the held record on a tie makes it immortal for the life of the
+    process, since no later write can ever compare greater. A tie means the two
+    records are simultaneous and the persisted one is on disk, so retaining the
+    held copy buys nothing. A stamp that is missing or not a string cannot be
+    ordered and is unusable, so it is dropped.
+    """
+    key = (_state_key(), account, kind)
+    with _unpersisted_lock:
+        held = _unpersisted_runs.get(key)
+        if held is None:
+            return
+        held_at = held.get("at")
+        if not isinstance(held_at, str) or held_at <= persisted_at:
+            _unpersisted_runs.pop(key, None)
+
+
+def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
+    """Overlay this process's unpersisted runs onto what the state file holds.
+
+    Newest wins, rather than memory always winning: a second gateway process on
+    the same data home can persist a NEWER run while this one still remembers a
+    write that failed, and the sidecar lock exists precisely because that other
+    process can exist. Both stamps come from the same UTC
+    ``isoformat(timespec="microseconds")`` call, so comparing the strings orders
+    them -- and microseconds rather than seconds is what makes that comparison
+    able to separate two uploads that finished in the same second. A persisted
+    stamp that is not a string is unusable and loses.
+    """
+    path = _state_key()
+    with _unpersisted_lock:
+        remembered = {
+            kind: record
+            for (state_path, acct, kind), record in _unpersisted_runs.items()
+            if state_path == path and acct == account
+        }
+    for kind, record in remembered.items():
+        persisted = runs.get(kind)
+        persisted_at = persisted.get("at") if isinstance(persisted, dict) else None
+        if not isinstance(persisted_at, str) or persisted_at < str(record.get("at", "")):
+            runs[kind] = record
+    return runs
+
+
 def _record_run(account: str, kind: str, key: str, size: int) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "key": key,
+        "bytes": size,
+        # Provisional. The authoritative stamp is taken inside `mutate`, under the
+        # sidecar lock -- see there. This value survives only on the path where the
+        # READ fails, because `mutate` never runs then.
+        "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds"),
+    }
+
     def mutate(state: dict[str, Any]) -> dict[str, Any]:
         entry = _account_state(state, account)
         runs = entry.setdefault("runs", {})
@@ -133,14 +311,61 @@ def _record_run(account: str, kind: str, key: str, size: int) -> dict[str, Any]:
             # A corrupted non-dict `runs` must not crash AFTER the archive
             # already uploaded (500 + no ledger entry + duplicate on retry).
             runs = entry["runs"] = {}
-        runs[kind] = {
-            "key": key,
-            "bytes": size,
-            "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        }
+        # Stamp HERE, not where `record` was built. `mutate` runs inside the
+        # sidecar lock, so a stamp taken here is ordered by the same lock that
+        # orders the writes; a stamp taken before the lock is not. Two runs can
+        # stamp in one order and acquire the lock in the other -- a manual run
+        # racing the nightly loop -- and then the older-stamped record writes
+        # LAST and the ledger reports the wrong archive as the last run.
+        #
+        # This is load-bearing for more than the ledger: everything that compares
+        # these stamps (the overlay's newest-wins in `_merge_unpersisted`, the
+        # monotonic eviction in `_forget_unpersisted`) is only sound if stamp
+        # order matches WRITE order, which is exactly what generating it in here
+        # buys. Microsecond precision alone does not: it separates two stamps
+        # without telling you which write landed first.
+        record["at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+        runs[kind] = record
         return runs[kind]
 
-    return _locked_state_update(mutate)
+    try:
+        recorded = _locked_state_update(mutate)
+    except OSError as exc:
+        # Two things are true here and only one of them was handled before.
+        #
+        # (1) The archive is ALREADY in the bucket, so raising would 500 a
+        # request whose upload succeeded and send the operator back to the button
+        # for a duplicate -- the same harm the corrupted-`runs` branch above
+        # avoids. So this still does not raise.
+        #
+        # (2) Not raising is not the end of it. `due_for_nightly` decides
+        # due-ness from the PERSISTED stamp and `hooks._run_once` calls it on
+        # every wake, so a write that never landed leaves the loop permanently
+        # due: it re-uploads, unattended and billable, on every wake for as long
+        # as this process lives, behind one log line nobody reads. Holding the
+        # run in process-local memory -- which `last_runs` merges in -- bounds
+        # that to at most one extra upload per gateway restart.
+        #
+        # Which half failed decides the wording, because both arrive as OSError
+        # and they send a reader to different places: `_StateUnreadable` means
+        # the existing document could not be read and was deliberately not
+        # published over, while a plain OSError means the read was fine and
+        # `write_state` failed (ENOSPC, EROFS, EIO). Reporting a full disk as
+        # "could not be read" points at permissions instead.
+        stage = "could not be read" if isinstance(exc, _StateUnreadable) else "could not be written"
+        _remember_unpersisted(account, kind, record)
+        logger.error(
+            "aws-control: %s backup for %s uploaded, but its state file %s, so the run is "
+            "not on disk; holding it in memory for this process so the nightly loop does "
+            "not re-upload the same archive: %s",
+            kind,
+            account,
+            stage,
+            exc,
+        )
+        return record
+    _forget_unpersisted(account, kind, record["at"])
+    return recorded
 
 
 def _stamp() -> str:
@@ -535,6 +760,20 @@ def _account_view(account: str) -> dict[str, Any]:
 
 
 def nightly_enabled(account: str) -> bool:
+    """Whether the owner has authorized unattended uploads for this account.
+
+    Reads through :func:`read_state`, so an unreadable state file answers False.
+    That is FAIL-CLOSED, and it is the opposite of what :func:`last_runs` does
+    with a run it could not persist -- the asymmetry is deliberate, because the
+    two answers cost different things when they are wrong.
+
+    This bit AUTHORIZES spending the owner's money without them present. Read it
+    optimistically and a corrupt or unreadable file becomes a reason to start
+    uploading; refuse, and a transient failure costs one skipped nightly window
+    that the next wake picks up. The run record is the mirror image: it is a
+    record of something that ALREADY happened and is already paid for, so
+    dropping it does not prevent a charge, it causes one.
+    """
     return bool(_account_view(account).get("nightly"))
 
 
@@ -546,8 +785,16 @@ def set_nightly(account: str, enabled: bool) -> None:
 
 
 def last_runs(account: str) -> dict[str, Any]:
+    """The last run per kind, including runs this process could not persist.
+
+    The merge is not cosmetic. A run whose state write failed really did upload,
+    and :func:`due_for_nightly` reads its answer from here -- so without the
+    overlay the nightly loop treats the account as never backed up and uploads
+    again on every wake. See :data:`_unpersisted_runs`.
+    """
     runs = _account_view(account).get("runs", {})
-    return runs if isinstance(runs, dict) else {}
+    runs = dict(runs) if isinstance(runs, dict) else {}
+    return _merge_unpersisted(account, runs)
 
 
 def due_for_nightly(account: str, now: Optional[dt.datetime] = None) -> bool:

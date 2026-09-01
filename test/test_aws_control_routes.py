@@ -2116,6 +2116,35 @@ class TestBackupEndpoints:
             assert _payload(resp)["code"] == "invalid_enabled"
             set_nightly.assert_not_called()
 
+    def test_a_toggle_that_could_not_persist_fails_with_a_structured_error(self):
+        # `set_nightly` now propagates rather than publishing over state it could
+        # not read, so this endpoint has a reachable failure. It must fail loudly
+        # -- reporting a setting the next read contradicts is worse than an error
+        # -- but with the machine-readable `code` every non-2xx here carries.
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        req = _request("POST", f"/backup/{ACCOUNT}/nightly", match_info={"account": ACCOUNT})
+        req.json = AsyncMock(return_value={"enabled": True})  # type: ignore[method-assign]
+        boom = OSError(28, "No space left on device", "/home/someone/.kirocrew/backup.json")
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.backup_mod, "set_nightly", side_effect=boom),
+        ):
+            resp = asyncio.run(
+                handlers[("POST", "/backup/{account}/nightly")](req)  # type: ignore[operator]
+            )
+        body = _payload(resp)
+        assert resp.status == 500
+        assert body["code"] == "state_persist_failed"
+        # The response must not report the toggle as applied...
+        assert "nightly" not in body
+        # ...and must not echo the OSError's rendering, which carries the
+        # absolute path of the state file. The log has it; a response body does
+        # not need to disclose the local filesystem layout.
+        assert ".kirocrew" not in body["error"]
+
     def test_a_real_false_still_disables_nightly(self):
         # The validation must not break the ordinary off path.
         handlers = _registered()

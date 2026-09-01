@@ -1306,7 +1306,24 @@ async def _handle_backup_nightly(request: web.Request) -> web.Response:
         return _bad_request("enabled must be a boolean", "invalid_enabled")
     enabled = raw
     account, _profile, _region = target
-    await asyncio.to_thread(backup_mod.set_nightly, account, enabled)
+    try:
+        await asyncio.to_thread(backup_mod.set_nightly, account, enabled)
+    except OSError:
+        # `set_nightly` now propagates rather than publishing over state it could
+        # not read, so this toggle can genuinely fail to persist. It must fail
+        # LOUDLY -- reporting a setting the next read contradicts is worse than an
+        # error -- but as a structured failure, because every non-2xx this app
+        # returns carries a machine-readable `code` the console switches on.
+        #
+        # The message is FIXED rather than the OSError's own text: that text
+        # renders the absolute path of the state file, and there is no reason to
+        # disclose a local filesystem path in a response body when the log below
+        # already carries it for whoever is actually debugging.
+        logger.exception("aws-control: the nightly toggle could not be persisted")
+        return web.json_response(
+            {"error": "the nightly setting could not be saved", "code": "state_persist_failed"},
+            status=500,
+        )
     return web.json_response({"nightly": enabled})
 
 
