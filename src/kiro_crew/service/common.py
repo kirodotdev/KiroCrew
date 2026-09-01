@@ -319,13 +319,9 @@ def service_path(home: str) -> str:
         "/bin",
     ]
     env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
-    seen: set[str] = set()
-    out: list[str] = []
-    for entry in required + env_path:
-        if entry not in seen:
-            seen.add(entry)
-            out.append(entry)
-    return ":".join(out)
+    # dict.fromkeys dedupes on first occurrence and preserves insertion order,
+    # so the required prefixes keep their precedence over the installer's $PATH.
+    return ":".join(dict.fromkeys(required + env_path))
 
 
 class Platform(enum.Enum):
