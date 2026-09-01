@@ -71,6 +71,15 @@ _MODEL_TEMP_UNAVAILABLE = {
     ),
 }
 
+# A structural "Improperly formed request" rejection (#6022). The backend
+# passes this string through verbatim; before FEAT-001 it fell through to the
+# unknown-shape branch (raw passthrough) with an incidental terminal verdict.
+_MALFORMED_REQUEST = {
+    "code": -32603,
+    "message": "Internal error",
+    "data": "Improperly formed request. (request_id: 863ae6fe-de1d-4149-b3ff-6ee02d8d58a2)",
+}
+
 
 def _handle() -> AcpSessionHandle:
     rt = MagicMock()
@@ -334,3 +343,35 @@ class TestTransientMarkerCoupling:
         formatted = _format_acp_error(_MODEL_UNAVAILABLE, ["claude-sonnet-4-5"])
         assert "does not have access" in formatted
         assert not is_transient_backend_error(formatted)
+
+
+class TestMalformedRequestReachesTheHandlePath:
+    """The shared-runtime path must surface the structural-rejection guidance
+    (#6022) and carry a terminal verdict, mirroring TestNoRawDictInUserFacingError.
+
+    "Improperly formed request" is a DETERMINISTIC structural rejection: the
+    identical payload cannot succeed on retry, so both handle raise sites must
+    format it into repair guidance (never the raw dict) and mark it
+    non-retryable so it is not re-sent in a loop.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_malformed_request_is_actionable(self, driver):
+        msg = str(await driver(_MALFORMED_REQUEST))
+
+        # The dict repr and the JSON-RPC boilerplate are gone.
+        assert "'code': -32603" not in msg
+        assert "ACP error: {" not in msg
+        assert "Internal error" not in msg
+        # It names the failure class and offers a repair affordance.
+        assert "malformed" in msg.lower()
+        assert "/compact" in msg or "/chat new" in msg
+        # request_id survives for support correlation.
+        assert "863ae6fe-de1d-4149-b3ff-6ee02d8d58a2" in msg
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_malformed_request_verdict_is_terminal(self, driver):
+        """A structurally-rejected payload must not be re-sent by the ladder."""
+        assert (await driver(_MALFORMED_REQUEST)).transient is False

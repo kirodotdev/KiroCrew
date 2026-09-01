@@ -24,3 +24,18 @@ AcpError (base)
 | Config load | Invalid JSON → log warning, return defaults |
 | Process spawn | `shutil.which` check before spawn; clear error if missing |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
+
+## Backend Error Classification
+
+`acp/client.py` rewrites raw JSON-RPC backend errors into actionable user text
+(`_format_acp_error`) and decides retry-eligibility (`_is_transient_raw_error`).
+Both key off the SAME module-level `_RE_*` patterns so wording and retry verdict
+never drift. Notable terminal (non-retryable) classes:
+
+- **Malformed request**: a structural rejection (backend "Improperly formed
+  request", #6022). Classified TERMINAL: the identical payload cannot succeed on
+  retry, so the message states the request was malformed and points at a repair
+  affordance (`/compact` to shrink and repair the conversation, or `/chat new`)
+  rather than suggesting a retry.
+- **Usage limit** and **model not entitled**: allowance spent, or the plan lacks
+  the model; also terminal, with guidance to switch model or tier.

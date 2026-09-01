@@ -1282,6 +1282,20 @@ _RE_USAGE_LIMIT = re.compile(
 # flipping an otherwise-terminal error.
 _RE_GENERATE_FAILED = re.compile(r"failed to generate a response", re.IGNORECASE)
 
+# kiro-cli's structural rejection of a payload the backend could not parse:
+# "Improperly formed request". Today this string has NO source-side handling
+# (#6022) and passes through the unknown-shape branch verbatim, so the user gets
+# the raw provider text with no repair affordance. This is a DETERMINISTIC
+# rejection (the payload was rejected for its shape, not a momentary backend
+# fault), so retrying the identical payload can only reproduce the same
+# rejection: it is TERMINAL (non-retryable). Matched against the provider `data`
+# field only (like model-unavailable / generate-failed), so a stray echo of the
+# phrase in the JSON-RPC `message` cannot flip an unrelated error into this
+# branch. Drives BOTH _format_acp_error (repair guidance) and
+# _is_transient_raw_error (terminal verdict) so wording and retry-eligibility
+# never drift.
+_RE_MALFORMED_REQUEST = re.compile(r"[Ii]mproperly formed request", re.IGNORECASE)
+
 # kiro-cli's wording for a concurrent in-flight prompt on the session, read by
 # the user-facing formatter below and by `_raise_acp_error`'s AcpPromptBusy
 # classification. One pattern, but two haystacks: the formatter scopes to the
@@ -1379,6 +1393,16 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     if _RE_USAGE_LIMIT.search(haystack):
         # Terminal: the allowance is spent until it resets. Ahead of the throttle
         # check so limit wording that also reads as rate-limiting stays terminal.
+        return False
+    if _RE_MALFORMED_REQUEST.search(data):
+        # Terminal: a payload rejected for its STRUCTURE (#6022) will be
+        # rejected identically on every retry, so there is no momentary fault to
+        # wait out. Scoped to `data` (mirrors _format_acp_error) so a phrase
+        # echo in the JSON-RPC `message` can't flip an unrelated error. Stated
+        # explicitly and terminal-first (like _RE_USAGE_LIMIT) so the verdict is
+        # intentional and self-documenting, not incidental to the False
+        # fall-through, and so a future transient marker added below cannot
+        # accidentally match malformed-request wording.
         return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
@@ -1658,6 +1682,23 @@ def _format_acp_error(error: object, available_models: Sequence[str] | None = No
                 "backend call died before streaming started, usually a momentary "
                 "capacity blip). Retry in a moment; if it keeps happening, switch "
                 "to a different model in the picker."
+                f"{req_id_suffix}"
+            )
+        elif _RE_MALFORMED_REQUEST.search(data):
+            # Structural rejection (#6022): the backend refused the payload
+            # because of its shape, not a momentary fault. Retrying the same
+            # payload will be rejected identically, so the guidance is to REPAIR
+            # or reset the conversation rather than retry. /compact shrinks and
+            # rebuilds the conversation; a fresh chat (/chat new) drops whatever
+            # in the accumulated context tripped the parser. Kept plain and
+            # non-alarmist, matching the other branches. Matched against `data`
+            # only via the shared _RE_MALFORMED_REQUEST, so a phrase echo in the
+            # JSON-RPC `message` can't flip an unrelated error into this branch.
+            formatted = (
+                "The request was rejected as malformed. This is a structural "
+                "problem with the request, so retrying it as-is will not help. "
+                "Try `/compact` to shrink and repair the conversation, or start "
+                "a fresh chat (`/chat new`)."
                 f"{req_id_suffix}"
             )
         elif _PROMPT_BUSY_RE.search(data):

@@ -69,7 +69,7 @@ from kiro_crew.acp.liveness import (
     boottime_now,
     consult_offloaded,
 )
-from kiro_crew.acp.prompt_blocks import build_prompt_blocks
+from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -705,6 +705,18 @@ class AcpSessionHandle:
                 build_prompt_blocks,
                 message,
                 allow_image=self._runtime.supports_image_prompt,
+            )
+            # Content-free outbound STRUCTURE diagnostics (issue #6022): one
+            # line per turn build recording block counts, per-type counts, and
+            # the serialized byte size — NEVER any block text or bytes — so an
+            # operator can tell a stale/invalid model id apart from a
+            # structurally malformed payload the next time a turn is rejected
+            # as "Improperly formed request". summarize_prompt_structure is
+            # itself no-raise, so this cannot break the live turn.
+            logger.debug(
+                "acp prompt structure for session %s: %s",
+                self._session_id,
+                summarize_prompt_structure(prompt_blocks),
             )
             return METHOD_PROMPT, {
                 "sessionId": self._session_id,
