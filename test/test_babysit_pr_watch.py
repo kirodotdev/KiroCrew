@@ -507,6 +507,53 @@ def test_malformed_known_reds_parameter_is_terminal(monkeypatch, module):
         _tick(module, _msg(known_reds=1))
 
 
+@pytest.mark.parametrize("spelling", ["false", "no", "0", "off"])
+def test_string_wake_on_green_is_refused_not_coerced(monkeypatch, module, spelling):
+    """The cron message is JSON, so a caller can write a string. bool("false")
+    is True, so coercing would INVERT an explicit disable and wake the operator
+    they told it not to. Every non-boolean spelling must stop the watch with a
+    terminal Done instead of running forever with the opposite behaviour."""
+    _wire(monkeypatch, module, _payload([_check("CI", "SUCCESS")]))
+    with pytest.raises(Done, match="wake_on_green"):
+        _tick(module, _msg(wake_on_green=spelling))
+
+
+def test_string_wake_on_green_does_not_coerce_to_a_wake(monkeypatch, module):
+    """The all-green PR a coerced ``"false"`` string would wake on: assert the
+    terminal Done fires instead of the review-ready Report that a truthy
+    coercion (``bool("false")`` is True) would have produced."""
+    # Same rollup as test_cancelled_runs_are_noise_not_failures: with a real
+    # ``wake_on_green=True`` this fires the "all checks green" ready wake.
+    checks = [_check("GPT Review", "CANCELLED"), _check("CI", "SUCCESS")]
+    _wire(monkeypatch, module, _payload(checks))
+    with pytest.raises(Done, match="wake_on_green"):
+        _tick(module, _msg(wake_on_green="false"))
+
+
+def test_real_boolean_true_wake_on_green_still_wakes(monkeypatch, module):
+    """The narrow fix keeps a real ``true`` working: it still fires the wake."""
+    checks = [_check("GPT Review", "CANCELLED"), _check("CI", "SUCCESS")]
+    _wire(monkeypatch, module, _payload(checks))
+    with pytest.raises(Report, match="all checks green"):
+        _tick(module, _msg(wake_on_green=True))
+
+
+def test_real_boolean_false_wake_on_green_stays_quiet(monkeypatch, module):
+    """The narrow fix keeps a real ``false`` working: the all-green PR stays quiet."""
+    checks = [_check("GPT Review", "CANCELLED"), _check("CI", "SUCCESS")]
+    _wire(monkeypatch, module, _payload(checks))
+    with pytest.raises(Skip):
+        _tick(module, _msg(wake_on_green=False))
+
+
+def test_absent_wake_on_green_defaults_to_waking(monkeypatch, module):
+    """An absent key keeps the documented default of True and still wakes."""
+    checks = [_check("GPT Review", "CANCELLED"), _check("CI", "SUCCESS")]
+    _wire(monkeypatch, module, _payload(checks))
+    with pytest.raises(Report, match="all checks green"):
+        _tick(module, _msg())
+
+
 def test_boolean_and_nonpositive_pr_numbers_are_terminal(monkeypatch, module):
     _wire(monkeypatch, module, _payload([]))
     with pytest.raises(Done, match="positive int"):

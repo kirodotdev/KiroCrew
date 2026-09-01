@@ -322,11 +322,21 @@ class PrWatchProbe(Probe):
             raise ValueError("pr_watch coalesce_secs must be a finite number")
         if coalesce < 0:
             raise ValueError("pr_watch coalesce_secs must not be negative")
+        # The cron message is JSON, so {"wake_on_green": "false"} arrives as a
+        # string. bool("false") is True, so coercing would silently INVERT an
+        # explicit disable and wake the operator they told it not to. Any
+        # non-empty string does this. bool is a subclass of int, so validate
+        # against bool explicitly and refuse everything else -- a nonsense flag
+        # is a permanently-invalid config, terminal (ValueError -> Done) like
+        # every other malformed field here.
+        raw_wake = params.get("wake_on_green", True)
+        if not isinstance(raw_wake, bool):
+            raise ValueError("pr_watch wake_on_green must be true or false")
 
         self.repo = repo
         self.pr = pr
         self.known_reds = {sanitize_label(x) for x in raw_reds or [] if isinstance(x, str)}
-        self.wake_on_green = bool(params.get("wake_on_green", True))
+        self.wake_on_green = raw_wake
         self.note = str(params.get("note") or "")[:500]
         self.coalesce_secs = coalesce
         return ("gh-pr", f"{repo}#{pr}")
