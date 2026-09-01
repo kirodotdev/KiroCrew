@@ -259,6 +259,50 @@ async def test_start_registered_kind_returns_run_without_params(
 
 
 @pytest.mark.asyncio
+async def test_the_interruption_fields_reach_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """``interrupted_from`` and ``interrupt_cause`` are served, unlike origin/pid.
+
+    They are not host facts: they are the two facts a client needs in order to
+    recover from an interruption -- whether the run may have committed side
+    effects, and whether retrying it is possible now -- and the client is the only
+    party that can act on either. A record that carries them behind an API that
+    withholds them leaves the record honest and the API not.
+    """
+    from kiro_crew.apps.job_sdk import (
+        CAUSE_RUNNER_UNREGISTERED,
+        INTERRUPTED,
+        STARTING,
+        JobRun,
+    )
+
+    _setup_guards(tmp_path, monkeypatch)
+    run_id = "5c" * 16
+    sdk.store.write(
+        JobRun(
+            run_id=run_id,
+            app=sdk.app_name,
+            kind="vanished",
+            status=STARTING,
+            origin="a-process-that-is-gone",
+        )
+    )
+    assert sdk.reconcile() == 1
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get(f"{_base()}/{run_id}")
+        assert resp.status == 200
+        run = (await resp.json())["run"]
+    assert run["status"] == INTERRUPTED
+    assert run["interrupted_from"] == STARTING
+    assert run["interrupt_cause"] == CAUSE_RUNNER_UNREGISTERED
+    # Still withheld: these have no client meaning and never gained one.
+    assert "origin" not in run
+    assert "pid" not in run
+
+
+@pytest.mark.asyncio
 async def test_unknown_kind_error_is_scrubbed_before_it_is_reflected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
 ) -> None:
