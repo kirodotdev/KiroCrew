@@ -12300,6 +12300,8 @@
         "other_surfaces_have_their_own_profiles": "拥有各自配置文件的面可以允许主机所不能允许的操作：{{surfaces}}。",
         "enforced_by_floor": "由 {{productName}} 内置的常开保护强制执行",
         "pinned_by_policy": "由你所在组织的安全策略强制执行",
+        "edition_rule_badge": "版本",
+        "edition_rule_tooltip": "由本次安装的版本添加，而非内置目录。默认开启，你可以将其关闭。",
         "pinned_for_the_host_surface": "由主机面配置文件设置。这仅是进程内主机操作的上限——其他面有各自的配置文件，可能允许此项。",
         "policy": "策略",
         "policy_profile": "策略 ∩ 配置文件",

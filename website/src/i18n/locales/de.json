@@ -12468,6 +12468,8 @@
         "other_surfaces_have_their_own_profiles": "Eine Surface mit eigenem Profil kann erlauben, was der Host nicht kann: {{surfaces}}.",
         "enforced_by_floor": "Durch einen immer aktiven, in {{productName}} integrierten Schutz erzwungen",
         "pinned_by_policy": "Durch die Sicherheitsrichtlinie deiner Organisation erzwungen",
+        "edition_rule_badge": "Edition",
+        "edition_rule_tooltip": "Von der Edition dieser Installation hinzugefügt, nicht aus dem integrierten Katalog. Standardmäßig aktiv, und du kannst sie ausschalten.",
         "pinned_for_the_host_surface": "Vom Profil der Host-Surface gesetzt. Das ist die Obergrenze nur für In-Process-Host-Aktionen — andere Surfaces haben eigene Profile und erlauben dies möglicherweise.",
         "policy": "Richtlinie",
         "policy_profile": "Richtlinie ∩ Profil",

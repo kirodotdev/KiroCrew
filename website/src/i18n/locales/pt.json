@@ -12636,6 +12636,8 @@
         "other_surfaces_have_their_own_profiles": "Uma superfície com o seu próprio perfil pode permitir o que o host não pode: {{surfaces}}.",
         "enforced_by_floor": "Aplicado por uma proteção sempre ativa integrada ao {{productName}}",
         "pinned_by_policy": "Aplicado pela política de segurança da sua organização",
+        "edition_rule_badge": "edição",
+        "edition_rule_tooltip": "Adicionada pela edição desta instalação, não pelo catálogo integrado. Ativada por padrão, e podes desativá-la.",
         "pinned_for_the_host_surface": "Definido pelo perfil da superfície host. É o limite apenas para as ações do host em processo — outras superfícies têm os seus próprios perfis e podem permitir isto.",
         "policy": "política",
         "policy_profile": "política ∩ perfil",

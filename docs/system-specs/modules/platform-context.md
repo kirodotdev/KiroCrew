@@ -49,6 +49,7 @@ interface, the public edition is complete standalone.
 | `agent_catalog` | adapter | `DefaultAgentCatalogProvider` (`builtin_agents()` → `[]`) | edition agent-catalog rows |
 | `prompt_sources` | adapter | `DefaultPromptSourceProvider` (`prompt_source_roots()` → `[]`) | edition prompt/SOP roots |
 | `skill_discovery` | adapter | `DefaultSkillDiscoveryProvider` (`skill_providers()` → `[]`) | edition skill discovery providers for the multi-provider search |
+| `denied_rules` | adapter | `DefaultDeniedRuleProvider` (`denied_rules()` → `[]`) | edition denied-command rules that are default-on but USER-DISABLEABLE (distinct from `security`, the un-weakenable overlay floor) |
 | `import_sources` | adapter | `DefaultImportSourceProvider` (`import_sources()` → `[]`) | edition onboarding-import sources |
 | `capability_manager` | adapter | `DefaultCapabilityManager` (`available()` → `False`) | operations-based external package manager: MCP servers, skills, agent packages, and client plugins |
 | `external_access` | adapter | `DefaultExternalAccessPolicy` (`admits_registry()` / `admits_cloud_deployment()` → `True`) | allowlist installable content to an internal registry; withhold cloud deployment |

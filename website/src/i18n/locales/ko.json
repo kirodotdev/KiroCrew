@@ -12300,6 +12300,8 @@
         "other_surfaces_have_their_own_profiles": "자체 프로필이 있는 표면은 호스트가 허용하지 않는 것을 허용할 수 있습니다: {{surfaces}}.",
         "enforced_by_floor": "{{productName}}에 내장된 상시 활성 보호 기능으로 적용됨",
         "pinned_by_policy": "조직의 보안 정책으로 적용됨",
+        "edition_rule_badge": "에디션",
+        "edition_rule_tooltip": "이 설치의 에디션에서 추가한 규칙으로, 기본 제공 카탈로그의 규칙이 아닙니다. 기본적으로 켜져 있으며 끌 수 있습니다.",
         "pinned_for_the_host_surface": "호스트 표면 프로필에서 설정되었습니다. 이는 프로세스 내 호스트 작업에만 적용되는 상한입니다 — 다른 표면은 자체 프로필이 있으며 이를 허용할 수 있습니다.",
         "policy": "정책",
         "policy_profile": "정책 ∩ 프로필",

@@ -32,6 +32,7 @@ from kiro_crew import sel as sel_mod
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, WorkspaceConfig
 from kiro_crew.cron import CronSchedule
 from kiro_crew.eval.scenario import AssertionType
+from kiro_crew.security import BUILTIN_DENIED_RULES
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
 # ── helpers ──
@@ -1173,18 +1174,30 @@ class TestPolicyCli:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Regression for #3454: an agent's only prior discovery mechanism for
-        the 139 built-in denied-command rules was to attempt one and be
-        refused. `policy show` must surface them even on a standalone
-        (non-enterprise) install, which is the common case the early-return
-        branch serves."""
+        the built-in denied-command rules was to attempt one and be refused.
+        `policy show` must surface them even on a standalone (non-enterprise)
+        install, which is the common case the early-return branch serves.
+
+        The totals are DERIVED from the catalog rather than spelled out: the
+        printer itself derives them, so a literal here would only duplicate
+        the explicit count assertion in ``test_denied_commands_security.py``
+        and rot on every rule that gets added (it did -- the docstring said
+        139 while the catalog held 140)."""
+        by_category: dict[str, int] = {}
+        for rule in BUILTIN_DENIED_RULES:
+            by_category[rule.category] = by_category.get(rule.category, 0) + 1
+        biggest, biggest_n = max(by_category.items(), key=lambda kv: kv[1])
         with patch(
             "kiro_crew.platform.context.current_context",
             return_value=SimpleNamespace(governance=None),
         ):
             cc._policy(_ns(policy_action="show"))
         out = capsys.readouterr().out
-        assert "commands.denied: 140 rules in 10 categories" in out
-        assert "aws-destructive(47)" in out
+        assert (
+            f"commands.denied: {len(BUILTIN_DENIED_RULES)} rules "
+            f"in {len(by_category)} categories"
+        ) in out
+        assert f"{biggest}({biggest_n})" in out
         # Counts only by default -- rule ids are the --ids opt-in.
         assert "aws-destructive-ec2-terminate-instances" not in out
 

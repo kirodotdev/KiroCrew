@@ -2085,3 +2085,54 @@ class TestTargetPathNestedExtraction:
         result = target_paths(params)
         assert len(result) == 40
         assert result.truncated is False
+
+
+class TestUnrecoverableShellIsRefusedUnconditionally:
+    """The deny-by-default refusal on a shell call with no recoverable command has
+    no operator override, and must not acquire one.
+
+    An override was implemented and removed on the PR that added the
+    ``DeniedRuleProvider`` seam. ``ToolHookResult`` carries only
+    ``allow`` / ``auto_approve`` / ``deny``, so a suppressed call can at best
+    return ``allow`` — and ``allow`` falls through to
+    patterns / trust-reads / trust / YOLO / interactive in the dashboard runner.
+    Under YOLO the unverified command would then execute with no human ever
+    seeing it, so barring the hook-level auto-approve branches is not sufficient:
+    the decision is re-made downstream. Reinstating a switch here needs a fourth
+    action meaning "force the interactive prompt, and let no downstream tier
+    auto-grant it".
+    """
+
+    _REASON = "could not be verified for security policy"
+
+    def test_the_refusal_fires(self):
+        res = HookManager(HooksConfig()).on_tool_call(
+            "Running a command", is_shell=True, command=None
+        )
+        assert res.action == TOOL_DENY
+        assert self._REASON in (res.reason or "")
+
+    def test_a_stale_override_key_cannot_resurrect_the_suppression(self):
+        """A build that briefly shipped the switch may have left
+        ``allow_unverified_shell: true`` in the keystone state. It is now an
+        unknown key and must be inert, not honoured."""
+        cfg = HooksConfig.from_dict(
+            {"denied_commands": {"allow_unverified_shell": True}},
+        )
+        assert not hasattr(cfg, "denied_commands_allow_unverified_shell")
+        res = HookManager(cfg).on_tool_call("Running a command", is_shell=True, command=None)
+        assert res.action == TOOL_DENY
+        assert self._REASON in (res.reason or "")
+
+    def test_an_auto_approve_pattern_cannot_admit_it(self):
+        """The ``auto_approve_tools`` loop matches only the agent-authored TITLE.
+        It is safe ONLY because this refusal returns before the loop is reached —
+        so a pattern as broad as ``*`` must still not admit an unverified call."""
+        cfg = HooksConfig(auto_approve_tools=["*", "Running: *"])
+        res = HookManager(cfg).on_tool_call("Running: something", is_shell=True, command=None)
+        assert res.action == TOOL_DENY
+
+        # Control: the same config DOES auto-approve once the command is present,
+        # so the assertion above pins the refusal and not a broken fixture.
+        ok = HookManager(cfg).on_tool_call("Running: ls", is_shell=True, command="ls")
+        assert ok.action == TOOL_AUTO_APPROVE

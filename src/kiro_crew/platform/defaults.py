@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         SessionPrincipal,
         WorkloadIdentity,
     )
+    from kiro_crew.security import DeniedCommandRule
     from kiro_crew.skill_providers.base import SkillProvider
 
 from kiro_crew import security, sso_status
@@ -307,6 +308,13 @@ class DefaultSkillDiscoveryProvider:
     """No edition skill discovery providers — the built-in catalog only."""
 
     def skill_providers(self) -> List["SkillProvider"]:
+        return []
+
+
+class DefaultDeniedRuleProvider:
+    """No edition denied-command rules — the built-in catalog only."""
+
+    def denied_rules(self) -> List["DeniedCommandRule"]:
         return []
 
 

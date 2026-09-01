@@ -12637,6 +12637,8 @@
         "other_surfaces_have_their_own_profiles": "Une surface avec son propre profil peut autoriser ce que l'hôte ne peut pas : {{surfaces}}.",
         "enforced_by_floor": "Imposé par une protection toujours active intégrée à {{productName}}",
         "pinned_by_policy": "Imposé par la politique de sécurité de ton organisation",
+        "edition_rule_badge": "édition",
+        "edition_rule_tooltip": "Ajoutée par l'édition de cette installation, pas par le catalogue intégré. Activée par défaut, et tu peux la désactiver.",
         "pinned_for_the_host_surface": "Défini par le profil de la surface hôte. C'est le plafond des actions hôte en cours de processus uniquement — les autres surfaces ont leurs propres profils et peuvent l'autoriser.",
         "policy": "politique",
         "policy_profile": "politique ∩ profil",

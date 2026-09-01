@@ -695,12 +695,13 @@ First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`
   - **`patterns=None` means the regex tier contributes nothing** — deliberately NOT `is_denied`'s fail-closed-to-every-built-in. Getting that backwards would evaluate the whole catalogue against a synthesized target, which is exactly the state this tier exists to leave.
   - **This tier does not run the argv-structural floors** (credential mint, self-kill, restart/update/cloud) **or the verb-anchored git-publish detector**, and does not do per-segment (pass 2) re-evaluation. Each interprets shell syntax a synthesized target does not have: its tokens are the namespace and `key=value` pairs, values are whitespace-encoded so one cannot split into two tokens, and no such target names a program — so a search of a tree cannot mint a credential or kill a process, and splitting only manufactures pseudo-commands out of path substrings. A real command still reaches all of them through its own `command` target.
 
-- `is_denied(tool_name, extra_patterns, *, denied_regexes, reason_notes)` evaluates the *effective* denied-command set plus a dedicated verb-anchored git-publish detector. The **regex tier** (`denied_regexes`, matched via `re.search`, case-insensitive) is the enabled subset of `BUILTIN_DENIED_RULES` plus the user's `user_added` patterns from the keystone `denied_commands.json` opt-out state, which the hooks layer resolves via `compute_effective_denied(...)` and passes in; the **glob tier** (`extra_patterns`, fnmatch) carries legacy `auto_deny_tools` + the companion overlay. `reason_notes` is an optional `{pattern: operator note}` map (from `hooks.resolve_denied_notes`, forwarded opaquely by `PolicyAuthority.is_denied`) that decorates the refusal text only — it cannot add, remove, or alter a match. "Agent-configured patterns" no longer means a kiro agent JSON `deniedCommands` array — that injection path is retired. When `denied_regexes` is `None` the check fails closed to all built-ins enabled. The git-publish detector and protected-branch gate are unchanged always-on floors that run before either tier:
+- `is_denied(tool_name, extra_patterns, *, denied_regexes, reason_notes)` evaluates the *effective* denied-command set plus a dedicated verb-anchored git-publish detector. The **regex tier** (`denied_regexes`, matched via `re.search`, case-insensitive) is the enabled subset of `BUILTIN_DENIED_RULES` plus the user's `user_added` patterns from the keystone `denied_commands.json` opt-out state, which the hooks layer resolves via `compute_effective_denied(...)` and passes in; the **glob tier** (`extra_patterns`, fnmatch) carries legacy `auto_deny_tools` + the companion overlay. `reason_notes` is an optional `{pattern: operator note}` map (from `hooks.resolve_denied_notes`, forwarded opaquely by `PolicyAuthority.is_denied`) that decorates the refusal text only — it cannot add, remove, or alter a match. "Agent-configured patterns" no longer means a kiro agent JSON `deniedCommands` array — that injection path is retired. When `denied_regexes` is `None` the check fails closed to all built-ins enabled. The git-publish detector runs before either tier and is always-on; the protected-branch **gate** it feeds is default-on but **per-rule disableable** (see the opt-out note in the Protected-branch gate bullet below), except for the anti-obfuscation branches, which no opt-out can reach:
 
   - **Refusal string (a parsed micro-format, not free text):** the first line is always exactly `f"{DENY_REASON_PREFIX}{matched}"` — `DENY_REASON_PREFIX` is exported from `security.py` precisely so guards cannot drift from the producer. It is byte-stable on purpose, because three consumers parse it: `website/src/pages/chat/RecoveryCard.tsx` extracts the pattern with `/Blocked by security policy:\s*(.+?)\s*$/gm`, the test helper `_denied_by` partitions on the exact `"Blocked by security policy: "` separator, and `chat_runner` reads it for display (after redaction). When the matched pattern has an operator note, the note is appended as a **second line** — never on the first, which would be captured as part of the pattern. Because `RecoveryCard`'s regex is GLOBAL and per-line, a note containing the prefix would be parsed as a second, fabricated pattern; that is why notes carrying it are rejected at the endpoint and dropped in `resolve_denied_notes`. Both guards test `DENY_REASON_MATCH_PREFIX` (the colon-terminated form derived from the emitted prefix), NOT the emitted prefix itself: the regex makes the space after the colon optional, so `"Blocked by security policy:forged"` parses as a refusal line without containing the emitted string. Anything added to this format must keep line one intact.
   - **Git publish (verb-anchored regex):** `git push` is detected by `_is_git_publish()` (`_GIT_PUBLISH_RE` + `_GIT_PUBLISH_GLUE_RE`), **not** a substring glob. `push` must be the git *subcommand* (first non-flag token after `git`, allowing intervening `-x` / `-C path` / `-c k=v` options), so a commit message, branch name, grep pattern, or ssh remote payload that merely contains the word "push" is **not** blocked (e.g. `git commit -m '...push...'`, `git log --grep push`, `git switch -c fix/git-push`). Checked on the whole string first to catch command-substitution glue-evasion (`git$(echo ' ')push`, `git\`echo\`push`, `git_push`) and on segment-spanning chains (`git stash push && git push origin main`). Replaces the former broad `*git*push*` glob + ` stash push` exception, which over-blocked benign commands and surfaced as a silent `Tool use aborted` on the removed standalone provider.
-  - **Protected-branch gate:** `_is_git_publish()` is a **pure, side-effect-free detector** — it only answers "is this a git push?". Whether the push is *allowed* (feature branch) or *denied* (protected/bare) is decided by `_is_push_to_protected_branch()` at the single enforcement point in `is_denied` (via a deferred `push_allow_pending` flag), which is also where **both** SEL audits fire: `_emit_deny_event` on deny and `_schedule_push_allow_audit` (SEL `push_allowed`, operation `git_push`) on allow. The `push_allowed` audit is deferred to the *final* allow exit, so a compound `<feature push> && <denied command>` chain that later trips a deny pass logs a **deny**, not an allow.
-    - `_PROTECTED_BRANCHES` covers `main`/`mainline` plus the legacy Git default-branch name (see `_PROTECTED_BRANCHES` in `security.py`), plus ambiguous runtime-resolved refs `_AMBIGUOUS_REFS` = {`head`, `@`, `fetch_head`} — all matched by `_is_protected_branch_name()`. A push to any of these (or a **bare** `git push` / `git push <remote>` with no explicit branch, since the current branch might be protected) is denied.
+  - **Protected-branch gate:** `_is_git_publish()` is a **pure, side-effect-free detector** — it only answers "is this a git push?". Whether the push is *allowed* (feature branch) or *denied* (protected/bare) is decided by `_git_publish_floor_tags()`, which returns the set of **rule-id tags** the command trips, at the single enforcement point in `is_denied` (via a deferred `push_allow_pending` flag), which is also where **both** SEL audits fire: `_emit_deny_event` on deny and `_schedule_push_allow_audit` (SEL `push_allowed`, operation `git_push`) on allow. `_is_push_to_protected_branch()` is retained only as a thin boolean view over the tag set for callers that need the yes/no answer. The `push_allowed` audit is deferred to the *final* allow exit, so a compound `<feature push> && <denied command>` chain that later trips a deny pass logs a **deny**, not an allow.
+    - **Opt-out, and the part of it that is NOT optional.** Each tag names a real git-publish catalog rule, and a tag fires only while its rule is in the enabled set — so an operator CAN disable protected-branch push blocking per rule (or wholesale with `disable_all`) through the keystone `denied_commands.json`. Three branches deliberately bypass that check and deny unconditionally, emitting the sentinel `_GIT_PUBLISH_UNGATED` instead of a rule id: an ambiguous refspec (`_AMBIGUOUS_REFSPEC_RE`), a brace-expansion refspec (`_AMBIGUOUS_EXPANSION_RE`), and the two "cannot parse" fallbacks (unparseable argv, or a push detected upstream with no clean segment). Those are anti-obfuscation, not policy: an operator opting out of a rule is choosing to allow a command shape they can *read*, which is not a licence to allow one nobody can. `git-publish-push-brace-expansion-refspec` is therefore the one git-publish rule that stays **locked** in the Settings panel (`_FLOOR_ENFORCED_RULE_IDS`), because its coverage is an ungated branch and a toggle for it would be a lie. A denial now reports the matched rule's own `pattern`, so it resolves to a `rule_id` in SEL rather than the opaque `git push` label.
+    - `_PROTECTED_BRANCHES` covers `main`/`mainline` plus the legacy Git default-branch name (see `_PROTECTED_BRANCHES` in `security.py`), plus ambiguous runtime-resolved refs `_AMBIGUOUS_REFS` = {`head`, `@`, `fetch_head`}. A push to any of these (or a **bare** `git push` / `git push <remote>` with no explicit branch, since the current branch might be protected) is denied.
     - `_PUSH_ALL_BRANCHES_FLAGS` = {`--mirror`, `--all`} are denied **outright** (they push every local branch, so a per-branch target check cannot vouch for them), kept in lockstep with the `--(mirror|all)` regex in `config/defaults.json`.
     - `_is_push_to_protected_branch()` splits the command with `_split_segments()` and validates **every** `push` segment / refspec (closing the `push origin feat && push origin main` bypass), normalizing `refs/heads/…` paths and `local:remote` refspecs; refspecs with shell/revision syntax (`$`, `` ` ``, `@{…}` — `_AMBIGUOUS_REFSPEC_RE`) are treated as ambiguous and denied. If a push was detected upstream but **no** clean segment parses, it denies to be safe.
     - **Force push:** a force flag (`--force` / `-f` / `--force-with-lease`) does not by itself make a feature-branch push protected (force-push to a feature branch is normal PR/rebase workflow), but force-push to a *protected* branch is still blocked because the target check fires regardless of flags.
@@ -747,6 +748,137 @@ append `user_added` verbatim. Governance pins win — a pinned rule is re-added
 even if the user disabled it or set disable-all (tightest-wins). The hooks gate
 computes this once per tool call via `HookManager._effective_denied(ctx)` and
 passes it as `denied_regexes` into `is_denied`.
+
+**Edition-contributed rules — the `denied_rules` seam.** A composed edition can
+contribute additional `DeniedCommandRule` records through the
+`DeniedRuleProvider` platform adapter (`current_context().denied_rules`).
+`security.edition_denied_rules()` reads and validates them and
+`hooks.resolve_effective_denied_regexes` unions them into the `rules` argument of
+`compute_effective_denied`, so a contributed rule is **default-ON and resolved by
+exactly the same opt-out arithmetic as a built-in**: an operator can disable it by
+id or clear it with `disable_all` through the existing keystone file and the
+existing `/api/security/denied-commands` endpoints, and Settings → Security lists
+it (tagged `source="edition"`) alongside the built-ins.
+
+This is deliberately the opposite half of `SecurityOverlay.extra_deny_patterns`,
+which remains the un-weakenable floor: overlay patterns travel the GLOB tier via
+`extra_patterns` and no opt-out can reach them. An edition picks per pattern —
+floor, or default-on-but-overridable. Consequences of that split, all pinned by
+`test/test_denied_rule_seam.py`:
+
+- **Regex, not glob.** A contributed `pattern` is a Python regex on the regex
+  tier. Moving a pattern over from the overlay requires rewriting it; a glob's
+  `*` are quantifiers as a regex.
+- **Namespaced ids.** `disabled_ids` is one flat set, so an id colliding with a
+  built-in id is skipped (the built-in wins) rather than letting one rule's
+  toggle move another's.
+- **Not pinnable (v1).** Governance `commands`-scope pins resolve a pattern to a
+  rule id against the static catalog, so a pin cannot name a contributed rule. An
+  edition needing an un-opt-out-able pattern keeps using the overlay.
+- **Fail-soft.** A raising or absent provider yields no contributed rules; the
+  built-in catalog and the overlay floor are unaffected.
+- **Full-input matching, or not published.** The matcher has two engines: a
+  forward-only *fragment* matcher that splits a pattern on its top-level `.*` and
+  scans the WHOLE input, and an exact whole-regex `re.search` over a
+  length-capped window (`_DENY_FALLBACK_SCAN_MAX_CHARS`, 2000). The capped engine
+  exists because Python's backtracking `re` cannot give exact semantics AND
+  full-input AND ReDoS-safety at once, and it is required only for a pattern the
+  fragment matcher would UNDER-match: one with a top-level alternation, or whose
+  non-final fragments can over-consume across a `.*` gap. A pattern that splits
+  into **one** fragment (no top-level `.*`) needs neither trade-off — there is no
+  gap to backtrack across, so its single `re.search` is already exact AND
+  full-input — and it therefore takes the unbounded path whoever authored it:
+  built-in, edition-contributed, or user-added. This matters because a rule
+  enforced over only a 2000-char prefix is bypassed by padding the command
+  (`env PAD=<2001 chars> <denied cmd>`), which is not a guarantee the Settings
+  panel should show as enforcing. So a contributed pattern that WOULD land on the
+  capped engine is **skipped, not published** (`_matches_full_input`, the same
+  principle as the `is_safe_user_regex` screen above): an edition rewrites the gap
+  as a bounded class such as `[^;&|\n]*`, which keeps the pattern one fragment, or
+  uses the un-weakenable overlay if it truly needs the loose form. Note the gate
+  evaluates shell segments separately, so a pad behind a `;` was never the
+  exposure — only a pad inside the SAME segment as the needle.
+- **Discoverable in the panel.** A contributed row carries `source: "edition"` in
+  the snapshot and renders an `edition` badge with a tooltip in
+  Settings → Security, so an operator can tell a contributed rule from a shipped
+  one. A seam whose rules are indistinguishable from built-ins would still leave
+  the refusal unattributable, which is the gap the seam exists to close.
+
+**How the always-on gates report and fail.** Three details of the gates that now
+honour per-rule toggles:
+
+- **The git-publish gate fails CLOSED on an unresolvable tag.** A floor tag naming
+  no catalog row is a maintenance error, not a policy choice, and the two must not
+  share a code path: skipping an unknown tag would turn a renamed rule id into a
+  silent *allow* of a protected-branch push. An unresolvable tag therefore denies,
+  logs at ERROR, and reports under the ungated row. The structural test in
+  `test_push_branch_gate.py` still catches the drift at build time; this is the
+  behaviour if that guard is ever removed.
+- **The refusal names the rule ID; SEL keeps the pattern.** A gated git-publish
+  denial leads with the rule id and carries the regex on its note line. The
+  dashboard's RecoveryCard fills its chip verbatim from the first line, so leading
+  with a ~70-character regex would make the most frequent denial an agent user
+  hits unreadable, while the id is both short and the identity of the toggle that
+  turns it off. The SEL event still records the pattern, which is what maps an
+  event to a catalog row.
+- **A regex spanning two rows attributes each match to its own row.** The nc/ncat
+  reverse-shell regex covers two rules; denying while *either* was enabled meant
+  switching `reverse-shell-nc` off left plain `nc` blocked by its sibling. Each
+  match is now attributed to the row it belongs to (longest discriminator first,
+  so `ncat` is never read as `nc`), and every match is examined, so a leading
+  disabled spelling cannot shadow a trailing enforced one.
+- **One shape earns one tag.** An all-branches flag suppresses the bare /
+  single-argument fallback: with `--all` the absence of a refspec is not the
+  "which branch is this?" shape, since the flag already names the target set
+  exhaustively. Tagging both meant `push --all origin` also carried the
+  single-argument tag, so disabling mirror-all left the command blocked by its
+  sibling — enabled-and-off with enforcement unchanged.
+- **The unbounded path is gated on backtracking cost, not just correctness.** A
+  single-fragment pattern gets full-input matching (no 2000-char cap) *only* if
+  `_polynomial_backtracking_prone` clears it. `_redos_prone` screens the
+  EXPONENTIAL family at publication; it deliberately passes the POLYNOMIAL one
+  (`a+a+$`, `\w+\d+$`, `.*.*!`), which is harmless on a capped window and not
+  harmless off it — measured, `a+a+$` against 2,000 characters takes ~3.5s, 4,000
+  ~27s, 8,000 ~228s, inside the synchronous PreToolUse gate. A flagged pattern is
+  still enforced, on the bounded engine it already had; the predicate is NOT
+  folded into `is_safe_user_regex` because refusing such patterns outright would
+  drop rules that work today, and a rule silently not published is the defect
+  this module fights rather than a fix for it.
+- **One context snapshot per tool call.** The gate reads `current_context()` once
+  and reuses it for both the always-on structural checks and the rule-catalog
+  checks. Two reads let a live ceiling refresh land between them and judge one
+  call half under each policy state. The direction that makes it matter: the
+  structural IMDS/exfil checks are the only ones that catch an ENCODED address
+  (`credential-exfil-imds-any` exists because the curl/wget patterns match a
+  literal dotted quad), so a governance pin arriving after that point could never
+  reach the encoded form — and honouring a pin late is not honouring it.
+
+**Push-option spellings the target parser must not misread.** `git push` accepts
+the repository as a flag *value* (`--repo=<x>` / `--repo <x>`), and both spellings
+begin with `-`. A naive "strip the flags, the first positional is the remote" read
+therefore treats the only remaining token as the remote, so `git push --repo=origin
+main` classifies as the single-arg shape rather than the protected-branch one.
+`--branches` is likewise git's own modern alias for `--all` (2.44+). Both were
+harmless while the whole floor was unconditional — the misclassified shape was
+denied anyway — and became bypasses the moment the rules were individually
+disableable, since switching off the rule a shape is misattributed to publishes it.
+
+**Abbreviations are resolved the way git resolves them.** Git accepts any
+unambiguous PREFIX of a long option, so `--mirr` is `--mirror` and `--rep=origin`
+is `--repo=origin`. Matching flag literals exactly therefore missed every
+abbreviation, with the same misclassification consequence. The classifier now tests
+whether a token is `--` plus a prefix of an option it cares about
+(`_push_option_matches`), rather than comparing against a list of spellings — a
+spelling list can only ever trail the next abbreviation. It deliberately does NOT
+carry git's full option table: testing the prefix against only the dangerous
+options is equivalent to resolving against every option and then intersecting,
+because a non-dangerous option can only add a candidate and never remove a
+dangerous one. That equivalence is asserted over every prefix of every `git push`
+long option, so it is a checked property rather than a comment. A consequence worth
+stating: an ambiguous abbreviation reads as dangerous (`--a` matches `all`), which
+is free, since git refuses an ambiguous abbreviation itself and the command never
+runs; a fully-spelled unrelated flag such as `--atomic` is unaffected, being a
+prefix of nothing dangerous.
 
 **Opt-out state — keystone `denied_commands.json`.** The opt-out state is a
 security ceiling, so it lives in its OWN keystone file
@@ -851,14 +983,29 @@ once at init — so a just-disabled built-in or just-added user deny reaches
 unattended heartbeat sessions without a gateway restart (cross-surface
 consistency).
 
-**Defense-in-depth nuance** — roughly a third of the rules overlap an independent,
-always-on keystone control (sensitive-file reads, IMDS, git-publish, cred-env
-dumps). Most rules are disableable, but disabling a rule does **not** disable
-its keystone control — such a command stays blocked by defense-in-depth. The
-`git-publish` rules go one step further: the floor is their *only* enforcement
-(their ReDoS-prone patterns never reach the regex tier), so they are not
-disableable at all and the Settings surface locks them (see above). The
-~85 purely-opinionated destructive rules (AWS delete/mutate, `cdk`/`terraform`/
+**Defense-in-depth nuance** — roughly a third of the rules overlap an independent
+keystone control, and it matters which of those controls the rule's own toggle
+now reaches:
+
+- **Still always-on, opt-out cannot touch it:** the sensitive-file read floor.
+  Disabling `sensitive-file-read` leaves `~/.aws/credentials`, the SEL log, the
+  HMAC key and the rest of the fenced set blocked by the path floor, so such a
+  command stays refused by defense-in-depth.
+- **Now gated by the rule's own toggle:** the IMDS gate (`_check_imds_access`,
+  keyed to `credential-exfil-imds-any`) and the bash exfiltration branches
+  (`audit_bash_exfiltration`, each branch keyed to the catalog rule(s) it
+  implements). These used to fire regardless of opt-out state. They are still
+  default-ON — the toggle is opt-*out* — but an operator who disables the rule
+  now disables the branch with it, which is the point: a rule advertised as
+  disableable that stayed enforced anyway was a lie the Settings panel told.
+- **Split:** the `git-publish` rules. The floor is still their *only* enforcement
+  (their ReDoS-prone patterns never reach the regex tier), but the floor now
+  consults the enabled set, so disabling one allows exactly the command shape it
+  covers. The exception is `git-publish-push-brace-expansion-refspec`, whose
+  coverage is an ungated anti-obfuscation branch; it is the one git-publish rule
+  the Settings surface still locks (see the Protected-branch gate bullet above).
+
+The ~85 purely-opinionated destructive rules (AWS delete/mutate, `cdk`/`terraform`/
 `pulumi destroy`, `rm -rf`, `DROP DATABASE`, kill-kirocrew, reverse shells) have
 no keystone backup, so disabling those fully unblocks them (the actual user ask).
 

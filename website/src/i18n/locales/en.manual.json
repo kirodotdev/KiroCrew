@@ -4842,6 +4842,8 @@
         "layer_n": "Layer {{n}}",
         "enforced_by_floor": "Enforced by an always-on protection built into {{productName}}",
         "pinned_by_policy": "Enforced by your organization's security policy",
+        "edition_rule_badge": "edition",
+        "edition_rule_tooltip": "Added by this installation's edition, not the built-in catalog. On by default, and you can switch it off.",
         "pinned_for_the_host_surface": "Set by the host-surface profile. This is the ceiling for in-process host actions only — other surfaces have their own profiles and may allow this.",
         "yolo_duration_title": "How long auto-approve stays on",
         "yolo_duration_desc": "Applies whenever you turn auto-approve on from the dashboard, Slack, or the API — all of them use this one duration.",

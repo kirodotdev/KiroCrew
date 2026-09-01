@@ -1476,7 +1476,7 @@ def _print_denied_command_summary(*, ids: bool) -> None:
     """Print the built-in denied-command catalog as grouped counts (or, with
     ``--ids``, each category's rule ids).
 
-    The 139 built-in rules are visible and configurable to the USER (Settings
+    The built-in rules are visible and configurable to the USER (Settings
     → Security renders them in category accordions, backed by
     ``GET /api/security/denied-commands``) but were invisible to the AGENT --
     ``policy show`` reported everything except them, so an agent planning a

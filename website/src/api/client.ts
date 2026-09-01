@@ -767,6 +767,12 @@ export interface DeniedCommandRule {
    *  null/absent = freely toggleable. Additive — `pinned` keeps its
    *  governance-only meaning. */
   lock_reason?: 'floor' | 'policy' | null
+  /** Where the rule came from: 'builtin' = shipped in Kiro Crew's catalog;
+   *  'edition' = contributed by a composed edition through the `denied_rules`
+   *  seam. Edition rules are default-on and freely toggleable (never locked),
+   *  and are grouped by their own `category`, so the panel needs no special
+   *  case. Optional so an older gateway's response still type-checks. */
+  source?: 'builtin' | 'edition'
 }
 
 /** A user-authored denied-command pattern. */
