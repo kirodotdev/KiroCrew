@@ -265,6 +265,25 @@ step with several paths; use whichever your environment supports:
 3. **No preview at all (also valid).** For many changes, the build gate + unit
    tests are enough confidence to cut the PR. Previewing live is optional.
 
+### Verifying against the pod, not just looking at it
+
+A preview you click through proves the page loads. To verify a *behavior*, boot
+the pod with state and call it:
+
+```bash
+kirocrew pod scenarios                  # the seeded states available, described
+kirocrew pod up <wt> --seed <scenario>  # born with that state, not blank
+kirocrew pod api <wt> GET sessions      # one authenticated call, fixed-key JSON
+```
+
+Which page and handler own the surface you changed is a lookup in
+[`docs/feature-map/`](../../../../../docs/feature-map/README.md). The recipes for
+the seven verification jobs that are not obvious — a deterministic fake-agent
+pod, driving a conversation over session-control, a WebSocket probe, scale-state
+loops, soaking the e2e suite, a spec-local accessibility scan, and the
+boot-duration metric — are in
+[verification-recipes.md](../../../../../docs/guides/verification-recipes.md).
+
 ### Agent specs + MCP servers are a SEPARATE isolation axis from the data home
 
 `KIROCREW_HOME` isolates config, DB, sessions and workspace. It does **not**
