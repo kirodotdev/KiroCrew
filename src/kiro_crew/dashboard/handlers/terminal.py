@@ -187,11 +187,30 @@ def _get_registry(request: web.Request) -> dict[str, _TerminalSession | None]:
 
 
 def _get_config(request: web.Request) -> dict:
+    """The ``dashboard.terminal`` object, or ``{}`` for anything malformed.
+
+    Every level is type-checked rather than chained, and the read fails CLOSED to
+    the default. config.json is hand-edited, so a non-object at any level --
+    ``"dashboard": false``, a number, a string, a list, or a document that is not
+    an object at all -- would make a chained ``.get`` raise ``AttributeError``,
+    which is NOT in the caught set below. That surfaced as an HTTP 500 on every
+    terminal route, including the per-keystroke completion one, from a single typo.
+
+    Returning the empty default (rather than propagating) is the convention the
+    nested reads already follow: a malformed value means "nothing configured",
+    which is also what an absent key means.
+    """
     try:
         data = json.loads(config_path().read_text(encoding="utf-8"))
-        return data.get("dashboard", {}).get("terminal", {})
     except (OSError, ValueError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    dashboard = data.get("dashboard")
+    if not isinstance(dashboard, dict):
+        return {}
+    cfg = dashboard.get("terminal")
+    return cfg if isinstance(cfg, dict) else {}
 
 
 def _is_enabled(request: web.Request) -> bool:
@@ -209,6 +228,36 @@ def _is_enabled(request: web.Request) -> bool:
 
 
 _enabled_cache: list = [True, 0.0]  # [value, timestamp]
+
+
+def _completion_cfg(request: web.Request) -> dict:
+    """The ``dashboard.terminal.completion`` object, or ``{}``.
+
+    Type-checked at BOTH levels because config.json is hand-edited: `"terminal":
+    false` would make `.get("completion")` raise on a boolean and `"completion":
+    false` would make the next `.get` raise — each an HTTP 500 from a typo on a
+    per-keystroke route. A non-object at either level means "nothing configured",
+    which is also the default.
+
+    Deliberately NOT memoised in ``_enabled_cache``: that slot belongs to
+    ``_is_enabled``, and a second flag sharing it would cross-contaminate the two.
+    Callers pay the executor-offloaded read the command tier already paid.
+    """
+    cfg = _get_config(request)
+    if not isinstance(cfg, dict):
+        return {}
+    inner = cfg.get("completion")
+    return inner if isinstance(inner, dict) else {}
+
+
+def _completion_disabled(completion_cfg: dict) -> bool:
+    """True only for a literal ``enabled: false``.
+
+    Any other value — a JSON string, a number, null, or an absent key — degrades
+    to the default (enabled). ``bool("false") is True``, so coercing would turn a
+    hand-edited string into the opposite of what it reads like.
+    """
+    return completion_cfg.get("enabled", True) is False
 
 
 def _resolve_cwd(cfg: dict, requested: str | None) -> str:
@@ -1539,15 +1588,22 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
             status=404,
         )
 
-    cwd = await _session_cwd_cached(sess)
+    # Split BEFORE any filesystem work: `prefix` is a pure function of the token
+    # and the completion gate below needs it for the empty answer, so the cwd
+    # probe must not run ahead of a request that is going to be suppressed.
     dir_part, prefix = _split_path_token(token)
 
-    # ── Command tier ──
-    # Ordered before the unknown-cwd branch: a subcommand list does not depend on
-    # the working directory (a cobra probe answers without one), so a session whose
-    # cwd cannot be read still gets `gh pr` completions even though it can get no
-    # path ones.
+    # `argv` is validated HERE, above the completion gate, because it is a
+    # BODY-SHAPE check like the session_id/token/folders_only ones further up: a
+    # malformed request must keep its 400 and its `invalid_argv` denial audit
+    # whether completion is on or off. Gating first would turn garbage argv into a
+    # silent 200 and drop the refusal from the SEL trail — the client would read a
+    # contract violation as "no suggestions". Parsing is pure (no filesystem, no
+    # subprocess), so doing it before the gate keeps the gate ahead of all real
+    # work; `argv is None` below therefore means "no argv in the body", since an
+    # unparsable one has already returned 400.
     raw_argv = body.get("argv")
+    argv = None
     if raw_argv is not None:
         argv = terminal_commands.parse_argv(raw_argv)
         if argv is None:
@@ -1560,30 +1616,44 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
-        # `completion` is read defensively AND off the event loop: `_get_config`
-        # does a synchronous `read_text()` of config.json, and this route fires per
-        # keystroke, so on a slow home filesystem (NFS, a stalled mount) an inline
-        # read would stall every gateway task. It is also hand-edited, so
-        # `"completion": false` would make a chained `.get` raise on a boolean — an
-        # HTTP 500 from a typo. A non-object value means "no operator additions",
-        # which is also the default.
-        # Read off the event loop (a synchronous `read_text` per keystroke would
-        # stall the gateway on a slow home filesystem) AND type-checked at BOTH
-        # levels: config.json is hand-edited, so `"terminal": false` would make
-        # `.get("completion")` raise on a boolean and `"completion": false` would
-        # make the next `.get` raise — each an HTTP 500 from a typo. A non-object at
-        # either level means "no operator additions", which is also the default.
 
-        def _completion_cfg() -> dict:
-            cfg = _get_config(request)
-            if not isinstance(cfg, dict):
-                return {}
-            inner = cfg.get("completion")
-            return inner if isinstance(inner, dict) else {}
-
-        completion_cfg = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), _completion_cfg,
+    # `completion` is read ONCE per request, above the tier split, and reused for
+    # both the gate here and the engine's operator command map below. Read off the
+    # event loop (`_get_config` does a synchronous `read_text()` of config.json and
+    # this route fires per keystroke, so on a slow home filesystem an inline read
+    # would stall every gateway task) and type-checked at both nesting levels.
+    completion_cfg = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _completion_cfg, request,
+    )
+    if _completion_disabled(completion_cfg):
+        # Gated ABOVE the tier split, so `completion.enabled: false` silences the
+        # `cd ` path popup as well as subcommand/flag suggestions — gating only the
+        # command tier would leave the path popup alive.
+        #
+        # The empty listing, NOT a 403: 403 is `_is_enabled`'s whole-panel signal
+        # and the client treats it differently. This is the same shape the
+        # unknown-cwd branch returns, so a configured silence needs no frontend
+        # change. Audited as `ok`: nothing was refused, and naming the state lets
+        # an operator tell a configured silence from a broken route.
+        _log_complete(caller, "ok", "completion_disabled")
+        return web.json_response(
+            {"dir": None, "prefix": prefix, "entries": [], "truncated": False}
         )
+
+    cwd = await _session_cwd_cached(sess)
+
+    # ── Command tier ──
+    # Ordered before the unknown-cwd branch: a subcommand list does not depend on
+    # the working directory (a cobra probe answers without one), so a session whose
+    # cwd cannot be read still gets `gh pr` completions even though it can get no
+    # path ones.
+    if argv is not None:
+        # Already parsed and validated above the completion gate, so this branch
+        # reuses it rather than parsing twice; a non-None value is by construction
+        # a well-formed argv.
+        # `completion_cfg` was read once above the tier split — off the event loop
+        # and type-checked at both nesting levels — so this branch reuses it
+        # rather than paying a second per-keystroke read of config.json.
         cmd_entries, reason = await terminal_commands.complete(
             argv, token, cwd, completion_cfg.get("commands"),
         )

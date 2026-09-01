@@ -204,6 +204,56 @@ class TestGetConfig:
         result = terminal._get_config(req)
         assert result == {}
 
+    @pytest.mark.parametrize(
+        "document",
+        [
+            '{"dashboard": false}',
+            '{"dashboard": true}',
+            '{"dashboard": 7}',
+            '{"dashboard": "x"}',
+            '{"dashboard": []}',
+            '{"dashboard": null}',
+            "[]",
+            '"x"',
+            "7",
+            "null",
+        ],
+    )
+    def test_a_malformed_parent_never_raises(self, document, tmp_path, monkeypatch):
+        # A chained `.get` on a non-dict raises AttributeError, which is NOT in
+        # this function's caught set — so before the type checks a single
+        # hand-edited typo was an HTTP 500 on every terminal route, including the
+        # per-keystroke completion one. The read fails closed to the default.
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(document)
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        assert terminal._get_config(_make_request()) == {}
+
+    @pytest.mark.parametrize("value", ["false", "true", "7", '"x"', "[]", "null"])
+    def test_a_non_object_terminal_value_is_the_default(
+        self, value, tmp_path, monkeypatch,
+    ):
+        # `"terminal": false` reads like "off" but is not the documented shape
+        # (`terminal.enabled`), and returning it verbatim made `_is_enabled` do
+        # `False.get("enabled")` — a 500 rather than a disabled panel. A malformed
+        # value degrades to the default, as an absent key does.
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text('{"dashboard": {"terminal": ' + value + "}}")
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        assert terminal._get_config(_make_request()) == {}
+
+    def test_is_enabled_survives_a_non_object_terminal_value(
+        self, tmp_path, monkeypatch,
+    ):
+        # The panel flag is the first `_get_config` consumer on every terminal
+        # route, so a raise here took the whole panel down, not just completion.
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text('{"dashboard": {"terminal": false}}')
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        terminal._enabled_cache[0] = True
+        terminal._enabled_cache[1] = 0.0
+        assert terminal._is_enabled(_make_request()) is True
+
     def test_returns_empty_when_no_terminal_key(self, tmp_path, monkeypatch):
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"dashboard": {}}))
@@ -1217,7 +1267,13 @@ class TestApiTerminalComplete:
         assert resp.status == 200
         assert [step for step, _ in seen] == ["resolve", "vet"]
         assert all(thread is not loop_thread for _, thread in seen)
-        assert disc.call_count == 1
+        # ONE hop for the trio is pinned by thread IDENTITY, not by counting
+        # `discovery_executor` calls: the completion gate's read is the first such
+        # call on every request (it must precede any filesystem work, so it cannot
+        # share this hop), and a count would conflate the two and pass for a
+        # resolution that had been split across two threads.
+        assert len({thread for _, thread in seen}) == 1
+        assert disc.call_count == 2
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], "0"])
@@ -1570,6 +1626,341 @@ class TestApiTerminalCompleteCommandTier:
         for leaked in ("gh", "sneaky", "secret-flag", "/w/proj"):
             assert leaked not in blob
         assert sel_log.call_args.kwargs["resources"] == "cmd_listed"
+
+
+class TestApiTerminalCompletionEnabledFlag:
+    """`dashboard.terminal.completion.enabled` — the popup's own switch.
+
+    Its own class rather than either tier's: the gate is read ABOVE the tier
+    split precisely so one key silences both, so tests that assert the path tier
+    and the command tier go quiet together belong to neither."""
+
+    @pytest.fixture(autouse=True)
+    def sel_log(self):
+        with patch.object(terminal, "_sel") as mock_sel:
+            log = MagicMock()
+            mock_sel.return_value.log_api_access = log
+            yield log
+
+    def _req(self, body, user="testuser", registry=None):
+        req = _make_request(user=user, registry=registry)
+        req.json = AsyncMock(return_value=body)
+        return req
+
+    def _entries(self, *names):
+        return [
+            terminal_commands.CmdEntry(n, f"about {n}", n.startswith("-")) for n in names
+        ]
+
+    def _complete(self, entries, reason="cmd_listed"):
+        return patch.object(
+            terminal_commands, "complete", AsyncMock(return_value=(entries, reason)),
+        )
+
+    # ── dashboard.terminal.completion.enabled ──
+    # A switch for the popup ALONE: `dashboard.terminal.enabled` also kills the
+    # PTY, so it is not a way to silence completions on a terminal you still use.
+
+    _EMPTY = {"dir": None, "entries": [], "truncated": False}
+
+    @pytest.mark.asyncio
+    async def test_disabled_completion_silences_the_path_tier(self, tmp_path):
+        # The reporter's primary complaint: the `cd ` popup. A real directory is
+        # present, so an empty answer proves the gate fired rather than the cwd
+        # simply having nothing to offer.
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "do"}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert json.loads(resp.text) == {**self._EMPTY, "prefix": "do"}
+
+    @pytest.mark.asyncio
+    async def test_disabled_completion_silences_the_command_tier(self):
+        # Gating only the command tier would leave the path popup alive; gating
+        # only the path tier would leave this one. Both are covered because the
+        # read sits ABOVE the tier split.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "cre", "argv": ["gh", "pr"]},
+            registry={"s1": sess},
+        )
+        engine = AsyncMock(return_value=(self._entries("create"), "cmd_listed"))
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}), \
+             patch.object(terminal_commands, "complete", engine):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert json.loads(resp.text) == {**self._EMPTY, "prefix": "cre"}
+        engine.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disabled_completion_is_an_empty_listing_not_a_403(self, tmp_path):
+        # 403 is `_is_enabled`'s whole-panel signal and the client treats it
+        # differently; the empty listing is the shape it already renders as "no
+        # popup", which is why this needs no frontend change.
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": ""}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_disabled_completion_does_no_filesystem_work(self, tmp_path):
+        # The gate sits before the cwd probe: a suppressed keystroke must not pay
+        # for an `lsof`/`/proc` read it is going to throw away.
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "x"}, registry={"s1": sess})
+        probe = AsyncMock(return_value=str(tmp_path))
+        with patch.object(terminal, "_session_cwd_cached", probe), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        probe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disabled_completion_audits_as_ok_not_denied(self, sel_log):
+        # Nothing was refused, and naming the state lets an operator tell a
+        # configured silence from a broken route.
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": ""}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            await terminal.api_terminal_complete(req)
+        kwargs = sel_log.call_args.kwargs
+        assert kwargs["outcome"] == "ok"
+        assert kwargs["resources"] == "completion_disabled"
+
+    @pytest.mark.asyncio
+    async def test_an_absent_enabled_key_preserves_current_behaviour(self, tmp_path):
+        # The default must be indistinguishable from before the key existed.
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "do"}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal, "_get_config", return_value={"completion": {}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["docs"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "no", 0, None, [], {}, "true", 1])
+    async def test_a_non_boolean_enabled_falls_back_to_the_default(
+        self, value, tmp_path,
+    ):
+        # config.json is hand-edited and `bool("false") is True`, so coercing
+        # would make the JSON STRING "false" mean the opposite of what it reads
+        # like. Only a real `false` disables; everything else is "absent".
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "do"}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": value}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["docs"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cfg", [False, True, "yes", 7, [], None])
+    async def test_a_non_object_terminal_config_does_not_raise_at_the_gate(
+        self, cfg, tmp_path,
+    ):
+        # `"terminal": false` would make `.get("completion")` raise on a boolean —
+        # an HTTP 500 on a keystroke. Covered at the GATE, not only at the command
+        # tier, because the read now happens for every request.
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "do"}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal, "_get_config", return_value=cfg):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["docs"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inner", [False, True, "yes", 7, [], None])
+    async def test_a_non_object_completion_config_does_not_raise_at_the_gate(
+        self, inner, tmp_path,
+    ):
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "do"}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": inner}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["docs"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "document", ['{"dashboard": false}', '{"dashboard": 7}', "[]", '"x"']
+    )
+    async def test_a_malformed_parent_config_does_not_500_the_route(
+        self, document, tmp_path, monkeypatch,
+    ):
+        # End-to-end companion to the `_get_config` unit tests: the gate now reads
+        # config.json on EVERY completion request, so a malformed parent that once
+        # raised AttributeError would have been a 500 per keystroke.
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(document)
+        monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
+        (tmp_path / "docs").mkdir()
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": "do"}, registry={"s1": sess})
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value=str(tmp_path))):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert [e["name"] for e in json.loads(resp.text)["entries"]] == ["docs"]
+
+    @pytest.mark.asyncio
+    async def test_the_gate_reads_the_config_off_the_event_loop(self):
+        # Every request now pays this read, not just the command tier, so the
+        # off-loop guarantee matters more than it did: `_get_config` does a
+        # synchronous `read_text()` and this route fires per keystroke.
+        seen = {}
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": ""}, registry={"s1": sess})
+
+        def spy(_request):
+            seen["thread"] = threading.current_thread().name
+            return {"completion": {"enabled": False}}
+
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config", spy):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert "thread" in seen, "config was never read"
+        assert seen["thread"] != threading.current_thread().name
+
+    @pytest.mark.asyncio
+    async def test_the_gate_does_not_touch_the_panel_flag_cache(self):
+        # `_enabled_cache` belongs to `_is_enabled`; caching a second flag in the
+        # same slot would cross-contaminate them.
+        sess = _make_session(session_id="s1")
+        req = self._req({"session_id": "s1", "token": ""}, registry={"s1": sess})
+        before = list(terminal._enabled_cache)
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            await terminal.api_terminal_complete(req)
+        assert list(terminal._enabled_cache) == before
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_body_still_400s_with_completion_disabled(self):
+        # The gate sits after the body/token/session validations, so a malformed
+        # request keeps its 400 instead of a spurious empty 200.
+        req = self._req({"session_id": 42})
+        with patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_token_still_413s_with_completion_disabled(self):
+        req = self._req(
+            {"session_id": "s1", "token": "x" * (terminal._COMPLETE_TOKEN_MAX + 1)},
+        )
+        with patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 413
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "argv", [[], "gh", ["./gh"], ["/usr/bin/gh"], [""], ["gh\n"], [7], {}]
+    )
+    async def test_a_malformed_argv_still_400s_with_completion_disabled(self, argv):
+        # `argv` is a body-shape contract, so turning the popup off must not turn a
+        # contract violation into a silent 200 — the client would read "malformed
+        # request" as "no suggestions" and never learn it sent garbage.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": argv}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "terminal_invalid_argv"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_argv_still_audits_denied_with_completion_disabled(
+        self, sel_log,
+    ):
+        # The denial must stay in the SEL trail. A disabled popup that swallowed
+        # `invalid_argv` would erase the only record that a caller is broken.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["./gh"]}, registry={"s1": sess},
+        )
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            await terminal.api_terminal_complete(req)
+        kwargs = sel_log.call_args.kwargs
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["resources"] == "invalid_argv"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_argv_never_reaches_the_engine_when_disabled(self):
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "", "argv": ["./gh"]}, registry={"s1": sess},
+        )
+        engine = AsyncMock(return_value=([], "cmd_unknown"))
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}), \
+             patch.object(terminal_commands, "complete", engine):
+            await terminal.api_terminal_complete(req)
+        engine.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_well_formed_argv_is_parsed_once(self):
+        # The hoisted parse must be REUSED by the command tier, not repeated: a
+        # second parse per keystroke is pure waste on this route.
+        sess = _make_session(session_id="s1")
+        req = self._req(
+            {"session_id": "s1", "token": "cre", "argv": ["gh", "pr"]},
+            registry={"s1": sess},
+        )
+        parse = MagicMock(side_effect=terminal_commands.parse_argv)
+        with patch.object(terminal, "_session_cwd_cached", AsyncMock(return_value="/w")), \
+             patch.object(terminal, "_get_config", return_value={}), \
+             patch.object(terminal_commands, "parse_argv", parse), \
+             self._complete(self._entries("create")):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 200
+        assert parse.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_session_still_404s_with_completion_disabled(self):
+        req = self._req({"session_id": "nope", "token": ""}, registry={})
+        with patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_the_panel_flag_still_wins_over_the_completion_flag(self):
+        # `dashboard.terminal.enabled = false` is the whole-panel refusal and must
+        # keep answering 403, not the completion gate's empty listing.
+        req = self._req({"session_id": "s1", "token": ""})
+        with patch.object(terminal, "_is_enabled", return_value=False), \
+             patch.object(terminal, "_get_config",
+                          return_value={"completion": {"enabled": False}}):
+            resp = await terminal.api_terminal_complete(req)
+        assert resp.status == 403
 
 
 class TestApiTerminalDelete:
