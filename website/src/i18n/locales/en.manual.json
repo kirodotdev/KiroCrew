@@ -1214,6 +1214,7 @@
       "search_failed": "Search failed",
       "retry": "Retry",
       "action_enter": "Open View",
+      "action_continue": "Continue",
       "action_ask": "Ask",
       "group_attention": "Needs You",
       "ask_agent": "Ask the agent: “{{query}}”",
@@ -1229,7 +1230,13 @@
         "command": "Command",
         "setting": "Setting",
         "view": "View"
-      }
+      },
+      "placeholder_argument": "Enter a value…",
+      "argument_invalid": "That value is not accepted by this command.",
+      "argument_withdrawn": "That command is no longer available.",
+      "argument_changed": "This command changed. Check what will be sent, then press Enter again.",
+      "will_send": "Will send",
+      "will_send_clipped": "Scroll to read the rest — this instruction continues below."
     },
     "papyrus": {
       "workspace": {

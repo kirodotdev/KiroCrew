@@ -990,6 +990,7 @@
       "ask_agent": "Den Agenten fragen: „{{query}}“",
       "group_attention": "Braucht dich",
       "action_enter": "Ansicht öffnen",
+      "action_continue": "Weiter",
       "action_open": "Öffnen",
       "action_open_app": "App-Seite öffnen",
       "action_open_session": "Sitzung öffnen",
@@ -1027,7 +1028,13 @@
         "command": "Befehl",
         "setting": "Einstellung",
         "view": "Ansicht"
-      }
+      },
+      "placeholder_argument": "Wert eingeben…",
+      "argument_invalid": "Dieser Befehl akzeptiert diesen Wert nicht.",
+      "argument_withdrawn": "Dieser Befehl ist nicht mehr verfügbar.",
+      "argument_changed": "Dieser Befehl hat sich geändert. Prüfe, was gesendet wird, und drücke erneut die Eingabetaste.",
+      "will_send": "Wird gesendet",
+      "will_send_clipped": "Zum Weiterlesen scrollen — diese Anweisung geht unten weiter."
     },
     "crewCompanion": {
       "accessory": {

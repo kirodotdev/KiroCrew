@@ -4622,6 +4622,7 @@
       "ask_agent": "ऐजेंट से पूंरें: “{{query}}”",
       "group_attention": "तुम्हारी ज़रूरत है",
       "action_enter": "व्यू खोलें",
+      "action_continue": "जारी रखें",
       "action_open": "खोलें",
       "action_open_app": "ऐप पेज खोलें",
       "action_open_session": "सेशन खोलें",
@@ -4659,7 +4660,13 @@
         "command": "कमांड",
         "setting": "सेटिंग",
         "view": "व्यू"
-      }
+      },
+      "placeholder_argument": "एक मान डालो…",
+      "argument_invalid": "यह कमांड उस मान को स्वीकार नहीं करता।",
+      "argument_withdrawn": "वह कमांड अब उपलब्ध नहीं है।",
+      "argument_changed": "यह कमांड बदल गया है। देखें कि क्या भेजा जाएगा, फिर दोबारा Enter दबाएँ।",
+      "will_send": "भेजा जाएगा",
+      "will_send_clipped": "बाकी पढ़ने के लिए स्क्रॉल करें — यह निर्देश नीचे जारी है।"
     },
     "awsControl": {
       "manifest": {

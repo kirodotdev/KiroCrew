@@ -4700,6 +4700,7 @@
       "ask_agent": "Preguntar al agente: «{{query}}»",
       "group_attention": "Requiere tu atención",
       "action_enter": "Abrir vista",
+      "action_continue": "Continuar",
       "action_open": "Abrir",
       "action_open_app": "Abrir página de la app",
       "action_open_session": "Abrir sesión",
@@ -4737,7 +4738,13 @@
         "command": "Comando",
         "setting": "Ajuste",
         "view": "Vista"
-      }
+      },
+      "placeholder_argument": "Introduce un valor…",
+      "argument_invalid": "Este comando no acepta ese valor.",
+      "argument_withdrawn": "Ese comando ya no está disponible.",
+      "argument_changed": "Este comando ha cambiado. Comprueba lo que se enviará y vuelve a pulsar Enter.",
+      "will_send": "Se enviará",
+      "will_send_clipped": "Desplázate para leer el resto: esta instrucción continúa más abajo."
     },
     "awsControl": {
       "manifest": {

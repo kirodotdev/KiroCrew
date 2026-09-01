@@ -114,6 +114,17 @@ export type InstalledApp = {
        */
       overlays?: { id: string; replaces: string }[]
     }
+    /**
+     * Rows this app adds to host-owned surfaces. Declared here for the same reason
+     * `ui.overlays` above is: the manifest serializes it, and a reader outside
+     * `contributedCommands.ts` (which carries its own record type, and validates the
+     * shape because this data is third-party) could not otherwise see the field
+     * exists. Left as `unknown` on purpose — the only code allowed to decide what a
+     * contribution IS is the module that checks it.
+     */
+    contributes?: {
+      commands?: unknown
+    }
     permissions?: { api?: string[]; events?: string[]; mcpTools?: string[]; storage?: boolean; cron?: boolean; network?: boolean }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

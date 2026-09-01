@@ -1721,7 +1721,25 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       const shouldAutoSend = embedded ? false : searchParams.get('autoSend') === '1'
       const wantNew = embedded ? false : searchParams.get('newSession') === '1'
       if (!embedded && (searchParams.get('prefill') || shouldAutoSend)) setSearchParams({}, { replace: true })
-      if (shouldAutoSend) { autoSendRef.current = pendingInput; newSessionRef.current = wantNew } else {
+      if (shouldAutoSend) {
+        autoSendRef.current = pendingInput
+        newSessionRef.current = wantNew
+        // Bump the tick, because arming the ref alone is not enough when ChatPage is
+        // ALREADY mounted. The send effect's deps are `[send, connected,
+        // autoSendTick]`: on a cold navigation, mounting and connecting move
+        // `connected` and it fires on its own, but a caller already on /chat only
+        // changes the search params. `send`'s identity does move with `activeSlot` --
+        // yet a seeder that awaits between activating its slot and setting the pending
+        // input (the command bar does, since the switch must land first) puts those in
+        // two different renders, and by the render that arms the ref none of the deps
+        // change. The prompt would then be neither sent nor visible: this branch is the
+        // one that does not fall back to the composer.
+        //
+        // Harmless on the cold path -- the effect runs, finds `connected` still false,
+        // and leaves the ref armed for the real connect. Same remedy the no-slot retry
+        // below already uses for the same reason.
+        setAutoSendTick(t => t + 1)
+      } else {
         if (activeSlot) { setDraft(drafts.current, activeSlot, pendingInput); saveDraftsDebounced() }
         setInput(pendingInput)
         setPrefillHint(true)

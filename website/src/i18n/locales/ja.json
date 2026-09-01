@@ -958,6 +958,7 @@
       "ask_agent": "エージェントに質問：「{{query}}」",
       "group_attention": "あなたの対応待ち",
       "action_enter": "ビューを開く",
+      "action_continue": "続ける",
       "action_open": "開く",
       "action_open_app": "アプリページを開く",
       "action_open_session": "セッションを開く",
@@ -995,7 +996,13 @@
         "command": "コマンド",
         "setting": "設定",
         "view": "ビュー"
-      }
+      },
+      "placeholder_argument": "値を入力…",
+      "argument_invalid": "このコマンドはその値を受け付けません。",
+      "argument_withdrawn": "そのコマンドは利用できなくなりました。",
+      "argument_changed": "このコマンドは変更されました。送信内容を確認して、もう一度 Enter を押してください。",
+      "will_send": "送信内容",
+      "will_send_clipped": "この指示は下に続きます。スクロールして残りを確認してください。"
     },
     "crewCompanion": {
       "accessory": {

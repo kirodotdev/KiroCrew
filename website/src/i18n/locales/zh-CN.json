@@ -4544,6 +4544,7 @@
       "ask_agent": "问一下 agent：“{{query}}”",
       "group_attention": "等你处理",
       "action_enter": "打开视图",
+      "action_continue": "继续",
       "action_open": "打开",
       "action_open_app": "打开应用页面",
       "action_open_session": "打开会话",
@@ -4581,7 +4582,13 @@
         "command": "命令",
         "setting": "设置",
         "view": "视图"
-      }
+      },
+      "placeholder_argument": "输入一个值…",
+      "argument_invalid": "这个命令不接受该值。",
+      "argument_withdrawn": "该命令已不可用。",
+      "argument_changed": "该命令已变更。请确认将要发送的内容，然后再次按 Enter。",
+      "will_send": "将发送",
+      "will_send_clipped": "该指令下方还有内容，请滚动查看完整文本。"
     },
     "awsControl": {
       "manifest": {

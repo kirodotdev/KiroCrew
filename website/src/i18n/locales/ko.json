@@ -958,6 +958,7 @@
       "ask_agent": "에이전트에게 질문: ‘{{query}}’",
       "group_attention": "확인 필요",
       "action_enter": "뷰 열기",
+      "action_continue": "계속",
       "action_open": "열기",
       "action_open_app": "앱 페이지 열기",
       "action_open_session": "세션 열기",
@@ -995,7 +996,13 @@
         "command": "명령",
         "setting": "설정",
         "view": "보기"
-      }
+      },
+      "placeholder_argument": "값 입력…",
+      "argument_invalid": "이 명령은 해당 값을 허용하지 않습니다.",
+      "argument_withdrawn": "해당 명령을 더 이상 사용할 수 없습니다.",
+      "argument_changed": "이 명령이 변경되었습니다. 전송될 내용을 확인한 뒤 Enter를 다시 누르세요.",
+      "will_send": "보낼 내용",
+      "will_send_clipped": "이 명령은 아래로 이어집니다. 스크롤하여 나머지를 확인하세요."
     },
     "crewCompanion": {
       "accessory": {

@@ -838,6 +838,21 @@ export default [
               // in another module inherits this. Both names exist in exactly one
               // module today (`src/utils/popoutController.ts`).
               '^log(Debug|Warn)$',
+              // `contributedCommands.ts`'s single console shim. A refused command
+              // contribution has to say WHY on the console or it is invisible, and
+              // the reason names the manifest field that failed (`missing title`,
+              // `argument.kind must be one of url, text`) addressed to
+              // whoever authored the app.json. Same class as `^console\.\w+$` and
+              // `\berrors\.push$` above: exempt when it is a throw or a direct
+              // console call, so treating it as copy only because a one-line wrapper
+              // adds the message prefix would be an artifact of the sink.
+              //
+              // A CALLEE exemption, not a whole-file one, for the reason the ones
+              // above give -- and the name is deliberately long and specific rather
+              // than a generic `warnSkip`, so a future helper elsewhere cannot
+              // inherit this by accident. One definition exists today, in
+              // `src/apps/command-bar/contributedCommands.ts`, which renders nothing.
+              '^warnContributionSkipped$',
               // Validator diagnostics, for parity with `Error` above. A rejected input's
               // reason names the FIELD that failed (`Missing or invalid "meta" field`,
               // `Invalid meta.format: "…" (expected "svg", "lottie", or "sprite")`) and
