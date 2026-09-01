@@ -37,7 +37,7 @@ const SCRIM = /key="sessions-backdrop"[\s\S]{0,240}?z-\[(\d+)\]/.exec(CHAT_PAGE)
 /** The wave chip's wrapper, lifted to clear ThemeExperienceLayer's ceiling. */
 const CHIP = /className="px-4 mx-auto w-full relative z-\[(\d+)\]"/.exec(SUBAGENT_BAR)
 /** The wrapper introduced around the bar stack. */
-const STACK = /<div className="([^"]*)" data-testid="composer-status-stack">/.exec(CHAT_PAGE)
+const STACK = /<div ref=\{composerBandRef\} className="([^"]*)" data-testid="composer-status-stack">/.exec(CHAT_PAGE)
 /** QueueStack's fuse overhang — the seam that pulls its card into the composer. */
 const OVERLAP = /const OVERLAP = (\d+)/.exec(QUEUE_STACK)
 

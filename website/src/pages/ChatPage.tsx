@@ -3393,6 +3393,34 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => cancelAnimationFrame(raf)
   }, [activeTip, surveyLayoutTick, scrollBottom])
 
+  // Same compensation for the composer status stack (progress bars, sub-agent
+  // delivery line, queue stack). The virtualizer's own viewport branch DOES
+  // re-pin when the band shrinks the scroller's box — but a queued send is a
+  // message-array append too, and the regroup remounts tail rows while the
+  // band's spring animates the viewport, so that re-pin can land on interior
+  // heights that are still settling. Measured frame-by-frame on the pre-fix
+  // build: `scrollTop - clientHeight` math reports "at bottom" while the
+  // content sits a card-height (~21px) low, and whether it recovers depends
+  // on which re-render lands last — the defect reads as intermittent. This
+  // observer re-anchors AFTER every layout step of the band (ResizeObserver
+  // fires post-layout), so the final write always follows the last height
+  // change instead of racing it. Effect deps cannot do that: a one-shot
+  // re-anchor at mount time measures a half-grown band. Gated on FOLLOW for
+  // the same reason as the tip/survey effect above. A callback ref (not
+  // useRef + effect) so the observer re-attaches when the chat column
+  // unmounts and remounts.
+  const composerBandObserverRef = useRef<ResizeObserver | null>(null)
+  const composerBandRef = useCallback((el: HTMLDivElement | null) => {
+    composerBandObserverRef.current?.disconnect()
+    composerBandObserverRef.current = null
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (vGetFollowRef.current()) scrollBottom(true)
+    })
+    ro.observe(el)
+    composerBandObserverRef.current = ro
+  }, [scrollBottom])
+
   // Navigate to a (possibly off-window) display index: mount it first via the
   // virtualizer so the DOM-based scroll can find it, then scroll next frame.
   // Tracks the in-flight row-mount poll (below) so a newer navigation cancels
@@ -8096,7 +8124,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   `overflow-y-auto overscroll-contain`): it replaces the global
                   always-visible `var(--border)` thumb with a hover-revealed
                   overlay one, so the capped box does not carry a permanent bar. */}
-              <div className="max-h-[50svh] overflow-y-auto overscroll-contain scrollbar-overlay pb-[11px] mb-[-11px]" data-testid="composer-status-stack">
+              <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain scrollbar-overlay pb-[11px] mb-[-11px]" data-testid="composer-status-stack">
               {/* Not gated on activityOpen (unlike the two bars below): the
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}
