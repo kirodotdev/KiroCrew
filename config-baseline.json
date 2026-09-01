@@ -7323,6 +7323,20 @@
       "defaultValue": true
     },
     {
+      "path": "connections_ui",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Connections UI",
+      "help": "Show the Connections gallery (held for a later release).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "timezone",
       "kind": "core",
       "type": "string",

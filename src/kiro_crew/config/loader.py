@@ -216,6 +216,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "timezone",
         "auto_update",
         "registries",
+        "connections_ui",
     }
 )
 
@@ -7574,6 +7575,28 @@ class KiroCrewConfig:
         default=True,
         metadata=_meta("Auto Update", "Enable automatic update checks."),
     )
+    #: Opt-in for the Connections gallery, which is merged but held for a later
+    #: release. A real field rather than an unmodelled top-level key because the
+    #: browser is the consumer: the frontend reads this flag live off ``GET
+    #: /api/config/kirocrew`` (``useConnectionsUi.ts``), and that response drops
+    #: every key the core does not model — ``_masked_config_dict`` cannot tell
+    #: whether an unmodelled value is a secret, so it strips them all rather
+    #: than leak one. Being schema-known is therefore what makes the flag
+    #: reachable at all; it also stops ``validation`` reporting the operator's
+    #: own documented setting as an "unrecognized top-level key".
+    #:
+    #: Parsed through ``_safe_bool`` and defaulting False: a value Kiro Crew
+    #: cannot read must mean "keep the held surface hidden", never the reverse
+    #: (same posture as ``computer_use.cursor_motion``). The frontend predicate
+    #: is a strict ``=== true``, so coercing e.g. the string ``"true"`` would
+    #: only make the two ends disagree about what was configured.
+    connections_ui: bool = field(
+        default=False,
+        metadata=_meta(
+            "Connections UI",
+            "Show the Connections gallery (held for a later release).",
+        ),
+    )
     #: Top-level sections that were PRESENT on disk but not a JSON object, and
     #: were therefore coerced to defaults by :meth:`load`.
     #:
@@ -8820,6 +8843,7 @@ class KiroCrewConfig:
                 cursor_motion=_safe_bool(computer_use_data.get("cursor_motion", False), False),
             ),
             auto_update=data.get("auto_update", True),
+            connections_ui=_safe_bool(data.get("connections_ui", False), False),
             _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
             timezone=data.get("timezone", ""),
             snapshot_dir=data.get("snapshot_dir", ""),
@@ -9123,6 +9147,13 @@ class KiroCrewConfig:
             "snapshot_dir": self.snapshot_dir,
             "timezone": self.timezone,
             "auto_update": self.auto_update,
+            # Emitted unconditionally, like every other modelled top-level
+            # value: _KNOWN_CONFIG_SECTIONS must equal the key set to_dict()
+            # writes (test_known_sections_equals_emitted_sections), and a key
+            # listed there but not emitted would be excluded from
+            # _extra_sections capture AND dropped here — losing the operator's
+            # opt-in on the first save().
+            "connections_ui": self.connections_ui,
         }
         # External registries (always serialized so save() round-trips the field)
         d["registries"] = [asdict(r) for r in self.registries]
