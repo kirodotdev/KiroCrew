@@ -804,7 +804,19 @@ def _mint_holder_alive(entry: MintState) -> bool:
     The PKCE verifier and the loopback listener both live in the minting process,
     so a dead process means a URL no paste can complete. Asked of a row that
     already holds a URL; a row still ``minting`` has nothing stamped yet.
+
+    ABSTAINS on a row carrying a ``generation``. That row was minted on the SHARED
+    process (:mod:`kiro_crew.connections.warm`) and owns no ``client`` by design, so
+    the ``client is None`` branch below would answer for it -- and answering is the
+    bug, because False here is a VERDICT, not a shrug: :func:`expire_dead_holder`
+    acts on it, so the first mint-state poll on a warm slug withdrew a URL whose
+    process and session were both alive. Warm rows are judged by generation AND
+    activation liveness at the warm table's own chokepoint
+    (``warm.expire_dead_mints``, called on the status path and by the reaper), which
+    is the only reader that can see the registry those stamps name.
     """
+    if entry.get("generation"):
+        return True
     client = entry.get("client")
     if client is None:
         return False
@@ -877,7 +889,21 @@ def pending_mint_for(slug: str) -> MintState | None:
     token = str(entry.get("token") or "")
     state = entry.get("state", "minting")
     view: MintState = {"state": state, "token": token}
-    if entry.get("oauth_url") and state == "waiting":
+    if entry.get("shared"):
+        # UNCLAIMED: a premint the warm table holds for whoever clicks Connect next,
+        # not a flow any caller started. Reported rather than hidden because this one
+        # view feeds two readers with different needs: the status classifier must
+        # refuse to read it as user consent (see ``status._classify``), while the
+        # mint-state poll must still tell it apart from ``idle``, which its own
+        # contract defines as "no mint exists for the provider". Filtering the row out
+        # would answer the second reader with that lie -- on exactly the slug a card
+        # has just adopted.
+        view["shared"] = True
+    if entry.get("oauth_url") and state == "waiting" and not entry.get("shared"):
+        # The consent URL completes a MACHINE-WIDE grant, so it is served only to
+        # the caller whose click owns the row. An unclaimed premint's view says a
+        # row exists and nothing more; the URL surfaces only after adoption rotates
+        # the token and clears ``shared`` (see ``warm.adopt_shared_mint``).
         view["oauth_url"] = entry["oauth_url"]
     if entry.get("reason"):
         view["reason"] = entry["reason"]

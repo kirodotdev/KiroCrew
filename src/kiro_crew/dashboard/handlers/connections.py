@@ -328,11 +328,37 @@ async def api_connections_mint(request: web.Request) -> web.Response:
 
     # Function-local by DESIGN, not for a cycle: this handlers package is imported
     # on the gateway boot path, and the mint engine drags in the ACP client, the
-    # credential predicate and the PID registry. Keeping it here is what stops a
+    # credential predicate and the PID registry -- the warm engine adds the ACP
+    # runtime and the MCP inventory on top. Keeping both here is what stops a
     # gateway start paying for a subsystem most requests never touch, and
-    # test_the_handlers_package_does_not_import_the_mint_engine enforces it in a
-    # subprocess -- hoisting this to module scope turns that test red.
+    # test_the_handlers_package_does_not_import_the_mint_engine (and its warm twin)
+    # enforce it in a subprocess -- hoisting either to module scope turns them red.
     from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
+    from kiro_crew.connections.warm import adopt_shared_mint
+
+    # ADOPTION FIRST, because the alternative is throwing the answer away. The premint
+    # sweep may already hold this provider's approval URL, and ``reserve_mint_row``
+    # below pops whatever row is at the slug -- so reserving first disposed the very
+    # URL this click existed to serve and then paid a ~7.5s cold spawn to re-mint it.
+    # A refusal (nothing warmed, a dead holder, another tab got there first) falls
+    # through to that cold path, which stays correct and stays the only path for a
+    # provider warming never covered.
+    adopted = await adopt_shared_mint(slug, str(provider["mcp_url"]))
+    if adopted is not None:
+        # ONE event, outcome ``ok``: unlike the cold path below, this request both
+        # starts and finishes here, so a ``started`` with no completion would leave the
+        # audit trail showing a mint that never ended.
+        await asyncio.to_thread(
+            lambda: sel().log_api_access(
+                caller="dashboard",
+                operation="connections_mint",
+                outcome="ok",
+                resources=f"provider:{slug} reason=adopted_warm_mint",
+            )
+        )
+        # ``waiting`` rather than ``minting``: the URL exists already. The card polls
+        # the mint state either way, and that poll now finds it on the first read.
+        return web.json_response({"ok": True, "slug": slug, "state": "waiting", "token": adopted})
 
     # Reserved BEFORE responding: the response names a row this tab polls
     # immediately, so the row has to be visible first. Allocating only a token here
