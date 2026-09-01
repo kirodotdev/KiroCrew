@@ -474,6 +474,202 @@ class TestASessionResumedWhileStagingIsLeftAlone:
         assert batch.revived == ()
 
 
+class TestAReadOnlyResumeIsCaughtByTheIndexReRead:
+    """mtime sees writes, so a resume that only READS needs a second signal.
+
+    Resuming a session reads its old transcript to rebuild history and records the
+    turn that follows under a newly mapped sid, without rewriting that transcript.
+    Every file therefore keeps the mtime that qualified it and passes the check
+    above — so the loop consults the index too, at the same per-session cadence,
+    where the resume IS visible: it is mapped.
+    """
+
+    def test_a_resume_that_only_reads_the_transcript_is_left_in_place(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The case the mtime guard cannot see: nothing is written at all."""
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=400)
+        _transcript(crew_home, "dashboard_chat-1", size=16, age_days=400)
+        _cli_half(kiro_home, "bbbb2222", log_bytes=16, age_days=400)
+        _transcript(crew_home, "dashboard_chat-2", size=16, age_days=400)
+
+        pairs = {"aaaa1111": "dashboard_chat-1", "bbbb2222": "dashboard_chat-2"}
+        retired = _index(pairs)
+        resumed = {"yet": False}
+        real = session_storage._move_file
+
+        def _resume_the_second_session(src: Path, dst: Path) -> None:
+            # Mapped part-way through the batch, and nothing written: no utime, no
+            # append, no recreated origin. This is the whole point of the case.
+            real(src, dst)
+            resumed["yet"] = True
+
+        monkeypatch.setattr(session_storage, "_move_file", _resume_the_second_session)
+
+        def _refresh() -> SessionIndex:
+            return retired if not resumed["yet"] else _index(pairs, active={"bbbb2222"})
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111", "bbbb2222"],
+            reason="manual",
+            index=retired,
+            now=_NOW,
+            refresh=_refresh,
+        )
+
+        assert batch.revived == ("bbbb2222",)
+        assert batch.sessions == 1
+        # Left in place means every half, and nothing of it staged: the loop reaches
+        # this session before touching any of its files, so there is no rollback.
+        assert (kiro_home / "sessions" / "cli" / "bbbb2222.jsonl").is_file()
+        assert (kiro_home / "sessions" / "cli" / "bbbb2222.json").is_file()
+        assert (crew_home / "sessions" / "dashboard_chat-2.jsonl").is_file()
+        staged = list((crew_home / "sessions" / "trash").rglob("*bbbb2222*"))
+        assert staged == [], f"a session left in place has files in the batch: {staged}"
+
+    def test_the_index_is_consulted_before_every_session(self, stores: tuple[Path, Path]) -> None:
+        """Once before the loop is not enough — that is the gap being closed.
+
+        Pinned as a count rather than a behaviour because the behaviour it buys is
+        already covered above; what a future change could quietly drop is the
+        CADENCE, and then only a batch resumed at exactly the wrong moment would
+        notice.
+        """
+        crew_home, kiro_home = stores
+        for sid, stem in (("aaaa1111", "1"), ("bbbb2222", "2"), ("cccc3333", "3")):
+            _cli_half(kiro_home, sid, log_bytes=16, age_days=400)
+            _transcript(crew_home, f"dashboard_chat-{stem}", size=16, age_days=400)
+
+        retired = _index(
+            {
+                "aaaa1111": "dashboard_chat-1",
+                "bbbb2222": "dashboard_chat-2",
+                "cccc3333": "dashboard_chat-3",
+            }
+        )
+        calls = {"n": 0}
+
+        def _refresh() -> SessionIndex:
+            calls["n"] += 1
+            return retired
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111", "bbbb2222", "cccc3333"],
+            reason="manual",
+            index=retired,
+            now=_NOW,
+            refresh=_refresh,
+        )
+
+        assert batch.sessions == 3
+        # One before the authority checks, then one per session reached.
+        assert calls["n"] == 4
+
+    def test_an_unchanged_index_is_not_re_derived(self, stores: tuple[Path, Path]) -> None:
+        """The per-session re-read has to be affordable at the selection cap.
+
+        ``active_stems`` rebuilds a frozenset over the whole map every time it is
+        read, so re-deriving it per session is what would make a six-figure
+        selection unpayable. A caller says "nothing has moved" by returning the same
+        object, and that must cost one identity comparison rather than a rebuild.
+        """
+        crew_home, kiro_home = stores
+        for sid, stem in (("aaaa1111", "1"), ("bbbb2222", "2"), ("cccc3333", "3")):
+            _cli_half(kiro_home, sid, log_bytes=16, age_days=400)
+            _transcript(crew_home, f"dashboard_chat-{stem}", size=16, age_days=400)
+
+        derived: list[str] = []
+
+        class _CountingIndex(SessionIndex):
+            """Records every read of the set the union would rebuild."""
+
+            @property
+            def active_stems(self) -> frozenset[str]:
+                derived.append("active_stems")
+                return super().active_stems
+
+        retired = _CountingIndex(
+            stem_to_sid={
+                "dashboard_chat-1": "aaaa1111",
+                "dashboard_chat-2": "bbbb2222",
+                "dashboard_chat-3": "cccc3333",
+            }
+        )
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111", "bbbb2222", "cccc3333"],
+            reason="manual",
+            index=_index(
+                {
+                    "aaaa1111": "dashboard_chat-1",
+                    "bbbb2222": "dashboard_chat-2",
+                    "cccc3333": "dashboard_chat-3",
+                }
+            ),
+            now=_NOW,
+            refresh=lambda: retired,
+        )
+
+        assert batch.sessions == 3
+        # Once, for the union before the authority checks. Three more would mean
+        # every session paid for a rebuild of a set that had not changed.
+        assert derived == ["active_stems"]
+
+    def test_a_re_read_that_starts_failing_keeps_the_view_it_last_read(
+        self, stores: tuple[Path, Path], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A lost re-read costs extra protection, not the protection already read.
+
+        Every re-read only widens the live sets, so failing to take one leaves the
+        guard exactly as strong as the last successful read made it. Abandoning a
+        batch that has already moved files would be the worse trade — and a refresh
+        broken from the start still fails closed, before anything moves.
+        """
+        crew_home, kiro_home = stores
+        for sid, stem in (("aaaa1111", "1"), ("bbbb2222", "2"), ("cccc3333", "3")):
+            _cli_half(kiro_home, sid, log_bytes=16, age_days=400)
+            _transcript(crew_home, f"dashboard_chat-{stem}", size=16, age_days=400)
+
+        pairs = {
+            "aaaa1111": "dashboard_chat-1",
+            "bbbb2222": "dashboard_chat-2",
+            "cccc3333": "dashboard_chat-3",
+        }
+        calls = {"n": 0}
+
+        def _refresh() -> SessionIndex:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Before the authority checks: reports every session retired, so
+                # the batch is allowed to start.
+                return _index(pairs)
+            if calls["n"] == 2:
+                # Reached the first session, and the third has just been resumed.
+                return _index(pairs, active={"cccc3333"})
+            raise OSError("the map went away")
+
+        with caplog.at_level(logging.WARNING, logger=session_storage.__name__):
+            batch = session_storage.move_to_trash(
+                ["aaaa1111", "bbbb2222", "cccc3333"],
+                reason="manual",
+                index=_index(pairs),
+                now=_NOW,
+                refresh=_refresh,
+            )
+
+        # The two the failing re-reads could not speak for still moved.
+        assert batch.sessions == 2
+        # And the one the last GOOD read named is still protected, which is the
+        # difference between retaining the view and discarding it.
+        assert batch.revived == ("cccc3333",)
+        assert (kiro_home / "sessions" / "cli" / "cccc3333.jsonl").is_file()
+        warnings = [r for r in caplog.records if "could not re-read" in r.getMessage()]
+        # Once for the batch, not once per session: at the selection cap a
+        # per-session line is six figures of identical warnings.
+        assert len(warnings) == 1
+
+
 class TestRestoreIsAllOrNothing:
     def test_restores_every_half(self, stores: tuple[Path, Path]) -> None:
         crew_home, kiro_home = stores

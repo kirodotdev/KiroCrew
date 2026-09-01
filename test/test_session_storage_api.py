@@ -1071,6 +1071,116 @@ class TestIndexConstruction:
         assert index.active_stems == frozenset(index.stem_to_sid)
 
 
+class TestTheReclaimRefreshIsCheapToCallPerSession:
+    """``move_to_trash`` calls ``refresh`` once per selected session (#7118).
+
+    It has to, because a resume that only READS an old transcript writes nothing
+    and is invisible to the mtime guard inside the move loop — the index is where
+    it shows up. Rebuilding the index that often is what has to be made affordable:
+    the rebuild reads and parses the whole session map, and the selection is capped
+    at six figures.
+    """
+
+    def _write_map(self, payload: dict[str, str]) -> Path:
+        """Land a session map the way ``SessionMap`` does: replace, never edit.
+
+        The token includes ``st_ino`` precisely because every real write arrives
+        through ``os.replace``, so an in-place rewrite is not the case under test.
+        """
+        target = handler.config_dir() / handler.SESSION_MAP_FILENAME
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, target)
+        return target
+
+    def test_the_same_index_is_returned_while_the_map_has_not_moved(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """One stat, not one parse — and the SAME object, which is the signal.
+
+        ``move_to_trash`` reads an unchanged index by identity, so returning an
+        equal-but-new object would still pay for re-deriving its sets per session.
+        """
+        self._write_map({"dashboard:chat-1": "aaaa1111"})
+        built = []
+
+        def _spy() -> handler.SessionIndex:
+            built.append(1)
+            return handler.SessionIndex()
+
+        refresh = handler._MapBackedRefresh()
+        with patch.object(handler, "_build_index", _spy):
+            first = refresh()
+            second = refresh()
+            third = refresh()
+
+        assert first is second is third
+        assert len(built) == 1
+
+    def test_a_mapping_write_forces_a_rebuild(self, stores: tuple[Path, Path]) -> None:
+        """A resume maps the session, which replaces the file. That must be seen."""
+        self._write_map({"dashboard:chat-1": "aaaa1111"})
+
+        def _spy() -> handler.SessionIndex:
+            return handler.SessionIndex()
+
+        refresh = handler._MapBackedRefresh()
+        with patch.object(handler, "_build_index", _spy):
+            before = refresh()
+            self._write_map({"dashboard:chat-1": "aaaa1111", "dashboard:chat-2": "bbbb2222"})
+            after = refresh()
+
+        assert before is not after
+
+    def test_an_unreadable_map_is_never_treated_as_unchanged(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """Fails toward rebuilding: a missing map costs a re-read, not a skip.
+
+        Skipping on an unreadable token would turn "I cannot tell" into "nothing
+        has changed", which is exactly the wrong direction for a guard.
+        """
+        assert not (handler.config_dir() / handler.SESSION_MAP_FILENAME).exists()
+        built = []
+
+        def _spy() -> handler.SessionIndex:
+            built.append(1)
+            return handler.SessionIndex()
+
+        refresh = handler._MapBackedRefresh()
+        with patch.object(handler, "_build_index", _spy):
+            first = refresh()
+            second = refresh()
+
+        assert first is not second
+        assert len(built) == 2
+
+    def test_a_write_landing_during_a_rebuild_is_not_missed(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The token is read BEFORE the rebuild, and that one is stored.
+
+        Stamping the rebuilt index with a token read afterwards would record a write
+        the rebuild had already raced past, and the next call would report the map
+        unchanged — losing the very resume this exists to catch.
+        """
+        self._write_map({"dashboard:chat-1": "aaaa1111"})
+        raced = {"yet": False}
+
+        def _spy_that_races() -> handler.SessionIndex:
+            if not raced["yet"]:
+                raced["yet"] = True
+                self._write_map({"dashboard:chat-2": "bbbb2222"})
+            return handler.SessionIndex()
+
+        refresh = handler._MapBackedRefresh()
+        with patch.object(handler, "_build_index", _spy_that_races):
+            first = refresh()
+            second = refresh()
+
+        assert first is not second
+
+
 class TestWhyAReclaimIsRefused:
     """A refusal must name the real reason.
 

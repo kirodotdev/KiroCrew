@@ -1633,18 +1633,26 @@ def move_to_trash(
     :data:`MIN_RECLAIM_AGE_DAYS`: a mapped session is resumable, and a fresh one
     may be running under a subsystem that never registered it.
 
-    *refresh* re-reads the caller's index INSIDE the lock, immediately before
-    anything moves. Scanning a large store takes long enough that a session can be
-    resumed and mapped while the selection is being computed, and the stale index
-    would then treat it as retired. The two active sets are UNIONED, never
-    replaced, so a re-read can only ever add protection.
+    *refresh* re-reads the caller's index INSIDE the lock: once immediately before
+    anything moves, and again before every session the loop reaches. Scanning a
+    large store takes long enough that a session can be resumed and mapped while
+    the selection is being computed, and the move loop after that is not instant
+    either. The active sets are UNIONED, never replaced, so a re-read can only ever
+    add protection.
 
-    That re-read still describes one instant, and the move loop after it is not
-    instant. A session resumed anywhere in that stretch is caught in the loop
-    instead: each file is already stat'd for the manifest, so a source modified
-    since the reclaim began marks its session as revived and leaves it in place.
-    The returned batch names those sessions in ``revived`` — they were asked for
-    and not taken.
+    Called up to once per selected session, so it must be CHEAP when nothing has
+    changed. Return the same :class:`SessionIndex` object as last time to say
+    "nothing has moved" — an identical object is recognised by identity and costs
+    one comparison. Returning a freshly built index every call is correct but pays
+    for a full re-read per session, which at a six-figure selection is minutes.
+
+    Two shapes of mid-staging resume are caught, and both are needed. A resume
+    that WRITES is caught by mtime: each file is already stat'd for the manifest,
+    so a source modified since the reclaim began fails the check before it moves.
+    A resume that only READS an old transcript writes nothing, so it is invisible
+    to mtime and is caught by the re-read instead — it is mapped. Either way the
+    session is left in place and named in the returned batch's ``revived``: it was
+    asked for and not taken.
 
     Serialized against other mutations, because two interleaved reclaims can put
     one half of a session in each batch and leave neither able to restore it.
@@ -1678,11 +1686,13 @@ def _move_to_trash_locked(
     would connect to this action.
 
     Every such check runs before the move loop, so each describes the instant it
-    ran. The loop closes the remaining window itself, against an instant taken
-    before any of them: a source file whose mtime is newer than that has been
-    written to since the reads that certified it, which an idle session's file
-    cannot be, so the whole session is left in place and named in
-    ``TrashBatch.revived``.
+    ran. The loop closes the remaining window itself, with two per-session signals.
+    A source file whose mtime is newer than an instant taken before any of those
+    checks has been written to since the reads that certified it, which an idle
+    session's file cannot be. And a session the re-read now reports as mapped is
+    one the product can resume, however old its files are — the case mtime cannot
+    see, because a resume that only reads a transcript writes nothing. Either way
+    the whole session is left in place and named in ``TrashBatch.revived``.
 
     Each session is recorded as it lands, so an interruption leaves a manifest
     describing exactly what moved — a partial batch stays restorable instead of
@@ -1718,9 +1728,14 @@ def _move_to_trash_locked(
     # The authority check runs AFTER the scan, not before it. Enumerating a
     # six-figure store is the slow part of this function, so an index read before
     # it is already stale by the time anything moves — a session continued in that
-    # interval would look retired. Re-reading here makes the last thing before the
-    # move loop the freshest view available, and the sets are UNIONED so a re-read
-    # can only ever add protection.
+    # interval would look retired. Re-reading here is what the checks below get to
+    # judge against, and the sets are UNIONED so a re-read can only ever add
+    # protection. It is not the last word: the move loop re-reads per session, for
+    # the stretch this one cannot describe.
+    #
+    # *seen* keeps the index this returned, so the loop can tell an unchanged view
+    # apart from a new one by identity and skip re-deriving the sets for it.
+    seen: SessionIndex | None = None
     if refresh is not None:
         try:
             latest = refresh()
@@ -1729,6 +1744,7 @@ def _move_to_trash_locked(
             raise SessionStorageError(
                 "could not confirm which sessions are live; nothing was moved"
             )
+        seen = latest
         live_sids = index.active_sids | latest.active_sids
         live_stems = index.active_stems | latest.active_stems
     else:
@@ -1795,6 +1811,7 @@ def _move_to_trash_locked(
     moved_bytes = 0
     moved_sessions = 0
     revived: list[str] = []
+    refresh_failed = False
     staged_dirs: set[Path] = set()
     cli_files = _cli_index()
     with (target / MANIFEST_NAME).open("w", encoding="utf-8") as manifest:
@@ -1802,6 +1819,51 @@ def _move_to_trash_locked(
         for uid in requested:
             unit = by_uid.get(uid)
             if unit is None:
+                continue
+            if refresh is not None:
+                # Re-read before EVERY unit, not once before the loop. The mtime
+                # check below is the only other per-unit signal and it sees writes
+                # only, so a resume that merely READS an old transcript to rebuild
+                # history — recording the turn that follows under a newly mapped
+                # sid — leaves every mtime days old and slips past it (#7118). The
+                # index is where that resume IS visible, so it has to be consulted
+                # at the same cadence.
+                #
+                # Affordable because an unchanged view costs one identity
+                # comparison: *refresh* may return the same object it returned last
+                # time to say "nothing has moved", and the dashboard's does exactly
+                # that behind a stat of the session map. A caller that returns a
+                # fresh index every time is not wrong, only slower — the sets are
+                # re-derived and the answer is identical.
+                try:
+                    latest = refresh()
+                except Exception:
+                    # Degraded, not fatal. Every re-read only ever WIDENS the live
+                    # sets, so losing one leaves the guard exactly as strong as the
+                    # pre-loop read already made it — it cannot make a session
+                    # reclaimable that the checks before this loop protected. A
+                    # batch part-way through has already moved files, and
+                    # abandoning it over the loss of an additive signal would be
+                    # the worse trade. A refresh broken from the start still fails
+                    # closed: the pre-loop call above raises.
+                    if not refresh_failed:
+                        refresh_failed = True
+                        logger.warning(
+                            "could not re-read the session index while staging; "
+                            "continuing with the last view read",
+                            exc_info=True,
+                        )
+                else:
+                    if latest is not seen:
+                        seen = latest
+                        live_sids = live_sids | latest.active_sids
+                        live_stems = live_stems | latest.active_stems
+            if is_live(uid):
+                # Mapped since the checks that certified it. Nothing of this
+                # session has moved yet, so there is nothing to roll back — it is
+                # simply not taken, and reported the same way a write-shaped
+                # revival is.
+                revived.append(uid)
                 continue
             files: list[dict[str, Any]] = []
             done: list[tuple[Path, Path]] = []

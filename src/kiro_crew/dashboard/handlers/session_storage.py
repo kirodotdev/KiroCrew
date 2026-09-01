@@ -26,12 +26,13 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import transcript_stems
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_digest import digest
-from kiro_crew.session_map import SessionMap
+from kiro_crew.session_map import SESSION_MAP_FILENAME, SessionMap
 from kiro_crew.session_storage import (
     BUCKET_DAYS,
     MIN_RECLAIM_AGE_DAYS,
@@ -106,6 +107,70 @@ def _build_index(state: DashboardState | None = None) -> SessionIndex:
         active_sids=frozenset(mapping.values()),
         live_sids=live_sids,
     )
+
+
+def _map_token() -> tuple[int, int, int] | None:
+    """Identity of the session map file, or ``None`` when it cannot be read.
+
+    ``(st_ino, st_mtime_ns, st_size)``. Every mapping write lands through
+    ``mkstemp`` plus ``os.replace`` (``SessionMap._write``), so the inode changes
+    on every write — a token that has not moved means no mapping has been written,
+    which mtime alone could not establish at this resolution.
+    """
+    try:
+        st = (config_dir() / SESSION_MAP_FILENAME).stat()
+    except OSError:
+        return None
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+class _MapBackedRefresh:
+    """A ``refresh`` for :func:`move_to_trash` that is cheap to call repeatedly.
+
+    ``move_to_trash`` calls ``refresh`` once per selected session, because the
+    index is the only place a resume that merely READS an old transcript shows up
+    (#7118): such a resume writes nothing, so the mtime guard inside the move loop
+    cannot see it, and the session's history would be staged out from under a live
+    slot.
+
+    Rebuilding per session cannot be paid for directly. :func:`_build_index` reads
+    and parses the whole session map — about 0.26 ms even for a 100-entry map,
+    because the floor is one file read plus one json parse — and the selection is
+    capped at :data:`_MAX_SELECTION`, so a naive per-session rebuild costs at least
+    ~56 s, and hours against a five-figure map.
+
+    So the rebuild is gated on the map file's identity, and the SAME object is
+    returned while that has not moved. ``move_to_trash`` recognises an unchanged
+    index by identity and skips re-deriving its sets, so an unmoved map costs one
+    stat (~2 us) — under a second for the whole cap.
+
+    Fails toward rebuilding rather than skipping: a token that could not be read is
+    ``None``, which never compares equal, so an unreadable map pays a real re-read.
+
+    RESIDUAL: ``SessionMap`` defers its write by ``_FLUSH_DEBOUNCE_SECS`` and this
+    reads the FILE, not the live in-process map, so a resume is invisible here for
+    up to that long. Bounded at ~50 ms instead of the whole move loop; closing it
+    outright needs the resume and reclaim paths to share a lock, which is the
+    change ``docs/system-specs/modules/session-storage.md`` already names.
+    """
+
+    def __init__(self) -> None:
+        self._token: tuple[int, int, int] | None = None
+        self._index: SessionIndex | None = None
+
+    def __call__(self) -> SessionIndex:
+        # Read the token BEFORE the rebuild, and store that one. A write landing
+        # while the rebuild is in flight then leaves a token the next call sees as
+        # moved, so it rebuilds again. Reading it afterwards would stamp the
+        # rebuilt index with a token that already includes the write it missed.
+        token = _map_token()
+        if self._index is not None and token is not None and token == self._token:
+            return self._index
+        # Deliberately without *state*: the running-session signal only LABELS a
+        # refusal, and this index is used to widen refusals, never to explain them.
+        self._index = _build_index()
+        self._token = token
+        return self._index
 
 
 def _deny(operation: str, request: web.Request) -> web.Response:
@@ -289,8 +354,11 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
             reason=REASON_POLICY,
             index=index,
             # Re-read the map inside the lock: the scan above can take long enough
-            # for a session to be resumed and mapped in the meantime.
-            refresh=_build_index,
+            # for a session to be resumed and mapped in the meantime, and so can
+            # the move loop, which calls this once per session. One instance per
+            # request — a shared one would serve a later request an index built
+            # before it started.
+            refresh=_MapBackedRefresh(),
         )
     except SessionStorageError as exc:
         return _refused(exc, "cleanup_refused")
@@ -966,7 +1034,11 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
             eligible,
             reason=REASON_MANUAL,
             index=index,
-            refresh=_build_index,
+            # Called once per selected session, so it is gated on the map file's
+            # identity rather than rebuilding every time. One instance per request:
+            # a shared one would serve a later request an index built before it
+            # started.
+            refresh=_MapBackedRefresh(),
         )
     except SessionStorageError as exc:
         # Audited before returning. A refusal from inside the move is the same
