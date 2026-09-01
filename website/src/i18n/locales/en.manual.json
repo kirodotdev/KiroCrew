@@ -3445,6 +3445,7 @@
       "show_hidden_folder_one": "Show {{count}} hidden folder",
       "show_hidden_folder_other": "Show {{count}} hidden folders",
       "sub_agent_needs_approval_one": "{{count}} sub-agent needs approval",
+      "runs_on_crew": "Runs on {{name}} — a connected crew, not this machine",
       "sub_agent_needs_approval_other": "{{count}} sub-agents need approval",
       "switch_failed": "Switch failed",
       "switch_to_board_view": "Switch to board view",

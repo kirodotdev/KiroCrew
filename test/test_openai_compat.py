@@ -911,6 +911,36 @@ class TestAgentMismatchFix:
         resp = await api_completions(request)
         assert resp.status == 409
 
+    async def test_a_remote_bound_slot_is_refused_before_any_mutation(self):
+        """A remote-bound slot targeted by id must 409, not hang the collector.
+
+        The turn runs on a peer and streams over the dashboard WebSocket; this
+        endpoint's collector reads only local rows, so reaching the local dispatch
+        chokepoint would append the prompt, emit a WS-only ``chat_done``, and leave
+        this HTTP caller waiting forever on a turn the peer never received
+        (GPT #7693). The refusal must fire BEFORE the prompt is appended.
+        """
+        slot = _make_slot()
+        slot.agent = "vanellope"
+        slot.executor = "remote"  # bound to a connected crew
+        state = _make_state(slot)
+
+        body = {
+            "id": "test-slot",
+            "model": "vanellope",  # matches slot.agent, so this is not a mismatch 409
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+        request = _make_request(body, state)
+
+        resp = await api_completions(request)
+
+        assert resp.status == 409
+        assert json.loads(resp.body)["code"] == "remote_slot_unsupported"
+        # No unsent turn recorded and no dispatch: refused ahead of the mutation.
+        slot.append.assert_not_called()
+        assert slot.task is None
+
     async def test_null_model_returns_400(self):
         """model=null (None in JSON) returns 400."""
         slot = _make_slot()

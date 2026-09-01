@@ -1539,6 +1539,22 @@ async def send_to_target(
         operation="send",
     )
 
+    # A crew-bound target executes its turns on the peer, not here. The delivery
+    # below hands ``_run_chat`` to ``enqueue_or_run_prompt``, which has no
+    # remote/executor branch — so on a bound target it would run the crew's work
+    # on THIS machine and diverge the local and peer transcripts, the same failure
+    # the send / regenerate / rewind / continue paths refuse. Relaying a
+    # cross-session send is a separate mechanism (open a peer turn, mirror it
+    # back); until that exists the send is refused rather than run locally
+    # (GPT #7693). Keyed on ``executor``, so a half-open binding is refused too.
+    if slot.executor == "remote":
+        raise SessionControlError(
+            "that session runs on a remote crew; sending into a crew-bound "
+            "session from another session is not supported yet",
+            code="remote_target_unsupported",
+            status=409,
+        )
+
     # Deferred for the same import cycle `stop_target` documents.
     from kiro_crew.dashboard.chat_runner import _run_chat
 

@@ -221,6 +221,16 @@ class SlotProjection:
             "surface": slot.mode,
             "workspace": slot.workspace,
             "project": slot.project,
+            # Remote-execution binding. Shipped on every slot (not just remote
+            # ones) so the frontend can branch on a field that is always
+            # present: an absent key and "runs locally" would be the same
+            # reading, and a stale client would then render a peer session as
+            # local. The binding's third field, `remote_slot`, is deliberately
+            # NOT projected: it is the PEER's slot key, meaningful only inside a
+            # request routed back through that instance, and no browser code has
+            # any use for it — these two carry every branch the frontend makes.
+            "executor": slot.executor,
+            "instance_id": slot.instance_id,
             "artifact": slot._artifact,
             "messages": len(slot.messages),
             "running": slot.running,

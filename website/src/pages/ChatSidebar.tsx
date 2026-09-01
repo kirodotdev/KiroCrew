@@ -59,6 +59,7 @@ import FolderMoveSubmenu from '../components/FolderMoveSubmenu'
 import MoveUndoBar from '../components/MoveUndoBar'
 import SessionActionsMenu from '../components/SessionActionsMenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../components/ChannelBrandIcon'
+import { RemoteCrewChip } from '../components/RemoteCrewChip'
 import TagManagerList from '../components/TagManagerList'
 import { DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '../components/dnd'
 import { collectFolderSubtreeIds } from '../utils/folderTree'
@@ -591,6 +592,12 @@ interface Slot {
   // simply never declared on this local view of the type.
   messages?: number
   workspace?: string
+  /** Remote-execution binding — see `ChatSlot` in ../types. Declared on this
+   *  narrowed view too: the row reads `executor` to decide whether to render the
+   *  crew chip, and a field absent from this interface is invisible to it no
+   *  matter what the backend sends. */
+  executor?: 'local' | 'remote'
+  instance_id?: string
   created?: string
   last_ts?: string
   // Settled activity instant: the last prompt or turn completion, NOT every
@@ -1424,6 +1431,18 @@ const SessionRow = memo(function SessionRow({
   // i18nT strings must re-translate even when no prop moves.
   useLanguageGeneration()
   const dispatch = useAppDispatch()
+  // The peer's display name for the runs-elsewhere chip. Read from the SHARED
+  // ['instances'] cache and enabled only for a row that is actually bound, so a
+  // peerless install never issues the query. Falls back to the instance id: it is
+  // less friendly but it is true, and a blank chip would claim the session runs
+  // somewhere unnamed.
+  const remoteCrewQuery = useQuery({
+    queryKey: ['instances'],
+    queryFn: () => api.listInstances(),
+    enabled: s.executor === 'remote' && !!s.instance_id,
+  })
+  const remoteCrewName =
+    remoteCrewQuery.data?.instances?.find(i => i.id === s.instance_id)?.name || s.instance_id || ''
   const ime = useImeGuard()
   const simplifiedToolNames = useSimplifiedToolNames()
   const uiLang = useLanguage().resolved
@@ -2038,6 +2057,16 @@ const SessionRow = memo(function SessionRow({
                     <ChannelBrandIcon channel={link.channel} size={10} />
                   </span>
                 ))}
+              {/* Runs-elsewhere marker, first in the strip for the same reason it
+               *  is first on a federated search row: it qualifies the whole row,
+               *  so a user scanning the list should meet it before the per-session
+               *  flags that only make sense once you know where the session is. */}
+              {s.executor === 'remote' && (
+                <RemoteCrewChip
+                  name={remoteCrewName}
+                  title={i18nT('pages.chatSidebar.runs_on_crew', { name: remoteCrewName })}
+                />
+              )}
               {s.clean_mode
                 ? <span className="text-accent" title={i18nT('pages.chatSidebar.clean_agent_only_no_kirocrew_context_or_mcp')}><Droplet size={10} /></span>
                 : <>
@@ -4564,19 +4593,26 @@ function ChatSidebar({
   // default on — the one case where they picked the non-default on purpose.
   // The button's main segment keeps honouring the preference; only this explicit
   // entry pins the mode.
-  // Create a session that RUNS ON A PEER. Deliberately not `createSlot`: that
-  // thunk builds a local slot, and the whole point here is that the peer owns
-  // the conversation. `agent` is left to the peer's own default — this crew has
-  // its own roster, and forcing the local default names a crew that may not
-  // exist over there.
+  // Create a LOCAL session whose turns run on a peer crew. The session belongs to
+  // this machine — local sidebar row, local transcript, local history and search —
+  // and only its execution moves, so this goes through the ordinary `createSlot`
+  // thunk with `instanceId` attached rather than reaching for the peer directly.
   //
-  // Landing is the honest weak spot: there is no native remote chat view yet, so
-  // the new session is opened by switching to that crew's pane. The alternative
-  // — create it and stay put — is worse, because the local list does not show
-  // live remote sessions, so the session would have nowhere to appear at all.
+  // This replaced an earlier shape that POSTed straight to the peer and then
+  // switched to that crew's iframe pane. The session then existed only over
+  // there, so the pane switch was not a choice: the local list had nowhere to
+  // show it. Now it does, and staying put is the whole point — the user asked for
+  // a session on that crew, not for a trip to that crew's dashboard.
+  //
+  // Deliberately NO `agent`, unlike every sibling entry below. `defaultAgent`
+  // names a crew from THIS machine's roster, and the backend forwards any agent
+  // it is given straight to the peer: sending it would either be refused over
+  // there or bind a different crew than the name implies. Omitting it lets the
+  // peer apply its own default — which is the point of the session running on it,
+  // and what the header then reads back from the peer's `default_agent`.
   const createRemoteChatMutation = useMutation({
-    mutationFn: (instanceId: string) => api.instancesCreateRemoteSlot(instanceId),
-    onSuccess: (_data, instanceId) => { selectInstance(instanceId) },
+    mutationFn: (instanceId: string) => dispatch(createSlot({ instanceId })).unwrap(),
+    onSuccess: focusComposer,
   })
 
   const createPlainChatMutation = useMutation({
@@ -6721,7 +6757,7 @@ function ChatSidebar({
                               cue, so the distinction survives a colour-vision
                               deficiency; it is aria-hidden because the crew name beside
                               it already names the target. */}
-                          {remoteInstanceName && <span className="shrink-0 inline-flex items-center gap-0.5 text-[10px] px-1 rounded bg-info-subtle text-info border border-info/40" title={remoteInstanceName}><Server size={9} aria-hidden="true" />{remoteInstanceName}</span>}
+                          {remoteInstanceName && <RemoteCrewChip name={remoteInstanceName} />}
                           {s.clean_mode
                             ? <span className="text-accent" title={i18nT('pages.chatSidebar.clean_agent_only_no_kirocrew_context_or_mcp')}><Droplet size={10} /></span>
                             : <>

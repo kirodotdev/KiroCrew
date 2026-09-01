@@ -60,7 +60,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), instancesCreateRemoteSlot: vi.fn(), listInstances: vi.fn() }))
+const mocks = vi.hoisted(() => ({ createChatSlot: vi.fn(), listInstances: vi.fn() }))
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy(mocks as Record<string, unknown>, {
@@ -82,7 +82,7 @@ import ChatSidebar from '../pages/ChatSidebar'
 // on is the same write the Developer > Feature Previews toggle performs.
 import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 
-function renderSidebar(opts: { warm?: Record<string, unknown> } = {}) {
+function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string } = {}) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: false, slots: [], approvalMode: 'normal',
@@ -105,7 +105,7 @@ function renderSidebar(opts: { warm?: Record<string, unknown> } = {}) {
           <MemoryRouter>
             <ChatSidebar
               slots={[]} activeSlot={null} unreadSlots={[]}
-              history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+              history={[]} historyHasMore={false} defaultAgent={opts.defaultAgent ?? ''} installedAgents={[]}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -124,7 +124,6 @@ beforeEach(() => {
   localStorage.clear()
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
   mocks.createChatSlot.mockResolvedValue({ key: 'chat-new-1' })
-  mocks.instancesCreateRemoteSlot.mockResolvedValue({ key: 'chat-7' })
   mocks.listInstances.mockResolvedValue({
     active: true, warm_set_cap: 5, sso: {},
     instances: [{ id: 'i-nobita', name: 'nobita' }, { id: 'i-gian', name: 'gian' }],
@@ -274,9 +273,51 @@ describe('create-button caret menu', () => {
     expect(screen.queryByTestId('new-chat-on-crew-i-gian')).toBeNull()
 
     fireEvent.click(row)
-    // Routed to the peer's own create endpoint through the proxy — NOT through
-    // createChatSlot, which would build a local slot and defeat the point.
-    await waitFor(() => expect(mocks.instancesCreateRemoteSlot).toHaveBeenCalledWith('i-nobita'))
-    expect(mocks.createChatSlot).not.toHaveBeenCalled()
+    // The session is created LOCALLY and bound to the peer for execution, so it
+    // lands in this machine's list with a crew chip. This replaced an earlier
+    // shape that POSTed straight to the peer's own create endpoint through the
+    // proxy: the session then existed only over there, and the only way to reach
+    // it was to switch to that crew's iframe pane. `instance_id` is what carries
+    // the binding, and it must be sent at BIRTH — the backend opens the peer's
+    // slot before creating the local one, so a disconnected or version-skewed
+    // peer fails the create instead of leaving a session that cannot send.
+    await waitFor(() =>
+      expect(mocks.createChatSlot).toHaveBeenCalledWith(
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        undefined, 'i-nobita',
+      ),
+    )
+  })
+
+  it('sends no agent with a crew create even when this machine has a default', async () => {
+    // The assertion above pins `agent` to undefined too, but only because its
+    // fixture configures no default — so it would still pass if the entry sent
+    // one. This is the case that makes the omission load-bearing: `defaultAgent`
+    // names a crew from THIS machine's roster and the backend forwards any agent
+    // it is given straight to the peer, where that name means nothing (or means
+    // a different crew). The peer applies its own default instead.
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    renderSidebar({ warm: { 'i-nobita': { local_port: 7879, token: 't' } }, defaultAgent: 'planner' })
+    openCreateMenu()
+    const trigger = await screen.findByTestId('new-chat-on-crew')
+    fireEvent.keyDown(trigger, { key: 'ArrowRight' })
+    fireEvent.click(await screen.findByTestId('new-chat-on-crew-i-nobita'))
+
+    // `agent` is the SECOND positional argument; `instance_id` the tenth.
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
+    const call = mocks.createChatSlot.mock.calls.at(-1)
+    expect(call?.[1]).toBeUndefined()
+    expect(call?.[9]).toBe('i-nobita')
+    expect(call).not.toContain('planner')
+  })
+
+  it('still stamps the default agent on an ordinary local create', async () => {
+    // The contrast that makes the subtraction above a deliberate one rather than
+    // a dropped argument: the local entry DOES carry this machine's default.
+    renderSidebar({ defaultAgent: 'planner' })
+    openCreateMenu()
+    fireEvent.click(await screen.findByText('New chat'))
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
+    expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBe('planner')
   })
 })

@@ -37,6 +37,7 @@ from kiro_crew.config.loader import (
     published_autocompact_pct,
     resolve_agent_bindings,
 )
+from kiro_crew.dashboard import remote_mirror
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_delivery import (
@@ -93,6 +94,16 @@ from kiro_crew.dashboard.chat_utils import (
     subagents_attached,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.remote_relay import (
+    RemoteTurnError,
+    create_peer_slot,
+    forward_peer_selection,
+    forward_peer_stop,
+    peer_is_connected,
+    redact_peer_text,
+    relay_remote_turn,
+    remote_bound_refusal,
+)
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -340,6 +351,13 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 error="app does not own this slot",
             )
             return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # Identity gate for a peer-bound slot, on top of the app-scope 404s above:
+    # those pass every empty-``app`` caller by contract, and a dashboard-link
+    # token is exactly that shape. Sending here would spend the OWNER's tunnel to
+    # run a turn on the owner's connected machine. No-op for a local slot.
+    denied = deny_non_owner_remote_operation(request, slot, "chat_send")
+    if denied is not None:
+        return denied
     # The member-pin refusal sits AFTER the app-ownership 404s (a 409 here
     # for an app would be an existence oracle for slots it may not see) and
     # BEFORE the _human_seen attendance mark, so a denied request leaves the
@@ -557,6 +575,40 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 # was suspended — queueing again would deliver the same text twice.
                 return web.json_response({"ok": True, "queued": True})
             # steer requested but unavailable -> fall through to queue below.
+        # A remote-bound slot has no queue drain, so it must not accept a queue
+        # entry. The drain lives inside ``_run_chat``, and ``relay_remote_turn``
+        # REPLACES ``_run_chat`` for this slot rather than wrapping it, so a
+        # queued message would sit there unexecuted while the API had already
+        # answered `queued: true` — the user is told their send was accepted and
+        # nothing ever runs it.
+        #
+        # Refusing is the honest report of that gap. Draining it locally was tried
+        # and reverted: ``_start_next_queued_turn`` carries no
+        # ``is_remote``/``executor`` branch and dispatches ``_run_chat``, so it ran
+        # the follow-up on THIS machine — the wrong-machine execution the
+        # ``executor == "remote"`` guard exists to prevent, and worse than either
+        # losing the message or refusing it. 409 lets the client re-send once the
+        # relayed turn ends, which is the behaviour the user can actually see.
+        #
+        # ``relay=1`` covers the SAME gap from the PEER's side. When the owner
+        # relays a turn, this handler runs on the peer against the peer's own
+        # slot — an ORDINARY local slot there, so ``slot.is_remote`` is False and
+        # the branch above does not fire. If that peer slot is still busy (e.g. a
+        # prior relayed turn survived the owner's restart and is still running),
+        # the send would fall through to the queue and drain later WITHOUT the
+        # ``relay=1`` mirror, so its answer never reaches the owner — the F2
+        # silent-loss path. Refusing a relayed send while busy makes the owner's
+        # ``_peer_turn_chunks`` raise on the 409 and surface a reconnect prompt
+        # instead. Read raw off the query because ``relay_mode`` is computed later
+        # in this handler, after this busy branch.
+        if slot.is_remote or request.query.get("relay") == "1":
+            return web.json_response(
+                {
+                    "error": "this crew is still running the previous message; send again when it finishes",
+                    "code": "remote_turn_busy",
+                },
+                status=409,
+            )
         # Queue the message - return JSON immediately (no SSE needed).
         # The existing SSE reader will pick up queued messages as _run_chat
         # processes the queue in its finally block. The message is non-empty
@@ -640,10 +692,59 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # WS mode: return JSON immediately, chunks delivered via WebSocket
     ws_mode = request.query.get("ws") == "1"
 
+    # Relay mode: an SSE reader on ANOTHER gateway is running this turn on behalf
+    # of a session in its own local list, and needs the frames a WebSocket client
+    # would get — tool calls, segment boundaries, turn end — which the SSE
+    # transport does not otherwise carry. For the life of this request those
+    # frames are also queued onto the slot's pending rows. Meaningless in WS mode
+    # (a WebSocket client already receives them) and ignored there, so the flag
+    # can never double-deliver to a local client.
+    relay_mode = not ws_mode and request.query.get("relay") == "1"
     slot._has_reader = not ws_mode  # Only block SSE broadcast if HTTP SSE reader
     slot._file_changes = []  # Reset file-change accumulator for the new turn
     # ── Sweep orphaned permissions from prior turns ──
     _sweep_stale_permissions(slot)
+
+    # Refuse a remote-bound send BEFORE it is recorded. Both guards below return
+    # 409 without starting a turn, so they must run ahead of the `slot.append`
+    # that writes the user row: a refusal that appended first would leave a user
+    # row in local history, and the user's retry would append a SECOND one while
+    # only the retry ever reaches the peer — the local and peer transcripts then
+    # diverge (GPT #7693). Every turn-refusing validation (member reserve, app
+    # ownership, agent conflict, busy/steer/queue, crew and orchestrator modes)
+    # has already run above, so a remote slot that reaches here is otherwise
+    # cleared to dispatch.
+    #
+    # `executor == "remote"` with an incomplete binding does NOT fall through to
+    # a local run: that would execute on this machine work the user asked a named
+    # crew to do, the one failure the binding exists to prevent.
+    if slot.executor == "remote" and not slot.is_remote:
+        return web.json_response(
+            {
+                "error": "this session is bound to a remote crew but the binding is incomplete",
+                "code": "remote_binding_incomplete",
+            },
+            status=409,
+        )
+    # Lock a remote session while its tunnel is down. A gateway that just
+    # restarted has not re-established its instance tunnels yet, and dispatching a
+    # turn into a half-open or absent tunnel loses it the same way finding F1
+    # describes — the peer never receives it, or answers into a stream nothing is
+    # reading. ``peer_is_connected`` reads the tunnel state defensively (the
+    # manager is duck-typed and stubbed in tests). The user re-sends once the crew
+    # is back online: the honest, visible refusal rather than a silent drop. Only
+    # a fully-bound remote slot reaches here (the incomplete-binding guard above
+    # already returned), so ``instance_id`` is populated.
+    if slot.is_remote and not peer_is_connected(
+        getattr(state, "instances_manager", None), slot.instance_id
+    ):
+        return web.json_response(
+            {
+                "error": "reconnecting to the crew running this session — send again once it is back online",
+                "code": "remote_not_connected",
+            },
+            status=409,
+        )
 
     # No per-message browse marker: browsing is a capability, not a per-turn
     # gate. The agent drives a browser by running `playwright-cli` shell
@@ -835,19 +936,43 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     except Exception:
         logger.debug("on_user_message observer raised; ignoring", exc_info=True)
 
+    # A slot bound to a peer crew runs its turn THERE. The dispatch branch sits
+    # here, at the single dispatch point, so every validation above applies
+    # identically to a remote-bound session — a remote slot is an ordinary slot
+    # that executes elsewhere, not a second kind of session. The two remote
+    # refusals (incomplete binding, tunnel down) ran earlier, ahead of the user
+    # row append, so a refused send is never recorded locally.
+    #
+    # Attach the mirror BEFORE dispatch, not after the response is prepared: the
+    # turn task can emit its first frames as soon as the event loop yields, and a
+    # mirror armed later would miss them.
+    _relay_owned = remote_mirror.attach(slot.key) if relay_mode else False
+
     # FIX 2: an unattended app-owned turn runs under the background concurrency
     # cap; run_background_turn passes an attended slot straight through, so the
     # interactive path is unchanged (no semaphore is even created).
+    #
+    # The remote arm is a conditional expression INSIDE the dispatch rather than a
+    # coroutine hoisted into a local: `test_chat_turn_timeout_consistency` scans
+    # the text of each `spawn_guarded_turn(...)` body for `_run_chat(`, so hoisting
+    # the call out would take this site — the primary user-typed turn — out of the
+    # static guard that every dispatch carries a CHAT_TURN_TIMEOUT ceiling.
+    # Both arms are wrapped identically: a hung peer must hit the same wall a hung
+    # local turn does.
     task = spawn_guarded_turn(
         state,
         slot,
         state.run_background_turn(
             slot,
-            _run_chat(
-                state,
-                slot,
-                message,
-                _directive_user_origin=not bool(request_app),
+            (
+                relay_remote_turn(state, slot, message)
+                if slot.is_remote
+                else _run_chat(
+                    state,
+                    slot,
+                    message,
+                    _directive_user_origin=not bool(request_app),
+                )
             ),
         ),
     )
@@ -870,7 +995,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
-    await resp.prepare(request)
+    try:
+        await resp.prepare(request)
+    except BaseException:
+        # `prepare` is the one awaitable between `remote_mirror.attach` above and
+        # the streaming loop's detach `finally` below. A peer that vanished
+        # between dispatch and prepare would raise here and skip that finally,
+        # stranding this slot in the process-global `_MIRRORED` set forever —
+        # every later frame then mirrors onto `slot._pending` with no reader
+        # draining it. Drop mirror ownership on the way out so the leak cannot
+        # happen; the dispatched turn keeps running, exactly as it does when the
+        # reader disconnects mid-stream.
+        remote_mirror.detach(slot.key, _relay_owned)
+        raise
 
     # Declare this reader as the owner of `slot._pending` for as long as it is
     # draining. A turn-end chunk release must not run while an SSE reader still
@@ -885,7 +1022,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                         await resp.write(b"data: [DONE]\n\n")
                         slot._has_reader = False
                         return resp
-                    chunk = _build_stream_chunk(msg)
+                    chunk = _build_stream_chunk(msg, include_row_meta=relay_mode)
                     await resp.write(f"data: {chunk}\n\n".encode())
                 try:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)
@@ -896,6 +1033,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         finally:
             slot.drain()
             slot._has_reader = False
+            remote_mirror.detach(slot.key, _relay_owned)
     return resp
 
 
@@ -2011,6 +2149,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     name = body.get("name")
+    if name is not None and not isinstance(name, str):
+        # Coerced HERE, before the peer write below, because `get_or_create_slot`
+        # normalizes the key with string operations: a non-string name reaches it
+        # as an unhandled 500 AFTER `create_peer_slot` has already opened a
+        # session on the crew, leaving that session orphaned over there with no
+        # local slot pointing at it to release it. Every other read of `name` in
+        # this handler already goes through `str(...)`, so this closes the one
+        # path that did not rather than adding a new rule.
+        name = str(name)
     agent = body.get("agent", "")
     model = body.get("model", "")
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
@@ -2023,8 +2170,149 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "folder not found", "code": "folder_not_found"}, status=400
         )
-    folder_project = ""
     existing_slot = state._slots.get(_normalize_slot_key(str(name))) if name else None
+    # Remote execution binding. Three authorization gates run BEFORE the peer is
+    # touched, because `create_peer_slot` is a write on ANOTHER machine spending
+    # the owner's tunnel credential — a request that is going to be refused must
+    # not have already created a session over there.
+    instance_id = str(body.get("instance_id") or "")
+    request_app = request.get("app", "")
+    if instance_id:
+        # (1) Binding a session to a crew is a human act: it comes from the
+        # composer's crew picker, which an app credential has no surface for. So
+        # an app caller is refused outright rather than being allowed to spend
+        # the user's peer credential on an unattended request.
+        #
+        # First of the three deliberately: this refusal is shaped as `not found`
+        # so it cannot be an existence oracle, and the owner gate below answers
+        # 403, which would tell an app caller the route is there. An app
+        # credential fails BOTH gates, so the order decides only which answer it
+        # gets — and the quieter one is the app's.
+        if request_app:
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat_slot_create",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"instance={instance_id}",
+                error="app tokens cannot bind a session to a remote crew",
+            )
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+        # (2) Owner-only, the same bar as `api_instances_capabilities` and the
+        # proxy: the peer write is made with the OWNER's manager-held tunnel
+        # credential, so being authenticated is not enough. A messaging identity
+        # admitted by an allow-list holds a dashboard credential whose subject is
+        # not the owner and whose `app` claim is EMPTY — so the gate above passes
+        # it, and without this one such a caller could spend the owner's
+        # credential to open and run sessions on the owner's crew. Deny-by-default:
+        # a positive owner assertion, not the absence of an app claim.
+        from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+        from kiro_crew.dashboard.handlers.source_providers import (
+            is_owner_dashboard_request,
+        )
+
+        if not is_owner_dashboard_request(request):
+            sel().log_api_access(
+                caller="non-owner",
+                operation="chat_slot_create",
+                outcome="denied",
+                source="owner_only",
+                resources=f"instance={instance_id}",
+                error="non-owner identity rejected",
+            )
+            return _owner_denial_response(
+                request, "binding a session to a remote crew is owner-only"
+            )
+        # (3) A binding is only ever stamped at BIRTH, so `name` addressing an
+        # existing slot is refused whatever that slot is — the create path has no
+        # honest way to convert one.
+        #
+        # An already-bound slot is the obvious half: re-binding it would point a
+        # live session at a second peer session and orphan the first.
+        #
+        # An existing LOCAL slot is the destructive half. Its transcript stays
+        # here while its EXECUTION moves to a peer slot that is empty, so the next
+        # turn runs with none of the conversation the user is looking at — the
+        # context is not deleted, it is silently no longer in play. It is also the
+        # ownership hole: the check further down runs only after the binding has
+        # been stamped, so a caller with no right to that slot would already have
+        # created a peer session and rewritten somebody else's session's executor
+        # before seeing its 404. Deciding here keeps every side effect unreachable.
+        if existing_slot is not None:
+            return web.json_response(
+                {
+                    "error": "that session already exists and cannot be bound to a crew",
+                    "code": "remote_already_bound",
+                },
+                status=409,
+            )
+    # Every remaining validation that can refuse this request runs BEFORE the
+    # peer write, for the reason the binding gates above give: `create_peer_slot`
+    # opens a session on another machine, and a refusal that happens afterwards
+    # leaves that session orphaned there with nothing local pointing at it to
+    # release it. So a `{"instance_id": …, "mode": "bogus"}` request must fail
+    # here, not after it has already cost the user a peer session. These read
+    # only `body`/`name`, so nothing forces them to run later.
+    memory_mode = body.get("memory_mode", "persistent")
+    if memory_mode not in ("persistent", "incognito", "temporary"):
+        return web.json_response({"error": "invalid memory_mode"}, status=400)
+    _mode = body.get("mode", "")
+    if _mode not in _CREATABLE_MODES:
+        return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
+    # A crew-bound session runs PLAIN chat only. A non-plain mode (crew,
+    # orchestrator, design-critique) is consumed by an EARLIER dispatch branch in
+    # ``api_chat`` — the orchestrator stage loop, the crew store — not by the
+    # remote arm, which only replaces the plain ``_run_chat`` dispatch. So a
+    # remote slot created with ``mode="crew"`` would run that mode's tools and
+    # filesystem work on THIS machine instead of the crew the user picked (finding
+    # F3). Refused here, alongside the other pre-peer validations above, so a
+    # rejected mode never costs the user an orphaned ``create_peer_slot`` session.
+    if instance_id and _mode:
+        return web.json_response(
+            {
+                "error": "a crew-bound session runs plain chat only; mode-specific work runs on the crew you pick, not here",
+                "code": "remote_mode_unsupported",
+            },
+            status=400,
+        )
+    # Same boundary as the mode-switch endpoint: a slot whose name folds to
+    # nothing but dots has no crew store, so accepting `mode="crew"` here would
+    # hand back a tab that 500s on its first message. Only a CALLER-SUPPLIED name
+    # can be that: an omitted name is generated by `get_or_create_slot` and is
+    # always storable. Checked on the NORMALIZED form, which is the key the store
+    # is built from — the raw body name is not what `CrewStore` ever sees.
+    if _mode == "crew" and name:
+        # Deferred: this module is imported when the dashboard package is, which
+        # the gateway does on its boot path, and crew is a dashboard-only
+        # subsystem. Only a crew request pays for it.
+        from kiro_crew.crew_chat import is_crew_capable_slot_key
+
+        if not is_crew_capable_slot_key(_normalize_slot_key(str(name))):
+            return web.json_response(
+                {
+                    "error": "this session name cannot run crew mode",
+                    "code": "crew_unsupported_slot",
+                },
+                status=400,
+            )
+    # A member-* name is RESERVED for DM threads (born only through the member
+    # thread endpoint); `get_or_create_slot` below rejects it with a ValueError
+    # that becomes a 409. That rejection has to happen BEFORE the peer write, not
+    # after — otherwise a `{"instance_id": …, "name": "member-…"}` create opens a
+    # peer session at `create_peer_slot` and only then 409s locally, orphaning the
+    # peer slot with nothing here to release it (opus #7693). Checked on the
+    # normalized key, the form the slot store is built from.
+    if name and _normalize_slot_key(str(name)).casefold().startswith(
+        members_mod.DM_SLOT_KEY_PREFIX
+    ):
+        return web.json_response(
+            {
+                "error": "member thread slots are created only via the member thread endpoint",
+                "code": "member_slot_reserved",
+            },
+            status=409,
+        )
+    folder_project = ""
     if folder_id and (existing_slot is None or not existing_slot.project):
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in folders]
@@ -2040,6 +2328,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+    remote_slot_key = ""
+    if instance_id:
+        try:
+            # The picks ride the create rather than following it: a second
+            # round-trip could fail after the peer session existed, leaving a
+            # bound session running a crew the user did not choose.
+            remote_slot_key = await create_peer_slot(state, instance_id, agent=agent, model=model)
+        except RemoteTurnError as exc:
+            return web.json_response({"error": str(exc), "code": "remote_bind_failed"}, status=502)
 
     # Resolve workspace from agent bindings
     workspace = "default"
@@ -2058,7 +2355,14 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # channel-transport writes). Placed BEFORE the normalization below so
     # the stamped alias also gets its workspace resolved by the existing
     # binding path.
-    if cfg is not None and not agent:
+    #
+    # Skipped for a peer-bound create: THIS machine's default names a crew from
+    # this machine's roster, and stamping it would make the shelf advertise an
+    # agent the peer may not have while the peer quietly answers with its own
+    # default. An empty agent is the honest record — the header renders the
+    # peer's default from its capability read, and `create_peer_slot` sends no
+    # agent precisely so the peer keeps that choice.
+    if cfg is not None and not agent and not instance_id:
         agent = cfg.default_agent or ""
     # Normalize an agent nothing will dispatch to the one that WILL answer.
     # Otherwise the name is stored verbatim and resolve_agent_bindings silently
@@ -2067,7 +2371,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # agent keeps the slot honest, and a caller that requires a specific binding
     # (an app panel verifying the returned agent) can see the mismatch instead of
     # discovering it turns later.
-    if cfg is not None and agent:
+    # Also skipped for a peer-bound create, and for the workspace's sake as much
+    # as the agent's: `resolve_agent_bindings` answers from THIS machine's
+    # bindings, so a peer agent name would resolve to a local workspace (or to
+    # nothing, logging a false "does not resolve"). The peer resolves its own.
+    if cfg is not None and agent and not instance_id:
         try:
             bindings = resolve_agent_bindings(cfg, agent)
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
@@ -2104,38 +2412,6 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # UI renders as a jump.
     with state.suspend_slots_push():
         try:
-            memory_mode = body.get("memory_mode", "persistent")
-            if memory_mode not in ("persistent", "incognito", "temporary"):
-                return web.json_response({"error": "invalid memory_mode"}, status=400)
-            _mode = body.get("mode", "")
-            if _mode not in _CREATABLE_MODES:
-                return web.json_response(
-                    {"error": "invalid mode", "code": "invalid_mode"}, status=400
-                )
-            # Same boundary as the mode-switch endpoint: a slot whose name folds
-            # to nothing but dots has no crew store, so accepting `mode="crew"`
-            # here would hand back a tab that 500s on its first message. Only a
-            # CALLER-SUPPLIED name can be that: an omitted name is generated by
-            # `get_or_create_slot` and is always storable. Checked on the
-            # NORMALIZED form, which is the key the store is built from — the raw
-            # body name is not what `CrewStore` ever sees.
-            if _mode == "crew" and name:
-                # Deferred: this module is imported when the dashboard package is,
-                # which the gateway does on its boot path, and crew is a
-                # dashboard-only subsystem. Only a crew request pays for it.
-                from kiro_crew.crew_chat import is_crew_capable_slot_key
-            if (
-                _mode == "crew"
-                and name
-                and not is_crew_capable_slot_key(_normalize_slot_key(str(name)))
-            ):
-                return web.json_response(
-                    {
-                        "error": "this session name cannot run crew mode",
-                        "code": "crew_unsupported_slot",
-                    },
-                    status=400,
-                )
             slot = state.get_or_create_slot(
                 name,
                 agent=agent,
@@ -2152,6 +2428,37 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             )
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=409)
+        if remote_slot_key and not is_new_slot:
+            # The name was free when the binding gates ran, but `create_peer_slot`
+            # awaits the peer and a concurrent create took it inside that window,
+            # so `get_or_create_slot` just handed back a session that already
+            # existed. Stamping the binding onto it is exactly the destructive
+            # half those gates exist to prevent: its transcript would stay here
+            # while EXECUTION moved to an empty peer slot, so the next turn runs
+            # with none of the conversation on screen. Refused instead — the peer
+            # session is left to the crew rather than taking over a live local
+            # one, which is the cheaper of the two losses.
+            logger.warning(
+                "Slot %s was created concurrently while binding to %s; refusing to rebind",
+                slot.key,
+                instance_id,
+            )
+            return web.json_response(
+                {
+                    "error": "that session already exists and cannot be bound to a crew",
+                    "code": "remote_already_bound",
+                },
+                status=409,
+            )
+        if remote_slot_key:
+            # Stamped after creation rather than passed through
+            # get_or_create_slot: the binding is not part of a slot's identity
+            # (the key, agent and workspace are), and keeping it out of that
+            # signature means every other creation path — channels, apps, forks,
+            # restore — stays untouched by remote execution.
+            slot.executor = "remote"
+            slot.instance_id = instance_id
+            slot.remote_slot = remote_slot_key
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
@@ -2162,7 +2469,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # another app's — or the dashboard's — session. A slot this request just
         # created carries `_app == request_app`, so the new-slot path is
         # unaffected; a dashboard caller (empty app) keeps full access.
-        request_app = request.get("app", "")
+        # `request_app` is read once at the top of the handler, because the remote
+        # binding gate up there needs the same value before the peer is touched.
         if request_app and slot._app != request_app:
             sel().log_api_access(
                 caller=request_app,
@@ -2310,7 +2618,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # A pinned title must persist too (not just a folder move): without the
     # write, a restart rehydrates the previous title with a refreshable "auto"
     # origin and the background refresh may rewrite the pin.
-    if folder_id or title:
+    if folder_id or title or remote_slot_key:
         # The create/recreate request has been authorized against this
         # transcript.  Do not let a rebind while the off-loop write waits on
         # the history lock redirect its newly supplied metadata to another
@@ -2323,7 +2631,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
-    schedule_eager_spawn(state, slot)
+    #
+    # Skipped for a peer-bound slot: the turn will run on the peer, so a local
+    # kiro-cli spawned here would idle until it timed out, having consumed a
+    # process and a model handshake for a session that never uses it.
+    if not slot.is_remote:
+        schedule_eager_spawn(state, slot)
     return web.json_response(state.serialize_slot(slot))
 
 
@@ -2752,6 +3065,24 @@ async def stop_slot_turn(
     name = slot.key
     cancel_key = cancel_key or _cancel_target(slot)
 
+    # A peer-bound slot's turn is not running in this process. The local
+    # escalation machinery below would find nothing to cancel and report a clean
+    # stop while the peer kept generating into the relay, so the stop has to
+    # travel. Deliberately placed before the local path rather than beside it:
+    # there is no local turn to also stop, and running both would insert a second
+    # stop_event card for one press.
+    if slot.is_remote:
+        accepted = await forward_peer_stop(state, slot, force or slot._stop_state == "soft_pending")
+        if not accepted:
+            return {
+                "ok": False,
+                "error": "could not reach the crew running this session to stop it",
+                "code": "remote_stop_unreachable",
+            }
+        # The peer ends its own turn, which reaches us as the relay's [DONE] and
+        # the mirrored chat_done. Nothing local to tear down.
+        return {"ok": True}
+
     # Escalation path: a second stop press while a cooperative cancel is
     # already pending hard-kills. We escalate on ANY second press — not only
     # when the client computed force=true — because the client derives force
@@ -2942,6 +3273,12 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     denied = _deny_cross_app_slot_access(request, slot, name, "slot_stop")
     if denied is not None:
         return denied
+    # A peer-bound stop travels over the owner's tunnel and aborts a turn on the
+    # owner's connected machine, so it takes the owner identity check the
+    # app-scope guard above cannot make. No-op for a local slot.
+    denied = deny_non_owner_remote_operation(request, slot, "slot_stop")
+    if denied is not None:
+        return denied
     # Before ANY side effect — the escalation branch inside stop_slot_turn clears
     # the queue and drops pending steers, so a guard placed later would still let
     # a foreign caller mutate the slot. One target, resolved once: the session the
@@ -3017,6 +3354,14 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             ),
         )
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+    # A crew-bound slot has no local continue: it queues a synthetic turn that the
+    # runner would dispatch on THIS machine, diverging from the peer. AFTER the
+    # app-ownership 404 above: a foreign app must not be able to tell a remote slot
+    # apart from a missing one, so the anti-enumeration 404 has to win (GPT #7693).
+    refusal = remote_bound_refusal(slot)
+    if refusal is not None:
+        return refusal
 
     async with slot._lock:
         if slot.running:
@@ -4340,6 +4685,125 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     )
 
 
+async def _apply_remote_pick(
+    request: web.Request,
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    control: str,
+    body: dict[str, Any],
+) -> web.Response:
+    """Forward one header pick to the bound peer, then mirror it on the slot.
+
+    Mirror AFTER the forward, never before: the local field is what the header
+    renders and what the next turn's request reports, so writing it first would
+    leave the user looking at a pick the peer refused.
+
+    ``control`` names both the peer's route and the slot attribute, which is why
+    a single body key carries the value for all four controls.
+
+    Takes the ``request`` purely to authorize: all four pick routes reach the peer
+    through here, so gating inside this function makes a fifth control's guard
+    structural instead of a copied line the next handler can omit.
+    """
+    # Reconfiguring the owner's connected crew is the same credential spend as
+    # sending to it (see ``deny_non_owner_remote_operation``), and it lands BEFORE
+    # anything reaches the tunnel or the local mirror.
+    denied = deny_non_owner_remote_operation(request, slot, f"slot_{control}")
+    if denied is not None:
+        return denied
+    # One pick at a time per slot, across the WHOLE transaction (forward →
+    # mirror → persist). Every pick suspends at the tunnel await, so two
+    # interleaved picks can otherwise land their peer write and their metadata
+    # write in opposite orders, and a restart then restores a value the crew does
+    # not hold — the local record naming one pick while the side that runs the
+    # next turn took the other.
+    #
+    # The lock is ``_remote_pick_lock``, deliberately NOT ``slot._lock``: that
+    # one guards message-window edits, and its own declaration forbids holding it
+    # across a multi-second network await, which is exactly what forwarding to
+    # the peer is. Serialising picks must not stall every window edit behind the
+    # tunnel's round-trip.
+    async with slot._remote_pick_lock:
+        return await _apply_remote_pick_locked(state, slot, control, body)
+
+
+async def _apply_remote_pick_locked(
+    state: "DashboardState", slot: "_ChatSlot", control: str, body: dict[str, Any]
+) -> web.Response:
+    """The body of :func:`_apply_remote_pick`, under its per-slot pick lock.
+
+    Split out rather than wrapping the body in an ``async with``: the transaction
+    has several early returns, and a split makes "the lock covers all of them"
+    checkable at a glance instead of by re-reading every exit.
+    """
+    try:
+        accepted = await forward_peer_selection(state, slot, control, body)
+    except RemoteTurnError as exc:
+        return web.json_response({"error": str(exc), "code": "remote_pick_failed"}, status=502)
+    value = body[control]
+    setattr(slot, control, value)
+    if control == "agent":
+        # The peer resolved this agent against ITS bindings and committed a
+        # workspace for it — the same derivation the local switch does further
+        # down. Mirroring what it reported keeps the header and the next turn's
+        # record naming the workspace the turns actually run in; leaving the
+        # local value alone made this slot claim a workspace the crew had already
+        # moved off. Only a non-empty string is taken, so a peer that omits the
+        # field changes nothing.
+        peer_workspace = accepted.get("workspace")
+        if isinstance(peer_workspace, str) and peer_workspace:
+            # Redacted like every other peer string: this one is both rendered in
+            # the header and PERSISTED to history below, so an unscrubbed
+            # credential here outlives the session.
+            slot.workspace = redact_peer_text(peer_workspace)
+    if control == "model":
+        # Same reason the local path bumps it: an explicit pick has to outrank
+        # the model-fallback restore probe.
+        slot._model_pick_gen += 1
+    # Persist the accepted pick immediately, exactly as the local agent switch
+    # does. The periodic dirty-slot flush would write it eventually (both save
+    # routes rebuild these fields from the slot), but the two ends diverge inside
+    # that window: the PEER committed the value the moment it answered, so a
+    # restart before the flush restores a local field the crew no longer agrees
+    # with — and the crew is the side that runs the next turn. A local-only pick
+    # can only ever disagree with itself, which is why the local model/effort/
+    # workspace routes can leave it to the flush and this one cannot.
+    persisted: dict[str, Any] = {control: value}
+    if control == "agent" and slot.workspace:
+        # The mirrored workspace is as much the peer's committed state as the
+        # agent is, so it goes in the same write — persisting one without the
+        # other would restore the pair inconsistent after a restart.
+        persisted["workspace"] = slot.workspace
+    if state.conversation_log:
+        try:
+            # update_metadata takes a flock and closes fds — blocking-on-loop
+            # prohibited, so it goes to a worker thread (same reasoning as the
+            # local agent switch).
+            await asyncio.to_thread(
+                state.conversation_log.update_metadata,
+                _history_key_for(slot.key),
+                persisted,
+            )
+        except Exception:
+            # The peer COMMITTED this pick the moment it answered, so the local
+            # write is the side that fell behind — re-arm the periodic
+            # dirty-slot flush to retry it, exactly as `save_slot_off_loop`'s
+            # best-effort branch does for the same class of swallowed failure.
+            # Without this a lock timeout or I/O error drops the change for good
+            # and the two ends stay diverged after a restart: the crew runs the
+            # next turn on the value it took while the local record names the old
+            # one. The response stays 2xx because the pick DID apply where the
+            # turns run; reporting failure would roll the header back to a value
+            # the peer no longer holds.
+            slot._dirty = True
+            logger.warning(
+                "Failed to persist remote %s pick for slot %s", control, slot.key, exc_info=True
+            )
+    logger.info("Remote slot %s %s set to %r on %s", slot.key, control, value, slot.instance_id)
+    state.push_slots_update()
+    return web.json_response({"ok": True, control: value, "remote": True})
+
+
 async def api_chat_slot_agent(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/agent — set agent for a chat slot."""
     state: DashboardState = request.app["state"]
@@ -4368,6 +4832,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             {"error": "member thread agent is pinned", "code": "member_thread_agent_pinned"},
             status=409,
         )
+    if slot.is_remote:
+        # A bound session has no local ACP session to reset — the whole
+        # transaction below would resolve a crew on the wrong machine. The pick
+        # travels instead, and the slot is mirrored only after the peer took it.
+        return await _apply_remote_pick(request, state, slot, "agent", {"agent": agent_name})
 
     # The whole resolve -> reset -> commit section runs under the slot's
     # lock: the awaits yield the event loop, and an interleaved second switch
@@ -4721,6 +5190,11 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     if reason:
         logger.warning("Slot %s model rejected: %s", name, reason)
         return web.json_response({"error": reason}, status=400)
+    if slot.is_remote:
+        # The picker lists the PEER's models, so the live-switch/reset machinery
+        # below has nothing to act on: the session that would receive
+        # ``session/set_model`` is on the other machine.
+        return await _apply_remote_pick(request, state, slot, "model", {"model": model_name})
     # One pick transaction at a time per slot (verifier finding on 84fc7961):
     # two picks interleaving at the set_model await can roll back each other's
     # state no matter how careful the rollback condition is — with two failed
@@ -5196,6 +5670,14 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if slot.is_remote:
+        # Validated against the LOCAL level set above, which is safe because a
+        # bound session is version-gated to a peer running this same build — the
+        # levels are an enumeration in the code, not per-machine config. The peer
+        # re-validates regardless; this only keeps an obvious typo off the wire.
+        return await _apply_remote_pick(
+            request, state, slot, "reasoning_effort", {"reasoning_effort": effort}
+        )
     # Same serialization + transactional ordering as the agent switch: the
     # awaits below yield the event loop, so the section runs under the slot's
     # lock, and the slot is mutated only AFTER the switch actually took
@@ -5390,6 +5872,12 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    if slot.is_remote:
+        # ``slot.project`` is deliberately left alone: it is a path on THIS
+        # machine (file search, @-mentions), and `default_project_dir` would
+        # write a local directory that has nothing to do with the peer's
+        # workspace. The peer resolves its own project from the name.
+        return await _apply_remote_pick(request, state, slot, "workspace", {"workspace": ws_name})
     slot.workspace = ws_name
     slot.project = default_project_dir(ws_name)
     logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
@@ -5543,6 +6031,37 @@ def _deny_cross_app_slot_access(
     return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
 
+def deny_non_owner_remote_operation(
+    request: web.Request, slot, operation: str
+) -> web.Response | None:
+    """403 unless the dashboard OWNER is driving this peer-bound slot, else None.
+
+    THE authorization chokepoint for peer-directed work. Every request that
+    spends the owner's tunnel credential — relaying a turn, stopping one, or
+    forwarding a header pick — passes through this one function, so a new
+    peer-directed route is authorized by construction rather than by whoever
+    remembers to copy a guard. ``test_remote_crew_execution`` asserts that
+    property statically against the relay entry points.
+
+    Why the existing guards are not enough. ``_deny_cross_app_slot_access``
+    returns ``None`` for any caller with an empty ``request["app"]`` — that is
+    its whole contract, "dashboard users pass". But ``send_dashboard_link``
+    mints ``generate_token(user_id, …)`` with ``app=""``, so a Slack-allowlisted
+    NON-owner holds exactly that shape: empty app, ``request["user"]`` different
+    from ``owner_id``. Against a local slot that is only the access the link
+    grants by design. Against a peer-bound slot it is the owner's SSH tunnel and
+    the owner's connected machine, which is the harm the create/capabilities
+    gates were added to prevent — so identity, not app scope, has to decide.
+
+    A LOCAL slot is untouched: the early return keeps the link's ordinary reach
+    intact, which is why this is safe to call unconditionally on every one of
+    these routes.
+    """
+    if not slot.is_remote:
+        return None
+    return deny_non_dashboard_caller(request, operation)
+
+
 def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Response | None:
     """403 unless this is the dashboard OWNER's own request, else None.
 
@@ -5551,9 +6070,11 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
     dashboard users, the app name for app tokens), so an ABSENT key means the
     middleware did not run and must refuse rather than fall through.
 
-    An app claim of ``""`` is necessary but NOT sufficient. Both surfaces guarded
-    here act on owner-scoped resources — the card renders in the owner's composer
-    and the worktree allow-list is built from every slot's project — so identity
+    An app claim of ``""`` is necessary but NOT sufficient. Every surface guarded
+    here acts on owner-scoped resources — the card renders in the owner's composer,
+    the worktree allow-list is built from every slot's project, and (via
+    ``deny_non_owner_remote_operation``) a peer-bound slot spends the owner's own
+    tunnel credential on the owner's connected machine — so identity
     is checked with ``is_owner_dashboard_request``, the same predicate the source
     provider mutations use: the caller must match the configured ``owner_id``, or
     be a signed local bootstrap subject when no owner is configured (the

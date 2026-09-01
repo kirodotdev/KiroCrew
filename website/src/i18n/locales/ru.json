@@ -9710,6 +9710,7 @@
       "new_chat": "Новый чат",
       "new_chat_in_folder": "Новый чат в папке",
       "new_chat_on_crew": "Новый чат на Crew",
+      "runs_on_crew": "Выполняется на {{name}} — подключённый Crew, а не эта машина",
       "new_chat_in_name": "Новый чат в {{name}}",
       "new_chat_session": "Новая сессия чата",
       "new_folder": "Новая папка",

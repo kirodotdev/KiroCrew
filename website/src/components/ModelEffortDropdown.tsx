@@ -25,6 +25,10 @@ interface Props {
   /** Configured default effort for new sessions. Shown in the footer when the
    *  slot carries no override, so the row reflects what a turn would run at. */
   defaultEffort?: string
+  /** Effort levels to offer instead of this machine's — set for a session whose
+   *  turns run on a peer crew. Forwarded verbatim to the slider; see
+   *  `ReasoningEffortDropdown`'s `levelsOverride`. */
+  effortLevelsOverride?: string[]
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
    *  tier that applies to agents pinning no model of their own. Optional so
@@ -64,7 +68,7 @@ const SPRING = { type: 'spring' as const, stiffness: 420, damping: 38 }
 export default function ModelEffortDropdown({
   anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
   filter, setFilter, onClose, hasEffort, slot, currentEffort, onListKeyDown, onSetDefault,
-  defaultEffort = '', onPinToAgent, agentName = '', pinModelName = '',
+  defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false,
 }: Props) {
   const [showEffort, setShowEffort] = useState(false)
@@ -183,7 +187,7 @@ export default function ModelEffortDropdown({
               {i18nT('components.modelEffortDropdown.models')}
             </button>
             {slot && (
-              <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded />
+              <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} />
             )}
           </div>
         </motion.div>

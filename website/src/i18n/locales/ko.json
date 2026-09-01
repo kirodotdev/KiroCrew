@@ -9296,6 +9296,7 @@
       "new_chat": "새 채팅",
       "new_chat_in_folder": "폴더에 새 채팅",
       "new_chat_on_crew": "Crew에서 새 채팅",
+      "runs_on_crew": "{{name}}에서 실행 — 연결된 Crew이며 이 컴퓨터가 아닙니다",
       "new_chat_in_name": "‘{{name}}’에 새 채팅",
       "new_chat_session": "새 채팅 세션",
       "new_folder": "새 폴더",

@@ -1373,6 +1373,21 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
             {"error": "member thread mode is locked", "code": "member_mode_locked"},
             status=409,
         )
+    # A crew-bound (remote) session runs PLAIN chat only — the same rule
+    # api_chat_slot_create enforces at birth, applied here to the post-create
+    # switch that would otherwise reopen it. A non-plain mode (crew,
+    # orchestrator, design-critique) is consumed by an earlier dispatch branch in
+    # api_chat that runs its tools and filesystem work on THIS machine, not on the
+    # peer the session is bound to (finding F3). Keyed on ``executor`` rather than
+    # ``is_remote`` so even a half-bound slot can never be switched into one.
+    if slot.executor == "remote" and mode:
+        return web.json_response(
+            {
+                "error": "a crew-bound session runs plain chat only; mode-specific work runs on the crew, not here",
+                "code": "remote_mode_unsupported",
+            },
+            status=409,
+        )
     # Crew keeps its durable queue in a directory named after the slot, and a
     # key that folds to nothing but dots has no such directory (see
     # `CrewStore`). That refusal would otherwise land on the first crew MESSAGE

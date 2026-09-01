@@ -55,6 +55,9 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/sso-ttl", handlers.api_sso_ttl)
     app.router.add_get("/api/dashboard/branding", handlers.api_branding)
     app.router.add_get("/api/health", handlers.api_health)
+    # Authenticated, NOT a probe path: the version-equality gate for remote
+    # execution reads it over an instance tunnel with the dashboard cookie.
+    app.router.add_get("/api/version", handlers.api_version)
     app.router.add_get("/api/live", handlers.api_live)
     app.router.add_get("/api/ready", handlers.api_ready)
     app.router.add_get("/api/theme/boot", handlers.api_theme_boot)

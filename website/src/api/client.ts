@@ -19,6 +19,7 @@ import type {
   UpdateCheckResult,
   WorkflowRunSummary,
 } from '../types'
+import type { RemoteCrewCapabilities } from '../hooks/useRemoteCapabilities'
 import { ApiError, friendlyErrText } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
@@ -2948,7 +2949,12 @@ export const api = {
     if (before !== undefined) p.set('before', String(before))
     return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '?' + p, { signal }).then(j)
   },
-  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}) }).then(j),
+  /** Create a chat slot. `instance_id` binds the new session to a connected crew
+   *  for EXECUTION: it lives in this machine's list and history, and its turns run
+   *  over there. The backend opens the peer's slot first, so a peer that is
+   *  disconnected or on a different version fails the create rather than yielding
+   *  a session that cannot send. */
+  createChatSlot: (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, clean_mode?: boolean, artifact?: string, folder_id?: string, instance_id?: string) => post('/api/chat/slots', { ...(name ? { name } : {}), ...(agent ? { agent } : {}), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(memory_mode ? { memory_mode } : {}), ...(title ? { title } : {}), ...(clean_mode !== undefined ? { clean_mode } : {}), ...(artifact ? { artifact } : {}), ...(folder_id ? { folder_id } : {}), ...(instance_id ? { instance_id } : {}) }).then(j) as Promise<ChatSlot>,
   /** Inject silent background context into a slot — consumed on the next user
    * message. Used by the artifact companion chat to name the bound artifact so
    * the user's first message needs no slug boilerplate. */
@@ -3092,17 +3098,19 @@ export const api = {
   // instance (backend rank-interleaves; remote rows carry instance_id/_name).
   // 403 = instances feature disabled — callers fall back to sessionsSearch.
   instancesSearchSessions: (q: string, limit = 50) => fetch('/api/instances/search-sessions?q=' + encodeURIComponent(q) + '&limit=' + limit).then(j),
-  /** Create a chat slot ON A CONNECTED PEER, through the instances chat proxy.
-   *  The peer owns the session end to end — its context, memory, skills and
-   *  kiro-cli run the turn, and nothing is written to local history. `api/chat`
-   *  is inside the proxy's path allowlist, so this needs no new backend route;
-   *  the returned `key` is the slot key in the PEER's namespace and is only
-   *  meaningful in a request routed back through the same instance.
-   *  No `agent` is sent: the peer picks its own default, which is the whole
-   *  point of the session running there rather than here. */
-  instancesCreateRemoteSlot: (instanceId: string) =>
-    post('/api/instances/' + encodeURIComponent(instanceId) + '/proxy/api/chat/slots',
-      {}).then(j) as Promise<{ key?: string }>,
+  /** What a connected crew can do: its version, agent roster, model list, effort
+   *  levels and workspaces. The per-instance counterpart to `/api/agents`,
+   *  `/api/models`, `/api/effort-levels` and `/api/workspaces`, which are all
+   *  same-origin reads of THIS machine — a session bound to a peer for execution
+   *  must offer the peer's options, since picking a crew or model that only exists
+   *  here would fail on the first send.
+   *
+   *  `version_match` is the gate the backend enforces on every dispatch, surfaced
+   *  so the UI can explain a refusal before the user types rather than after.
+   *  `unavailable` names the reads that failed, per field, so one unreachable
+   *  roster disables exactly its own control instead of blanking the shelf. */
+  instancesCapabilities: (instanceId: string) =>
+    fetch('/api/instances/' + encodeURIComponent(instanceId) + '/capabilities').then(j) as Promise<RemoteCrewCapabilities>,
   sessionDetail: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key)).then(j),
   deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
   clearSessions: () => del('/api/sessions').then(j),

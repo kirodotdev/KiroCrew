@@ -172,13 +172,25 @@ def _redact_tool_field(text: str | None, *, limit: int = _MAX_TOOL_FIELD) -> str
     return text
 
 
-def _build_stream_chunk(msg: dict) -> str:
-    """Build a JSON SSE chunk from a slot message, with meta redaction for permissions."""
+def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
+    """Build a JSON SSE chunk from a slot message, with meta redaction for permissions.
+
+    ``include_row_meta`` carries the row's own durable ``meta`` dict (tool
+    input/output, call identity) into the record. Off by default so the ordinary
+    SSE / OpenAI-compat stream keeps its "only permission rows carry meta"
+    contract; the RELAY drain turns it on, because a relay reader (``_apply_row``)
+    rebuilds the local row from this record and would otherwise lose that tool
+    correlation permanently on a local refresh (GPT #7693).
+    """
     try:
         meta = parse_cls_meta(msg.get("cls", "")) if msg.get("role") == "permission" else None
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is None and include_row_meta:
+        row_meta = msg.get("meta")
+        if isinstance(row_meta, dict):
+            meta = row_meta
     if meta:
         meta = _redact_deep(meta)
     content = msg.get("content", "")

@@ -9572,6 +9572,7 @@
       "new_chat": "Nouveau chat",
       "new_chat_in_folder": "Nouveau chat dans le dossier",
       "new_chat_on_crew": "Nouveau chat sur un Crew",
+      "runs_on_crew": "S'exécute sur {{name}} — un Crew connecté, pas sur cette machine",
       "new_chat_in_name": "Nouveau chat dans {{name}}",
       "new_chat_session": "Nouvelle session de chat",
       "new_folder": "Nouveau dossier",

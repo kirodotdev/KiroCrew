@@ -28,6 +28,7 @@ from urllib.parse import unquote
 
 from aiohttp import web
 
+import kiro_crew
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.session_transfer import (
@@ -1181,6 +1182,204 @@ def _proxy_canonical_path(raw: str) -> tuple[str, str]:
         if len(prefix) >= 2 and tuple(segments[: len(prefix)]) == prefix:
             return _URL_PATH_SEP.join(segments), ""
     return "", _PROXY_PATH_DENIED_REASON
+
+
+#: Caps applied to a peer's capability reply before it reaches the browser. The
+#: peer is the user's own machine but its reply is still untrusted input crossing
+#: a trust boundary, and these lists feed pickers — an unbounded roster would
+#: render an unusable menu and an unbounded string would break the layout.
+_CAP_MAX_ROWS = 500
+_CAP_MAX_STR = 512
+_CAP_MAX_VERSION_STR = 64
+
+
+def _cap_str(value: object, limit: int = _CAP_MAX_STR) -> str:
+    """A peer-supplied string, redacted and clamped, or "" for anything else.
+
+    Every one of these lands in a dashboard picker, so the peer's text is an
+    output boundary: it runs the relay's credential + exfiltration-URL chain
+    BEFORE the clamp, so a credential cannot survive by sitting past the limit.
+    """
+    if not isinstance(value, str):
+        return ""
+    # Deferred: this module is imported on the gateway's boot path and the relay
+    # pulls in the chat-slot machinery, which a capability read does not need.
+    from kiro_crew.dashboard.remote_relay import redact_peer_text
+
+    return redact_peer_text(sanitize_string(value))[:limit]
+
+
+def _cap_list(payload: object, key: str) -> object:
+    """The row list out of a peer reply that is either bare or wrapped in *key*.
+
+    The five capability endpoints do not agree on a shape: ``/api/models`` and
+    ``/api/effort-levels`` answer a bare list, while ``/api/agents`` and
+    ``/api/workspaces`` answer ``{"<key>": [...]}`` next to a sibling default.
+    Normalizing here is what keeps a wrapped reply from reaching ``_cap_rows``,
+    which accepts only a list — a dict would come back as an empty picker rather
+    than an error, so the failure would look like "this crew has no agents".
+    """
+    return payload.get(key) if isinstance(payload, dict) else payload
+
+
+def _cap_rows(payload: object, fields: dict[str, int]) -> list[dict[str, object]]:
+    """Re-shape a peer's list reply to *fields*, dropping everything unlisted.
+
+    Allowlist, not passthrough: the browser gets the keys this gateway knows how
+    to render and nothing else, so a peer on a build with extra fields cannot
+    inject content into a picker. ``context_window`` is the one numeric field and
+    is coerced rather than clamped — a bogus value reads as "unknown", which the
+    frontend already handles by falling back to the reference window.
+    """
+    if not isinstance(payload, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for entry in payload[:_CAP_MAX_ROWS]:
+        if not isinstance(entry, dict):
+            continue
+        row: dict[str, object] = {}
+        for field, limit in fields.items():
+            raw = entry.get(field)
+            if field == "context_window":
+                row[field] = int(raw) if isinstance(raw, int) and not isinstance(raw, bool) else 0
+            else:
+                row[field] = _cap_str(raw, limit)
+        rows.append(row)
+    return rows
+
+
+async def api_instances_capabilities(request: web.Request) -> web.Response:
+    """GET /api/instances/{id}/capabilities — what a connected peer can do.
+
+    A local session bound to a peer for execution must offer the PEER's agents,
+    models, effort levels and workspaces in its header — showing this machine's
+    would let the user pick a crew or model that does not exist over there. Those
+    rosters are gateway-wide reads, and every existing frontend control fetches
+    them same-origin from the local gateway, so this route is the per-instance
+    counterpart the frontend switches to when the active slot is peer-bound.
+
+    Deliberately NOT served through ``/api/instances/{id}/proxy/*``: that route
+    forwards a caller-supplied path and is fenced to the ``api/chat`` /
+    ``api/stream`` prefixes. Widening it to reach ``api/agents`` would have
+    granted the peer's mutating ``PUT /api/agents/{name}`` in the same stroke,
+    because the fence matches prefixes and cannot distinguish verbs. So the reads
+    go through ``SshTunnelManager.peer_capability``, whose target is chosen from a
+    closed set in the backend.
+
+    One peer read failing does not fail the request: each result is independent
+    and a missing one is reported in ``unavailable`` so the frontend can disable
+    exactly that control instead of showing an empty menu that looks like the peer
+    has no models.
+    """
+    denied = _guard(request, "capabilities")
+    if denied is not None:
+        return denied
+    # Owner-only, same bar as the proxy and the federated search: the reads run
+    # on a peer with the OWNER's manager-held credential, so a Slack-minted
+    # `!dashboard` subject (an authenticated non-owner) must not reach them.
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if not is_owner_dashboard_request(request):
+        _audit("capabilities", "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew capabilities are owner-only")
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info.get("id", "")
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("capabilities", "denied", error="instances manager unavailable")
+        return web.json_response(
+            {"error": "remote crews are not available", "code": "instances_unavailable"},
+            status=503,
+        )
+
+    paths = ("/api/version", "/api/agents", "/api/models", "/api/effort-levels", "/api/workspaces")
+    results = await asyncio.gather(
+        *(mgr.peer_capability(instance_id, path) for path in paths),
+        return_exceptions=True,
+    )
+    raw: dict[str, object] = {}
+    unavailable: dict[str, str] = {}
+    for path, outcome in zip(paths, results):
+        field = path.rsplit("/", 1)[-1].replace("-", "_")
+        if isinstance(outcome, BaseException):
+            logger.info(
+                "Peer capability %s on %s raised (%s)",
+                path,
+                instance_id,
+                type(outcome).__name__,
+            )
+            unavailable[field] = "capability_unreachable"
+            continue
+        ok, payload = outcome
+        if ok:
+            raw[field] = payload
+        else:
+            unavailable[field] = (
+                _cap_str(payload.get("code"), 64)
+                if isinstance(payload, dict)
+                else "capability_error"
+            )
+
+    peer_version = ""
+    version_payload = raw.get("version")
+    if isinstance(version_payload, dict):
+        peer_version = _cap_str(version_payload.get("version"), _CAP_MAX_VERSION_STR)
+    agents_payload = raw.get("agents")
+    workspaces_payload = raw.get("workspaces")
+    workspaces = _cap_rows(
+        _cap_list(workspaces_payload, "workspaces"), {"name": 128, "path": _CAP_MAX_STR}
+    )
+    effort_payload = _cap_list(raw.get("effort_levels"), "effort_levels")
+    effort_levels = (
+        [_cap_str(level, 32) for level in effort_payload[:_CAP_MAX_ROWS] if isinstance(level, str)]
+        if isinstance(effort_payload, list)
+        else []
+    )
+
+    _audit("capabilities", "success", request_id=instance_id)
+    return web.json_response(
+        {
+            "instance_id": instance_id,
+            "version": peer_version,
+            "local_version": kiro_crew.__version__,
+            # The gate the relay enforces on every dispatch, surfaced so the UI
+            # can explain a refusal BEFORE the user types a message rather than
+            # after their first send fails.
+            "version_match": bool(peer_version) and peer_version == kiro_crew.__version__,
+            "agents": _cap_rows(
+                _cap_list(agents_payload, "agents"),
+                {"name": 128, "description": _CAP_MAX_STR, "scope": 32, "model": 128},
+            ),
+            # What answers when the bound session has picked nothing. A local
+            # session falls back to THIS machine's default agent, which for a
+            # peer-bound session would name a crew the peer may not have — so the
+            # shelf needs the peer's own default to render honestly before the
+            # first pick.
+            "default_agent": (
+                _cap_str(agents_payload.get("default_agent"), 128)
+                if isinstance(agents_payload, dict)
+                else ""
+            ),
+            "models": _cap_rows(
+                _cap_list(raw.get("models"), "models"),
+                {
+                    "model_name": 128,
+                    "display_name": 128,
+                    "description": _CAP_MAX_STR,
+                    "context_window": 0,
+                },
+            ),
+            "effort_levels": effort_levels,
+            "workspaces": workspaces,
+            "default_workspace": (
+                _cap_str(workspaces_payload.get("default"), 128)
+                if isinstance(workspaces_payload, dict)
+                else ""
+            ),
+            "unavailable": unavailable,
+        }
+    )
 
 
 async def api_instances_proxy(request: web.Request) -> web.StreamResponse:

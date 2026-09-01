@@ -179,7 +179,12 @@ describe('ChatSidebar – federated history search across connected instances', 
     renderSidebar({ warm: true })
     await searchOlderSessions('deploy checklist')
 
-    const badge = await screen.findByText('clouddeskARM')
+    // The crew name sits in a truncating child of the chip, so resolve the chip
+    // itself: the tint is carried by the chip (and inherited by the name), and
+    // reading the name node's own className would only see `truncate`.
+    const name = await screen.findByText('clouddeskARM')
+    const badge = name.closest('[data-testid="remote-crew-chip"]') as HTMLElement
+    expect(badge).not.toBeNull()
     const cls = badge.className
     // The claim "this transcript is on another machine" must not look like the
     // neutral chip styling shared by every other meta chip, or it reads as a

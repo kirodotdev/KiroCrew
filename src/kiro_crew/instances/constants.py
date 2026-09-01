@@ -231,6 +231,26 @@ DEFAULT_SEARCH_PROXY_TIMEOUT_SECS: float = 6.0
 # a truthful worst case is well under 1 MiB; 4 MiB only ever bites on garbage.
 SEARCH_REPLY_MAX_BYTES: int = 4 * 1024 * 1024
 
+# Timeout (secs) for one peer capability read over an already-open tunnel (GET
+# the peer's /api/version, /api/agents, /api/models, /api/effort-levels or
+# /api/workspaces — no SSH spawn). Larger than the token probe (2s) because the
+# peer does real work for some of these (the model list can round-trip to its
+# own provider), and kept as short as that work allows because a capability read
+# blocks a chat header from rendering: a user watching an empty model picker is
+# better served by a fast "peer did not answer" than by a long wait. It is the
+# one peer budget ABOVE the federated-search timeout (6s), which fans out reads
+# that a partial result set can absorb; a missing capability read has no partial
+# form — the picker is simply empty — so it is the one worth waiting out.
+# The reads run concurrently, so this is the worst-case latency for the set.
+DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
+
+# Byte ceiling for one peer capability reply, enforced BEFORE JSON decoding for
+# the same reason as the search cap above. Sized for the largest honest payload
+# by a wide margin: the agent roster and the model list are the big ones and are
+# tens of KiB each even on a heavily-configured gateway, so 2 MiB only ever
+# bites on a hostile or broken peer.
+CAPABILITY_REPLY_MAX_BYTES: int = 2 * 1024 * 1024
+
 
 # Accepted shape for a dashboard-token lifetime: a positive integer of at most
 # four digits followed by ``h`` or ``m``. Canonical here because three layers

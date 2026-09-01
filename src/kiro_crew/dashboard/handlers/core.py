@@ -319,6 +319,28 @@ async def api_health(request: web.Request) -> web.Response:
     return web.json_response(_liveness_payload(request))
 
 
+async def api_version(request: web.Request) -> web.Response:
+    """GET /api/version — this gateway's exact version, for an authenticated peer.
+
+    Exists because remote execution is fenced by version EQUALITY: a local
+    session may only dispatch its turns to a connected crew running the identical
+    gateway build, since the two ends exchange a wire vocabulary that is not
+    versioned independently. ``/api/health`` cannot answer that question — it
+    reveals ``version`` only to a direct-local caller with a served ``Host``, on
+    purpose, to keep an exact-version fingerprint off the public probe boundary.
+
+    So this route is NOT public. It is deliberately absent from
+    ``token_auth._BYPASS_EXACT`` and from ``origin.PROBE_PATHS``, which means it
+    requires the dashboard credential and a served ``Host`` like any other API
+    route. A peer reads it over its tunnel with the port-scoped cookie the
+    instance manager already mints, exactly as the session-search and
+    session-import carriers do — so nothing is exposed to an anonymous caller
+    that was not exposed before, and the fingerprint decision at
+    :func:`_liveness_payload` stands unchanged.
+    """
+    return web.json_response({"version": kiro_crew.__version__})
+
+
 async def api_live(request: web.Request) -> web.Response:
     """GET /api/live — Kubernetes-style liveness alias for /api/health."""
     return web.json_response(_liveness_payload(request))

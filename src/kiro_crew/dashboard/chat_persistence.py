@@ -963,6 +963,35 @@ def _rehydrate_slot_from_history(
             slot.workspace = meta["workspace"]
         if meta.get("project"):
             slot.project = meta["project"]
+        # Restore the remote executor marker INDEPENDENTLY of its target fields.
+        # history JSONL is a file on disk, so a truncated write or a hand-edit can
+        # leave the ``executor="remote"`` marker without a valid instance_id /
+        # remote_slot. Dropping the marker in that case (the old behaviour) failed
+        # OPEN: the session came back as an ordinary local slot and its next send
+        # ran the crew's turn on THIS machine — the wrong-host execution the remote
+        # binding exists to prevent (GPT #7693). Fail CLOSED instead: keep the
+        # marker, populate only the target fields that are valid, and let the
+        # incomplete-binding guard in ``api_chat`` (``slot.executor == "remote" and
+        # not slot.is_remote`` -> 409 ``remote_binding_incomplete``) plus the
+        # ``_run_chat`` chokepoint (keyed on ``executor``, not ``is_remote``) refuse
+        # the send with a message the user can act on, rather than run local.
+        _relay_was_in_flight = False
+        _executor_meta = meta.get("executor")
+        _instance_meta = meta.get("instance_id")
+        _remote_slot_meta = meta.get("remote_slot")
+        if _executor_meta == "remote":
+            slot.executor = "remote"
+            if isinstance(_instance_meta, str) and _instance_meta:
+                slot.instance_id = _instance_meta
+            if isinstance(_remote_slot_meta, str) and _remote_slot_meta:
+                slot.remote_slot = _remote_slot_meta
+            # Deferred to AFTER the window is loaded (see below): the metadata line
+            # is read before the transcript rows, so appending here would land the
+            # notice ahead of the conversation instead of at its tail. Only a
+            # COMPLETE binding can have been mid-relay; an incomplete one never
+            # dispatched, so there is no in-flight tail to recover.
+            if slot.is_remote:
+                _relay_was_in_flight = bool(meta.get("relay_in_flight"))
         if meta.get("mode") and _member_identity is None:
             slot.mode = meta["mode"]
         if meta.get("created_by"):
@@ -1158,6 +1187,28 @@ def _rehydrate_slot_from_history(
         # turns counted above) is never rewritten.
         slot._disk_window_len = len(slot.messages)
         slot._dirty = False
+        if _relay_was_in_flight:
+            # The gateway crashed while this slot's turn was executing on the peer
+            # (flagged in the binding block above). The relay reader died with it
+            # and the turn's tail was never mirrored here, so the loaded window
+            # stops mid-turn. Append an explicit notice at the TAIL rather than
+            # resurrect a silently truncated conversation — the peer may well have
+            # finished, and the next send re-synchronises the visible history.
+            # ``broadcast=False`` is the sanctioned replay door (fork / transfer /
+            # window-rebuild use it): no clients exist at boot, and it appends a
+            # schema-correct row with a minted id. Placed AFTER ``_disk_window_len``
+            # so the new row is not miscounted as already-persisted, with ``_dirty``
+            # re-armed so the next flush writes it. The runtime ``_relay_in_flight``
+            # stays False, so that flush clears the on-disk marker and a second
+            # restart cannot append the notice twice.
+            slot.append(
+                "error",
+                "This turn was interrupted when the app restarted. The crew may "
+                "have finished it — send again to pick the conversation back up.",
+                "msg msg-err",
+                broadcast=False,
+            )
+            slot._dirty = True
         logger.info("Rehydrated session %s (%s) from history", slot_name, slot.title)
         return slot
     except BaseException:
@@ -2715,6 +2766,25 @@ def _save_slot_to_history(
                     fields["channel_origin"] = True
                 if slot.forked_from is not None:
                     fields["forked_from"] = slot.forked_from
+                if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
+                    # All three or none, exactly like the full save: a newborn
+                    # bound to a peer has an EMPTY window until the first relayed
+                    # row lands, so this merge is the only writer its binding
+                    # ever sees. Dropping it here means a restart in that window
+                    # brings the session back as an ordinary local one and the
+                    # next turn runs on this machine instead of the crew the user
+                    # picked. The completeness guard keeps the fail-closed
+                    # invariant: a half-binding is never written, so rehydration
+                    # never has to repair one.
+                    fields["executor"] = "remote"
+                    fields["instance_id"] = slot.instance_id
+                    fields["remote_slot"] = slot.remote_slot
+                    if getattr(slot, "_relay_in_flight", False):
+                        # Only ever written while a turn is mid-flight; the relay
+                        # clears it when the turn ends, so a persisted True means
+                        # "crashed mid-turn" on reload. Nested under the binding
+                        # because it is meaningless without one.
+                        fields["relay_in_flight"] = True
                 if getattr(slot, "_tab_id", None):
                     fields["tab_id"] = slot._tab_id
                 if getattr(slot, "_auto_tagged", False):
@@ -2979,6 +3049,20 @@ def _save_slot_to_history(
                 meta_line["workspace"] = slot.workspace
             if slot.project:
                 meta_line["project"] = slot.project
+            # Remote-execution binding. All three are written together or not at
+            # all: a half-restored binding (executor="remote" with no peer slot)
+            # is the fail-closed refusal case, so persisting the marker without
+            # its target would resurrect a session that can never run. Written
+            # only when the whole binding is present, and read back the same way.
+            if slot.executor == "remote" and slot.instance_id and slot.remote_slot:
+                meta_line["executor"] = "remote"
+                meta_line["instance_id"] = slot.instance_id
+                meta_line["remote_slot"] = slot.remote_slot
+                if getattr(slot, "_relay_in_flight", False):
+                    # See the merge-save site: written only while a turn is
+                    # in-flight, so a True read back on reload is the crash signal
+                    # that triggers the interrupted-turn row.
+                    meta_line["relay_in_flight"] = True
             if slot.folder_id:
                 meta_line["folder_id"] = slot.folder_id
             if slot._channel_folder_filed or existing_meta.get("channel_folder_filed"):

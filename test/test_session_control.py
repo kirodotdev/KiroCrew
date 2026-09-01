@@ -1975,6 +1975,39 @@ def test_send_to_a_busy_target_queues_instead_of_racing(tmp_path):
     assert any("queued message" in q.get("content", "") for q in target._queue)
 
 
+def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monkeypatch):
+    """A crew-bound target executes on the peer; session_send must not run its
+    turn on THIS machine.
+
+    ``send_to_target`` hands ``_run_chat`` to ``enqueue_or_run_prompt``, which has
+    no remote/executor branch — so a bound target would run the crew's work here
+    and diverge the local and peer transcripts (GPT #7693). It is refused with a
+    409 before any dispatch, and nothing is queued.
+    """
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    target.executor = "remote"  # bound to a peer crew for execution
+
+    ran: dict[str, str] = {}
+
+    async def _fake_run_chat(_state, slot, prompt):
+        ran["slot"] = slot.key
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    with pytest.raises(sc.SessionControlError) as err:
+        asyncio.run(
+            sc.send_to_target(
+                state, caller_session_key=_key(caller), target="chat-2", message="do it there"
+            )
+        )
+    assert err.value.code == "remote_target_unsupported"
+    # Refused before dispatch: no local turn ran and nothing was queued.
+    assert ran == {}
+    assert target._queue == []
+
+
 def test_send_is_refused_for_a_session_out_of_bounds(tmp_path):
     """The same deny-by-default guard the other verbs share gates send too."""
     state = _make_state(tmp_path)
@@ -2458,6 +2491,19 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         "app",
         "forked_from",
         "linked_session_key",
+        # The remote-execution binding, written all-three-or-none by both the
+        # full save and the merge. A plain local newborn carries none of it; the
+        # bound case is covered by
+        # test_remote_crew_execution.py::test_the_empty_window_merge_persists_a_complete_binding.
+        "executor",
+        "instance_id",
+        "remote_slot",
+        # In-flight relay marker: written ONLY while a relay is running and
+        # omitted once the turn ends (absence = "not in flight"), so a plain
+        # newborn never carries it. Its clear-on-completion behaviour is covered by
+        # test_remote_crew_execution.py::
+        # test_the_marker_is_cleared_on_disk_when_a_relay_completes.
+        "relay_in_flight",
     }
     for key in sorted(SLOT_OWNED_META_KEYS - excluded):
         assert key in meta, f"slot-owned field {key!r} missing after an empty-window forced save"

@@ -45,6 +45,7 @@ from kiro_crew.dashboard.interaction_coordinator import (
     QuestionCoordinator,
 )
 from kiro_crew.dashboard.notification_coordinator import NotificationCoordinator
+from kiro_crew.dashboard.remote_mirror import mirror_frame as _mirror_relay_frame
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.slot_buffers import SlotBufferCoordinator
@@ -3260,6 +3261,7 @@ class _ChatSlot:
         "forked_from",
         "_fork_lock",
         "_model_pick_lock",
+        "_remote_pick_lock",
         "_tab_id",
         "_channel_window_mtime",
         "_disk_older_count",
@@ -3272,6 +3274,13 @@ class _ChatSlot:
         "_pending_rewrite",
         "_file_changes",
         "linked_session_key",
+        # Remote-execution binding: this slot lives in the LOCAL list and local
+        # history, but its turns run on a connected peer crew. See
+        # ``dashboard/remote_relay.py``.
+        "executor",
+        "instance_id",
+        "remote_slot",
+        "_relay_in_flight",
         "_active_turn_session_key",
         "_side",
         "_acp_client",
@@ -3323,6 +3332,23 @@ class _ChatSlot:
         self.mode = mode
         self.workspace = workspace
         self.project: str = ""
+        # Remote-execution binding. ``executor`` is "local" for every ordinary
+        # slot; "remote" means the turn is dispatched over an instance tunnel to
+        # ``instance_id`` and run by the peer's slot ``remote_slot``. The local
+        # side still owns the transcript, the sidebar row and history — only
+        # execution moves. Fail-closed: a slot whose executor says "remote" but
+        # whose instance_id or remote_slot is empty refuses to dispatch rather
+        # than silently falling back to running the turn on this machine, which
+        # would put the peer's work on the wrong host.
+        self.executor: str = "local"
+        self.instance_id: str = ""
+        self.remote_slot: str = ""
+        # True only while a remote turn is executing on the peer. Persisted (with
+        # the binding) so a gateway crash mid-turn is detectable on reload: a slot
+        # that comes back still carrying it lost its relay reader to the restart,
+        # and rehydration appends an "interrupted" row rather than leaving the
+        # transcript silently stopped. Set/cleared in ``remote_relay.relay_remote_turn``.
+        self._relay_in_flight: bool = False
         self.created_at: str = datetime.now(timezone.utc).isoformat()
         self.messages: list[dict[str, Any]] = []
         self._buffers = SlotBufferCoordinator()
@@ -3747,6 +3773,18 @@ class _ChatSlot:
         # slot._lock, which guards message-window edits and must not be held
         # across a multi-second network await.
         self._model_pick_lock: asyncio.Lock = asyncio.Lock()
+        # Serialises one remote header pick's whole transaction (forward to the
+        # peer → mirror locally → persist) on this slot. Concurrent picks each
+        # suspend at the tunnel await, so without this their peer writes and
+        # their metadata writes can complete in opposite orders and a restart
+        # restores a value the crew does not hold.
+        #
+        # Deliberately NOT ``slot._lock``, for the reason its sibling above
+        # gives: that lock guards message-window edits and must not be held
+        # across a multi-second network await. A remote pick is exactly such an
+        # await, so it gets its own lock rather than blocking every window edit
+        # on the tunnel's round-trip.
+        self._remote_pick_lock: asyncio.Lock = asyncio.Lock()
         self._tab_id: str = ""  # permanent tab identity for cross-restart session chaining
         # Transcript mtime the in-memory window was last brought up to date
         # against. Only meaningful for a slot bound to a channel session, whose
@@ -4286,6 +4324,18 @@ class _ChatSlot:
     def push_wire_frame(self, cls: str, content: str) -> None:
         """Queue an ephemeral frame for live SSE readers only."""
         self._buffers.push_wire_frame(self, cls, content)
+
+    @property
+    def is_remote(self) -> bool:
+        """True when this slot's turns must be dispatched to a peer crew.
+
+        Requires the whole binding, not just the ``executor`` marker: a slot
+        carrying ``executor == "remote"`` with no instance or no peer slot is
+        broken, and treating it as local would run the turn on this machine —
+        the one outcome the binding exists to prevent. Callers therefore get
+        False here and a refusal at the dispatch site, not a silent local run.
+        """
+        return bool(self.executor == "remote" and self.instance_id and self.remote_slot)
 
     def drain(self) -> list[dict[str, str]]:
         """Return and clear pending messages."""
@@ -7909,6 +7959,12 @@ class DashboardState:
         _websocket_for(self)._send_ws_owners(msg)
 
     def broadcast_ws(self, msg_type: str, data: object) -> None:
+        # Mirror first, broadcast second. A relay reader consumes the SSE stream,
+        # so the mirrored copy must be queued before the frame fans out to local
+        # WebSocket clients — otherwise a turn that ends inside the broadcast
+        # (chat_done tearing the slot down) could publish to local clients a
+        # frame the relay never receives.
+        _mirror_relay_frame(self, msg_type, data)
         _websocket_for(self).broadcast_ws(msg_type, data)
 
     def broadcast_context_usage(self, slot_key: str, payload: dict) -> None:

@@ -9434,6 +9434,7 @@
       "new_chat": "নতুন চ্যাট",
       "new_chat_in_folder": "ফোল্ডারে নতুন চ্যাট",
       "new_chat_on_crew": "Crew-এ নতুন চ্যাট",
+      "runs_on_crew": "{{name}} এ চলে — একটি সংযুক্ত Crew, এই মেশিনে নয়",
       "new_chat_in_name": "{{name}}-এ নতুন চ্যাট",
       "new_chat_session": "নতুন চ্যাট সেশন",
       "new_folder": "নতুন ফোল্ডার",

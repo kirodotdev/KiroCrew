@@ -179,6 +179,18 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "mode",
         "workspace",
         "project",
+        # Remote-execution binding: owned by the slot, so clearing it in memory
+        # clears it on disk. Left unowned, a rebind or an unbind would be undone
+        # on the next save by the carried-forward copy.
+        "executor",
+        "instance_id",
+        "remote_slot",
+        # In-flight relay marker: the slot save writes it only while a relay is
+        # running and omits it once the turn ends. Absence therefore means "not
+        # in flight" and must clear the on-disk value — left unowned, the `true`
+        # written at relay start is carried forward past a clean completion, so
+        # every later restart would append a false "interrupted" row.
+        "relay_in_flight",
         "folder_id",
         "app",
         "artifact",

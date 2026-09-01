@@ -33,6 +33,15 @@ interface Props {
    *  and the popover dismisses on outside-click, so this is no longer invoked. */
   onClose: () => void
   embedded?: boolean
+  /** Effort levels to offer instead of this machine's.
+   *
+   *  Set for a session bound to a peer crew for execution: the levels come from
+   *  the model running the turn, which is the PEER's model, and
+   *  `/api/effort-levels` only knows about this gateway. An empty array is
+   *  meaningful — "the peer's levels could not be read" — and falls back to the
+   *  shared fallback set rather than to this machine's live values, because those
+   *  would describe a model that is not answering. */
+  levelsOverride?: string[]
 }
 
 /** Reasoning-effort picker: a stepped macOS-style slider over the model's
@@ -40,8 +49,8 @@ interface Props {
  *  the value snaps to the grid and persists to the slot. Reads the slot's
  *  live levels from /api/effort-levels (keyed by slot so a model switch is
  *  reflected on remount). */
-export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEffort = '', embedded }: Props) {
-  const { data: levels = FALLBACK_LEVELS } = useQuery({
+export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEffort = '', embedded, levelsOverride }: Props) {
+  const { data: liveLevels = FALLBACK_LEVELS } = useQuery({
     queryKey: ['effort-levels', slot],
     queryFn: () => api.effortLevels(slot).then(data =>
       Array.isArray(data) && data.length > 0
@@ -50,7 +59,13 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
     ),
     staleTime: 0,
     refetchOnMount: 'always',
+    // A peer-bound session never consults this gateway's levels, so it must not
+    // spawn the query either — the answer would describe the wrong model.
+    enabled: levelsOverride === undefined,
   })
+  const levels = levelsOverride === undefined
+    ? liveLevels
+    : (levelsOverride.length > 0 ? normalizeLevels(levelsOverride) : FALLBACK_LEVELS)
 
   // "Default" is a mode (let the model pick its own effort), not a level — it's a
   // toggle. The slider covers only the concrete levels (low→max).

@@ -9434,6 +9434,7 @@
       "new_chat": "Neuer Chat",
       "new_chat_in_folder": "Neuer Chat im Ordner",
       "new_chat_on_crew": "Neuer Chat auf einer Crew",
+      "runs_on_crew": "Läuft auf {{name}} — einer verbundenen Crew, nicht auf diesem Rechner",
       "new_chat_in_name": "Neuer Chat in {{name}}",
       "new_chat_session": "Neue Chat-Sitzung",
       "new_folder": "Neuer Ordner",

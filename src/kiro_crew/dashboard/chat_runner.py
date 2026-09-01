@@ -5221,6 +5221,33 @@ async def _run_chat(
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
+    # Chokepoint invariant: a crew-bound slot NEVER executes locally. Its turns go
+    # through ``relay_remote_turn``; ``_run_chat`` is the LOCAL runner. Every
+    # dispatch entry point (the primary send, regenerate, edit-resend, rewind,
+    # continue, ``session_send``, the queue drain, orchestrator stages, the
+    # OpenAI-compat endpoint) is supposed to refuse or relay a remote slot before
+    # reaching here — but they are many and a new one is easy to add, which is why
+    # the reviewer kept finding one more each round. This is the single place that
+    # makes running a bound slot on this machine impossible regardless of caller
+    # (GPT #7693): local tools, local credentials and a locally-authored answer on
+    # a session the user handed to a crew would diverge the two transcripts.
+    # Keyed on ``executor`` (not ``is_remote``) so a half-open binding is refused
+    # too. An error row + ``chat_done`` matches the shape a refused turn takes, so
+    # the composer unblocks rather than hanging.
+    if getattr(slot, "executor", "") == "remote":
+        logger.warning("refusing to run remote-bound slot %s on this machine", slot.key)
+        slot.append(
+            "error",
+            "This session runs on a remote crew, so it cannot run on this "
+            "machine. Reopen it on the crew, or send again once it reconnects.",
+            "msg msg-err",
+        )
+        try:
+            state.broadcast_ws("chat_done", {"slot": slot.key})
+        except Exception:  # pragma: no cover - unblock is best-effort
+            logger.debug("chat_done broadcast failed for refused remote slot", exc_info=True)
+        return
+
     # Capture before any await: a Stop can complete while pre-turn setup is
     # suspended and reset _stop_state to idle before continuation processing.
     # The monotonic generation preserves that user intent across the whole call.

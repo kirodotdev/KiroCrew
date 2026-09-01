@@ -9296,6 +9296,7 @@
       "new_chat": "新建对话",
       "new_chat_in_folder": "在文件夹中新建聊天",
       "new_chat_on_crew": "在 Crew 上新建聊天",
+      "runs_on_crew": "在 {{name}} 上运行 —— 一个已连接的 Crew，而非本机",
       "new_chat_in_name": "在 {{name}} 中新建聊天",
       "new_chat_session": "新建聊天会话",
       "new_folder": "新建文件夹",

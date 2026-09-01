@@ -1209,6 +1209,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "chokepoint that applies the credential + exfiltration-URL chain before the "
         "text reaches the dashboard.",
     ),
+    (
+        "Relayed remote-crew turn output",
+        "dashboard/remote_relay.py",
+        "Every string in a turn relayed from a bound remote crew: the assistant "
+        "text, and each mirrored frame's tool inputs and outputs. The peer is a "
+        "SEPARATE machine with its own agents, environment and secrets, so its "
+        "reply can quote a credential or an exfiltration URL that no local "
+        "redaction pass has ever seen. The peer redacts its own copy with this "
+        "same chain, but a hub that trusted that would inherit whatever an older "
+        "or misconfigured peer failed to scrub -- so the boundary where the "
+        "peer's bytes become this dashboard's transcript re-applies the "
+        "credential + exfiltration-URL chain itself, before any broadcast.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
