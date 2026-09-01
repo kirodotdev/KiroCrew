@@ -249,8 +249,26 @@ class SessionLifecycleService:
         """Adopt config changes that only affect new sessions."""
         owner = self._owner
         logger = self._deps.logger
-        cfg = self._deps.load_config()
         async with owner._pool_fill_lock:
+            # Loaded OFF the event loop, and INSIDE the fill lock. Both halves
+            # are load-bearing:
+            #
+            # Off-loop, because load_config() stats and reads the file, validates
+            # it, and deep-copies the validated dict even on a cache hit. Every
+            # caller here is a request handler (a settings write, a crew write, a
+            # Slack command), so that work on the loop stalls every other
+            # session's turn, and a stall past
+            # dashboard.loop_stall_exit_after_secs takes the gateway down.
+            #
+            # Inside the lock, because going off-loop introduces an await point
+            # between READING the config and INSTALLING it. Two overlapping
+            # refreshes could then finish their loads out of order and let the
+            # older one install last, pinning every new session to stale defaults
+            # until the next restart -- silently, which is the failure mode this
+            # method exists to prevent. Holding the lock across both makes
+            # read-then-install atomic per refresh, and costs only that
+            # serialization: the load still never touches the loop.
+            cfg = await asyncio.to_thread(self._deps.load_config)
             async with owner._lock:
                 owner._cfg = cfg
                 owner._provider_factory = self._deps.build_provider_factory(cfg)

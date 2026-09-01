@@ -7098,6 +7098,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agents.*.reasoning_effort",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Reasoning Effort",
+      "help": "Default reasoning effort for sessions on this crew. Empty inherits: the global agent.reasoning_effort (or, for a background worker crew, its role effort). A per-session pick still overrides this. Only reasoning-capable models accept a level; on any other model the pin is ignored, exactly as the global default is.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.description",
       "kind": "core",
       "type": "string",

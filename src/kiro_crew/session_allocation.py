@@ -991,6 +991,31 @@ class SessionAllocationService:
         cache[agent] = (model, directory_mtime, now)
         return model
 
+    async def _crew_pins_effort(self, agent: str | None, crew_agent: object) -> bool:
+        """True when the crew this session runs as pins its own reasoning effort.
+
+        Read off the event loop: ``load_config`` parses (and deep-copies, even on
+        a cache hit) the whole config, which is not work to do inline. Only the
+        warm-pool decision calls this, so the cost lands once per cold start
+        rather than once per turn, and never on a session that was already
+        skipping the pool for a cheaper reason.
+
+        Failure answers False -- the pre-field behaviour. An unreadable config
+        must not stop a session from starting, and pooling it is only wrong for a
+        crew that pins an effort, which is exactly what could not be read.
+        """
+        try:
+            config = await asyncio.to_thread(self._deps.load_config)
+            crew = crew_agent if isinstance(crew_agent, str) else None
+            return bool(config.crew_pinned_effort(agent, crew))
+        except Exception:
+            self._deps.logger.warning(
+                "Could not read the crew effort pin for agent=%r; pooling as before",
+                agent,
+                exc_info=True,
+            )
+            return False
+
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None:
         """Dispatch blocking provider teardown away from the event-loop thread."""
         kill = self._deps.get_sync_kill_provider()
@@ -1155,6 +1180,18 @@ class SessionAllocationService:
             pool_decision = "bypass_effort"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
+            # Same reason as bypass_effort above, for the effort a CREW pins
+            # rather than one a caller passed: a pooled child was spawned under
+            # whatever effort overlay was current when the pool filled, and the
+            # claim path re-keys the model but never re-pushes effort — so a warm
+            # hit would silently run this crew at the wrong depth. Cold-starting
+            # is what makes the pin real.
+            #
+            # Last in the chain on purpose: it is the only arm that needs to read
+            # config, so every cheaper reason to skip the pool is settled first
+            # and a bypassing session never pays for the lookup.
+            pool_decision = "bypass_effort"
         else:
             pool_decision = ""
 

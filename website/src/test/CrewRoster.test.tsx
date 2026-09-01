@@ -611,6 +611,7 @@ describe('crew editor — save', () => {
       memory_store: 'oncall-mem',
       triggers: 'pager',
       model: 'claude-opus-5',
+      reasoning_effort: '',
       session_color: '',
     })
   })
