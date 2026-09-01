@@ -61,6 +61,7 @@ from kiro_crew.messaging.link import (
     UNBIND_REASON_DASHBOARD_UNLINK,
     UNBIND_REASON_ENTRY_DELETED,
     UNBIND_REASON_ORIGIN_REBIND,
+    UNBIND_REASON_PRUNED_STALE,
     UNBIND_REASON_SESSION_DESTROYED,
     UNBIND_REASON_UNSPECIFIED,
     UNBIND_REASON_USER_UNLINK,
@@ -2086,6 +2087,7 @@ _INBOUND_UNBIND_WHY: dict[str, str] = {
     UNBIND_REASON_ORIGIN_REBIND: "this conversation was relinked to a new session",
     UNBIND_REASON_SESSION_DESTROYED: "that session was deleted",
     UNBIND_REASON_ENTRY_DELETED: "that session's record was removed",
+    UNBIND_REASON_PRUNED_STALE: "that session's record was no longer on disk",
     UNBIND_REASON_UNSPECIFIED: "the link was cleared",
 }
 _INBOUND_UNBIND_WHY_DEFAULT = "the link was cleared"

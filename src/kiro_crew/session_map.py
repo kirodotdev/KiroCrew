@@ -24,6 +24,7 @@ from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
     UNBIND_REASON_ENTRY_DELETED,
+    UNBIND_REASON_PRUNED_STALE,
     UNBIND_REASON_UNSPECIFIED,
     UNBIND_REASONS,
     ChannelLink,
@@ -1019,6 +1020,17 @@ class SessionMap:
 
         Returns the number of entries removed; a ``sid``-only reset is a repair,
         not a removal, so it is not counted.
+
+        Collection goes through :meth:`_remove_entry` rather than deleting out of
+        ``_data``, so it inherits the audit and the announcement every other
+        removal path gets. Today that is unreachable — :func:`_survives_prune`
+        holds every bound entry back — and reaching the choke point anyway is the
+        point: a future loosening of that predicate then lands on an audited path
+        instead of silently collecting a live binding. On prune's only production
+        path (``start_pool``, on the startup loop) the per-entry saves coalesce
+        through ``_save``'s debounced deferred flush into one worker-thread
+        write; off the loop each save writes inline, which no production caller
+        does.
         """
         sessions_dir = _kiro_sessions_dir()
         stale: list[str] = []
@@ -1038,10 +1050,20 @@ class SessionMap:
                     stale.append(key)
             elif not sid and not survives:
                 stale.append(key)
-        for k in stale:
-            del self._data[k]
         if stale:
+            for k in stale:
+                self._remove_entry(k, reason=UNBIND_REASON_PRUNED_STALE)
+            # Still a FULL rebuild, not the per-key index drop
+            # ``_remove_entry`` already did: two entries can claim one
+            # thread, and only a rebuild re-resolves the thread to the
+            # survivor instead of leaving it ownerless.
             self._rebuild_thread_index()
+            # One more dirty-mark after the rebuild. ``_save`` is loop-aware:
+            # on prune's only production path (``start_pool`` on the startup
+            # loop) the saves coalesce into one deferred flush whose disk
+            # write runs on a worker thread (#2405) — the loop still pays the
+            # serialize, never the write. A ``batched_save`` here would write
+            # inline at batch exit on that same loop.
             self._save()
             logger.info("Pruned %d stale session map entries", len(stale))
         elif repaired:

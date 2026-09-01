@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.messaging.link import (
+    UNBIND_REASON_PRUNED_STALE,
     UNBIND_REASON_UNSPECIFIED,
     ChannelLink,
     legacy_dashboard_mirror_key,
@@ -1020,6 +1021,109 @@ class TestInboundUnbindIsLoud:
         assert session_map.get_mirror_link("dashboard:chat-1") == INBOUND_LINK
         assert session_map.mirror_accepts_inbound("dashboard:chat-1") is True
         assert unbind_calls == []
+
+
+class TestPruneRemovesThroughTheChokePoint:
+    """Prune's deletions are audited like every other entry removal.
+
+    ``_survives_prune`` keeps every bound entry out of prune's delete branch, so
+    today prune cannot reach a binding at all — which is precisely why this needs
+    pinning rather than leaving to inspection. Prune used to delete straight out
+    of ``_data``, so the audit and the announcement were not skipped by policy,
+    they were simply unreachable: any future loosening of that predicate would
+    have reopened a silent binding-removal path and nothing in the trail would
+    have named prune as the remover.
+    """
+
+    def test_a_pruned_binding_is_audited_and_announced(
+        self, session_map, unbind_calls, sel_events, monkeypatch
+    ):
+        """The latent path, made reachable: the removal still has to be loud."""
+        key = "dashboard:chat-1"
+        session_map.set(key, "sid-that-no-longer-exists")
+        session_map.set_mirror_link(key, INBOUND_LINK, accepts_inbound=True)
+        # Stand in for a future edit to the predicate: the entry becomes
+        # collectable while still holding the binding prune would take with it.
+        monkeypatch.setattr("kiro_crew.session_map._survives_prune", lambda entry: False)
+
+        assert session_map.prune() == 1
+        assert key not in session_map._data
+
+        audits = _inbound_audits(sel_events)
+        assert len(audits) == 1
+        assert key in audits[0]["resources"]
+        assert "discord:chan-1" in audits[0]["resources"]
+        assert UNBIND_REASON_PRUNED_STALE in audits[0]["resources"]
+        assert unbind_calls == [(key, INBOUND_LINK, UNBIND_REASON_PRUNED_STALE)]
+
+    def test_collecting_an_unbound_row_stays_silent(
+        self, session_map, unbind_calls, sel_events
+    ):
+        """The reachable case is unchanged: garbage strands nobody, so no event.
+
+        Routing prune through the choke point must not start narrating ordinary
+        collection — the audit exists for a lost binding, and a bare stale row
+        holds none.
+        """
+        session_map.set("dashboard:chat-1", "sid-that-no-longer-exists")
+
+        assert session_map.prune() == 1
+        assert "dashboard:chat-1" not in session_map._data
+        assert unbind_calls == []
+        assert _inbound_audits(sel_events) == []
+
+    @pytest.mark.asyncio
+    async def test_startup_collection_defers_the_write_off_loop(self, session_map):
+        """Prune on a running loop pays no inline whole-map write.
+
+        ``_save`` defers the disk write to a worker thread precisely so the
+        loop never blocks on serialization (its docstring cites #2405), and
+        prune's sole caller is ``start_pool`` on the startup loop. Routing
+        removals through the choke point must keep that property: per-key
+        audits, zero loop-thread writes, one coalesced flush afterwards.
+        """
+        import kiro_crew.session_map as mod
+
+        loop_thread = threading.current_thread()
+        replace_threads: list[threading.Thread] = []
+        real_replace = mod.os.replace
+
+        def _recording_replace(src, dst, **kw):
+            replace_threads.append(threading.current_thread())
+            return real_replace(src, dst, **kw)
+
+        # NOTE: mod.os IS the os module, so this patch is process-global, not
+        # module-local. Harmless under xdist process isolation; do not widen.
+        with patch.object(mod.os, "replace", side_effect=_recording_replace):
+            for n in range(5):
+                session_map.set(f"dashboard:chat-{n}", f"sid-gone-{n}")
+
+            assert session_map.prune() == 5
+            assert [t for t in replace_threads if t is loop_thread] == []
+            while True:
+                task = session_map._flush_task
+                if task is None:
+                    break
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                if task is session_map._flush_task:
+                    break
+            assert len(replace_threads) == 1
+            assert replace_threads[0] is not loop_thread
+
+    def test_a_collected_thread_binding_leaves_the_index(
+        self, session_map, monkeypatch
+    ):
+        """The reverse index cannot outlive the entry that owned the thread."""
+        key = "dashboard:chat-1"
+        session_map.set_slack_link(key, "1700000000.000100", "C123")
+        assert session_map.get_session_for_thread("1700000000.000100") == key
+        monkeypatch.setattr("kiro_crew.session_map._survives_prune", lambda entry: False)
+
+        assert session_map.prune() == 1
+        assert session_map.get_session_for_thread("1700000000.000100") is None
 
 
 class TestOutboundOnlyStaysQuiet:

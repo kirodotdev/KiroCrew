@@ -258,6 +258,13 @@ UNBIND_REASON_SESSION_DESTROYED = "session_destroyed"
 # rather than its cause.
 UNBIND_REASON_ENTRY_DELETED = "entry_deleted"
 
+# ``SessionMap.prune`` collected the entry as stale: its native session file is
+# gone and the entry held nothing that had to outlive it. Distinct from
+# ``entry_deleted`` because nobody asked for this one — it is the map's own
+# garbage collection, so a binding appearing under this reason says the STALE
+# predicate let a live conversation through rather than that a caller removed it.
+UNBIND_REASON_PRUNED_STALE = "pruned_stale"
+
 #: The closed vocabulary. A reason outside this set is normalized to
 #: ``unspecified`` at the map's choke point, so it can neither fragment the audit
 #: trail nor reach the channel notice's phrasing map as a miss.
@@ -269,6 +276,7 @@ UNBIND_REASONS: frozenset[str] = frozenset(
         UNBIND_REASON_ORIGIN_REBIND,
         UNBIND_REASON_SESSION_DESTROYED,
         UNBIND_REASON_ENTRY_DELETED,
+        UNBIND_REASON_PRUNED_STALE,
     }
 )
 
