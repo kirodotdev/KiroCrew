@@ -5692,7 +5692,9 @@
       "push_your_local_version_up_as_the_remote_s_new_v": "Push your local version up as the remote's new version WITHOUT pulling the remote's content first. The remote's newer version stays in its history but is superseded.",
       "revert": "Revert",
       "s_artifact": "'s artifact",
+      "save_conflict_changed_since_read": "Content changed since you loaded it — another window, an agent, or an external edit. Your draft is kept; saving again will overwrite the newer content.",
       "save_failed": "Save failed:",
+      "save_refused_content_changed": "Save refused — content changed",
       "save_to_live_cmd_s_updates_the_live_state_withou": "Save to Live (Cmd+S) — updates the live state without versioning",
       "snapshot": "Snapshot",
       "snapshot_capture_the_current_state_as_a_new_vers": "Snapshot — capture the current state as a new version",
@@ -5712,6 +5714,7 @@
       "version": "Version",
       "via_dashboard": "via dashboard",
       "view_remote": "View remote",
+      "view_the_newer_content": "View the newer content",
       "your_current_edits_are_saved_as_a_version_first": "Your current edits are saved as a version first, so nothing is lost."
     },
     "artifactPopoutFrame": {

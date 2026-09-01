@@ -8491,7 +8491,9 @@
       "reverted": "Revertido",
       "s_artifact": ": artefato",
       "save": "Salvar",
+      "save_conflict_changed_since_read": "O conteúdo mudou desde que você o carregou — outra janela, um agente ou uma edição externa. Seu rascunho foi mantido; salvar novamente substituirá o conteúdo mais recente.",
       "save_failed": "Falha ao salvar:",
+      "save_refused_content_changed": "Salvamento recusado — o conteúdo mudou",
       "save_to_live_cmd_s_updates_the_live_state_withou": "Salvar no estado ativo (Cmd+S) — atualiza o estado ativo sem criar uma versão",
       "saving": "Salvando…",
       "session_title": "Artefato: {{name}}",
@@ -8521,6 +8523,7 @@
       "version": "Versão",
       "via_dashboard": "pelo painel",
       "view_remote": "Ver remoto",
+      "view_the_newer_content": "Ver o conteúdo mais recente",
       "your_current_edits_are_saved_as_a_version_first": "Suas edições atuais são salvas como uma versão primeiro, então nada é perdido."
     },
     "artifactPopoutFrame": {

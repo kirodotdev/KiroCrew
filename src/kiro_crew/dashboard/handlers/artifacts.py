@@ -48,6 +48,7 @@ from kiro_crew.artifacts import (
     USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactValidationError,
@@ -1730,6 +1731,23 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             from_version = int(raw_from_version) if raw_from_version is not None else None
         except (TypeError, ValueError):
             from_version = None
+        # Optional optimistic-concurrency token. A string sha from a prior
+        # read's ``content_sha256``; the store 409s the write if live content
+        # no longer hashes to it. Type-check here so a malformed token is a
+        # 400 (caller bug) rather than a guaranteed-mismatch 409 (which would
+        # read as a phantom concurrent edit).
+        raw_expected = body.get("expected_sha256")
+        if raw_expected is not None and (not isinstance(raw_expected, str) or not raw_expected):
+            msg = "expected_sha256 must be a non-empty string when provided"
+            _audit(
+                tool="artifact_update",
+                request=request,
+                outcome="denied",
+                error=msg,
+                extra={"slug": slug},
+            )
+            return _err(msg)
+        expected_sha256 = raw_expected
         # Explicit render-kind change (the type control on the artifact page).
         # Restricted to the inline-editable kinds: `widget` / `html` render in a
         # sandboxed iframe and are NOT editable, so letting a caller select one
@@ -1775,6 +1793,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                 event_type=event_type,
                 from_version=from_version,
                 snapshot=snapshot,
+                expected_sha256=expected_sha256,
             )
         )
         # store.update() only loads content into the returned Artifact when
@@ -1802,6 +1821,27 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             error=str(exc),
         )
         return _err(str(exc))
+    except ArtifactConflictError as exc:
+        # Optimistic-concurrency loss: someone else changed the content since
+        # this caller read it. 409 with the LIVE token + version so the client
+        # can refetch and re-base — the write was refused before any mutation,
+        # so nothing needs rolling back. Must precede the ArtifactError branch
+        # below (it subclasses it) or conflicts would surface as 500s.
+        _audit(
+            tool="artifact_update",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _json_response(
+            {
+                "error": str(exc),
+                "current_sha256": exc.current_sha256,
+                "version": exc.version,
+            },
+            status=409,
+        )
     except ArtifactError as exc:
         # Catches the base class fallback — store._write_text() raises
         # ArtifactError("refusing to write sensitive path: ...") which is

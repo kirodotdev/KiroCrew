@@ -8257,7 +8257,9 @@
       "reverted": "已还原",
       "s_artifact": "的产物",
       "save": "保存",
+      "save_conflict_changed_since_read": "内容在加载后已被更改——可能来自其他窗口、智能体或外部编辑。你的草稿已保留；再次保存将覆盖较新的内容。",
       "save_failed": "保存失败：",
+      "save_refused_content_changed": "保存被拒绝——内容已更改",
       "save_to_live_cmd_s_updates_the_live_state_withou": "保存到实时 (Cmd+S) — 更新实时状态但不创建版本",
       "saving": "正在保存…",
       "session_title": "产物：{{name}}",
@@ -8287,6 +8289,7 @@
       "version": "版本",
       "via_dashboard": "通过仪表板",
       "view_remote": "查看远端",
+      "view_the_newer_content": "查看较新的内容",
       "your_current_edits_are_saved_as_a_version_first": "你当前的修改会先保存为一个版本，因此不会丢失任何内容。"
     },
     "artifactPopoutFrame": {

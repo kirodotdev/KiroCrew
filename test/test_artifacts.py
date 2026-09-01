@@ -14,10 +14,12 @@ from kiro_crew.artifacts import (
     MAX_VERSIONS,
     Artifact,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactStore,
     ArtifactValidationError,
+    _content_sha256,
     _infer_kind,
     detect_editor_kind,
     has_unthemed_hardcoded_colors,
@@ -289,6 +291,218 @@ class TestUpdate:
         store.create(name="x", content="a")
         with pytest.raises(ArtifactValidationError):
             store.update("x", content="a" * (MAX_CONTENT_BYTES + 1))
+
+
+# ── optimistic-concurrency token (expected_sha256) ──────────────────────────
+
+
+class TestConflictToken:
+    def test_matching_token_allows_write(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        art = store.update("x", content="v2", expected_sha256=_content_sha256("v1"))
+        assert art.content == "v2"
+
+    def test_stale_token_raises_and_writes_nothing(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        with pytest.raises(ArtifactConflictError) as exc_info:
+            store.update("x", content="v2", expected_sha256=_content_sha256("something else"))
+        # The exception carries what a client needs to re-base.
+        assert exc_info.value.current_sha256 == _content_sha256("v1")
+        assert exc_info.value.version == 1
+        # Refused BEFORE any mutation: live content and metadata untouched.
+        assert store.get("x").content == "v1"
+
+    def test_token_omitted_keeps_last_write_wins(self, store: ArtifactStore) -> None:
+        # Opt-in: existing callers that send no token are unchanged.
+        store.create(name="x", content="v1")
+        art = store.update("x", content="v2")
+        assert art.content == "v2"
+
+    def test_token_ignored_for_metadata_only_update(self, store: ArtifactStore) -> None:
+        # A rename/retag cannot clobber content, so a token (even a stale
+        # one) must not block it.
+        store.create(name="x", content="v1")
+        art = store.update("x", description="new desc", expected_sha256="not-a-real-sha")
+        assert art.description == "new desc"
+
+    def test_silent_save_trips_stale_token_despite_same_version(
+        self, store: ArtifactStore
+    ) -> None:
+        # The reason the token is a content hash and not the version number:
+        # a silent save (snapshot=False) mutates live content WITHOUT bumping
+        # the version, so a version-based token would read two different live
+        # states as identical.
+        store.create(name="x", content="v1")
+        store.update("x", content="v2", snapshot=False)  # silent — version stays 1
+        assert store.get("x").version == 1
+        with pytest.raises(ArtifactConflictError):
+            store.update("x", content="v3", expected_sha256=_content_sha256("v1"))
+        # The current token succeeds.
+        art = store.update("x", content="v3", expected_sha256=_content_sha256("v2"))
+        assert art.content == "v3"
+
+    def test_external_source_file_edit_trips_guard(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # File-backed artifacts hash the get() read path — source_path on
+        # disk — so an external write (agent editing the repo file directly)
+        # also registers as a conflict.
+        src = tmp_path / "linked.md"
+        src.write_text("original", encoding="utf-8")
+        store.create(name="linked", content="original", source_path=str(src), kind="markdown")
+        src.write_text("changed behind the editor's back", encoding="utf-8")
+        with pytest.raises(ArtifactConflictError) as exc_info:
+            store.update("linked", content="stale edit", expected_sha256=_content_sha256("original"))
+        assert exc_info.value.current_sha256 == _content_sha256(
+            "changed behind the editor's back"
+        )
+        # The external edit survives.
+        assert src.read_text(encoding="utf-8") == "changed behind the editor's back"
+
+    def test_source_write_race_after_compare_conflicts_not_clobbers(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The store lock cannot exclude an EXTERNAL writer landing between
+        # the guard's compare and the source mirror. The mirror runs as a
+        # descriptor-pinned compare-and-swap for guarded writes, so that
+        # window answers conflict instead of overwriting the newer bytes.
+        # Simulate the race by rewriting the file at the moment the CAS runs.
+        src = tmp_path / "raced.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="raced", content="base", source_path=str(src), kind="markdown")
+
+        from kiro_crew import hooks as hooks_mod
+
+        real_cas = hooks_mod.verified_replace_file_nolink
+
+        def race_then_cas(raw, content, base_hash, **kwargs):
+            Path(raw).write_text("external winner", encoding="utf-8")
+            return real_cas(raw, content, base_hash, **kwargs)
+
+        monkeypatch.setattr(
+            "kiro_crew.artifacts.hooks.verified_replace_file_nolink", race_then_cas
+        )
+        with pytest.raises(ArtifactConflictError) as exc_info:
+            store.update("raced", content="stale edit", expected_sha256=_content_sha256("base"))
+        assert exc_info.value.current_sha256 == _content_sha256("external winner")
+        # The racing writer's bytes survive on disk AND in the store's view;
+        # the losing writer changed nothing.
+        assert src.read_text(encoding="utf-8") == "external winner"
+        assert store.get("raced").content == "external winner"
+
+    def test_unguarded_mirror_still_last_write_wins(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # No token = today's behavior end to end, including the mirror.
+        src = tmp_path / "plain.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="plain", content="base", source_path=str(src), kind="markdown")
+        src.write_text("external write", encoding="utf-8")
+        art = store.update("plain", content="my edit")
+        assert art.content == "my edit"
+        assert src.read_text(encoding="utf-8") == "my edit"
+
+    def test_guarded_refused_mirror_conflicts_instead_of_demoting(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The guarded invariant: a save either fully applies or changes
+        # NOTHING. A refused mirror must not fall into the unguarded path's
+        # demote-to-source_copy_only fallback — that would store the stale
+        # buffer in current.html and silently detach the artifact from a
+        # source that may carry someone else's newer content.
+        src = tmp_path / "readonly.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="readonly", content="base", source_path=str(src), kind="markdown")
+
+        real_write = type(store)._try_write_source_path
+
+        def refusing_write(self, source_path, content, source_root="", *, base_hash=None):
+            if base_hash is not None:
+                return "refused"
+            return real_write(self, source_path, content, source_root, base_hash=base_hash)
+
+        monkeypatch.setattr(type(store), "_try_write_source_path", refusing_write)
+        with pytest.raises(ArtifactConflictError):
+            store.update("readonly", content="new", expected_sha256=_content_sha256("base"))
+        monkeypatch.undo()
+        # Nothing changed: source intact, store content intact, still a live
+        # pointer (NOT demoted).
+        assert src.read_text(encoding="utf-8") == "base"
+        loaded = store.get("readonly")
+        assert loaded.content == "base"
+        assert loaded.source_copy_only is False
+
+    def test_non_utf8_source_saves_cleanly_under_guard(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # The token hashes DECODED text (errors="replace") while the mirror's
+        # CAS verifies RAW bytes — one read must feed both, or a source with
+        # a non-round-tripping byte (e.g. a latin-1 é) 409s forever: the
+        # decoded token always passes the store compare and the decoded-hash
+        # CAS base never matches disk. Regression for the round-3 Opus find.
+        src = tmp_path / "latin1.md"
+        src.write_bytes(b"caf\xe9 notes")  # \xe9 is not valid UTF-8
+        store.create(name="latin1", content="seed", source_path=str(src), kind="markdown")
+        # The client's token: hash of the decoded live read, as get() serves it.
+        token = store.get("latin1").to_dict(include_content=True)["content_sha256"]
+        art = store.update("latin1", content="clean utf-8 now", expected_sha256=token)
+        assert art.content == "clean utf-8 now"
+        assert src.read_text(encoding="utf-8") == "clean utf-8 now"
+
+    def test_invalid_event_type_validates_before_any_write(
+        self, store: ArtifactStore, tmp_path: Path
+    ) -> None:
+        # event_type is validated BEFORE the source mirror and current.html
+        # writes — a rejected request must not leave the user's file (or the
+        # store) partially updated.
+        src = tmp_path / "validated.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="validated", content="base", source_path=str(src), kind="markdown")
+        with pytest.raises(ArtifactValidationError):
+            store.update(
+                "validated",
+                content="new",
+                snapshot=True,
+                event_type="bogus",
+                expected_sha256=_content_sha256("base"),
+            )
+        assert src.read_text(encoding="utf-8") == "base"
+        assert store.get("validated").content == "base"
+
+    def test_store_write_failure_rolls_back_guarded_source_mirror(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The guarded mirror writes the user's file FIRST (the CAS). If the
+        # store's own cache write then fails, the save reports failure — so
+        # the user's file must be restored rather than left carrying a save
+        # the store never recorded.
+        src = tmp_path / "rollback.md"
+        src.write_text("base", encoding="utf-8")
+        store.create(name="rollback", content="base", source_path=str(src), kind="markdown")
+
+        real_write_text = type(store)._write_text
+
+        def failing_write_text(self, path, text):
+            if path.name == "current.html":
+                raise OSError("disk full")
+            return real_write_text(self, path, text)
+
+        monkeypatch.setattr(type(store), "_write_text", failing_write_text)
+        with pytest.raises(OSError):
+            store.update("rollback", content="new", expected_sha256=_content_sha256("base"))
+        monkeypatch.undo()
+        # The source was restored; the store still serves the old content.
+        assert src.read_text(encoding="utf-8") == "base"
+        assert store.get("rollback").content == "base"
+
+    def test_to_dict_carries_content_sha256(self, store: ArtifactStore) -> None:
+        store.create(name="x", content="v1")
+        art = store.get("x")
+        d = art.to_dict(include_content=True)
+        assert d["content_sha256"] == _content_sha256("v1")
+        # Absent when content is excluded — the token is only meaningful
+        # alongside the content it hashes.
+        assert "content_sha256" not in art.to_dict(include_content=False)
 
 
 # ── list / list_versions ────────────────────────────────────────────────────
@@ -1108,7 +1322,7 @@ class TestSourcePathSecurityHardening:
             lambda p: p == resolved,
         )
         assert store._try_read_source_path(traversal) is None
-        assert store._try_write_source_path(traversal, "data") is False
+        assert store._try_write_source_path(traversal, "data") == "refused"
 
     @requires_symlinks
     def test_symlink_to_sensitive_resolves_before_sensitive_check(
@@ -1130,7 +1344,7 @@ class TestSourcePathSecurityHardening:
         )
         # Read should fall through to None (refused).
         assert store._try_read_source_path(str(link)) is None
-        assert store._try_write_source_path(str(link), "data") is False
+        assert store._try_write_source_path(str(link), "data") == "refused"
 
     def test_utf8_truncation_uses_byte_count_not_char_count(
         self, store: ArtifactStore, tmp_path: Path, monkeypatch
@@ -1802,12 +2016,12 @@ class TestSourceRootBarrier:
 
     def test_write_refused_without_recorded_root(self, home_store, project_file) -> None:
         _proj, src = project_file
-        assert home_store._try_write_source_path(str(src), "edited") is False
+        assert home_store._try_write_source_path(str(src), "edited") == "refused"
         assert src.read_text(encoding="utf-8") == "# live from the project"
 
     def test_write_allowed_with_recorded_root(self, home_store, project_file) -> None:
         proj, src = project_file
-        assert home_store._try_write_source_path(str(src), "edited", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "edited", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "edited"
 
     def test_recorded_root_does_not_widen_other_artifacts(self, home_store, tmp_path) -> None:
@@ -1888,7 +2102,7 @@ class TestSourceRootBarrier:
         proj, src = project_file
         src.write_text("ORIGINAL", encoding="utf-8")
         monkeypatch.setattr(_os, "supports_dir_fd", set(), raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
         # No staging litter left behind on this path either.
@@ -1935,7 +2149,7 @@ class TestSourceRootBarrier:
             return st
 
         monkeypatch.setattr(_os, "stat", lying_stat)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "refused"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
@@ -1965,7 +2179,7 @@ class TestSourceRootBarrier:
         before = open_fds()
         for _ in range(40):
             assert (
-                home_store._try_write_source_path(str(outside), "nope", str(proj)) is False
+                home_store._try_write_source_path(str(outside), "nope", str(proj)) == "refused"
             )
         # A leak would add ~40 descriptors; allow a little slack for unrelated I/O.
         assert open_fds() - before < 10
@@ -1997,7 +2211,7 @@ class TestSourceRootBarrier:
             raise OSError(1, "Operation not permitted")
 
         monkeypatch.setattr(_os, "setxattr", refuse_setxattr, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "refused"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
@@ -2019,7 +2233,7 @@ class TestSourceRootBarrier:
             raise OSError(95, "Operation not supported")
 
         monkeypatch.setattr(_os, "setxattr", refuse_setxattr, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
 
@@ -2044,7 +2258,7 @@ class TestSourceRootBarrier:
             raise OSError(_errno.EACCES, "Permission denied")
 
         monkeypatch.setattr(_os, "listxattr", failing_list, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "refused"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
@@ -2065,7 +2279,7 @@ class TestSourceRootBarrier:
             raise OSError(_errno.ENOTSUP, "Operation not supported")
 
         monkeypatch.setattr(_os, "listxattr", unsupported, raising=False)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
 
@@ -2086,7 +2300,7 @@ class TestSourceRootBarrier:
             os.setxattr(str(src), "user.kirocrew_test", b"keepme")
         except (AttributeError, OSError):
             pytest.skip("filesystem or platform has no xattr support")
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "new body"
         assert os.getxattr(str(src), "user.kirocrew_test") == b"keepme"
 
@@ -2104,7 +2318,7 @@ class TestSourceRootBarrier:
 
         proj, src = project_file
         monkeypatch.delattr(_os, "geteuid", raising=False)
-        assert home_store._try_write_source_path(str(src), "no euid here", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "no euid here", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "no euid here"
 
     def test_pinned_parent_check_only_applies_where_pinning_exists(
@@ -2122,7 +2336,7 @@ class TestSourceRootBarrier:
         proj, src = project_file
         src.write_text("ORIGINAL", encoding="utf-8")
         monkeypatch.setattr(_os, "supports_dir_fd", set(), raising=False)
-        assert home_store._try_write_source_path(str(src), "fallback body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "fallback body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "fallback body"
 
@@ -2154,7 +2368,7 @@ class TestSourceRootBarrier:
             return _Foreign()
 
         monkeypatch.setattr(_os, "fstat", fstat_foreign)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "new body"
 
@@ -2192,7 +2406,7 @@ class TestSourceRootBarrier:
                 _os.replace(str(newer), str(src))
 
         monkeypatch.setattr(_os, "fsync", fsync_then_replace)
-        assert home_store._try_write_source_path(str(src), "our body", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "our body", str(proj)) == "refused"
         monkeypatch.undo()
         # The editor's newer content survived; ours was refused.
         assert src.read_text(encoding="utf-8") == "A NEWER SAVE FROM THE EDITOR"
@@ -2214,7 +2428,7 @@ class TestSourceRootBarrier:
 
         proj, src = project_file
         src.chmod(0o644)
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "new body"
         assert _stat.S_IMODE(src.stat().st_mode) == 0o644
 
@@ -2230,7 +2444,7 @@ class TestSourceRootBarrier:
         proj, src = project_file
         decoy = src.parent / f".{src.name}.kirocrew-tmp"
         decoy.write_text("someone else's data", encoding="utf-8")
-        assert home_store._try_write_source_path(str(src), "new body", str(proj)) is True
+        assert home_store._try_write_source_path(str(src), "new body", str(proj)) == "ok"
         assert src.read_text(encoding="utf-8") == "new body"
         assert decoy.read_text(encoding="utf-8") == "someone else's data"
 
@@ -2263,7 +2477,7 @@ class TestSourceRootBarrier:
             return real_write(fd, data)
 
         monkeypatch.setattr(hooks_mod.os, "write", exploding_write)
-        assert home_store._try_write_source_path(str(src), "replacement", str(proj)) is False
+        assert home_store._try_write_source_path(str(src), "replacement", str(proj)) == "refused"
         monkeypatch.setattr(hooks_mod.os, "write", real_write)
         assert src.read_text(encoding="utf-8") == original
         # And no staging litter is left behind.
@@ -2293,7 +2507,7 @@ class TestSourceRootBarrier:
         assert art.source_copy_only is False
 
         monkeypatch.setattr(
-            type(home_store), "_try_write_source_path", lambda self, *a, **k: False
+            type(home_store), "_try_write_source_path", lambda self, *a, **k: "refused"
         )
         home_store.update("linked-demote", content="# my edit")
 
@@ -2569,7 +2783,7 @@ class TestAllowedRootsSingleProducer:
         target = data_home / "note.md"
         target.write_text("in the data home", encoding="utf-8")
         assert home_store._try_read_source_path(str(target)) == "in the data home"
-        assert home_store._try_write_source_path(str(target), "edited") is True
+        assert home_store._try_write_source_path(str(target), "edited") == "ok"
 
     def test_no_second_copy_of_the_root_assembly_in_source(self) -> None:
         """Anti-drift pin: only ``allowed_source_roots`` may assemble the set.

@@ -1333,6 +1333,11 @@ export interface Artifact {
   created_at: string
   updated_at: string
   content?: string
+  /** Optimistic-concurrency token: sha256 of `content` as loaded, present
+   * whenever `content` is. Carry it back as `expected_sha256` on a content
+   * PATCH; the server 409s the save if the live content changed since this
+   * read (another window, an agent edit, or an external file write). */
+  content_sha256?: string
   /** Original source path for file-backed artifacts (live pointer). */
   source_path?: string
   /** True when the live state differs from the latest numbered snapshot.

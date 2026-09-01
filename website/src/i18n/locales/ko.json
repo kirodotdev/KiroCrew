@@ -8257,7 +8257,9 @@
       "reverted": "되돌려짐",
       "s_artifact": "의 아티팩트",
       "save": "저장",
+      "save_conflict_changed_since_read": "불러온 이후 콘텐츠가 변경되었습니다(다른 창, 에이전트 또는 외부 편집). 초안은 유지됩니다. 다시 저장하면 최신 콘텐츠를 덮어씁니다.",
       "save_failed": "저장에 실패했습니다:",
+      "save_refused_content_changed": "저장이 거부되었습니다 — 콘텐츠가 변경되었습니다",
       "save_to_live_cmd_s_updates_the_live_state_withou": "라이브에 저장 (Cmd+S) — 버전을 만들지 않고 라이브 상태를 업데이트",
       "saving": "저장 중…",
       "session_title": "아티팩트: {{name}}",
@@ -8287,6 +8289,7 @@
       "version": "버전",
       "via_dashboard": "대시보드에서",
       "view_remote": "원격 보기",
+      "view_the_newer_content": "최신 콘텐츠 보기",
       "your_current_edits_are_saved_as_a_version_first": "현재 편집 내용이 먼저 버전으로 저장되므로 잃는 것은 없습니다."
     },
     "artifactPopoutFrame": {
