@@ -187,6 +187,82 @@ def test_realpath_dir_collapses_dotdot_in_a_missing_tail(symlinked_home):
 
 
 # --------------------------------------------------------------------------
+# args: a documented flag must be accepted AND reach the driver
+#
+# SKILL.md tells the operator to "pass --no-suppress-first-run" when testing the
+# onboarding flow itself, and pod-playwright.py accepts it — but the runner's
+# arg loop hit its `-*)` catch-all and exited 64, so the documented spelling
+# aborted the run before a single phase. Accepting it without appending it to
+# PW_ARGS would be just as broken (a silent no-op), so both halves are driven
+# out of the shipped script here.
+# --------------------------------------------------------------------------
+
+ARGS = _fragment('NAME="" ; KEEP=0', "\ndone")
+PW_BUILD = _fragment('PW_ARGS=("$PW_RUNNER"', 'PW_CMD=("$PW_PY" -u "${PW_ARGS[@]}")')
+
+
+def _driver_argv(*argv: str) -> subprocess.CompletedProcess:
+    """Parse *argv* with the real loop, then build the real driver command.
+
+    Coupling the two fragments is the point: a flag the parser accepts but the
+    builder drops is the defect, and only the end-to-end argv shows it.
+    """
+    snippet = "\n".join(
+        [
+            "set -uo pipefail",
+            ARGS,
+            # Minimum context the construction block reads. MANIFEST is empty so
+            # the --spec branch stays out of the way.
+            "PW_RUNNER=/drv/pod-playwright.py ; PW_PY=/usr/bin/python3",
+            "BASE_URL=http://127.0.0.1:7811 ; ARTIFACT_DIR=/art ; CHECKOUT=/wt",
+            'MANIFEST=""',
+            PW_BUILD,
+            'printf "%s\\n" "${PW_CMD[@]}"',
+        ]
+    )
+    return subprocess.run(
+        ["bash", "-c", snippet, "pod-e2e.sh", *argv],
+        env={"HOME": "/nonexistent", "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_no_suppress_first_run_is_accepted_and_forwarded():
+    """The regression: the documented flag exited 64 instead of reaching the driver."""
+    res = _driver_argv("smoke", "--no-suppress-first-run")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "unknown flag" not in res.stderr, res.stderr
+    argv = res.stdout.split()
+    assert "--no-suppress-first-run" in argv, f"never forwarded to the driver: {argv}"
+    # It must not be mistaken for the worktree NAME by the loop's `*)` arm.
+    assert "NAME=--no-suppress-first-run" not in res.stdout
+
+
+def test_first_run_suppression_stays_the_default():
+    """Absent the flag, nothing is appended — suppression is the documented default."""
+    res = _driver_argv("smoke")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "--no-suppress-first-run" not in res.stdout, res.stdout
+
+
+def test_unknown_flags_are_still_rejected():
+    """The catch-all must survive: a typo may not be silently swallowed."""
+    res = _driver_argv("smoke", "--no-supress-first-run")
+    assert res.returncode == 64, res.stdout + res.stderr
+    assert "unknown flag" in res.stderr, res.stderr
+
+
+def test_usage_text_lists_the_flag():
+    """A flag the parser takes but the usage line hides is undiscoverable."""
+    lines = SCRIPT.read_text(encoding="utf-8").splitlines()
+    header = next(ln for ln in lines if ln.startswith("# pod-e2e.sh <worktree-name>"))
+    usage = next(ln for ln in lines if ln.lstrip().startswith('[ -n "$NAME" ]'))
+    for where, text in (("header", header), ("usage message", usage)):
+        assert "--no-suppress-first-run" in text, f"{where} omits the flag: {text}"
+
+
+# --------------------------------------------------------------------------
 # resolver: must mirror pod/runtime.py resolve_checkout() exactly
 # --------------------------------------------------------------------------
 
