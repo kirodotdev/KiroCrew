@@ -31,6 +31,7 @@ from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
+    sanitized_oauth_endpoint,
     scan_exfiltration_urls,
     scan_history,
     should_record_observe_history,
@@ -2547,6 +2548,208 @@ class TestOAuthAuthorizationUrlRedaction:
         cleaned, warnings = redact_exfiltration_urls(url)
         assert cleaned != url
         assert warnings
+
+    def test_miro_mcp_authorize_endpoint_is_approved(self) -> None:
+        """mcp.miro.com/authorize is a reporter-verified RFC 8414 endpoint
+        (#7578): a real PKCE consent URL there must pass the banner gate."""
+        url = self.NOTION_URL.replace(
+            "https://api.notion.com/v1/oauth/authorize",
+            "https://mcp.miro.com/authorize",
+            1,
+        )
+        assert oauth_url_contains_credential(url) is False
+
+
+class TestSanitizedOAuthEndpoint:
+    """``sanitized_oauth_endpoint`` names a rejected endpoint without leaking.
+
+    The boolean gate alone leaves the user unable to tell WHICH URL tripped the
+    scanner (#7578); this helper surfaces host+path only. The invariant under
+    test: query values, fragments, userinfo, and credential-bearing paths never
+    appear in the returned tuple.
+    """
+
+    GITHUB_TOKEN = "ghp_" "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+
+    def test_returns_host_and_path_only(self) -> None:
+        result = sanitized_oauth_endpoint(
+            "https://idp.example/realms/dev/authorize"
+            "?state=topsecretstate&code_challenge=alsosecret"
+        )
+        assert result == ("idp.example", "/realms/dev/authorize")
+
+    def test_query_values_never_echoed(self) -> None:
+        result = sanitized_oauth_endpoint(
+            f"https://idp.example/authorize?token={self.GITHUB_TOKEN}"
+        )
+        assert result is not None
+        assert self.GITHUB_TOKEN not in "".join(result)
+
+    def test_host_is_lowercased(self) -> None:
+        assert sanitized_oauth_endpoint("https://IdP.Example/Authorize") == (
+            "idp.example",
+            "/Authorize",  # paths are case-sensitive, only the host normalizes
+        )
+
+    def test_empty_path_defaults_to_root(self) -> None:
+        assert sanitized_oauth_endpoint("https://idp.example") == ("idp.example", "/")
+
+    def test_userinfo_authority_returns_none(self) -> None:
+        """A userinfo-bearing authority is never named — raw or percent-encoded
+        (user%3Apass%40host hides inside what urlparse reports as the
+        hostname), mirroring the rejection gate's own check (GPT review)."""
+        assert (
+            sanitized_oauth_endpoint(f"https://{self.GITHUB_TOKEN}@idp.example/authorize") is None
+        )
+        assert (
+            sanitized_oauth_endpoint("https://user%3Apass%40idp.example/authorize?state=x") is None
+        )
+        # DOUBLE-encoded userinfo (%2540) survives one decode pass; the "@"
+        # check runs at every decode layer like the rest of the scan.
+        assert (
+            sanitized_oauth_endpoint("https://user%253Apass%2540idp.example/authorize?state=x")
+            is None
+        )
+
+    def test_fragment_never_echoed(self) -> None:
+        result = sanitized_oauth_endpoint("https://idp.example/authorize#fragmentsecret")
+        assert result == ("idp.example", "/authorize")
+
+    def test_credential_in_path_is_redacted(self) -> None:
+        result = sanitized_oauth_endpoint(f"https://idp.example/{self.GITHUB_TOKEN}/authorize")
+        assert result is not None
+        host, path = result
+        assert host == "idp.example"
+        assert self.GITHUB_TOKEN not in path
+        assert path == security.REDACTED_CREDENTIAL_TAG
+
+    def test_format_character_split_credential_in_path_is_redacted(self) -> None:
+        """Invisible format characters (U+200B) split a credential so no
+        substring pattern matches, yet the browser renders the fragments
+        visually reassembled — presence of ANY category-Cf character in a
+        component is disqualifying on its own (GPT review, round 8)."""
+        split_token = "\u200b".join(
+            self.GITHUB_TOKEN[i : i + 8] for i in range(0, len(self.GITHUB_TOKEN), 8)
+        )
+        result = sanitized_oauth_endpoint(f"https://idp.example/{split_token}/authorize?x=1")
+        assert result is not None
+        host, path = result
+        assert host == "idp.example"
+        assert "\u200b" not in path
+        assert path == security.REDACTED_CREDENTIAL_TAG
+
+    def test_percent_encoded_format_character_in_path_is_redacted(self) -> None:
+        """%E2%80%8B only becomes U+200B after a decode pass — the format
+        character check runs on every decode layer like the rest of the scan."""
+        encoded_zwsp = "%E2%80%8B"
+        result = sanitized_oauth_endpoint(f"https://idp.example/auth{encoded_zwsp}orize?state=x")
+        assert result is not None
+        host, path = result
+        assert host == "idp.example"
+        assert path == security.REDACTED_CREDENTIAL_TAG
+
+    def test_format_character_in_host_returns_none(self) -> None:
+        """A host carrying an invisible format character is not a nameable
+        identity — the helper falls back to the unnamed message."""
+        assert sanitized_oauth_endpoint("https://idp\u200bevil.example/authorize") is None
+
+    def test_percent_encoded_credential_in_path_is_redacted(self) -> None:
+        encoded = "%67%68%70%5F" + self.GITHUB_TOKEN.removeprefix("ghp_")
+        result = sanitized_oauth_endpoint(f"https://idp.example/{encoded}/authorize")
+        assert result is not None
+        host, path = result
+        assert self.GITHUB_TOKEN not in path
+        assert encoded not in path
+        assert path == security.REDACTED_CREDENTIAL_TAG
+
+    def test_double_percent_encoded_credential_in_path_is_redacted(self) -> None:
+        """The rejection gate decodes up to _MAX_URL_DECODE_PASSES, so it
+        rejects a DOUBLE-encoded credential on a deeper pass — the sanitizer
+        must not echo bytes the gate refused (Opus review, worked case)."""
+        double_encoded = "%2567%2568%2570%255F" + self.GITHUB_TOKEN.removeprefix("ghp_")
+        result = sanitized_oauth_endpoint(f"https://idp.example/{double_encoded}/authorize")
+        assert result is not None
+        _, path = result
+        assert self.GITHUB_TOKEN not in path
+        assert double_encoded not in path
+        assert path == security.REDACTED_CREDENTIAL_TAG
+
+    def test_path_still_decodable_past_budget_is_redacted(self) -> None:
+        """A path that keeps yielding new decode layers past the budget cannot
+        be fully scanned — fail closed to the tag, mirroring the gate."""
+        nested = "%2525252541"  # "A" percent-encoded 5 layers deep
+        result = sanitized_oauth_endpoint(f"https://idp.example/{nested}/authorize")
+        assert result is not None
+        _, path = result
+        assert path == security.REDACTED_CREDENTIAL_TAG
+
+    def test_plus_delimited_private_key_in_path_is_redacted(self) -> None:
+        """Form-encoded material delimits with "+"; the scan must fold it to
+        spaces (unquote_plus) or a plus-separated private-key header slips
+        through every decode layer unmatched (GPT review)."""
+        result = sanitized_oauth_endpoint("https://idp.example/BEGIN+RSA+PRIVATE+KEY/authorize")
+        assert result is not None
+        _, path = result
+        assert path == security.REDACTED_CREDENTIAL_TAG
+
+    def test_credential_in_hostname_returns_none(self) -> None:
+        """A credential smuggled into a DNS label (hyphens are DNS-legal, so a
+        Slack-token-shaped label parses as a hostname) must not be echoed —
+        a host is an identity, so the whole helper bails (GPT review)."""
+        url = "https://xoxb-1234567890-AbCdEfGhIjKl.evil.example/authorize?state=x"
+        assert sanitized_oauth_endpoint(url) is None
+
+    def test_non_ascii_host_is_surfaced_as_idna_alabel(self) -> None:
+        """An internationalized host surfaces in punycode A-label form: defuses
+        homoglyph spoofing and matches the ASCII-only oauth_endpoints.json
+        entry shape."""
+        result = sanitized_oauth_endpoint("https://bücher.example/authorize")
+        assert result is not None
+        host, path = result
+        assert host == "xn--bcher-kva.example"
+        assert host.isascii()
+        assert path == "/authorize"
+
+    def test_fullwidth_host_normalizing_into_a_credential_returns_none(self) -> None:
+        """IDNA nameprep folds fullwidth characters to ASCII, so a token-shaped
+        fullwidth host can NORMALIZE INTO a credential the pre-IDNA scan could
+        not match — the surfaced form must be re-scanned after every transform
+        (GPT review)."""
+        fullwidth = "ｘｏｘｂ－１２３４５６７８９０－ａｂｃｄｅｆｇｈｉｊｋｌ"
+        assert sanitized_oauth_endpoint(f"https://{fullwidth}.evil.example/authorize") is None
+
+    def test_overlong_path_is_truncated(self) -> None:
+        # Hyphenated segments: no 40+ run of the base64 alphabet, so the path
+        # is benign-long rather than entropy-suspicious — it truncates, not
+        # redacts.
+        long_path = "/seg-ment" * 40
+        result = sanitized_oauth_endpoint(f"https://idp.example{long_path}")
+        assert result is not None
+        _, path = result
+        assert len(path) == security._SANITIZED_OAUTH_PATH_MAX_LEN + 1
+        assert path.endswith("…")
+
+    def test_overlong_host_is_capped(self) -> None:
+        # 30-char labels: below the 40-char bare-run floor, so the host is
+        # benign-long — it caps, not bails.
+        long_host = ".".join(["a" * 30] * 9) + ".example"
+        result = sanitized_oauth_endpoint(f"https://{long_host}/authorize")
+        assert result is not None
+        host, _ = result
+        assert len(host) <= security._SANITIZED_OAUTH_HOST_MAX_LEN
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "",
+            "https://[bad-ipv6/x",
+            "not a url at all",
+            "https:///path-without-host",
+        ],
+        ids=["empty", "invalid-ipv6", "not-a-url", "no-host"],
+    )
+    def test_unparseable_urls_return_none(self, url: str) -> None:
+        assert sanitized_oauth_endpoint(url) is None
 
 
 class TestOperatorOAuthEndpointExtension:

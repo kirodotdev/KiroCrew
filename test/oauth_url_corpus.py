@@ -169,6 +169,19 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("Kp7mQ2xR" * 12),  # 96-char opaque state
     ),
+    # Miro remote MCP server — authorization endpoint verified via RFC 8414
+    # metadata by the reporter of issue #7578; the fail-closed banner blocked
+    # every attempt to connect it before the endpoint was allowlisted.
+    (
+        "miro-mcp",
+        "https://mcp.miro.com/authorize"
+        "?client_id=3458764514956732000"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&response_type=code"
+        "&state=af0ifjsldkj"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256",
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate
