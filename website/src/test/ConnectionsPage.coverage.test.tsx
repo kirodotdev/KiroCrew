@@ -335,6 +335,95 @@ describe('a connected provider', () => {
     expect(failure).toHaveTextContent('Action failed: The provider did not pass the connection test.')
   })
 
+  it('passes a tokenless needs_auth probe when a grant is held', async () => {
+    // The FLAG-2 shape. This app probes WITHOUT a token — kiro-cli owns token
+    // custody — so a healthy AUTHORIZED remote OAuth provider answers 401 and
+    // the gateway reports `needs_auth`. The card folds that plus the grant as
+    // Connected, so the button beside it must not call the same probe a failure.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    mcpProbe.mockResolvedValue([server({ status: 'needs_auth' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    mount()
+
+    // The badge's own verdict on this probe, which is what the button must match.
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Test' }))
+
+    expect(await screen.findByText('Connection is healthy.')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('still fails a needs_auth probe when no grant is held', async () => {
+    // Same 401, no authorization behind it: the grant axis is the only thing
+    // separating "authorized elsewhere" from "nobody authorized this", so the
+    // fix must not turn every needs_auth into a pass. The card mounts connected
+    // off a cached `ok`; the FRESH probe is what answers needs_auth.
+    mcpServers.mockResolvedValue(connected)
+    mcpProbe.mockResolvedValue([server({ status: 'needs_auth' })])
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' })))
+
+    const failure = await screen.findByRole('alert')
+    expect(failure).toHaveTextContent('Action failed: The provider did not pass the connection test.')
+    expect(screen.queryByText('Connection is healthy.')).toBeNull()
+  })
+
+  it('still passes a plain ok probe with the authorization feed populated', async () => {
+    mcpServers.mockResolvedValue(connected)
+    mcpProbe.mockResolvedValue(connected)
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' })))
+
+    expect(await screen.findByText('Connection is healthy.')).toBeInTheDocument()
+  })
+
+  it('passes right after an in-session OAuth completion while the grant feed lags', async () => {
+    // The onboarding moment: Connect → approve → the badge flips Connected off
+    // the completed `mcp_oauth` banner BEFORE the status feed has re-read the
+    // grant it just watched being written. The fresh probe still answers
+    // needs_auth (tokenless), the feed still says nothing — the button must
+    // honour the same completed-flow precedence the badge does, or the very
+    // first Test click after connecting reports a failure beside a Connected
+    // badge, which is FLAG-2 all over again.
+    mcpServers.mockResolvedValue([server({ status: 'needs_auth' })])
+    mcpProbe.mockResolvedValue([server({ status: 'needs_auth' })])
+    // Status feed deliberately empty: the grant axis is still unknown here.
+    mount({ chat: { messages: [banner('notion', { completed: true })] } })
+
+    // The badge's verdict via the completed-OAuth precedence.
+    await waitFor(() => expect(card('notion')).toHaveAttribute('data-state', 'connected'))
+    fireEvent.click(within(card('notion')).getByRole('button', { name: 'Test' }))
+
+    expect(await screen.findByText('Connection is healthy.')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('never lets a held grant launder a broken provider into a pass', async () => {
+    // A grant says the runtime is authorized; it says nothing about an endpoint
+    // that is actually broken. `error` stays a failure with a grant on disk.
+    mcpServers.mockResolvedValue(connected)
+    mcpProbe.mockResolvedValue([server({ status: 'error' })])
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'notion', status: 'connected', grantPresent: true }],
+    })
+    mount()
+
+    fireEvent.click(await waitFor(() => within(card('notion')).getByRole('button', { name: 'Test' })))
+
+    const failure = await screen.findByRole('alert')
+    expect(failure).toHaveTextContent('Action failed: The provider did not pass the connection test.')
+  })
+
   it('shows the busy label while the probe is in flight', async () => {
     const pending = deferred<McpServer[]>()
     mcpServers.mockResolvedValue(connected)

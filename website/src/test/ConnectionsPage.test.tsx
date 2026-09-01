@@ -1,12 +1,15 @@
 import { isValidLoopbackReturnAddress } from '../utils/loopbackReturnAddress'
 import { describe, expect, it } from 'vitest'
+import type { ConnectionStatus } from '../api/client'
 import type { ChatMessage, McpServer } from '../types'
 import {
+  confirmedGrantPresent,
   connectionStateFor,
   disconnectFeedback,
   effectiveOAuth,
   latestOAuthByServer,
   mintOutcome,
+  probeIndicatesConnected,
   uninstallOnCancel,
   withMintedUrl,
   type OAuthState,
@@ -20,6 +23,14 @@ const server = (status: string): McpServer => ({
   status,
   source: 'mcp.json',
   enabled: true,
+})
+
+/** One entry of the /api/connections/status authorization feed. */
+const status = (over: Partial<ConnectionStatus> = {}): ConnectionStatus => ({
+  slug: 'notion',
+  status: 'connected',
+  grantPresent: true,
+  ...over,
 })
 
 describe('Connections card states', () => {
@@ -382,5 +393,46 @@ describe('the authorization axis resolves the needs_auth ambiguity', () => {
       .toBe('needs-attention')
     // A grant says nothing about an endpoint that is actually broken.
     expect(connectionStateFor(server('error'), undefined, false, true)).toBe('needs-attention')
+  })
+})
+
+describe('one probe reading serves both the badge and the Test button', () => {
+  // The badge and the Test button used to fold the SAME probe answer twice, and
+  // disagreed: a connected provider showed Connected beside a "test failed".
+  // This is the single predicate both now consume, so the truth table is pinned
+  // here rather than inferred from either surface.
+  it('reads a tokenless needs_auth beside a grant as connected', () => {
+    expect(probeIndicatesConnected('needs_auth', true)).toBe(true)
+  })
+
+  it('refuses needs_auth when no grant is held', () => {
+    // Absent AND indeterminate: neither is a grant, so neither may claim health.
+    expect(probeIndicatesConnected('needs_auth', false)).toBe(false)
+    expect(probeIndicatesConnected('needs_auth', undefined)).toBe(false)
+  })
+
+  it('accepts ok unless the grant is CONFIRMED absent', () => {
+    // Reachability is cached, so it outlives revocation — only a confirmed
+    // absence is a fresher fact than it. Indeterminate keeps the prior verdict.
+    expect(probeIndicatesConnected('ok', true)).toBe(true)
+    expect(probeIndicatesConnected('ok', undefined)).toBe(true)
+    expect(probeIndicatesConnected('ok', false)).toBe(false)
+  })
+
+  it('never lets a grant launder a broken or unknown probe', () => {
+    for (const status of ['error', 'disabled', 'unknown', 'probing', 'outdated']) {
+      expect(probeIndicatesConnected(status, true)).toBe(false)
+      expect(probeIndicatesConnected(status, undefined)).toBe(false)
+    }
+  })
+
+  it('collapses an indeterminate grant lookup to the honest hedge', () => {
+    // `grantPresent: false` from a lookup that FAILED means "could not look" —
+    // it must not reach either surface as a confirmed absence.
+    expect(confirmedGrantPresent(undefined)).toBeUndefined()
+    expect(confirmedGrantPresent(status({ grantPresent: false, grantIndeterminate: true })))
+      .toBeUndefined()
+    expect(confirmedGrantPresent(status({ grantPresent: false }))).toBe(false)
+    expect(confirmedGrantPresent(status({ grantPresent: true }))).toBe(true)
   })
 })

@@ -234,6 +234,40 @@ export function disconnectFeedback(
   }
 }
 
+/**
+ * The ONE reading of a probe status against the authorization axis. Both the
+ * card's badge and the Test button's verdict fold through this, because they
+ * judge the same probe and a second reading is how they came to disagree:
+ * a connected Linear card rendered Connected while its Test click reported a
+ * failure, from `status !== 'ok'` on the exact answer the badge folds as healthy.
+ *
+ * Exported for test.
+ */
+export function probeIndicatesConnected(status: string, grantPresent?: boolean): boolean {
+  // `ok` is REACHABILITY and it is cached, so it outlives a revoked grant. Only
+  // a CONFIRMED absent grant (never the indeterminate or not-yet-loaded
+  // undefined) is a fresher fact than it.
+  if (status === 'ok') return grantPresent !== false
+  // A tokenless probe of a remote OAuth server answers 401, which the gateway
+  // reports as `needs_auth` — kiro-cli owns token custody, so needs_auth beside
+  // a grant IS the healthy shape. The grant axis is the only thing separating
+  // "authorized outside this app" from "nobody authorized this", so an absent
+  // OR indeterminate verdict is not a grant.
+  if (status === 'needs_auth') return grantPresent === true
+  return false
+}
+
+/**
+ * The confirmed-only grant verdict, read once and shared. An indeterminate
+ * lookup reports `grantPresent: false` without knowing anything, so it must
+ * collapse to `undefined` (the honest hedge) rather than to a confirmed absence.
+ *
+ * Exported for test.
+ */
+export function confirmedGrantPresent(status: ConnectionStatus | undefined): boolean | undefined {
+  return status && !status.grantIndeterminate ? status.grantPresent : undefined
+}
+
 export function connectionStateFor(
   server: McpServer | undefined,
   oauth: OAuthState | undefined,
@@ -259,7 +293,7 @@ export function connectionStateFor(
     // or not-yet-loaded undefined) is the fresher authorization fact and wins:
     // render the honest not-verified card instead of a Connected badge for an
     // authorization that no longer exists.
-    return grantPresent === false ? 'not-verified' : 'connected'
+    return probeIndicatesConnected(server.status, grantPresent) ? 'connected' : 'not-verified'
   }
   if (locallyWaiting || awaitingConsent || oauth?.oauthUrl) return 'waiting-for-approval'
   // The status probe carries no OAuth token — kiro-cli owns token custody and
@@ -274,7 +308,9 @@ export function connectionStateFor(
   // Absent `grantPresent` (status feed not yet loaded) keeps the prior behaviour.
   // It must reach neither the error card (#1853) nor the spinner below, which
   // would imply a grant is in flight.
-  if (server.status === 'needs_auth') return grantPresent ? 'connected' : 'not-verified'
+  if (server.status === 'needs_auth') {
+    return probeIndicatesConnected(server.status, grantPresent) ? 'connected' : 'not-verified'
+  }
   if (server.status === 'error' || server.status === 'disabled') return 'needs-attention'
   return 'waiting-for-approval'
 }
@@ -1018,7 +1054,27 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     const probed = await api.mcpProbe() as McpServer[]
     queryClient.setQueryData<McpServer[]>(['mcp-servers'], probed)
     const tested = serverForConnection(provider, probed)
-    if (!tested || tested.status !== 'ok') throw new Error(t('pages.connectionsPage.test_failed'))
+    // The verdict is the CARD's fold, not a bare `status === 'ok'`. A healthy
+    // AUTHORIZED remote OAuth provider answers this tokenless probe with 401,
+    // which the gateway reports as `needs_auth` — so reading only `ok` as a pass
+    // told the user "test failed" beside a badge reading the same probe as
+    // Connected. Same predicate, same grant input as the badge, so the button and
+    // the badge cannot report two verdicts for one probe.
+    //
+    // The badge has one more input than the predicate: an OAuth flow completed
+    // in THIS session outranks the possibly-lagging grant feed (the grant was
+    // just watched being written). Without the same precedence here, the very
+    // first Test click after connecting fails beside a Connected badge — the
+    // original bug at the exact moment every new user hits it. A completed flow
+    // is grant EVIDENCE, not a verdict: a genuinely broken probe still fails,
+    // unlike the badge's blanket completed→connected short-circuit.
+    const oauth = effectiveOAuth(oauthByServer[provider.slug], locallyWaiting[provider.slug])
+    const grantEvidence = oauth?.completed && !oauth.failed
+      ? true
+      : confirmedGrantPresent(statusBySlug[provider.slug])
+    if (!tested || !probeIndicatesConnected(tested.status, grantEvidence)) {
+      throw new Error(t('pages.connectionsPage.test_failed'))
+    }
     setFeedback(current => ({
       ...current,
       [provider.slug]: { kind: 'success', text: t('pages.connectionsPage.connection_healthy') },
@@ -1118,7 +1174,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                   !!pending,
                   // Only a CONFIRMED verdict may steer the card: an indeterminate
                   // lookup reports grantPresent=false without knowing anything.
-                  status && !status.grantIndeterminate ? status.grantPresent : undefined,
+                  confirmedGrantPresent(status),
                   // The backend's mint table outlives this tab's local state, so
                   // a refresh mid-consent still renders the waiting card.
                   status?.status === 'awaiting_consent',
@@ -1134,7 +1190,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     connectedSince={status?.connectedSince}
                     // The same confirmed-only verdict the state fold received:
                     // indeterminate stays undefined so the card keeps the hedge.
-                    grantPresent={status && !status.grantIndeterminate ? status.grantPresent : undefined}
+                    grantPresent={confirmedGrantPresent(status)}
                     busy={cardBusy}
                     feedback={feedback[provider.slug]}
                     highlighted={highlightedSlug === provider.slug}
