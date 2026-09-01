@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -95,6 +96,28 @@ class TestStepUpModule:
         assert got.version == "9.9.9"
         with pytest.raises(update_stepup.StepUpError, match="no armed update request"):
             update_stepup.consume(pending.nonce)
+
+    def test_consume_refuses_when_the_nonce_cannot_be_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pending = update_stepup.arm("9.9.9", "stable")
+        path = update_stepup.pending_path()
+        original_unlink = Path.unlink
+
+        def refuse_nonce_unlink(target: Path, *args, **kwargs) -> None:
+            if target == path:
+                raise PermissionError("nonce file is locked")
+            original_unlink(target, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "unlink", refuse_nonce_unlink)
+            with pytest.raises(update_stepup.StepUpError, match="could not consume"):
+                update_stepup.consume(pending.nonce)
+
+        still_pending = update_stepup.read_pending()
+        assert still_pending is not None
+        assert still_pending.nonce == pending.nonce
+        update_stepup.clear_pending()
 
     def test_wrong_nonce_refused_and_not_consumed(self) -> None:
         pending = update_stepup.arm("9.9.9", "stable")
