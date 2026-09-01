@@ -366,13 +366,14 @@ class TestManagerRefusesUnknownAgent:
             ],
         )
         # Empty request still means "use the default" — no error.
-        assert subagent._validate_agent("") == ("", "")
+        assert subagent._validate_agent("") == ("", "", "")
         # A known agent passes through unchanged.
-        assert subagent._validate_agent("mochi--mochi-bg") == ("mochi--mochi-bg", "")
+        assert subagent._validate_agent("mochi--mochi-bg") == ("mochi--mochi-bg", "", "")
         # A named-but-unknown agent is REFUSED (error), not silently defaulted.
-        name, err = subagent._validate_agent("does-not-exist")
+        name, err, code = subagent._validate_agent("does-not-exist")
         assert name == ""
         assert err and "not found" in err
+        assert code == subagent.AGENT_NOT_FOUND_CODE
 
     def test_project_scope_is_read_from_cache_not_the_filesystem(self, monkeypatch):
         """``spawn`` is synchronous and runs on the event loop, so validation must not
@@ -402,7 +403,7 @@ class TestManagerRefusesUnknownAgent:
             "project_agent_files",
             lambda p, include_legacy=False: pytest.fail("globbed on the event loop"),
         )
-        assert subagent._validate_agent("repobot", "/some/project") == ("repobot", "")
+        assert subagent._validate_agent("repobot", "/some/project") == ("repobot", "", "")
 
     def test_cold_project_cache_refuses_rather_than_scanning(self, monkeypatch):
         """Fail closed on a cold cache — refusing an unknown name is this function's
@@ -415,7 +416,7 @@ class TestManagerRefusesUnknownAgent:
             lambda project_dir=None: [types.SimpleNamespace(name="kirocrew")],
         )
         monkeypatch.setattr(subagent, "cached_project_agent_names", lambda p: None)
-        name, err = subagent._validate_agent("repobot", "/some/project")
+        name, err, _code = subagent._validate_agent("repobot", "/some/project")
         assert name == ""
         assert "repobot" in err
 

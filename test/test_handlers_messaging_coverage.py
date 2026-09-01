@@ -28,6 +28,7 @@ from aiohttp import web
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
+from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
 
 class _Req:
@@ -100,6 +101,7 @@ def _info(**kw: Any) -> Any:
         "task": "do it",
         "done": False,
         "error": "",
+        "error_code": "",
         "result": "",
         "result_path": "",
         "started": 1_700_000_000.0,
@@ -185,7 +187,30 @@ class TestApiSpawn:
         mgr.spawn.return_value = _info(done=True, error="cwd not allowed")
         resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x"}))
         assert resp.status == 400
-        assert _payload(resp) == {"error": "cwd not allowed", "counted": True}
+        # An un-coded rejection kind reports the generic identifier, so the body
+        # is machine-readable even where the manager mints nothing.
+        assert _payload(resp) == {
+            "error": "cwd not allowed",
+            "code": "spawn_rejected",
+            "counted": True,
+        }
+
+    def test_unknown_agent_rejection_carries_its_own_code(self) -> None:
+        """The one rejection a client acts on differently keeps its own identifier:
+        ``spawn_run`` stops re-posting a name the gateway already refused, and it
+        must not have to parse the prose to know which refusal this was."""
+        mgr = _mgr()
+        mgr.spawn.return_value = _info(
+            done=True,
+            error="agent 'ghost' not found; available: scout",
+            error_code=AGENT_NOT_FOUND_CODE,
+        )
+        resp = _run(mod.api_spawn, _Req(_state(subagents=mgr), {"task": "x", "agent": "ghost"}))
+        assert resp.status == 400
+        body = _payload(resp)
+        assert body["code"] == AGENT_NOT_FOUND_CODE
+        # Prose still travels for the model to read and self-correct from.
+        assert "available: scout" in body["error"]
 
     def test_success_coerces_string_flags_and_bounds_batch_total(self) -> None:
         mgr = _mgr()

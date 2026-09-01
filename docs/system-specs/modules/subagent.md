@@ -624,6 +624,41 @@ Request: `{"task": "..."}`
 Response: `{"id": "abc123", "task": "...", "status": "spawned"}`
 Errors: 400 (missing task), 429 (capacity reached), 503 (subagents not available)
 
+**Typed rejections.** A rejection raised INSIDE `spawn()` answers 400 with a
+machine-readable `code` beside the advisory `error` prose (plus `counted: true` —
+see Wave liveness above): `agent_not_found` for a named-but-unknown agent,
+`spawn_rejected` for every other kind (empty task, low memory, cwd refusal,
+governance). `code` is the contract and `error` is advisory (RFC 9457 3.1.3),
+which is what lets the refusal sentence be reworded without breaking a client.
+The identifier is minted AT the decision — `subagent.AGENT_NOT_FOUND_CODE`,
+returned by `_validate_agent` — carried on `SubagentInfo.error_code`, and
+forwarded by the handler without being respelled there, so the value has exactly
+one spelling in the tree.
+
+`spawn_run` switches on that code for the wave short-circuit (#4842): once the
+gateway has refused an agent name, the remaining members of a wave sharing it are
+not re-posted. Fail-soft in both version directions — an old client still
+text-matches the unchanged prose, and a new client against a gateway that sends
+no `code` loses only the short-circuit (every member is dispatched and refused
+individually) and never refuses a name the gateway would have accepted. That
+asymmetry is why a missing code is safe here, and why a code is never used to
+REJECT a spawn.
+
+The request-validation errors (bad JSON, missing task, bad `approval_mode` /
+`batch_id`), the 429 capacity answer and the 503 are prose-only today; converting
+them is Track B work tracked by `error-code-baseline.json`.
+
+Not yet true of the sibling endpoints: `POST /api/spawn/{id}/continue` and
+`.../release` DO answer with a `code`, but they derive it by prefix-matching the
+manager's prose (`info.error.startswith("conversation_busy")`), because
+`continue_conversation` mints those two decisions as sentences rather than
+returning an identifier. `SubagentInfo.error_code` is the carrier that would let
+them be minted at the decision the way the unknown-agent refusal now is; until
+that migration, treat `conversation_busy` / `conversation_gone` as inferred, not
+minted. Two more consumers reconstruct the same two decisions from prose
+internally (`crew_chat`'s queue hold, `continuation`'s busy retry), so the
+migration has to move them together.
+
 ### Handler keywords (instant, no LLM)
 
 User-typed `spawn <task>`, `bg <task>`, `spawn list`, `spawn status` are intercepted by the handler for instant execution.

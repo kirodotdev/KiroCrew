@@ -121,7 +121,7 @@ class TestNoSurfaceReimplementsThePipeline:
 
         with patch.object(sa, "visible_agent_names", _stub):
             with patch.object(sa, "list_agents", return_value=_agents("scout")):
-                _, refusal = sa._validate_agent("nope")
+                _, refusal, _ = sa._validate_agent("nope")
         assert marker in refusal
 
         with patch.object(spawn_tools, "visible_agent_names", _stub):
@@ -142,20 +142,20 @@ class TestRenderedStringsAreUnchanged:
 
     def test_the_refusal_reads_the_same(self) -> None:
         with patch.object(sa, "list_agents", return_value=_agents("kirocrew", "scout", "probe")):
-            name, err = sa._validate_agent("explore")
+            name, err, _ = sa._validate_agent("explore")
         assert name == ""
         assert err == "agent 'explore' not found; available: probe, scout"
 
     def test_the_truncated_refusal_reads_the_same(self) -> None:
         many = [f"agent-{i:02d}" for i in range(sa._MAX_AVAILABLE_IN_ERROR + 3)]
         with patch.object(sa, "list_agents", return_value=_agents(*many)):
-            _, err = sa._validate_agent("nope")
+            _, err, _ = sa._validate_agent("nope")
         expected = ", ".join(many[: sa._MAX_AVAILABLE_IN_ERROR])
         assert err == f"agent 'nope' not found; available: {expected} (+3 more, call spawn_list)"
 
     def test_the_empty_refusal_reads_the_same(self) -> None:
         with patch.object(sa, "list_agents", return_value=_agents("kirocrew")):
-            _, err = sa._validate_agent("explore")
+            _, err, _ = sa._validate_agent("explore")
         assert err == (
             "agent 'explore' not found; no other agents are installed - "
             "omit 'agent' to use the default"
@@ -218,7 +218,7 @@ class TestOrderingConverged:
 
     def test_the_refusal_orders_the_same_way(self) -> None:
         with patch.object(sa, "list_agents", return_value=_agents(CREDENTIAL_SHAPED, "beacon")):
-            _, err = sa._validate_agent("nope")
+            _, err, _ = sa._validate_agent("nope")
         assert err == f"agent 'nope' not found; available: beacon, {REDACTED}"
 
 

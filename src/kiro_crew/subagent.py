@@ -172,6 +172,17 @@ _MAX_CONCURRENT = 3
 #: the pair and it cannot drift when a third reserved name appears.
 UNADVERTISED_AGENTS = frozenset({"kirocrew", "kirocrew-conductor"})
 
+#: Wire code for the unknown-agent refusal ``_validate_agent`` returns. It rides
+#: ``SubagentInfo.error_code`` to ``POST /api/spawn``, which forwards the FIELD as
+#: the response's ``code`` without naming the value -- so the gateway handler never
+#: spells this identifier and stays agnostic about which code it is carrying. The
+#: refusal's PROSE is advisory and free to be reworded (RFC 9457 3.1.3); this is
+#: the contract ``spawn_run`` switches on, and here is the only place the literal
+#: appears: ``mcp_tools.spawn`` imports it, under the same single-definition rule
+#: as the reserved pair above, because a respelled literal is exactly the drift a
+#: code exists to remove.
+AGENT_NOT_FOUND_CODE = "agent_not_found"
+
 
 def visible_agent_names(
     names: Iterable[str],
@@ -251,7 +262,7 @@ def _available_agents_hint(available: list[str]) -> str:
     return hint
 
 
-def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str]:
+def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str, str]:
     """Validate that an agent name is one kiro-cli can actually load.
 
     Runs ON the event loop (``spawn`` is synchronous), so it must not add
@@ -271,16 +282,20 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str]:
     *project_dir* must be the cwd the subagent will actually run in, because that
     is what kiro-cli resolves ``--agent`` against.
 
-    Returns (agent_name, error). If agent found, error is empty.
-    If not found, agent_name is empty and error explains what happened.
+    Returns (agent_name, error, code). If the agent is found, error and code are
+    both empty. If not, agent_name is empty, error explains what happened in prose
+    and code is the machine-readable identifier for that decision. The code is
+    returned rather than inferred by the caller so that a SECOND refusal kind
+    added here has to choose its own identifier instead of silently inheriting
+    this one.
     """
     if not requested:
-        return "", ""
+        return "", "", ""
     known = {a.name for a in list_agents()}
     if project_dir:
         known |= set(cached_project_agent_names(project_dir) or frozenset())
     if requested in known:
-        return requested, ""
+        return requested, "", ""
     available = sorted(known - UNADVERTISED_AGENTS)
     # REFUSE a named-but-unknown agent rather than silently falling back to the
     # host default: that fallback runs the full default agent (frequently at
@@ -291,7 +306,11 @@ def _validate_agent(requested: str, project_dir: str = "") -> tuple[str, str]:
     logger.warning("Agent %r not found; refusing spawn. Available: %s", requested, available)
     # The roster travels WITH the refusal, not only to the log: the caller acts on
     # the returned string, and a bare "not found" gives it nothing to correct to.
-    return "", f"agent {requested!r} not found{_available_agents_hint(available)}"
+    return (
+        "",
+        f"agent {requested!r} not found{_available_agents_hint(available)}",
+        AGENT_NOT_FOUND_CODE,
+    )
 
 
 def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") -> str | None:
@@ -1147,6 +1166,17 @@ class SubagentInfo:
     result_path: str = ""
     result_truncated: bool = False  # completion-event copy dropped content → summary+path
     error: str = ""
+    # Machine-readable identifier for ``error``, forwarded by ``POST /api/spawn``
+    # as the response's ``code`` so a client can switch on the decision instead of
+    # parsing the prose. Set today only by the unknown-agent refusal
+    # (``AGENT_NOT_FOUND_CODE``), which is the one rejection a client acts on
+    # differently: ``spawn_run`` stops re-posting a name the gateway already
+    # refused. The other kinds that DO carry an error (bad task, low memory, a cwd
+    # refusal, governance) stay un-coded and the handler answers them under a
+    # generic code — a code with no consumer would be contract surface bought for
+    # nothing. A capacity refusal never reaches this field at all: it returns no
+    # record, and the handler answers 429 from that absence.
+    error_code: str = ""
     parent_session_key: str = ""
     agent: str = ""
     # The app that spawned this child (empty for a non-app spawn). Persisted so

@@ -20,7 +20,7 @@ import asyncio
 import json
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlencode
 
@@ -30,7 +30,11 @@ from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.subagent import resolve_max_subagents, visible_agent_names
+from kiro_crew.subagent import (
+    AGENT_NOT_FOUND_CODE,
+    resolve_max_subagents,
+    visible_agent_names,
+)
 from kiro_crew.subagent_persistence import agent_dir_for_display
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
@@ -467,20 +471,27 @@ def schemas() -> list[dict[str, Any]]:
     ]
 
 
-def _is_unknown_agent_refusal(err: str, agent: str) -> bool:
-    """True when *err* is the gateway refusing *agent* as a name it cannot load.
+def _is_unknown_agent_refusal(resp: Mapping[str, Any], agent: str) -> bool:
+    """True when *resp* is the gateway refusing *agent* as a name it cannot load.
 
-    Matched on the message text because the refusal has no wire code of its own,
-    and the two sides are pinned together by a test that feeds
-    ``subagent._validate_agent``'s real output through this predicate -- so the
-    wording cannot drift out from under it silently.
+    Reads the response's machine-readable ``code`` (``AGENT_NOT_FOUND_CODE``,
+    spelled once in ``subagent`` and imported by both sides), not its prose. The
+    refusal text is advisory and free to be reworded; before this it WAS the
+    contract, so any rewording silently disabled the wave short-circuit until a
+    test caught it.
 
-    Fail-soft by construction: a miss reproduces today's behavior (every member
-    is dispatched and refused individually), never a refusal of a name the
-    gateway would have accepted. That asymmetry is why matching text is safe
-    here, while matching text to REJECT a spawn would not be.
+    The response answers the POST that named *agent*, so no name re-check is
+    needed -- pairing is what the old text match had to reconstruct from the
+    message. ``agent`` is still required, because an unnamed request means "use
+    the default" and can never produce this refusal.
+
+    Fail-soft by construction: a miss reproduces today's behavior (every member is
+    dispatched and refused individually), never a refusal of a name the gateway
+    would have accepted. That asymmetry is what makes a missing code safe -- a
+    client newer than the gateway simply loses the short-circuit -- while using it
+    to REJECT a spawn would not be.
     """
-    return bool(agent) and err.startswith(f"agent {agent!r} not found")
+    return bool(agent) and resp.get("code") == AGENT_NOT_FOUND_CODE
 
 
 def _collapse_effort_verdicts(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -633,7 +644,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
                 transport_errors.append(error_line)
                 continue
             errors.append(error_line)
-            if a and _is_unknown_agent_refusal(str(d["error"]), a):
+            if a and _is_unknown_agent_refusal(d, a):
                 refused_agents[a] = str(d["error"])
             # Wave-liveness reconcile: every sibling's batch_total counts
             # THIS member,

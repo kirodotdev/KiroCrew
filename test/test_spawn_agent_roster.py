@@ -10,6 +10,10 @@ invented names.
    agent name, instead of re-posting the same doomed name per task.
 3. The roster must be reachable from ``spawn_run``'s own parameter description,
    because a caller that never called ``spawn_list`` has never seen it.
+
+Seam 2 recognized the refusal by its SENTENCE, which made an advisory message
+part of the wire contract. It now travels as ``code`` (``AGENT_NOT_FOUND_CODE``),
+so the prose is free to change and the short-circuit is not.
 """
 
 from __future__ import annotations
@@ -29,23 +33,25 @@ def _agents(*names: str) -> list[types.SimpleNamespace]:
 class TestRefusalCarriesTheRoster:
     def test_available_names_are_in_the_returned_error(self) -> None:
         with patch.object(sa, "list_agents", return_value=_agents("kirocrew", "scout", "probe")):
-            name, err = sa._validate_agent("explore")
+            name, err, code = sa._validate_agent("explore")
         assert name == ""
         # The names the log line already had.
         assert "scout" in err and "probe" in err
         # The host default is not advertised: it is reached by omitting `agent`.
         assert "kirocrew" not in err
+        # ...and the decision travels as data next to the prose.
+        assert code == sa.AGENT_NOT_FOUND_CODE
 
     def test_empty_roster_says_to_omit_the_parameter(self) -> None:
         """With nothing to correct TO, the only valid move is to stop naming one."""
         with patch.object(sa, "list_agents", return_value=_agents("kirocrew")):
-            _, err = sa._validate_agent("explore")
+            _, err, _ = sa._validate_agent("explore")
         assert "omit" in err
 
     def test_roster_is_bounded_and_reports_the_remainder(self) -> None:
         many = [f"agent-{i:02d}" for i in range(sa._MAX_AVAILABLE_IN_ERROR + 5)]
         with patch.object(sa, "list_agents", return_value=_agents(*many)):
-            _, err = sa._validate_agent("nope")
+            _, err, _ = sa._validate_agent("nope")
         assert f"agent-{sa._MAX_AVAILABLE_IN_ERROR - 1:02d}" in err
         assert f"agent-{sa._MAX_AVAILABLE_IN_ERROR:02d}" not in err
         assert "+5 more" in err
@@ -58,7 +64,7 @@ class TestRefusalCarriesTheRoster:
         with patch.object(
             sa, "list_agents", return_value=_agents("scout", hostile, "\u4ee3\u7406")
         ):
-            _, err = sa._validate_agent("nope")
+            _, err, _ = sa._validate_agent("nope")
         assert "; available: scout" in err
         assert "IGNORE" not in err and "\n" not in err
         assert "\u4ee3\u7406" not in err
@@ -71,29 +77,68 @@ class TestRefusalCarriesTheRoster:
             patch.object(sa, "list_agents", return_value=_agents("kirocrew")),
             patch.object(sa, "cached_project_agent_names", return_value=frozenset({"repobot"})),
         ):
-            _, err = sa._validate_agent("nope", "/some/project")
+            _, err, _ = sa._validate_agent("nope", "/some/project")
         assert "; available: repobot" in err
 
 
-class TestPredicateTracksTheRealRefusal:
-    """Both sides of the seam, pinned: ``spawn_run`` matches the refusal text that
-    ``_validate_agent`` actually produces, so a reworded message fails HERE rather
-    than silently disabling the wave short-circuit in production."""
+class TestPredicateReadsTheWireCode:
+    """Both sides of the seam, pinned on the CODE: ``spawn_run`` recognizes the
+    refusal by the identifier ``_validate_agent`` mints, so the message text is free
+    to be reworded without silently disabling the wave short-circuit."""
+
+    def _refusal(self, agent: str = "explore") -> tuple[str, str]:
+        with patch.object(sa, "list_agents", return_value=_agents("kirocrew", "scout")):
+            _, err, code = sa._validate_agent(agent)
+        return err, code
 
     def test_real_refusal_is_recognized(self) -> None:
-        with patch.object(sa, "list_agents", return_value=_agents("kirocrew", "scout")):
-            _, err = sa._validate_agent("explore")
-        assert spawn_tools._is_unknown_agent_refusal(err, "explore") is True
+        err, code = self._refusal()
+        assert code == sa.AGENT_NOT_FOUND_CODE
+        assert spawn_tools._is_unknown_agent_refusal({"error": err, "code": code}, "explore")
+
+    def test_reworded_prose_is_still_recognized(self) -> None:
+        """The point of the migration: the wording is advisory (RFC 9457 3.1.3).
+        Before this, a rewrite of the sentence disabled the short-circuit."""
+        _, code = self._refusal()
+        reworded = {"error": "no agent named 'explore' is installed", "code": code}
+        assert spawn_tools._is_unknown_agent_refusal(reworded, "explore")
 
     def test_other_refusals_are_not_swallowed(self) -> None:
         # A policy denial is a different decision and must keep its own path.
         assert not spawn_tools._is_unknown_agent_refusal(
-            "agent 'explore' not permitted by spawn policy", "explore"
+            {"error": "agent 'explore' not permitted by spawn policy", "code": "spawn_rejected"},
+            "explore",
         )
-        # Another member's name must not short-circuit this one.
-        assert not spawn_tools._is_unknown_agent_refusal("agent 'other' not found", "explore")
-        assert not spawn_tools._is_unknown_agent_refusal("capacity reached (3)", "explore")
-        assert not spawn_tools._is_unknown_agent_refusal("agent '' not found", "")
+        assert not spawn_tools._is_unknown_agent_refusal(
+            {"error": "capacity reached (3)", "counted": True}, "explore"
+        )
+        # An unnamed request means "use the default", which cannot be refused as
+        # unknown -- so no response may short-circuit on it.
+        assert not spawn_tools._is_unknown_agent_refusal(
+            {"error": "x", "code": sa.AGENT_NOT_FOUND_CODE}, ""
+        )
+
+    def test_a_gateway_without_the_code_fails_soft(self) -> None:
+        """A client newer than the gateway sees no ``code`` and loses only the
+        short-circuit: every member is dispatched and refused individually, which is
+        the pre-#4842 behavior -- never a refusal of a name the gateway would take."""
+        assert not spawn_tools._is_unknown_agent_refusal(
+            {"error": "agent 'explore' not found; available: scout", "counted": True}, "explore"
+        )
+
+    def test_the_code_has_one_definition(self) -> None:
+        """A respelled literal on the client is exactly the drift a code removes, so
+        the identifier is imported, not retyped. Source ratchet: a behavioral test
+        cannot see a re-duplication because both spellings compare equal."""
+        import pathlib
+
+        assert spawn_tools.AGENT_NOT_FOUND_CODE is sa.AGENT_NOT_FOUND_CODE
+        for module, expected in ((sa, 1), (spawn_tools, 0)):
+            src = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+            assert src.count('"agent_not_found"') == expected, (
+                f"{module.__name__} respells the refusal code; import "
+                "subagent.AGENT_NOT_FOUND_CODE instead"
+            )
 
 
 class TestWaveStopsAfterTheFirstRefusal:
@@ -103,7 +148,7 @@ class TestWaveStopsAfterTheFirstRefusal:
         def _post(path: str, body: dict) -> dict:
             posts.append((path, body))
             if path == "/api/spawn":
-                return {"error": error, "counted": True}
+                return {"error": error, "code": sa.AGENT_NOT_FOUND_CODE, "counted": True}
             return {}
 
         with (
@@ -137,7 +182,11 @@ class TestWaveStopsAfterTheFirstRefusal:
                 return {}
             posts.append(body)
             if body["agent"] == "ghost":
-                return {"error": "agent 'ghost' not found; available: scout", "counted": True}
+                return {
+                    "error": "agent 'ghost' not found; available: scout",
+                    "code": sa.AGENT_NOT_FOUND_CODE,
+                    "counted": True,
+                }
             return {"id": f"id{len(posts)}"}
 
         with (
@@ -159,7 +208,11 @@ class TestWaveStopsAfterTheFirstRefusal:
             if path != "/api/spawn":
                 return {}
             posts.append(body)
-            return {"error": "agent 'scout' not found", "transport_error": True}
+            return {
+                "error": "agent 'scout' not found",
+                "code": sa.AGENT_NOT_FOUND_CODE,
+                "transport_error": True,
+            }
 
         with (
             patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),

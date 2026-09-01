@@ -413,7 +413,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             effective_cwd = resolved_cwd or str(
                 getattr(self._manager._sessions, "_pool_cwd", "") or ""
             )
-            agent, err = _validate_agent(agent, effective_cwd)
+            agent, err, err_code = _validate_agent(agent, effective_cwd)
             if err:
                 info = SubagentInfo(
                     id=agent_id,
@@ -422,6 +422,7 @@ class SpawnAdmissionCoordinator(ManagerComponent):
                     parent_session_key=parent_session_key,
                     done=True,
                     error=err,
+                    error_code=err_code,
                     batch_id=batch_id,
                     batch_total=max(0, int(batch_total)),
                 )

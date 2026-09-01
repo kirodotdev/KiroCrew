@@ -86,32 +86,33 @@ class TestSafeFire:
 
 class TestValidateAgent:
     def test_empty_request_is_the_default(self) -> None:
-        assert sa._validate_agent("") == ("", "")
+        assert sa._validate_agent("") == ("", "", "")
 
     def test_known_user_agent_accepted(self) -> None:
         with patch.object(sa, "list_agents", return_value=[SimpleNamespace(name="scout")]):
-            assert sa._validate_agent("scout") == ("scout", "")
+            assert sa._validate_agent("scout") == ("scout", "", "")
 
     def test_unknown_agent_refused_not_defaulted(self) -> None:
         with patch.object(sa, "list_agents", return_value=[SimpleNamespace(name="scout")]):
-            name, err = sa._validate_agent("typo")
+            name, err, code = sa._validate_agent("typo")
         assert name == ""
         assert "not found" in err
+        assert code == sa.AGENT_NOT_FOUND_CODE
 
     def test_project_scope_widens_known_set(self, tmp_path: Path) -> None:
         with (
             patch.object(sa, "list_agents", return_value=[]),
             patch.object(sa, "cached_project_agent_names", return_value=frozenset({"local"})),
         ):
-            assert sa._validate_agent("local", str(tmp_path)) == ("local", "")
+            assert sa._validate_agent("local", str(tmp_path)) == ("local", "", "")
 
     def test_project_scope_cold_cache_refuses(self, tmp_path: Path) -> None:
         with (
             patch.object(sa, "list_agents", return_value=[]),
             patch.object(sa, "cached_project_agent_names", return_value=None),
         ):
-            name, err = sa._validate_agent("local", str(tmp_path))
-        assert (name, "not found" in err) == ("", True)
+            name, err, code = sa._validate_agent("local", str(tmp_path))
+        assert (name, "not found" in err, code) == ("", True, sa.AGENT_NOT_FOUND_CODE)
 
 
 # ── _vet_spawn_governance ─────────────────────────────────────────────────

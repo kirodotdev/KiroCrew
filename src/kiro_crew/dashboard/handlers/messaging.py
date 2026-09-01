@@ -162,6 +162,13 @@ def _sel():
 
 # ── Subagents ──
 
+#: Generic ``code`` for a spawn rejection that mints no identifier of its own.
+#: Spelled once for the two handlers that answer with it (``api_spawn`` and
+#: ``api_spawn_continue``), so the pair cannot drift apart. A rejection a client
+#: acts on differently gets its OWN code at the decision instead -- see
+#: ``subagent.AGENT_NOT_FOUND_CODE``.
+_SPAWN_REJECTED_CODE = "spawn_rejected"
+
 
 async def api_spawn(request: web.Request) -> web.Response:
     """POST /api/spawn — spawn a subagent.
@@ -269,7 +276,21 @@ async def api_spawn(request: web.Request) -> web.Response:
         # batch members) announced through the completion consumer
         # (_announce_rejection). "counted" tells spawn_run's client-side
         # reconcile to skip this member.
-        return web.json_response({"error": info.error, "counted": True}, status=400)
+        #
+        # ``code`` is what the client switches on; ``error`` is advisory prose
+        # (RFC 9457 3.1.3). Only the unknown-agent refusal mints its own
+        # identifier today, because it is the only rejection a client treats
+        # differently — spawn_run stops re-posting a name already refused. Every
+        # other rejection reports the generic code, matching the sibling
+        # /continue handler below.
+        return web.json_response(
+            {
+                "error": info.error,
+                "code": info.error_code or _SPAWN_REJECTED_CODE,
+                "counted": True,
+            },
+            status=400,
+        )
     resp: dict[str, object] = {"id": info.id, "task": task, "status": "spawned"}
     # Server-side effort verdict: only this side knows the model the factory's
     # effort gate will see (explicit per-call value, else the subagent role
@@ -359,7 +380,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
             return web.json_response({"error": info.error, "code": "conversation_busy"}, status=409)
         if info.error.startswith("conversation_gone"):
             return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
-        return web.json_response({"error": info.error, "code": "spawn_rejected"}, status=400)
+        return web.json_response({"error": info.error, "code": _SPAWN_REJECTED_CODE}, status=400)
     return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})
 
 
