@@ -14,9 +14,9 @@
  * enumerates `Object.keys(...)` of the exported maps, so a new hat appears
  * here without edits.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Dices } from 'lucide-react'
+import { Coffee, Crown, Dices, Eye, Heart, ImageUp, Meh, Palette, Smile } from 'lucide-react'
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Btn, Toggle } from './ui'
 import SegmentedControl from './SegmentedControl'
@@ -28,9 +28,10 @@ import {
   MOUTHS,
   PROPS,
   TILES,
+  ghostDataUri,
   type KiroGhostTraits,
 } from '../lib/kiroGhostAvatar'
-import { ghostDataUri, seededTraits, type CrewAvatarOverride } from './CrewAvatar'
+import CrewAvatar, { seededTraits, type CrewAvatarOverride } from './CrewAvatar'
 
 /** Trait axes shown as category tabs, in mockup order. `blush` is a two-option
  *  axis (off/on) and `tile` is the color — both special-cased below. */
@@ -116,7 +117,107 @@ const OPT_LABEL_KEYS: Record<string, string> = {
 /** Every pickable tile, brand purple first — the "no hue" spelling. */
 const TILE_OPTIONS = [BRAND_PURPLE, ...TILES]
 
+/**
+ * Human color names for the tile swatches, keyed by hex. Screen readers get
+ * "Sky blue", not "#21a5de" (UX review: a raw hex is noise to a person).
+ * Literal catalog keys, indexed — same extractor constraint as
+ * OPT_LABEL_KEYS. A hex missing here (a future palette entry) falls back to
+ * the hex itself: still announceable, just not friendly, and the dead-key
+ * gate will not fire because every listed key ships in the catalog.
+ */
+const TILE_LABEL_KEYS: Record<string, string> = {
+  '#9046ff': 'components.avatarBuilder.tile_purple',
+  '#de2121': 'components.avatarBuilder.tile_red',
+  '#21de21': 'components.avatarBuilder.tile_green',
+  '#21a5de': 'components.avatarBuilder.tile_sky',
+  '#3d259d': 'components.avatarBuilder.tile_indigo',
+  '#eeae4f': 'components.avatarBuilder.tile_amber',
+  '#ee4fee': 'components.avatarBuilder.tile_magenta',
+  '#259d85': 'components.avatarBuilder.tile_teal',
+  '#9d2561': 'components.avatarBuilder.tile_plum',
+  '#9d6725': 'components.avatarBuilder.tile_bronze',
+  '#25679d': 'components.avatarBuilder.tile_steel',
+  '#979d25': 'components.avatarBuilder.tile_olive',
+  '#ee4f7e': 'components.avatarBuilder.tile_rose',
+  '#21d4de': 'components.avatarBuilder.tile_cyan',
+  '#ee7e4f': 'components.avatarBuilder.tile_coral',
+}
+
 const pickRandom = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]
+
+/** Longest source file the picker accepts BEFORE crop/downscale. Generous —
+ *  the output is re-encoded regardless — but bounds the decode of a
+ *  mis-picked 200MB TIFF-in-a-.png. */
+const MAX_SOURCE_BYTES = 20 * 1024 * 1024
+/** Output edge — matches the design spec and keeps the upload tens of KB. */
+const OUTPUT_PX = 512
+/** Client-side output budget, under the server's 1 MB cap with headroom. */
+const MAX_OUTPUT_BYTES = 900 * 1024
+
+/** Approximate byte size of a data URI's payload (base64 → bytes). */
+const dataUriBytes = (uri: string) => Math.floor(((uri.length - uri.indexOf(',') - 1) * 3) / 4)
+
+/**
+ * Center-crop to square and downscale, returning a data URI within the
+ * upload budget. PNG first (lossless, keeps transparency); a high-entropy
+ * photo whose 512px PNG overflows the budget falls back to JPEG on a white
+ * ground, then to a smaller JPEG — so any decodable pick yields something
+ * the server will accept. Runs entirely client-side: the server only ever
+ * sees the small square the user previewed, never the original photo.
+ */
+async function cropToSquareDataUri(file: File): Promise<string> {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image()
+      i.onload = () => resolve(i)
+      i.onerror = () => reject(new Error('undecodable image'))
+      // `i` is an HTMLImageElement (decode-only, cannot execute script) and
+      // `url` is a same-origin blob: URL minted two lines up from the user's
+      // own file pick — no externally controlled input reaches the sink.
+      // nosemgrep: semgrep.kirocrew.frontend-external-script-inject
+      i.src = url
+    })
+    const side = Math.min(img.naturalWidth, img.naturalHeight)
+    if (!side) throw new Error('empty image')
+    const draw = (out: number, jpegGround: boolean) => {
+      const canvas = document.createElement('canvas')
+      canvas.width = out
+      canvas.height = out
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('no canvas context')
+      if (jpegGround) {
+        // JPEG has no alpha channel; without a ground, transparent source
+        // pixels encode as black.
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, out, out)
+      }
+      ctx.drawImage(
+        img,
+        (img.naturalWidth - side) / 2,
+        (img.naturalHeight - side) / 2,
+        side,
+        side,
+        0,
+        0,
+        out,
+        out,
+      )
+      return canvas
+    }
+    const px = Math.min(side, OUTPUT_PX)
+    const png = draw(px, false).toDataURL('image/png')
+    if (dataUriBytes(png) <= MAX_OUTPUT_BYTES) return png
+    const jpeg = draw(px, true).toDataURL('image/jpeg', 0.85)
+    if (dataUriBytes(jpeg) <= MAX_OUTPUT_BYTES) return jpeg
+    return draw(Math.min(side, 384), true).toDataURL('image/jpeg', 0.8)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+/** The builder's top-level tiers: hand-pick ghost traits, or wear a picture. */
+type Mode = 'face' | 'picture'
 
 export default function CrewAvatarBuilder({
   open,
@@ -140,15 +241,37 @@ export default function CrewAvatarBuilder({
   const defaults = useMemo(() => seededTraits(name), [name])
   /** null draft = "no override": preview the default face; the first pick
    *  branches the draft off it. */
-  const [draft, setDraft] = useState<KiroGhostTraits | null>(value?.traits ?? null)
+  const [draft, setDraft] = useState<KiroGhostTraits | null>(
+    value?.kind === 'ghost' ? value.traits : null,
+  )
   const [axis, setAxis] = useState<Axis>('eyes')
+  const [mode, setMode] = useState<Mode>(value?.kind === 'image' ? 'picture' : 'face')
+  /** The cropped-and-scaled picture chosen THIS opening (data URI), not yet
+   *  uploaded — upload happens on the editor's Save, keeping Apply free of
+   *  side effects for pictures exactly as it is for traits. */
+  const [pending, setPending] = useState<string | null>(
+    value?.kind === 'image' ? (value.pendingData ?? null) : null,
+  )
+  const [pickError, setPickError] = useState('')
+  const [dragOver, setDragOver] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+  /** Monotonic pick generation: only the LATEST pick (of this dialog
+   *  opening) may land its decode result, so a slow decode of pick A cannot
+   *  overwrite a faster pick B, and a decode outliving a closed dialog
+   *  cannot resurrect into the next opening. */
+  const pickGen = useRef(0)
   // Re-arm when the dialog (re)opens: it stays mounted while closed (Radix
   // layer-stack requirement, see WorkspaceModal), so state must not leak from
   // the previous opening.
   useEffect(() => {
     if (open) {
-      setDraft(value?.traits ?? null)
+      setDraft(value?.kind === 'ghost' ? value.traits : null)
       setAxis('eyes')
+      setMode(value?.kind === 'image' ? 'picture' : 'face')
+      setPending(value?.kind === 'image' ? (value.pendingData ?? null) : null)
+      setPickError('')
+      setDragOver(false)
+      pickGen.current += 1
     }
   }, [open, value])
 
@@ -188,7 +311,48 @@ export default function CrewAvatarBuilder({
 
   const optLabel = (key: string) => { const k = OPT_LABEL_KEYS[key]; return k ? t(k) : key }
 
-  const segments = AXES.map(a => ({ key: a, label: t(AXIS_LABEL_KEYS[a]) }))
+  /** Icons keep every axis visible when the strip collapses to its compact
+   *  form on narrow widths — an icon-less segment there renders as an empty
+   *  button, hiding the axis entirely. */
+  const AXIS_ICONS: Record<Axis, React.ReactNode> = {
+    eyes: <Eye size={13} aria-hidden="true" />,
+    brows: <Meh size={13} aria-hidden="true" />,
+    mouth: <Smile size={13} aria-hidden="true" />,
+    accessory: <Crown size={13} aria-hidden="true" />,
+    prop: <Coffee size={13} aria-hidden="true" />,
+    blush: <Heart size={13} aria-hidden="true" />,
+    tile: <Palette size={13} aria-hidden="true" />,
+  }
+  const segments = AXES.map(a => ({ key: a, label: t(AXIS_LABEL_KEYS[a]), icon: AXIS_ICONS[a] }))
+
+  const pickFile = async (file: File | undefined | null) => {
+    setPickError('')
+    // Invalidate any in-flight decode FIRST: a rejected pick must not leave
+    // an older slow decode able to complete and install itself as pending.
+    const gen = ++pickGen.current
+    if (!file) return
+    if (file.size > MAX_SOURCE_BYTES) {
+      setPickError(t('components.avatarBuilder.upload_too_large'))
+      return
+    }
+    try {
+      const uri = await cropToSquareDataUri(file)
+      if (gen === pickGen.current) setPending(uri)
+    } catch {
+      if (gen === pickGen.current) setPickError(t('components.avatarBuilder.upload_bad_image'))
+    }
+  }
+
+  /** What Apply hands the editor for the picture tier: a fresh pick carries
+   *  its data URI (uploaded on the editor's Save); reopening over an already
+   *  saved picture with no new pick keeps the stored value verbatim. */
+  const pictureResult: CrewAvatarOverride | null = pending
+    ? { kind: 'image', pendingData: pending }
+    : value?.kind === 'image'
+      ? value
+      : null
+
+  const applyDisabled = mode === 'picture' && pictureResult === null
 
   return (
     <Dialog open={open} onOpenChange={next => { if (!next) onCancel() }}>
@@ -200,6 +364,77 @@ export default function CrewAvatarBuilder({
           <DialogTitle>{t('components.avatarBuilder.title_named', { name })}</DialogTitle>
         </DialogHeader>
         <DialogBody>
+          {/* Tier switch: hand-picked ghost vs uploaded picture. Above both
+              panes so switching never loses either side's in-progress state —
+              the ghost draft and the pending picture live in separate state. */}
+          <div className="mb-3">
+            <SegmentedControl
+              segments={[
+                { key: 'face', label: t('components.avatarBuilder.mode_face') },
+                { key: 'picture', label: t('components.avatarBuilder.mode_picture') },
+              ]}
+              value={mode}
+              onChange={m => setMode(m as Mode)}
+              // Two short segments always fit; measured collapse would fold
+              // them into a dropdown inside the animated dialog (and in jsdom).
+              collapse={false}
+              layoutId="avatar-builder-mode"
+            />
+          </div>
+          {mode === 'picture' ? (
+            <div className="flex flex-col items-center gap-3 py-2" data-testid="avatar-upload-pane">
+              {pending ? (
+                <img
+                  src={pending}
+                  alt=""
+                  aria-hidden="true"
+                  width={176}
+                  height={176}
+                  className="rounded-xl border border-border object-cover"
+                  data-testid="avatar-upload-preview"
+                />
+              ) : value?.kind === 'image' ? (
+                <CrewAvatar seed={name} avatar={value} size={176} className="rounded-xl" />
+              ) : null}
+              {/* Drop zone doubles as the click target; a plain button inside
+                  keeps it keyboard-reachable without inventing a focusable div. */}
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={e => {
+                  e.preventDefault()
+                  setDragOver(false)
+                  void pickFile(e.dataTransfer.files?.[0])
+                }}
+                className={`flex w-full max-w-[420px] flex-col items-center gap-2 rounded-xl border-2 border-dashed p-6 text-center transition-colors ${
+                  dragOver ? 'border-ring bg-accent-subtle' : 'border-border'
+                }`}
+                data-testid="avatar-upload-dropzone"
+              >
+                <ImageUp className="lucide-inline" aria-hidden="true" />
+                <span className="text-[12px] text-muted">{t('components.avatarBuilder.upload_hint')}</span>
+                <Btn onClick={() => fileInput.current?.click()} data-testid="avatar-upload-choose">
+                  {t('components.avatarBuilder.upload_choose')}
+                </Btn>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={e => {
+                    void pickFile(e.target.files?.[0])
+                    // Allow re-picking the same file after an error.
+                    e.target.value = ''
+                  }}
+                  data-testid="avatar-upload-input"
+                />
+              </div>
+              {pickError && (
+                <span role="alert" className="text-[12px] text-danger">{pickError}</span>
+              )}
+              <span className="text-[11px] text-muted">{t('components.avatarBuilder.upload_note')}</span>
+            </div>
+          ) : (
           <div className="flex flex-col gap-4 md:flex-row">
             {/* Left: live preview + the whole-face view switch. Flip stays a
                 toggle rather than a tab: it is a view transform of the same
@@ -233,7 +468,10 @@ export default function CrewAvatarBuilder({
             </div>
             {/* Right: category tabs + the thumbnail grid. */}
             <div className="flex min-w-0 flex-1 flex-col gap-3">
-              <SegmentedControl segments={segments} value={axis} onChange={setAxis} />
+              {/* Adaptive collapse stays ON (a phone width cannot fit seven
+                  labeled tabs without clipping); the icons above are what
+                  keep every axis visible in the collapsed compact form. */}
+              <SegmentedControl segments={segments} value={axis} onChange={setAxis} layoutId="avatar-builder-axis" />
               <div className="grid max-h-[380px] grid-cols-[repeat(auto-fill,minmax(84px,1fr))] gap-2 overflow-y-auto pr-1" role="listbox" aria-label={t(AXIS_LABEL_KEYS[axis])}>
                 {thumbs.map(({ key, uri }) => {
                   const selected =
@@ -248,7 +486,11 @@ export default function CrewAvatarBuilder({
                       type="button"
                       role="option"
                       aria-selected={selected}
-                      aria-label={axis === 'tile' ? key : optLabel(key)}
+                      aria-label={
+                        axis === 'tile'
+                          ? (TILE_LABEL_KEYS[key] ? t(TILE_LABEL_KEYS[key]) : key)
+                          : optLabel(key)
+                      }
                       onClick={() =>
                         setTrait(
                           axis === 'tile'
@@ -277,6 +519,7 @@ export default function CrewAvatarBuilder({
               </div>
             </div>
           </div>
+          )}
         </DialogBody>
         {/* flex-wrap: at phone width the reset link + hint block and the
             action buttons cannot share one row; wrapping keeps Apply on
@@ -291,7 +534,7 @@ export default function CrewAvatarBuilder({
           <div className="mr-auto flex min-w-0 flex-col gap-0.5">
             <button
               type="button"
-              onClick={() => setDraft(null)}
+              onClick={() => { pickGen.current += 1; setDraft(null); setPending(null); setMode('face') }}
               className="self-start text-[12px] text-muted underline underline-offset-2 hover:text-text"
               data-testid="avatar-builder-reset"
             >
@@ -300,7 +543,20 @@ export default function CrewAvatarBuilder({
             <span className="text-[11px] text-muted">{t('components.avatarBuilder.apply_hint')}</span>
           </div>
           <Btn onClick={onCancel}>{t('components.avatarBuilder.cancel')}</Btn>
-          <Btn primary onClick={() => onSave(draft ? { kind: 'ghost', traits: draft } : null)} data-testid="avatar-builder-save">
+          <Btn
+            primary
+            disabled={applyDisabled}
+            onClick={() =>
+              onSave(
+                mode === 'picture'
+                  ? pictureResult
+                  : draft
+                    ? { kind: 'ghost', traits: draft }
+                    : null,
+              )
+            }
+            data-testid="avatar-builder-save"
+          >
             {t('components.avatarBuilder.apply')}
           </Btn>
         </DialogFooter>

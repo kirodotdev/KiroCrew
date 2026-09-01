@@ -70,6 +70,7 @@ const mockApi = vi.hoisted(() => ({
   createKirocrewAgent: vi.fn(),
   updateKirocrewAgent: vi.fn(),
   deleteKirocrewAgent: vi.fn(),
+  uploadCrewAvatar: vi.fn(),
   agentResolvedModel: vi.fn(),
   setDefaultAgent: vi.fn(),
   createChatSlot: vi.fn(),
@@ -971,5 +972,52 @@ describe('crew avatar builder', () => {
     // Nothing pending: the draft round-tripped back to "no override", so Save
     // stays disabled — the dirty check compares normalized traits, not clicks.
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  })
+})
+
+describe('crew avatar — uploaded picture', () => {
+  it('renders an image override from the authenticated endpoint with the cache stamp', () => {
+    const { container } = render(
+      <CrewAvatar seed="on call" avatar={{ kind: 'image', v: 1700000000 }} size={38} />,
+    )
+    const src = container.querySelector('img')!.getAttribute('src')!
+    // Name is a display string — it must be URI-encoded, and the stamp must
+    // ride along so a replaced picture busts the browser cache.
+    expect(src).toBe('/api/agents/on%20call/avatar?v=1700000000')
+  })
+
+  it('previews the editor draft picture without touching the network', () => {
+    const data = 'data:image/png;base64,AAAA'
+    const { container } = render(
+      <CrewAvatar seed="oncall" avatar={{ kind: 'image', pendingData: data }} size={38} />,
+    )
+    expect(container.querySelector('img')!.getAttribute('src')).toBe(data)
+  })
+
+  it('falls back to the seeded ghost when the picture fails to load', () => {
+    const plain = render(<CrewAvatar seed="oncall" size={38} />)
+    const plainSrc = plain.container.querySelector('img')!.getAttribute('src')!
+    plain.unmount()
+    const { container } = render(
+      <CrewAvatar seed="oncall" avatar={{ kind: 'image', v: 1 }} size={38} />,
+    )
+    fireEvent.error(container.querySelector('img')!)
+    expect(container.querySelector('img')!.getAttribute('src')).toBe(plainSrc)
+  })
+
+  it('builder shows the picture tier with a disabled Apply until a picture exists', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+
+    fireEvent.click(within(builder).getByRole('button', { name: 'Picture' }))
+    expect(within(builder).getByTestId('avatar-upload-dropzone')).toBeInTheDocument()
+    // No picture chosen and none saved: Apply must not stage an empty image
+    // override.
+    expect(within(builder).getByTestId('avatar-builder-save')).toBeDisabled()
+    // The ghost pane's draft survives the round-trip through the picture tab.
+    fireEvent.click(within(builder).getByRole('button', { name: 'Ghost face' }))
+    expect(within(builder).getByTestId('avatar-builder-preview')).toBeInTheDocument()
   })
 })

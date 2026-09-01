@@ -36,6 +36,10 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/agents/sync", handlers.api_kirocrew_agents_sync)
     app.router.add_put("/api/agents/{name}", handlers.api_kirocrew_agent_update)
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
+    # Per-crew uploaded avatar (the "image" tier; file under the data home,
+    # served through the authenticated API so remote dashboards work)
+    app.router.add_get("/api/agents/{name}/avatar", handlers.api_kirocrew_agent_avatar_get)
+    app.router.add_post("/api/agents/{name}/avatar", handlers.api_kirocrew_agent_avatar_upload)
     # Edition capability agents
     app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
     app.router.add_post("/api/capability/agents/install", handlers.api_capability_agents_install)

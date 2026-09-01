@@ -18,7 +18,7 @@ import SegmentedControl from '../components/SegmentedControl'
 import InfoTip from '../components/InfoTip'
 import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
-import CrewAvatar, { ghostTraitsFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
+import CrewAvatar, { ghostTraitsFrom, imageAvatarFrom, type CrewAvatarOverride } from '../components/CrewAvatar'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import CrewWakeSection from '../components/CrewWakeSection'
 import CrewWebhookSection from '../components/CrewWebhookSection'
@@ -769,7 +769,14 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     // check compares like with like (a junk stored value reads as "no
     // override" everywhere).
     const storedTraits = ghostTraitsFrom(a.avatar)
-    setEditAvatar(storedTraits ? { kind: 'ghost', traits: storedTraits } : null)
+    const storedImage = imageAvatarFrom(a.avatar)
+    setEditAvatar(
+      storedTraits
+        ? { kind: 'ghost', traits: storedTraits }
+        : storedImage
+          ? { kind: 'image', v: storedImage.v }
+          : null,
+    )
     setAvatarBuilderOpen(false)
     setSheet({ mode: 'edit', name: a.name })
   }, [defaultAgent])
@@ -841,23 +848,76 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     createMut.mutate({ name: n, kiro_agent: kiroAgent, workspace, memory_store: memoryStore, triggers, session_color: sessionColor, epoch: sheetEpoch.current })
   }
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editing) return
     setError('')
+    // Snapshot the identity of THIS save before the first await: the epoch
+    // moves when the editor closes or reopens, and a save that awaited an
+    // upload must neither write through to a different opening's crew nor
+    // settle (close) a dialog it no longer owns. The FIELD VALUES are
+    // snapshotted here too — what commits is exactly what was on screen when
+    // Save was pressed, and the pane is fenced (disabled) for the upload's
+    // duration so no edit can land mid-save only to be discarded by the
+    // post-save close.
+    const epoch = sheetEpoch.current
+    const name = editing
+    const data = {
+      kiro_agent: kiroAgent,
+      workspace,
+      memory_store: memoryStore,
+      triggers,
+      // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
+      // clearing a pin is a real write rather than a skipped field.
+      model: editModel,
+      session_color: sessionColor,
+    }
+    let avatarPayload: CrewAvatarOverride | Record<string, never> = editAvatar ?? {}
+    if (editAvatar?.kind === 'image') {
+      let stagedToken: string | null = null
+      if (editAvatar.pendingData) {
+        // STAGE the picture; nothing live changes until the PUT below
+        // promotes it under the server's config lock — so a failed or
+        // abandoned Save never costs the previously saved picture.
+        setAvatarUploading(true)
+        try {
+          // Decode the data URI directly — fetch(data:) trips the
+          // dashboard's connect-src CSP, which only allows network origins.
+          const comma = editAvatar.pendingData.indexOf(',')
+          const mime = /data:([^;,]+)/.exec(editAvatar.pendingData)?.[1] ?? 'image/png'
+          const bin = atob(editAvatar.pendingData.slice(comma + 1))
+          const bytes = new Uint8Array(bin.length)
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+          const up = await api.uploadCrewAvatar(name, new Blob([bytes], { type: mime }))
+          if (!up.ok || !up.token) {
+            settleFor(epoch, up.error || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent'))
+            return
+          }
+          stagedToken = up.token
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          settleFor(epoch, msg || i18nT('pages.kiroCrewAgentsPage.failed_to_update_agent'))
+          return
+        } finally {
+          setAvatarUploading(false)
+        }
+      }
+      // `promote` + the staging token only when THIS save staged the file —
+      // the token is what stops an overlapping save's staging from being
+      // committed by this one, and a plain {kind:'image'} keeps the current
+      // picture while the server discards any stale staging. The server
+      // stamps the cache-buster `v` at the commit.
+      avatarPayload = stagedToken
+        ? { kind: 'image', promote: true, token: stagedToken }
+        : { kind: 'image' }
+    }
+    if (epoch !== sheetEpoch.current) return
     updateMut.mutate({
-      name: editing,
-      epoch: sheetEpoch.current,
+      name,
+      epoch,
       data: {
-        kiro_agent: kiroAgent,
-        workspace,
-        memory_store: memoryStore,
-        triggers,
-        // INHERIT_MODEL is normalized to '' server-side; send it verbatim so
-        // clearing a pin is a real write rather than a skipped field.
-        model: editModel,
-        session_color: sessionColor,
+        ...data,
         // {} is the wire spelling for "reset to the name-derived face".
-        avatar: editAvatar ?? {},
+        avatar: avatarPayload,
       },
     })
   }
@@ -941,7 +1001,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const collidingCrews = [...new Set([...sharingWorkspace, ...sharingMemoryStore])]
 
   const creating = sheet?.mode === 'create'
-  const sheetBusy = createMut.isPending || updateMut.isPending || deleteMut.isPending
+  const [avatarUploading, setAvatarUploading] = useState(false)
+  const sheetBusy =
+    createMut.isPending || updateMut.isPending || deleteMut.isPending || avatarUploading
 
   /** Which rail pane the editor body is showing. Reset whenever the editor is
    *  pointed somewhere else, so a crew never opens on the pane the previous one
@@ -1017,10 +1079,19 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (editModel !== (editingAgent.model || INHERIT_MODEL)) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
-    // Traits are a flat record with a stable key order (both sides come out of
-    // ghostTraitsFrom), so JSON equality is a faithful comparison.
-    const savedTraits = ghostTraitsFrom(editingAgent.avatar)
-    if (JSON.stringify(editAvatar?.traits ?? null) !== JSON.stringify(savedTraits)) out.add('routing')
+    // Both tiers in one comparison: ghost traits normalize through
+    // ghostTraitsFrom (flat record, stable key order) and an image override
+    // through imageAvatarFrom — so a picture pick, replace, or removal is
+    // dirty exactly like a trait edit. pendingData is part of the draft's
+    // identity on purpose: a newly chosen picture IS an unsaved change.
+    const savedNorm = ghostTraitsFrom(editingAgent.avatar) ?? imageAvatarFrom(editingAgent.avatar)
+    const draftNorm =
+      editAvatar?.kind === 'ghost'
+        ? (editAvatar.traits ?? null)
+        : editAvatar?.kind === 'image'
+          ? { v: editAvatar.v, pendingData: editAvatar.pendingData }
+          : null
+    if (JSON.stringify(draftNorm) !== JSON.stringify(savedNorm)) out.add('routing')
     return out
   }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, triggers, sessionColor, editAvatar])
 
@@ -1238,7 +1309,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 title={i18nT('components.avatarBuilder.title')}
                 data-testid="header-avatar-button"
               >
-                <CrewAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} />
+                <CrewAvatar seed={editing} avatar={editAvatar ?? undefined} size={28} onImageError={() => setError(i18nT('components.avatarBuilder.image_load_failed'))} />
               </button>
             )}
             <DialogTitle className="font-mono">
@@ -1257,6 +1328,18 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
               an existing crew has surfaces (schedules, bindings, removal) that a
               new one does not, and a wizard for creation is a separate decision. */}
           <DialogBody className={creating ? undefined : 'flex flex-col overflow-hidden p-0 sm:flex-row'}>
+            {/* The fence that makes the Save-time snapshot honest: while a
+                save is in flight (staged upload, the committing PUT, create
+                or delete), every control in the pane is disabled (fieldset
+                covers form controls, pointer-events the custom widgets), so
+                no edit can land mid-save only to be silently dropped when
+                the post-save close unmounts the pane.
+                display:contents keeps the flex layout unchanged. */}
+            <fieldset
+              disabled={sheetBusy}
+              aria-busy={sheetBusy}
+              className={`contents ${sheetBusy ? '[&>*]:pointer-events-none [&>*]:opacity-60' : ''}`}
+            >
             {creating ? (
               <div className="flex flex-col gap-6">
                 <section className="flex flex-col gap-3">
@@ -1430,6 +1513,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 </div>
               </>
             )}
+            </fieldset>
           </DialogBody>
 
           {/* Save is disabled while nothing is pending. The schedule pause/run

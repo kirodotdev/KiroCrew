@@ -1247,7 +1247,10 @@
       "customized_note": "Using a custom face",
       "field_hint": "The face this crew wears everywhere it appears.",
       "field_label": "Avatar",
+      "image_load_failed": "The saved picture could not be loaded — showing the default face instead.",
       "mirror": "Flip direction",
+      "mode_face": "Ghost face",
+      "mode_picture": "Picture",
       "opt_angry": "Angry",
       "opt_antenna": "Antenna",
       "opt_bandana": "Bandana",
@@ -1293,8 +1296,28 @@
       "opt_wrench": "Wrench",
       "randomize": "Randomize",
       "reset_default": "Reset to the default face",
+      "tile_amber": "Amber",
+      "tile_bronze": "Bronze",
+      "tile_coral": "Coral",
+      "tile_cyan": "Cyan",
+      "tile_green": "Green",
+      "tile_indigo": "Indigo",
+      "tile_magenta": "Magenta",
+      "tile_olive": "Olive",
+      "tile_plum": "Plum",
+      "tile_purple": "Kiro purple",
+      "tile_red": "Red",
+      "tile_rose": "Rose",
+      "tile_sky": "Sky blue",
+      "tile_steel": "Steel blue",
+      "tile_teal": "Teal",
       "title": "Customize avatar",
-      "title_named": "Customize avatar — {{name}}"
+      "title_named": "Customize avatar — {{name}}",
+      "upload_bad_image": "That file could not be read as an image.",
+      "upload_choose": "Choose a picture…",
+      "upload_hint": "Drag a picture here, or",
+      "upload_note": "PNG, JPEG, or WEBP. Cropped square and scaled to 512 px before it is stored.",
+      "upload_too_large": "That file is too large (20 MB max)."
     },
     "crewWakeSection": {
       "active": "active",
@@ -2364,8 +2387,7 @@
       "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting..."
     },
-    "voiceDisabledModal": {
-    },
+    "voiceDisabledModal": {},
     "voiceStatusBar": {
       "default_microphone": "Default microphone"
     },

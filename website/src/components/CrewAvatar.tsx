@@ -22,7 +22,7 @@
  * Swapping the art set is a one-line change to STYLE below; nothing outside
  * this file knows which style is in use.
  */
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { createAvatar } from '@dicebear/core'
 import {
   BRAND_PURPLE,
@@ -36,12 +36,38 @@ import {
 /** Kiro's own ghost, built on the shipped mark. See `lib/kiroGhostAvatar.ts`. */
 const STYLE = kiroGhost
 
-/** The stored per-crew override, as the backend round-trips it. */
-export type CrewAvatarOverride = { kind: 'ghost'; traits: KiroGhostTraits }
-
-export { ghostDataUri }
+/** The stored per-crew override, as the backend round-trips it.
+ *
+ * `image` marks an uploaded picture served from the per-crew avatar endpoint;
+ * `v` is the upload's cache-busting stamp. `pendingData` and `promote` never
+ * persist: `pendingData` is the editor draft's not-yet-uploaded picture (a
+ * data URI), and `promote` is the wire-only Save directive that tells the
+ * server "this save just staged a fresh upload — commit it" (without it, a
+ * leftover staging from an abandoned save must not ride into an unrelated
+ * edit). */
+export type CrewAvatarOverride =
+  | { kind: 'ghost'; traits: KiroGhostTraits }
+  | { kind: 'image'; v?: number; file?: string; pendingData?: string; promote?: boolean; token?: string }
 
 const TILE_RE = /^#[0-9a-f]{6}$/
+
+/**
+ * Interpret a crew record's `avatar` field as an uploaded-picture override.
+ * Returns the image descriptor, or `null` when the field is absent, junk, or
+ * a ghost override. Total for the same reason as `ghostTraitsFrom`: roster
+ * rows carry the field untyped.
+ */
+export function imageAvatarFrom(
+  avatar: unknown,
+): { v?: number; pendingData?: string } | null {
+  if (!avatar || typeof avatar !== 'object') return null
+  const a = avatar as Record<string, unknown>
+  if (a.kind !== 'image') return null
+  return {
+    v: typeof a.v === 'number' ? a.v : undefined,
+    pendingData: typeof a.pendingData === 'string' ? a.pendingData : undefined,
+  }
+}
 
 /**
  * Interpret a crew record's `avatar` field. Returns the pinned traits, or
@@ -101,6 +127,10 @@ export interface CrewAvatarProps {
    *  single-avatar surface. Identity is untouched — the working variant only
    *  moves what the face drew — so omitting it is a lossless still frame. */
   working?: WorkingIntensity
+  /** Fired when an uploaded picture fails to load (before the seeded-ghost
+   *  fallback renders). Surfaces the failure where a bare fallback would
+   *  read as "saved fine" — the editor shows an inline warning through it. */
+  onImageError?: () => void
   className?: string
 }
 
@@ -109,9 +139,16 @@ export default function CrewAvatar({
   avatar,
   size = 40,
   working,
+  onImageError,
   className = '',
 }: CrewAvatarProps) {
   const traits = useMemo(() => ghostTraitsFrom(avatar), [avatar])
+  const image = useMemo(() => imageAvatarFrom(avatar), [avatar])
+  // An uploaded picture that fails to load (file deleted out-of-band, stale
+  // record) falls back to the name-derived ghost rather than the browser's
+  // broken-image glyph. Keyed by the src so a REPLACED picture gets a fresh
+  // chance instead of inheriting the previous file's failure.
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const src = useMemo(() => {
     // Pinned traits render fresh (see the CACHE comment); useMemo already
     // dedupes re-renders of one mounted instance. `working` is a render
@@ -127,6 +164,35 @@ export default function CrewAvatar({
     CACHE.set(key, uri)
     return uri
   }, [seed, traits, working])
+
+  // The editor draft's not-yet-uploaded picture previews directly; a saved
+  // one is served by the authenticated API (same-origin cookie auth), with
+  // the upload stamp as the cache-buster so a replaced face shows up without
+  // waiting out the browser cache.
+  const imageSrc = image
+    ? (image.pendingData ??
+      `/api/agents/${encodeURIComponent(seed)}/avatar${image.v ? `?v=${image.v}` : ''}`)
+    : null
+
+  if (imageSrc && failedSrc !== imageSrc) {
+    return (
+      <img
+        src={imageSrc}
+        alt=""
+        aria-hidden="true"
+        width={size}
+        height={size}
+        style={{ width: size, height: size }}
+        onError={() => {
+          setFailedSrc(imageSrc)
+          onImageError?.()
+        }}
+        // object-cover: the client crops square before upload, but an old or
+        // hand-placed file may not be — cover keeps the tile's rhythm either way.
+        className={`shrink-0 rounded-md border border-border bg-bg-elevated object-cover ${className}`}
+      />
+    )
+  }
 
   return (
     <img
