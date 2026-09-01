@@ -5624,7 +5624,10 @@
       "reset_to_global": "Сбросить к глобальному ({{pct}}%)",
       "following_global": "Следует глобальному ({{pct}}%)",
       "sketch": "Эскиз",
-      "sketch_desc": "Нарисуйте эскиз; прикрепляет изображение и его редактируемый исходник"
+      "sketch_desc": "Нарисуйте эскиз; прикрепляет изображение и его редактируемый исходник",
+      "session_control_needs_attention": "Требует внимания",
+      "session_control_ready": "Готово",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Список агентов",
@@ -7902,6 +7905,15 @@
       "confirm_discard": "Удалить рисунок",
       "already_attached": "Прикреплено — измените холст, чтобы нарисовать снова",
       "load_failed": "Не удалось загрузить блокнот для эскизов — проверьте соединение и откройте снова"
+    },
+    "sessionControlHost": {
+      "failed": "Сбой {{label}}",
+      "chat_unaffected": "Это не влияет на чат — перестал работать только этот элемент управления.",
+      "retry": "Повторить",
+      "retry_loading": "Повторить загрузку {{label}}",
+      "could_not_load": "Не удалось загрузить {{label}}",
+      "loading": "Загрузка {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

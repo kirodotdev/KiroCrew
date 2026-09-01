@@ -5357,7 +5357,10 @@
       "reset_to_global": "グローバル設定に戻す（{{pct}}%）",
       "following_global": "グローバル設定に従う（{{pct}}%）",
       "sketch": "スケッチ",
-      "sketch_desc": "スケッチを描く。画像と編集可能なソースを添付します"
+      "sketch_desc": "スケッチを描く。画像と編集可能なソースを添付します",
+      "session_control_needs_attention": "要対応",
+      "session_control_ready": "準備完了",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -7584,6 +7587,15 @@
       "confirm_discard": "描画を破棄",
       "already_attached": "添付済み — キャンバスを編集すると再度スケッチできます",
       "load_failed": "スケッチパッドを読み込めませんでした。接続を確認して再度開いてください"
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} が失敗しました",
+      "chat_unaffected": "チャットには影響ありません。このコントロールのみが動作を停止しました。",
+      "retry": "再試行",
+      "retry_loading": "{{label}} の読み込みを再試行",
+      "could_not_load": "{{label}} を読み込めませんでした",
+      "loading": "{{label}} を読み込み中…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

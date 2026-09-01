@@ -5446,7 +5446,10 @@
       "reset_to_global": "ग्लोबल पर रीसेट करें ({{pct}}%)",
       "following_global": "ग्लोबल का पालन कर रहा है ({{pct}}%)",
       "sketch": "स्केच",
-      "sketch_desc": "स्केच बनाएं; छवि और संपादन योग्य स्रोत संलग्न करता है"
+      "sketch_desc": "स्केच बनाएं; छवि और संपादन योग्य स्रोत संलग्न करता है",
+      "session_control_needs_attention": "ध्यान देने की ज़रूरत",
+      "session_control_ready": "तैयार",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",
@@ -7690,6 +7693,15 @@
       "confirm_discard": "चित्र हटाएं",
       "already_attached": "संलग्न — फिर से स्केच करने के लिए कैनवास संपादित करें",
       "load_failed": "स्केच पैड लोड नहीं हो सका — कनेक्शन जांचें और फिर से खोलें"
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} विफल",
+      "chat_unaffected": "तुम्हारी चैट अप्रभावित है — केवल यह नियंत्रण काम करना बंद हुआ।",
+      "retry": "पुनः प्रयास करें",
+      "retry_loading": "{{label}} लोड करने का पुनः प्रयास करें",
+      "could_not_load": "{{label}} लोड नहीं हो सका",
+      "loading": "{{label}} लोड हो रहा है…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

@@ -3728,6 +3728,50 @@ export const api = {
   // Auto-research
   researchValidate: (body: object) => post("/api/apps/auto-research/validate", body).then(j),
   researchGrillExpand: (body: object) => post("/api/apps/auto-research/grill/expand", body).then(j),
+  /**
+   * GET an app's declared per-session status route.
+   *
+   * Routed through `get()` + `j()` rather than a bare `fetch`, so this call
+   * carries the X-Session-Key gate and runs `checkSessionExpired` like every
+   * other app call. `statusPath` is validated by the caller against the same
+   * allowlist the backend applies at install time.
+   *
+   * `processBacked` selects the prefix, because an app's backend is served at
+   * one of TWO places and picking the wrong one is a silent permanent failure
+   * rather than a visible error: in-gateway hook routes are registered under
+   * `/api/apps/<app>/`, while an app running its own backend PROCESS is
+   * reverse-proxied at `/apps/<app>/api/`. Calling the hook prefix for a
+   * process-backed app answers 502 ("no reachable backend"), which the chip
+   * renders as a permanently stateless control with nothing saying why.
+   */
+  appSessionStatus: (
+    appName: string,
+    statusPath: string,
+    params: Record<string, string>,
+    processBacked = false,
+  ) => {
+    // Defensive: the boundary is enforced here rather than deferred to every
+    // call site. statusPath comes from a third-party app manifest and is
+    // interpolated into the path, so a caller that forgets to sanitize it must
+    // not be able to reach /api/apps/<app>/../other-app/... . This is the
+    // client-side backstop for the same allowlist the backend applies at
+    // install time — callers still validate too, this is not the only check.
+    if (!/^[a-z0-9][a-z0-9/_-]{0,63}$/.test(statusPath)) {
+      // A machine code, not UI copy: this throw is a programmer-error backstop for
+      // a manifest that got past the caller's own check, so it never renders and
+      // must not become a translated string. The comment above is the explanation;
+      // the code is what a caller can match on.
+      throw new ApiError(400, 'invalidAppStatusPath')
+    }
+    const qs = new URLSearchParams(params).toString()
+    // Both prefixes are built HERE from the app name rather than read from the
+    // manifest, so the only app-authored value interpolated into the URL is the
+    // `statusPath` already validated above.
+    const base = processBacked
+      ? '/apps/' + encodeURIComponent(appName) + '/api/'
+      : '/api/apps/' + encodeURIComponent(appName) + '/'
+    return get(base + statusPath + (qs ? '?' + qs : '')).then(j)
+  },
   researchCampaigns: () => get("/api/apps/auto-research/campaigns").then(j),
   researchCampaign: (id: string) => get("/api/apps/auto-research/campaigns/" + id).then(j),
   researchCreate: (body: object) => post("/api/apps/auto-research/campaigns", body).then(j),

@@ -1,21 +1,21 @@
 ---
 title: App Session Controls — a composer seam for per-chat app state
-status: in-progress
+status: accepted
 author: omerrubi
 created: 2026-08-31
 last-audited: 2026-09-01
 audited-at: 1d705a03f
 doc-pr:
-implementation-prs: []
+implementation-prs: [7573]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: App Session Controls — a composer seam for per-chat app state
 
-- Status: in-progress — the design below is implemented and tested on an active
-  branch, but no PR is open yet. Nothing is on main. §4 describes code that
-  exists; §5 and §9 describe what has not been decided.
+- Status: accepted — this document ships in the same PR as its implementation
+  (#7573), so §4 describes code that lands with it rather than code on a branch.
+  §5 and §9 describe what has not been decided.
 - Author: omerrubi
 - Created: 2026-08-31
 - Related: `rfc-navigation-placement-seam.md` (the sibling problem — a manifest
@@ -118,7 +118,6 @@ belongs beside them, and nowhere else.
 | `entryPoint` | ESM bundle path relative to `ui/` |
 | `label` | Accessible name, and the chip tooltip |
 | `icon` | lucide icon name |
-| `placement` | `"session-bar"` (the only value today) |
 | `statusPath` | Optional backend route reporting per-session chip state |
 
 Validation, enforced at install:
@@ -139,9 +138,13 @@ declaring the same `id` cannot collide.
 
 - A resolver turns the installed-app list into resolved controls, dropping
   duplicate keys and sorting by key for a stable render order.
-- **The composer renders at most three chips in total**, across all apps:
-  `MAX_INLINE_SESSION_CONTROLS = 3` (`website/src/hooks/useSessionControls.ts:30`),
-  applied as `out.slice(0, MAX_INLINE_SESSION_CONTROLS)` (`:186`). Controls past
+- **The composer renders at most two chips in total**, across all apps:
+  `MAX_INLINE_SESSION_CONTROLS = 2` (`website/src/hooks/useSessionControls.ts:30`),
+  applied as `out.slice(0, MAX_INLINE_SESSION_CONTROLS)` (`:195`). Two rather
+  than three because the chips render in their own separated region and
+  `max-two-buttons-per-row` (`website/AUTOSDE.yaml`, `blocking: true`) caps a
+  horizontal group at two action controls, so the region sits at the cap
+  rather than over it. Controls past
   the cap are **dropped, not overflowed**. That is a deliberate trade recorded in
   the code — the bar competes with the message input for one row, so an overflow
   menu is a follow-up and a dropped chip beats a composer that cannot be typed
@@ -178,9 +181,6 @@ export interface SessionControlContext {
   folderName?: string
   /** Working directory recorded for the session, when known. */
   cwd: string
-  agent: string
-  model: string
-  workspace: string
 }
 ```
 
@@ -190,13 +190,23 @@ committing a change.
 
 ### 4.3 Optional status — `statusPath`
 
-When declared, the host GETs `<backend.routes>/<statusPath>` with `session_key`
+When declared, the host GETs `<the app's own route base>/<statusPath>` with
+`session_key`
 always, `folder_id` when the chat is in a folder, and `folder_name` alongside it
 when known — a control holding a per-folder setting cannot answer without the
 folder, and a brand-new chat is exactly the case where it has no record of its
 own to fall back on. It reads `{ state, tooltip }`, where `state` is `ok` |
 `warn` | `none`; the chip tints with `--ok` or `--warn` respectively
 (`ChatInput.tsx:416-420`) and the tooltip is length-bounded.
+
+The route base is derived from the manifest, not declared: an app with
+`backend.entryPoint` runs its own backend process and is reverse-proxied at
+`/apps/<app>/api/`, while one with only `backend.hooks.routes` is registered
+in-gateway under `/api/apps/<app>/`. Both prefixes are constructed host-side from
+the app name, so `statusPath` remains the only app-authored segment. Picking one
+prefix for both was a real defect found in review — the hook prefix answers `502
+no reachable backend` for a process-backed app, which the chip would render as a
+permanently stateless control with nothing saying why.
 
 A control with no `statusPath` is never polled, and no poll is issued before a
 session exists. Polling **fails closed**: a third-party app that is down is not
@@ -270,8 +280,9 @@ The change is additive in both directions.
 
 ## 8. Non-goals
 
-- Not a general-purpose composer plugin API. One placement value ships
-  (`session-bar`); more require their own argument.
+- Not a general-purpose composer plugin API. One surface ships — the composer
+  session bar. A second would need its own argument, and the manifest field to
+  select between them is deliberately deferred until there is one (§9.4).
 - Not a replacement for `ui.pages`. A control is compact and session-scoped;
   anything larger stays a page.
 - No cross-app state, and no host-mediated write path. A chip's only way to
@@ -287,17 +298,21 @@ The change is additive in both directions.
    this seam wait on that translation path, or ship untranslated labels and adopt
    it when it exists? Shipping first is what the implementation does today.
 2. **The global cap drops silently — should it overflow instead?** The composer
-   is capped at three controls and anything past the cap is dropped
-   (`useSessionControls.ts:186`), which the code itself flags as a follow-up. A
-   user with four contributing apps has one control that is simply absent, with
+   is capped at two controls and anything past the cap is dropped
+   (`useSessionControls.ts:195`), which the code itself flags as a follow-up. A
+   user with three contributing apps has one control that is simply absent, with
    nothing disclosing it. An overflow menu, or at minimum a disclosure, is the
    open question — not whether a global cap should exist.
 3. **Should status be pushed rather than polled?** `rfc-local-notification-bus.md`
    has a bus whose Phase 2 is wired with no producer. A control's status change is
    a plausible producer, and would retire the poll.
-4. **Is `placement` premature?** It has one legal value. It exists so a second
-   surface does not need a breaking manifest change, but a field with one value
-   is also a field nobody has had to think about yet.
+4. **How does a second surface get selected?** An earlier draft shipped a
+   `placement` field for this, with `session-bar` as its only legal value. It was
+   removed before merge: nothing branched on it, so it was manifest schema —
+   which cannot be withdrawn once apps write it — bought against a surface that
+   does not exist. Adding a field when the second surface arrives is a
+   backward-compatible change; removing one is not. The same reasoning removed
+   `agent`, `model` and `workspace` from the props contract in §4.3.
 
 ## 10. Alternatives considered
 

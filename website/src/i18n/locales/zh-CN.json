@@ -5357,7 +5357,10 @@
       "reset_to_global": "重置为全局设置（{{pct}}%）",
       "following_global": "跟随全局设置（{{pct}}%）",
       "sketch": "草图",
-      "sketch_desc": "画个草图；会附上图片和可编辑源文件"
+      "sketch_desc": "画个草图；会附上图片和可编辑源文件",
+      "session_control_needs_attention": "需要处理",
+      "session_control_ready": "就绪",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -7584,6 +7587,15 @@
       "confirm_discard": "丢弃画作",
       "already_attached": "已附加——继续编辑画布可再次草图",
       "load_failed": "草图板加载失败——请检查网络后重新打开"
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} 失败",
+      "chat_unaffected": "聊天不受影响——仅此控件停止工作。",
+      "retry": "重试",
+      "retry_loading": "重试加载 {{label}}",
+      "could_not_load": "无法加载 {{label}}",
+      "loading": "正在加载 {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

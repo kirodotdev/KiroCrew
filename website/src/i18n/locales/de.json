@@ -5446,7 +5446,10 @@
       "reset_to_global": "Auf global zurücksetzen ({{pct}} %)",
       "following_global": "Folgt global ({{pct}} %)",
       "sketch": "Skizze",
-      "sketch_desc": "Skizze zeichnen; hängt ein Bild plus bearbeitbare Quelle an"
+      "sketch_desc": "Skizze zeichnen; hängt ein Bild plus bearbeitbare Quelle an",
+      "session_control_needs_attention": "Aktion erforderlich",
+      "session_control_ready": "Bereit",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -7690,6 +7693,15 @@
       "confirm_discard": "Zeichnung verwerfen",
       "already_attached": "Angehängt — Canvas bearbeiten, um erneut zu skizzieren",
       "load_failed": "Skizzenblock konnte nicht geladen werden – Verbindung prüfen und erneut öffnen"
+    },
+    "sessionControlHost": {
+      "failed": "{{label}} fehlgeschlagen",
+      "chat_unaffected": "Ihr Chat ist nicht betroffen – nur dieses Steuerelement funktioniert nicht mehr.",
+      "retry": "Wiederholen",
+      "retry_loading": "{{label}} erneut laden",
+      "could_not_load": "{{label}} konnte nicht geladen werden",
+      "loading": "{{label}} wird geladen…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

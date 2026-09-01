@@ -5535,7 +5535,10 @@
       "reset_to_global": "Redefinir para o global ({{pct}}%)",
       "following_global": "Seguindo o global ({{pct}}%)",
       "sketch": "Esboço",
-      "sketch_desc": "Desenhe um esboço; anexa uma imagem e sua fonte editável"
+      "sketch_desc": "Desenhe um esboço; anexa uma imagem e sua fonte editável",
+      "session_control_needs_attention": "Requer atenção",
+      "session_control_ready": "Pronto",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -7796,6 +7799,15 @@
       "confirm_discard": "Descartar desenho",
       "already_attached": "Anexado — edite a tela para esboçar novamente",
       "load_failed": "Não foi possível carregar o bloco de esboços — verifique sua conexão e reabra"
+    },
+    "sessionControlHost": {
+      "failed": "Falha em {{label}}",
+      "chat_unaffected": "Seu chat não é afetado — apenas este controle parou de funcionar.",
+      "retry": "Tentar novamente",
+      "retry_loading": "Tentar carregar {{label}} novamente",
+      "could_not_load": "Não foi possível carregar {{label}}",
+      "loading": "Carregando {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {

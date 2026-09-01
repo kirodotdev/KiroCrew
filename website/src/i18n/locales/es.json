@@ -5535,7 +5535,10 @@
       "reset_to_global": "Restablecer al global ({{pct}}%)",
       "following_global": "Sigue el global ({{pct}}%)",
       "sketch": "Boceto",
-      "sketch_desc": "Dibuja un boceto; adjunta una imagen y su fuente editable"
+      "sketch_desc": "Dibuja un boceto; adjunta una imagen y su fuente editable",
+      "session_control_needs_attention": "Requiere atención",
+      "session_control_ready": "Listo",
+      "session_control_chip_label": "{{label}} — {{detail}}"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -7796,6 +7799,15 @@
       "confirm_discard": "Descartar dibujo",
       "already_attached": "Adjuntado: edita el lienzo para volver a dibujar",
       "load_failed": "No se pudo cargar el bloc de bocetos: revisa tu conexión y vuelve a abrirlo"
+    },
+    "sessionControlHost": {
+      "failed": "Error en {{label}}",
+      "chat_unaffected": "Tu chat no se ve afectado: solo este control dejó de funcionar.",
+      "retry": "Reintentar",
+      "retry_loading": "Reintentar la carga de {{label}}",
+      "could_not_load": "No se pudo cargar {{label}}",
+      "loading": "Cargando {{label}}…",
+      "dialog_label": "{{label}} — {{appName}}"
     }
   },
   "hooks": {
