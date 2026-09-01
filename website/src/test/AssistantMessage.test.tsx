@@ -203,6 +203,24 @@ describe('AssistantMessage', () => {
     expect(row.querySelectorAll('button')).toHaveLength(baseRowButtons)
   })
 
+  it('renders no fork or plan affordance at all when handlers are absent (embedded co-author pane)', () => {
+    // ChatPage passes onFork/onPlanFromHere as undefined when `embedded` —
+    // an embedded pane (scribe/papyrus co-author, artifact chat) forking would
+    // mint a top-level session in the Sessions tab and silently switch the
+    // GLOBAL active slot. With no handlers, neither the row buttons nor the
+    // unavailable-state overflow menu may render.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} forkIndex={2} />)
+    expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('plan-from-here')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
+    cleanup()
+    // Same with no forkIndex: the (onFork || onPlanFromHere) overflow branch
+    // must also stay closed when both handlers are undefined.
+    render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} />)
+    expect(screen.queryByTestId('fork-from-here')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
+  })
+
   it('keeps an unavailable fork item reachable, so its reason can actually be read', () => {
     // Radix sets data-disabled AND pointer-events-none for a `disabled` item, so the
     // reason would be unreachable by keyboard nav and by hover alike.
