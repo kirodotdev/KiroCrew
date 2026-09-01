@@ -206,6 +206,25 @@ describe('ChatPane follow-up options (issue #5870)', () => {
     expect(composer().value).toBe('Please, Alphabet')
   })
 
+  it('leaves earlier draft text alone when the user already deleted the appended option', async () => {
+    // ChatPage removes only the COMPLETE generated suffix (#6092 review). The
+    // pane must hold the same invariant: once the user has deleted the
+    // appended ", Alpha" by hand, unselecting the still-lit chip has nothing of
+    // its own left to remove, and a last-occurrence search would fall back onto
+    // the ", Alpha" the user typed — silently editing their draft.
+    await renderPane('pane-8')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha') })
+    expect(composer().value).toBe('Discuss, Alpha home, Alpha')
+
+    // The chip stays lit; the user removes its generated tail themselves.
+    fireEvent.change(composer(), { target: { value: 'Discuss, Alpha home' } })
+    await act(async () => { clickOption('Alpha') })
+    expect(composer().value).toBe('Discuss, Alpha home')
+  })
+
   it('offers no pills while the pane is busy, and offers them once busy clears', async () => {
     // selectComposerBusy reads the dashboard slot's subagents_running flag —
     // the same composer-busy rule that queues sends — so the derive gate must
