@@ -81,3 +81,97 @@ describe('cron JobForm agent selector roster (#5990)', () => {
     expect(within(listbox).getByText('gpu-research')).toBeInTheDocument()
   })
 })
+
+/**
+ * The state the report was actually describing: the roster fetch failed, so the
+ * list is empty while the trigger still shows the default agent (SchedulePage
+ * reads `defaultAgent` from a SEPARATE query that succeeded). The form used to
+ * render that as the italic "No matches" — the same thing it says when you
+ * filter for a name nobody has — so a failed load was indistinguishable from an
+ * install with one agent, with no way to retry short of remounting the page.
+ */
+describe('cron JobForm agent selector roster failure (#5990)', () => {
+  it('says the roster failed to load, rather than claiming there are no matches', () => {
+    renderWithProviders(
+      <JobForm job={messageJob()} agents={[]} defaultAgent="kirocrew" rosterFailure={{ reloading: false, onReload: () => {} }} onSaved={() => {}} layout="vertical" />,
+    )
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+
+    expect(screen.getByText("Couldn't load the agent list.")).toBeInTheDocument()
+    // The misleading empty-state must be gone, not merely accompanied.
+    expect(screen.queryByText('No matches')).not.toBeInTheDocument()
+  })
+
+  it('offers a retry that re-runs the roster fetch', () => {
+    const onReloadRoster = vi.fn()
+    renderWithProviders(
+      <JobForm job={messageJob()} agents={[]} defaultAgent="kirocrew" rosterFailure={{ reloading: false, onReload: onReloadRoster }} onSaved={() => {}} layout="vertical" />,
+    )
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+
+    fireEvent.click(screen.getByText('Retry'))
+    expect(onReloadRoster).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports the failure on the inline create form too', () => {
+    renderWithProviders(
+      <JobForm agents={[]} defaultAgent="kirocrew" rosterFailure={{ reloading: false, onReload: () => {} }} onSaved={() => {}} layout="horizontal" />,
+    )
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+
+    expect(screen.getByText("Couldn't load the agent list.")).toBeInTheDocument()
+  })
+
+  it('keeps a roster it still holds usable when a later refresh failed', () => {
+    renderWithProviders(
+      <JobForm job={messageJob()} agents={roster} defaultAgent="kirocrew" rosterFailure={{ reloading: false, onReload: () => {} }} onSaved={() => {}} layout="vertical" />,
+    )
+    const options = openRosterOptions()
+
+    // A stale error must not replace a list the user can act on.
+    expect(options).toHaveLength(roster.length)
+    expect(screen.queryByText("Couldn't load the agent list.")).not.toBeInTheDocument()
+  })
+
+  it('still says "No matches" when a filter — not a failure — empties the list', () => {
+    renderWithProviders(
+      <JobForm job={messageJob()} agents={roster} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />,
+    )
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+    fireEvent.change(screen.getByLabelText('Filter agents'), { target: { value: 'nobody' } })
+
+    expect(screen.getByText('No matches')).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't load the agent list.")).not.toBeInTheDocument()
+  })
+
+  it('shows the retry as in flight, so a retry that fails again is not silent', () => {
+    renderWithProviders(
+      <JobForm job={messageJob()} agents={[]} defaultAgent="kirocrew" rosterFailure={{ reloading: true, onReload: () => {} }} onSaved={() => {}} layout="vertical" />,
+    )
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+
+    const btn = screen.getByRole('button', { name: 'Retrying…' })
+    expect(btn).toBeDisabled()
+    // A second press must not queue another fetch behind the one in flight.
+    expect(screen.queryByText('Retry')).not.toBeInTheDocument()
+  })
+
+  it('withholds the filter box while the roster is unavailable', () => {
+    renderWithProviders(
+      <JobForm job={messageJob()} agents={[]} defaultAgent="kirocrew" rosterFailure={{ reloading: false, onReload: () => {} }} onSaved={() => {}} layout="vertical" />,
+    )
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+
+    // Nothing to filter — the control is absent rather than merely inert.
+    expect(screen.queryByLabelText('Filter agents')).not.toBeInTheDocument()
+  })
+
+  it('keeps the filter box when a roster is present despite a failed refresh', () => {
+    renderWithProviders(
+      <JobForm job={messageJob()} agents={roster} defaultAgent="kirocrew" rosterFailure={{ reloading: false, onReload: () => {} }} onSaved={() => {}} layout="vertical" />,
+    )
+    fireEvent.click(screen.getByLabelText('Switch agent'))
+
+    expect(screen.getByLabelText('Filter agents')).toBeInTheDocument()
+  })
+})

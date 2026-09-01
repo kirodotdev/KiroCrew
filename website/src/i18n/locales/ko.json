@@ -4941,6 +4941,9 @@
       "default": "기본값",
       "filter_agents": "에이전트 필터",
       "no_matches": "일치 항목 없음",
+      "retry": "다시 시도",
+      "retrying": "다시 시도 중…",
+      "roster_load_failed": "에이전트 목록을 불러올 수 없습니다.",
       "switch_agent": "에이전트 전환",
       "type_to_filter": "입력하여 필터링…"
     },

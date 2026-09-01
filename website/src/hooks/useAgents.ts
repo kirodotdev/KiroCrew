@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { api } from '../api/client'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 
@@ -10,10 +10,33 @@ import type { KiroCrewAgent } from '../components/AgentSelector'
  *   just an input to it: pointing the SAME slot at a different project changes
  *   the roster without changing `sessionKey`. Omit on surfaces with no slot
  *   context (the roster is then global-only and cannot go stale this way).
+ *
+ * @returns `error` — the roster fetch FAILED, as distinct from an install that
+ *   genuinely has one agent. The two used to be the same observation: the fetch
+ *   swallowed its rejection and left `agents` empty, so every caller rendered a
+ *   failed load as a legitimately short list (#5990). Callers that cannot
+ *   otherwise recover must surface it and offer `reload`.
+ * @returns `reload` — re-run the roster fetch. `refreshTrigger` cannot serve as
+ *   the retry on a surface that passes a constant (the schedule form passes
+ *   `0`), because the effect then never runs again for the life of the mount.
+ *   The one-shot sync is NOT repeated: it is per-mount by design, and a fetch is
+ *   what failed.
+ * @returns `reloading` — a `reload` fetch is in flight. Without it a retry that
+ *   fails AGAIN is invisible: `setError(true)` over an already-true value bails
+ *   out of re-rendering, so the surface is pixel-identical after the click and
+ *   the one recovery affordance looks broken during the very outage it exists
+ *   for. Callers use it to make the attempt visibly complete.
  */
 export function useAgents(refreshTrigger: number, sessionKey?: string, projectDir?: string) {
   const [agents, setAgents] = useState<KiroCrewAgent[]>([])
   const [defaultAgent, setDefaultAgent] = useState('')
+  const [error, setError] = useState(false)
+  const [reloading, setReloading] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
+  const reload = useCallback(() => {
+    setReloading(true)
+    setReloadTick(t => t + 1)
+  }, [])
   const syncOnce = useRef<Promise<unknown> | null>(null)
   const syncSettled = useRef(false)
   // The scope this roster belongs to, held as two refs rather than one joined
@@ -35,13 +58,27 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
       lastKey.current = sessionKey
       lastProject.current = projectDir
       setAgents([])
+      // The previous scope's verdict says nothing about this one.
+      setError(false)
     }
     const fetchAgents = () =>
       api.kirocrewAgents(sessionKey).then(d => {
         if (cancelled) return
         setAgents(d.agents || [])
         setDefaultAgent(d.default_agent || '')
-      }).catch(() => {})
+        setError(false)
+        setReloading(false)
+      }).catch(() => {
+        // Still swallowed as far as throwing goes — a rejected roster fetch must
+        // not break the surface that asked for it — but no longer silent: the
+        // list is left as-is (a failed REFRESH keeps the roster it already had)
+        // and the failure becomes readable state.
+        if (cancelled) return
+        setError(true)
+        // Cleared on the failing path too, so a retry that fails again still
+        // resolves visibly instead of leaving the caller pinned in "trying".
+        setReloading(false)
+      })
 
     // Sync runs ONCE per mount. Hold the promise rather than a "started" flag so
     // a scope change arriving while it is still in flight waits for it too:
@@ -63,7 +100,7 @@ export function useAgents(refreshTrigger: number, sessionKey?: string, projectDi
     else syncOnce.current.then(fetchAgents)
 
     return () => { cancelled = true }
-  }, [refreshTrigger, sessionKey, projectDir])
+  }, [refreshTrigger, sessionKey, projectDir, reloadTick])
 
-  return { agents, defaultAgent }
+  return { agents, defaultAgent, error, reload, reloading }
 }

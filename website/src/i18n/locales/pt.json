@@ -5128,6 +5128,9 @@
       "default": "padrão",
       "filter_agents": "Filtrar agentes",
       "no_matches": "Nenhum resultado",
+      "retry": "Tentar novamente",
+      "retrying": "Tentando novamente…",
+      "roster_load_failed": "Não foi possível carregar a lista de agentes.",
       "switch_agent": "Trocar de agente",
       "type_to_filter": "Digite para filtrar…"
     },

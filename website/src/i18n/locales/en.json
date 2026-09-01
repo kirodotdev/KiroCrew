@@ -3829,6 +3829,9 @@
       "default": "default",
       "filter_agents": "Filter agents",
       "no_matches": "No matches",
+      "retry": "Retry",
+      "retrying": "Retrying…",
+      "roster_load_failed": "Couldn't load the agent list.",
       "switch_agent": "Switch agent",
       "type_to_filter": "Type to filter…"
     },

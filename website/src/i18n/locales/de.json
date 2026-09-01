@@ -5043,6 +5043,9 @@
       "default": "Standard",
       "filter_agents": "Agenten filtern",
       "no_matches": "Keine Treffer",
+      "retry": "Wiederholen",
+      "retrying": "Wird wiederholt…",
+      "roster_load_failed": "Die Agentenliste konnte nicht geladen werden.",
       "switch_agent": "Agent wechseln",
       "type_to_filter": "Zum Filtern tippen…"
     },

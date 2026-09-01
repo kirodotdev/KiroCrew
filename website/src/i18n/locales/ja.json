@@ -4941,6 +4941,9 @@
       "default": "デフォルト",
       "filter_agents": "エージェントをフィルター",
       "no_matches": "マッチするものがありません",
+      "retry": "再試行",
+      "retrying": "再試行中…",
+      "roster_load_failed": "エージェント一覧を読み込めませんでした。",
       "switch_agent": "エージェントを切り替え",
       "type_to_filter": "フィルターするには入力…"
     },

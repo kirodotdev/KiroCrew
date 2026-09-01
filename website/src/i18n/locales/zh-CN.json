@@ -4958,6 +4958,9 @@
       "default": "默认",
       "filter_agents": "筛选代理",
       "no_matches": "无匹配项",
+      "retry": "重试",
+      "retrying": "正在重试…",
+      "roster_load_failed": "无法加载 Agent 列表。",
       "switch_agent": "切换代理",
       "type_to_filter": "输入以筛选…"
     },

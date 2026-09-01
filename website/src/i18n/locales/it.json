@@ -5128,6 +5128,9 @@
       "default": "predefinito",
       "filter_agents": "Filtra gli agenti",
       "no_matches": "Nessuna corrispondenza",
+      "retry": "Riprova",
+      "retrying": "Nuovo tentativo…",
+      "roster_load_failed": "Impossibile caricare l'elenco degli agenti.",
       "switch_agent": "Cambia agente",
       "type_to_filter": "Digita per filtrare…"
     },
