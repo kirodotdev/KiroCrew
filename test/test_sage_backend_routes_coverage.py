@@ -1254,7 +1254,8 @@ class TestRunReviewBgModelBinding(_SageRoutesBase):
     """``run_review`` takes no model parameter, so the pin travels through the
     dispatch the driver is handed. Same contract the poster path pins above:
     a bare ``make_sync_dispatch`` acquires None against a batch pinned to m1,
-    so an explicit-model review used to die on its first dispatched task."""
+    so an explicit-model review dies on its first dispatched task unless the
+    driver carries the pin."""
 
     def setUp(self):
         super().setUp()

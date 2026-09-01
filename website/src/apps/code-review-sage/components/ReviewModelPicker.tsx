@@ -3,10 +3,6 @@ import { useAvailableModels } from '../../../hooks/useAvailableModels'
 import { i18nT } from '../../../i18n/t'
 import { REVIEW_MODEL_AUTO } from '../lib/types'
 
-const SELECT_CLASS =
-  'text-[12px] px-2 py-1 rounded-md bg-bg-elevated text-text border border-border '
-  + 'outline-none focus:border-accent cursor-pointer'
-
 export interface ReviewModelPickerProps {
   value: string
   onChange: (model: string) => void
@@ -40,7 +36,7 @@ export default function ReviewModelPicker({
         value={selected}
         onChange={model => onChange(model || REVIEW_MODEL_AUTO)}
         disabled={disabled}
-        className={SELECT_CLASS}
+        className="text-[12px] px-2 py-1 rounded-md bg-bg-elevated text-text border border-border outline-none focus:border-accent cursor-pointer"
       />
     </div>
   )

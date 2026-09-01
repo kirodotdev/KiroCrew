@@ -712,6 +712,12 @@ class TestHookGateKwargs:
             "command",
             "is_shell",
         },
+        # Review-fix governance: raw_tool_params may nest the shell command
+        # under a "bash" key, which AcpEvent.shell_command does not read; the
+        # override keeps that shape gated instead of falling to deny-by-default.
+        "apps/builtins/code_review_sage/sage_lib/review_pool.py": {
+            "command",
+        },
     }
 
     @staticmethod

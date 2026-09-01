@@ -201,7 +201,7 @@ def assert_target_unchanged(
     expected: ReviewFixTargetSnapshot,
     current: ReviewFixTargetSnapshot,
 ) -> None:
-    """Raise when Apply is no longer operating on the captured target."""
+    """Raise when Apply is operating on something other than the captured target."""
     if (
         expected.repo_root != current.repo_root
         or expected.target_path != current.target_path

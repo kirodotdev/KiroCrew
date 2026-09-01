@@ -21,6 +21,13 @@ class _Sessions:
     _sessions: dict = {}
 
 
+@pytest.fixture(autouse=True)
+def _sage_app_enabled(monkeypatch):
+    # Route-level tests below run with the app enabled; the gate's own behavior
+    # is covered by TestFixTaskEnablementGate at the bottom of this file.
+    monkeypatch.setattr(fix_tasks, "is_app_enabled", lambda name: True)
+
+
 def _app(runner: TaskRunner) -> web.Application:
     app = web.Application()
     app["state"] = SimpleNamespace(task_runner=runner, sessions=_Sessions())
@@ -368,3 +375,67 @@ async def test_apply_commit_and_push_are_state_gated(tmp_path):
             )
             assert response.status == 409
             assert (await response.json())["code"] == "review_fix_action_rejected"
+
+
+class TestFixTaskEnablementGate:
+    """A disabled Sage app must answer nothing on its fix-task surface.
+
+    The handlers are registered once at startup (both on the Sage app's own
+    router and, through ``dashboard/handlers/review_fix.py``, on the core
+    dashboard's), so enablement has to be checked per request — see
+    ``fix_tasks._require_enabled``.
+    """
+
+    @staticmethod
+    async def _assert_disabled(client):
+        created = await client.post("/api/apps/code-review-sage/fix-tasks", json={})
+        assert created.status == 403
+        assert (await created.json())["code"] == "app_disabled"
+        fetched = await client.get("/api/apps/code-review-sage/fix-tasks/some-task")
+        assert fetched.status == 403
+        assert (await fetched.json())["code"] == "app_disabled"
+        again = await client.post(
+            "/api/apps/code-review-sage/fix-tasks/some-task/review-again", json={}
+        )
+        assert again.status == 403
+        assert (await again.json())["code"] == "app_disabled"
+
+    @pytest.mark.asyncio
+    async def test_disabled_app_answers_403_on_all_three_routes(self, monkeypatch):
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=None, sessions=_Sessions())
+        fix_tasks.register_fix_task_routes(app)
+        monkeypatch.setattr(fix_tasks, "is_app_enabled", lambda name: False)
+        async with TestClient(TestServer(app)) as client:
+            await self._assert_disabled(client)
+
+    @pytest.mark.asyncio
+    async def test_unreadable_app_state_denies_instead_of_opening(self, monkeypatch, tmp_path):
+        # An unreadable installed.json reads as "not enabled", so the gate must
+        # fail closed rather than let a broken state file open the surface.
+        from kiro_crew.apps.manager import is_app_enabled as real_is_app_enabled
+
+        monkeypatch.setattr(fix_tasks, "is_app_enabled", real_is_app_enabled)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        app_root = tmp_path / "apps" / "code-review-sage"
+        app_root.mkdir(parents=True)
+        (app_root / "installed.json").write_text("{not json", encoding="utf-8")
+        assert fix_tasks.is_app_enabled("code-review-sage") is False
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=None, sessions=_Sessions())
+        fix_tasks.register_fix_task_routes(app)
+        async with TestClient(TestServer(app)) as client:
+            await self._assert_disabled(client)
+
+    @pytest.mark.asyncio
+    async def test_enabled_app_reaches_the_handler(self, tmp_path):
+        runner = await _runner_for(tmp_path, state=ReviewFixState.AWAITING_GROUP_CONFIRMATION)
+        app = web.Application()
+        app["state"] = SimpleNamespace(task_runner=runner, sessions=_Sessions())
+        fix_tasks.register_fix_task_routes(app)
+        async with TestClient(TestServer(app)) as client:
+            missing = await client.get("/api/apps/code-review-sage/fix-tasks/no-such-task")
+            assert missing.status == 404
+            assert (await missing.json())["code"] == "not_found"
+            found = await client.get("/api/apps/code-review-sage/fix-tasks/review-fix-http")
+            assert found.status == 200

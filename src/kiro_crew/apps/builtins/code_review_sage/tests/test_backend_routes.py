@@ -187,11 +187,11 @@ class TestRunsPersistence(unittest.TestCase):
 
 class TestRecordReviewedDelivery(unittest.TestCase):
     """The reviewed-index write path:
-      * a PR is indexed as reviewed ONLY when the poster
-        actually delivered (posted_comments >= posting_expected), not merely when
-        the poster turn completed (post_ok). A failed gh post must not strand it.
-      * The entry is keyed by the collision-free reviewed key (github.com/o/r#n),
-        NOT the lossy change-id."""
+    * a PR is indexed as reviewed ONLY when the poster
+      actually delivered (posted_comments >= posting_expected), not merely when
+      the poster turn completed (post_ok). A failed gh post must not strand it.
+    * The entry is keyed by the collision-free reviewed key (github.com/o/r#n),
+      NOT the lossy change-id."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

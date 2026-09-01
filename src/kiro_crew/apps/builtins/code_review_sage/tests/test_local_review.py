@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import stat
 import subprocess
@@ -21,7 +22,16 @@ _ROUTES = _APP_ROOT / "backend" / "routes.py"
 if str(_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(_APP_ROOT))
 
-_rmtree = shutil.rmtree
+
+def _retry_readonly_removal(func, path, _exc_info):
+    """Let ``rmtree`` remove git's read-only object files on Windows."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _rmtree(path):
+    """rmtree that tolerates read-only files (Windows loose git objects)."""
+    shutil.rmtree(path, onerror=_retry_readonly_removal)
 
 
 def _load_routes_module():
@@ -92,7 +102,7 @@ def test_working_tree_diff_is_byte_capped_not_unbuffered(tmp_path):
     # A diff larger than MAX_DIFF_BYTES must yield the partial-review warning
     # from the CAPTURE-time truncation flag — the parent never buffers more
     # than the cap, so a runaway diff cannot OOM the gateway before the limit
-    # applies (GPT review, PR #5274, residual/crash-data-loss-corruption).
+    # applies.
     repo = _repo(tmp_path)
     big = "\n".join(f"value_{i} = {i}" for i in range(40000)) + "\n"
     (repo / "example.py").write_text(big, encoding="utf-8")
@@ -296,6 +306,56 @@ def test_save_session_writes_owner_only(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def _fresh_local_reviews_root():
+    """Return the local-reviews root, resetting whatever an earlier test left
+    there (the pinned KIROCREW_HOME is shared across the whole suite)."""
+    root = local_review.session_path("probe").parent
+    if root.is_symlink():
+        root.unlink()
+    elif root.exists():
+        _rmtree(root)
+    root.mkdir(parents=True)
+    return root
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="unprivileged symlinks")
+def test_save_session_refuses_a_link_planted_at_the_root(tmp_path):
+    """A symlinked (or junctioned) local-reviews root would redirect every
+    session write to attacker-chosen storage."""
+    root = _fresh_local_reviews_root()
+    outside = root.parent / "local-reviews-outside"
+    if outside.is_symlink() or outside.exists():
+        _rmtree(outside) if outside.is_dir() and not outside.is_symlink() else outside.unlink()
+    outside.mkdir()
+    root.rmdir()
+    root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="local-review"):
+        local_review.save_session({"id": "local-link-root"})
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="unprivileged symlinks")
+def test_save_session_refuses_a_link_planted_at_the_session_file(tmp_path):
+    """The session file itself being a plant must not be dereferenced into a
+    write outside the local-reviews directory."""
+    root = _fresh_local_reviews_root()
+    path = local_review.session_path("local-link-file")
+    outside = root / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    path.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="local-review"):
+        local_review.save_session({"id": "local-link-file"})
+
+
+def test_save_session_works_on_a_fresh_root(tmp_path):
+    session = {"id": "local-fresh"}
+
+    local_review.save_session(session)
+
+    assert local_review.load_session("local-fresh") == session
+
+
 # ── re-review reconciliation scope guard (backend routes) ──────────────────
 
 
@@ -443,7 +503,7 @@ class TestReReviewReconcileScopeGuard(unittest.IsolatedAsyncioTestCase):
         result = await self._review(session)
 
         self.assertEqual(result["status"], "completed")
-        by_status = {}
+        by_status: dict = {}
         for item in result["findings"]:
             by_status.setdefault(item["status"], []).append(item)
         # The fresh finding inherited the old disposition...

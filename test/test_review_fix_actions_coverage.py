@@ -49,6 +49,13 @@ class _Sessions:
     _sessions: dict = {}
 
 
+@pytest.fixture(autouse=True)
+def _sage_app_enabled(monkeypatch):
+    # These tests exercise the handlers' own logic; the enablement gate has its
+    # own tests in test_review_fix_routes.py.
+    monkeypatch.setattr(fix_tasks, "is_app_enabled", lambda name: True)
+
+
 def _app(runner: TaskRunner | None) -> web.Application:
     app = web.Application()
     app["state"] = SimpleNamespace(task_runner=runner, sessions=_Sessions())
@@ -573,9 +580,9 @@ async def test_push_rejects_when_head_advanced_after_the_approved_preview(tmp_pa
 
 @pytest.mark.asyncio
 async def test_discard_from_awaiting_commit_removes_the_worktree(tmp_path):
-    """Regression: discarding used to destroy the worktree BEFORE the state
-    transition, so a task not in a DONE-reachable state lost its candidate and
-    stayed bricked. The Opus repro discards from AWAITING_COMMIT."""
+    """Discard transitions the state BEFORE destroying the worktree, so a task
+    not in a DONE-reachable state keeps its candidate instead of staying
+    bricked. This test discards from AWAITING_COMMIT."""
     from review_fix_helpers import _repo as make_repo
 
     repo = make_repo(tmp_path)
@@ -680,7 +687,10 @@ async def test_retry_capture_and_validate_dispatches(tmp_path, monkeypatch):
 
     run.revision = 1
     run.review_fix.revision = 1
+    # undo() also drops the autouse enablement patch, so re-apply it: the
+    # handler-level gate denies every dispatch while the app reads disabled.
     monkeypatch.undo()
+    monkeypatch.setattr(fix_tasks, "is_app_enabled", lambda name: True)
 
     async def fake_capture(_runner, _task_id, _group_id, **_kwargs):
         return {"ok": True}
@@ -701,6 +711,7 @@ async def test_retry_capture_and_validate_dispatches(tmp_path, monkeypatch):
     run.revision = 2
     run.review_fix.revision = 2
     monkeypatch.undo()
+    monkeypatch.setattr(fix_tasks, "is_app_enabled", lambda name: True)
 
     async def fake_validate(_runner, _task_id, _group_id, **_kwargs):
         return {"validated": True}, True

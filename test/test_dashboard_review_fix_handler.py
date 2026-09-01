@@ -28,6 +28,15 @@ class _Sessions:
     _sessions: dict = {}
 
 
+@pytest.fixture(autouse=True)
+def _sage_app_enabled(monkeypatch):
+    # The adapter forwards to the shared Sage handlers, which gate on app
+    # enablement; these tests are about the forwarding itself, so enable.
+    from kiro_crew.apps.builtins.code_review_sage.backend import fix_tasks
+
+    monkeypatch.setattr(fix_tasks, "is_app_enabled", lambda name: True)
+
+
 def _app(runner: TaskRunner) -> web.Application:
     app = web.Application()
     app["state"] = SimpleNamespace(task_runner=runner, sessions=_Sessions())
@@ -84,3 +93,20 @@ async def test_adapter_cold_load_then_cached_module_serves_both_wrappers(tmp_pat
 
         cached_status = await client.get("/rf/review-fix-http")
         assert cached_status.status == 200
+
+
+@pytest.mark.asyncio
+async def test_disabled_sage_app_denies_both_dashboard_routes(monkeypatch, tmp_path):
+    """The core dashboard's review-fix routes share the Sage handlers, so the
+    enablement gate must reach this surface too — no second, ungated copy."""
+    from kiro_crew.apps.builtins.code_review_sage.backend import fix_tasks
+
+    monkeypatch.setattr(fix_tasks, "is_app_enabled", lambda name: False)
+    app = _app(TaskRunner(_Sessions(), work_dir=tmp_path / "work"))
+    async with TestClient(TestServer(app)) as client:
+        fetched = await client.get("/rf/review-fix-http")
+        assert fetched.status == 403
+        assert (await fetched.json())["code"] == "app_disabled"
+        acted = await client.post("/rf/review-fix-http/actions", json={})
+        assert acted.status == 403
+        assert (await acted.json())["code"] == "app_disabled"

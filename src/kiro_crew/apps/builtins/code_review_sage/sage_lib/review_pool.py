@@ -92,9 +92,7 @@ try:
 except ImportError:  # pragma: no cover - standalone app fallback
 
     @contextmanager
-    def workspace_cli_settings_lock(
-        work_dir: Path, *, timeout: float = 0.0
-    ) -> Iterator[Path]:
+    def workspace_cli_settings_lock(work_dir: Path, *, timeout: float = 0.0) -> Iterator[Path]:
         raise OSError("shared workspace CLI settings lock is unavailable")
         yield work_dir  # pragma: no cover - marks this function as a context manager
 
@@ -272,15 +270,21 @@ def _policy_deny_reason(ev: object, *, session_key: str = "", agent: str = "") -
     pay for them.
     """
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.hooks import TOOL_DENY, HookManager, hooks_config_from_config_dict
+    from kiro_crew.hooks import (
+        TOOL_DENY,
+        HookManager,
+        hook_gate_kwargs,
+        hooks_config_from_config_dict,
+    )
 
-    is_shell = bool(getattr(ev, "is_shell", False))
+    # One extraction for every event-derived gate argument. The command override
+    # keeps this surface's extra recovery shape: raw_tool_params may nest the
+    # shell command under a "bash" key, which AcpEvent.shell_command does not
+    # read; when neither shape yields a command the helper's None feeds the
+    # gate's deny-by-default backstop unchanged.
     raw_params = getattr(ev, "raw_tool_params", None)
-    # event.diff_path is cached by acp._dispatch (see hooks.on_tool_call); empty on
-    # events that never carried a diff block, which keeps current behavior unchanged.
-    diff_path = getattr(ev, "diff_path", "") or ""
     command = ""
-    if is_shell and isinstance(raw_params, dict):
+    if bool(getattr(ev, "is_shell", False)) and isinstance(raw_params, dict):
         nested = raw_params.get("bash")
         candidates = [raw_params, nested if isinstance(nested, dict) else {}]
         for source in candidates:
@@ -288,8 +292,7 @@ def _policy_deny_reason(ev: object, *, session_key: str = "", agent: str = "") -
             if isinstance(value, str) and value.strip():
                 command = value
                 break
-    tool_kind = getattr(ev, "tool_kind", "") or ""
-    title = (getattr(ev, "title", "") or tool_kind or "").strip()
+    title = (getattr(ev, "title", "") or getattr(ev, "tool_kind", "") or "").strip()
     try:
         cfg = KiroCrewConfig.load()
         manager = HookManager(hooks_config_from_config_dict(getattr(cfg, "hooks", {}) or {}))
@@ -298,13 +301,7 @@ def _policy_deny_reason(ev: object, *, session_key: str = "", agent: str = "") -
             session_key=session_key,
             agent=agent,
             app="code-review-sage",
-            tool_kind=tool_kind,
-            raw_params=raw_params if isinstance(raw_params, dict) else None,
-            diff_path=diff_path,
-            command=command or None,
-            is_shell=is_shell,
-            mcp_server_name=getattr(ev, "mcp_server_name", "") or "",
-            mcp_tool_name=getattr(ev, "tool_name", "") or "",
+            **hook_gate_kwargs(ev, command=command or None),
         )
     except Exception as exc:  # noqa: BLE001 - a broken gate must DENY, not authorize
         logger.warning(

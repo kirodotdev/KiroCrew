@@ -166,10 +166,11 @@ async def test_pathspec_magic_in_a_owned_path_captures_nothing_extra(tmp_path):
 
 @pytest.mark.asyncio
 async def test_push_preview_without_upstream_previews_against_cached_remote_ref(tmp_path):
-    # A branch with no tracking ref (a new-branch candidate) used to preview
-    # as EMPTY — approving it would publish unseen commits and files. The
-    # preview must fall back to the branch's locally cached remote ref (no
-    # network) and list what the push would actually publish.
+    # A branch with no tracking ref (a new-branch candidate) previews as
+    # EMPTY against the tracking ref alone — approving it would publish
+    # unseen commits and files. The preview falls back to the branch's
+    # locally cached remote ref (no network) and lists what the push would
+    # actually publish.
     repo = _repo(tmp_path)
     base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     (repo / "target.txt").write_text("after\n", encoding="utf-8")

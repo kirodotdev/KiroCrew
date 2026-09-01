@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import wraps
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -15,6 +16,7 @@ from aiohttp import web
 
 from kiro_crew import review_fix_git
 from kiro_crew.agent_sdk import advertised_model_ids
+from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers.taskrunner import _gate_auto_approve, _sel
 from kiro_crew.loop_lock import LoopBoundLock
@@ -65,7 +67,7 @@ _CONFIRMATION_ACTIONS = {
 }
 
 # Fields whose drift between the approved preview and the push moment means the
-# user is no longer pushing what they were shown.
+# push would publish something other than what the user was shown.
 _PUSH_PREVIEW_FIELDS = ("remote", "branch", "upstream", "commits", "files", "diverged")
 
 
@@ -309,6 +311,42 @@ def _runner(request: web.Request):
     return getattr(state, "task_runner", None)
 
 
+_FixTaskHandler = Callable[..., Awaitable[web.Response]]
+
+
+def _require_enabled(handler: _FixTaskHandler) -> _FixTaskHandler:
+    """Deny when the code-review-sage app is disabled.
+
+    These endpoints are registered once at startup (three on the Sage app's own
+    router, two via the core dashboard's ``dashboard/handlers/review_fix.py``
+    adapter), so a disabled app's routes stay reachable — the platform's
+    convention is that handlers check enabled state themselves. Without this a
+    disabled app could still create review-fix tasks and mutate Git state on a
+    reviewer's checkout.
+
+    ``is_app_enabled`` reads ``installed.json`` synchronously, so it runs off the
+    event loop. Deny-by-default: an unreadable state file disables the surface
+    rather than opening it. Mirrors the gate on this backend's other routes
+    (``routes.py``).
+
+    Cross-reference: an app-scoped ``app_lifecycle_lock`` would centralize this
+    check per app instance. This decorator is the seam where that lock gets
+    adopted; until then the gate stays here, applied at the single handler
+    layer both surfaces share.
+    """
+
+    @wraps(handler)
+    async def _wrapped(request: web.Request, *args, **kwargs) -> web.Response:
+        if not await asyncio.to_thread(is_app_enabled, "code-review-sage"):
+            return web.json_response(
+                {"code": "app_disabled", "error": "code-review-sage is disabled"}, status=403
+            )
+        return await handler(request, *args, **kwargs)
+
+    return _wrapped
+
+
+@_require_enabled
 async def handle_create_fix_task(request: web.Request) -> web.Response:
     runner = _runner(request)
     if runner is None:
@@ -367,6 +405,7 @@ async def handle_create_fix_task(request: web.Request) -> web.Response:
     return web.json_response(_payload(run), status=201)
 
 
+@_require_enabled
 async def handle_get_fix_task(request: web.Request) -> web.Response:
     runner = _runner(request)
     if runner is None:
@@ -833,6 +872,7 @@ async def _action(
     raise ValueError("unsupported review-fix action")
 
 
+@_require_enabled
 async def handle_fix_action(request: web.Request) -> web.Response:
     body = await _read_json(request)
     if body is None:
@@ -873,6 +913,7 @@ async def handle_fix_action(request: web.Request) -> web.Response:
         return _error("review_fix_action_failed", _safe_error(exc), 409)
 
 
+@_require_enabled
 async def handle_review_again(
     request: web.Request,
     review_again_handler: Callable[[web.Request, dict[str, Any]], Awaitable[web.Response]] | None,

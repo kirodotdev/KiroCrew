@@ -1,10 +1,9 @@
 """Regression tests for review-fix git-mutation serialization.
 
-Two concurrent group actions at one revision both pass target-unchanged
+Two concurrent group actions at one revision can both pass target-unchanged
 validation and both apply to the real checkout; the CAS then rejects the
-loser while its git changes remain in the tree, unrecorded (GPT review,
-PR #5274, residual/crash-data-loss-corruption). ``fix_tasks`` holds
-``_GIT_MUTATION_LOCK`` across inspect -> mutate -> CAS persist, so the
+loser while its git changes remain in the tree, unrecorded. ``fix_tasks``
+holds ``_GIT_MUTATION_LOCK`` across inspect -> mutate -> CAS persist, so the
 loser is rejected BEFORE its git mutation can run.
 """
 

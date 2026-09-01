@@ -109,8 +109,7 @@ def test_default_groups_own_a_file_once_so_patches_cannot_overlap():
 
     groups = build_review_fix_groups(findings, None)
 
-    assert [(group.group_id, group.finding_keys, group.affected_files)
-            for group in groups] == [
+    assert [(group.group_id, group.finding_keys, group.affected_files) for group in groups] == [
         # group ids stay sequential in order of first appearance of each file.
         ("group-1", ["a1", "a2"], ["a.py"]),
         ("group-2", ["b1"], ["b.py"]),
@@ -135,9 +134,9 @@ def test_hard_flag_locks_only_on_a_json_boolean(raw_hard, expected):
 
 
 def test_fileless_finding_cannot_form_an_auto_group():
-    # A fileless finding used to produce affected_files=[] and an unscoped patch
-    # (a pathless `git diff` covers the whole candidate worktree); plan time is
-    # where that must die.
+    # A fileless finding yields affected_files=[] and an unscoped patch
+    # (a pathless `git diff` covers the whole candidate worktree); plan time
+    # rejects that shape.
     findings = [
         ReviewFixFindingSnapshot(key="red", file_path="a.py"),
         ReviewFixFindingSnapshot(key="ghost", file_path=""),

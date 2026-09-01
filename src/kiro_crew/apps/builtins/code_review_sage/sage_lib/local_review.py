@@ -523,9 +523,24 @@ def session_path(session_id: str) -> Path:
 
 def save_session(session: dict) -> None:
     path = session_path(str(session["id"]))
+    root = store.data_dir() / "local-reviews"
     path.parent.mkdir(parents=True, exist_ok=True)
-    if platform_compat.is_link_or_junction(path.parent):
-        raise ValueError("refusing to write through a local-review directory link")
+    # Walk the WHOLE chain from the local-reviews root down to the session file,
+    # not just the immediate parent: a link planted at the root or at any
+    # intermediate directory component redirects every write below it just as
+    # effectively as one planted at the parent. Every component is tested with
+    # is_link_or_junction BEFORE any resolve() call — resolving first would
+    # silently follow the very link we are refusing — and the final path must
+    # still land under the resolved anchor afterwards. Junctions are covered by
+    # platform_compat (os.path.islink alone misses Windows directory junctions).
+    components = [root]
+    for part in path.parent.relative_to(root).parts:
+        components.append(components[-1] / part)
+    for component in [*components, path]:
+        if platform_compat.is_link_or_junction(component):
+            raise ValueError("refusing to write through a local-review directory link")
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError("refusing to write outside the local-review directory")
     # atomic_write owns the unique-temp-file + rename contract (plus the Windows
     # rename retry) and applies the 0o600 mode on every platform; a bare
     # os.fchmod has no Windows binding, so hand-rolling it kills the whole local
