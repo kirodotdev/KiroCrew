@@ -705,6 +705,7 @@ async def api_prompts_create(request: web.Request) -> web.Response:
             # keeps the narrower guarantee of the junction check alone.
             target_dir.mkdir(parents=True, exist_ok=True)
             path = target_dir / filename
+            created_ident: tuple[int, int] | None = None
             try:
                 # "x" mode makes create-if-absent atomic — no exists()/write race.
                 # newline="" keeps the bytes byte-exact, as the update path does:
@@ -712,14 +713,32 @@ async def api_prompts_create(request: web.Request) -> web.Response:
                 # MAX_PROMPT_BYTES becomes a file over it — created successfully,
                 # then rejected by its own read with 413.
                 with path.open("x", encoding="utf-8", newline="") as f:
+                    # Identity of the inode THIS create made, read from the
+                    # descriptor while it is provably ours. The cleanup below
+                    # re-resolves the name, and only this pair proves the entry
+                    # still is the file this call created.
+                    st = os.fstat(f.fileno())
+                    created_ident = (st.st_dev, st.st_ino)
                     f.write(content)
             except FileExistsError:
                 return "exists"
             except OSError:
                 # The file now exists but holds a partial body, and O_EXCL would
                 # answer the retry with 409 forever. Remove it so the caller's next
-                # attempt is a clean create rather than a permanent conflict.
-                path.unlink(missing_ok=True)
+                # attempt is a clean create rather than a permanent conflict — but
+                # only when the name still resolves to the inode this call created:
+                # a concurrent writer can replace the entry inside the failure
+                # window, and a bare by-name unlink would delete THEIR file. Same
+                # narrower-guarantee posture as the junction check on this
+                # no-openat path; a swap after the lstat below remains possible,
+                # and losing the retry-cleanup then is the safe direction.
+                if created_ident is not None:
+                    try:
+                        st_now = path.lstat()
+                        if (st_now.st_dev, st_now.st_ino) == created_ident:
+                            path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 raise
             return None
         try:

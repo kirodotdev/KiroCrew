@@ -789,6 +789,20 @@ describe('assemblePromptContent — the frontmatter block is the author\'s text'
       .toBe('---\ndescription: edited\n---\nBody starts immediately\n')
   })
 
+  it('consumes the whole closing-fence line and preserves its tail', () => {
+    // The reader closes frontmatter at any line STARTING with `---`, so a
+    // `---junk` closer is a closer. Matching only the three dashes would leak
+    // `junk` into the body on Save; carrying the closer keeps the no-edit
+    // round-trip byte-exact instead of normalizing the author's line.
+    const raw = '---\ndescription: x\n---junk\nBody\n'
+    const d = parsePromptContent(raw, 'p', 'global')
+    expect(d.frontmatter).toBe('description: x')
+    expect(d.body).toBe('Body\n')
+    expect(d.body).not.toContain('junk')
+    expect(round(raw)).toBe(raw)
+    expect(round(raw, 'edited')).toBe('---\ndescription: edited\n---junk\nBody\n')
+  })
+
   it('keeps the blank line when the file had one', () => {
     const raw = '---\ndescription: x\n---\n\nBody after a blank line\n'
     expect(round(raw)).toBe(raw)

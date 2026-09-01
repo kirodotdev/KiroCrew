@@ -25,6 +25,11 @@ export interface PromptFormData {
    *  imposing the convention on a file that did not use it. Only frontmatter
    *  ADDED by the form synthesizes a canonical separator. */
   separator?: string
+  /** The closing fence line EXACTLY as the file holds it — normally `---`, but
+   *  the reader accepts any line starting with `---`, so a `---junk` closer is
+   *  carried and re-emitted verbatim rather than normalized on Save. Undefined
+   *  only for frontmatter the form is adding. */
+  closer?: string
   /** The prompt's frontmatter block EXACTLY as the file holds it, without the
    *  `---` fences — or undefined when the file has no frontmatter.
    *
@@ -72,8 +77,11 @@ const descriptionAt = (lines: string[]) =>
  *  The body is byte-exact apart from the one separator newline pair that
  *  assemble re-inserts, and CRLF files are recognized so their description is
  *  editable rather than silently blank. */
-function splitPrompt(raw: string): { frontmatter?: string; body: string; separator?: string; eol?: string } {
-  const m = raw.match(/^---(\r?\n)([\s\S]*?)\r?\n---\r?\n?/)
+function splitPrompt(raw: string): { frontmatter?: string; body: string; separator?: string; eol?: string; closer?: string } {
+  // The closing fence owns its WHOLE line: the reader treats any line starting
+  // with `---` as the closer, so a `---junk` fence must be consumed here too —
+  // matching only the three dashes would leak the line's tail into the body.
+  const m = raw.match(/^---(\r?\n)([\s\S]*?)\r?\n(---[^\r\n]*)(\r?\n)?/)
   if (!m) return { body: raw }
   const block = m[2]
   if (!block.split(/\r?\n/).some(l => fieldKey(l) !== null)) return { body: raw }
@@ -88,6 +96,7 @@ function splitPrompt(raw: string): { frontmatter?: string; body: string; separat
     body: sep ? rest.slice(sep[0].length) : rest,
     separator: sep ? sep[0] : '',
     eol: m[1],
+    closer: m[3],
   }
 }
 
@@ -108,7 +117,7 @@ function modelledDescription(block: string): string | null {
 }
 
 export function parsePromptContent(raw: string, name: string, scope: PromptScope): PromptFormData {
-  const { frontmatter, body, separator, eol } = splitPrompt(raw)
+  const { frontmatter, body, separator, eol, closer } = splitPrompt(raw)
   return {
     name,
     description: frontmatter ? (modelledDescription(frontmatter) ?? '') : '',
@@ -117,6 +126,7 @@ export function parsePromptContent(raw: string, name: string, scope: PromptScope
     frontmatter,
     separator,
     eol,
+    closer,
   }
 }
 
@@ -163,7 +173,7 @@ export function assemblePromptContent(data: PromptFormData): string {
   // save the user made without touching the field at all. Parse-then-assemble
   // with no edit is identity.
   if (desc === (modelledDescription(block) ?? '')) {
-    return ['---', block, '---'].join(eol) + eol + sep + data.body
+    return ['---', block, data.closer ?? '---'].join(eol) + eol + sep + data.body
   }
 
   /** The span a field occupies.
@@ -211,7 +221,7 @@ export function assemblePromptContent(data: PromptFormData): string {
 
   const kept = lines.join(eol)
   if (!kept.trim()) return data.body
-  return ['---', kept, '---'].join(eol) + eol + sep + data.body
+  return ['---', kept, data.closer ?? '---'].join(eol) + eol + sep + data.body
 }
 
 interface PromptFormProps {
@@ -237,7 +247,6 @@ export default function PromptForm({ data, onChange, hideIdentity }: PromptFormP
           <div>
             {/* label-has-for can't resolve the control through the custom <Input>
                 component; the runtime association via htmlFor + id + aria-label is correct. */}
-            {/* eslint-disable-next-line jsx-a11y/label-has-for */}
             <label htmlFor={nameId} className="block text-[12px] text-muted mb-1">{i18nT('pages.overview.promptsTab.form_name')}</label>
             <Input id={nameId} aria-label={i18nT('pages.overview.promptsTab.form_name')} value={data.name} onChange={e => set({ name: e.target.value })} placeholder={i18nT('pages.overview.promptsTab.form_name_placeholder')} />
             <p className="text-[11px] text-muted mt-1">{i18nT('pages.overview.promptsTab.form_name_hint')}</p>
@@ -258,7 +267,6 @@ export default function PromptForm({ data, onChange, hideIdentity }: PromptFormP
         </>
       )}
       <div>
-        {/* eslint-disable-next-line jsx-a11y/label-has-for -- control resolved at runtime via htmlFor + id */}
         <label htmlFor={descId} className="block text-[12px] text-muted mb-1">{i18nT('pages.overview.promptsTab.form_description')}</label>
         <Input id={descId} aria-label={i18nT('pages.overview.promptsTab.form_description')} value={data.description} onChange={e => set({ description: e.target.value })} placeholder={i18nT('pages.overview.promptsTab.form_description_placeholder')} />
       </div>

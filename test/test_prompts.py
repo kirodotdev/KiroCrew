@@ -1767,6 +1767,84 @@ class TestByNameFallbackStillWorks:
         assert resp.status == 409 and json.loads(resp.body)["code"] == "prompt_exists"
         assert (tmp_path / ".kiro" / "prompts" / "dupe.md").read_text() == "ORIGINAL\n"
 
+    def test_failed_create_cleans_up_its_own_partial_file(self, tmp_path, mock_sel, monkeypatch):
+        """A write failure removes the partial file this create made, so the
+        caller's retry is a clean create rather than a permanent 409."""
+        original_open = Path.open
+
+        def failing_open(self, mode="r", *args, **kwargs):
+            fh = original_open(self, mode, *args, **kwargs)
+            if "x" not in mode:
+                return fh
+
+            class _Failing:
+                def __enter__(s):
+                    return s
+
+                def __exit__(s, *exc):
+                    fh.close()
+                    return False
+
+                def fileno(s):
+                    return fh.fileno()
+
+                def write(s, data):
+                    raise OSError(28, "No space left on device")
+
+            return _Failing()
+
+        monkeypatch.setattr(Path, "open", failing_open)
+        resp = asyncio.run(
+            api_prompts_create(_create_request({"name": "p", "content": "x", "scope": "global"}))
+        )
+        assert resp.status == 500 and json.loads(resp.body)["code"] == "write_failed"
+        assert not (tmp_path / ".kiro" / "prompts" / "p.md").exists()
+
+    def test_failed_create_does_not_unlink_a_concurrent_replacement(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """The failure-path cleanup re-resolves the name, so a concurrent writer
+        that replaced the entry inside the failure window must keep its file:
+        the unlink is bound to the inode this create made, never the name."""
+        original_open = Path.open
+
+        def swapping_open(self, mode="r", *args, **kwargs):
+            fh = original_open(self, mode, *args, **kwargs)
+            if "x" not in mode:
+                return fh
+
+            class _Swapping:
+                def __enter__(s):
+                    return s
+
+                def __exit__(s, *exc):
+                    fh.close()
+                    return False
+
+                def fileno(s):
+                    return fh.fileno()
+
+                def write(s, data):
+                    # A concurrent writer lands an atomic save (staged sibling +
+                    # replace, allocating its inode while ours still exists, so
+                    # the identities cannot collide), then this write fails.
+                    staged = self.with_suffix(".swap")
+                    staged.write_text("REPLACEMENT", encoding="utf-8")
+                    fh.close()
+                    os.replace(staged, self)
+                    raise OSError(28, "No space left on device")
+
+            return _Swapping()
+
+        monkeypatch.setattr(Path, "open", swapping_open)
+        resp = asyncio.run(
+            api_prompts_create(_create_request({"name": "p", "content": "x", "scope": "global"}))
+        )
+        assert resp.status == 500 and json.loads(resp.body)["code"] == "write_failed"
+        assert (tmp_path / ".kiro" / "prompts" / "p.md").read_text(
+            encoding="utf-8"
+        ) == "REPLACEMENT"
+
 
 class TestAppTokenWriteGate:
     """App tokens must not reach prompt mutations (path-only grants are verb-blind)."""
