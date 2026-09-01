@@ -24,7 +24,21 @@ export default [
     },
     rules: {
       ...tsPlugin.configs.recommended.rules,
-      ...Object.fromEntries(Object.entries(jsxA11y.configs.recommended.rules || {}).map(([k, v]) => [k, 'warn'])),
+      // Downgrade jsx-a11y's recommended severities to 'warn' so they ride the
+      // --max-warnings ratchet instead of failing the build outright — but keep
+      // whatever the preset switched OFF off. A blanket rewrite to 'warn' also
+      // re-enables the rules the plugin deliberately disabled, which is how 44
+      // `label-has-for` warnings existed: the plugin marks that rule
+      // `deprecated: true, replacedBy: ['label-has-associated-control']` and
+      // ships it as 'off' in recommended, while the live replacement is already
+      // on. Those 44 were noise from a rule nobody chose, consuming ratchet
+      // headroom that a real a11y regression needs.
+      ...Object.fromEntries(
+        Object.entries(jsxA11y.configs.recommended.rules || {}).map(([k, v]) => [
+          k,
+          v === 'off' || v === 0 ? v : 'warn',
+        ]),
+      ),
       'jsx-a11y/no-autofocus': 'off',
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',

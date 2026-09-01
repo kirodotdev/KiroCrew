@@ -658,7 +658,6 @@ export default function SchedulePage() {
               <div className="flex items-center gap-2 mb-3 text-[13px] text-muted">
                 <Globe className="lucide-inline" />
                 {/* Control is correctly associated via htmlFor+id (the select can't be nested); label-has-for's nesting requirement is a false positive here. */}
-                {/* eslint-disable-next-line jsx-a11y/label-has-for */}
                 <label htmlFor="schedule-render-tz" className="mr-1">{i18nT('pages.schedulePage.render_in')}</label>
                 <TimezoneSelect id="schedule-render-tz" value={renderTz} onChange={setRenderTz} />
                 <InfoTip text={i18nT('pages.schedulePage.changes_only_how_the_calendar_grid_is_displayed')} />

@@ -216,7 +216,6 @@ function Field({
           caller passes either the custom `Input` or a `children` expression it
           cannot look inside. `label-has-associated-control`, the rule that
           replaced this deprecated one, is satisfied and stays on. */}
-      {/* eslint-disable-next-line jsx-a11y/label-has-for */}
       <label htmlFor={id} className="block">
         <span className="mb-1.5 block text-[13px] font-semibold text-text">{label}</span>
         {children}
@@ -665,7 +664,6 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
               {/* The label wraps only the INPUT, not the Roll button beside it:
                   an interactive descendant of a label is a second thing to click
                   in one hit area. */}
-              {/* eslint-disable-next-line jsx-a11y/label-has-for -- nested + htmlFor→id both hold; the deprecated rule cannot see through the custom `Input`. */}
               <label htmlFor="crew-editor-name" className="min-w-0 flex-1">
                 <span className="mb-1.5 block text-[13px] font-semibold text-text">
                   {t('apps.issueRadar.views.crews.editor.name_label')}

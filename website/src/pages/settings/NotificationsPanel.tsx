@@ -249,7 +249,6 @@ export function NotificationsPanel() {
           />
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.notificationsPanel.volume')}>
             {/* Slider is correctly associated via htmlFor+id (a range input can't be nested); label-has-for's nesting requirement is a false positive here. */}
-            {/* eslint-disable-next-line jsx-a11y/label-has-for */}
             <label htmlFor="mc-volume-slider" className="text-[13px] font-semibold text-text">{i18nT('pages.settings.notificationsPanel.volume')}</label>
             <div className="text-[12px] text-muted">{Math.round(settings.volume * 100)}%</div>
             <input

@@ -328,7 +328,6 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         <div className="mt-4 border border-accent/30 rounded-lg p-4 bg-accent/5 animate-rise">
           <div className="grid grid-cols-[1fr_1fr_0.7fr] gap-3 mb-3 [&>div]:min-w-0">
             <div>
-              {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
               <label htmlFor="registry-name" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.display_name')}</label>
               <Input
                 id="registry-name"
@@ -339,7 +338,6 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               />
             </div>
             <div>
-              {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
               <label htmlFor="registry-repo" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.repo')}</label>
               <Input
                 id="registry-repo"
@@ -357,7 +355,6 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
               />
             </div>
             <div>
-              {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
               <label htmlFor="registry-branch" className="text-[12px] text-muted mb-1 block">{i18nT('components.registryManager.branch')}</label>
               <Input
                 id="registry-branch"

@@ -1841,7 +1841,6 @@ function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftCha
           <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
           <div className="text-[13px] text-text leading-relaxed">{confirmBody}</div>
         </div>
-        {/* eslint-disable-next-line jsx-a11y/label-has-for -- the Checkbox control is nested inside the label */}
         <label className="flex items-center gap-2.5 mt-4 cursor-pointer">
           <Checkbox checked={ack} onChange={e => setAck(e.target.checked)} />
           <span className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.i_understand_this_weakens_kirocrew_s_protection')}</span>

@@ -3258,7 +3258,6 @@ function ChatInput({
               <div className="relative shrink-0" ref={plusWrapRef}>
                 {directFilePicker ? (
                   /* Association is intentionally absent while uploads disable the control. */
-                  // eslint-disable-next-line jsx-a11y/label-has-for
                   <label
                     htmlFor={uploading ? undefined : fileInputId}
                     aria-disabled={uploading || undefined}

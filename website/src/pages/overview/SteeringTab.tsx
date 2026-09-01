@@ -665,7 +665,6 @@ export default function SteeringTab() {
             form elements, so its nesting check false-positives on the trigger
             <button> SearchableSelect renders. Same disable as SchedulePage's
             render-timezone label, for the same component family. */}
-        {/* eslint-disable-next-line jsx-a11y/label-has-for */}
         <label className="flex flex-col gap-1" htmlFor="steering-new-scope">
           <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.scope')}</span>
           {/* SearchableSelect, not SimpleSelect: the workspace row is a REAL option

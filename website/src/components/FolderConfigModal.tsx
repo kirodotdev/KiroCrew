@@ -298,7 +298,6 @@ export default function FolderConfigModal({
           {/* Name. The folder's identity mark is a palette color, applied to
            *  the swatch row below — there is no per-folder icon to preview,
            *  so the name input owns the full width. */}
-          {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule can't see the htmlFor→id link to the custom Input control; label-has-associated-control is satisfied. */}
           <label htmlFor="folder-config-name-input" className="flex flex-col gap-1.5">
             <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.name')}</span>
             <Input

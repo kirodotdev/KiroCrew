@@ -874,12 +874,10 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
         <div>
           {/* label-has-for can't resolve the control through the custom <Input>
               component; the runtime association via htmlFor + id + aria-label is correct. */}
-          {/* eslint-disable-next-line jsx-a11y/label-has-for */}
           <label htmlFor="skill-name" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.name')}</label>
           <Input id="skill-name" aria-label={i18nT('components.skillForm.name')} placeholder={i18nT('components.skillForm.e_g_my_tool')} value={data.name} onChange={e => set('name', e.target.value)} className="w-full" />
         </div>
         <div>
-          {/* eslint-disable-next-line jsx-a11y/label-has-for -- control resolved at runtime via htmlFor + id */}
           <label htmlFor="skill-category" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.category')} <span className="text-muted font-normal">{i18nT('components.skillForm.optional')}</span></label>
           <Input id="skill-category" aria-label={i18nT('components.skillForm.category')} placeholder={i18nT('components.skillForm.e_g_utils_code')} value={data.category} onChange={e => set('category', e.target.value)} className="w-full" />
           <div className="text-[11px] text-muted mt-1">{i18nT('components.skillForm.groups_the_skill_in_the_list_leave_empty_for_the')}</div>
@@ -894,13 +892,11 @@ export default function SkillForm({ data, onChange, hideIdentity, allowRaw = tru
       <div>
         {/* label-has-for can't resolve the control through the custom <Input>
             component; the runtime association via htmlFor + id + aria-label is correct. */}
-        {/* eslint-disable-next-line jsx-a11y/label-has-for */}
         <label htmlFor="skill-triggers" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.triggers')}</label>
         <Input id="skill-triggers" aria-label={i18nT('components.skillForm.triggers')} placeholder={i18nT('components.skillForm.keyword1_keyword2_keyword3')} value={data.triggers} onChange={e => set('triggers', e.target.value)} className="w-full" />
         <div className="text-[11px] text-muted mt-1">{i18nT('components.skillForm.comma_separated_keywords_that_activate_this_skil')}</div>
       </div>
       <div>
-        {/* eslint-disable-next-line jsx-a11y/label-has-for -- control resolved at runtime via htmlFor + id */}
         <label htmlFor="skill-tags" className="text-[13px] font-semibold text-text mb-1 block">{i18nT('components.skillForm.tags')} <span className="text-muted font-normal">{i18nT('components.skillForm.optional')}</span></label>
         <Input id="skill-tags" aria-label={i18nT('components.skillForm.tags')} placeholder={i18nT('components.skillForm.skill_tool_aws')} value={data.tags} onChange={e => set('tags', e.target.value)} className="w-full" />
         <div className="text-[11px] text-muted mt-1">{i18nT('components.skillForm.comma_separated_labels_for_categorization_metada')}</div>

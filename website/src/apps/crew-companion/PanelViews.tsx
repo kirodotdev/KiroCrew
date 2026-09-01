@@ -209,7 +209,6 @@ const Toggle: React.FC<{
 }> = ({ on, onChange, label, hint }) => {
   const skin = useSkin()
   return (
-    // eslint-disable-next-line jsx-a11y/label-has-for -- input IS nested inside this label; nesting provides the association
     <label style={{
       display: 'flex', alignItems: 'flex-start', gap: 9, padding: '9px 10px',
       // No background/radius of its own: a Toggle may sit alone or grouped with

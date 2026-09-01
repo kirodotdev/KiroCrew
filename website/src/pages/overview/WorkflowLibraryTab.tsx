@@ -483,7 +483,6 @@ export default function WorkflowLibraryTab() {
                 </Btn>
               </div>
               <div className="border-t border-border pt-3">
-                {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule cannot resolve the htmlFor/id link through the shared Input component. */}
                 <label
                   htmlFor="workflow-run-input"
                   className="block text-[12px] text-muted mb-2"
@@ -557,7 +556,6 @@ function WorkflowEditor({
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule cannot resolve the htmlFor/id link through the shared Input component. */}
         <label htmlFor="workflow-name" className="text-[12px] text-muted">
           <span className="block mb-1">
             {i18nT('pages.overview.workflowLibrary.name')}
@@ -569,7 +567,6 @@ function WorkflowEditor({
             onChange={(event) => write('name', event.target.value)}
           />
         </label>
-        {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule cannot resolve the htmlFor/id link through the shared Input component. */}
         <label htmlFor="workflow-slug" className="text-[12px] text-muted">
           <span className="block mb-1">
             {i18nT('pages.overview.workflowLibrary.slug')}
@@ -582,7 +579,6 @@ function WorkflowEditor({
           />
         </label>
       </div>
-      {/* eslint-disable-next-line jsx-a11y/label-has-for -- deprecated rule cannot resolve the htmlFor/id link through the shared Input component. */}
       <label
         htmlFor="workflow-description"
         className="block text-[12px] text-muted"

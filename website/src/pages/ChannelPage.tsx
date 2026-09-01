@@ -361,7 +361,6 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
     // which predates this conversion and differs from the rendered title only in
     // case. The eslint disable below covers the label/Input association
     // (label-has-for cannot see through the custom <Input>).
-    /* eslint-disable jsx-a11y/label-has-for */
     <Modal
       open
       onClose={onClose}
@@ -394,7 +393,6 @@ function NewChannelDialog({ onClose, onCreate, presets }: { onClose: () => void;
         ))}
       </div>
     </Modal>
-    /* eslint-enable jsx-a11y/label-has-for */
   )
 }
 
