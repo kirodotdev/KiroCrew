@@ -344,6 +344,7 @@ async def _bounded_turn(
     _TURN_DEADLINE.set(loop.time() + timeout_secs)
     task: "asyncio.Task[Any] | None" = None
     handle: "asyncio.TimerHandle | None" = None
+    _generator_exit = False
     try:
         try:
             task = asyncio.ensure_future(coro)
@@ -370,6 +371,21 @@ async def _bounded_turn(
             # the production path: without this the ceiling is silently absorbed.
             raise TimeoutError(f"turn exceeded the {timeout_secs:.0f}s ceiling")
         return result
+    except GeneratorExit:
+        # This wrapper is being torn down directly -- its own coroutine object
+        # is being ``close()``-d, which happens when nothing ever awaited or
+        # cancelled it through a live Task and the garbage collector reclaims
+        # it instead (an orphaned ``spawn_guarded_turn`` dispatch nobody
+        # joined). Unlike a live ``CancelledError`` unwind, there is no
+        # guarantee the event loop that would drive ``task`` to completion is
+        # even still running -- ``close()`` resumes this frame synchronously
+        # from whatever thread the collector runs on, not from a loop
+        # callback. A coroutine that suspends again while unwinding a
+        # GeneratorExit gets "coroutine ignored GeneratorExit" from the
+        # interpreter, so ``_generator_exit`` below tells the ``finally`` to
+        # skip the join and only cancel best-effort.
+        _generator_exit = True
+        raise
     finally:
         if handle is not None:
             handle.cancel()
@@ -382,13 +398,20 @@ async def _bounded_turn(
             # The wrapper itself was cancelled, or setup failed after Task
             # creation.  Cancel AND join it: cancellation alone can leave an
             # unstarted coroutine pending until a later GC cycle.
-            task.cancel()
             try:
-                await task
-            except BaseException:
-                # Cleanup must preserve the exception already leaving the
-                # wrapper (setup failure or caller cancellation).
+                task.cancel()
+            except RuntimeError:
+                # The loop that owned ``task`` is already closed (the
+                # GeneratorExit case, or a shutdown race). Nothing left to
+                # schedule the cancellation on.
                 pass
+            if not _generator_exit:
+                try:
+                    await task
+                except BaseException:
+                    # Cleanup must preserve the exception already leaving the
+                    # wrapper (setup failure or caller cancellation).
+                    pass
 
 
 async def bounded_chat_turn(coro: "Coroutine[Any, Any, Any]") -> Any:

@@ -202,6 +202,101 @@ class TestBoundedTurnSetup:
             td._TURN_DEADLINE.set(original_deadline)
 
 
+class TestBoundedTurnGeneratorExit:
+    """A ``_bounded_turn`` wrapper nobody ever awaited or cancelled through a
+    live Task -- e.g. a ``spawn_guarded_turn`` dispatch left in
+    ``state._background_tasks`` when the test's event loop closes -- is
+    reclaimed by the garbage collector instead, which calls ``close()`` on
+    its still-suspended coroutine directly. That throws ``GeneratorExit`` at
+    the ``await task`` suspension point, resumed synchronously by the
+    collector rather than by a loop callback. The old cleanup path answered
+    with ``task.cancel(); await task`` unconditionally -- fine for a live
+    ``CancelledError`` unwind, fatal here: suspending on that second
+    ``await`` while already unwinding a ``GeneratorExit`` is exactly what
+    raises "coroutine ignored GeneratorExit" as an unraisable exception
+    nobody can catch (surfaced in CI as ``PytestUnraisableExceptionWarning``,
+    misattributed to whichever later test happened to trigger the GC sweep).
+    """
+
+    def test_close_after_the_owning_loop_has_closed_does_not_raise(self) -> None:
+        """Faithful reproduction: a real loop, closed while the wrapper is
+        still suspended on it, then ``close()`` from entirely outside any
+        running loop -- exactly what a garbage-collected orphan goes through.
+
+        Not ``@pytest.mark.asyncio``: the whole point is driving the wrapper
+        to suspension on one real loop, closing THAT loop, and only then
+        calling ``close()`` -- which needs managing the loop by hand rather
+        than the fixture's own.
+        """
+
+        async def _inner() -> None:
+            await asyncio.sleep(3600)
+
+        async def _driver():
+            bt = td._bounded_turn(_inner(), 60)
+            # Drive the wrapper to its suspension point at `await task` for
+            # real, on a live loop -- exactly where a caller leaves it if
+            # nothing ever awaits or cancels the wrapper itself.
+            bt.send(None)
+            return bt
+
+        loop = asyncio.new_event_loop()
+        try:
+            bt = loop.run_until_complete(_driver())
+        finally:
+            loop.close()
+
+        # What the garbage collector does to an unreferenced, still-suspended
+        # coroutine once its owning loop is gone. Must not raise "coroutine
+        # ignored GeneratorExit" or "RuntimeError: Event loop is closed".
+        bt.close()
+
+    @pytest.mark.asyncio
+    async def test_owned_tasks_loop_already_closed_does_not_raise(self, monkeypatch) -> None:
+        """``Task.cancel()`` itself can raise once its owning loop is closed.
+
+        ``call_soon`` checks ``_check_closed()`` synchronously, so cancelling a
+        task whose loop closed between dispatch and collection raises
+        ``RuntimeError: Event loop is closed`` right out of ``task.cancel()``.
+        Mirrors ``TestBoundedTurnSetup``'s timer-failure setup: forcing entry
+        into the cleanup path via a rejected timer, but with the owned task's
+        own ``cancel`` failing too, the way it would against a closed loop.
+        """
+        original_deadline = td._TURN_DEADLINE.get()
+        created_tasks: list[asyncio.Task[None]] = []
+        real_ensure_future = asyncio.ensure_future
+
+        async def _turn() -> None:
+            raise AssertionError("failed setup must not start the turn")
+
+        def _record_task(coro):
+            task = real_ensure_future(coro)
+            monkeypatch.setattr(
+                task, "cancel", MagicMock(side_effect=RuntimeError("Event loop is closed"))
+            )
+            created_tasks.append(task)
+            return task
+
+        loop = asyncio.get_running_loop()
+        turn = _turn()
+        monkeypatch.setattr(td.asyncio, "ensure_future", _record_task)
+        monkeypatch.setattr(
+            loop,
+            "call_later",
+            MagicMock(side_effect=RuntimeError("timer rejected deadline")),
+        )
+        try:
+            # Must not raise the mocked "Event loop is closed" instead of the
+            # real setup failure -- task.cancel() failing is swallowed, not
+            # propagated over the exception already unwinding the wrapper.
+            with pytest.raises(RuntimeError, match="timer rejected deadline"):
+                await td._bounded_turn(turn, 60)
+            assert len(created_tasks) == 1
+            created_tasks[0].cancel.assert_called_once()
+        finally:
+            td._TURN_DEADLINE.set(original_deadline)
+
+
 class TestTimeoutCard:
     def test_names_the_limit_in_hours(self) -> None:
         assert "2-hour" in td.format_turn_timeout_card(7200.0)
