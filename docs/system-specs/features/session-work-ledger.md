@@ -45,6 +45,10 @@ Every accepted record advances `last_progress_at`. Changing `phase` requires a n
 
 `session_ledger._serialize_bounded()` evicts oldest history before an accepted state file can exceed the reader ceiling. `test_writer_guarantees_the_read_ceiling_for_legitimate_records` ensures a valid record remains readable, and `test_oversized_unknown_fields_are_dropped_not_self_corrupting` ensures oversized forward-compatible fields do not destroy known state.
 
+Each eviction discards data that never reaches disk, so it cannot be recovered from the stored file the way a read-side clamp can. `_serialize_bounded()` therefore logs one warning per over-budget serialization naming the ledger, the evicted `events`/`tried` counts, and any unknown fields dropped - including on the refusal path, which raises with the in-memory record already stripped. The line describes the document the call built rather than a durable write, because `atomic_write` runs afterwards and may still fail. A document that fits logs nothing. `TestBoundedWriteIsLoudAboutLoss` pins the counts, the named ledger, the refusal report, the failed-write case leaving the stored file intact, and the silence.
+
+`record()` returns the same dict `_serialize_bounded()` evicts from, so a caller's post-write view is the document on disk rather than the pre-eviction one. `test_record_returns_exactly_what_landed_on_disk` pins that equality across an eviction; serializing a copy instead would report entries the write dropped.
+
 Writes use the bounded exclusive lock in `session_ledger._locked()`. Contention raises `OSError` rather than allowing an unserialized write or indefinitely blocking a worker; `test_record_fails_closed_on_held_lock` enforces this. Reads are lock-free because `atomic_write` exposes either the previous or complete replacement document, so the state and event tail come from one transaction.
 
 ## 4. MCP surface and authorization
