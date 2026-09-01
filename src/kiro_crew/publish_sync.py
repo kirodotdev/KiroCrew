@@ -47,9 +47,11 @@ from pathlib import Path
 from kiro_crew.artifacts import (
     Artifact,
     ArtifactPublication,
+    ArtifactStore,
     ArtifactValidationError,
     ForkMetadata,
     get_default_store,
+    get_default_store_async,
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.publish_provider import (
@@ -165,6 +167,17 @@ _BASE_BODY_CSS = (
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+async def _store_async() -> ArtifactStore:
+    """The default store, for use from a coroutine.
+
+    Constructing the store does filesystem work, so a caller that arrives
+    before the gateway's post-bind warm-up must not build it on the loop.
+    Forwards this module's ``get_default_store`` name so a test that replaces
+    it keeps its substitute.
+    """
+    return await get_default_store_async(get_default_store)
 
 
 def _now_iso() -> str:
@@ -502,7 +515,7 @@ async def _publish_unlocked(
     takes the idempotent re-publish branch below instead of minting a second
     destination id.
     """
-    store = get_default_store()
+    store = await _store_async()
     # store.get reads current.html (up to MAX_CONTENT_BYTES = 25 MiB) + meta.json
     # synchronously; offload it off the asyncio gateway loop (no-blocking-call).
     art = await asyncio.to_thread(store.get, slug)  # ArtifactNotFoundError -> 404
@@ -620,7 +633,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
     if art.publication is None or not art.publication.auto_sync:
         return
     pub = art.publication
-    store = get_default_store()
+    store = await _store_async()
     # Offload the ≤25 MiB current.html read off the event loop (no-blocking-call).
     fresh = await asyncio.to_thread(store.get, art.slug)
     # If the live content has unsaved working edits (live_dirty), the bytes we
@@ -733,7 +746,7 @@ async def push_version(art: Artifact, *, force: bool = False) -> None:
 
 async def push_version_by_slug(slug: str, *, force: bool = False) -> None:
     """Convenience wrapper: load the artifact and push if published."""
-    art = await asyncio.to_thread(get_default_store().get, slug)
+    art = await asyncio.to_thread((await _store_async()).get, slug)
     if art.publication is not None and art.publication.auto_sync:
         await push_version(art, force=force)
 
@@ -775,7 +788,7 @@ async def update_sharing(
     slug: str, *, visibility: str, shared_with: list[str] | None = None
 ) -> dict[str, object]:
     """Update visibility + shared-with on an already-published artifact."""
-    store = get_default_store()
+    store = await _store_async()
     # Offload the ≤25 MiB current.html read + meta write off the event loop.
     art = await asyncio.to_thread(store.get, slug)
     if art.publication is None:
@@ -825,7 +838,7 @@ async def unpublish(slug: str) -> None:
 
     Raises ``NotPublishedError`` only when the artifact isn't published.
     """
-    store = get_default_store()
+    store = await _store_async()
     art = await asyncio.to_thread(store.get, slug)
     if art.publication is None:
         raise NotPublishedError(f"artifact {slug} is not published")
@@ -886,7 +899,7 @@ async def refresh_publication(slug: str) -> Artifact:
     out-of-band *content* change still surfaces as a conflict on the next push
     rather than being silently clobbered.
     """
-    store = get_default_store()
+    store = await _store_async()
     art = await asyncio.to_thread(store.get, slug)
     pub = art.publication
     if pub is None:
@@ -981,7 +994,7 @@ async def reprobe_notice(slug: str) -> Artifact:
     A publication that carries no notice is a no-op (nothing to reconcile), so
     the re-probe never issues a needless store write for the common case.
     """
-    store = get_default_store()
+    store = await _store_async()
     art = await asyncio.to_thread(store.get, slug)
     pub = art.publication
     if pub is None:
@@ -1240,7 +1253,7 @@ async def upstream_status(slug: str) -> dict[str, object]:
     origin). Best-effort: a provider/network failure reports ``tracked`` with
     the flags defaulted to False so opening an artifact never blocks or errors.
     """
-    store = get_default_store()
+    store = await _store_async()
     art = await asyncio.to_thread(store.get, slug)
     base: dict[str, object] = {
         "tracked": art.publication is not None or art.fork_metadata is not None,
@@ -1357,7 +1370,7 @@ async def pull_upstream(
 
     Best-effort: never raises for provider failures.
     """
-    store = get_default_store()
+    store = await _store_async()
     art = await asyncio.to_thread(store.get, slug)
     if art.publication is None and art.fork_metadata is None:
         return {"pulled": False, "reason": "not tracked", "tracked": False}
@@ -1515,7 +1528,7 @@ async def clone_from_remote(artifact_id: str, *, provider_name: str = DEFAULT_PR
     Fork is the path for a copy you intend to diverge from rather than sync with.
     Idempotent via ``find_by_artifact_id``.
     """
-    store = get_default_store()
+    store = await _store_async()
     existing = await asyncio.to_thread(
         lambda: store.find_by_artifact_id(artifact_id, provider=provider_name)
     )
@@ -1605,7 +1618,7 @@ async def fork_from_remote(external_id: str, *, provider_name: str = DEFAULT_PRO
     ``publication``. Reads the upstream via ``fetch_content`` behind the same
     content-type allowlist + widget-unwrap as clone.
     """
-    store = get_default_store()
+    store = await _store_async()
     provider = _resolve_provider(provider_name)
     if not await provider.ensure_ready():
         raise PublishUnavailableError(provider.install_hint)
@@ -1677,7 +1690,7 @@ async def overwrite_upstream(slug: str) -> dict[str, object]:
 
     Best-effort: never raises for provider failures (records ``last_error``).
     """
-    store = get_default_store()
+    store = await _store_async()
     art = await asyncio.to_thread(store.get, slug)
     pub = art.publication
     if pub is None:

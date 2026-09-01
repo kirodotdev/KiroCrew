@@ -48,12 +48,15 @@ from kiro_crew.artifacts import (
     USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactStillPublishedError,
+    ArtifactStore,
     ArtifactValidationError,
     get_default_folder_store,
     get_default_store,
+    get_default_store_async,
     has_unthemed_hardcoded_colors,
     is_document_path,
     webapp_metadata_from_dict,
@@ -110,6 +113,10 @@ _MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB 
 # module doesn't carry those tools, so the constraint lives here at the sole
 # HTTP boundary that accepts a provider name.
 _ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+#: A wire content token: the hex HMAC-SHA256 the store mints (see
+#: ``ArtifactStore._token_for_digest``). Checked before the token reaches the
+#: store's constant-time compare.
+_TOKEN_SHAPE = re.compile(r"[0-9a-f]{64}")
 
 # Upper bound (seconds) on any single awaited remote-publish-provider network
 # call. Without it a slow/hung provider would block the awaiting request (and
@@ -696,6 +703,17 @@ async def _run_off_loop(fn):  # type: ignore[no-untyped-def]
     return await loop.run_in_executor(subprocess_executor(), fn)
 
 
+async def _store_async() -> ArtifactStore:
+    """The default store, for use from a handler coroutine.
+
+    Constructing the store does filesystem work (its root, the token key with
+    a lock and a one-time fsync), so a handler that arrives before the
+    post-bind warm-up must not build it on the loop. Forwards this module's
+    ``get_default_store`` name so a test that replaces it keeps its substitute.
+    """
+    return await get_default_store_async(get_default_store)
+
+
 def _set_folder_and_reload(slug: str, folder_id: str) -> Any:
     """Move an artifact into a folder and return the reloaded record (blocking)."""
     store = get_default_store()
@@ -1125,7 +1143,7 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
         else None
     )
     try:
-        store = get_default_store()
+        store = await _store_async()
         items = store.list(
             tag=tag,
             kind=kind,
@@ -1347,7 +1365,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             )
             return _err(perr)
     if source_path:
-        store = get_default_store()
+        store = await _store_async()
         try:
             existing = store.find_by_source_path(source_path)
         except (ArtifactError, OSError) as exc:
@@ -1472,30 +1490,36 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # authorizes later reads is recorded with it. source_path is validated here
     # rather than stored as a raw string: an unvalidated project file outside
     # $HOME yields a pointer the store then refuses to read.
+    # Off the event loop, like every other store call in this handler: create()
+    # ends in the store's pinned staging (a component-by-component O_NOFOLLOW
+    # walk plus create + rename), and on slow storage those syscalls would
+    # stall every concurrent request and the heartbeat.
     try:
-        art = get_default_store().create(
-            name=body.get("name", ""),
-            content=(
-                promoted_content if promoted_content is not None else body.get("content", "")
-            ),
-            slug=body.get("slug"),
-            kind=body.get("kind"),
-            # Honor an explicitly-supplied source (MCP tool / import path); for
-            # UI saves that omit it, derive the ACTUAL session origin
-            # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
-            source=(body.get("source") or _artifact_source_for_request(request)),
-            description=body.get("description", ""),
-            tags=body.get("tags") or [],
-            source_path=link_source_path,
-            source_root=link_source_root,
-            source_copy_only=link_copy_only,
-            folder_id=folder_id,
-            # Originating chat session for the Source column. Only a real slot
-            # key that passes the permitted grammar is stored (validated to
-            # prevent attribution spoofing / metadata poisoning); anything else
-            # collapses to "".
-            session_key=_clean_origin_session_key(body.get("origin_session_key")),
-            webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
+        art = await _run_off_loop(
+            lambda: get_default_store().create(
+                name=body.get("name", ""),
+                content=(
+                    promoted_content if promoted_content is not None else body.get("content", "")
+                ),
+                slug=body.get("slug"),
+                kind=body.get("kind"),
+                # Honor an explicitly-supplied source (MCP tool / import path); for
+                # UI saves that omit it, derive the ACTUAL session origin
+                # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
+                source=(body.get("source") or _artifact_source_for_request(request)),
+                description=body.get("description", ""),
+                tags=body.get("tags") or [],
+                source_path=link_source_path,
+                source_root=link_source_root,
+                source_copy_only=link_copy_only,
+                folder_id=folder_id,
+                # Originating chat session for the Source column. Only a real slot
+                # key that passes the permitted grammar is stored (validated to
+                # prevent attribution spoofing / metadata poisoning); anything else
+                # collapses to "".
+                session_key=_clean_origin_session_key(body.get("origin_session_key")),
+                webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
+            )
         )
     except ArtifactValidationError as exc:
         _audit(
@@ -1564,7 +1588,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
 async def api_artifact_detail(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")
     try:
-        store = get_default_store()
+        store = await _store_async()
         art = store.get(slug)
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
@@ -1647,7 +1671,7 @@ async def api_artifact_asset(request: web.Request) -> web.Response:
     """
     slug = request.match_info.get("slug", "")
     try:
-        store = get_default_store()
+        store = await _store_async()
         # Off the loop: the sidecar can be up to MAX_CONTENT_BYTES, and a
         # synchronous read of that size would stall every other gateway task
         # (the user's chat turn and the liveness heartbeat included).
@@ -1734,6 +1758,26 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             from_version = int(raw_from_version) if raw_from_version is not None else None
         except (TypeError, ValueError):
             from_version = None
+        # Optional optimistic-concurrency token. The opaque ``content_token``
+        # a prior read handed the caller; the store 409s the write unless live
+        # content still mints to it. Shape-check here so a malformed token is a
+        # 400 (caller bug) rather than a guaranteed-mismatch 409 (which would
+        # read as a phantom concurrent edit) -- and never reaches the
+        # constant-time compare, which rejects non-ASCII input by raising.
+        raw_expected = body.get("expected_token")
+        if raw_expected is not None and (
+            not isinstance(raw_expected, str) or not _TOKEN_SHAPE.fullmatch(raw_expected)
+        ):
+            msg = "expected_token must be the 64-character hex content_token from a prior read"
+            _audit(
+                tool="artifact_update",
+                request=request,
+                outcome="denied",
+                error=msg,
+                extra={"slug": slug},
+            )
+            return _err(msg)
+        expected_token = raw_expected
         # Explicit render-kind change (the type control on the artifact page).
         # Restricted to the inline-editable kinds: `widget` / `html` render in a
         # sandboxed iframe and are NOT editable, so letting a caller select one
@@ -1779,6 +1823,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                 event_type=event_type,
                 from_version=from_version,
                 snapshot=snapshot,
+                expected_token=expected_token,
             )
         )
         # store.update() only loads content into the returned Artifact when
@@ -1806,6 +1851,30 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             error=str(exc),
         )
         return _err(str(exc))
+    except ArtifactConflictError as exc:
+        # Optimistic-concurrency loss: someone else changed the content since
+        # this caller read it. 409 with the LIVE token + version so the client
+        # can refetch and re-base. Nothing observable was mutated: the store
+        # compares before writing, and on the file-backed path it stages its
+        # own copy and installs it only after the source mirror succeeds, so
+        # a lost mirror discards the staged file and there is nothing to roll
+        # back. Must precede the ArtifactError branch below (it subclasses
+        # it) or conflicts would surface as 500s.
+        _audit(
+            tool="artifact_update",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return _json_response(
+            {
+                "error": str(exc),
+                "current_token": exc.current_token,
+                "version": exc.version,
+            },
+            status=409,
+        )
     except ArtifactError as exc:
         # Catches the base class fallback — store._write_text() raises
         # ArtifactError("refusing to write sensitive path: ...") which is
@@ -2002,7 +2071,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
     # Capture the pre-delete version so the deleted-variant WS event carries the
     # last-known version.
     try:
-        _existing = get_default_store().get(slug)
+        _existing = (await _store_async()).get(slug)
     except ArtifactError:
         # Best-effort version capture only — swallow both the missing-slug and
         # invalid-slug (ArtifactValidationError) siblings so an invalid slug still
@@ -2111,7 +2180,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
         # `refuse_if_published=True` is safe for an artifact that was never published
         # (its record is None and nothing above touched it) and is the whole guard for
         # one that was: see the clear directly above.
-        get_default_store().delete(slug, refuse_if_published=True)
+        (await _store_async()).delete(slug, refuse_if_published=True)
     except ArtifactStillPublishedError as exc:
         # A publish landed between the withdrawal and the removal. Refusing is the same
         # rule the withdrawal outcomes follow -- a refused delete is recoverable, an
@@ -2180,7 +2249,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
 async def api_artifact_versions(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")
     try:
-        versions = get_default_store().list_versions(slug)
+        versions = (await _store_async()).list_versions(slug)
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
@@ -2196,7 +2265,7 @@ async def api_artifact_version_detail(request: web.Request) -> web.Response:
     except ValueError:
         return _err(f"invalid version: {version_str}")
     try:
-        art = get_default_store().get(slug, version=version)
+        art = (await _store_async()).get(slug, version=version)
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
@@ -2217,7 +2286,7 @@ async def api_artifact_events(request: web.Request) -> web.Response:
     """
     slug = request.match_info.get("slug", "")
     try:
-        art = get_default_store().get(slug)
+        art = (await _store_async()).get(slug)
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
@@ -2292,7 +2361,7 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     if widget_index is not None and not isinstance(widget_index, int):
         return _err("metadata.widget_index must be an integer")
     try:
-        art, appended = get_default_store().record_impression(
+        art, appended = (await _store_async()).record_impression(
             slug,
             by=actor,
             session_id=session_id_hdr,
@@ -2695,7 +2764,7 @@ async def api_artifact_pull_latest(request: web.Request) -> web.Response:
         return _err("restricted session cannot pull latest", status=403)
 
     slug = request.match_info.get("slug", "")
-    store = get_default_store()
+    store = await _store_async()
     try:
         art = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
@@ -2824,7 +2893,7 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
             extra={"slug": slug},
         )
         return _err("restricted session cannot overwrite the remote", status=403)
-    store = get_default_store()
+    store = await _store_async()
     try:
         existing = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
@@ -2948,7 +3017,7 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
         # data-home root makes relocate refuse paths the store would then happily
         # read. is_relative_to on the resolved Paths is the sanitizer CodeQL
         # recognizes.
-        allowed_roots = get_default_store().allowed_source_roots()
+        allowed_roots = (await _store_async()).allowed_source_roots()
         # Fixed-root containment barrier — the COMPARISON stays inlined (NOT via
         # a helper) so CodeQL's intra-procedural taint tracker sees the
         # ``is_relative_to`` sanitizer guarding the SAME ``resolved_path`` that
@@ -2991,7 +3060,7 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
             return _err("source_path must be a file, not a directory", status=400)
         source_path = str(resolved_path)
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         # Blocking store read/write (meta.json + up to 25 MiB current.html) —
         # offload off the event loop.
@@ -3034,7 +3103,7 @@ def _serialize_folder(folder: dict[str, Any], *, path: str | None = None) -> dic
 
 async def api_artifact_folders(request: web.Request) -> web.Response:
     """GET /api/artifact-folders — list folders enriched with item_count + path."""
-    store = get_default_store()
+    store = await _store_async()
     fstore = get_default_folder_store()
     try:
         # list_with_counts walks every artifact's meta.json (O(N) filesystem
@@ -3259,7 +3328,7 @@ async def _withdraw_subtree_publications(folder_id: str, fstore: Any) -> str:
     ids = await _run_off_loop(lambda: fstore.subtree_ids(folder_id))
     if not ids:
         return ""
-    store = get_default_store()
+    store = await _store_async()
     slugs = await _run_off_loop(
         lambda: [a.slug for a in store.list() if (getattr(a, "folder_id", "") or "") in ids]
     )
@@ -3558,7 +3627,7 @@ async def api_artifact_session_docs(request: web.Request) -> web.Response:
             extra={"count": 0},
         )
         return _json_response({"docs": []})
-    store = get_default_store()
+    store = await _store_async()
     session = request.query.get("session") or None
 
     def work() -> list[dict[str, Any]]:
@@ -3686,7 +3755,7 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
     if state is None or _is_restricted_session(state, request):
         return _err("restricted session", status=403)
     slug = request.match_info["slug"]
-    store = get_default_store()
+    store = await _store_async()
 
     try:
         # Existence check + sidecar read are blocking filesystem IO (store.get
@@ -3839,7 +3908,7 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
     if scope not in ("private", "shared"):
         return _err("scope must be 'private' or 'shared'")
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         art = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
@@ -4002,7 +4071,7 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
         return _err("text exceeds 10000 chars")
     text = _redact_text(text)
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         art = await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
@@ -4108,7 +4177,7 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
     comment_id = request.match_info["comment_id"]
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
@@ -4189,7 +4258,7 @@ async def api_artifact_resolve_comment(request: web.Request) -> web.Response:
     if request.headers.get("X-Internal-Secret") is not None or body.get("is_agent"):
         return _err("agents cannot resolve comments — human-only", status=403)
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
@@ -4236,7 +4305,7 @@ async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
     comment_id = request.match_info["comment_id"]
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
@@ -4299,7 +4368,7 @@ async def api_artifact_delete_comment(request: web.Request) -> web.Response:
     # comment bodies / author / anchors.
     reason = (await asyncio.to_thread(_redact_text, str(body.get("reason") or "").strip()))[:500]
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         await _run_off_loop(lambda: store.get(slug))  # verify artifact exists
     except ArtifactNotFoundError as exc:
@@ -4431,7 +4500,7 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
     # post/reply (security-controls).
     text = _redact_text(text)
 
-    store = get_default_store()
+    store = await _store_async()
     try:
         await _run_off_loop(lambda: store.get(slug))
     except ArtifactNotFoundError as exc:
