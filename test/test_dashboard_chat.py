@@ -3676,7 +3676,8 @@ class TestKiroReadinessQueueHandoff:
 
 class TestQueueDrainOffLoopGuard:
     """Regression coverage for the off-loop GeneratorExit crash guarded by
-    ``chat_runner._loop_is_running``.
+    ``_on_serving_loop`` in ``_start_next_queued_turn`` /
+    ``_finish_queue_cycle``.
 
     In production a turn's coroutine is never abandoned mid-flight:
     ``spawn_guarded_turn`` always registers its task in
@@ -3691,33 +3692,34 @@ class TestQueueDrainOffLoopGuard:
     ``get_running_loop()`` and raised ``RuntimeError`` with no loop to
     schedule onto, replacing the in-flight ``GeneratorExit`` and surfacing as
     an unraisable exception blamed on whatever test the GC happened to run
-    in. These tests pin the guard directly (monkeypatching
-    ``get_running_loop`` to fail is the exact condition the guard checks for,
-    without needing a real event loop) plus one end-to-end reproduction of
-    the actual race against ``_run_chat`` itself.
+    in.
+
+    The guard keys on IDENTITY against the dashboard's bound serving loop,
+    not on whether *any* loop is running: the GC can finalize the orphaned
+    coroutine while a LATER, unrelated loop is active (successive event loops
+    in a test process), and dispatching onto that loop -- which does not own
+    the turn -- would consume the queued turn and run background work on the
+    wrong loop. These tests pin the guard directly for both the no-loop case
+    and the wrong-loop case (without needing the real coroutine machinery)
+    plus one end-to-end reproduction of the actual race against ``_run_chat``.
     """
 
     @staticmethod
-    def _break_get_running_loop(monkeypatch) -> None:
-        from kiro_crew.dashboard import chat_runner
+    def _break_running_loop(state, monkeypatch) -> None:
+        # Simulate GC finalization with NO loop running at all.
+        monkeypatch.setattr(state, "_running_loop", lambda: None)
 
-        monkeypatch.setattr(
-            chat_runner.asyncio,
-            "get_running_loop",
-            MagicMock(side_effect=RuntimeError("no running event loop")),
-        )
+    @staticmethod
+    def _running_loop_is_a_foreign_loop(state, monkeypatch) -> None:
+        # Simulate GC finalization while a LATER, unrelated loop is running:
+        # a serving loop was bound at startup, but the loop now under us is a
+        # different one. ``_on_serving_loop`` must reject this by identity.
+        import asyncio as _asyncio
 
-    def test_loop_is_running_false_with_no_loop(self) -> None:
-        from kiro_crew.dashboard import chat_runner
-
-        # A plain sync test body has no running loop at all.
-        assert chat_runner._loop_is_running() is False
-
-    @pytest.mark.asyncio
-    async def test_loop_is_running_true_on_a_real_loop(self) -> None:
-        from kiro_crew.dashboard import chat_runner
-
-        assert chat_runner._loop_is_running() is True
+        foreign = _asyncio.new_event_loop()
+        serving = _asyncio.new_event_loop()
+        state.bind_serving_loop(serving)
+        monkeypatch.setattr(state, "_running_loop", lambda: foreign)
 
     @pytest.mark.asyncio
     async def test_start_next_queued_turn_returns_false_off_loop_and_leaves_queue_intact(
@@ -3728,13 +3730,57 @@ class TestQueueDrainOffLoopGuard:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("off-loop-start")
         slot.queue_append("keep this queued")
-        self._break_get_running_loop(monkeypatch)
+        self._break_running_loop(state, monkeypatch)
 
         started = await chat_runner._start_next_queued_turn(state, slot)
 
         assert started is False
         assert len(slot._queue) == 1
         assert slot._queue[0]["content"] == "keep this queued"
+
+    @pytest.mark.asyncio
+    async def test_start_next_queued_turn_returns_false_on_a_foreign_loop_and_leaves_queue_intact(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A later, unrelated loop is running -- but it does not own this turn.
+
+        This is the case a bare ``_running_loop() is None`` check misses: the
+        GC finalizes the orphaned coroutine while a DIFFERENT loop is active,
+        so ``_running_loop()`` returns a real (non-None) loop that is not the
+        serving loop. Dispatching here would consume the queued turn onto a
+        loop that does not own it. ``_on_serving_loop`` must reject it by
+        identity and leave the queue exactly as a legitimate later drain
+        (running on the serving loop) will find it.
+        """
+        from kiro_crew.dashboard import chat_runner
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("foreign-loop-start")
+        slot.queue_append("keep this queued")
+        self._running_loop_is_a_foreign_loop(state, monkeypatch)
+
+        started = await chat_runner._start_next_queued_turn(state, slot)
+
+        assert started is False
+        assert len(slot._queue) == 1
+        assert slot._queue[0]["content"] == "keep this queued"
+
+    @pytest.mark.asyncio
+    async def test_finish_queue_cycle_on_a_foreign_loop_schedules_no_background_tasks(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Same wrong-loop case for the synthesis/title/summary dispatch tail:
+        a non-None foreign loop must still schedule nothing."""
+        from kiro_crew.dashboard import chat_runner
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("foreign-loop-finish")
+        slot._titled = False
+        self._running_loop_is_a_foreign_loop(state, monkeypatch)
+
+        chat_runner._finish_queue_cycle(state, slot)
+
+        assert state._background_tasks == set()
 
     @pytest.mark.asyncio
     async def test_finish_queue_cycle_off_loop_schedules_no_background_tasks(
@@ -3745,7 +3791,7 @@ class TestQueueDrainOffLoopGuard:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("off-loop-finish")
         slot._titled = False
-        self._break_get_running_loop(monkeypatch)
+        self._break_running_loop(state, monkeypatch)
 
         # Every branch below normally schedules a background task (auto-title
         # and session-summary); off-loop, none of them may.
@@ -3765,7 +3811,7 @@ class TestQueueDrainOffLoopGuard:
         slot._titled = True
         state.subagents = MagicMock()
         state.subagents.running_agents_for = MagicMock(return_value=[])
-        self._break_get_running_loop(monkeypatch)
+        self._break_running_loop(state, monkeypatch)
 
         chat_runner._finish_queue_cycle(state, slot)
 
@@ -3814,6 +3860,14 @@ class TestQueueDrainOffLoopGuard:
             loop.run_until_complete(asyncio.sleep(0.05))
             assert not task.done(), "the hang stub must keep the turn suspended, not finished"
             coro = task.get_coro()
+            # This task is deliberately abandoned pending -- that's the whole
+            # scenario under test. Left alone, its own eventual __del__ (at
+            # some later, unpredictable GC moment) logs "Task was destroyed
+            # but it is pending!" via the (by-then-closed) loop's exception
+            # handler -- a separate, expected asyncio noise source, not the
+            # unraisable exception this test verifies is gone. Silence it
+            # here, deterministically, rather than letting it surface later.
+            task._log_destroy_pending = False
         finally:
             loop.close()
 

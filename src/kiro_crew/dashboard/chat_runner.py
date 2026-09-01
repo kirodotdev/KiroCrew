@@ -4636,35 +4636,52 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         )
 
 
-def _loop_is_running() -> bool:
-    """True when called from inside a running asyncio event loop.
+def _on_serving_loop(state: DashboardState) -> bool:
+    """True only when the CURRENTLY running loop is this dashboard's own.
 
-    False only in one pathological case: a turn's coroutine was orphaned as a
-    background task and never joined (a test/harness hygiene bug, not a
-    production path -- ``spawn_guarded_turn`` always registers its task and
-    ``finish_turn_task`` always retrieves it), so the GC finalizes it via
-    ``coro.close()`` well after the owning loop closed. ``close()`` throws
-    ``GeneratorExit`` at whatever await point the coroutine was suspended on;
-    unwinding that through ``_run_chat``'s tail must not try to dispatch a
-    successor turn or schedule a background task -- ``asyncio.create_task``
-    calls ``get_running_loop()`` and would raise instead, and that raise
-    inside a ``finally`` unwinding ``GeneratorExit`` is what became the
-    unraisable exception this guards against.
+    The queue-cycle tail can be reached three ways: (1) normally, on the
+    dashboard's serving loop; (2) off any loop, when a turn coroutine
+    orphaned as an unjoined background task is finalized by the GC via
+    ``coro.close()`` after its loop has closed; (3) ON A DIFFERENT loop,
+    when that GC finalization happens to run while a later, unrelated loop
+    is active (successive event loops in a test process are the ordinary
+    way this occurs). Only case (1) may dispatch: cases (2) and (3) would
+    schedule the successor turn and its background tasks onto a loop that
+    does not own this turn, consuming the queued turn and running work on
+    the wrong loop. A bare ``get_running_loop() is not None`` test cannot
+    tell (1) from (3), so identity against the bound serving loop is what
+    the guard must key on.
+
+    Returns False when no loop is running, when no serving loop was ever
+    bound, or when the running loop is not the serving loop.
     """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
+    running = state._running_loop()
+    if running is None:
         return False
-    return True
+    serving = state.serving_loop
+    return serving is not None and running is serving
 
 
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
 
-    if not _loop_is_running():
-        # Nothing can be dispatched off-loop. Bail out before any queue
-        # mutation so the queue is left exactly as a legitimate later drain
-        # (with a real loop under it) will find it -- see _loop_is_running.
+    if not _on_serving_loop(state):
+        # Not on this dashboard's serving loop: nothing may be dispatched.
+        # This function is reached off the serving loop when a turn's
+        # coroutine, orphaned as an unjoined background task (a test/harness
+        # hygiene bug, not a production path -- ``spawn_guarded_turn`` always
+        # registers its task and ``finish_turn_task`` always retrieves it),
+        # is finalized by the GC via ``coro.close()`` after the owning loop
+        # closed. ``close()`` throws ``GeneratorExit`` at whatever await
+        # point the coroutine was suspended on, and that can land with NO
+        # loop running or with a LATER, unrelated loop running (successive
+        # event loops in a test process). Neither owns this turn: dispatching
+        # would schedule the successor turn and its background tasks onto the
+        # wrong loop, or -- with no loop -- make ``asyncio.create_task`` raise
+        # from inside ``_run_chat``'s ``finally`` while it unwinds the
+        # ``GeneratorExit``, the unraisable exception this guards against.
+        # Bail out before any queue mutation so the queue is left exactly as
+        # a legitimate later drain (running ON the serving loop) will find it.
         return False
 
     # FIRST, before anything reads the queue: re-assert each entry's
@@ -5115,14 +5132,17 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     """Start synthesis when eligible, otherwise mark a queue cycle idle."""
 
-    # See _loop_is_running: every asyncio.create_task below needs a running
-    # loop, and this function's tail also runs from inside _run_chat's own
-    # finally while that finally is unwinding an off-loop GeneratorExit. Folded
-    # into will_synthesize itself (not just its create_task) so the
+    # Every asyncio.create_task below needs THIS dashboard's serving loop
+    # under it, and this function's tail also runs from inside _run_chat's
+    # own finally while that finally is unwinding an off-loop GeneratorExit
+    # (see _start_next_queued_turn and _on_serving_loop). A later unrelated
+    # loop is not this turn's owner, so identity against the serving loop --
+    # not a bare running-loop test -- is what gates dispatch. Folded into
+    # will_synthesize itself (not just its create_task) so the
     # flush-deferred-notes gate right below stays in lockstep with the actual
     # dispatch -- a note withheld for a synthesis turn that never gets
     # scheduled would otherwise never flush.
-    loop_running = _loop_is_running()
+    loop_running = _on_serving_loop(state)
 
     will_synthesize = (
         slot._pending_synthesis
