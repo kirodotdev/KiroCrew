@@ -929,8 +929,12 @@
       },
       "lib": {
         "format": {
+          "cause_no_agent_cli": "El revisor nunca se inició — no se encontró ningún ejecutable de kiro-cli en este host. Instálalo, o añádelo a PATH.",
           "cause_no_record": "El revisor terminó pero no registró ningún hallazgo.",
+          "cause_record_incomplete": "El revisor escribió un registro de hallazgos pero se detuvo antes de completar la revisión.",
           "cause_runtime_died": "El proceso del revisor se detuvo a mitad de la revisión — normalmente porque el gateway se reinició. El pull request no tenía nada mal.",
+          "cause_runtime_not_importable": "El revisor nunca se inició — esta instalación no puede cargar el runtime de agente que necesita. Repara la instalación para restaurarlo.",
+          "cause_runtime_unavailable": "El revisor nunca se inició — su runtime de agente no está disponible en este host.",
           "cause_timeout": "La revisión superó su límite de tiempo.",
           "cause_turn_failed": "El turno de revisión falló antes de registrar nada.",
           "cause_unknown": "La revisión no se completó.",

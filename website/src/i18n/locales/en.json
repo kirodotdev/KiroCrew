@@ -781,8 +781,12 @@
       },
       "lib": {
         "format": {
+          "cause_no_agent_cli": "Reviewer never started — no kiro-cli executable was found on this host. Install it, or add it to PATH.",
           "cause_no_record": "Reviewer finished but recorded no findings.",
+          "cause_record_incomplete": "Reviewer wrote a findings record but stopped before completing the review.",
           "cause_runtime_died": "Reviewer process stopped mid-review — usually the gateway restarting. Nothing was wrong with the pull request.",
+          "cause_runtime_not_importable": "Reviewer never started — this install cannot load the agent runtime it needs. Repair the install to restore it.",
+          "cause_runtime_unavailable": "Reviewer never started — its agent runtime is unavailable on this host.",
           "cause_timeout": "Review ran past its time limit.",
           "cause_turn_failed": "Review turn failed before recording anything.",
           "cause_unknown": "Review did not complete.",

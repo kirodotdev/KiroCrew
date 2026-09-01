@@ -877,8 +877,12 @@
       },
       "lib": {
         "format": {
+          "cause_no_agent_cli": "리뷰어가 시작되지 못했습니다 — 이 호스트에서 kiro-cli 실행 파일을 찾지 못했습니다. 설치하거나 PATH에 추가하세요.",
           "cause_no_record": "리뷰어가 끝났지만 지적을 기록하지 않았습니다.",
+          "cause_record_incomplete": "리뷰어가 지적 기록은 남겼지만 리뷰를 마치기 전에 멈췄습니다.",
           "cause_runtime_died": "리뷰어 프로세스가 리뷰 도중 중지되었습니다 — 대개 게이트웨이 재시작 때문입니다. 풀 리퀘스트 자체에는 문제가 없습니다.",
+          "cause_runtime_not_importable": "리뷰어가 시작되지 못했습니다 — 이 설치는 필요한 에이전트 런타임을 불러올 수 없습니다. 설치를 복구하면 다시 돌아옵니다.",
+          "cause_runtime_unavailable": "리뷰어가 시작되지 못했습니다 — 에이전트 런타임을 이 호스트에서 사용할 수 없습니다.",
           "cause_timeout": "리뷰가 제한 시간을 넘겼습니다.",
           "cause_turn_failed": "리뷰 턴이 아무것도 기록하기 전에 실패했습니다.",
           "cause_unknown": "리뷰가 완료되지 않았습니다.",

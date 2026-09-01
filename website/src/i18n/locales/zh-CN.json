@@ -877,8 +877,12 @@
       },
       "lib": {
         "format": {
+          "cause_no_agent_cli": "评审器根本没启动——这台主机上没找到 kiro-cli 可执行文件。装上它，或者把它加进 PATH。",
           "cause_no_record": "评审器跑完了，但没有记录任何发现。",
+          "cause_record_incomplete": "评审器写下了发现记录，但在评审完成前就停了。",
           "cause_runtime_died": "评审器进程在评审途中停了——通常是 gateway 重启导致的。这个 pull request 本身没有问题。",
+          "cause_runtime_not_importable": "评审器根本没启动——这套安装加载不了它需要的 agent 运行时。修复安装即可恢复。",
+          "cause_runtime_unavailable": "评审器根本没启动——它的 agent 运行时在这台主机上不可用。",
           "cause_timeout": "评审超过了时间上限。",
           "cause_turn_failed": "评审轮次在记录任何内容之前就失败了。",
           "cause_unknown": "评审没有完成。",

@@ -929,8 +929,12 @@
       },
       "lib": {
         "format": {
+          "cause_no_agent_cli": "Le relecteur n’a jamais démarré — aucun exécutable kiro-cli n’a été trouvé sur cet hôte. Installe-le, ou ajoute-le au PATH.",
           "cause_no_record": "Le relecteur a terminé mais n’a enregistré aucun constat.",
+          "cause_record_incomplete": "Le relecteur a écrit un enregistrement de constats mais s’est arrêté avant de terminer la revue.",
           "cause_runtime_died": "Le processus du relecteur s’est arrêté en pleine revue — généralement parce que le gateway a redémarré. Rien n’allait mal du côté de la pull request.",
+          "cause_runtime_not_importable": "Le relecteur n’a jamais démarré — cette installation ne peut pas charger le runtime d’agent dont elle a besoin. Répare l’installation pour le rétablir.",
+          "cause_runtime_unavailable": "Le relecteur n’a jamais démarré — son runtime d’agent n’est pas disponible sur cet hôte.",
           "cause_timeout": "La revue a dépassé sa limite de temps.",
           "cause_turn_failed": "Le tour de revue a échoué avant d’enregistrer quoi que ce soit.",
           "cause_unknown": "La revue ne s’est pas terminée.",

@@ -903,8 +903,12 @@
       },
       "lib": {
         "format": {
+          "cause_no_agent_cli": "Der Reviewer ist nie gestartet — auf diesem Host wurde keine ausführbare kiro-cli-Datei gefunden. Installiere sie, oder nimm sie in PATH auf.",
           "cause_no_record": "Der Reviewer ist fertig geworden, hat aber keine Befunde aufgezeichnet.",
+          "cause_record_incomplete": "Der Reviewer hat einen Befund-Datensatz geschrieben, aber vor dem Abschluss des Reviews aufgehört.",
           "cause_runtime_died": "Der Reviewer-Prozess wurde mitten im Review gestoppt — meist durch einen Neustart des Gateways. Am Pull-Request war nichts falsch.",
+          "cause_runtime_not_importable": "Der Reviewer ist nie gestartet — diese Installation kann die benötigte Agent-Runtime nicht laden. Repariere die Installation, um sie wiederherzustellen.",
+          "cause_runtime_unavailable": "Der Reviewer ist nie gestartet — seine Agent-Runtime ist auf diesem Host nicht verfügbar.",
           "cause_timeout": "Das Review hat sein Zeitlimit überschritten.",
           "cause_turn_failed": "Der Review-Turn ist fehlgeschlagen, bevor etwas aufgezeichnet wurde.",
           "cause_unknown": "Das Review wurde nicht abgeschlossen.",
