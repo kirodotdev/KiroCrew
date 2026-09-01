@@ -1753,12 +1753,28 @@ class HistoryConsolidator:
                         session_key=key,
                         created_at=AutoSkillProvenance.now_iso(),
                     )
-                    if self._approval_required or valid_scripts or scripts_supplied:
-                        # Stage for human review — nothing goes live unattended,
-                        # and any candidate that SUPPLIED scripts ALWAYS stages
-                        # (even if every script was rejected by the validator, so
-                        # a script-bearing candidate can never auto-publish as a
-                        # prose-only skill).
+                    if scripts_supplied and not valid_scripts and not self._approval_required:
+                        # The user opted out of prose review, but this candidate
+                        # attempted to add executable content and every script
+                        # failed validation. Do not disguise it as a prose-only
+                        # skill, and do not create an approval request the user
+                        # explicitly disabled: reject the candidate as a whole.
+                        self._logger.info(
+                            "Auto-skill candidate %s rejected: all supplied scripts failed validation",
+                            slug,
+                        )
+                        _facade_sel().log_tool_invocation(
+                            session_key=key,
+                            tool_name="auto_skill_create",
+                            tool_kind="skills",
+                            outcome="rejected",
+                            metadata={"slug": slug, "reason": "all_scripts_rejected"},
+                        )
+                    elif self._approval_required or valid_scripts or scripts_supplied:
+                        # Stage when review is enabled or the candidate supplied
+                        # executable content. A mixed candidate retains only the
+                        # scripts that passed validation; with review enabled, an
+                        # all-rejected candidate can still be inspected as prose.
                         name = self._skills_loader.stage_skill_candidate(
                             slug,
                             description=description,

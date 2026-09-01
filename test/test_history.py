@@ -3112,7 +3112,7 @@ class TestProcessAutoSkillsIntegration:
             await consolidator._consolidate("dashboard:chat-bad", include_history=True)
 
         detail = skills.get_pending_skill("dangerous-skill")
-        assert detail is not None  # skill still staged
+        assert detail is not None  # approval is enabled, so the prose still stages
         assert detail["scripts"] == []  # dangerous script dropped by validator
 
 
@@ -4649,9 +4649,9 @@ async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_script_bearing_candidate_stages_even_when_all_scripts_invalid(tmp_path):
-    """A candidate that SUPPLIED scripts must never auto-publish as prose-only,
-    even with approval disabled and every script rejected (GPT MEDIUM)."""
+async def test_all_invalid_scripts_are_rejected_when_approval_disabled(tmp_path):
+    """A candidate whose supplied scripts all fail validation is rejected
+    instead of being auto-published or queued against the user's opt-out."""
     from kiro_crew.memory import MemoryStore
     from kiro_crew.skills import SkillsLoader
 
@@ -4683,9 +4683,10 @@ async def test_script_bearing_candidate_stages_even_when_all_scripts_invalid(tmp
     with patch.object(consolidator, "_call_llm", side_effect=fake_llm):
         await consolidator._consolidate("dashboard:chat-x", include_history=True)
 
-    # Not live (would be an auto-publish); staged for review instead.
+    # The unsafe candidate is neither auto-published nor queued for a review the
+    # user disabled.
     assert skills.list_auto_skills() == []
-    assert any(s["slug"] == "scripted-skill" for s in skills.list_pending_skills())
+    assert skills.list_pending_skills() == []
 
 
 class TestMetadataReadSurvivesATransientSharingViolation:
