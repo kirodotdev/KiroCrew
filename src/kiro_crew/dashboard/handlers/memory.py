@@ -41,6 +41,7 @@ from kiro_crew.embeddings import (
 from kiro_crew.executors import embed_executor, run_in_embed_pool
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -49,7 +50,7 @@ from kiro_crew.sandbox import (
     wrap_argv,
     wrap_argv_async,
 )
-from kiro_crew.security import redact_and_truncate, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import _get_memory, _is_restricted_session, _redact_memory_field, read_bounded_json
 from .cron import _recognize_session
@@ -72,11 +73,28 @@ _history_write_lock = LoopBoundLock()
 # loader publishes into an embedder we close, and close() is terminal.
 _MODEL_LOAD_TIMEOUT_SECS = 600.0
 
-# Log-line budget for pip/ensurepip stderr in the warnings below. The bound is
-# applied by redact_and_truncate AFTER redaction runs over the FULL decoded
-# stderr, so a credential straddling the boundary cannot survive as an
-# unredacted fragment (the redact-before-bound invariant; see security.py).
+# Log-line budget for pip/ensurepip stderr in the warnings below.
 _PIP_STDERR_LOG_CHARS = 500
+
+
+def _redact_pip_stderr(raw: bytes) -> str:
+    """Redact pip/ensurepip stderr for a log line, then bound its length.
+
+    Through the CONTEXT rather than `security.redact_and_truncate`: a pip failure
+    is prime territory for a host-specific credential shape (an internal registry
+    cookie, a token in an index URL), and those live in a loaded companion's
+    regexes rather than in the OSS baseline. Reading the baseline here would scan a
+    companion host's stderr with the weaker pass and log what it missed. The
+    `_log_` spelling is the one that cannot raise, which this path needs: the
+    caller is reporting a failure, and losing the report is worse than losing the
+    line.
+
+    Redact BEFORE bounding. Slicing first can cut a credential in half, and half a
+    token no longer matches the redactors' patterns (an AWS key ID needs its full
+    20 characters), so the surviving fragment would reach gateway.log verbatim. The
+    character cap is for log volume, so it belongs last.
+    """
+    return redact_log_via_context(raw.decode(errors="replace"))[:_PIP_STDERR_LOG_CHARS]
 
 
 def _sel():
@@ -906,10 +924,7 @@ async def _ensure_pip_available() -> tuple[bool, str]:
             logger.warning("ensurepip bootstrap timed out")
             return False, "pip bootstrap (ensurepip) timed out"
         if proc.returncode != 0:
-            logger.warning(
-                "ensurepip bootstrap failed: %s",
-                redact_and_truncate(stderr.decode(errors="replace"), _PIP_STDERR_LOG_CHARS),
-            )
+            logger.warning("ensurepip bootstrap failed: %s", _redact_pip_stderr(stderr))
             return False, "pip bootstrap (ensurepip) failed"
         importlib.invalidate_caches()
         logger.info("Bootstrapped pip via ensurepip")
@@ -1061,10 +1076,7 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                         )
                     if proc.returncode != 0:
                         logger.warning(
-                            "faiss-cpu install failed: %s",
-                            redact_and_truncate(
-                                stderr.decode(errors="replace"), _PIP_STDERR_LOG_CHARS
-                            ),
+                            "faiss-cpu install failed: %s", _redact_pip_stderr(stderr)
                         )
                         _embedding_setup_status = {
                             "step": "idle",
