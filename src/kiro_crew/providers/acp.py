@@ -23,7 +23,6 @@ from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
-    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -37,6 +36,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
+from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
@@ -445,8 +445,14 @@ class AcpProvider(LLMProvider):
 
     @property
     def is_claude_backend(self) -> bool:
-        """True when this ACP provider talks to claude-agent-acp (vs kiro-cli)."""
-        return self._client.backend == ACP_BACKEND_CLAUDE
+        """True when this ACP provider talks to claude-agent-acp (vs kiro-cli).
+
+        The comparison lives in ``agent_sdk.backend_identity`` so this property,
+        ``session._is_claude_backend`` and ``provider_label`` cannot drift about
+        what "the claude backend" means. Reading ``self._client.backend`` stays
+        here because only this class knows where its own backend string lives.
+        """
+        return is_claude_backend_name(self._client.backend)
 
     @property
     def is_kas_backend(self) -> bool:
@@ -1523,7 +1529,7 @@ def provider_label(provider: Any) -> str:
         backend = getattr(getattr(provider, "client", None), "backend", "")
     else:
         return PROVIDER_LABEL_DEFAULT
-    if backend == ACP_BACKEND_CLAUDE:
+    if is_claude_backend_name(backend):
         return PROVIDER_LABEL_CLAUDE
     if backend == ACP_BACKEND_KAS:
         return PROVIDER_LABEL_KAS

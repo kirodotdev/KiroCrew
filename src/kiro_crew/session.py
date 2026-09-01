@@ -93,7 +93,6 @@ if TYPE_CHECKING:
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp.types import (
-    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
     PROVIDER_LABEL_CLAUDE,
@@ -102,6 +101,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import selectable_backends
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
+from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -209,13 +209,19 @@ def _is_claude_backend(provider: Any) -> bool:
     which the public build offers: ``BASELINE_SELECTABLE_BACKENDS`` includes it, so
     the factory selects it whenever an operator has chosen it and the adapter is
     installed.
+
+    The ``isinstance`` gate and the backend-string read stay here -- they are
+    what makes this predicate mock-safe, and the shape they read is the
+    provider's own business. Only the comparison is delegated to
+    ``agent_sdk.backend_identity``, so this and ``AcpProvider.is_claude_backend``
+    cannot disagree about which string counts as the claude backend.
     """
     from kiro_crew.providers.acp import AcpProvider  # circular import: providers -> session
 
     if not isinstance(provider, AcpProvider):
         return False
     backend = getattr(provider.client, "backend", "")
-    return backend == ACP_BACKEND_CLAUDE
+    return is_claude_backend_name(backend)
 
 
 def _provider_label(provider: Any) -> str:
