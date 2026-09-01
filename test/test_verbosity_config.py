@@ -273,6 +273,23 @@ class TestAnswerOnlyBlock:
         assert "Brevity is not enough" in result
         assert "jargon that dresses up a simple point" in result
 
+    def test_answer_only_puts_the_point_at_the_front_of_the_sentence(self):
+        """Word choice was governed but sentence SHAPE was not, so a reply of
+        short plain words could still bury the point mid-sentence behind chained
+        clauses ("here", "then", "but", "which means") and contrastive framing
+        ("this is not X, it's Y"). The reported symptom was having to hunt for
+        what to know. Also fences off the opposite failure: plain is written for
+        a capable reader in a hurry, never dumbed down.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        one_line = " ".join(result.split())
+        assert "the point at the front of each one" in one_line
+        assert "Plain does not mean childish" in one_line
+        assert "capable reader in a hurry, not for a five-year-old" in one_line
+        assert "in the first few words and stop" in one_line
+        assert "here, then, but, so that or which means" in one_line
+        assert "read twice to find the point, rewrite it" in one_line
+
     def test_answer_only_names_the_categories_it_removes(self):
         """Enumerated bans, not a vague "be brief" -- each named category is a
         distinct way explanation creeps back in.
@@ -377,14 +394,34 @@ class TestAnswerOnlyBlock:
         assert "Naming your findings is not naming the answer" in result
         assert "you have not answered" in result
 
-    def test_answer_only_turns_itself_off_when_detail_is_requested(self):
-        """Detailed explanations are still reachable -- by asking. Without this
-        the level is a dead end rather than a default.
+    def test_answer_only_turns_itself_off_when_depth_is_requested(self):
+        """Detailed explanations are still reachable -- by asking for depth.
+        Without this the level is a dead end rather than a default. The escape
+        hatch is scoped to an explicit depth request, NOT to any question that
+        contains the word "why" (see the sibling test below).
         """
         result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
-        assert "asks you to explain" in result
+        one_line = " ".join(result.split())
+        assert "Only an explicit request for depth" in one_line
         assert "this mode is off" in result
         assert "full detail they asked for" in result
+
+    def test_asking_why_does_not_lift_the_length_rules(self):
+        """The carve-out used to fire on "asks why" and switch the whole mode
+        off, so a bare "why did you override that?" -- a one-line question --
+        licensed a full report. The user's own workaround was to append "simple
+        sentences to explain" to every why-question, which is the missing bound
+        written by hand. A why-question opts into the REASON, not into length:
+        the per-item sentence bound and the plain-words rule stay in force.
+        """
+        result = _resolve("{{VERBOSITY_BLOCK}}", "dashboard:x", verbosity="answer_only")
+        one_line = " ".join(result.split())
+        assert "A request for the reason is not a request for a document" in one_line
+        assert "every length rule stays in force" in one_line
+        assert "a few plain sentences, one per point" in one_line
+        # The old wholesale flip must be gone, or both readings survive and the
+        # model picks the longer one.
+        assert "The moment the user asks why" not in one_line
 
     def test_unrequested_explanation_is_the_rare_exception(self):
         """The block previously carried a broad judgement-based licence to
