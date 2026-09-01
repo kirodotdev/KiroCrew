@@ -168,3 +168,126 @@ class TestReceive:
         t = SlackTransport(FakeClient(), allowed_users={"U_OWNER"})  # dispatch=None
         # Should not raise even for an authorized message.
         await t.receive({"event": {"user": "U_OWNER", "channel": "C1", "text": "hi"}})
+
+
+class TestReceiveTrustedBots:
+    """The trusted_bot_ids second allow-list, mirroring the events.py gate."""
+
+    @staticmethod
+    def _collector():
+        seen: list[InboundMessage] = []
+
+        async def dispatch(m):
+            seen.append(m)
+
+        return seen, dispatch
+
+    @pytest.mark.asyncio
+    async def test_trusted_bot_admitted(self, monkeypatch):
+        import kiro_crew.slack.transport as transport_mod
+
+        monkeypatch.setattr(transport_mod, "validated_self_bot_id", lambda: "B_SELF")
+        seen, dispatch = self._collector()
+        t = SlackTransport(
+            FakeClient(),
+            allowed_users={"U_OWNER"},
+            trusted_bot_ids={"B_PEER"},
+            dispatch=dispatch,
+        )
+        # A trusted bot's message commonly carries subtype == "bot_message";
+        # the trust decision must run first so the subtype gate does not eat it.
+        await t.receive(
+            {
+                "event": {
+                    "bot_id": "B_PEER",
+                    "subtype": "bot_message",
+                    "channel": "C1",
+                    "text": "ping",
+                    "ts": "1.1",
+                }
+            }
+        )
+        assert len(seen) == 1
+        # The bot_id stands in as the sender id, as on the events.py path.
+        assert seen[0].user_id == "B_PEER"
+
+    @pytest.mark.asyncio
+    async def test_untrusted_bot_still_dropped(self, monkeypatch):
+        import kiro_crew.slack.transport as transport_mod
+
+        monkeypatch.setattr(transport_mod, "validated_self_bot_id", lambda: "B_SELF")
+        seen, dispatch = self._collector()
+        t = SlackTransport(
+            FakeClient(),
+            allowed_users={"U_OWNER"},
+            trusted_bot_ids={"B_PEER"},
+            dispatch=dispatch,
+        )
+        await t.receive({"event": {"bot_id": "B_EVIL", "channel": "C1", "text": "spam"}})
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_untrusted_bot_denial_is_audited(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.slack.transport as transport_mod
+
+        monkeypatch.setattr(transport_mod, "validated_self_bot_id", lambda: "B_SELF")
+        rec = MagicMock()
+        monkeypatch.setattr(transport_mod, "sel", lambda: rec)
+        t = SlackTransport(FakeClient(), trusted_bot_ids={"B_PEER"})
+        await t.receive({"event": {"bot_id": "B_EVIL", "channel": "C1", "text": "spam"}})
+        kwargs = rec.log_api_access.call_args.kwargs
+        assert kwargs["caller"] == "B_EVIL"
+        assert kwargs["outcome"] == "denied"
+        assert kwargs["operation"] == "slack_transport.receive"
+        assert kwargs["error"] == "untrusted_bot"
+
+    @pytest.mark.asyncio
+    async def test_trusted_admission_is_audited(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import kiro_crew.slack.transport as transport_mod
+
+        monkeypatch.setattr(transport_mod, "validated_self_bot_id", lambda: "B_SELF")
+        rec = MagicMock()
+        monkeypatch.setattr(transport_mod, "sel", lambda: rec)
+        seen, dispatch = self._collector()
+        t = SlackTransport(FakeClient(), trusted_bot_ids={"B_PEER"}, dispatch=dispatch)
+        await t.receive({"event": {"bot_id": "B_PEER", "channel": "C1", "text": "ping"}})
+        assert len(seen) == 1
+        kwargs = rec.log_api_access.call_args.kwargs
+        assert kwargs["outcome"] == "allowed"
+        assert kwargs["resources"] == "trusted_bot"
+
+    @pytest.mark.asyncio
+    async def test_own_bot_never_trusted_even_when_listed(self, monkeypatch):
+        import kiro_crew.slack.transport as transport_mod
+
+        monkeypatch.setattr(transport_mod, "validated_self_bot_id", lambda: "B_SELF")
+        seen, dispatch = self._collector()
+        t = SlackTransport(FakeClient(), trusted_bot_ids={"B_SELF"}, dispatch=dispatch)
+        await t.receive({"event": {"bot_id": "B_SELF", "channel": "C1", "text": "echo"}})
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_unverified_self_id_fails_closed(self, monkeypatch):
+        import kiro_crew.slack.transport as transport_mod
+
+        monkeypatch.setattr(transport_mod, "validated_self_bot_id", lambda: "")
+        seen, dispatch = self._collector()
+        t = SlackTransport(FakeClient(), trusted_bot_ids={"B_PEER"}, dispatch=dispatch)
+        await t.receive({"event": {"bot_id": "B_PEER", "channel": "C1", "text": "ping"}})
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_trusted_set_is_frozen_snapshot(self, monkeypatch):
+        import kiro_crew.slack.transport as transport_mod
+
+        monkeypatch.setattr(transport_mod, "validated_self_bot_id", lambda: "B_SELF")
+        seen, dispatch = self._collector()
+        live = {"B_PEER"}
+        t = SlackTransport(FakeClient(), trusted_bot_ids=live, dispatch=dispatch)
+        live.add("B_INTRUDER")  # mutate the source set after construction
+        await t.receive({"event": {"bot_id": "B_INTRUDER", "channel": "C1", "text": "x"}})
+        assert seen == []
