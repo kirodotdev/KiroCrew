@@ -20,6 +20,7 @@ import { PageHeader, Btn, EmptyState, ContentSkeleton, Input } from '../../compo
 import AwsConsentGate from '../../components/AwsConsentGate'
 import { api, type AwsConsentStatus } from '../../api/client'
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
 import ConsoleView, { ReconnectAction } from './ConsoleView'
 import DrivePage from './DrivePage'
@@ -75,6 +76,16 @@ function AccountRow({ account, onOpen }: { account: AwsAccount; onOpen: () => vo
         <span className="min-w-0 shrink-0 max-w-[45%] truncate text-[13px] font-semibold text-text-strong" data-testid="account-name">
           {accountName(account)}
         </span>
+        {/* A word, not just a colour: the dot alone made a degraded account
+            distinguishable only by hue. Healthy rows stay quiet — the word
+            appears exactly when something needs attention. min-w-0 + truncate,
+            not shrink-0: a fixed-width label at 320px pushes the keys count and
+            chevron off the clipped row (longest German label measured). */}
+        {account.health !== 'ok' && (
+          <span className="min-w-0 shrink truncate text-[12px] text-warn" data-testid="account-health-word">
+            {i18nT(HEALTH_LABEL_KEY[account.health])}
+          </span>
+        )}
         {account.account && (
           <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted" data-testid="account-id">
             {account.account}
@@ -367,12 +378,21 @@ export default function AwsControlPage() {
     <div className="flex h-full flex-col">
       {header}
       <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
-        {/* Accounts and a client-side search over them. Nothing else lives on
-            this page: the aggregate counts line was removed because the list it
-            summarised is directly below it, and the paid-service consent gates
-            moved onto the account they actually bill (see ConsoleView), where
-            the connection they use is already on screen. */}
-        <div className="flex flex-wrap items-center justify-end gap-2" data-testid="accounts-aggregate">
+        {/* Accounts and a client-side search over them. The strip on the left
+            answers "how much is connected and is it healthy" at a glance —
+            counts the backend already sends — while the list below stays the
+            page's primary content. Paid-service consent gates live on the
+            account they actually bill (see ConsoleView). */}
+        <div className="flex flex-wrap items-center justify-between gap-2" data-testid="accounts-aggregate">
+          {data?.totals ? (
+            <p className="text-[13px] text-muted" data-testid="accounts-totals">
+              {i18nT('apps.awsControl.page.totals_summary', {
+                accounts: fmtNumber(data.totals.accounts),
+                keys: fmtNumber(data.totals.profiles),
+                healthy: fmtNumber(data.totals.profilesHealthy),
+              })}
+            </p>
+          ) : <span />}
           <div className="relative">
             <Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
             <Input

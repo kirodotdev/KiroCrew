@@ -209,8 +209,23 @@ if (await cap.count()) {
     await expectCount('drive-view-toggle', 0)
     await expectCount('drive-folder', 1)
     await expectCount('drive-file', 3)
-    // Folder creation and its delete confirm are both reachable from here.
+    // Folder creation is a DISCLOSURE now: collapsed, the toolbar carries the
+    // toggle + Upload and no name input; opening it swaps Upload out (the
+    // expanded row stays one two-button group) and reveals the input + Create
+    // + Cancel. Assert both states rather than the old always-visible input.
+    await expectCount('drive-folder-toggle', 1)
+    await expectCount('drive-folder-name', 0)
+    await expectCount('drive-upload-btn', 1)
+    await page.locator('[data-testid="drive-folder-toggle"]').click()
+    await page.waitForTimeout(300)
+    await expectCount('drive-folder-name', 1)
     await expectCount('drive-folder-create', 1)
+    await expectCount('drive-folder-cancel', 1)
+    await expectCount('drive-upload-btn', 0)
+    await page.locator('[data-testid="drive-folder-cancel"]').click()
+    await page.waitForTimeout(300)
+    await expectCount('drive-folder-name', 0)
+    await expectCount('drive-upload-btn', 1)
     await expectCount('drive-folder-delete-confirm', 0)
     // Two controls per row: Download plus one overflow trigger. The menu comes
     // from ui/dropdown-menu, which PORTALS its content out of the table - a
@@ -237,9 +252,14 @@ if (await cap.count()) {
     // plausible screenshot at 1280px.
     await page.setViewportSize({ width: 320, height: 900 })
     await page.waitForTimeout(400)
+    // The folder controls live behind the disclosure now: open it so the
+    // measured set matches what a narrow-viewport user actually sees, then
+    // measure the collapsed pair afterwards.
+    await page.locator('[data-testid="drive-folder-toggle"]').click()
+    await page.waitForTimeout(300)
     const overflow = await page.evaluate(() => {
       const bad = []
-      for (const t of ['drive-folder-name', 'drive-folder-create', 'drive-upload-btn',
+      for (const t of ['drive-folder-name', 'drive-folder-create', 'drive-folder-cancel',
                        'drive-folder-delete-cancel', 'drive-folder-delete-action']) {
         const el = document.querySelector(`[data-testid="${t}"]`)
         if (!el) { bad.push(`${t}: missing`); continue }
@@ -250,6 +270,21 @@ if (await cap.count()) {
       }
       return { bad, docScroll: document.documentElement.scrollWidth, win: window.innerWidth }
     })
+    await page.locator('[data-testid="drive-folder-cancel"]').click()
+    await page.waitForTimeout(300)
+    const overflowCollapsed = await page.evaluate(() => {
+      const bad = []
+      for (const t of ['drive-folder-toggle', 'drive-upload-btn']) {
+        const el = document.querySelector(`[data-testid="${t}"]`)
+        if (!el) { bad.push(`${t}: missing`); continue }
+        const r = el.getBoundingClientRect()
+        if (r.right > window.innerWidth + 1 || r.left < -1) {
+          bad.push(`${t}: ${Math.round(r.left)}..${Math.round(r.right)} outside 0..${window.innerWidth}`)
+        }
+      }
+      return bad
+    })
+    overflow.bad.push(...overflowCollapsed)
     console.log(`ASSERT narrow-viewport controls-onscreen ${overflow.bad.length === 0 ? 'ok' : 'MISMATCH ' + overflow.bad.join('; ')}`)
     if (overflow.bad.length) failures.push(`narrow viewport: ${overflow.bad.join('; ')}`)
     await page.screenshot({ path: `${OUT}/drive-narrow.png`, fullPage: false })

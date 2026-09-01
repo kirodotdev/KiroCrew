@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
@@ -405,6 +405,8 @@ describe('DrivePage', () => {
     stubDrivePresent()
     await renderDrive('drive')
 
+    // The name field is a disclosure now: open it first.
+    fireEvent.click(await screen.findByTestId('drive-folder-toggle'))
     fireEvent.change(await screen.findByTestId('drive-folder-name'), { target: { value: '../escape' } })
     fireEvent.click(screen.getByTestId('drive-folder-create'))
 
@@ -413,6 +415,84 @@ describe('DrivePage', () => {
     expect(err).not.toHaveTextContent(i18nT('apps.awsControl.console.drive_bad_name'))
     // Never reached the endpoint.
     expect(awsControlApi.driveFolderCreate).not.toHaveBeenCalled()
+  })
+
+  it('folder disclosure swaps Upload out while open, and blurring the empty field collapses it', async () => {
+    // Expanded, the row must stay one two-button action group (Create/Cancel):
+    // Upload hides rather than becoming a third sibling. An abandoned empty
+    // field must not leave the toolbar stuck expanded — blur puts it back.
+    stubDrivePresent()
+    await renderDrive('drive')
+
+    expect(screen.getByTestId('drive-upload-btn')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('drive-folder-toggle'))
+    expect(screen.queryByTestId('drive-upload-btn')).toBeNull()
+
+    const name = screen.getByTestId('drive-folder-name')
+    // Blur with TEXT keeps the disclosure open (the reader is mid-thought)...
+    fireEvent.change(name, { target: { value: 'photos' } })
+    fireEvent.blur(name)
+    expect(screen.getByTestId('drive-folder-name')).toBeTruthy()
+    // ...and blur with an EMPTY field collapses back to the toggle + Upload.
+    fireEvent.change(name, { target: { value: '' } })
+    fireEvent.blur(name)
+    expect(screen.queryByTestId('drive-folder-name')).toBeNull()
+    expect(screen.getByTestId('drive-upload-btn')).toBeTruthy()
+  })
+
+  it('collapsing after a failed create clears BOTH error rows, not just the local one', async () => {
+    // drive-folder-create-error keys on the mutation's isError and renders
+    // OUTSIDE the disclosure — without a reset, Cancel after a failed create
+    // leaves a danger row orphaned under a toolbar whose input is gone.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveFolderCreate).mockRejectedValue(new Error('boom'))
+    await renderDrive('drive')
+
+    fireEvent.click(screen.getByTestId('drive-folder-toggle'))
+    fireEvent.change(screen.getByTestId('drive-folder-name'), { target: { value: 'photos' } })
+    fireEvent.click(screen.getByTestId('drive-folder-create'))
+    await screen.findByTestId('drive-folder-create-error')
+
+    fireEvent.click(screen.getByTestId('drive-folder-cancel'))
+    expect(screen.queryByTestId('drive-folder-name')).toBeNull()
+    expect(screen.queryByTestId('drive-folder-create-error')).toBeNull()
+    expect(screen.queryByTestId('drive-folder-error')).toBeNull()
+  })
+
+  it('refuses to collapse while a create is in flight, so a failure returns to the typed name', async () => {
+    // Escape/Cancel during a pending create must NOT erase the name being
+    // created: the request can fail, and the reader needs their input back to
+    // retry. The disclosure closes only once the mutation settles.
+    stubDrivePresent()
+    let rejectCreate: (e: Error) => void = () => {}
+    vi.mocked(awsControlApi.driveFolderCreate).mockImplementation(
+      () => new Promise((_res, rej) => { rejectCreate = rej }),
+    )
+    await renderDrive('drive')
+
+    fireEvent.click(screen.getByTestId('drive-folder-toggle'))
+    const name = screen.getByTestId('drive-folder-name')
+    fireEvent.change(name, { target: { value: 'photos' } })
+    fireEvent.click(screen.getByTestId('drive-folder-create'))
+    // The mutationFn runs on a microtask: wait until it has actually been
+    // invoked (and captured its reject) before exercising the in-flight paths —
+    // otherwise the Escape below races a not-yet-pending mutation.
+    await waitFor(() => expect(awsControlApi.driveFolderCreate).toHaveBeenCalledTimes(1))
+
+    // In flight: Escape, Cancel and blur are all refused — input and text stay.
+    fireEvent.keyDown(name, { key: 'Escape' })
+    fireEvent.click(screen.getByTestId('drive-folder-cancel'))
+    fireEvent.blur(name)
+    expect(screen.getByTestId('drive-folder-name')).toHaveValue('photos')
+
+    // The create fails: the typed name is still there to retry from, and the
+    // disclosure can now be cancelled normally.
+    await act(async () => { rejectCreate(new Error('boom')) })
+    await screen.findByTestId('drive-folder-create-error')
+    expect(screen.getByTestId('drive-folder-name')).toHaveValue('photos')
+    fireEvent.click(screen.getByTestId('drive-folder-cancel'))
+    expect(screen.queryByTestId('drive-folder-name')).toBeNull()
+    expect(screen.queryByTestId('drive-folder-create-error')).toBeNull()
   })
 
   it('deleting a folder does not also open it', async () => {

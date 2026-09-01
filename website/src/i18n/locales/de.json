@@ -4812,6 +4812,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "{{accounts}} Konten · {{keys}} Schlüssel · {{healthy}} fehlerfrei",
         "refresh": "Aktualisieren",
         "health_ok": "Intakt",
         "health_degraded": "Erfordert Aufmerksamkeit",

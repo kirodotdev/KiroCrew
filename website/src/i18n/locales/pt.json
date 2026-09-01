@@ -4892,6 +4892,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "{{accounts}} contas · {{keys}} chaves · {{healthy}} íntegras",
         "refresh": "Atualizar",
         "health_ok": "Íntegro",
         "health_degraded": "Requer atenção",

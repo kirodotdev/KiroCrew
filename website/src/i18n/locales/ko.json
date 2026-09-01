@@ -4732,6 +4732,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "계정 {{accounts}}개 · 키 {{keys}}개 · 정상 {{healthy}}개",
         "refresh": "새로 고침",
         "health_ok": "정상",
         "health_degraded": "확인 필요",

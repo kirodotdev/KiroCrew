@@ -4972,6 +4972,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "Аккаунтов: {{accounts}} · Ключей: {{keys}} · Исправно: {{healthy}}",
         "refresh": "Обновить",
         "health_ok": "Исправно",
         "health_degraded": "Требует внимания",

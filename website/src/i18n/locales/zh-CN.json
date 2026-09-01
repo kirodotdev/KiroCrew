@@ -4732,6 +4732,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "{{accounts}} 个账户 · {{keys}} 个密钥 · {{healthy}} 个正常",
         "refresh": "刷新",
         "health_ok": "正常",
         "health_degraded": "需要处理",

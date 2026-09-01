@@ -16,11 +16,11 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ChevronLeft, ChevronRight, ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, Link2, ShieldCheck, } from 'lucide-react'
-import { Btn, Badge, StatCard, ContentSkeleton } from '../../components/ui'
+  ChevronRight, ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, Link2, ShieldCheck, Wallet, } from 'lucide-react'
+import { Btn, Badge, ContentSkeleton } from '../../components/ui'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
-import { CopyBtn, SectionHeader } from './shared'
+import { CopyBtn, SectionHeader, CrumbHeader } from './shared'
 import type { LiveDrive } from './DrivePage'
 import { fmtBytes, fmtCurrency, fmtDate } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
@@ -330,22 +330,17 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
   return (
     <div className="flex h-full flex-col">
       {/* Crumb + header: name + full account id (mono). */}
-      <div className="px-4 pt-2 pb-3 md:px-6">
-        <button
-          onClick={onBack}
-          className="mb-1 inline-flex items-center gap-1 text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none p-0"
-          data-testid="console-crumb"
-        >
-          <ChevronLeft size={14} />
-          {i18nT('apps.awsControl.console.crumb_accounts')} / <span className="text-text">{accountName(account)}</span>
-        </button>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          {/* Three-state, not two. The deleted General card carried the full
-              Connected / Degraded / Unknown label, and collapsing it into a
-              binary `health === 'ok'` dot would announce "not connected" for a
-              degraded account whose keys still partly work - a misdiagnosis for
-              whoever is triaging a flaky key. The dot's colour keeps the same
-              three states its title and aria-label now name. */}
+      <CrumbHeader
+        onBack={onBack}
+        crumbTestId="console-crumb"
+        crumb={<>{i18nT('apps.awsControl.console.crumb_accounts')} / <span className="text-text">{accountName(account)}</span></>}
+        /* Three-state, not two. The deleted General card carried the full
+           Connected / Degraded / Unknown label, and collapsing it into a
+           binary `health === 'ok'` dot would announce "not connected" for a
+           degraded account whose keys still partly work - a misdiagnosis for
+           whoever is triaging a flaky key. The dot's colour keeps the same
+           three states its title and aria-label now name. */
+        leading={
           <span
             className={`h-2.5 w-2.5 rounded-full ${HEALTH_DOT[account.health] ?? 'bg-muted'}`}
             data-testid="console-health"
@@ -353,27 +348,26 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
             title={i18nT(CONNECTION_LABEL_KEY[account.health] ?? 'apps.awsControl.console.connection_unknown')}
             aria-label={i18nT(CONNECTION_LABEL_KEY[account.health] ?? 'apps.awsControl.console.connection_unknown')}
           />
-          <span className="text-lg font-semibold text-text-strong">{accountName(account)}</span>
-          {id && (
-            <>
-              <span className="font-mono text-[13px] text-muted" data-testid="console-account-id">{id}</span>
-              {/* The copy button came off the deleted General card; a 12-digit
-                  account id is the field most often pasted elsewhere. */}
-              <CopyBtn text={id} testId="console-copy-id" ariaLabel={i18nT('apps.awsControl.console.copy_id')} />
-            </>
-          )}
-        </div>
-
-        {/* No Payments control. Paid-service consent is SERVICE-scoped -- the
-            endpoint takes a service and derives the connection from that
-            service's own configuration -- so it cannot honestly sit on a
-            per-account page, and it stays where its gate was designed to live.
-            With consent gone, a panel here would have held only facts this same
-            screen already states: the credential kind and region are the
+        }
+        title={accountName(account)}
+        meta={id ? (
+          <>
+            <span className="font-mono text-[13px] text-muted" data-testid="console-account-id">{id}</span>
+            {/* The copy button came off the deleted General card; a 12-digit
+                account id is the field most often pasted elsewhere. */}
+            <CopyBtn text={id} testId="console-copy-id" ariaLabel={i18nT('apps.awsControl.console.copy_id')} />
+          </>
+        ) : undefined}
+      />
+      {/* No Payments control. Paid-service consent is SERVICE-scoped -- the
+          endpoint takes a service and derives the connection from that
+          service's own configuration -- so it cannot honestly sit on a
+          per-account page, and it stays where its gate was designed to live.
+          With consent gone, a panel here would have held only facts this same
+          screen already states: the credential kind and region are the
             connection row's, the account id is the title's, and the
             month-to-date figure is a tile. Restating them behind a button is
             the duplication this change exists to remove. */}
-      </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
         {/* Connections only. The General card that used to sit above it carried
@@ -392,20 +386,29 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
             it AND on the Cloud drive row below, which is the same fact twice on
             one screen - and the row is the better home, since that is the thing
             the number describes. */}
-        <div className="mt-6 grid grid-cols-2 gap-3" data-testid="console-stats">
-          {costs?.consentMissing ? (
-            <StatCard label={i18nT('apps.awsControl.console.stat_this_month')} value="—" title={i18nT('apps.awsControl.console.costs_consent_missing')} />
-          ) : costsQ.isError ? (
-            // A failed bill read (Cost Explorer not enabled on the account,
-            // network, throttle) must not skeleton forever — say "no number".
-            <StatCard label={i18nT('apps.awsControl.console.stat_this_month')} value="—" title={i18nT('apps.awsControl.console.costs_unavailable')} />
-          ) : (
-            <StatCard
-              label={i18nT('apps.awsControl.console.stat_this_month')}
-              value={costs ? fmtCurrency(costs.monthToDate, costs.currency) : undefined}
-              title={costs && !costs.fresh ? i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) }) : undefined}
-            />
-          )}
+        {/* One figure, rendered in the same row language as the capability row
+            below it: a lone half-width tile in a two-column grid read as a
+            layout accident, not an emphasis. Label left, amount right. */}
+        <div className="mt-6 overflow-hidden rounded-lg border border-border bg-card" data-testid="console-stats">
+          <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+            <Wallet size={15} className="shrink-0 text-accent" aria-hidden="true" />
+            <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.stat_this_month')}</span>
+            {costs && !costs.consentMissing && !costsQ.isError && !costs.fresh && (
+              <span className="text-[12px] text-muted">{i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) })}</span>
+            )}
+            <span className="flex-1" />
+            {costs?.consentMissing ? (
+              <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_consent_missing')}>—</span>
+            ) : costsQ.isError ? (
+              // A failed bill read (Cost Explorer not enabled on the account,
+              // network, throttle) must not skeleton forever — say "no number".
+              <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_unavailable')}>—</span>
+            ) : (
+              <span className="text-[15px] font-semibold text-text-strong" data-testid="console-cost-value">
+                {costs ? fmtCurrency(costs.monthToDate, costs.currency) : '…'}
+              </span>
+            )}
+          </div>
         </div>
 
         {driveQ.isLoading && <div className="mt-6"><ContentSkeleton rows={3} /></div>}
@@ -506,9 +509,13 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
             <h2 className="text-sm font-semibold text-text-strong">
               {i18nT('apps.awsControl.page.paid_services_title')}
             </h2>
-            <div className="mt-3 flex flex-col gap-3">
-              {s3Receipt && <AwsConsentGate service="s3" onConsentChange={refetchGated} />}
-              {ceReceipt && <AwsConsentGate service="ce" onConsentChange={refetchGated} />}
+            {/* Compact rows in one card: a receipt is a record, not a decision,
+                so it should not out-weigh the capabilities it pays for. The full
+                facts live behind the ask (which keeps its card), and withdraw
+                stays reachable per row. */}
+            <div className="mt-3 overflow-hidden rounded-md border border-border bg-card divide-y divide-border">
+              {s3Receipt && <AwsConsentGate service="s3" compact onConsentChange={refetchGated} />}
+              {ceReceipt && <AwsConsentGate service="ce" compact onConsentChange={refetchGated} />}
             </div>
           </section>
         )}

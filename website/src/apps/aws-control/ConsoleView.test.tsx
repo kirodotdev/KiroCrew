@@ -214,7 +214,7 @@ describe('ConsoleView', () => {
     // drive row, which is the thing they describe. The bill arrives async, so
     // wait for it rather than reading the skeleton StatCard renders while it is
     // undefined.
-    await waitFor(() => expect(within(stats).getAllByTestId('stat-card-value')).toHaveLength(1))
+    await waitFor(() => expect(within(stats).getAllByTestId('console-cost-value')).toHaveLength(1))
     expect(stats.textContent).not.toMatch(/\b0\b/)
     expect(screen.queryByTestId('console-ghosts')).toBeNull()
     expect(screen.queryAllByTestId('app-ghost')).toHaveLength(0)
@@ -392,11 +392,12 @@ describe('ConsoleView', () => {
     renderWithProviders(<ConsoleView account={ACCOUNT} onBack={() => {}} />)
 
     const stats = await screen.findByTestId('console-stats')
-    // The cached figure renders, and the stale-cache branch attaches an
-    // "as of <date>" InfoTip title (the fresh branch would attach no title).
+    // The cached figure renders, and the stale-cache branch shows a VISIBLE
+    // "as of <date>" hint next to the label (the fresh branch renders none) —
+    // visible rather than a hover-only title, so staleness is stated, not hidden.
     await waitFor(() => expect(stats.textContent ?? '').toContain('9.99'))
     const asOf = i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate('2026-08-24T05:00:00Z') })
-    expect(within(stats).getByTitle(asOf)).toBeTruthy()
+    expect(within(stats).getByText(asOf)).toBeTruthy()
   })
 
   /* ── Drive: stored-usage stat, folder navigation, load-more ──────────────── */

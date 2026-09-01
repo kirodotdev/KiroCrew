@@ -4812,6 +4812,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "{{accounts}} खाते · {{keys}} कुंजियाँ · {{healthy}} स्वस्थ",
         "refresh": "रीफ़्रेश करें",
         "health_ok": "स्वस्थ",
         "health_degraded": "ध्यान देने की ज़रूरत",

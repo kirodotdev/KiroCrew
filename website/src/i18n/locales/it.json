@@ -4892,6 +4892,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "{{accounts}} account · {{keys}} chiavi · {{healthy}} integre",
         "refresh": "Aggiorna",
         "health_ok": "Integro",
         "health_degraded": "Richiede attenzione",

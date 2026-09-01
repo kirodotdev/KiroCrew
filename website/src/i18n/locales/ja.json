@@ -4732,6 +4732,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "アカウント {{accounts}} 件 · キー {{keys}} 個 · 正常 {{healthy}} 個",
         "refresh": "更新",
         "health_ok": "正常",
         "health_degraded": "要確認",

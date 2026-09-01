@@ -3709,6 +3709,7 @@
       },
       "page": {
         "title": "AWS Control",
+        "totals_summary": "{{accounts}} accounts · {{keys}} keys · {{healthy}} healthy",
         "refresh": "Refresh",
         "health_ok": "Healthy",
         "health_degraded": "Needs attention",

@@ -27,7 +27,7 @@ import { Fragment, useRef, useState } from 'react'
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
-  ChevronLeft, ChevronDown, RefreshCw, HardDrive, Library, Archive, Share2,
+  ChevronDown, RefreshCw, HardDrive, Library, Archive, Share2,
   Download, Trash2, Upload, FolderClosed, FolderPlus, FileText, X,
   MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus,
 } from 'lucide-react'
@@ -55,7 +55,7 @@ import type {
   AwsAccount, DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
   BackupKind, Share, DriveUsage, DriveSectionUsage,
 } from './types'
-import { CopyBtn, SectionHeader } from './shared'
+import { CopyBtn, SectionHeader, CrumbHeader } from './shared'
 
 /** The account's display name, or the not-connected label. */
 function accountNameOf(account: AwsAccount): string {
@@ -851,7 +851,13 @@ function AddFromArtifactsDialog({ account, onClose }: { account: string; onClose
             support. Filtering is meaningless with nothing to filter anyway. */}
         {!libQ.isError && (
         <div className="flex flex-wrap gap-1.5 border-b border-border px-4 py-2.5" data-testid="library-chips">
-          {(['all', ...KIND_KEYS] as const).map((k) => (
+          {/* A chip you cannot usefully press is noise: a zero-count kind
+              filters the grid to nothing. 'All' always renders, and the
+              currently-selected kind stays visible even at zero so the reader
+              can see (and undo) an active filter that no longer matches. */}
+          {(['all', ...KIND_KEYS] as const)
+            .filter((k) => k === 'all' || k === kind || (counts[k] ?? 0) > 0)
+            .map((k) => (
             <button
               key={k}
               onClick={() => setKind(k)}
@@ -1052,7 +1058,23 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [confirmFolder, setConfirmFolder] = useState<string | null>(null)
   const [newFolder, setNewFolder] = useState('')
+  /** Folder-name input is a disclosure: visible only after "New folder". */
+  const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderError, setFolderError] = useState('')
+  /** The ONE way out of the folder disclosure (Escape, Cancel, blur-on-empty),
+   *  carrying the whole close invariant: (1) it refuses while a create is in
+   *  flight — collapsing mid-request would erase the very name being created,
+   *  so a failure comes back to a wiped input; (2) when it does close, it
+   *  clears ALL creation state — the name, the validation error, and the
+   *  mutation's own error — because any of the three left behind renders as an
+   *  orphan under a toolbar whose input is gone. */
+  const closeFolderDisclosure = () => {
+    if (folderCreateMut.isPending) return
+    setNewFolder('')
+    setFolderError('')
+    folderCreateMut.reset()
+    setCreatingFolder(false)
+  }
   /* How many objects the last folder delete actually removed. One click can
      remove far more than one file, and the count is only knowable AFTER the
      fact - the response carries it, while a figure shown BEFORE consent would
@@ -1100,7 +1122,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
   const folderCreateMut = useMutation({
     mutationFn: (name: string) =>
       awsControlApi.driveFolderCreate(account, 'drive', path ? `${path}/${name}` : name),
-    onSuccess: () => { setNewFolder(''); invalidate() },
+    onSuccess: () => { setNewFolder(''); setCreatingFolder(false); invalidate() },
   })
   const folderDeleteMut = useMutation({
     mutationFn: (folder: string) => awsControlApi.driveFolderDelete(account, 'drive', folder),
@@ -1171,23 +1193,48 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
       <SectionHeader icon={<FolderClosed size={15} />} title={i18nT('apps.awsControl.console.section_files')} actions={
         <div className="flex flex-wrap items-center gap-2">
         <ViewModeToggle section="drive" mode={mode} onChange={setMode} />
-        <Input
-          value={newFolder}
-          onChange={(e) => setNewFolder(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') onCreateFolder() }}
-          placeholder={i18nT('apps.awsControl.console.folder_name')}
-          aria-label={i18nT('apps.awsControl.console.folder_new')}
-          className="w-full min-w-0 basis-full sm:w-[160px] sm:flex-none sm:basis-auto"
-          data-testid="drive-folder-name"
-        />
-        <Btn onClick={onCreateFolder} disabled={folderCreateMut.isPending || !newFolder.trim()} data-testid="drive-folder-create">
-          <FolderPlus size={13} />
-          {i18nT('apps.awsControl.console.folder_new')}
-        </Btn>
-        <Btn onClick={() => fileRef.current?.click()} disabled={uploadMut.isPending} data-testid="drive-upload-btn">
-          <Upload size={13} />
-          {uploadMut.isPending ? i18nT('apps.awsControl.console.drive_uploading') : i18nT('apps.awsControl.console.drive_upload')}
-        </Btn>
+        {/* The name field appears when the reader ASKS to create a folder.
+            Parked permanently in the toolbar it was two dead controls (an empty
+            input and a disabled button) on every visit that isn't about
+            folders — which is most of them. Escape, Cancel, or blurring the
+            empty field puts the toolbar back; Upload hides while creating so
+            the expanded row stays one action group of two buttons. */}
+        {creatingFolder ? (
+          <>
+            <Input
+              value={newFolder}
+              onChange={(e) => setNewFolder(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onCreateFolder()
+                if (e.key === 'Escape') closeFolderDisclosure()
+              }}
+              onBlur={() => { if (!newFolder.trim()) closeFolderDisclosure() }}
+              autoFocus
+              placeholder={i18nT('apps.awsControl.console.folder_name')}
+              aria-label={i18nT('apps.awsControl.console.folder_new')}
+              className="w-full min-w-0 basis-full sm:w-[160px] sm:flex-none sm:basis-auto"
+              data-testid="drive-folder-name"
+            />
+            <Btn onClick={onCreateFolder} disabled={folderCreateMut.isPending || !newFolder.trim()} data-testid="drive-folder-create">
+              <FolderPlus size={13} />
+              {i18nT('apps.awsControl.console.folder_new')}
+            </Btn>
+            <Btn onClick={closeFolderDisclosure} disabled={folderCreateMut.isPending} data-testid="drive-folder-cancel">
+              {i18nT('apps.awsControl.console.cancel')}
+            </Btn>
+          </>
+        ) : (
+          <>
+            <Btn onClick={() => setCreatingFolder(true)} data-testid="drive-folder-toggle">
+              <FolderPlus size={13} />
+              {i18nT('apps.awsControl.console.folder_new')}
+            </Btn>
+            <Btn onClick={() => fileRef.current?.click()} disabled={uploadMut.isPending} data-testid="drive-upload-btn">
+              <Upload size={13} />
+              {uploadMut.isPending ? i18nT('apps.awsControl.console.drive_uploading') : i18nT('apps.awsControl.console.drive_upload')}
+            </Btn>
+          </>
+        )}
         </div>
       } />
       <input
@@ -2103,28 +2150,23 @@ export default function DrivePage({ account, drive: opened, onBack }: {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="px-4 pt-2 pb-3 md:px-6">
-        <button
-          onClick={section ? () => setSection(null) : onBack}
-          className="mb-1 inline-flex items-center gap-1 text-[13px] text-muted hover:text-text cursor-pointer bg-transparent border-none p-0"
-          data-testid="drive-crumb-back"
-        >
-          <ChevronLeft size={14} />
-          {/* The crumb states where the reader IS, so at the drive's root it
-              names the account then the drive, and inside a section it names the
-              drive then that section. Rendering the console's own crumb here
-              (Accounts / <account>) said nothing about having changed page. */}
+      <CrumbHeader
+        onBack={section ? () => setSection(null) : onBack}
+        crumbTestId="drive-crumb-back"
+        /* The crumb states where the reader IS, so at the drive's root it
+           names the account then the drive, and inside a section it names the
+           drive then that section. Rendering the console's own crumb here
+           (Accounts / <account>) said nothing about having changed page. */
+        crumb={<>
           {section ? i18nT('apps.awsControl.console.drive_title') : accountNameOf(account)}
           {' / '}
           <span className="text-text">
             {section ? i18nT(SECTION_LABEL_ON_PAGE[section]) : i18nT('apps.awsControl.console.drive_title')}
           </span>
-        </button>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <HardDrive size={16} className="text-accent" />
-          <span className="text-lg font-semibold text-text-strong">
-            {i18nT('apps.awsControl.console.drive_title')}
-          </span>
+        </>}
+        leading={<HardDrive size={18} className="text-accent" />}
+        title={i18nT('apps.awsControl.console.drive_title')}
+        meta={<>
           <span className="font-mono text-[13px] text-muted" data-testid="drive-bucket">{drive.bucket}</span>
           <CopyBtn text={drive.bucket} testId="drive-copy-bucket" />
           <span className="text-[13px] text-muted">{drive.region}</span>
@@ -2137,8 +2179,8 @@ export default function DrivePage({ account, drive: opened, onBack }: {
               objects: fmtNumber(drive.usage.objects),
             })}
           </span>
-        </div>
-      </div>
+        </>}
+      />
 
       <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
         {section === null && (
