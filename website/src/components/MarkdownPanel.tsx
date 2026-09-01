@@ -10,6 +10,7 @@ import { useConfirm } from './ConfirmDialog'
 import Clickable from './Clickable'
 import { CommentPopover, CommentList, formatCommentsMessage, type InlineComment } from './CommentOverlay'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
+import { useFileMenuItems, visibleFileMenuItems, invokeFileMenuItem, FileMenuItemIcon } from '../apps/fileMenuContributions'
 import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
 import MarkdownOutlineRail from './MarkdownToc'
 import { useFileWatch } from '../hooks/useFileWatch'
@@ -453,6 +454,8 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
   const revealLabel = useRevealLabel()
   const knowledge = useFileKnowledgeState(filePath)
   const artifact = useFileArtifactState(filePath, content)
+  const contribItems = useFileMenuItems('file-overflow')
+  const contribRows = visibleFileMenuItems(contribItems, { path: filePath, kind: 'file' })
   const delayedClose = () => { closeTimerRef.current = setTimeout(() => setOpen(false), 800) }
   useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current) }, [])
   // Reset the per-mutation success flags whenever the menu closes so the
@@ -585,6 +588,31 @@ export function OverflowMenu({ filePath, content, onRefresh, refreshDisabled, re
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { downloadFile(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.download')}
           </button>
+          {/* App-contributed rows (`contributes.fileMenuItems`, surface
+              'file-overflow'), LAST and in their own group: the core rows above are
+              a fixed vocabulary a reader learns, and splicing third-party rows into
+              the middle of it would move a familiar row whenever an app is
+              installed. Activation POSTs the file's PATH to the app's own endpoint;
+              core imports no app code. Filtered by the declaration's `when`
+              predicate, so the stock build (no declaring app) renders neither the
+              rows nor the separator. `data-option` is what makes each row navigable
+              to `useListboxKeyboard`. */}
+          {contribRows.length > 0 && <div className="h-px bg-border my-1 mx-2" />}
+          {contribRows.map(item => (
+            <button
+              key={`${item.app}:${item.id}`}
+              role="menuitem"
+              data-option
+              tabIndex={-1}
+              className={menuRowCls}
+              onClick={() => {
+                invokeFileMenuItem(item, { surface: 'file-overflow', path: filePath, kind: 'file' })
+                setOpen(false)
+              }}
+            >
+              <FileMenuItemIcon name={item.icon} /> {item.label}
+            </button>
+          ))}
         </div>
       )}
     </div>

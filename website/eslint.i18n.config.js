@@ -869,6 +869,22 @@ export default [
               // inherit this by accident. One definition exists today, in
               // `src/apps/command-bar/contributedCommands.ts`, which renders nothing.
               '^warnContributionSkipped$',
+              // `fileMenuContributions.tsx`'s console shim, the exact same class as
+              // `^warnContributionSkipped$` directly above: a refused
+              // `contributes.fileMenuItems` row has to say WHY on the console or the
+              // contribution is invisible, and the reason names the manifest field
+              // that failed (`missing label`, `duplicate id`,
+              // `contributes.fileMenuItems is not an array`) addressed to whoever
+              // authored the app.json — never rendered.
+              //
+              // A CALLEE exemption rather than a whole-file one, for the reason the
+              // entries above give: the module also renders real rows, so releasing
+              // the file would release a module that does put text on screen (a
+              // contributed row's `label` — which is an app-owned literal from the
+              // manifest, not a catalog string, and reaches the DOM through JSX
+              // rather than through this helper). One definition exists today, in
+              // `src/apps/fileMenuContributions.tsx`.
+              '^warnSkipped$',
               // Validator diagnostics, for parity with `Error` above. A rejected input's
               // reason names the FIELD that failed (`Missing or invalid "meta" field`,
               // `Invalid meta.format: "…" (expected "svg", "lottie", or "sprite")`) and

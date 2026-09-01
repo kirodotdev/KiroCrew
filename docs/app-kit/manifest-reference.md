@@ -302,6 +302,59 @@ for a legible reason instead. Unsigned apps are unaffected, as are signed apps t
 contribute nothing: the key is only added to the payload when non-empty, so every
 signature issued before this existed still verifies.
 
+### `contributes.fileMenuItems` — Rows in File / Tree / Folder Menus
+
+Declares rows an app adds to the file-editor overflow (⋮) menu, the workspace
+tree context menu, and the folder panel. Like `contributes.commands`, it is
+**declarative and host-rendered**: core reads the declaration, draws the rows,
+and POSTs to the app's own `endpoint` on activation — it never imports app code
+and holds no live callback, which is what makes the rows reachable by an app
+installed at runtime.
+
+```json
+{
+  "contributes": {
+    "fileMenuItems": [
+      {
+        "id": "send-to-store",
+        "label": "Send to store",
+        "icon": "Package",
+        "endpoint": "/api/apps/doc-store/send",
+        "surfaces": ["file-overflow", "tree-context", "folder-row"],
+        "when": { "extensions": ["md", "txt"], "kinds": ["file"] }
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | string | Stable, app-owned row id (lowercase kebab slug, `[a-z0-9][a-z0-9-]*`), unique within the app |
+| `label` | string | Row label, max 120 characters (an app-owned literal — not a core i18n key) |
+| `icon` | string | Host glyph name: one of `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`. Any other name falls back to `Package` |
+| `endpoint` | string | App route core POSTs to; **must** sit under `/api/apps/<your-app>/` |
+| `surfaces` | string[] | Any of `file-overflow`, `tree-context`, `folder-row` |
+| `when.extensions` | string[] | Match these file extensions (lowercase, no dot; empty = any) |
+| `when.kinds` | string[] | Match `file` and/or `dir` (empty = any) |
+
+At most **10** rows per app.
+
+On activation core POSTs `{ item_id, surface, path, kind?, root? }` to `endpoint`.
+
+**The file's PATH is sent, never its CONTENT.** A contributed row needs no
+permission to exist, so shipping file bytes with every activation would hand any
+app that declares a row the contents of whatever file the reader clicked, with no
+install-time declaration and no consent step. An app that needs the bytes reads
+them through a route its own `permissions` cover.
+
+`when` is evaluated by core, so an app cannot run code in the host to decide
+visibility. An endpoint outside the app's own namespace (or one using `..`
+traversal) is refused at install — the same allowlist `publishProvider` uses. For
+a signed app the rows are covered by the signature, because `endpoint` is where
+core sends the reader's chosen path. A stock build with no app declaring these
+renders nothing.
+
 ### App Icon
 
 `iconPath` is the App Store's card and row icon, and it is **top-level** — not

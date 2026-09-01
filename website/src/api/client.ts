@@ -3769,6 +3769,18 @@ export const api = {
   researchReport: (id: string) => get("/api/apps/auto-research/campaigns/" + id + "/report").then(j),
   researchDelete: (id: string) => del("/api/apps/auto-research/campaigns/" + id).then(j),
 
+  // Activate a file-menu row an installed app contributed. The declarations ride on
+  // `GET /api/apps` (see `fileMenuContributions.ts`) rather than an endpoint of their
+  // own, so only the dispatch lives here: core POSTs the file's path to the row's own
+  // endpoint and never imports app code.
+  invokeFileMenuItem: async (item: { id: string; endpoint: string }, ctx: FileMenuContext) => {
+    const r = await post(item.endpoint, { item_id: item.id, ...ctx })
+    checkSessionExpired(r)
+    if (r.ok) { removeAuthBanner(); return r.json() }
+    const errText = await r.text()
+    throw new ApiError(r.status, errText || `HTTP ${r.status}`)
+  },
+
   artifactTeardown: (slug: string) => post(`/api/deploy/teardown/${slug}`, { confirm: true }).then(j),
   publishProviders: () => get('/api/publish-providers').then(j) as Promise<{ providers: AppPublishProvider[] }>,
   publishToProvider: async (slug: string, providerId: string, provider?: AppPublishProvider, ttlHours?: number) => {
@@ -3802,4 +3814,23 @@ export interface AppPublishProvider {
   configured: boolean
   setupRoute: string
   endpoint: string
+}
+
+/** The surfaces a contributed file-menu row can appear on. */
+export type FileMenuSurface = 'file-overflow' | 'tree-context' | 'folder-row'
+
+/**
+ * What core POSTs to a row's endpoint when it is activated.
+ *
+ * The PATH only — deliberately never file CONTENT. A contributed row is declared in a
+ * manifest and needs no permission to exist, so shipping the bytes with the activation
+ * would hand any app that declares one the contents of whatever file the reader clicked,
+ * with no install-time declaration and no consent step. An app that needs the bytes reads
+ * them through a route its own `permissions` cover.
+ */
+export interface FileMenuContext {
+  surface: FileMenuSurface
+  path: string
+  kind?: 'file' | 'dir'
+  root?: string
 }
