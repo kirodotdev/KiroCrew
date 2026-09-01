@@ -8,6 +8,7 @@ writers target the same file.
 from __future__ import annotations
 
 import asyncio
+import base64
 import errno
 import io
 import logging
@@ -93,28 +94,77 @@ ACCESS_CONTROL_XATTRS_SUPPORTED = all(
 )
 
 
-def open_access_control_source(path: Path | str) -> int | None:
+def pinned_parent_replace_supported() -> bool:
+    """Whether an inode-replacing write can be staged and renamed through a dir fd.
+
+    The staged temp file is created with ``os.open(name, ..., dir_fd=)`` and the
+    rename that publishes it is ``renameat`` -- ``os.rename`` with both
+    ``src_dir_fd`` and ``dst_dir_fd``. Both syscalls must accept a directory
+    descriptor, or a caller that passes ``parent_dir_fd`` would fall through to
+    the by-name floor.
+
+    ``os.rename`` is probed rather than ``os.replace``: on this interpreter family
+    ``os.rename`` is in ``os.supports_dir_fd`` while ``os.replace`` is not, and on
+    POSIX ``os.rename`` already overwrites an existing destination, so the replace
+    semantics hold. ``O_NOFOLLOW`` is part of the requirement because the staged
+    file must refuse a link planted at the temp name.
+    """
+    return (
+        hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.rename in os.supports_dir_fd
+    )
+
+
+def open_access_control_source(path: Path | str, *, dir_fd: int | None = None) -> int | None:
     """Open *path* for a :func:`atomic_write` ``preserve_access_control_from``.
 
-    Returns ``None`` — meaning "pass no descriptor" — on a platform without the
-    xattr syscalls. That is not merely an optimisation: there is nothing to carry
-    there, AND holding a read handle open across the write is not free on
-    Windows, where ``os.replace`` fails with ``PermissionError`` while ANY other
-    handle is open on either path. A descriptor kept for a carry that cannot
-    happen would therefore fail every write on that platform, which is what this
-    helper exists to prevent — and why both call sites go through it rather than
-    spelling the ``os.open`` themselves.
+    *dir_fd* is a descriptor for the destination's ALREADY-PINNED parent — the
+    same one the caller hands to ``parent_dir_fd``. With it the leaf is opened as
+    a bare component RELATIVE to that descriptor, so the inode whose mode and
+    ACL are read is the one inside the directory the caller walked. Opening by
+    name after pinning is a hole rather than a redundancy: a directory replaced
+    at that name between the pin and this open makes the metadata come from the
+    replacement while the write still publishes into the pinned original, so the
+    original's file is handed back carrying a mode and ACL chosen by whoever did
+    the replacing. Every caller that pins MUST pass it; the pinned parent is only
+    worth having if nothing downstream of it is addressed by name again.
 
-    ``O_NOFOLLOW`` is defense-in-depth only. Both callers hand in a path already
-    canonicalized (``hooks.validate_file_path``) or ``lstat``-checked, so the
-    final component is symlink-free by construction and this open rejects
-    nothing legitimate; it closes the window where that component is swapped for
-    a link after the check. An ``OSError`` propagates so the caller can treat it
-    as a rejected target rather than a server fault.
+    With *dir_fd* the descriptor comes back even where the xattr syscalls are
+    absent, and the Windows caveat below does not apply there: pinning needs
+    ``O_DIRECTORY``, which Windows does not have, so a pinned caller is on POSIX
+    and publishes with ``renameat`` rather than ``os.replace``. That case is not
+    hypothetical — macOS has ``openat`` and no ``listxattr`` — and the MODE carry
+    needs a descriptor even when the ACL carry has nothing to read, or a by-name
+    ``stat`` would reintroduce exactly the mismatch above on that platform.
+
+    Without *dir_fd*, returns ``None`` — meaning "pass no descriptor" — on a
+    platform without the xattr syscalls. That is not merely an optimisation:
+    there is nothing to carry there, AND holding a read handle open across the
+    write is not free on Windows, where ``os.replace`` fails with
+    ``PermissionError`` while ANY other handle is open on either path. A
+    descriptor kept for a carry that cannot happen would therefore fail every
+    write on that platform, which is what this helper exists to prevent — and why
+    all three call sites go through it rather than spelling the ``os.open``
+    themselves.
+
+    ``O_NOFOLLOW`` carries real weight for one caller and is defense-in-depth for
+    the rest. The file-write and steering updates hand in a path already
+    canonicalized (``hooks.validate_file_path``) or ``lstat``-checked, so the final
+    component is symlink-free by construction there and this open rejects nothing
+    legitimate; it closes the window where that component is swapped for a link
+    after the check. ``skills._write_skill_md`` has no such check — its guard is a
+    plain ``exists()``, which FOLLOWS a link — so for that caller this open is what
+    refuses a symlinked ``SKILL.md`` in the first place. An ``OSError`` propagates
+    so the caller can treat it as a rejected target rather than a server fault, and
+    all three do.
     """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    if dir_fd is not None:
+        return os.open(os.path.basename(os.fspath(path)), flags, dir_fd=dir_fd)
     if not ACCESS_CONTROL_XATTRS_SUPPORTED:
         return None
-    return os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    return os.open(path, flags)
 
 
 def _should_carry_xattr(attr: str) -> bool:
@@ -223,6 +273,42 @@ def _write_all(fd: int, data: bytes, path: Path) -> None:
                 f"{len(view)} of {len(data)} still pending"
             )
         view = view[written:]
+
+
+#: Bytes of randomness in a pinned-parent temp name. tempfile.mkstemp uses eight
+#: random characters; matching that entropy keeps the collision odds equivalent to
+#: the by-name floor while the O_EXCL create below is what actually makes the name
+#: unique -- a collision simply retries.
+_PINNED_TMP_RANDOM_BYTES = 6
+_PINNED_TMP_MAX_ATTEMPTS = 100
+
+
+def _mkstemp_at(dir_fd: int) -> tuple[int, str]:
+    """Create a unique temp file relative to *dir_fd*; return ``(fd, name)``.
+
+    ``tempfile.mkstemp`` cannot be driven through a directory descriptor -- it
+    only takes a ``dir=`` PATH, which re-resolves every component and so reopens
+    exactly the ancestor-swap window the pinned parent exists to close. This is
+    the descriptor-relative equivalent: ``O_CREAT|O_EXCL|O_NOFOLLOW`` under the
+    pinned parent, so the create is atomic, refuses a link planted at the temp
+    name, and never leaves the directory the caller walked.
+
+    The name is returned as a bare component (no directory part); the caller
+    addresses it only through *dir_fd*, never by joining it to a path.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0)
+    for _ in range(_PINNED_TMP_MAX_ATTEMPTS):
+        token = base64.urlsafe_b64encode(os.urandom(_PINNED_TMP_RANDOM_BYTES)).decode("ascii")
+        token = token.rstrip("=").replace("-", "_")
+        name = f".{token}.tmp"
+        try:
+            fd = os.open(name, flags, 0o600, dir_fd=dir_fd)
+        except FileExistsError:
+            continue
+        return fd, name
+    raise OSError(  # pragma: no cover - 100 consecutive collisions is not reachable
+        errno.EEXIST, "could not create a unique temp file under the pinned parent"
+    )
 
 
 def on_event_loop() -> bool:
@@ -733,11 +819,15 @@ def atomic_write(
     restrict_to_owner: bool = False,
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
+    parent_dir_fd: int | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
     Uses ``tempfile.mkstemp`` so concurrent writers never collide on the
-    same temp filename.  On error the temp file is cleaned up.
+    same temp filename — or, with a pinned parent (*parent_dir_fd* below),
+    ``_mkstemp_at``, which gives the same collision-free guarantee through an
+    ``O_EXCL`` retry loop relative to the descriptor.  On error the temp file is
+    cleaned up.
 
     *content* may be ``str`` (written UTF-8 encoded in text mode) or ``bytes``
     (written verbatim in binary mode). Binary mode exists for callers whose
@@ -803,6 +893,30 @@ def atomic_write(
     there are none. Reading from the descriptor rather than by name keeps the
     read pinned to the inode the caller validated. The carry is ADDITIVE to
     ``mode=``, not a replacement.
+
+    *parent_dir_fd* is an OPEN descriptor for the destination's directory,
+    already pinned component-by-component by the caller (``pinned_fs`` supplies
+    the walk). When given on a platform that can stage and rename through a
+    descriptor (:func:`pinned_parent_replace_supported`), the temp file is
+    created with ``os.open(name, O_CREAT|O_EXCL|O_NOFOLLOW, dir_fd=)`` and the
+    publishing rename is ``renameat`` -- both ends relative to that descriptor --
+    so neither the temp creation nor the rename re-resolves the parent by name and
+    an ancestor swapped after the caller's validation cannot redirect the write.
+    ``None`` (default) keeps the by-name ``mkstemp`` + rename floor exactly as
+    before, and that is what a platform lacking the descriptor-relative syscalls
+    must pass: it is the same platform that cannot pin a directory at all, so the
+    floor adds no exposure the declared by-name traversal does not already carry.
+    A descriptor handed in where :func:`pinned_parent_replace_supported` is False is
+    REFUSED rather than ignored — a caller that walked a parent and passed the
+    result believes the write is pinned, so quietly staging and renaming by name
+    instead would leave that belief wrong and nothing would say so. Callers ask
+    both probes (``pinned_fs.supports_pinned_walk()`` for the walk that produces
+    the descriptor, this module's for the write that consumes it) and pass ``None``
+    when either is False, which is why the refusal is unreachable in normal
+    operation and fires only on probe drift. The destination's own name still comes
+    from *path*; only the directory it is resolved through is pinned. It is also
+    REFUSED alongside *restrict_to_owner*, whose lockdown is applied to the staged
+    file by name and so cannot address a descriptor-relative temp.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -816,6 +930,30 @@ def atomic_write(
         raise ValueError(
             f"restrict_on_error={restrict_on_error!r} is meaningless without "
             "restrict_to_owner=True"
+        )
+    if restrict_to_owner and parent_dir_fd is not None:
+        # Rejected rather than silently reconciled. The lockdown below is applied
+        # to the staged file BY NAME (platform_compat.restrict_to_owner takes a
+        # path, and its Windows half has no descriptor form), while a pinned
+        # parent's temp name is a bare component addressed only through the
+        # descriptor. Handing that bare name to a path-based chmod resolves it
+        # against the process CWD, so it would tighten some unrelated file -- or
+        # nothing -- and then publish a secret at the umask default.
+        raise ValueError(
+            "restrict_to_owner cannot be combined with parent_dir_fd: the "
+            "owner-only lockdown is applied to the staged file by name"
+        )
+    if parent_dir_fd is not None and not pinned_parent_replace_supported():
+        # Refused rather than degraded. The caller pinned a parent chain
+        # component-by-component and handed the descriptor over; staging and
+        # renaming by name anyway would answer that with an unpinned write while
+        # every caller-side comment, spec line and test claims the opposite. A
+        # capability the caller can ask about before it walks anything is a
+        # caller-side gate, so this is the drift alarm for it, not the fallback.
+        raise ValueError(
+            "parent_dir_fd requires descriptor-relative open and rename "
+            "(pinned_parent_replace_supported() is False on this platform); pass "
+            "None to take the by-name floor instead of an unpinned write"
         )
     # restrict_to_owner wins: fchmod must not widen the file back to the umask
     # default after the lockdown has been applied.
@@ -833,13 +971,21 @@ def atomic_write(
         # would create the missing directories under its target, so checking
         # after it would find a tree the write itself had already built.
         _refuse_linked_parent(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    # A pinned parent descriptor stages and renames through the fd the caller
+    # already walked; without one the by-name mkstemp + rename is the floor. There
+    # is no third state: a descriptor this platform cannot use was refused above.
+    pin = parent_dir_fd
+    if pin is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    else:
+        fd, tmp = _mkstemp_at(pin)
     try:
         if restrict_to_owner:
             # Before fdopen, matching the shipping order in webhooks.py and
             # mcp_gateway/rewriter.py: the DACL lands while the file is still
-            # empty, so a secret never exists in a readable file.
+            # empty, so a secret never exists in a readable file. tmp is a full
+            # path here because parent_dir_fd is refused with this flag above.
             try:
                 platform_compat.restrict_to_owner(tmp)
             except OSError:
@@ -874,7 +1020,22 @@ def atomic_write(
         # cannot double-close if this close is itself what fails.
         fd, open_fd = -1, fd
         os.close(open_fd)
-        replace_with_retry(tmp, path)
+        if pin is None:
+            replace_with_retry(tmp, path)
+        else:
+            # renameat, both ends relative to the pinned parent: neither the temp
+            # name nor the destination name is re-resolved from the root, so an
+            # ancestor swapped after the caller's walk cannot redirect the
+            # publish. os.rename overwrites an existing destination on POSIX, so
+            # the replace semantics hold; os.replace is not in supports_dir_fd on
+            # every interpreter, os.rename is (pinned_parent_replace_supported
+            # probes rename for exactly this reason).
+            os.rename(
+                os.path.basename(tmp),
+                path.name,
+                src_dir_fd=pin,
+                dst_dir_fd=pin,
+            )
     except BaseException:
         # BaseException, not Exception. Three of the hand-rolled writers this
         # helper replaces already cleaned up under ``except BaseException``:
@@ -889,7 +1050,13 @@ def atomic_write(
         if fd >= 0:
             os.close(fd)
         try:
-            os.unlink(tmp)
+            if pin is None:
+                os.unlink(tmp)
+            else:
+                # Removed relative to the same pinned descriptor the temp was
+                # created under, so cleanup cannot reach a different file even if
+                # the parent name has since been swapped.
+                os.unlink(os.path.basename(tmp), dir_fd=pin)
         except OSError:
             pass
         raise

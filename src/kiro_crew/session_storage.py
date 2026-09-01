@@ -1693,7 +1693,7 @@ def _approve_emptied_batch(
         )
         return SKIP_UNLISTED_FILES
     if tree.links:
-        # A link is the ONE entry the removal takes by name: `_unlink_verified` compares the
+        # A link is the ONE entry the removal takes by name: `unlink_verified` compares the
         # scanned inode and then unlinks, and POSIX offers no "unlink if this inode", so those
         # are two syscalls. Admitting a link therefore hands an actor a lever - plant one, let
         # this approval pass it, then put a file at that name in the window and the removal

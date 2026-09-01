@@ -28,8 +28,12 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.multipart import BodyPartReader
 
-from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write, open_access_control_source
+from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.atomic_write import (
+    atomic_write,
+    open_access_control_source,
+    pinned_parent_replace_supported,
+)
 from kiro_crew.config import loader as config_loader
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
 from kiro_crew.dashboard import part_stream, upload_destination
@@ -2871,11 +2875,42 @@ def _file_write_blocking(path: str, content: str) -> str | None:
     component is swapped for a link after the check. That refusal is a rejected
     target rather than a server fault, hence ``"notfound"`` and not an exception.
     """
+    # Pin the parent chain FIRST, then address the leaf only through that
+    # descriptor. The pin is what stops atomic_write's temp create and publishing
+    # rename from re-resolving the parent by name, and the ORDER is what stops the
+    # metadata read below from re-resolving it either: a directory replaced at
+    # that name between the pin and the leaf open would otherwise supply the mode
+    # and ACL while the write published into the pinned original.
+    #
+    # pin_parent, NOT open_dir_pinned: ``path`` is already realpath-canonicalized,
+    # so every component of its parent was a real directory at validation time.
+    # pin_parent walks THAT recorded chain with O_NOFOLLOW per component, so a
+    # component swapped for a link since is REFUSED. open_dir_pinned would
+    # realpath the chain again here and follow the swap instead -- a fresh
+    # resolution cannot be more faithful than the one already done, only less.
+    #
+    # None on a platform that cannot walk a parent by descriptor or cannot stage
+    # and rename through one, where atomic_write keeps the by-name floor. Both
+    # probes are asked because they are two capabilities: atomic_write refuses a
+    # descriptor it cannot use rather than silently writing by name.
+    dir_fd: int | None = None
+    if pinned_fs.supports_pinned_walk() and pinned_parent_replace_supported():
+        try:
+            dir_fd = pinned_fs.pin_parent(os.path.dirname(path), what="file directory")
+        except (pinned_fs.PinnedPathRefusal, OSError):
+            # Both are the same disposition -- a target that can no longer be
+            # reached through the tree the caller validated is rejected, not a
+            # server fault -- so they share one arm rather than drifting apart.
+            return "notfound"
+    src_fd: int | None = None
     try:
-        src_fd = open_access_control_source(path)
-    except OSError:
-        return "notfound"
-    try:
+        try:
+            src_fd = open_access_control_source(path, dir_fd=dir_fd)
+        except OSError:
+            return "notfound"
+        # os.stat by name only where nothing was pinned: with dir_fd the helper
+        # always hands back a descriptor, so the mode comes from the same inode
+        # the ACL does and neither is re-resolved.
         src_stat = os.fstat(src_fd) if src_fd is not None else os.stat(path)
         # mode= keeps the previous copymode behaviour (permission bits), and
         # preserve_access_control_from is ADDITIVE to it: copymode carried BITS
@@ -2888,13 +2923,15 @@ def _file_write_blocking(path: str, content: str) -> str | None:
             content,
             mode=_stat_mod.S_IMODE(src_stat.st_mode),
             preserve_access_control_from=src_fd,
+            parent_dir_fd=dir_fd,
         )
     finally:
-        if src_fd is not None:
-            try:
-                os.close(src_fd)
-            except OSError:
-                pass
+        for fd in (src_fd, dir_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
     return None
 
 

@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     write_config_atomically,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.sel import sel
 
@@ -2279,11 +2280,13 @@ def _rmtree_dirfd(fd: int) -> None:
 
 
 def _dirfd_ops_supported() -> bool:
-    return (
-        os.open in os.supports_dir_fd
-        and os.unlink in os.supports_dir_fd
-        and os.rmdir in os.supports_dir_fd
-    )
+    # supports_pinned_walk covers the openat capability itself (O_DIRECTORY,
+    # O_NOFOLLOW, os.open in supports_dir_fd); _rmtree_dirfd above also removes
+    # files AND directories relative to the pinned descriptor, so those two extra
+    # syscalls are probed on top -- the extras name the descriptor-relative calls
+    # this surface actually issues, the way prompts.py adds {os.unlink, os.mkdir}
+    # for its own.
+    return supports_pinned_walk() and {os.unlink, os.rmdir}.issubset(os.supports_dir_fd)
 
 
 def resolve_mcp_backend_url(mcp_servers: Any) -> str | None:

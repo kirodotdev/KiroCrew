@@ -2087,7 +2087,12 @@ async def api_skill_detail(request: web.Request) -> web.Response:
     skills = _get_skills(state)
 
     if request.method == "DELETE":
-        ok = skills.delete_skill(name)
+        # Off the loop: delete_skill walks a pinned parent chain and then rmtrees
+        # the skill directory, and update_skill below stages a temp file, carries
+        # the ACL and renames it into place. On network-backed storage either can
+        # stall long enough to matter to every other session sharing this loop, so
+        # both go to a thread the way discover.py already routes the same two calls.
+        ok = await asyncio.to_thread(skills.delete_skill, name)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
@@ -2100,7 +2105,7 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         content = body.get("content", "")
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
-        ok = skills.update_skill(name, content)
+        ok = await asyncio.to_thread(skills.update_skill, name, content)
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
@@ -2176,7 +2181,9 @@ async def api_skills_create(request: web.Request) -> web.Response:
     if not safe_name:
         return web.json_response({"error": "invalid skill name"}, status=400)
     skills = _get_skills(state)
-    ok = skills.create_skill(safe_name, content)
+    # Off the loop for the same reason api_skill_detail offloads its two calls:
+    # create_skill walks a pinned parent chain and writes the SKILL.md.
+    ok = await asyncio.to_thread(skills.create_skill, safe_name, content)
     if not ok:
         return web.json_response({"error": f"skill '{safe_name}' already exists"}, status=409)
     return web.json_response({"ok": True, "name": safe_name})
