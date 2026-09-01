@@ -18,6 +18,7 @@ at ``job_routes`` module scope, so it is patched there.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 import time
 from pathlib import Path
@@ -121,26 +122,38 @@ def _base(app: str = APP) -> str:
     return f"/api/apps/{app}/_jobs"
 
 
-def _wait_terminal(sdk: JobSDK, run_id: str, deadline: float = _DEADLINE) -> js.JobRun:
-    """Poll until the run reaches a terminal state or the deadline passes."""
+async def _wait_terminal(sdk: JobSDK, run_id: str, deadline: float = _DEADLINE) -> js.JobRun:
+    """Poll until the run reaches a terminal state or the deadline passes.
+
+    ``async``, with every ``sdk.get`` offloaded via ``asyncio.to_thread`` — the
+    same shape ``job_routes.py`` uses for every store read.  Every caller is an
+    async test, so a plain ``sdk.get`` here would run ON the event loop, where
+    ``read_bytes_with_retry`` deliberately re-raises ``PermissionError`` instead
+    of sleeping the loop for its retry budget.  When the job worker's concurrent
+    ``os.replace`` is in flight, that surfaces the Windows sharing violation as
+    a flaky test failure (#7703).  Off the loop the retry applies, exactly as it
+    does for the production routes.
+    """
     end = time.monotonic() + deadline
     while time.monotonic() < end:
-        run = sdk.get(run_id)
+        run = await asyncio.to_thread(sdk.get, run_id)
         if run is not None and run.is_terminal:
             return run
-        time.sleep(0.02)
-    run = sdk.get(run_id)
+        await asyncio.sleep(0.02)
+    run = await asyncio.to_thread(sdk.get, run_id)
     raise AssertionError(f"run {run_id} did not reach a terminal state: {run and run.status}")
 
 
-def _wait_status(sdk: JobSDK, run_id: str, status: str, deadline: float = _DEADLINE) -> js.JobRun:
+async def _wait_status(
+    sdk: JobSDK, run_id: str, status: str, deadline: float = _DEADLINE
+) -> js.JobRun:
     end = time.monotonic() + deadline
     while time.monotonic() < end:
-        run = sdk.get(run_id)
+        run = await asyncio.to_thread(sdk.get, run_id)
         if run is not None and run.status == status:
             return run
-        time.sleep(0.02)
-    run = sdk.get(run_id)
+        await asyncio.sleep(0.02)
+    run = await asyncio.to_thread(sdk.get, run_id)
     raise AssertionError(f"run {run_id} never reached {status!r}: {run and run.status}")
 
 
@@ -242,7 +255,7 @@ async def test_start_registered_kind_returns_run_without_params(
         assert field in run
     assert run["kind"] == "quick"
     assert run["cancellable"] is False
-    _wait_terminal(sdk, run["run_id"])
+    await _wait_terminal(sdk, run["run_id"])
 
 
 @pytest.mark.asyncio
@@ -293,7 +306,7 @@ async def test_start_with_malformed_body_is_treated_as_empty_not_500(
         )
         assert resp.status == 200
         run = (await resp.json())["run"]
-    _wait_terminal(sdk, run["run_id"])
+    await _wait_terminal(sdk, run["run_id"])
 
 
 @pytest.mark.asyncio
@@ -341,7 +354,7 @@ async def test_active_and_recent_return_runs_array(
     _setup_guards(tmp_path, monkeypatch)
     sdk.register("k", lambda handle, **p: {"ok": True})
     rid = sdk.start("k")
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
     async with TestClient(TestServer(_make_app())) as client:
         active = await client.get(f"{_base()}/active")
         recent = await client.get(f"{_base()}/recent")
@@ -407,7 +420,7 @@ async def test_get_existing_run_is_200(
     _setup_guards(tmp_path, monkeypatch)
     sdk.register("k", lambda handle, **p: {"ok": True})
     rid = sdk.start("k")
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.get(f"{_base()}/{rid}")
         assert resp.status == 200
@@ -438,7 +451,7 @@ async def test_cancel_non_cancellable_run_is_409_with_run(
     # A terminal, non-cancellable run: cancel_async returns False.
     sdk.register("k", lambda handle, **p: {"ok": True})
     rid = sdk.start("k")
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/{rid}/cancel")
         assert resp.status == 409
@@ -463,13 +476,13 @@ async def test_cancel_live_cancellable_run_is_200_cancelling(
     sdk.register("blocker", _blocking, cancellable=True)
     rid = sdk.start("blocker")
     assert started.wait(timeout=_DEADLINE), "runner never started"
-    _wait_status(sdk, rid, js.RUNNING)
+    await _wait_status(sdk, rid, js.RUNNING)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/{rid}/cancel")
         assert resp.status == 200
         assert (await resp.json())["cancelling"] is True
     # The worker observes the signal and settles into CANCELLED.
-    run = _wait_terminal(sdk, rid)
+    run = await _wait_terminal(sdk, rid)
     assert run.status == js.CANCELLED
 
 
@@ -513,7 +526,7 @@ async def test_requested_cancel_is_visible_to_a_later_read_of_the_run(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
             # A brand-new read, holding nothing from the cancel call.
@@ -526,7 +539,7 @@ async def test_requested_cancel_is_visible_to_a_later_read_of_the_run(
         assert run["status"] == js.RUNNING
     finally:
         release.set()
-    assert _wait_terminal(sdk, rid).status == js.CANCELLED
+    assert (await _wait_terminal(sdk, rid)).status == js.CANCELLED
 
 
 @pytest.mark.asyncio
@@ -539,7 +552,7 @@ async def test_requested_cancel_is_visible_in_the_active_list(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
             resp = await client.get(f"{_base()}/active")
@@ -550,7 +563,7 @@ async def test_requested_cancel_is_visible_in_the_active_list(
         assert adopted[0]["cancelling"] is True
     finally:
         release.set()
-    assert _wait_terminal(sdk, rid).status == js.CANCELLED
+    assert (await _wait_terminal(sdk, rid)).status == js.CANCELLED
 
 
 @pytest.mark.asyncio
@@ -563,14 +576,14 @@ async def test_a_run_nobody_cancelled_reads_not_cancelling(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
         assert run["cancelling"] is False
         assert run["status"] == js.RUNNING
     finally:
         release.set()
-    _wait_terminal(sdk, rid)
+    await _wait_terminal(sdk, rid)
 
 
 @pytest.mark.asyncio
@@ -589,11 +602,11 @@ async def test_a_recorded_cancel_is_no_longer_cancelling(
     rid = sdk.start("slow")
     try:
         assert started.wait(timeout=_DEADLINE), "runner never started"
-        _wait_status(sdk, rid, js.RUNNING)
+        await _wait_status(sdk, rid, js.RUNNING)
         async with TestClient(TestServer(_make_app())) as client:
             assert (await client.post(f"{_base()}/{rid}/cancel")).status == 200
             release.set()
-            assert _wait_terminal(sdk, rid).status == js.CANCELLED
+            assert (await _wait_terminal(sdk, rid)).status == js.CANCELLED
             run = (await (await client.get(f"{_base()}/{rid}")).json())["run"]
         assert run["status"] == js.CANCELLED
         assert run["cancelling"] is False
@@ -697,3 +710,73 @@ async def test_sdk_refusal_becomes_a_coded_503_not_a_bare_500(
             assert (await resp.json())["code"] == "job_start_failed"
     finally:
         forget_sdk(APP)
+
+
+# ---------------------------------------------------------------------------
+# The off-loop-read invariant behind the polling helpers (#7703)
+# ---------------------------------------------------------------------------
+
+
+def test_wait_helpers_are_coroutine_functions() -> None:
+    """A revert to synchronous helpers must fail loudly, not flake on Windows.
+
+    The helpers poll ``sdk.get``; every caller is an async test.  Synchronous,
+    they read ON the event loop, where ``read_bytes_with_retry`` deliberately
+    re-raises the Windows sharing-violation ``PermissionError`` instead of
+    sleeping the loop for its retry budget — a flake nobody can reproduce on
+    a POSIX box (#7703).  ``async`` + ``asyncio.to_thread`` is the contract.
+    """
+    assert inspect.iscoroutinefunction(_wait_terminal)
+    assert inspect.iscoroutinefunction(_wait_status)
+
+
+@pytest.mark.asyncio
+async def test_on_loop_read_propagates_permission_error_offloaded_read_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    """Prove the #7703 defect directly, without a Windows shard.
+
+    With Windows semantics shimmed (``platform_compat.IS_WINDOWS`` true) and the
+    record's first ``Path.read_bytes`` raising ``PermissionError`` — the sharing
+    violation a concurrent ``os.replace`` produces — a synchronous ``sdk.get``
+    from the event loop propagates the error (``read_bytes_with_retry`` gives up
+    its retry budget on the loop, by design), while the offloaded polls the
+    helpers now use retry off-loop and succeed.  Shimmed on the module attribute
+    only — never ``os.name``, which breaks ``Path.home()`` on POSIX.
+    """
+    from kiro_crew import platform_compat
+
+    sdk.register("k", lambda handle, **p: {"ok": True})
+    rid = sdk.start("k")
+    # Settle the run first so no real writer races the injected failure.
+    await _wait_terminal(sdk, rid)
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    real_read_bytes = Path.read_bytes
+    inject = {"armed": False}
+
+    def flaky_read_bytes(self: Path) -> bytes:
+        if inject["armed"] and self.name == f"{rid}.json":
+            inject["armed"] = False
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+
+    # The OLD shape: a sync read on the event loop — one attempt, error escapes.
+    inject["armed"] = True
+    with pytest.raises(PermissionError):
+        sdk.get(rid)
+    inject["armed"] = False
+
+    # The NEW shape: both helpers poll off-loop, so the retry budget applies
+    # and the poll survives the same injected sharing violation.
+    inject["armed"] = True
+    run = await _wait_terminal(sdk, rid)
+    assert run.run_id == rid
+    assert not inject["armed"], "_wait_terminal never hit the injected error"
+
+    inject["armed"] = True
+    run = await _wait_status(sdk, rid, js.DONE)
+    assert run.status == js.DONE
+    assert not inject["armed"], "_wait_status never hit the injected error"
