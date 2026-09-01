@@ -47,7 +47,12 @@ const LottieRendererInner: React.FC<LottieRendererProps> = ({
     try {
       parsed = JSON.parse(animationData)
     } catch {
-      // Invalid JSON — skip loading
+      // A malformed imported clip renders as an empty slot, so leave enough
+      // context to distinguish bad pack data from a renderer failure.
+      // eslint-disable-next-line no-console
+      console.error('[crew-companion] lottie JSON parse failed', {
+        bytes: animationData.length,
+      })
       return
     }
 
