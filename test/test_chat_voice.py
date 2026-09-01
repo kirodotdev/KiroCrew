@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
 import json
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -471,6 +473,127 @@ class TestVoiceSynthesize:
             assert data["ok"] is True
             assert data["chunks"] == 1
         state.broadcast_ws.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_the_piper_clip_is_read_off_the_event_loop(self, tmp_path, monkeypatch):
+        """AUTOSDE `no-blocking-call-on-event-loop`, Piper path.
+
+        Piper returns an UNCOMPRESSED wav whose size scales with the length of
+        the reply, and this handler reads it whole before base64-ing it. The
+        gateway runs every session on one loop, so a synchronous read here
+        stalls every other chat turn — and the liveness heartbeat — for as long
+        as the transfer takes.
+
+        The probe is the read itself: `open` is wrapped for this one path and
+        records the thread it was called on. Comparing that against the thread
+        running this coroutine is exact — no sleeping, no timing threshold.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(
+            provider="piper", default_voice="Ruth", default_engine="generative",
+            default_rate="100%", default_pitch="0%", aws_profile="", region="",
+            piper_binary="", piper_model="~/m.onnx", piper_model_config="",
+            piper_length_scale=1.0,
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+
+        wav = tmp_path / "out.wav"
+        wav.write_bytes(b"RIFF....WAVEfake-audio-bytes")
+
+        async def _fake_synth(text, **kw):
+            return str(wav)
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.synthesize_speech", _fake_synth)
+
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        real_open = builtins.open
+
+        def _watch_open(file, *args, **kwargs):
+            # Delegate everything; only the clip's own read is recorded, so
+            # nothing else in the request path is disturbed.
+            if str(file) == str(wav):
+                read_threads.append(threading.get_ident())
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _watch_open)
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            resp = await client.post("/api/voice/synthesize", json={"text": "hello", "slot": "s1"})
+            assert resp.status == 200
+
+        assert read_threads, "the clip was never read — the probe did not fire"
+        assert loop_thread not in read_threads, (
+            "the synthesized clip was read on the gateway event loop "
+            f"(thread {loop_thread}); every other session blocks for the "
+            "length of that read"
+        )
+        # Positive control in the same test: the audio still reaches the client,
+        # so the assertion above is about WHERE the read happened, not about a
+        # read that silently stopped happening.
+        payloads = [c.args[1] for c in state.broadcast_ws.call_args_list]
+        assert any(p.get("audio") for p in payloads)
+
+    @pytest.mark.asyncio
+    async def test_the_polly_chunks_are_written_and_read_off_the_event_loop(
+        self, tmp_path, monkeypatch
+    ):
+        """Same rule, streaming path — and it is the worse of the two.
+
+        The chunk spill runs once per SENTENCE inside the streaming loop, so a
+        long reply blocks the loop repeatedly, and the stitched mp3 is then read
+        whole on top of that.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mock_vc = MagicMock(
+            provider="polly", default_voice="Joanna", default_engine="neural",
+            default_rate="100%", default_pitch="0%", aws_profile="", region="us-east-1",
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+
+        async def _mock_stream(*a, **kw):
+            yield 0, "Hello", b"\x00\x01\x02"
+            yield 1, "Again", b"\x03\x04\x05"
+
+        final = tmp_path / "final.mp3"
+        final.write_bytes(b"ID3stitched-audio")
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.streaming_voice_reply", _mock_stream)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.stitch_mp3s", AsyncMock(return_value=str(final))
+        )
+
+        loop_thread = threading.get_ident()
+        audio_io_threads: list[int] = []
+        real_open = builtins.open
+
+        def _watch_open(file, *args, **kwargs):
+            # Both the per-sentence chunk spill and the stitched read are `.mp3`;
+            # the chunk path is chosen by mkstemp, so match on the suffix rather
+            # than on a path the test cannot know in advance.
+            if str(file).endswith(".mp3"):
+                audio_io_threads.append(threading.get_ident())
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _watch_open)
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            resp = await client.post("/api/voice/synthesize", json={"text": "Hello. Again.", "slot": "s1"})
+            assert resp.status == 200
+            assert (await resp.json())["chunks"] == 2
+
+        # Two chunk writes plus the stitched read: the probe must have seen all
+        # three, otherwise "not on the loop" would be vacuously true.
+        assert len(audio_io_threads) == 3, (
+            f"expected 2 chunk writes + 1 stitched read, saw {len(audio_io_threads)}"
+        )
+        assert loop_thread not in audio_io_threads, (
+            "synthesized audio was written or read on the gateway event loop "
+            f"(thread {loop_thread})"
+        )
 
     @pytest.mark.asyncio
     async def test_synthesize_exception_returns_500_and_broadcasts_error(self, tmp_path, monkeypatch):
