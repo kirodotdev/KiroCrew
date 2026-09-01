@@ -346,3 +346,130 @@ class TestLockRegistry:
             holder.lock.release()
             worker.join(timeout=10.0)
         assert not worker.is_alive()
+
+
+def _park_first_writer_late(monkeypatch, inside: threading.Event, delay: float) -> None:
+    """Patch ``_atomic_write`` so the FIRST writer announces itself, then lands
+    *delay* seconds later.
+
+    The announcement marks the point where the writer's READ has already
+    happened, so anything written after it is what a stale rewrite would roll
+    back. The delay is what puts the writer's WRITE after the on-loop write
+    under test -- unserialized and undrained, that ordering is the clobber.
+    """
+    real_atomic_write = sp._atomic_write
+    seen: list[str] = []
+    guard = threading.Lock()
+
+    def instrumented(path, data):
+        with guard:
+            first = not seen
+            if first:
+                seen.append("parked")
+        if first:
+            inside.set()
+            time.sleep(delay)
+        real_atomic_write(path, data)
+
+    monkeypatch.setattr(sp, "_atomic_write", instrumented)
+
+
+def _mock_sessions_for_run(served_model: str):
+    """Minimal SessionManager double: enough to drive ``_run_inner`` to its
+    pre-spawn provenance write and no further."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    sessions = MagicMock()
+    sessions.get_pid = MagicMock(return_value=None)
+    provider = AsyncMock()
+    provider.start = AsyncMock()
+    provider.shutdown = AsyncMock()
+    provider.context_usage_pct = lambda: 0.0
+    provider.context_used_tokens = lambda: 0
+    provider.context_window_tokens = lambda: 0
+    provider.client = None
+    provider.served_model = served_model
+
+    async def _empty_stream(*_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+        return
+        yield  # noqa: unreachable -- makes this an async generator
+
+    provider.stream = MagicMock(side_effect=lambda *a, **kw: _empty_stream())
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions.release = MagicMock()
+    sessions.reset = AsyncMock()
+    sessions.record_success = MagicMock()
+    sessions.get_agent = MagicMock(return_value="")
+    return sessions
+
+
+def _mock_ctx_builder_for_run():
+    from unittest.mock import MagicMock
+
+    ctx = MagicMock()
+    ctx.build_message = MagicMock(return_value=("built_message", None))
+    ctx.hooks.on_tool_call = MagicMock()
+    ctx.hooks.auto_approve_subagent_spawn = False
+    return ctx
+
+
+class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
+    """#6298: the on-loop retention ``keep`` write must not be rolled back.
+
+    ``_promote_conversation`` / ``release_conversation`` write ``keep`` from the
+    event loop, where ``update_state`` deliberately takes no lock -- so a
+    concurrent pool writer's stale whole-file rewrite erases it. Both are reached
+    only through the ``_conversation_busy`` gate, which refuses while a run is in
+    flight, so the one writer that can still be concurrent is a DETACHED worker:
+    one whose ``to_thread`` await was cancelled while the write was in flight.
+    Draining every off-loop writer on cancellation (#6308) removes that
+    population, which closes this interleave too -- a pool writer can no longer
+    outlive the run it belongs to.
+    """
+
+    @pytest.mark.asyncio
+    async def test_keep_survives_a_cancelled_runs_provenance_worker(self, agent_root, monkeypatch):
+        from unittest.mock import patch
+
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        conv_id = "keep01"
+        _new_agent(conv_id)
+        inside = threading.Event()
+        # Long enough that an UNDRAINED cancellation reliably reaches the on-loop
+        # keep write first, short enough to stay well inside the 5s drain bound.
+        _park_first_writer_late(monkeypatch, inside, delay=0.4)
+
+        manager = SubagentManager(
+            sessions=_mock_sessions_for_run("model-served"),
+            ctx_builder=_mock_ctx_builder_for_run(),
+            is_yolo=lambda: True,
+        )
+        info = SubagentInfo(id=conv_id, task="keep vs zombie", model="model-req")
+        manager._agents[info.id] = info
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            task = asyncio.ensure_future(manager._run_inner(info, f"subagent:{conv_id}"))
+            assert await asyncio.to_thread(inside.wait, 5.0), "provenance write never started"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The run's cancellation has settled. This is where a release or a
+            # continuation promotes retention on the loop; nothing may still be
+            # holding a pre-promote snapshot of state.json.
+            manager._agents.pop(info.id, None)
+            assert manager._conversation_busy(f"subagent:{conv_id}") is None
+            manager._promote_conversation(conv_id, f"subagent:{conv_id}")
+
+        # Give any worker that was NOT drained time to land its stale rewrite.
+        await asyncio.sleep(0.6)
+        state = sp.read_state(conv_id)
+        assert state is not None
+        assert state.get("keep") is True, (
+            "the on-loop keep write was rolled back by a detached worker's stale "
+            "whole-file rewrite -- retention is lost, so the tombstone pruner "
+            "deletes session files the conversation needs (#6298)"
+        )
+        # The worker's own field still landed: the drain waits for it, it is not
+        # discarded.
+        assert state.get("requested_model") == "model-req"

@@ -266,12 +266,16 @@ def update_state(agent_id: str, **fields: object) -> bool:
 
     KNOWN LIMITATION: an ON-LOOP caller does not take the lock, because waiting
     on a pool thread's fsync from the event loop is exactly the blocking call the
-    repo's anchor forbids. So an interleave in which ONE participant is on the
-    loop is still open, unchanged from before this lock existed -- the loop-side
-    retention (``keep``) write against an in-flight pool write (#6298), and a
-    detached pool worker against the on-loop PID / session-id writes a
-    cancel-respawn recovery run makes (#6308). Closing those needs the loop-side
-    callers moved off-loop (#6288's class), tracked separately.
+    repo's anchor forbids. What closes the interleave for those callers instead
+    is that every off-loop writer inside a RUN is drained on cancellation
+    (``_write_state_off_loop``, #6298 / #6308): a pool writer cannot outlive the
+    run it belongs to, and the on-loop retention (``keep``) writes are reached
+    only through a ``_conversation_busy`` gate that refuses while a run is in
+    flight. The drain is bounded, so on a wedged FS a worker IS abandoned -- but
+    that same gate then holds the conversation until the abandoned worker
+    settles, so the two on-loop ``keep`` writes are deferred past it rather than
+    silently undone. Separately, on-loop callers still pay this function's fsync
+    ON the loop; moving them off-loop is tracked as #7302.
     """
     p = _agent_dir(agent_id) / "state.json"
     # Off-loop callers serialize; on-loop callers keep pre-existing behaviour.

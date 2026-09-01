@@ -452,11 +452,12 @@ _RECOVERY_SLOT_WAIT_SECS = 60.0
 _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
 )
-# Max seconds a cancelled run holds cancellation open for an in-flight per-turn
-# diagnostics write worker (#6306 review): long enough for any healthy fsync,
-# short enough that a wedged FS cannot hold cancel_all()'s untimed gather —
-# bounded shutdown plus recoverable state beats unbounded shutdown.
-_DIAG_DRAIN_TIMEOUT = 5.0
+# Max seconds a cancelled run holds cancellation open for an in-flight off-loop
+# state.json write worker (#6306 review; widened to every off-loop writer by
+# #6308): long enough for any healthy fsync, short enough that a wedged FS
+# cannot hold cancel_all()'s untimed gather — bounded shutdown plus recoverable
+# state beats unbounded shutdown.
+_STATE_DRAIN_TIMEOUT = 5.0
 _STARTUP_TIMEOUT_SECS = 120  # max seconds a subagent may sit pre-first-turn with no runtime before the startup watchdog reaps it
 _ON_DONE_TIMEOUT = 1200.0  # outer cap: max total seconds for semaphore wait + injection
 
@@ -1359,13 +1360,21 @@ class SubagentInfo:
     # One-shot budget for auto-continue after an UNEXPECTED (non-user, non-
     # shutdown) asyncio cancellation — mirrors the main path's cancel recovery.
     _cancel_retry_used: bool = False
-    # True while a cancelled run is draining an in-flight diagnostics write
-    # worker (#6306). _run's unexpected-cancel recovery gate reads it: on
-    # Python 3.10 a second outer cancel can deliver that gate BEFORE the drain
-    # finishes (wait_for's _cancel_and_wait awaits an interruptible bare
-    # future), and scheduling a recovery writer while the worker is live
-    # re-opens the stale-overwrite race the drain exists to close.
-    _diag_drain_active: bool = False
+    # True while a cancelled run is draining an in-flight off-loop state.json
+    # write worker (#6306; every off-loop writer since #6308). _run's
+    # unexpected-cancel recovery gate reads it: on Python 3.10 a second outer
+    # cancel can deliver that gate BEFORE the drain finishes (wait_for's
+    # _cancel_and_wait awaits an interruptible bare future), and scheduling a
+    # recovery writer while the worker is live re-opens the stale-overwrite race
+    # the drain exists to close.
+    _state_drain_active: bool = False
+    # Set only on the synthetic marker `_conversation_busy` returns for a
+    # conversation held by an abandoned state writer (#6298 review), so the two
+    # retention callers can say "still settling a state write" instead of
+    # promising a completion event that has already fired. The authoritative
+    # record is `SubagentManager._abandoned_state_writers`, which survives
+    # `evict_completed_agents` pruning a completed run out of `_agents`.
+    _state_writer_abandoned: bool = False
     # True between an unexpected cancellation and the recovery respawn; the
     # _run finally block skips terminal finalization (subagent_done, on_done)
     # while set so the agent is not reported done mid-recovery.
@@ -1570,6 +1579,16 @@ class SubagentManager:
         # also re-registers it on demand.
         self._conversations: dict[str, float] = {}
         self._conv_registry_rebuilt = False
+        # Run ids whose bounded state-write drain EXPIRED, so a pool worker is
+        # still live and its stale whole-file rewrite would roll back the
+        # retention `keep` a promote / release writes on the loop (#6298).
+        # `_conversation_busy` reports these as held, which defers both retention
+        # writes past the worker; each worker's own done-callback discards its id,
+        # so the set holds at most one entry per live zombie. It lives on the
+        # MANAGER, not on the run's SubagentInfo, because `evict_completed_agents`
+        # prunes completed runs out of `_agents` and an eviction must not silently
+        # release the hold.
+        self._abandoned_state_writers: set[str] = set()
         # state.json is the source of truth for retention (#1115): give the
         # SessionManager's in-memory continuable cache a disk fallback so a
         # cache miss (restart window) cannot demote a promoted conversation.
@@ -2219,6 +2238,9 @@ class SubagentManager:
             )
         except Exception:
             logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)
+
+    async def _write_state_off_loop(self, info: SubagentInfo, what: str, **fields: object) -> bool:
+        return await self._run_events._write_state_off_loop_impl(info, what, **fields)
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
         return await self._run_events._run_inner_impl(info, session_key)

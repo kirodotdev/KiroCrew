@@ -324,8 +324,8 @@ async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
             )
             # While draining, the latch _run's recovery gate reads must be up
             # (3.10 wait_for double-cancel can deliver that gate mid-drain).
-            assert info._diag_drain_active is True, (
-                "drain did not raise the _diag_drain_active latch — on 3.10 a "
+            assert info._state_drain_active is True, (
+                "drain did not raise the _state_drain_active latch — on 3.10 a "
                 "second outer cancel can schedule recovery mid-drain (#6306 "
                 "review round 4)"
             )
@@ -348,7 +348,7 @@ async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
     assert landed and landed[0]["turns"] == 1
     # ...and the latch is down again: after a completed drain there is no live
     # worker, so recovery is safe and must not stay suppressed.
-    assert info._diag_drain_active is False, "latch leaked past the drain"
+    assert info._state_drain_active is False, "latch leaked past the drain"
 
 
 @pytest.mark.asyncio
@@ -359,7 +359,7 @@ async def test_no_recovery_scheduled_while_diagnostics_worker_is_live() -> None:
     scheduled while the worker is still live. On 3.11+ the second cancel
     routes to the child task so the gate runs only post-drain; on 3.10 the
     second cancel can deliver the gate mid-drain, where the
-    ``_diag_drain_active`` latch suppresses it — both paths must satisfy the
+    ``_state_drain_active`` latch suppresses it — both paths must satisfy the
     same invariant asserted here."""
     import asyncio
 
@@ -435,7 +435,7 @@ async def test_no_recovery_scheduled_while_diagnostics_worker_is_live() -> None:
 @pytest.mark.asyncio
 async def test_recovery_gate_respects_live_drain_latch() -> None:
     """Direct gate check (kills the condition mutant): an UNEXPECTED
-    cancellation with ``_diag_drain_active`` raised must NOT schedule
+    cancellation with ``_state_drain_active`` raised must NOT schedule
     cancel-respawn recovery — a fresh recovery writer would race the live
     worker. With the latch down, the same cancellation must recover
     (control, so the test cannot pass by recovery being broken outright)."""
@@ -453,7 +453,7 @@ async def test_recovery_gate_respects_live_drain_latch() -> None:
         )
         info = SubagentInfo(id=f"turnw08-{latch}", task="gate task", model="model-req")
         manager._agents[info.id] = info
-        info._diag_drain_active = latch
+        info._state_drain_active = latch
         recovery_calls: list[Any] = []
 
         with (
@@ -473,7 +473,7 @@ async def test_recovery_gate_respects_live_drain_latch() -> None:
         assert bool(recovery_calls) is expect_recovery, (
             f"latch={latch}: expected recovery_scheduled={expect_recovery}, "
             f"got {bool(recovery_calls)} — the recovery gate does not respect "
-            "_diag_drain_active (#6306 review round 4)"
+            "_state_drain_active (#6306 review round 4)"
         )
 
 
@@ -522,7 +522,7 @@ async def test_per_turn_diagnostics_drain_is_bounded() -> None:
         patch("kiro_crew.subagent.sel"),
         patch("kiro_crew.subagent.update_state", return_value=True),
         patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_wedged_to_thread),
-        patch("kiro_crew.subagent._DIAG_DRAIN_TIMEOUT", 0.0),
+        patch("kiro_crew.subagent._STATE_DRAIN_TIMEOUT", 0.0),
     ):
         task = asyncio.ensure_future(manager._run_inner(info, f"subagent:{info.id}"))
         try:
@@ -604,7 +604,7 @@ async def test_abandoned_diagnostics_worker_exception_is_retrieved() -> None:
                 "kiro_crew.subagent.asyncio.to_thread",
                 side_effect=_wedged_raising_to_thread,
             ),
-            patch("kiro_crew.subagent._DIAG_DRAIN_TIMEOUT", 0.0),
+            patch("kiro_crew.subagent._STATE_DRAIN_TIMEOUT", 0.0),
         ):
             task = asyncio.ensure_future(manager._run_inner(info, f"subagent:{info.id}"))
             try:
@@ -688,3 +688,418 @@ async def test_unpinned_spawn_records_requested_model_auto() -> None:
     assert (
         provenance[0]["requested_model"] == "auto"
     ), f"unpinned spawn must record requested_model='auto', got {provenance[0]['requested_model']!r}"
+
+
+@pytest.mark.asyncio
+async def test_provenance_write_is_drained_on_cancellation() -> None:
+    """#6308 sibling A: cancelling a run while the PRE-SPAWN provenance write is
+    in flight must hold cancellation open until that worker finishes.
+
+    The site used to be a bare ``await asyncio.to_thread(...)``: the cancel
+    detached the worker, the run finalized immediately, and the zombie's
+    WHOLE-FILE rewrite could then roll back whatever landed after its read --
+    including the ``pid`` / ``session_id`` a cancel-respawn recovery run writes
+    on the loop, without which the reaper can no longer reach the child. Same
+    contract as the per-turn diagnostics write (#6306), now shared by every
+    off-loop state writer through ``_write_state_off_loop``.
+    """
+    import asyncio
+
+    sessions = _mock_sessions(served_model="model-served")
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(id="provdr1", task="provenance cancel task", model="model-req")
+    manager._agents[info.id] = info
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    landed: list[dict[str, Any]] = []
+
+    async def _gated_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        # Only the provenance write carries requested_model; every other
+        # off-loop call in the spawn path goes straight through.
+        if "requested_model" not in kwargs:
+            return func(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        landed.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", return_value=True),
+        patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_gated_to_thread),
+    ):
+        task = asyncio.ensure_future(manager._run_inner(info, f"subagent:{info.id}"))
+        try:
+            await entered.wait()
+            task.cancel()
+            await _event_loop_checkpoint()
+            assert not task.done(), (
+                "cancelled _run_inner completed while the pre-spawn provenance "
+                "write was in flight -- the detached worker can still roll back a "
+                "recovery run's pid/session_id (#6308)"
+            )
+            # The same latch the per-turn drain raises, for the same reason: on
+            # 3.10 a second outer cancel can deliver _run's recovery gate
+            # mid-drain, and recovery must not be scheduled while a worker lives.
+            assert (
+                info._state_drain_active is True
+            ), "the provenance drain did not raise the recovery-gate latch"
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    # The write itself still landed (drained, not abandoned)...
+    assert landed and landed[0]["requested_model"] == "model-req"
+    assert info._state_drain_active is False, "latch leaked past the drain"
+    # ...and the cancellation ended the two-attempt retry loop rather than
+    # adding a SECOND writer for the same fields (the composition ruling this
+    # site needed: drain per attempt, cancel ends the loop).
+    assert len(landed) == 1, f"retry loop started another attempt after the cancel: {landed}"
+
+
+@pytest.mark.asyncio
+async def test_cc_refinement_write_is_drained_on_cancellation() -> None:
+    """#6308 sibling B: same contract for the CC-path model refinement write.
+
+    The refinement fires on the first text chunk, when a raw/CC provider first
+    reveals its served model -- mid-turn, so a cancellation is more likely to
+    find it in flight than the pre-spawn write.
+    """
+    import asyncio
+
+    from kiro_crew.acp.types import EVENT_TEXT_CHUNK, AcpEvent
+
+    # Spawn-time resolve sees nothing; the provider reveals its served model
+    # only as the first chunk streams, which is what arms the refinement.
+    sessions = _mock_sessions(served_model="")
+    provider = sessions.get_or_create.return_value[0]
+
+    async def _late_model_stream(*_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+        provider.served_model = "model-late"
+        yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="hello")
+
+    provider.stream = MagicMock(side_effect=lambda *a, **kw: _late_model_stream())
+
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(id="ccdrn1", task="cc refinement cancel task")
+    manager._agents[info.id] = info
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    landed: list[dict[str, Any]] = []
+
+    async def _gated_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        # The refinement is the only write carrying resolved_model WITHOUT the
+        # provenance write's requested_model companion.
+        if "resolved_model" not in kwargs or "requested_model" in kwargs:
+            return func(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        landed.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", return_value=True),
+        patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_gated_to_thread),
+    ):
+        task = asyncio.ensure_future(manager._run_inner(info, f"subagent:{info.id}"))
+        try:
+            await entered.wait()
+            task.cancel()
+            await _event_loop_checkpoint()
+            assert not task.done(), (
+                "cancelled _run_inner completed while the CC-path refinement "
+                "write was in flight -- the detached worker can still roll back a "
+                "recovery run's pid/session_id (#6308)"
+            )
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert landed and landed[0]["resolved_model"] == "model-late"
+    assert info._state_drain_active is False, "latch leaked past the drain"
+
+
+@pytest.mark.asyncio
+async def test_an_abandoned_state_writer_holds_the_conversation() -> None:
+    """#6298 review (GPT round 1): the drain is BOUNDED, so on a wedged FS a
+    worker outlives its run -- and its stale whole-file rewrite would roll back
+    the ``keep`` a promote / release writes on the loop in the meantime.
+
+    Unbounding the drain is not the answer: ``cancel_all()`` gathers run tasks
+    with no timeout, so it would hold gateway shutdown open forever (the posture
+    ``_REPORT_DRAIN_TIMEOUT`` already sets). Neither is keeping the run
+    non-terminal, which would stall its completion event for as long as the FS
+    stays wedged. Instead the manager records the abandoned writer and
+    ``_conversation_busy`` reports the conversation as held until it settles,
+    which defers both retention writes past the zombie. This pins the hold, that
+    it survives ``_agents`` eviction (GPT review round 2), and its release.
+    """
+    import asyncio
+
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+    event = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="grep",
+        tool_kind="read",
+        request_id="req-1",
+    )
+    sessions = _mock_sessions_with_tool_event("model-served", event)
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(id="aband01", task="abandoned writer task", model="model-req")
+    manager._agents[info.id] = info
+    conv_key = f"subagent:{info.id}"
+
+    wedged = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def _wedged_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        if "turns" not in kwargs:
+            return func(*args, **kwargs)
+        entered.set()
+        await wedged.wait()  # never released before the drain deadline
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", return_value=True),
+        patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_wedged_to_thread),
+        # Expire the drain immediately: this test is about what happens AFTER
+        # expiry, not about the bound itself (pinned separately).
+        patch("kiro_crew.subagent._STATE_DRAIN_TIMEOUT", 0.0),
+    ):
+        task = asyncio.ensure_future(manager._run_inner(info, conv_key))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The run is finished, but a worker is still live.
+        info.done = True
+        assert info.id in manager._abandoned_state_writers, (
+            "drain expiry did not record the abandoned state writer -- "
+            "promote/release would run while the zombie is live (#6298)"
+        )
+        held = manager._conversation_busy(conv_key)
+        assert held is not None and held.id == info.id, (
+            "a finished run with a live abandoned writer must still hold its "
+            "conversation, so the keep write is deferred past the zombie"
+        )
+        # GPT review round 2: the hold must not depend on the run staying in
+        # `_agents`. `evict_completed_agents` prunes completed runs, and an
+        # eviction that released the hold would let a continuation write `keep`
+        # for the zombie to erase.
+        manager._agents.clear()
+        evicted = manager._conversation_busy(conv_key)
+        assert evicted is not None and evicted.id == info.id, (
+            "evicting the completed run released the hold -- the abandoned-writer "
+            "record must live on the manager, not on an _agents-resident flag"
+        )
+        assert evicted._state_writer_abandoned is True
+        # Both retention paths therefore refuse rather than being silently undone.
+        ok, detail = manager.release_conversation(info.id)
+        assert ok is False and "conversation_busy" in detail, detail
+        assert (
+            "settling a state write" in detail
+        ), f"refusal must not promise a completion event that already fired: {detail}"
+
+        # The zombie lands: the hold releases and the conversation is usable again.
+        wedged.set()
+        for _ in range(200):
+            if info.id not in manager._abandoned_state_writers:
+                break
+            await asyncio.sleep(0.01)
+    assert info.id not in manager._abandoned_state_writers, (
+        "the hold outlived the worker -- a conversation would stay permanently "
+        "un-promotable and un-releasable"
+    )
+    assert manager._conversation_busy(conv_key) is None
+
+
+def test_no_bare_to_thread_update_state_outside_the_drained_helper() -> None:
+    """Build gate: the drain invariant must not be convention-only.
+
+    "Every off-loop ``state.json`` writer is drained on cancellation" holds only
+    while writers call ``_write_state_off_loop`` instead of a bare
+    ``asyncio.to_thread(update_state, ...)``. That is precisely the divergence
+    this change had to repair: three structurally identical sites, one given a
+    drain by #6306 and two left bare, 300 lines apart in one file and identical
+    at the call. A convention cannot catch that; a gate can (Design Review on
+    #6298/#6308, matching the repo's other static gates -- see
+    ``test_no_blocking_call_on_loop.py``).
+
+    Deterministic and false-positive-free: an off-loop ``update_state`` has no
+    legitimate undrained form, so exactly one call site is allowed -- the
+    helper's own.
+    """
+    import ast
+    from pathlib import Path
+
+    allowed = "_write_state_off_loop_impl"
+    src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    assert src.is_dir(), src
+
+    class _Scan(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.stack: list[str] = []
+            self.hits: list[tuple[str, int]] = []
+
+        def _enter(self, node: Any) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_FunctionDef = _enter
+        visit_AsyncFunctionDef = _enter
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            # A nested callable is a separate frame, so it must not inherit the
+            # helper's exemption (same scope rule as
+            # test_no_blocking_call_on_loop.py).
+            self.stack.append("<lambda>")
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            fn = node.func
+            if (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "to_thread"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "update_state"
+                and (not self.stack or self.stack[-1] != allowed)
+            ):
+                self.hits.append((self.stack[-1] if self.stack else "<module>", node.lineno))
+            self.generic_visit(node)
+
+    offenders: list[str] = []
+    for path in sorted(src.rglob("*.py")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:  # pragma: no cover - unreadable source
+            continue
+        # Cheap pre-filter: only a handful of modules mention either name, and
+        # `ast.parse` over the whole package is by far the expensive part. A
+        # substring miss cannot hide a call, because the pattern this gate looks
+        # for spells both names literally.
+        if "to_thread" not in text or "update_state" not in text:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:  # pragma: no cover - unparseable source
+            continue
+        scan = _Scan()
+        scan.visit(tree)
+        rel = path.relative_to(src.parent.parent)
+        offenders += [f"{rel}:{line} (in {func})" for func, line in scan.hits]
+
+    assert not offenders, (
+        "bare `asyncio.to_thread(update_state, ...)` outside "
+        f"`{allowed}`: " + ", ".join(offenders) + ". An off-loop state write must go "
+        "through the helper, which drains the worker on cancellation -- an "
+        "undrained worker outlives its run and its stale whole-file rewrite rolls "
+        "back every field written after its read (#6298, #6308)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_conversation_hold_covers_the_whole_drain_not_only_expiry() -> None:
+    """#6298 review (GPT round 3): the hold must start at the CANCELLATION, not
+    at the drain deadline.
+
+    On Python 3.10 a second outer cancel can interrupt ``wait_for``'s
+    ``_cancel_and_wait`` and deliver ``_run``'s finalization while the drain is
+    still in flight -- so a run can go ``done`` with a live writer and WITHOUT
+    ever reaching the expiry branch. A hold armed only on expiry leaves that whole
+    window open, and a continuation reaching a released gate writes ``keep`` for
+    the live writer to erase. Here the drain keeps its real bound (never expires),
+    so the hold under test can only come from the cancellation itself.
+    """
+    import asyncio
+
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+
+    event = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="grep",
+        tool_kind="read",
+        request_id="req-1",
+    )
+    sessions = _mock_sessions_with_tool_event("model-served", event)
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(id="middrn1", task="mid-drain hold task", model="model-req")
+    manager._agents[info.id] = info
+    conv_key = f"subagent:{info.id}"
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _gated_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        if "turns" not in kwargs:
+            return func(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", return_value=True),
+        patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_gated_to_thread),
+    ):
+        task = asyncio.ensure_future(manager._run_inner(info, conv_key))
+        try:
+            await entered.wait()
+            task.cancel()
+            await _event_loop_checkpoint()
+            # Mid-drain: the deadline has NOT passed, so nothing has been
+            # abandoned -- yet the writer is live and the conversation must
+            # already be held, because a 3.10 double-cancel could finalize the
+            # run right here.
+            assert info._state_drain_active is True, "not draining -- test setup wrong"
+            assert info.id in manager._abandoned_state_writers, (
+                "the conversation is unheld while a writer is live mid-drain -- a "
+                "3.10 double-cancel finalization would let a continuation write "
+                "`keep` for that writer to erase (#6298)"
+            )
+            # Simulate exactly that: the run finalizes while the drain is live.
+            info.done = True
+            held = manager._conversation_busy(conv_key)
+            assert held is not None and held._state_writer_abandoned is True, (
+                "a finished run whose writer is still in-drain must keep holding "
+                "its conversation"
+            )
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # Drained normally (never expired), so the one-shot recovery is intact.
+        assert info._cancel_retry_used is False, "a completed drain must not burn the retry"
+        for _ in range(200):
+            if info.id not in manager._abandoned_state_writers:
+                break
+            await asyncio.sleep(0.01)
+    assert info.id not in manager._abandoned_state_writers, "hold outlived the worker"
+    assert manager._conversation_busy(conv_key) is None
