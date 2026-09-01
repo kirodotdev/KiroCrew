@@ -17,14 +17,12 @@ new thread; turns never run directly in a normal guild channel.
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.discord.client import (
     DISCORD_CHUNK_LIMIT,
-    DISCORD_MAX_FILES_PER_MESSAGE,
     DiscordClient,
     DiscordInbound,
 )
@@ -38,8 +36,6 @@ from kiro_crew.messaging.transport import (
     TransportCapabilities,
 )
 from kiro_crew.sel import sel
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -157,38 +153,6 @@ class DiscordTransport(MessagingTransport):
         mid = await self._client.send_message(conversation_id, content)
         return str(mid or "")
 
-    async def send_message_with_files(
-        self,
-        conversation_id: str,
-        content: str,
-        files: Sequence[OutboundFile],
-        thread_id: str | None = None,
-    ) -> str:
-        """Send ``content`` with ``files`` attached. Returns the message id.
-
-        The transport-level upload verb: :meth:`send_message` plus attachments,
-        same return contract, so a caller holding a transport does not reach past
-        it into the client. ``files`` carry the validated bytes from
-        ``messaging/outbound_files.py``; this path uploads exactly those and never
-        re-opens ``OutboundFile.path``.
-
-        Discord's ceilings are budgets the CALLER feeds to extraction, because a
-        file refused before it is read keeps its markdown in the text -- refusing
-        here would drop it after the reference was already cut out. Anything still
-        over the count cap is a caller bug, dropped with a warning rather than
-        failing the whole send.
-        """
-        if len(files) > DISCORD_MAX_FILES_PER_MESSAGE:
-            logger.warning(
-                "discord: %d attachments exceeds the %d-per-message cap; sending the first %d",
-                len(files),
-                DISCORD_MAX_FILES_PER_MESSAGE,
-                DISCORD_MAX_FILES_PER_MESSAGE,
-            )
-            files = list(files)[:DISCORD_MAX_FILES_PER_MESSAGE]
-        mid = await self._client.send_message_with_files(conversation_id, content, files)
-        return str(mid or "")
-
     async def send_document(
         self,
         conversation_id: str,
@@ -199,8 +163,9 @@ class DiscordTransport(MessagingTransport):
     ) -> str:
         """Send one validated file, keeping its admitted name. Returns the message id.
 
-        The name-preserving counterpart of :meth:`send_message_with_files`, whose
-        sanitizer is aimed at LLM-authored reference paths and would deliver
+        The transport-level upload verb, and the name-preserving counterpart of the
+        renderer's extraction upload (``DiscordClient.send_message_with_files``),
+        whose sanitizer is aimed at LLM-authored reference paths and would deliver
         ``report.pdf`` as ``report.bin``. A caller here has already gated the name
         (``file_send``), so the real basename is pinned onto the multipart part.
         ``file`` carries validated bytes (the ``OutboundFile`` contract — the path

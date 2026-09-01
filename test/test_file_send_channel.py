@@ -798,11 +798,12 @@ class TestChannelUploadEndpoint:
         # was the extraction one, whose sanitizer maps any non-raster mime to
         # `.bin` (report.pdf would arrive as report.bin). It now has the same
         # purpose-built name-preserving verb Telegram uses, so it delivers.
+        # `spec_set` names that verb alone: reaching for any other upload verb
+        # raises here instead of being caught by an after-the-fact assertion.
         from unittest.mock import AsyncMock
 
-        transport = MagicMock(spec_set=["send_document", "send_message_with_files"])
+        transport = MagicMock(spec_set=["send_document"])
         transport.send_document = AsyncMock(return_value="900")
-        transport.send_message_with_files = AsyncMock(return_value="901")
         app = self._app()
         with patch(
             "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
@@ -826,9 +827,6 @@ class TestChannelUploadEndpoint:
         assert resp.status == 200
         assert body == {"ok": True, "delivered": True, "channel_type": "discord"}
         transport.send_document.assert_awaited_once()
-        # The extraction verb stays out of this path: it is the one whose
-        # sanitizer would rename the attachment.
-        transport.send_message_with_files.assert_not_called()
         args, kwargs = transport.send_document.call_args
         assert args[0] == "555"
         outbound = args[1]
@@ -879,13 +877,10 @@ class TestChannelUploadEndpoint:
 
     @pytest.mark.asyncio
     async def test_a_discord_transport_without_the_verb_is_still_a_skip(self, tmp_path, outbox_file):
-        # The channel list is not the authority — the verb is. A transport that
-        # predates it keeps the dashboard-link fallback rather than being routed
-        # into the extraction upload whose sanitizer renames the attachment.
-        from unittest.mock import AsyncMock
-
-        transport = MagicMock(spec_set=["send_message_with_files"])
-        transport.send_message_with_files = AsyncMock(return_value="900")
+        # The channel list is not the authority — the verb is. A Discord
+        # transport that predates `send_document` keeps the dashboard-link
+        # fallback rather than failing the request on a missing attribute.
+        transport = MagicMock(spec_set=["send_message"])
         app = self._app()
         with patch(
             "kiro_crew.dashboard.chat_runner._resolve_mirror_target",
@@ -901,7 +896,7 @@ class TestChannelUploadEndpoint:
         assert resp.status == 200
         assert body["delivered"] is False
         assert body["skipped"] == "channel_upload_unsupported:discord"
-        transport.send_message_with_files.assert_not_called()
+        transport.send_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_channel_without_an_upload_verb_is_a_skip(self, tmp_path, outbox_file):

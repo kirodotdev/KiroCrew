@@ -521,18 +521,6 @@ class TestDocumentVerb:
         assert asyncio.run(transport.send_document("c1", _doc())) == ""
 
 
-class TestTransportVerb:
-    def test_send_message_with_files_returns_the_message_id(self) -> None:
-        transport = DiscordTransport(cli := FakeClient(), allowed_user_ids=["u1"])  # type: ignore[arg-type]
-        file = _file()
-        assert asyncio.run(transport.send_message_with_files("c1", "hi", [file])).isdigit() and cli.uploaded_files == [file]
-
-    def test_over_cap_attachments_are_dropped_not_failed(self) -> None:
-        transport = DiscordTransport(cli := FakeClient(), allowed_user_ids=["u1"])  # type: ignore[arg-type]
-        files = [_file(f"/tmp/{i}.png") for i in range(DISCORD_MAX_FILES_PER_MESSAGE + 3)]
-        assert asyncio.run(transport.send_message_with_files("c1", "hi", files)).isdigit() and len(cli.uploaded_files) == DISCORD_MAX_FILES_PER_MESSAGE
-
-
 async def _done(value: Any) -> Any:
     return value
 

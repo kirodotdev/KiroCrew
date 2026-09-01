@@ -248,7 +248,7 @@ class TelegramTransport(MessagingTransport):
     ) -> str:
         """Send one validated file into this conversation. Returns the message id.
 
-        The transport-level upload verb, Discord's ``send_message_with_files``
+        The transport-level upload verb, Discord's ``send_document``
         counterpart: a caller holding a transport does not reach past it into
         the client. ``file`` carries validated bytes (the ``OutboundFile``
         contract — the path is provenance, never re-opened).

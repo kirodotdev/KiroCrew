@@ -73,7 +73,6 @@ __all__ = [
     "chunk_utf8_bytes",
     "iter_fence_spans",
     "iter_fence_lines",
-    "open_fence_at_end",
     "truncate_utf8",
     "FENCE_OUTSIDE",
     "FENCE_OPEN",
@@ -476,14 +475,6 @@ def _advance(fence: _Fence | None, line: str) -> _Fence | None:
     if m:
         return _Fence(char=m.group(1)[0], length=len(m.group(1)), opener=body)
     return None
-
-
-def open_fence_at_end(text: str) -> tuple[str, int, str] | None:
-    """Return ``(character, length, opener)`` for the fence open at text's end."""
-    fence: _Fence | None = None
-    for line, _full, _terminated in _lines(text):
-        fence = _advance(fence, line)
-    return (fence.char, fence.length, fence.opener) if fence else None
 
 
 def iter_fence_spans(text: str) -> Iterator[tuple[int, int]]:
