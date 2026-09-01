@@ -21,7 +21,7 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_path
 from kiro_crew.dashboard import terminal_commands
-from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
 from kiro_crew.security import (
@@ -583,6 +583,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             source="dashboard",
             resources=f"origin_not_allowed={request.headers.get('Origin', '')[:80]!r}",
         )
+        # This record is the specific one; claim the request so the deny-audit
+        # boundary does not add a second, generic entry for the same refusal.
+        mark_audit_claimed(request)
         raise web.HTTPForbidden(text="WebSocket origin not allowed")
     caller = request.get("user")
     if not caller:

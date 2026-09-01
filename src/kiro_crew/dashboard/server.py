@@ -121,6 +121,7 @@ from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
 from kiro_crew.dashboard.handlers.whatsapp_setup import setup_whatsapp_routes
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
+    AUDIT_CLAIMED_KEY,
     PROBE_PATHS,
     bind_address_for,
     build_allowed_origins,
@@ -128,6 +129,7 @@ from kiro_crew.dashboard.origin import (
     check_origin,
     dashboard_socket_path,
     frame_ancestors_value,
+    mark_audit_claimed,
     resolve_dashboard_host,
     should_canonicalize_host,
 )
@@ -434,6 +436,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
 )
 
 
+#: Statuses the deny-audit boundary treats as a permission decision. Deliberately
+#: not "any 4xx": a 404 from routing and a 302 from host canonicalization are
+#: outcomes, not refusals. Nothing raises 401 today (``token_auth_middleware``
+#: RETURNS its 401/403 and audits each itself), but a barrier that raises one is
+#: the same class of event as a raised 403, so it is covered by position too.
+_PRE_AUDIT_DENY_STATUSES = frozenset({401, 403})
+
+
 async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
     """Record a middleware refusal in the SEL, off the event loop, best-effort.
 
@@ -451,7 +461,14 @@ async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
     * BEST-EFFORT — a trust root too short to sign the chain makes construction
       raise, and an unguarded write would turn the refusal into a 500: losing
       the denial in order to report it.
+
+    Calling this CLAIMS the request (:func:`origin.mark_audit_claimed`) so the
+    deny-audit boundary outer to every barrier does not record the same refusal
+    a second time. The claim is set unconditionally, before the write: a write
+    that failed here fails identically in the boundary, so a second doomed
+    thread hop buys nothing.
     """
+    mark_audit_claimed(request)
     try:
         await asyncio.to_thread(
             lambda: sel().log_api_access(
@@ -464,6 +481,84 @@ async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
         )
     except Exception:
         logger.warning("Failed to log a middleware denial to SEL", exc_info=True)
+
+
+def _make_deny_audit_middleware(caller: str) -> Callable:
+    """Build the audit boundary for refusals raised BEFORE the audit middleware.
+
+    SHARED by BOTH entrypoints (``start_dashboard`` and the ``--slack-only``
+    ``start_api_server``) so the two chains can never drift — same rationale as
+    :func:`_make_host_validation_middleware`.
+
+    ``sel_audit_middleware`` is registered INNER to the Host, CSRF and token
+    barriers, so a refusal one of them raises produces a 403 that the audit
+    middleware never observes. The three known sites each call
+    :func:`_audit_denied` themselves and a source-string test pins that they keep
+    doing so — but a pin only catches what someone remembers to run, and the
+    omission is invisible in production: the refusal simply appears nowhere in
+    the audit log. That is the deny-or-audit violation the pin exists to paper
+    over.
+
+    Registered OUTER to every barrier, this middleware makes the guarantee
+    positional. It catches the refusal on its way out and records it unless some
+    inner layer already claimed the request, so a future deny site that forgets
+    everything is still audited; forgetting now costs the record's reason
+    DETAIL, not the record. The per-site calls become enrichment rather than the
+    guarantee.
+
+    Its scope is deliberately narrow, so the audit surface is unchanged and no
+    refusal is recorded twice:
+
+    * Only a RAISED ``web.HTTPException`` whose status is in
+      :data:`_PRE_AUDIT_DENY_STATUSES`. Everything else propagates untouched.
+    * Only an UNCLAIMED request (:data:`origin.AUDIT_CLAIMED_KEY`). A layer claims
+      when it has written the specific record itself: the two barriers through
+      :func:`_audit_denied`, ``sel_audit_middleware`` for the requests it
+      actually logs (so its ``outcome="error"`` entry for a handler's 403 is not
+      doubled), and the two WebSocket origin refusals that log their own denial.
+      All four go through :func:`origin.mark_audit_claimed`. Not claiming is the
+      safe direction: the refusal is then recorded here under a generic reason.
+      The one refusal that reaches this middleware unclaimed today is
+      ``ws.py``'s cross-origin WebSocket 403, which was audited nowhere before.
+    * Returned responses are NOT inspected. ``token_auth_middleware`` returns
+      its 401/403 rather than raising and audits each with a specific reason
+      code, so its records stay single.
+
+    Best-effort and off the loop come from :func:`_audit_denied`; the refusal is
+    re-raised unchanged either way, so an audit failure can never convert a 403
+    into a 500.
+
+    ``caller`` is only the FALLBACK label. A refusal raised inner to
+    ``token_auth_middleware`` carries an authenticated identity on the request by
+    the time it reaches here, and recording the static label instead would file an
+    app's or a user's refusal under ``dashboard_user`` — the attribution problem
+    ``handlers.terminal``'s own deny site avoids by reading
+    ``request["user"]``. Note ``request["app"]`` is ``""`` for the dashboard user
+    and that emptiness is POSITIVE proof of them (see ``token_auth``), so an empty
+    app falls through to the user rather than to the label.
+    """
+
+    @web.middleware  # type: ignore[misc]
+    async def deny_audit_middleware(
+        request: web.Request,
+        handler: object,
+    ) -> web.StreamResponse:
+        try:
+            return await handler(request)  # type: ignore[operator]
+        except web.HTTPException as exc:
+            if exc.status in _PRE_AUDIT_DENY_STATUSES and not request.get(AUDIT_CLAIMED_KEY):
+                # Status and reason only — never the exception body. The record
+                # already carries method, path and caller; what a claimed record
+                # adds is the deny site's own explanation, which by definition
+                # is missing here.
+                await _audit_denied(
+                    request.get("app") or request.get("user") or caller,
+                    request,
+                    f"refused with {exc.status} {exc.reason} before the audit middleware",
+                )
+            raise
+
+    return deny_audit_middleware
 
 
 def _make_host_validation_middleware(caller: str) -> Callable:
@@ -3299,6 +3394,13 @@ async def start_dashboard(
         handler: object,
     ) -> web.StreamResponse:
         if request.method in _sel_log_methods and request.path.startswith("/api/"):
+            # Claim only what this middleware actually records. Its except arm
+            # logs a refusal raised below this point, so the boundary must not
+            # add a second entry for it — but a request OUTSIDE this branch is
+            # logged nowhere here, and claiming it would hand the boundary a
+            # promise no one keeps (a cross-origin WebSocket GET refused in its
+            # handler would be silently unaudited).
+            mark_audit_claimed(request)
             from kiro_crew.sel import sel
 
             try:
@@ -3370,6 +3472,10 @@ async def start_dashboard(
     # Same factory as the headless server's barrier, so the CSRF exemption set is
     # one decision rather than two (see _make_csrf_middleware).
     csrf_middleware = _make_csrf_middleware("dashboard_user")
+    # Audit boundary for refusals raised before sel_audit_middleware runs. Same
+    # factory as the headless server's, so the guarantee cannot hold on one
+    # entrypoint and not the other (see _make_deny_audit_middleware).
+    deny_audit_middleware = _make_deny_audit_middleware("dashboard_user")
 
     # Generate per-session secret for local app / IPC authentication.
     # NOTE: file write (and parent mkdir) deferred until after port bind
@@ -3410,6 +3516,11 @@ async def start_dashboard(
         # method / bounded route_template / status_class — never a real path,
         # query, id, or body — so it cannot leak content or explode cardinality.
         make_route_latency_middleware(),
+        # Outer to every barrier that can refuse, so a pre-audit 403 is recorded
+        # by POSITION rather than by each deny site remembering to. Inner to the
+        # latency middleware only, which keeps that one's "times the FULL
+        # in-gateway handling" contract intact.
+        deny_audit_middleware,
         host_canonical_redirect,
         host_validation_middleware,
         no_cache_middleware,
@@ -4149,6 +4260,11 @@ async def start_api_server(
         handler: object,
     ) -> web.StreamResponse:
         if request.method in _sel_methods and request.path.startswith("/api/"):
+            # Claim only what this middleware records — same contract as the
+            # dashboard's (see origin.AUDIT_CLAIMED_KEY): its except arm owns a
+            # refusal raised below this point, and a request it does not log is
+            # left unclaimed so the boundary can record one.
+            mark_audit_claimed(request)
             # ``sel`` is imported at module scope (top of file); no in-function
             # import needed (host/csrf middleware below call it unqualified too).
             try:
@@ -4181,18 +4297,26 @@ async def start_api_server(
     # the SAME factory builds both, including the self-authenticating-webhook
     # exemption (see _make_csrf_middleware).
     csrf_middleware = _make_csrf_middleware("mcp_tool")
+    # Audit boundary at parity with start_dashboard by construction — the SAME
+    # factory builds both, so a pre-audit refusal cannot be positional on one
+    # entrypoint and per-site on the other (see _make_deny_audit_middleware).
+    deny_audit_middleware = _make_deny_audit_middleware("mcp_tool")
 
     # Warm the auth singletons off the event loop before building the chain
     # (parity with start_dashboard) so no blocking key-file I/O hits the loop.
     await warm_auth_singletons()
 
-    # Explicit ordering mirrors start_dashboard: latency → host → csrf → token → audit.
+    # Explicit ordering mirrors start_dashboard: latency → deny-audit → host →
+    # csrf → token → audit.
     app.middlewares[:] = [
         # Outermost: privacy-safe, bounded-cardinality per-route latency (rec #1).
         # The MCP routes are registered AFTER this assignment, so the middleware
         # captures its route-template set LAZILY on the first request (by which
         # point every route is registered) — see make_route_latency_middleware.
         make_route_latency_middleware(),
+        # Outer to every barrier that can refuse: a pre-audit 403 is recorded by
+        # POSITION here, not by each deny site remembering to.
+        deny_audit_middleware,
         host_validation_middleware,
         csrf_middleware,
         token_auth_middleware(

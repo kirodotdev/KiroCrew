@@ -217,6 +217,30 @@ def request_is_unix_socket(request: web.Request) -> bool:
     return sock is not None and getattr(sock, "family", None) == _AF_UNIX
 
 
+#: Request key meaning "a layer has already recorded, or deliberately owns, the
+#: audit for this request's refusal". Read by ONE consumer — the deny-audit
+#: boundary middleware in ``server.py``, which records a raised 401/403 that
+#: nobody claimed, so a barrier written tomorrow is audited by POSITION instead
+#: of by remembering a helper call. It lives here rather than in ``server.py``
+#: because the barriers that must claim do not all live there: the two
+#: middlewares do, but the WebSocket origin refusals in ``ws.py`` /
+#: ``stt_stream.py`` / ``handlers.terminal`` are handlers, and importing
+#: ``server`` from a handler is a cycle. Same reason ``check_origin`` itself
+#: lives here.
+AUDIT_CLAIMED_KEY = "_kc_audit_claimed"
+
+
+def mark_audit_claimed(request: web.Request) -> None:
+    """Declare that this request's refusal is already audited.
+
+    Call it at a deny site that writes its OWN audit record, so the boundary
+    does not add a second, less specific one. Not calling it is the safe
+    direction: the boundary then records the refusal itself under a generic
+    reason, which is the whole point of the guarantee being positional.
+    """
+    request[AUDIT_CLAIMED_KEY] = True
+
+
 def check_origin(
     request: web.Request,
     *,

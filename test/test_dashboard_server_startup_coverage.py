@@ -362,7 +362,9 @@ class TestStartDashboardWiring:
         The ``Host`` barrier must run OUTSIDE the audit middleware: aiohttp runs
         middlewares outermost-first, and a rebinding attempt refused inside the
         audit layer would 403 without ever being recorded (which is why
-        ``_audit_denied`` exists at all).
+        ``_audit_denied`` exists at all). The deny-audit boundary must in turn
+        run outside the ``Host`` barrier: that is what makes the recording
+        positional rather than dependent on every deny site calling the helper.
         """
         async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
             names = [getattr(mw, "__name__", type(mw).__name__) for mw in runner.app.middlewares]
@@ -370,6 +372,8 @@ class TestStartDashboardWiring:
         assert "host_validation_middleware" in names
         assert "sel_audit_middleware" in names
         assert names.index("host_validation_middleware") < names.index("sel_audit_middleware")
+        assert "deny_audit_middleware" in names, "the pre-audit deny boundary is not installed"
+        assert names.index("deny_audit_middleware") < names.index("host_validation_middleware")
 
     @pytest.mark.asyncio
     async def test_a_disallowed_host_is_refused_by_the_real_chain(
