@@ -298,6 +298,33 @@ describe('PromptsTab authoring', () => {
     expect(written).toContain('description: typed one')
   })
 
+  it('warns the browser about an unsaved edit on reload or close, and stops once it is gone', async () => {
+    // The tab-switch guard only covers exits this shell owns. A reload or a tab
+    // close destroys the same draft, and beforeunload is the only thing the
+    // platform offers there. Asserted in BOTH directions: a listener that is
+    // registered unconditionally would nag on every reload of a clean pane, and
+    // one that is never removed would nag for the rest of the session.
+    const addSpy = vi.spyOn(window, 'addEventListener')
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+    const beforeUnloadAdds = () => addSpy.mock.calls.filter(c => c[0] === 'beforeunload').length
+    const beforeUnloadRemoves = () => removeSpy.mock.calls.filter(c => c[0] === 'beforeunload').length
+
+    mockApi.prompts.mockResolvedValue([USER_PROMPT])
+    renderTab()
+    await select('my-prompt')
+    fireEvent.click(await screen.findByText('Edit'))
+    // Opening the editor is not itself dirty: the baseline is captured on open.
+    expect(beforeUnloadAdds()).toBe(0)
+    fireEvent.change(screen.getByPlaceholderText(/markdown the agent receives/), { target: { value: 'unsaved edit' } })
+    await waitFor(() => expect(beforeUnloadAdds()).toBe(1))
+
+    // Cancel the edit: nothing is at stake any more, so the warning must go.
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(beforeUnloadRemoves()).toBe(1))
+    expect(beforeUnloadAdds()).toBe(1)
+  })
+
   it('asks before discarding an unsaved draft when another prompt is selected', async () => {
     const OTHER = { ...USER_PROMPT, name: 'other', fullName: 'other', path: '~/.kiro/prompts/other.md' }
     mockApi.prompts.mockResolvedValue([USER_PROMPT, OTHER])

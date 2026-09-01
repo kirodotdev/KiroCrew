@@ -10,6 +10,7 @@ import Modal from '../../components/Modal'
 import PromptForm, { assemblePromptContent, parsePromptContent, type PromptFormData, type PromptScope } from '../../components/PromptForm'
 import InfoTip from '../../components/InfoTip'
 import ListDetailBack from '../../components/ListDetailBack'
+import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { parseErrorCode } from '../../utils/errorReport'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
@@ -285,8 +286,9 @@ export default function PromptsTab() {
    *  after the fence, the spacing of the description field), so a prompt whose
    *  on-disk shape differs from that would read as dirty with zero edits and
    *  pop a discard-confirm the user never earned. */
-  const editDirty = () =>
-    detailEditing && assemblePromptContent(editForm) !== editBaselineRef.current
+  const editDirty = useCallback(() =>
+    detailEditing && assemblePromptContent(editForm) !== editBaselineRef.current,
+  [detailEditing, editForm])
 
   /** True when the create form holds anything typed. Unlike editDirty there is
    *  no baseline to compare against — the form always opens empty, so any
@@ -294,6 +296,49 @@ export default function PromptsTab() {
    *  choice, not content, and alone it is not worth an "are you sure". */
   const createDirty = () =>
     !!(createForm.name.trim() || createForm.description.trim() || createForm.body.trim())
+
+  // The host page renders this tab conditionally (`{tab === 'prompts' &&
+  // <PromptsTab />}`), so clicking another tab in the rail UNMOUNTS the pane and
+  // takes the open editor with it. Every in-pane exit already asks before
+  // destroying typed work — the editor's Cancel, the modal's Cancel and X, and
+  // selecting a different row — but the rail click belongs to the shell, so
+  // until it consults this guard it was the one exit that discarded a draft in
+  // silence. Same copy as those confirms, because it is the same question.
+  //
+  // Deliberately `editDirty()` alone, NOT the create form: the create modal
+  // renders a full-viewport backdrop above the rail, so while a create draft is
+  // open no rail tab (and no mobile back bar) can be clicked at all — measured,
+  // not assumed: a capture run driving the rail with the modal open cannot reach
+  // the button, the backdrop takes the click. Adding `createDirty()` here would
+  // guard an unreachable path, and unqualified it would be actively wrong, since
+  // discarding a create leaves `createForm` holding the abandoned text (only
+  // OPENING the modal resets it) and every later tab switch would ask about a
+  // draft the user already threw away. If the modal ever stops covering the
+  // rail, the create form needs this same guard.
+  useSidePanelLeaveGuard(() =>
+    !editDirty() || confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')))
+
+  // The guard above only sees exits this shell owns. A reload, a tab close, or
+  // navigating the browser off the dashboard entirely destroys the same draft,
+  // and `beforeunload` is the only thing the platform offers there — the same
+  // idiom, for the same reason, as ArtifactDetailPage, PapyrusPage, MdNotebook
+  // and ChatPage.
+  //
+  // What this deliberately does NOT cover: an in-app route change (the global
+  // sidebar, or browser back inside the SPA). `beforeunload` does not fire for
+  // those — the document never unloads — so they need a router-level blocker,
+  // which is a larger change than this fix and is recorded as a follow-up
+  // rather than half-done here.
+  useEffect(() => {
+    if (!editDirty()) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+    // `editDirty` is a useCallback over detailEditing + editForm, which is what
+    // it reads; the baseline is a ref, so it cannot be a dependency and does not
+    // need to be — it is only written when the editor OPENS, which flips
+    // detailEditing in the same commit.
+  }, [editDirty])
 
   const select = (p: Prompt) => {
     // A write in flight owns the panes it is about to update. Switching now
