@@ -11,7 +11,11 @@
  */
 export function isValidLoopbackReturnAddress(value: string): boolean {
   try {
-    const url = new URL(value.trim())
+    let normalized = value.trim()
+    // iOS Safari omits http:// when copying loopback URLs (e.g. 127.0.0.1:8976/callback?code=...).
+    // Default to http:// so the paste validates — other constraints still apply.
+    if (normalized && !normalized.includes('://')) normalized = `http://${normalized}`
+    const url = new URL(normalized)
     const loopback =
       url.hostname === '127.0.0.1'
       || url.hostname === '[::1]'

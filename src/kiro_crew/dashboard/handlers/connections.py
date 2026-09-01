@@ -57,6 +57,11 @@ def _validated_loopback_return_address(value: object) -> _LoopbackCallback | Non
     candidate = value.strip()
     if not candidate or len(candidate.encode("utf-8")) > _MAX_RETURN_ADDRESS_BYTES:
         return None
+    # iOS Safari omits http:// when copying loopback URLs (e.g. 127.0.0.1:8976/callback).
+    # Default to http:// so the paste validates — all other constraints still apply
+    # after normalization; a non-loopback host cannot become loopback by prepending.
+    if "://" not in candidate:
+        candidate = f"http://{candidate}"
     try:
         parsed = urlsplit(candidate)
         port = parsed.port
