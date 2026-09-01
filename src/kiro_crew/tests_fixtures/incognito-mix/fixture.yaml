@@ -1,0 +1,8 @@
+schema-version: 2026-04-28
+fixture-name: incognito-mix
+description: |
+  Three sessions whose only difference is memory_mode: one normal, one
+  ``incognito`` and one ``temporary``. Both of the latter are what
+  ``history.is_incognito_transcript`` treats as private, so this is the fixture
+  for anything that must prove a restricted session is excluded -- memory writes,
+  history search, session listing -- without hand-building the records.

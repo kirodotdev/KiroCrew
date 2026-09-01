@@ -1,0 +1,14 @@
+{
+  "slug": "release-checklist",
+  "name": "Release checklist",
+  "kind": "widget",
+  "description": "Pre-release gate checklist, one row per gate.",
+  "tags": [
+    "release",
+    "wip"
+  ],
+  "version": 2,
+  "created_at": "2026-01-15T09:00:00+00:00",
+  "updated_at": "2026-01-15T09:00:00+00:00",
+  "source_path": ""
+}

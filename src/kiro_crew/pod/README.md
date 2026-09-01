@@ -20,6 +20,9 @@ kirocrew pod up   <wt> [--json]   # bring up an isolated pod → {base_url, toke
 kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
 kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
 kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
+kirocrew pod up   <wt> --seed rich      # pre-populate its HOME from a named scenario
+kirocrew pod scenarios [--json]   # what `--seed <scenario>` accepts, with descriptions
+kirocrew pod api  <wt> GET sessions     # one authenticated API call → JSON on stdout
 kirocrew pod ls                   # what's running (≈ kubectl get pods) + orphaned HOMEs (with age)
 kirocrew pod prune [--all] [--dry-run]  # bulk-reclaim orphaned HOMEs (default: older than 3d; --all for every age)
 kirocrew pod status <wt>          # up/down + health
@@ -51,6 +54,74 @@ So plain `pod up <wt>` builds the cheap venv for you but **fails loud** if the
 dist is missing — pointing you at the slow build — while `pod up <wt> --provision`
 (or `pod provision <wt>`) runs the full chain: venv + `npm run build` in
 `website/` staged into the served `static/dist`.
+
+## The agent front door: seed a state, then call the API
+
+The three verbs an agent drives, in the order it drives them. Together they turn
+"reproduce this, then check it" into two commands with no manual token handling
+and no `curl` string to get wrong.
+
+### `pod scenarios` — what states are available
+
+```bash
+kirocrew pod scenarios          # SCENARIO / DESCRIPTION table
+kirocrew pod scenarios --json   # [{"name": …, "description": …}]
+```
+
+A **scenario** is a fixture shipped as package data in
+`kiro_crew/tests_fixtures/<name>/`, each a valid `KIROCREW_HOME` tree with a
+`fixture.yaml` whose `description` is what this listing prints. The same
+fixtures back `kirocrew gateway --seed <name>` and
+`kiro_crew.testing.fixtures.seeded_home`, so a state reproduced in a pod is the
+same state a test can assert against. The registry is read from disk, so a
+fixture added to the package appears here with nothing else to update.
+
+### `pod up --seed <scenario>` — boot with that state already in place
+
+```bash
+kirocrew pod up my-wt --seed crons-active      # a NAME: populate the whole HOME
+kirocrew pod up my-wt --seed ~/.kiro/crew      # a PATH: sanitized config.json only
+```
+
+`--seed` takes both forms and tells them apart **syntactically**: anything with
+a path separator or a leading `~`/`.` is a directory, and a bare token is a
+scenario name. The rule is syntactic rather than a filesystem lookup so the
+control plane (`pod up`, which must refuse an unknown name before starting a
+unit) and the pod's own `boot` cannot reach different verdicts. An unknown bare
+name is **refused with the available list** — the alternative is a pod that
+comes up blank and healthy, which an agent reads as the feature under test being
+broken. To seed from a bare relative directory name, spell it as a path
+(`--seed ./name`).
+
+Both forms record one `SEED=` key, so re-`up`ing with the other form replaces
+the value instead of leaving two keys to disagree. Seeding happens in `boot`,
+after the HOME is created and before the gateway is exec'd, and a HOME that
+already holds state is **never re-seeded** — otherwise a `Restart=on-failure`
+re-exec would delete the sessions and logs of the crash being investigated. A
+scenario's own `config.json` is put through the same `SEED_DISABLED_SECTIONS`
+deny list as a directory seed, so no fixture can hand a pod a live channel.
+
+### `pod api` — call it without touching the credential
+
+```bash
+kirocrew pod api my-wt GET sessions
+kirocrew pod api my-wt GET /api/health
+kirocrew pod api my-wt POST config --data '{"key":"agent.model"}'
+```
+
+Prints **one JSON document with fixed keys** on every outcome —
+`{name, method, path, status, ok, body}` — so a caller never has to test which
+of several shapes it got. `body` is the parsed response when it is JSON and the
+raw text otherwise, which keeps a plain-text 500 readable. A non-2xx prints the
+same document (the gateway's own error body included) and exits 1.
+
+The path is normalized, so `sessions`, `/sessions`, `/api/sessions` and a full
+`base_url` all work. The token is minted internally through the same
+ownership-proof path `pod token` uses, so the agent never reads `.local_secret`
+and a foreign process holding the derived port can never be authenticated
+against. A pod that is not running is reported as exactly that, naming
+`kirocrew pod up <wt>`; a pod that is up but unreachable points at
+`pod status` / `pod logs` instead.
 
 ## A pod IS the worktree's gateway (control plane vs payload)
 

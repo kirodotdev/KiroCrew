@@ -1,0 +1,8 @@
+schema-version: 2026-04-28
+fixture-name: artifacts-library
+description: |
+  Three saved artifacts of different kinds -- a widget on its second
+  version, a markdown document, and an svg -- each with the meta.json /
+  current.html / versions layout the artifact store writes. Gives the artifacts
+  library, the version dropdown, and the kind filter something to render on first
+  boot.

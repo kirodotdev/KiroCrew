@@ -104,6 +104,17 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     checkout = _resolve_or_die(cfg, name)
 
+    # Resolve a NAMED seed here, in the control plane, before anything is pinned
+    # or started. `boot` would reach the same verdict, but there it costs a failed
+    # unit start and a journal read to see it; refusing at the CLI puts the
+    # available-scenario list in front of the operator who typed the name.
+    if args.seed and rt.is_scenario_ref(args.seed):
+        try:
+            rt.resolve_seed_scenario(args.seed)
+        except rt.PodError as exc:
+            _audit("pod.up", "denied", f"name={name}", error="unknown seed scenario")
+            _die(str(exc))
+
     # Graduated, teaching errors + auto-provisioning. The venv is cheap and
     # idempotent so we build it on demand; the dist is the slow SPA build, so we
     # only run it under explicit --provision consent and otherwise fail loud.
@@ -572,7 +583,9 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
             threshold = time.time() - _parse_older_than(args.older_than)
         orphans = rt.orphan_homes(cfg)
     except rt.PodError as exc:
-        _audit("pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120])
+        _audit(
+            "pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120]
+        )
         raise
     dry_run = bool(getattr(args, "dry_run", False))
     results: list[dict[str, str]] = []
@@ -782,6 +795,69 @@ def _exec(cfg: PodConfig, args: argparse.Namespace) -> None:
     sys.exit(rt.exec_in_pod(cfg, name, argv))
 
 
+def _api(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """One authenticated HTTP call against a running pod, printed as JSON.
+
+    The output is always ONE JSON document with the same keys, on every status
+    and for every body shape, so a caller can pipe it without first testing which
+    of several shapes it got. ``body`` is the parsed response when it is JSON and
+    the raw text otherwise, which keeps a plain-text 500 readable instead of
+    turning it into a parse error at the caller.
+    """
+    name = rt.validate_name(args.name)
+    method = str(args.method).upper()
+    try:
+        status, raw = rt.pod_api(cfg, name, method, args.path, data=args.data or "")
+    except rt.PodError as exc:
+        _audit("pod.api", "failure", f"name={name} method={method}", error=str(exc)[:120])
+        _die(str(exc))
+    try:
+        body: object = json.loads(raw) if raw else None
+    except ValueError:
+        body = raw
+    ok = 200 <= status < 300
+    # Audited like `pod exec`: this is an authenticated, possibly mutating call
+    # into a gateway, so the trail records the verb and target. The PATH is
+    # recorded and the body is not -- a request body can carry a secret.
+    _audit(
+        "pod.api",
+        "allowed" if ok else "failure",
+        f"name={name} method={method} path={rt.api_path(args.path)} status={status}",
+        error="" if ok else f"status={status}",
+    )
+    print(
+        json.dumps(
+            {
+                "name": name,
+                "method": method,
+                "path": rt.api_path(args.path),
+                "status": status,
+                "ok": ok,
+                "body": body,
+            },
+            indent=2,
+        )
+    )
+    if not ok:
+        sys.exit(1)
+
+
+def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """List the seed scenarios ``pod up --seed <scenario>`` accepts."""
+    rows = rt.seed_scenarios()
+    if args.json:
+        print(json.dumps([{"name": n, "description": d} for n, d in rows]))
+        return
+    if not rows:
+        print("no seed scenarios found (the packaged fixtures tree is missing)")
+        return
+    width = max(len(n) for n, _ in rows)
+    print(f"{'SCENARIO':<{width}}  DESCRIPTION")
+    for scenario, desc in rows:
+        print(f"{scenario:<{width}}  {desc or '(no description)'}")
+    print(f"\nseed one with: kirocrew pod up <worktree> --seed {rows[0][0]}")
+
+
 def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     # Gate before exec'ing the log mechanism — on an unsupported host this would
@@ -867,6 +943,8 @@ _VERBS: dict[str, PodHandler] = {
     "status": _status,
     "token": _token,
     "url": _url,
+    "api": _api,
+    "scenarios": _scenarios,
     "logs": _logs,
     "install": _install,
     "provision": _provision,
@@ -881,7 +959,7 @@ def dispatch(args: argparse.Namespace) -> None:
     if not action:
         print(
             "Usage: kirocrew pod "
-            "{up|down|ls|prune|status|token|url|logs|exec|install|provision} …"
+            "{up|down|ls|prune|status|token|url|api|scenarios|logs|exec|install|provision} …"
         )
         sys.exit(2)
     cfg = PodConfig.load()

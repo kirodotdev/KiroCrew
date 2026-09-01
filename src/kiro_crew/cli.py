@@ -1722,7 +1722,7 @@ Examples:
     pod_parser = cli_help.add_command(sub, "pod")
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,prune,status,token,url,logs,exec,provision,install}",
+        metavar=("{up,down,ls,prune,status,token,url,api,scenarios,logs,exec,provision,install}"),
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -1733,7 +1733,19 @@ Examples:
         help="Provision (venv + SPA dist) if needed before bringing the pod up",
     )
     pod_up.add_argument("--ttl", default="2h", help="Token TTL (default: 2h)")
-    pod_up.add_argument("--seed", default="", help="Seed config dir (tunnel is forced off)")
+    pod_up.add_argument(
+        "--seed",
+        default="",
+        help=(
+            "Pre-populate the pod's isolated home. A bare NAME is a shipped seed "
+            "scenario and populates the whole home (`kirocrew pod scenarios` lists "
+            "them; an unknown name is refused with the list). A PATH — anything "
+            "with a separator or a leading ~ or . — is a config dir, and only its "
+            "sanitized config.json is copied. Either way the tunnel and every "
+            "self-activating channel are forced off, and a home that already holds "
+            "state is never re-seeded on restart."
+        ),
+    )
     pod_up.add_argument(
         "--approval",
         # Literal mirrors kiro_crew.pod.runtime.APPROVAL_MODES, which is the
@@ -1796,6 +1808,54 @@ Examples:
     pod_token.add_argument("--ttl", default="2h", help="Token TTL (default: 2h)")
     pod_url = pod_sub.add_parser("url", help="Print a pod's base URL")
     pod_url.add_argument("name", help="Worktree name")
+    pod_api = pod_sub.add_parser(
+        "api",
+        help="Call a running pod's HTTP API with its own token, and print JSON",
+        description=(
+            "Make ONE authenticated request against a running pod's gateway and "
+            "print the result as a single JSON document with fixed keys "
+            "{name, method, path, status, ok, body}. `body` is the parsed response "
+            "when it is JSON and the raw text otherwise. A non-2xx status prints "
+            "the same document (so the gateway's own error body is visible) and "
+            "exits 1. The token is minted internally through the same "
+            "ownership-proof path `pod token` uses, so no secret is ever read or "
+            "passed by the caller."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  kirocrew pod api my-wt GET sessions\n"
+            "  kirocrew pod api my-wt GET /api/health\n"
+            '  kirocrew pod api my-wt POST config --data \'{"key":"agent.model"}\'\n'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pod_api.add_argument("name", help="Worktree name")
+    pod_api.add_argument(
+        "method",
+        # Accept either case at the CLI; the runtime upper()s and validates
+        # against rt.API_METHODS, which is the enforcement point.
+        choices=["GET", "POST", "PUT", "PATCH", "DELETE", "get", "post", "put", "patch", "delete"],
+        metavar="METHOD",
+        help="HTTP method: GET, POST, PUT, PATCH or DELETE (case-insensitive)",
+    )
+    pod_api.add_argument(
+        "path",
+        help=(
+            "API path. `/api/` is prepended when absent, so `sessions`, "
+            "`/sessions`, `/api/sessions` and a full base_url all work. Query "
+            "strings are preserved."
+        ),
+    )
+    pod_api.add_argument(
+        "--data",
+        default="",
+        help="Request body, sent verbatim with Content-Type: application/json",
+    )
+    pod_scen = pod_sub.add_parser(
+        "scenarios",
+        help="List the seed scenarios `pod up --seed <scenario>` accepts",
+    )
+    pod_scen.add_argument("--json", action="store_true", help="Emit rows as JSON")
     pod_logs = pod_sub.add_parser("logs", help="Tail a pod's journal")
     pod_logs.add_argument("name", help="Worktree name")
     pod_logs.add_argument("-n", "--lines", type=int, default=50, help="Lines to tail (default: 50)")

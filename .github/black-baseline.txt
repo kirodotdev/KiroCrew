@@ -342,7 +342,6 @@ src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/capability_bound.py
 src/kiro_crew/platform/update_layout.py
-src/kiro_crew/pod/cli.py
 src/kiro_crew/pod/config.py
 src/kiro_crew/pod/launchd.py
 src/kiro_crew/pod/provision.py
@@ -353,7 +352,6 @@ src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
 src/kiro_crew/safety_override.py
 src/kiro_crew/security.py
-src/kiro_crew/seed.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
@@ -1025,7 +1023,6 @@ test/test_sandbox_unsandboxed_exec_consent.py
 test/test_scenarios_v2.py
 test/test_scenarios_v2_logic.py
 test/test_search_sessions_cost.py
-test/test_seed.py
 test/test_sel.py
 test/test_sel_dashboard_offload.py
 test/test_sel_prune_streaming.py
