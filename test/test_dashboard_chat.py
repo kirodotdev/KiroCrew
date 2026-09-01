@@ -3674,6 +3674,160 @@ class TestKiroReadinessQueueHandoff:
         )
 
 
+class TestQueueDrainOffLoopGuard:
+    """Regression coverage for the off-loop GeneratorExit crash guarded by
+    ``chat_runner._loop_is_running``.
+
+    In production a turn's coroutine is never abandoned mid-flight:
+    ``spawn_guarded_turn`` always registers its task in
+    ``state._background_tasks`` and ``finish_turn_task`` always retrieves it.
+    The one way this fires is a test/harness bug -- a ``_run_chat`` task
+    dropped while still pending, after its own event loop already closed.
+    Python then finalizes the coroutine via ``close()``, which throws
+    ``GeneratorExit`` at whatever await point it was suspended on. Before the
+    fix, unwinding that through ``_run_chat``'s own ``finally`` reached the
+    queue-drain tail (``_start_next_queued_turn`` / ``_finish_queue_cycle``),
+    and both unconditionally called ``asyncio.create_task`` -- which calls
+    ``get_running_loop()`` and raised ``RuntimeError`` with no loop to
+    schedule onto, replacing the in-flight ``GeneratorExit`` and surfacing as
+    an unraisable exception blamed on whatever test the GC happened to run
+    in. These tests pin the guard directly (monkeypatching
+    ``get_running_loop`` to fail is the exact condition the guard checks for,
+    without needing a real event loop) plus one end-to-end reproduction of
+    the actual race against ``_run_chat`` itself.
+    """
+
+    @staticmethod
+    def _break_get_running_loop(monkeypatch) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        monkeypatch.setattr(
+            chat_runner.asyncio,
+            "get_running_loop",
+            MagicMock(side_effect=RuntimeError("no running event loop")),
+        )
+
+    def test_loop_is_running_false_with_no_loop(self) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        # A plain sync test body has no running loop at all.
+        assert chat_runner._loop_is_running() is False
+
+    @pytest.mark.asyncio
+    async def test_loop_is_running_true_on_a_real_loop(self) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        assert chat_runner._loop_is_running() is True
+
+    @pytest.mark.asyncio
+    async def test_start_next_queued_turn_returns_false_off_loop_and_leaves_queue_intact(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("off-loop-start")
+        slot.queue_append("keep this queued")
+        self._break_get_running_loop(monkeypatch)
+
+        started = await chat_runner._start_next_queued_turn(state, slot)
+
+        assert started is False
+        assert len(slot._queue) == 1
+        assert slot._queue[0]["content"] == "keep this queued"
+
+    @pytest.mark.asyncio
+    async def test_finish_queue_cycle_off_loop_schedules_no_background_tasks(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("off-loop-finish")
+        slot._titled = False
+        self._break_get_running_loop(monkeypatch)
+
+        # Every branch below normally schedules a background task (auto-title
+        # and session-summary); off-loop, none of them may.
+        chat_runner._finish_queue_cycle(state, slot)
+
+        assert state._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_finish_queue_cycle_off_loop_skips_synthesis_dispatch(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from kiro_crew.dashboard import chat_runner
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("off-loop-synth")
+        slot._pending_synthesis = True
+        slot._titled = True
+        state.subagents = MagicMock()
+        state.subagents.running_agents_for = MagicMock(return_value=[])
+        self._break_get_running_loop(monkeypatch)
+
+        chat_runner._finish_queue_cycle(state, slot)
+
+        # Not claimed: nothing would ever clear it, since no synthesis task
+        # was scheduled to run _run_pending_synthesis's own finally.
+        assert slot._synthesis_inflight is False
+        assert state._background_tasks == set()
+
+    def test_run_chat_close_after_loop_closed_does_not_raise(self, tmp_path) -> None:
+        """The real race: close() a suspended _run_chat coroutine after the
+        loop it was parked on has already closed.
+
+        Plain sync test (no ``@pytest.mark.asyncio``) so this owns its event
+        loop outright -- ``loop.run_until_complete`` cannot run nested inside
+        another already-running loop.
+        """
+        from kiro_crew.dashboard.chat import _run_chat
+
+        state = _make_state(tmp_path)
+        state.kiro_prerequisite_service = object()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.context_builder = None
+        state.consolidator = None
+        state._hook_store = None
+        state._yolo = False
+
+        async def _hang(*_args, **_kwargs):
+            # A real, never-resolving suspension (an actual Future via
+            # loop.call_later), not an instantly-resolved mock -- this parks
+            # _run_chat the way a stalled ACP call would, rather than letting
+            # it complete synchronously.
+            await asyncio.sleep(999)
+
+        state.sessions.get_or_create = AsyncMock(side_effect=_hang)
+        slot = state.get_or_create_slot("orphaned-turn")
+        slot._titled = True
+        slot.queue_append("keep this queued")
+
+        loop = asyncio.new_event_loop()
+        try:
+            task = loop.create_task(_run_chat(state, slot, "first message"))
+            # Real (short) wall-clock wait so _run_chat actually runs, on
+            # THIS loop, all the way up to its first genuine suspension --
+            # not a single sleep(0) pump relying on scheduling order.
+            loop.run_until_complete(asyncio.sleep(0.05))
+            assert not task.done(), "the hang stub must keep the turn suspended, not finished"
+            coro = task.get_coro()
+        finally:
+            loop.close()
+
+        # coro is now suspended with its owning loop already closed -- the
+        # exact state a GC sweep finds an orphaned spawn_guarded_turn Task
+        # in. This must not raise: before the fix, unwinding the
+        # GeneratorExit close() throws here reached _run_chat's queue-drain
+        # tail, which tried to asyncio.create_task() a successor turn with no
+        # loop to schedule it onto and raised RuntimeError instead of
+        # letting the close finish cleanly.
+        coro.close()
+        assert coro.cr_frame is None
+
+
 # ── History save on close (not per-turn) ──
 
 

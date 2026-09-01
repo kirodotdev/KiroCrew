@@ -4636,8 +4636,36 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         )
 
 
+def _loop_is_running() -> bool:
+    """True when called from inside a running asyncio event loop.
+
+    False only in one pathological case: a turn's coroutine was orphaned as a
+    background task and never joined (a test/harness hygiene bug, not a
+    production path -- ``spawn_guarded_turn`` always registers its task and
+    ``finish_turn_task`` always retrieves it), so the GC finalizes it via
+    ``coro.close()`` well after the owning loop closed. ``close()`` throws
+    ``GeneratorExit`` at whatever await point the coroutine was suspended on;
+    unwinding that through ``_run_chat``'s tail must not try to dispatch a
+    successor turn or schedule a background task -- ``asyncio.create_task``
+    calls ``get_running_loop()`` and would raise instead, and that raise
+    inside a ``finally`` unwinding ``GeneratorExit`` is what became the
+    unraisable exception this guards against.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics."""
+
+    if not _loop_is_running():
+        # Nothing can be dispatched off-loop. Bail out before any queue
+        # mutation so the queue is left exactly as a legitimate later drain
+        # (with a real loop under it) will find it -- see _loop_is_running.
+        return False
 
     # FIRST, before anything reads the queue: re-assert each entry's
     # admission-time containment and drop what no longer qualifies (#5911).
@@ -5087,6 +5115,15 @@ async def _run_pending_synthesis(state: DashboardState, slot: _ChatSlot) -> None
 def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     """Start synthesis when eligible, otherwise mark a queue cycle idle."""
 
+    # See _loop_is_running: every asyncio.create_task below needs a running
+    # loop, and this function's tail also runs from inside _run_chat's own
+    # finally while that finally is unwinding an off-loop GeneratorExit. Folded
+    # into will_synthesize itself (not just its create_task) so the
+    # flush-deferred-notes gate right below stays in lockstep with the actual
+    # dispatch -- a note withheld for a synthesis turn that never gets
+    # scheduled would otherwise never flush.
+    loop_running = _loop_is_running()
+
     will_synthesize = (
         slot._pending_synthesis
         and not slot._synthesis_inflight
@@ -5096,6 +5133,7 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
         and state.subagents is not None
         and not state.subagents.running_agents_for(f"dashboard:{slot.key}")
         and slot._subagent_deliveries_inflight == 0
+        and loop_running
     )
 
     # Before any successor is dispatched. A held note's CONTEXT half drains into
@@ -5144,24 +5182,27 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     state.refresh_slot_source_status(slot.key)
     state.push_refresh("history")
     if not slot._titled:
-        title_task = asyncio.create_task(_maybe_auto_title(state, slot))
-        state._background_tasks.add(title_task)
-        title_task.add_done_callback(state._background_tasks.discard)
+        if loop_running:
+            title_task = asyncio.create_task(_maybe_auto_title(state, slot))
+            state._background_tasks.add(title_task)
+            title_task.add_done_callback(state._background_tasks.discard)
     else:
         # Already titled: re-examine an AUTO title at bounded milestones so
         # long sessions aren't stuck with a name generated from their very
         # first message. Self-guarding (origin/milestone/in-flight checks in
         # maybe_refresh_title) — the common case returns without any LLM call.
-        refresh_task = asyncio.create_task(maybe_refresh_title(state, slot))
-        state._background_tasks.add(refresh_task)
-        refresh_task.add_done_callback(state._background_tasks.discard)
+        if loop_running:
+            refresh_task = asyncio.create_task(maybe_refresh_title(state, slot))
+            state._background_tasks.add(refresh_task)
+            refresh_task.add_done_callback(state._background_tasks.discard)
 
     # Intent summary for the chat summary panel. Self-guarding: the common case
     # (feature disabled) returns before any work, and an unchanged transcript is
     # served from the sidecar cache without a model call.
-    summary_task = asyncio.create_task(generate_session_summary(state, slot))
-    state._background_tasks.add(summary_task)
-    summary_task.add_done_callback(state._background_tasks.discard)
+    if loop_running:
+        summary_task = asyncio.create_task(generate_session_summary(state, slot))
+        state._background_tasks.add(summary_task)
+        summary_task.add_done_callback(state._background_tasks.discard)
 
 
 def _emit_ttft_metric(t0: float, session_key: str, *, is_new: bool, resumed: bool) -> None:
