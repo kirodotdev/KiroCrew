@@ -1287,9 +1287,20 @@ class TestRunCommandSandboxed:
         assert killed == [command_run.proc]
         assert cron_script._RUNNING_PROCS == {}
 
-    def test_cancellation_is_reported_over_the_output(self, command_run):
-        command_run.proc = _FakeProc(comm_results=[("ignored", "")], returncode=-15)
-        cron_script._CANCELLED_PROC_JOBS.add("job-c")
+    def test_cancellation_is_reported_over_the_output(self, command_run, monkeypatch):
+        # The cancel lands DURING the spawn, which is the only way this path is
+        # reachable now that a cancel recorded BEFORE the spawn returns without
+        # launching at all. Pre-seeding the flag instead exercised a state
+        # production cannot produce: _begin_spawn is reached only when the job is
+        # in neither registry, and every helper clears the flag on the way out.
+        proc = _FakeProc(comm_results=[("ignored", "")], returncode=-15)
+        command_run.proc = proc
+
+        def _popen_then_cancel(argv, **kw):
+            cron_script._CANCELLED_PROC_JOBS.add("job-c")
+            return proc
+
+        monkeypatch.setattr(cron_script, "popen_limited", _popen_then_cancel)
 
         result = run_command_sandboxed("sleep 100", job_id="job-c")
 

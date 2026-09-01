@@ -1814,7 +1814,13 @@ class CronService:
                     "job_id": job_id,
                     "session_key": session_key,
                     "elapsed": int(elapsed),
-                    "killed_subprocess": killed_proc,
+                    # Named for what the return now MEANS, not for what it used
+                    # to. kill_running_process returns True either because it
+                    # signalled a live child OR because it recorded the cancel
+                    # against a spawn still in flight, where there is no child to
+                    # signal yet. Auditing that second case as
+                    # "killed_subprocess" asserted a kill that never happened.
+                    "cancellation_accepted": killed_proc,
                 },
             )
         except Exception:

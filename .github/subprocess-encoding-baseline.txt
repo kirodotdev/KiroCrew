@@ -36,7 +36,7 @@
 1 src/kiro_crew/cli_perf.py
 2 src/kiro_crew/cli_setup.py
 1 src/kiro_crew/cloud/aws.py
-4 src/kiro_crew/cron_script.py
+2 src/kiro_crew/cron_script.py
 1 src/kiro_crew/dashboard/handlers/knowledge.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/handlers_system.py

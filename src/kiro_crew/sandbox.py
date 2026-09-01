@@ -8477,6 +8477,21 @@ async def create_subprocess_limited(
     ``PATH`` after the shim has entered that directory. ``PATH=.:/usr/bin`` --
     or the same directory spelled absolutely -- would otherwise exec a binary
     out of the agent's own workspace, ahead of the sandbox meant to contain it.
+
+    A spawn landing while the launcher interpreter's install tree is being
+    rebuilt is retried, on the same budget and by the same discriminator as
+    :func:`popen_limited` -- this wrapper puts the same ``sys.executable`` at
+    the head of the spawned argv, so it was exposed to the identical blip. The
+    backoff uses ``asyncio.sleep``: a blocking sleep would freeze the event loop
+    for up to ~3.75s, which is precisely the hazard this wrapper exists to
+    avoid. Only the shim-prefixed spawn is retried -- the no-shim fallback below
+    execs the caller's own ``argv[0]``, so an ENOENT there is the caller's own
+    missing binary and must still surface on the first attempt.
+
+    There is deliberately no ``abort_retry`` hook here, unlike
+    :func:`popen_limited`: no caller mediates this wrapper's cancellation
+    through a registry keyed on the live child, so the lost-cancel window that
+    hook exists to close has no consumer. Add one when a caller needs it.
     """
     if "preexec_fn" in kwargs:
         raise TypeError(
@@ -8564,6 +8579,23 @@ async def create_subprocess_limited(
         # NFS/autofs entry would otherwise freeze the gateway -- and the search it
         # replaces used to happen in the child, never in this process.
         resolved = await asyncio.to_thread(_resolve_spawn_target, argv, search_env, search_cwd)
+    for delay in _INTERPRETER_ENOENT_DELAYS:
+        try:
+            return await asyncio.create_subprocess_exec(
+                *prefix, resolved, *argv[1:], preexec_fn=None, **kwargs
+            )
+        except FileNotFoundError as exc:
+            # ``prefix`` IS the head of the argv actually spawned, and prefix[0]
+            # is this process's own sys.executable -- the only shape the
+            # discriminator accepts.
+            if not _retry_interpreter_enoent(exc, prefix, delay):
+                raise
+            # asyncio.sleep, NOT time.sleep: a blocking sleep here would freeze
+            # the event loop for up to ~3.75s, which is the hazard this wrapper
+            # exists to avoid.
+            await asyncio.sleep(delay)
+    # Budget spent. Deliberately unguarded, exactly as in popen_limited: a
+    # genuinely broken install reports the error it reports today, ~4s later.
     return await asyncio.create_subprocess_exec(
         *prefix, resolved, *argv[1:], preexec_fn=None, **kwargs
     )
@@ -8640,11 +8672,36 @@ def run_limited(
     ``-c`` string, and both exceptions render ``cmd`` into their message, so
     reporting the spawned argv would put the whole shim in every failure log
     line.
+
+    A spawn landing while the launcher interpreter's install tree is being
+    rebuilt is retried, on the same budget and by the same discriminator as
+    :func:`popen_limited` -- this wrapper puts the same ``sys.executable`` at
+    ``cmd[0]``, so it was exposed to the identical blip. The retry sits INSIDE
+    the ``cmd``-rewriting handler so a ``CalledProcessError`` or
+    ``TimeoutExpired`` still reports the caller's own argv.
+
+    There is deliberately no ``abort_retry`` hook here, unlike
+    :func:`popen_limited`: this wrapper never hands back a handle, so no
+    cancellation registry can be keyed on the child and the lost-cancel hazard
+    that hook exists to close cannot arise. Add one when a caller needs it.
     """
     cmd, preexec = _prepare_limited_spawn(argv, profile, kwargs, "run_limited")
     reported = list(argv)
     try:
-        result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
+        for delay in _INTERPRETER_ENOENT_DELAYS:
+            try:
+                result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
+                break
+            except FileNotFoundError as exc:
+                if not _retry_interpreter_enoent(exc, cmd, delay):
+                    raise
+                time.sleep(delay)
+        else:
+            # Budget spent. Deliberately unguarded, exactly as in
+            # popen_limited: whatever this raises reaches the caller unchanged,
+            # so a genuinely broken install still reports the error it reports
+            # today -- just ~4s later.
+            result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         exc.cmd = reported
         raise
@@ -8652,10 +8709,83 @@ def run_limited(
     return result
 
 
+#: Backoff between spawn attempts when the launcher interpreter is transiently
+#: absent. Five attempts, ~3.75s of waiting in total.
+#:
+#: ``sys.executable`` is often a symlink into a managed install tree, and
+#: rebuilding that tree DELETES and re-creates its entries -- including the
+#: interpreter :func:`wrap_argv` prepends to EVERY sandboxed argv. The tree is
+#: whole again in about a second, so a spawn landing inside that window dies with
+#: ENOENT on an interpreter that both existed before it and exists after it. The
+#: caller cannot tell that apart from a broken install: a cron records a hard
+#: failure (and counts a strike toward auto-pause) for a condition that already
+#: healed itself, and several crons sharing one tick fail together. Any packaging
+#: that relinks an interpreter in place reaches this -- an environment rebuild, a
+#: toolchain reinstall, a swapped container layer.
+_INTERPRETER_ENOENT_DELAYS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0)
+
+
+def _is_transient_interpreter_enoent(exc: OSError, cmd: "Sequence[str]") -> bool:
+    """True when ``exc`` is ENOENT for the interpreter WE prepended to ``cmd``.
+
+    Deliberately narrow, because ENOENT from ``Popen`` is ambiguous: it is raised
+    for a missing ``cwd`` and for a missing program alike, and a genuinely absent
+    user binary MUST still fail on the first attempt rather than after a delay.
+    So the only retryable shape is an ENOENT whose ``filename`` IS ``cmd[0]`` and
+    whose ``cmd[0]`` is this process's own ``sys.executable``. A missing-``cwd``
+    ENOENT names the directory and a missing user binary names that binary, so
+    both fall through untouched.
+
+    ``filename`` being populated is not guaranteed, so when it is absent fall
+    back to a live check that the interpreter really is gone from disk -- an
+    observation, rather than an assumption that this ENOENT must be ours.
+    """
+    if not cmd or cmd[0] != sys.executable:
+        return False
+    if exc.filename is not None:
+        return exc.filename == cmd[0]
+    return not os.path.exists(sys.executable)
+
+
+def _retry_interpreter_enoent(exc: OSError, cmd: "Sequence[str]", delay: float) -> bool:
+    """Decide whether *exc* is a retryable interpreter blip, and log it if so.
+
+    The single shared implementation behind all three spawn wrappers
+    (:func:`run_limited`, :func:`popen_limited`,
+    :func:`create_subprocess_limited`), which all put ``sys.executable`` at
+    ``cmd[0]`` via :func:`spawn_shim_argv` and are therefore exposed to the same
+    transient ENOENT. Returning ``False`` means the caller must re-raise
+    untouched.
+
+    What is deliberately NOT shared is the spawn itself, and the WAIT. The spawn
+    stays lexically inside each wrapper because both spawn audits key on
+    ``<relpath>::<enclosing function>``: hoisting any of the three into a common
+    helper would migrate its audit key, stranding the existing ``_SYNC_ALLOWED``
+    and ``BENIGN_SPAWNS`` entries as stale while the relocated call read as a
+    brand-new unrouted spawn. The wait is per-flavour because the async wrapper
+    must ``await asyncio.sleep`` -- a ``time.sleep`` there would block the event
+    loop for up to ~3.75s, which is the very hazard the async wrapper exists to
+    avoid. So each caller keeps its own two lines (wait, then re-check abort) and
+    shares the DECISION, which is where the subtlety actually lives.
+    """
+    if not _is_transient_interpreter_enoent(exc, cmd):
+        return False
+    # Log every retry: a silently-absorbed spawn failure would hide an install
+    # tree that has genuinely stopped converging.
+    logger.warning(
+        "sandbox launcher interpreter %r is absent; retrying spawn in "
+        "%.2fs (its install tree is probably mid-rebuild)",
+        cmd[0],
+        delay,
+    )
+    return True
+
+
 def popen_limited(
     argv: "Sequence[str]",
     *,
     profile: str = RLIMIT_PROFILE_TOOL,
+    abort_retry: "Callable[[], bool] | None" = None,
     **kwargs: "Any",
 ) -> "subprocess.Popen[Any]":
     """``subprocess.Popen`` with resource limits applied AFTER ``exec``.
@@ -8673,8 +8803,47 @@ def popen_limited(
     ``TimeoutExpired`` from ``self.args``, so leaving the shim there would put
     ~8 KB of shim source into the timeout message. Nothing in CPython reads
     ``self.args`` functionally -- only ``__repr__`` and that exception.
+
+    A spawn that lands while the launcher interpreter's install tree is being
+    rebuilt is retried rather than surfaced -- see
+    :data:`_INTERPRETER_ENOENT_DELAYS`. The retry loop is INLINE rather than
+    extracted into a helper on purpose: both spawn audits key on
+    ``<relpath>::<enclosing function>``, so moving this ``Popen`` into its own
+    function would migrate its key, stranding the ``popen_limited`` entries in
+    ``_SYNC_ALLOWED`` and ``BENIGN_SPAWNS`` as stale while the relocated call read
+    as a brand-new unrouted spawn.
+
+    ``abort_retry`` is consulted after each backoff, and matters only to a caller
+    whose cancellation is mediated by a REGISTRY keyed on the live child -- for
+    those, the backoff is a window in which a cancel is silently LOST rather than
+    merely delayed, because the canceller finds no registered child and records
+    nothing, and the retry then launches work the caller already cancelled.
+    Returning ``True`` re-raises the ENOENT instead of spawning, so the caller's
+    own cancellation path reports the run rather than running it. A caller that
+    holds the ``Popen`` handle itself and polls a stop flag (such as
+    ``auto_improvement.spine.agent_runner``, which calls ``_terminate_group`` on
+    the handle) loses nothing by omitting it: the stop is observed after the
+    spawn returns and the child is signalled then.
     """
     cmd, preexec = _prepare_limited_spawn(argv, profile, kwargs, "popen_limited")
-    proc = subprocess.Popen(cmd, preexec_fn=preexec, **kwargs)
+    for delay in _INTERPRETER_ENOENT_DELAYS:
+        try:
+            proc = subprocess.Popen(cmd, preexec_fn=preexec, **kwargs)
+            break
+        except FileNotFoundError as exc:
+            if not _retry_interpreter_enoent(exc, cmd, delay):
+                raise
+            time.sleep(delay)
+            # Checked AFTER the sleep, because that is when a cancellation
+            # racing the backoff will have landed. Spawning now would run work
+            # the caller has already cancelled, and the exit status would not
+            # say so.
+            if abort_retry is not None and abort_retry():
+                raise
+    else:
+        # Budget spent. Deliberately unguarded: whatever this raises reaches the
+        # caller unchanged, so a genuinely broken install still reports exactly
+        # the error it reports today -- just ~4s later.
+        proc = subprocess.Popen(cmd, preexec_fn=preexec, **kwargs)
     proc.args = list(argv)
     return proc
