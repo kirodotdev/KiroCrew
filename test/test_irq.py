@@ -37,18 +37,56 @@ from kiro_crew.irq import (
 )
 
 #: Grace floor used by tests that need a window to close. Paired with
-#: :func:`_settle`, which pushes wall-clock past it.
+#: :func:`_settle`, which steps the fake clock past it.
 _COALESCE = 0.01
 
 
+class _FakeClock:
+    """A wall clock that moves only when a test advances it.
+
+    Installed over the ``time`` name that :mod:`kiro_crew.irq` reads (see
+    :func:`_deterministic_clock`), so every interval the kernel measures is
+    exact by construction. The assertions this protects are the ones that
+    need an interval to stay SHORT -- two back-to-back ``_verdict()`` calls
+    asserting a floor has NOT closed yet had only ``_COALESCE`` (10 ms) of
+    real wall clock between them, which a loaded CI runner can overshoot.
+    With a clock that nothing but an explicit :meth:`advance` moves, no
+    scheduling stall can age a window between two calls.
+    """
+
+    def __init__(self, start: float) -> None:
+        self._now = start
+
+    def time(self) -> float:
+        return self._now
+
+    def advance(self, secs: float) -> None:
+        self._now += secs
+
+    def reset(self, start: float) -> None:
+        self._now = start
+
+    def __getattr__(self, name: str) -> object:
+        raise AttributeError(
+            f"_FakeClock does not fake time.{name}; kiro_crew.irq grew a clock "
+            "read beyond time.time(). Cover it here (see _deterministic_clock)."
+        )
+
+
+#: The clock every test in this module runs on; re-seeded per test by the
+#: autouse :func:`_deterministic_clock` fixture. Nothing outside a test body
+#: may read or cache it -- the per-test reset is what keeps tests independent.
+_clock = _FakeClock(0.0)
+
+
 def _settle() -> None:
-    """Advance wall clock past ``_COALESCE`` so an OPEN window may now fire.
+    """Advance the clock past ``_COALESCE`` so an OPEN window may now fire.
 
     A window cannot open and fire within one tick -- ``elapsed`` is zero at
     the moment it opens -- so every coalesced wake costs at least one extra
     tick. See ``test_coalesced_wake_always_costs_an_extra_tick``.
     """
-    time.sleep(_COALESCE * 3)
+    _clock.advance(_COALESCE * 3)
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +94,22 @@ def _isolated_home(tmp_path, monkeypatch):
     """Point the kernel's state directory at a private tmp home."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_clock(monkeypatch):
+    """Give ``kiro_crew.irq`` a clock that only this module can move.
+
+    The patch targets the module attribute ``kiro_crew.irq.time`` -- the name
+    the kernel's ``time.time()`` reads resolve -- never the stdlib module
+    object, so the fake is scoped to the kernel and nothing else in the
+    process sees it. Seeding from the real clock keeps the absolute values
+    plausible; determinism comes from the clock being frozen BETWEEN explicit
+    advances, not from the seed.
+    """
+    _clock.reset(time.time())
+    monkeypatch.setattr("kiro_crew.irq.time", _clock)
+    return _clock
 
 
 def _ctx(message: str = "{}", job_id: str = "job-1") -> types.SimpleNamespace:
@@ -385,7 +439,7 @@ def test_an_entry_left_by_a_partial_fire_still_reaches_the_cap():
                 "epoch": "e1",
                 # What a partial fire leaves: the sticky half already delivered,
                 # one epoch-scoped survivor carrying the age it earned.
-                "coalescing": {key: {"brief": "a red", "opened_at": time.time() - 600}},
+                "coalescing": {key: {"brief": "a red", "opened_at": _clock.time() - 600}},
             }
         ),
         encoding="utf-8",
@@ -767,7 +821,9 @@ def test_a_sticky_key_is_dropped_once_past_the_realert_window():
         ]
     )
     assert isinstance(_verdict(probe, coalesce_secs=0, realert_secs=0.01), Report)
-    time.sleep(0.05)
+    # Crosses the 0.01s re-alert window -- an irq-measured interval, so it is a
+    # clock advance, not a real sleep.
+    _clock.advance(0.05)
     assert isinstance(_verdict(probe, coalesce_secs=0, realert_secs=0.01), Skip)
     state = load_state(state_path("test-kind", "sub-1", "job-1"))
     assert not [k for k in state.get("alerted", {}) if "comment:1" in k]
@@ -806,7 +862,7 @@ def test_state_written_before_the_sentinels_existed_costs_no_extra_wake():
     path = state_path("test-kind", "sub-1", "job-1")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"epoch": "e1", "alerted": {"red:a": time.time()}}), encoding="utf-8"
+        json.dumps({"epoch": "e1", "alerted": {"red:a": _clock.time()}}), encoding="utf-8"
     )
     probe = ScriptedProbe([Tick(epoch="e1", observations=[_wake("red:a")])])
     assert isinstance(_verdict(probe, coalesce_secs=0), Skip)
@@ -1160,7 +1216,7 @@ def test_a_window_written_before_per_entry_ages_keeps_the_age_it_had():
             {
                 "epoch": "e1",
                 "coalescing": {key: "said"},
-                "coalesce_started_at": time.time() - 600,
+                "coalesce_started_at": _clock.time() - 600,
             }
         ),
         encoding="utf-8",
