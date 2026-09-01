@@ -2557,8 +2557,17 @@ const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
   return n
 }
 
-/** Predicate: subagent is blocked awaiting a spawn approval. */
-const isAwaitingSpawnApproval = (a: SubagentActivity) =>
+/**
+ * Predicate: subagent is blocked awaiting a spawn approval.
+ *
+ * Exported because the RENDERERS need the same question answered, and every
+ * component that re-derived it from `status` alone got a different answer: the
+ * wave chip and the launch card both counted a parked run as running (#7318).
+ * `approval_id` is the load-bearing half — `sseSubagentPending` is the only
+ * writer of `'pending'` and always sets it, so its absence means a card built
+ * some other way and must not be claimed as blocked on the user.
+ */
+export const isAwaitingSpawnApproval = (a: SubagentActivity) =>
   a.status === 'pending' && !!a.approval_id
 
 /** Counts subagents pending spawn approval in a subagent map. */

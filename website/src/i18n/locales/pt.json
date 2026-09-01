@@ -9015,6 +9015,7 @@
         "tool_many": "{{count}} ferramentas",
         "tool_one": "{{count}} ferramenta",
         "tool_other": "{{count}} ferramentas",
+        "waiting_for_your_approval_to_start": "Aguardando sua aprovação para iniciar",
         "waiting_to_start_queued_behind_the_concurrency_l": "Aguardando para iniciar — na fila devido ao limite de simultaneidade"
       },
       "subagentRunCard": {
@@ -9036,6 +9037,7 @@
         "open_in_the_subagents_panel": "Abrir no painel de subagentes",
         "open_subagents_panel": "Abrir painel de subagentes",
         "waiting": "aguardando",
+        "waiting_for_your_approval_to_start": "Aguardando sua aprovação para iniciar",
         "waiting_to_start_queued_behind_the_concurrency_l": "Aguardando para iniciar — na fila devido ao limite de simultaneidade"
       },
       "taskProgressBar": {

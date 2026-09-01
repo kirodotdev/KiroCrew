@@ -8889,6 +8889,7 @@
         "stop_this_subagent": "এই সাবএজেন্টটি থামান",
         "tool_one": "{{count}}টি টুল",
         "tool_other": "{{count}}টি টুল",
+        "waiting_for_your_approval_to_start": "শুরু হওয়ার জন্য আপনার অনুমোদনের অপেক্ষায়",
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
       },
       "subagentRunCard": {
@@ -8905,6 +8906,7 @@
         "open_in_the_subagents_panel": "সাবএজেন্ট প্যানেলে খুলুন",
         "open_subagents_panel": "সাবএজেন্ট প্যানেল খুলুন",
         "waiting": "অপেক্ষমাণ",
+        "waiting_for_your_approval_to_start": "শুরু হওয়ার জন্য আপনার অনুমোদনের অপেক্ষায়",
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
       },
       "taskProgressBar": {

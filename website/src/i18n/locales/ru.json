@@ -9141,6 +9141,7 @@
         "tool_many": "{{count}} инструментов",
         "tool_one": "{{count}} инструмент",
         "tool_other": "{{count}} инструмента",
+        "waiting_for_your_approval_to_start": "Ожидает вашего одобрения для запуска",
         "waiting_to_start_queued_behind_the_concurrency_l": "Ожидает запуска — в очереди из-за лимита параллельности"
       },
       "subagentRunCard": {
@@ -9167,6 +9168,7 @@
         "open_in_the_subagents_panel": "Открыть на панели «Субагенты»",
         "open_subagents_panel": "Открыть панель «Субагенты»",
         "waiting": "ожидание",
+        "waiting_for_your_approval_to_start": "Ожидает вашего одобрения для запуска",
         "waiting_to_start_queued_behind_the_concurrency_l": "Ожидает запуска — в очереди из-за лимита параллельности"
       },
       "taskProgressBar": {

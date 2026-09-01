@@ -8889,6 +8889,7 @@
         "stop_this_subagent": "Diesen Subagenten stoppen",
         "tool_one": "{{count}} Werkzeug",
         "tool_other": "{{count}} Werkzeuge",
+        "waiting_for_your_approval_to_start": "Warten auf deine Genehmigung zum Starten",
         "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze"
       },
       "subagentRunCard": {
@@ -8905,6 +8906,7 @@
         "open_in_the_subagents_panel": "Im Subagenten-Panel öffnen",
         "open_subagents_panel": "Subagenten-Panel öffnen",
         "waiting": "wartet",
+        "waiting_for_your_approval_to_start": "Warten auf deine Genehmigung zum Starten",
         "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze"
       },
       "taskProgressBar": {

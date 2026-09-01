@@ -354,3 +354,53 @@ describe('SubagentRunCard — opening from a background pane retargets the panel
     expect(store.getState().chat.activityTab).toBe('subagents')
   })
 })
+
+/**
+ * A run parked on an unanswered spawn approval launched no process, so this card
+ * must not report it as running (#7318). It used to be folded into the running
+ * tally, which put a spinning loader and the words "1 agent running" in
+ * scrollback for a wave that was in fact waiting on the user -- and the card is
+ * the surface that OUTLIVES the transient chip above the composer, so the false
+ * claim is the one that persists.
+ */
+describe('SubagentRunCard — a run parked on a spawn approval is not running', () => {
+  const launch = { ids: ['a1', 'a2'], announced: 2 }
+
+  /** A 'pending' entry as `sseSubagentPending` writes it: approval_id included. */
+  const parked = (id: string): SubagentActivity =>
+    ({ ...agent(id, 'pending'), approval_id: `spawn:${id}` }) as SubagentActivity
+
+  const storeWith = (subagents: Record<string, SubagentActivity>) => createTestStore({
+    chat: { activeSlot: SLOT, subagents, subagentQueued: {} } as unknown as ChatState,
+  })
+
+  it('does not claim a wholly parked wave is running', () => {
+    const store = storeWith({ a1: parked('a1'), a2: parked('a2') })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.queryByText('2 agents running')).toBeNull()
+    expect(screen.getByTestId('subagent-card-awaiting').textContent).toContain('2')
+  })
+
+  it('counts only the members that actually started', () => {
+    const store = storeWith({ a1: parked('a1'), a2: agent('a2', 'running') })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('1 agent running')).toBeTruthy()
+    expect(screen.getByTestId('subagent-card-awaiting').textContent).toContain('1')
+  })
+
+  it('shows no awaiting chip when nothing is parked', () => {
+    const store = storeWith({ a1: agent('a1', 'running'), a2: agent('a2', 'done') })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('1 agent running')).toBeTruthy()
+    expect(screen.queryByTestId('subagent-card-awaiting')).toBeNull()
+  })
+
+  it('leaves a pending entry with no approval_id in the running tally', () => {
+    // `approval_id` is the discriminator, not `status` alone: with no approval to
+    // point at, the entry cannot be reported as blocked on the user.
+    const store = storeWith({ a1: agent('a1', 'pending'), a2: agent('a2', 'running') })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('2 agents running')).toBeTruthy()
+    expect(screen.queryByTestId('subagent-card-awaiting')).toBeNull()
+  })
+})

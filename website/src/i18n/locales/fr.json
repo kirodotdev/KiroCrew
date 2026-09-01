@@ -9015,6 +9015,7 @@
         "tool_many": "{{count}} outils",
         "tool_one": "{{count}} outil",
         "tool_other": "{{count}} outils",
+        "waiting_for_your_approval_to_start": "En attente de votre approbation pour démarrer",
         "waiting_to_start_queued_behind_the_concurrency_l": "En attente de démarrage — mis en file derrière la limite de concurrence"
       },
       "subagentRunCard": {
@@ -9036,6 +9037,7 @@
         "open_in_the_subagents_panel": "Ouvrir dans le panneau Sous-agents",
         "open_subagents_panel": "Ouvrir le panneau Sous-agents",
         "waiting": "en attente",
+        "waiting_for_your_approval_to_start": "En attente de votre approbation pour démarrer",
         "waiting_to_start_queued_behind_the_concurrency_l": "En attente de démarrage — mis en file derrière la limite de concurrence"
       },
       "taskProgressBar": {
