@@ -795,11 +795,23 @@ def build_spliced_lane(
     prompt = substitute_sed_placeholders(prompt, workflow_text, values)
     prompt = remap_staged_paths(substitute_expressions(prompt, values), stage_dir)
 
-    pass_block = _run_block_with(scalars, "DISCOVERY PASS", contract)
-    literals = prompt_segments(pass_block, stage_dir)
-    discovery = literals_between(literals, "DISCOVERY PASS", "DISCOVERY PASS", "discovery-pass")
+    # Each pass needs its own Bedrock session, so a lane may run them as two
+    # separate steps -- locate each instruction in the `run:` block that carries
+    # it rather than assuming both share one. Both lookups resolve to the same
+    # block for a lane that still drives both passes from a single step.
+    discovery_block = _run_block_with(scalars, "DISCOVERY PASS", contract, stage_dir)
+    discovery = literals_between(
+        prompt_segments(discovery_block, stage_dir),
+        "DISCOVERY PASS",
+        "DISCOVERY PASS",
+        "discovery-pass",
+    )
+    pass_block = _run_block_with(scalars, "FALSIFICATION PASS", contract, stage_dir)
     falsification = literals_between(
-        literals, "FALSIFICATION PASS", "UNTRUSTED EVIDENCE", "falsification-pass"
+        prompt_segments(pass_block, stage_dir),
+        "FALSIFICATION PASS",
+        "UNTRUSTED EVIDENCE",
+        "falsification-pass",
     )
     markers = re.findall(r"\"([A-Z0-9_]+)::\$\{?[a-z_]+\}?\"", pass_block)
     notes: list[str] = []
@@ -931,14 +943,32 @@ def _assembly_block(scalars: list[BlockScalar], target: str, contract: str) -> s
     )
 
 
-def _run_block_with(scalars: list[BlockScalar], needle: str, contract: str) -> str:
+def _run_block_with(
+    scalars: list[BlockScalar], needle: str, contract: str, stage_dir: str
+) -> str:
+    """The `run:` block whose MODEL-FACING instructions carry ``needle``.
+
+    Matches ``needle`` in the block's own text first, then in the ``cat``-spliced
+    prompt files it pulls in, so an instruction the workflow keeps in a shared
+    prompt file is found in the step that splices it rather than only where it
+    appears inline. A block whose splices cannot be resolved is skipped, not
+    fatal: an unresolvable splice elsewhere in the job is not evidence about the
+    block being looked for.
+    """
     for scalar in scalars:
-        if scalar.key == "run" and needle in scalar.text:
+        if scalar.key != "run":
+            continue
+        if needle in scalar.text:
+            return scalar.text
+        try:
+            segments = prompt_segments(scalar.text, stage_dir)
+        except ParityError:
+            continue
+        if any(needle in segment for segment in segments):
             return scalar.text
     raise ParityError(
-        "no `run:` block in {} contains {!r} - the workflow was restructured.".format(
-            contract, needle
-        )
+        "no `run:` block in {} carries the instruction {!r}, in its own text or in "
+        "a prompt file it splices - the workflow was restructured.".format(contract, needle)
     )
 
 

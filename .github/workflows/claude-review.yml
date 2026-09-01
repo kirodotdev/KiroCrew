@@ -278,6 +278,20 @@ jobs:
           echo "--- stage 1 candidates (never posted; kept here as tuning signal) ---"
           cat .review-candidates.md
 
+      # Re-assume the role BETWEEN the stages. The action's session lasts one
+      # hour and both stages used to share it, so a discovery stage that took
+      # most of that hour left validation to die mid-call on `401 Unauthorized:
+      # The security token included in the request is expired` -- the gate then
+      # failed closed with no verdict and no way to tell a real hang from a
+      # spent session. Each stage now starts on a fresh session, leaving the
+      # 90-minute job timeout as the only wall. Keep in sync with
+      # codex-review.yml.
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        if: github.actor != 'dependabot[bot]' && steps.human_override.outputs.active != 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
+          aws-region: us-west-2
+
       # ── Stage 2 of 2: VALIDATION (authoritative) ───────────────────────────
       # A fresh call with no memory of stage 1's reasoning. It re-derives input /
       # call path / observable outcome for every candidate from code it opens
