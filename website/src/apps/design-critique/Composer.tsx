@@ -82,7 +82,12 @@ export default function Composer(p: Props) {
     )
 
   return (
-    <div style={S.composerMid} onDragOver={p.onDragOver} onDragLeave={p.onDragLeave} onDrop={p.onDrop}>
+    // Drag-and-drop is a pointer-only shortcut layered over this card; the
+    // keyboard path is the role="button" drop tile above, which opens the same
+    // file picker on Enter/Space. `presentation` marks the drop surface as
+    // layout rather than a control — the card's real inputs and buttons below
+    // keep their own semantics.
+    <div style={S.composerMid} role="presentation" onDragOver={p.onDragOver} onDragLeave={p.onDragLeave} onDrop={p.onDrop}>
       <div style={S.card}>
         <input
           ref={inputRef}
