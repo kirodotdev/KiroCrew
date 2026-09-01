@@ -240,9 +240,61 @@ resurrected from a disabled or uninstalled app would have persisted indefinitely
 Lock order is unchanged (transaction → config → bridge-file); the widened hold is
 the innermost one.
 
+### 1a. The submission may not CREATE a name in the `<app>:<server>` region
+
+Every row above is about a name the submission **omits**. The mirror question is a
+name the submission **contains**, and until #7089 the answer was "persist it
+verbatim": an editor tab that loaded while an app was installed and running
+re-created that app's bridge on save after the app had been uninstalled or
+disabled. Same non-self-healing direction as above — reconciliation only revisits
+ENABLED apps — so the resurrected bridge stayed live and callable.
+
+`_drop_unbacked_app_entries` closes it with one rule: **a submitted name containing
+`:` that the installed spec does not hold is dropped**, because that region is
+reserved *from this endpoint* — the raw editor is not one of its writers. Two paths
+legitimately put a colon-containing key here: `_register_mcp_servers` (every app
+bridge, as `<app>:<server>`) and the MCP page's
+`handlers/mcp.py::_sync_mcp_to_agent_unlocked` (a global mcp.json server copied in
+under `mcp_server_alias`, which returns a slash-free name unchanged and so keeps a
+colon). A name either of them actually wrote is present on disk, and therefore
+untouched.
+
+| Submitted `mcpServers` entry | Verdict |
+| --- | --- |
+| plain name (no `:`), not on disk | **persisted** — this is how the user adds a server here |
+| `<app>:<server>` on disk | **persisted as submitted** — the snapshot still wins where the platform agrees the name exists |
+| `<app>:<server>` NOT on disk, app uninstalled | **dropped** — `_deregister_mcp_servers` removed it |
+| `<app>:<server>` NOT on disk, app installed but DISABLED | **dropped** — same, and reconciliation never revisits it |
+| `<app>:<server>` NOT on disk, app installed, ENABLED and DECLARING it | **dropped** — `_register_mcp_servers` skips an HTTP server with no live port and scrubs stale rows for it; a manifest's illustrative port is a dead URL that breaks every kiro session |
+| host-owned name containing `:` (an edition extra), not on disk | **persisted** — the host's key, not an app's; the host axis is unchanged |
+| any, spec readable but carrying no `mcpServers` key | **dropped** — a keyless spec holds no bridge, which is a definite answer; reading it as "unknown" lets the resurrection through |
+| any, spec unreadable, or `mcpServers` present but not an object | **persisted** — best-effort, so this endpoint stays the repair path for a corrupt spec, and nothing is deleted on evidence that cannot be read |
+
+The declared-name census is deliberately **not** consulted on this axis, and the
+last row above is why: it would rescue exactly the entry the registration path
+scrubbed on purpose. The two directions ask different questions — the absent axis
+must name an owner before KEEPING something the client asked to remove, while here
+every candidate is one the client is ADDING to a region it does not author, which
+the on-disk map answers alone. A consequence: this rule performs no manifest I/O
+and cannot raise `app_ownership_unreadable`, so it adds no new failure mode. Both
+rules read the spec **once**, through `_on_disk_mcp_servers`, so they cannot
+disagree about their baseline.
+
+The cost is that a name containing `:` can no longer be introduced through this raw
+editor; the MCP page is the path that adds a server, after which the name is on
+disk and this rule leaves it alone. Nothing becomes unremovable — an entry on disk
+stays deletable through the absent-axis rule.
+
+**Not closed here:** where the name is on disk and the submission carries a
+SUPERSEDED definition of it (an older port or command), the submitted row still
+wins and reverts a correction the registration path had made. Fixing that reverses
+the editor-snapshot-wins contract kept in #5899, and unlike resurrection it
+self-heals on the next gateway start, so it is left to a separate ruling.
+
 Writer: `apps/bridges.py::_apply_agent_mcp_policy`, `_mcp_json_path`,
 `_scrub_legacy_shared_mcp`;
-`dashboard/handlers/agents.py::_merge_unowned_servers` for the PUT side.
+`dashboard/handlers/agents.py::_merge_unowned_servers` and
+`_drop_unbacked_app_entries` for the PUT side.
 
 ## 2. Auto-approve is intersected with the governance ceiling
 

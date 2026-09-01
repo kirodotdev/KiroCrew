@@ -1140,3 +1140,303 @@ async def test_preserved_entries_go_through_the_governance_filter(tmp_path, monk
         "a preserved entry kept a ceiling-denied autoApprove: the merge ran "
         "AFTER the governance filter, so what it re-added was never governed"
     )
+
+
+# ── (d) the stale-snapshot axis: entries PRESENT in the submission (#7089) ─────
+#
+# The mirror of section (b). There the submission OMITS a name and the question is
+# whether to KEEP it; here the submission CONTAINS a namespaced name absent from
+# disk and the question is whether the client may CREATE one. It may not: only
+# ``_register_mcp_servers`` writes the ``<app>:<server>`` region, so absence from
+# disk is a verdict the platform reached (uninstall, disable, or a deliberate
+# skip) rather than a gap for a snapshot to fill.
+#
+# Where the name is on disk AND submitted, the submitted row still wins untouched
+# -- see ``test_app_owned_entry_present_in_the_snapshot_is_updated`` in section
+# (c). This axis deletes; it never rewrites a submitted value.
+
+
+@pytest.mark.asyncio
+async def test_a_stale_snapshot_cannot_resurrect_an_uninstalled_apps_bridge(tmp_path):
+    """The headline case: the app went away, the editor tab did not.
+
+    The tab loaded while app ``demoapp`` was installed and running, so its
+    snapshot holds ``demoapp:tool``. The app was then uninstalled --
+    ``_deregister_mcp_servers`` removed the bridge and the app directory is gone,
+    so nothing on disk or under apps/ mentions it. Pre-fix the snapshot was
+    persisted verbatim and the bridge came back live, with nothing logged; and it
+    stayed back, because ``reconcile_enabled_app_resources`` only re-registers
+    ENABLED apps and there is no longer an app here at all.
+
+    The user's own plain entry in the same submission is untouched, which is what
+    makes this specifically the app-namespace axis rather than a blanket refusal.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {"plainuser": {"url": "u"}}},
+        submitted={
+            "name": "kirocrew",
+            "mcpServers": {
+                "demoapp:tool": {"url": "http://127.0.0.1:9100/mcp"},
+                "plainuser": {"url": "u"},
+            },
+        },
+        apps={},  # nothing installed: the app was uninstalled
+    )
+
+    assert response.status == 200
+    assert "demoapp:tool" not in written["mcpServers"], (
+        "a stale editor snapshot resurrected app-owned server 'demoapp:tool' that "
+        "the installed spec does not hold: the PUT trusted the snapshot's copy of "
+        "a name in the app-namespace region instead of on-disk state"
+    )
+    assert written["mcpServers"]["plainuser"] == {"url": "u"}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_snapshot_cannot_resurrect_a_disabled_apps_bridge(tmp_path):
+    """Installed but DISABLED, the case reconciliation provably never repairs.
+
+    Disable calls ``_deregister_mcp_servers``, so the bridge is off disk while the
+    app directory and its manifest remain. Resurrecting it keeps a disabled app's
+    code launchable through the retained bridge indefinitely -- startup
+    reconciliation skips disabled apps, so nothing ever removes it again.
+
+    ``scope_names`` declares the same name in the user's own mcp.json to pin that a
+    scope declaration does not rescue it, matching the absent-axis rule where
+    proven ownership -- not a declaration -- is what decides.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {}},
+        submitted={"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "notes-mcp"}}},
+        apps={"demo": ("notes",)},
+        enabled=False,
+        scope_names=frozenset({"demo:notes"}),
+    )
+
+    assert response.status == 200
+    assert "demo:notes" not in written["mcpServers"], (
+        "a stale snapshot resurrected the bridge of a DISABLED app: nothing "
+        "removes it again, because startup reconciliation only re-registers "
+        "enabled apps"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_snapshot_cannot_rewrite_a_deliberately_skipped_http_bridge(tmp_path):
+    """ENABLED and DECLARED, yet absent from disk on purpose -- still dropped.
+
+    ``_register_mcp_servers`` refuses to write an HTTP server with no resolvable
+    live port and scrubs any stale entry for it, because a manifest's illustrative
+    port is a reachable-LOOKING dead URL that kiro-cli dials on every request:
+    a connect failure there breaks EVERY kiro session, not just this app's.
+
+    So this row also pins that the declared-name census is NOT consulted on this
+    axis. The app is installed, enabled, and declares ``notes`` -- every ingredient
+    the absent-axis ownership test needs -- and the entry is still dropped, because
+    the only question here is whether the platform PUT IT ON DISK, which it
+    deliberately did not.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {}},
+        submitted={
+            "name": "kirocrew",
+            # The manifest's illustrative port, which is what a snapshot taken
+            # before the scrub carries.
+            "mcpServers": {"demo:notes": {"url": "http://127.0.0.1:9100/mcp"}},
+        },
+        apps={"demo": ("notes",)},
+        enabled=True,
+    )
+
+    assert response.status == 200
+    assert "demo:notes" not in written["mcpServers"], (
+        "the PUT wrote back an HTTP bridge the registration path had scrubbed for "
+        "having no live backend: that dead URL breaks every kiro session, and the "
+        "declared-name census must not rescue an entry absent from disk"
+    )
+
+
+@pytest.mark.asyncio
+async def test_both_directions_decide_from_one_baseline_in_a_single_put(tmp_path):
+    """The two rules compose, and they read the same on-disk map to do it.
+
+    One realistic save carries both faults at once: the tab is old enough that its
+    snapshot still holds a bridge of an app that has since gone away
+    (``gone:tool``), and old enough that it predates a bridge that has since been
+    registered (``demo:notes``). The stale one must be dropped and the new one
+    preserved in the same PUT, off a single read -- two reads could only agree by
+    luck, and a rule pair disagreeing about its baseline would show up here as a
+    name both preserved and dropped.
+
+    ``apps`` installs only ``demo``, so ``gone`` has no owner to name while
+    ``demo:notes`` has one.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={
+            "name": "kirocrew",
+            "mcpServers": {"demo:notes": {"command": "notes-mcp"}, "plainuser": {"url": "u"}},
+        },
+        submitted={
+            "name": "kirocrew",
+            "mcpServers": {"gone:tool": {"command": "t"}, "plainuser": {"url": "u"}},
+        },
+        apps={"demo": ("notes",)},
+    )
+
+    assert response.status == 200
+    assert "gone:tool" not in written["mcpServers"], (
+        "the stale namespaced addition survived alongside a preserved bridge: the "
+        "two rules did not both act on the same baseline"
+    )
+    assert written["mcpServers"]["demo:notes"] == {"command": "notes-mcp"}, (
+        "the absent-axis merge stopped preserving an owned bridge once the "
+        "stale-snapshot rule ran ahead of it"
+    )
+    assert written["mcpServers"]["plainuser"] == {"url": "u"}
+
+
+@pytest.mark.asyncio
+async def test_a_plain_client_entry_the_client_adds_is_still_persisted(tmp_path):
+    """The rule is scoped to the namespace shape, and this is the guard on that.
+
+    A server the user types into this raw editor has no ``:`` in its name and is
+    absent from disk by definition on the PUT that creates it. Reading "absent
+    from disk" as a verdict for THAT entry would make the editor unable to add
+    anything at all -- the opposite failure, and a much louder one.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {}},
+        submitted={"name": "kirocrew", "mcpServers": {"myserver": {"command": "mine"}}},
+    )
+
+    assert response.status == 200
+    assert written["mcpServers"]["myserver"] == {"command": "mine"}, (
+        "the client could not add its own server: the stale-snapshot rule reached "
+        "past the app-namespace region it is scoped to"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_namespaced_edition_extra_the_client_resubmits_is_left_alone(tmp_path):
+    """A ``:`` in the key does not always mean an app owns it.
+
+    An edition's ``_extra_mcp_servers`` may contribute a key containing ``:``, and
+    that key is the HOST's. The absent-axis rule already preserves such an entry by
+    host ownership; this axis must not delete the same entry when the client
+    resubmits it while the rebuild has yet to write it, so host-owned names are
+    excluded here and the host contract is left exactly as it was.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {}},
+        submitted={"name": "kirocrew", "mcpServers": {"edition:extra": {"command": "x"}}},
+        extra_managed={"edition:extra": {"command": "x"}},
+    )
+
+    assert response.status == 200
+    assert written["mcpServers"]["edition:extra"] == {"command": "x"}, (
+        "a host-owned entry whose name happens to contain ':' was dropped as if an "
+        "app owned it: this axis must exclude host-owned names"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_readable_spec_with_no_servers_still_drops_a_namespaced_addition(tmp_path):
+    """``{}`` on disk is an ANSWER, and this is the row that makes it one.
+
+    A spec that reads cleanly and holds no ``mcpServers`` is definite: the platform
+    has written no bridge, so a namespaced name in the submission is an addition to
+    a region the client does not author. Collapsing this state with "could not
+    read" would silently reopen the whole axis for the commonest shape of all -- a
+    spec whose app bridges have just been deregistered.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": {}},
+        submitted={"name": "kirocrew", "mcpServers": {"demoapp:tool": {"command": "t"}}},
+        apps={},
+    )
+
+    assert response.status == 200
+    assert "demoapp:tool" not in written["mcpServers"], (
+        "an empty-but-readable mcpServers map was treated as unreadable, so the "
+        "stale entry was persisted"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_spec_with_no_mcpservers_key_still_drops_a_namespaced_addition(tmp_path):
+    """A KEYLESS spec is ``{}``, not "unknown" -- the GPT round-1 finding on #7465.
+
+    Reading a missing ``mcpServers`` key as unreadable hands this rule a reason to
+    stand down and lets the resurrection straight through. The state is reachable
+    from this handler: a PUT whose submission omits ``mcpServers`` is persisted
+    verbatim, and ``_deregister_mcp_servers`` pops entries out of
+    ``get("mcpServers", {})`` without ever adding the key back -- so the spec can sit
+    keyless while an old editor tab still holds the bridge.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew"},  # readable, and carries no mcpServers at all
+        submitted={"name": "kirocrew", "mcpServers": {"demo:notes": {"command": "notes-mcp"}}},
+        apps={"demo": ("notes",)},
+        enabled=False,
+    )
+
+    assert response.status == 200
+    assert "demo:notes" not in written["mcpServers"], (
+        "a spec with no mcpServers key was treated as unreadable rather than as "
+        "holding no bridge, so the stale snapshot resurrected an executable bridge"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_mcpservers_value_on_disk_decides_nothing(tmp_path):
+    """Present but not an object stays ``None``: we do not delete on a value we cannot read.
+
+    The file parsed, but that value cannot be interpreted -- the same
+    cannot-interpret state the submitted-side guard in ``_merge_unowned_servers``
+    refuses to act on. Deleting the client's entries on the strength of it would be
+    the guess this span exists to avoid, so the submission lands as it did pre-fix.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk={"name": "kirocrew", "mcpServers": "not an object"},
+        submitted={"name": "kirocrew", "mcpServers": {"demoapp:tool": {"command": "t"}}},
+        apps={},
+    )
+
+    assert response.status == 200
+    assert written["mcpServers"]["demoapp:tool"] == {"command": "t"}, (
+        "an uninterpretable on-disk mcpServers value was read as an empty map, so "
+        "the client's submission was deleted on evidence we could not read"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_spec_still_persists_a_namespaced_entry(tmp_path):
+    """BEST-EFFORT holds on this axis too, for the same reason as the merge's.
+
+    A corrupt spec is precisely the state this editor exists to repair. Refusing
+    the PUT, or deleting what the user submitted, would leave a broken agent with
+    no way to fix it from the dashboard -- so an unreadable baseline decides
+    nothing and the snapshot lands as it did pre-fix. Enabled apps re-register on
+    the next gateway start, so the residue self-heals.
+    """
+    response, written = await _put(
+        tmp_path,
+        on_disk="{ not json at all",
+        submitted={"name": "kirocrew", "mcpServers": {"demoapp:tool": {"command": "t"}}},
+        apps={},
+    )
+
+    assert response.status == 200
+    assert written["mcpServers"]["demoapp:tool"] == {"command": "t"}, (
+        "an unreadable spec deleted what the client submitted: this axis must be "
+        "best-effort so the raw editor stays the repair path for a corrupt spec"
+    )
