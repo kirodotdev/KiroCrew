@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from windows_sim import replace_sharing_violation
+from windows_sim import replace_sharing_violation, unlink_sharing_violation
 
 from kiro_crew import atomic_write as aw
 from kiro_crew import platform_compat
@@ -141,6 +141,49 @@ async def test_offloading_from_the_loop_restores_the_retry(tmp_path, monkeypatch
     assert target.read_text() == "payload-v1"
     assert sim["n"] == 3
     assert _tmp_leftovers(tmp_path) == []
+
+
+def test_windows_unlink_contention_is_retried_until_it_succeeds(tmp_path, monkeypatch):
+    """Two faulted deletes then a real one: dest is gone."""
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    target = tmp_path / "state.json"
+    target.write_text("payload-v1", encoding="utf-8")
+
+    with unlink_sharing_violation(match="state.json", times=2) as sim:
+        aw.unlink_with_retry(target)
+
+    assert target.exists() is False
+    assert sim["n"] == 3
+
+
+def test_windows_unlink_gives_up_after_the_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    target = tmp_path / "state.json"
+    target.write_text("payload-v1", encoding="utf-8")
+
+    with unlink_sharing_violation(match="state.json", times=10_000) as sim:
+        with pytest.raises(PermissionError):
+            aw.unlink_with_retry(target)
+
+    assert sim["n"] == aw._REPLACE_MAX_ATTEMPTS
+    assert target.exists() is True
+
+
+def test_posix_unlink_permission_error_surfaces_without_retrying(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    target = tmp_path / "state.json"
+    target.write_text("payload-v1", encoding="utf-8")
+
+    with unlink_sharing_violation(match="state.json", times=1) as sim:
+        with pytest.raises(PermissionError):
+            aw.unlink_with_retry(target)
+
+    assert sim["n"] == 1
+    assert target.exists() is True
+
+
+def test_unlink_missing_ok_does_not_raise(tmp_path) -> None:
+    aw.unlink_with_retry(tmp_path / "missing.json", missing_ok=True)
 
 
 def test_autonudge_state_write_survives_the_rename_window(tmp_path, monkeypatch):

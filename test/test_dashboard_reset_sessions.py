@@ -46,7 +46,10 @@ class _FakeSessionManager:
         return len(self._sessions)
 
     async def reload_provider_factory(self) -> None:
-        pass
+        # Real SessionManager shuts leftover sessions down with no
+        # timeout. Drain must have emptied ``_sessions`` first.
+        for sess in list(self._sessions.values()):
+            await sess.provider.shutdown()
 
     async def drain_all_providers(self) -> list:
         async with self._lock:
@@ -80,6 +83,52 @@ def _make_request(sessions: _FakeSessionManager) -> tuple[web.Request, MagicMock
 
 class TestResetAllSessionsShutdown:
     """Bounded shutdown behavior for the dashboard restart path."""
+
+    @pytest.mark.asyncio
+    async def test_drains_before_reload_so_unbounded_teardown_cannot_run(self) -> None:
+        """Live providers must leave the map before reload_provider_factory."""
+        order: list[str] = []
+        provider = MagicMock()
+        provider.shutdown = MagicMock(return_value=asyncio.sleep(0))
+        sessions = _FakeSessionManager([provider])
+        real_reload = sessions.reload_provider_factory
+        real_drain = sessions.drain_all_providers
+
+        async def _reload() -> None:
+            order.append("reload")
+            assert sessions.count == 0
+            await real_reload()
+
+        async def _drain() -> list:
+            order.append("drain")
+            return await real_drain()
+
+        sessions.reload_provider_factory = _reload  # type: ignore[assignment]
+        sessions.drain_all_providers = _drain  # type: ignore[assignment]
+        request, state = _make_request(sessions)
+        await _reset_all_sessions(request)
+        for task in list(state._background_tasks):
+            await task
+        assert order[:2] == ["drain", "reload"]
+
+    @pytest.mark.asyncio
+    async def test_reload_error_shuts_down_drained_providers(self) -> None:
+        """A factory reload raise must still bounded-shutdown drained JWTs."""
+        provider = MagicMock()
+        provider.shutdown = MagicMock(return_value=asyncio.sleep(0))
+        sessions = _FakeSessionManager([provider])
+
+        async def _boom() -> None:
+            raise RuntimeError("invalid factory")
+
+        sessions.reload_provider_factory = _boom  # type: ignore[assignment]
+        request, state = _make_request(sessions)
+        with pytest.raises(RuntimeError, match="invalid factory"):
+            await _reset_all_sessions(request, await_shutdown=True)
+        provider.shutdown.assert_called_once()
+        assert sessions.count == 0
+        assert sessions.start_pool_called is False
+        assert not state._background_tasks
 
     @pytest.mark.asyncio
     async def test_awaits_healthy_shutdowns_without_force_kill(self) -> None:
@@ -116,9 +165,7 @@ class TestResetAllSessionsShutdown:
         # module (handlers.sessions), not the handlers package re-export —
         # ``_safe_shutdown`` reads the global from its own module, so patching
         # the re-export is a silent no-op and the test blocks the full 10s.
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
 
         async def _never_returns() -> None:
             await asyncio.sleep(60)
@@ -147,9 +194,7 @@ class TestResetAllSessionsShutdown:
         """
         # Patch the DEFINING module (handlers.sessions), not the package
         # re-export — see test_force_kills_hung_provider_after_timeout.
-        monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05
-        )
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.sessions._SHUTDOWN_TIMEOUT_SECS", 0.05)
 
         async def _never_returns() -> None:
             await asyncio.sleep(60)
@@ -207,3 +252,12 @@ class TestResetAllSessionsShutdown:
         # Both shutdowns must complete before start_pool.
         assert completion_order[-1] == "start_pool"
         assert set(completion_order[:-1]) == {"shutdown:p1", "shutdown:p2"}
+
+
+def test_force_kill_runs_off_the_event_loop() -> None:
+    import inspect
+
+    from kiro_crew.dashboard.handlers import sessions as sess_mod
+
+    source = inspect.getsource(sess_mod._reset_all_sessions)
+    assert "await asyncio.to_thread(_h._sync_kill_provider, p)" in source

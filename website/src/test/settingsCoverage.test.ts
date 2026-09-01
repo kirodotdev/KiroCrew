@@ -195,11 +195,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
   },
   'SecurityPanel.tsx': {
-    counts: { Toggle: 5, Checkbox: 2, Input: 3 },
+    counts: { Toggle: 5, Checkbox: 1, Input: 3, input: 1 },
     reason:
       'disable-all + per-rule + custom-rule Toggles are data-driven table rows ' +
-      '(manual: security.denied-commands); Checkboxes are confirm-modal acks; ' +
-      'Inputs are the rule search filter and the add-custom-deny form ' +
+      '(manual: security.denied-commands); one Checkbox is a confirm-modal ack; ' +
+      'the allow-all ack is a native checkbox (transient modal); Inputs are the ' +
+      'rule search filter and the add-custom-deny form ' +
       '(manual: security.your-custom-denies)',
   },
   'SettingsSearch.tsx': {

@@ -5,7 +5,8 @@ enumerate AWS account Gateways and can start a target Sync. GET is
 live control-plane + optional tools/list (through the workload SigV4
 proxy) + a vend-and-discard WAT probe; POST /verify is the same
 snapshot with a distinct SEL verb;
-POST /sync asks the Gateway to refresh one DEFAULT target.
+POST /sync is operator-gated (``KIROCREW_AGENTCORE_GATEWAY_SYNC=1``):
+the standard instance role does not permit SynchronizeGatewayTargets.
 
 A WAT never leaves this handler. Non-2xx bodies carry a machine
 ``code``.
@@ -15,8 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from aiohttp import web
+
+# Standard instance role omits SynchronizeGatewayTargets. Opt-in only.
+GATEWAY_SYNC_ENV = "KIROCREW_AGENTCORE_GATEWAY_SYNC"
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +174,20 @@ async def api_agentcore_gateway_sync(request: web.Request) -> web.Response:
     refused = await _owner_gate(request, OP_SYNC)
     if refused is not None:
         return refused
+    if os.environ.get(GATEWAY_SYNC_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
+        await _audit_async(
+            request,
+            operation=OP_SYNC,
+            outcome="denied",
+            resources="operator_gate",
+        )
+        return web.json_response(
+            {
+                "error": "Gateway target sync is not permitted on the standard instance role",
+                "code": "sync_not_permitted",
+            },
+            status=403,
+        )
     try:
         body = await request.json()
     except Exception:

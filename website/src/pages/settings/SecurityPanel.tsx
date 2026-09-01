@@ -1,19 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, Boxes, BookOpen, Network, Copy, Check, Package } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, Boxes, BookOpen, Network, Copy, Check, Package, IdCard, RefreshCw, Wrench, Plug } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { SettingsSubNav } from '../../components/SettingsSubNav'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
-import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
+import { SettingsSection, SettingsCard, SettingsInput, SettingsSelect, SettingsToggle } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
-import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernanceDistributionData, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData } from '../../api/client'
+import { api, ApiError, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule, type GovernanceDistributionData, type GovernancePolicyData, type GovernanceScope, type GovernanceScopeDetail, type SecurityPostureData, type TailnetStatusData, type TrustedAppsData, type AgentcoreIdentityData, type AgentcoreConsentData, type AgentcoreGatewayData, type AgentcoreGatewayCheck, type AgentcoreGatewayTarget } from '../../api/client'
 import { PostureDisclosureRow, CODE_BASE as POSTURE_CODE_BASE } from './PostureDisclosure'
 import { MobileLoginCard } from './MobileLoginCard'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateFields, fmtDuration, fmtList, fmtTime, fmtTimeNumeric, fmtUnit, toDate, compareText } from '../../i18n/format'
+import { fmtDateFields, fmtDateTime, fmtDuration, fmtList, fmtNumber, fmtTime, fmtTimeNumeric, fmtUnit, toDate, compareText } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 /* ── Security feature registry ──
  *
@@ -451,6 +451,7 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
  * all ten locales. It is now reachable only by a scope a future release adds.
  */
 export const SCOPE_LABEL_KEY: Record<string, string> = {
+  'capabilities.agentcore': 'pages.settings.securityPanel.gov_scope_agentcore',
   tools: 'pages.settings.securityPanel.gov_scope_tools',
   mcp: 'pages.settings.securityPanel.gov_scope_mcp',
   apps: 'pages.settings.securityPanel.gov_scope_apps',
@@ -2130,8 +2131,15 @@ function ThirdPartyAppsCard() {
           <div className="text-[13px] text-text leading-relaxed">{confirmBody}</div>
         </div>
         {needsAck && (
-          <label className="flex items-center gap-2.5 mt-4 cursor-pointer">
-            <Checkbox checked={ack} onChange={e => setAck(e.target.checked)} />
+          <label htmlFor="trusted-apps-allow-all-ack" className="flex items-center gap-2.5 mt-4 cursor-pointer">
+            <input
+              id="trusted-apps-allow-all-ack"
+              type="checkbox"
+              checked={ack}
+              onChange={e => setAck(e.target.checked)}
+              aria-label={i18nT('pages.settings.securityPanel.trustedApps.allow_all_confirm_ack')}
+              style={{ margin: 0, accentColor: 'var(--accent)', cursor: 'pointer' }}
+            />
             <span className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.trustedApps.allow_all_confirm_ack')}</span>
           </label>
         )}
@@ -2150,6 +2158,547 @@ function LayersSection() {
         </div>
         <div className="divide-y divide-border">
           {FEATURES.map(f => <FeatureRow key={f.key} feature={f} />)}
+        </div>
+      </SettingsCard>
+    </SettingsSection>
+  )
+}
+
+/* ── This-crew AgentCore identity ── */
+const IDENTITY_POSTURE_KEY: Record<string, string> = {
+  none: 'pages.settings.securityPanel.agent_identity_posture_none',
+  workload: 'pages.settings.securityPanel.agent_identity_posture_workload',
+  login: 'pages.settings.securityPanel.agent_identity_posture_login',
+}
+
+const CATALOG_CHECK_LABEL: Record<string, string> = {
+  url: 'pages.settings.securityPanel.agent_identity_check_url',
+  extra: 'pages.settings.securityPanel.agent_identity_check_extra',
+  reachable: 'pages.settings.securityPanel.agent_identity_check_reachable',
+  ready: 'pages.settings.securityPanel.agent_identity_check_ready',
+  authorizer: 'pages.settings.securityPanel.agent_identity_check_authorizer',
+  url_match: 'pages.settings.securityPanel.agent_identity_check_url_match',
+  invoke_scope: 'pages.settings.securityPanel.agent_identity_check_invoke_scope',
+  tools: 'pages.settings.securityPanel.agent_identity_check_tools',
+  identity: 'pages.settings.securityPanel.agent_identity_check_identity',
+}
+
+const CATALOG_CODE_HINT: Record<string, string> = {
+  no_url: 'pages.settings.securityPanel.agent_identity_code_no_url',
+  extra_missing: 'pages.settings.securityPanel.agent_identity_code_extra_missing',
+  unusable_url: 'pages.settings.securityPanel.agent_identity_code_unusable_url',
+  aws_denied: 'pages.settings.securityPanel.agent_identity_code_aws_denied',
+  not_found: 'pages.settings.securityPanel.agent_identity_code_not_found',
+  aws_error: 'pages.settings.securityPanel.agent_identity_code_aws_error',
+  service_linked: 'pages.settings.securityPanel.agent_identity_code_service_linked',
+  not_named: 'pages.settings.securityPanel.agent_identity_code_not_named',
+  identity_denied: 'pages.settings.securityPanel.agent_identity_code_identity_denied',
+  identity_not_found: 'pages.settings.securityPanel.agent_identity_code_identity_not_found',
+  identity_error: 'pages.settings.securityPanel.agent_identity_code_identity_error',
+  not_kirocrew_prefixed: 'pages.settings.securityPanel.agent_identity_code_not_kirocrew',
+  invoke_denied: 'pages.settings.securityPanel.agent_identity_code_invoke_denied',
+  proxy_unavailable: 'pages.settings.securityPanel.agent_identity_code_proxy_unavailable',
+}
+
+const WRITE_BLOCKED_HINT: Record<string, string> = {
+  signed: 'pages.settings.securityPanel.agent_identity_blocked_signed',
+  distribution: 'pages.settings.securityPanel.agent_identity_blocked_distribution',
+  companion: 'pages.settings.securityPanel.agent_identity_blocked_companion',
+  fleet_override: 'pages.settings.securityPanel.agent_identity_blocked_fleet_override',
+  signature_required: 'pages.settings.securityPanel.agent_identity_blocked_signature_required',
+  unreadable: 'pages.settings.securityPanel.agent_identity_blocked_unreadable',
+  unavailable: 'pages.settings.securityPanel.agent_identity_blocked_unavailable',
+}
+
+function writeBlockedCopy(reason: string | null | undefined): string {
+  const key = reason ? WRITE_BLOCKED_HINT[reason] : undefined
+  return i18nT(key ?? 'pages.settings.securityPanel.agent_identity_not_writable')
+}
+
+const TARGET_TYPE_LABEL: Record<string, string> = {
+  MCP_SERVER: 'pages.settings.securityPanel.agent_identity_type_mcp',
+  MCP: 'pages.settings.securityPanel.agent_identity_type_mcp',
+  CONNECTOR: 'pages.settings.securityPanel.agent_identity_type_connector',
+  HTTP_CONNECTOR: 'pages.settings.securityPanel.agent_identity_type_http',
+  LAMBDA: 'pages.settings.securityPanel.agent_identity_type_lambda',
+  OPEN_API_SCHEMA: 'pages.settings.securityPanel.agent_identity_type_openapi',
+  SMITHY_MODEL: 'pages.settings.securityPanel.agent_identity_type_smithy',
+  API_GATEWAY: 'pages.settings.securityPanel.agent_identity_type_apigw',
+  PROVIDER: 'pages.settings.securityPanel.agent_identity_type_provider',
+  AGENTCORE_RUNTIME: 'pages.settings.securityPanel.agent_identity_type_runtime',
+  PASSTHROUGH: 'pages.settings.securityPanel.agent_identity_type_passthrough',
+}
+
+function catalogHint(data: AgentcoreGatewayData | undefined): string | null {
+  if (!data) return null
+  if (data.code !== 'ok' && CATALOG_CODE_HINT[data.code]) {
+    return i18nT(CATALOG_CODE_HINT[data.code])
+  }
+  const identity = data.checks.find(c => c.id === 'identity')
+  if (identity && !identity.ok) {
+    if (CATALOG_CODE_HINT[identity.detail]) {
+      return i18nT(CATALOG_CODE_HINT[identity.detail])
+    }
+    return i18nT('pages.settings.securityPanel.agent_identity_mismatch_identity')
+  }
+  const authorizer = data.checks.find(c => c.id === 'authorizer')
+  if (authorizer && !authorizer.ok) {
+    return i18nT('pages.settings.securityPanel.agent_identity_mismatch_authorizer')
+  }
+  const invoke = data.checks.find(c => c.id === 'invoke_scope')
+  if (invoke && !invoke.ok && CATALOG_CODE_HINT[invoke.detail]) {
+    return i18nT(CATALOG_CODE_HINT[invoke.detail])
+  }
+  if (data.tools.skip_reason === 'login_needs_sign_in') {
+    return i18nT('pages.settings.securityPanel.agent_identity_tools_skipped_login')
+  }
+  if (data.tools.skip_reason === 'proxy_unavailable') {
+    return i18nT('pages.settings.securityPanel.agent_identity_code_proxy_unavailable')
+  }
+  return null
+}
+
+function toolsEmptyCopy(data: AgentcoreGatewayData | undefined): string | null {
+  if (!data || data.tools.items.length > 0) return null
+  if (data.tools.skip_reason) return null
+  if (data.checks.some(check => !check.ok)) return null
+  return i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')
+}
+
+function agentcoreConsentErrorCopy(err: unknown): string | null {
+  if (!err) return null
+  if (err instanceof ApiError) {
+    try {
+      const parsed = JSON.parse(err.body) as { code?: unknown }
+      if (parsed.code === 'consent_host_refused') {
+        return i18nT('pages.settings.securityPanel.agent_identity_consent_refused')
+      }
+    } catch {
+      // not JSON — fall through to the generic unavailable copy
+    }
+  }
+  return i18nT('pages.settings.securityPanel.agent_identity_consent_unavailable')
+}
+
+function checkDetailLabel(detail: string): string {
+  const key = CATALOG_CODE_HINT[detail]
+  return key ? i18nT(key) : detail
+}
+
+function CheckRow({ check }: { check: AgentcoreGatewayCheck }) {
+  const labelKey = CATALOG_CHECK_LABEL[check.id]
+  const Icon = check.ok ? CheckCircle2 : AlertTriangle
+  return (
+    <li className="flex items-start gap-2 text-[12px]">
+      <Icon
+        className={`lucide-inline mt-0.5 shrink-0 ${check.ok ? 'text-ok' : 'text-warn'}`}
+        aria-hidden
+      />
+      <span className="text-text">
+        {labelKey ? i18nT(labelKey) : check.id}
+        {!check.ok && check.detail && check.detail !== 'ok' ? (
+          <span className="text-muted"> · {checkDetailLabel(check.detail)}</span>
+        ) : null}
+      </span>
+    </li>
+  )
+}
+
+function TargetRow({ target }: { target: AgentcoreGatewayTarget }) {
+  const typeKey = TARGET_TYPE_LABEL[target.target_type]
+  const synced = target.last_synchronized_at
+    ? fmtDateTime(target.last_synchronized_at)
+    : i18nT('pages.settings.securityPanel.agent_identity_never_synced')
+  const mode =
+    target.listing_mode === 'DYNAMIC'
+      ? i18nT('pages.settings.securityPanel.agent_identity_listing_dynamic')
+      : target.listing_mode === 'DEFAULT'
+        ? i18nT('pages.settings.securityPanel.agent_identity_listing_default')
+        : target.listing_mode
+  const authHref =
+    typeof target.authorization_url === 'string' && target.authorization_url.startsWith('https://')
+      ? target.authorization_url
+      : null
+  return (
+    <tr className="border-t border-border align-top">
+      <td className="py-2 pr-3 text-[12px] text-text">
+        <div className="font-medium">{target.name || target.target_id}</div>
+        {target.name && target.target_id ? (
+          <code className="font-mono text-[11px] text-muted">{target.target_id}</code>
+        ) : null}
+      </td>
+      <td className="py-2 pr-3 text-[12px] text-muted">
+        {typeKey ? i18nT(typeKey) : target.target_type || '—'}
+      </td>
+      <td className="py-2 pr-3 text-[12px] text-text">
+        <span className="font-mono text-[11px]">{target.status || '—'}</span>
+        {target.pending_auth ? (
+          <div className="text-warn mt-1">
+            {i18nT('pages.settings.securityPanel.agent_identity_pending_auth')}
+          </div>
+        ) : null}
+        {(target.status_reasons ?? []).map(reason => (
+          <div key={reason} className="text-warn mt-1 leading-relaxed">
+            {reason}
+          </div>
+        ))}
+      </td>
+      <td className="py-2 pr-3 text-[12px] text-muted">{mode || '—'}</td>
+      <td className="py-2 pr-3 text-[12px] text-muted">{synced}</td>
+      <td className="py-2 text-[12px]">
+        {authHref ? (
+          <a
+            href={authHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-accent hover:underline"
+          >
+            <ExternalLink className="lucide-inline" />
+            {i18nT('pages.settings.securityPanel.agent_identity_consent_open')}
+          </a>
+        ) : null}
+      </td>
+    </tr>
+  )
+}
+
+function GatewayCatalogCard() {
+  const queryClient = useQueryClient()
+  const [copied, setCopied] = useState(false)
+  const catalog = useQuery<AgentcoreGatewayData>({
+    queryKey: ['agentcore-gateway'],
+    queryFn: api.getAgentcoreGateway,
+  })
+  const verify = useMutation({
+    mutationFn: api.verifyAgentcoreGateway,
+    onSuccess: next => {
+      queryClient.setQueryData(['agentcore-gateway'], next)
+    },
+  })
+  const data = catalog.data
+  const hint = catalogHint(data)
+  const tools = data?.tools.items ?? []
+  const emptyToolsCopy = toolsEmptyCopy(data)
+  const busy = catalog.isFetching || verify.isPending
+  const debugBlob = data
+    ? JSON.stringify(
+        {
+          code: data.code,
+          posture: data.posture,
+          workload_name: data.workload_name,
+          gateway: data.gateway,
+          checks: data.checks,
+          targets: data.targets.map(t => ({
+            target_id: t.target_id,
+            name: t.name,
+            target_type: t.target_type,
+            status: t.status,
+            listing_mode: t.listing_mode,
+            pending_auth: t.pending_auth,
+            syncable: t.syncable,
+          })),
+          tools: {
+            reachable: data.tools.reachable,
+            skip_reason: data.tools.skip_reason,
+            via: data.tools.via ?? null,
+            count: tools.length,
+          },
+        },
+        null,
+        2,
+      )
+    : ''
+
+  return (
+    <div className="rounded-md border border-border bg-bg-elevated p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1 min-w-0">
+          <p className="text-[13px] text-text flex items-center gap-1.5">
+            <Plug className="lucide-inline" />
+            {i18nT('pages.settings.securityPanel.agent_identity_catalog')}
+          </p>
+          <p className="text-[12px] text-muted leading-relaxed">
+            {i18nT('pages.settings.securityPanel.agent_identity_catalog_hint')}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Btn
+            disabled={busy}
+            onClick={() => verify.mutate()}
+            aria-label={i18nT('pages.settings.securityPanel.agent_identity_verify')}
+          >
+            <RefreshCw className={`lucide-inline ${busy ? 'animate-spin' : ''}`} />
+            {busy
+              ? i18nT('pages.settings.securityPanel.agent_identity_verifying')
+              : i18nT('pages.settings.securityPanel.agent_identity_verify')}
+          </Btn>
+        </div>
+      </div>
+      {catalog.isError ? (
+        <ErrorNotice
+          message={catalog.error instanceof Error ? catalog.error.message : String(catalog.error)}
+        />
+      ) : null}
+      {verify.isError ? (
+        <ErrorNotice
+          message={verify.error instanceof Error ? verify.error.message : String(verify.error)}
+        />
+      ) : null}
+      {hint ? <p className="text-[12px] text-warn leading-relaxed">{hint}</p> : null}
+      {data?.gateway?.name || data?.gateway?.id ? (
+        <div className="text-[13px] text-text">
+          <span className="text-muted">{i18nT('pages.settings.securityPanel.agent_identity_gateway_name')} </span>
+          {data.gateway.name || data.gateway.id}
+          {data.gateway.status ? (
+            <code className="ml-2 font-mono text-[11px] text-muted">{data.gateway.status}</code>
+          ) : null}
+        </div>
+      ) : null}
+      {data?.checks.length ? (
+        <ul className="space-y-1.5" aria-label={i18nT('pages.settings.securityPanel.agent_identity_checks')}>
+          {data.checks.map(check => (
+            <CheckRow key={check.id} check={check} />
+          ))}
+        </ul>
+      ) : catalog.isLoading ? (
+        <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_loading')}</p>
+      ) : null}
+
+      <div className="space-y-2">
+        <p className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.agent_identity_targets')}</p>
+        {data && data.targets.length === 0 ? (
+          <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_targets_empty')}</p>
+        ) : data?.targets.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-[11px] uppercase tracking-wide text-muted">
+                  <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_name')}</th>
+                  <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_type')}</th>
+                  <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_status')}</th>
+                  <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_mode')}</th>
+                  <th className="pb-1 pr-3 font-medium">{i18nT('pages.settings.securityPanel.agent_identity_target_synced')}</th>
+                  <th className="pb-1 font-medium">
+                    <span className="sr-only">{i18nT('pages.settings.securityPanel.agent_identity_target_actions')}</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.targets.map(target => (
+                  <TargetRow key={target.target_id || target.name} target={target} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-[13px] text-text flex items-center gap-1.5">
+          <Wrench className="lucide-inline" />
+          {i18nT('pages.settings.securityPanel.agent_identity_tools')}
+          {tools.length > 0 ? (
+            <span className="text-muted font-normal">({fmtNumber(tools.length)})</span>
+          ) : null}
+        </p>
+        {tools.length === 0 ? (
+          emptyToolsCopy ? (
+            <p className="text-[12px] text-muted">{emptyToolsCopy}</p>
+          ) : null
+        ) : (
+          <ul className="space-y-1.5 max-h-64 overflow-y-auto">
+            {tools.map(tool => (
+              <li key={tool.name} className="text-[12px]">
+                <code className="font-mono text-text">{tool.name}</code>
+                {tool.description ? (
+                  <span className="text-muted"> — {tool.description}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {debugBlob ? (
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 text-[12px] text-muted hover:text-text"
+          onClick={() => {
+            const clipboard = navigator.clipboard
+            if (!clipboard?.writeText) {
+              setCopied(false)
+              return
+            }
+            void clipboard.writeText(debugBlob).then(
+              () => {
+                setCopied(true)
+                window.setTimeout(() => setCopied(false), 1500)
+              },
+              () => setCopied(false),
+            )
+          }}
+        >
+          {copied ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />}
+          {copied
+            ? i18nT('pages.settings.securityPanel.agent_identity_copied')
+            : i18nT('pages.settings.securityPanel.agent_identity_copy_debug')}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+function AgentIdentitySection() {
+  const queryClient = useQueryClient()
+  const { data, isLoading, isError, error } = useQuery<AgentcoreIdentityData>({
+    queryKey: ['agentcore-identity'],
+    queryFn: api.getAgentcoreIdentity,
+  })
+  const [draft, setDraft] = useState<'none' | 'workload' | 'login'>('none')
+  const [draftUrl, setDraftUrl] = useState('')
+  const [draftName, setDraftName] = useState('')
+  useEffect(() => {
+    setDraft(data?.posture === 'login' || data?.posture === 'workload' ? data.posture : 'none')
+    setDraftUrl(data?.gateway_url ?? '')
+    setDraftName(data?.workload_name ?? '')
+  }, [data?.posture, data?.gateway_url, data?.workload_name])
+  const save = useMutation({
+    mutationFn: () =>
+      api.saveAgentcoreIdentity({
+        posture: draft,
+        gateway_url: draftUrl.trim(),
+        workload_name: draftName.trim(),
+      }),
+    onSuccess: next => {
+      queryClient.setQueryData(['agentcore-identity'], next)
+      // Catalog checks (authorizer, identity, tools) depend on the saved
+      // posture/name/url. Leaving the previous snapshot up after Save is how
+      // a login-vs-IAM mismatch stays green until the operator remembers Verify.
+      void queryClient.invalidateQueries({ queryKey: ['agentcore-gateway'] })
+    },
+  })
+  const dirty =
+    (data?.posture ?? 'none') !== draft
+    || (data?.gateway_url ?? '') !== draftUrl.trim()
+    || (data?.workload_name ?? '') !== draftName.trim()
+  const nameRequired = draft !== 'none' && !draftName.trim()
+  const blocked = Boolean(data && !data.writable)
+  const { data: consent, error: consentQueryError } = useQuery<AgentcoreConsentData>({
+    queryKey: ['agentcore-consent'],
+    queryFn: api.getAgentcoreConsent,
+    enabled: Boolean(data?.configured),
+    refetchInterval: 15_000,
+  })
+  const consentErrorCopy = agentcoreConsentErrorCopy(consentQueryError)
+  const consentHref =
+    typeof consent?.url === 'string' && consent.url.startsWith('https://') ? consent.url : null
+  return (
+    <SettingsSection title={i18nT('pages.settings.securityPanel.agent_identity')}>
+      <SettingsCard>
+        <div data-setting-label={i18nT('pages.settings.securityPanel.agent_identity')}>
+          <p className="text-[12px] text-muted leading-relaxed">
+            {i18nT('pages.settings.securityPanel.agent_identity_hint')}
+          </p>
+          {isLoading ? (
+            <div className="text-[12px] text-muted py-2">{i18nT('pages.settings.securityPanel.agent_identity_loading')}</div>
+          ) : isError ? (
+            <ErrorNotice message={error instanceof Error ? error.message : String(error)} className="mt-3" />
+          ) : (
+            <div className="mt-3 space-y-3">
+              {draft === 'none' && !data?.workload_name ? (
+                <div className="text-[13px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_unset')}</div>
+              ) : null}
+              <SettingsSelect
+                label={i18nT('pages.settings.securityPanel.agent_identity_posture')}
+                value={draft}
+                options={['none', 'workload', 'login']}
+                optionLabels={[
+                  i18nT(IDENTITY_POSTURE_KEY.none),
+                  i18nT(IDENTITY_POSTURE_KEY.workload),
+                  i18nT(IDENTITY_POSTURE_KEY.login),
+                ]}
+                onChange={v => setDraft(v === 'workload' || v === 'login' ? v : 'none')}
+                disabled={blocked || save.isPending}
+              />
+              {draft !== 'none' && (
+                <>
+                  <SettingsInput
+                    label={i18nT('pages.settings.securityPanel.agent_identity_name')}
+                    hint={i18nT('pages.settings.securityPanel.agent_identity_name_hint')}
+                    value={draftName}
+                    disabled={blocked || save.isPending}
+                    placeholder={i18nT('pages.settings.securityPanel.agent_identity_name_placeholder')}
+                    onChange={setDraftName}
+                  />
+                  {nameRequired ? (
+                    <span className="text-[12px] text-warn">
+                      {i18nT('pages.settings.securityPanel.agent_identity_name_required')}
+                    </span>
+                  ) : null}
+                </>
+              )}
+              {draft !== 'none' && (
+                <SettingsInput
+                  label={i18nT('pages.settings.securityPanel.agent_identity_gateway_url')}
+                  hint={i18nT('pages.settings.securityPanel.agent_identity_gateway_url_hint')}
+                  value={draftUrl}
+                  disabled={blocked || save.isPending}
+                  placeholder={i18nT('pages.settings.securityPanel.agent_identity_gateway_url_placeholder')}
+                  onChange={setDraftUrl}
+                />
+              )}
+              {blocked && (
+                <p className="text-[12px] text-muted">{writeBlockedCopy(data?.write_blocked)}</p>
+              )}
+              {save.isError && (
+                <ErrorNotice message={save.error instanceof Error ? save.error.message : String(save.error)} />
+              )}
+              {data?.restart_required && (
+                <p className="text-[12px] text-warn">{i18nT('pages.settings.securityPanel.agent_identity_restart')}</p>
+              )}
+              {data?.extra_code === 'no_install_channel' && (
+                <p className="text-[12px] text-warn">{i18nT('pages.settings.securityPanel.agent_identity_extra_missing_channel')}</p>
+              )}
+              {data?.extra_code === 'install_failed' && (
+                <p className="text-[12px] text-warn">{i18nT('pages.settings.securityPanel.agent_identity_extra_failed')}</p>
+              )}
+              {data?.configured && data.extra_installed === false && data.extra_code !== 'no_install_channel' && data.extra_code !== 'install_failed' && (
+                <p className="text-[12px] text-muted">{i18nT('pages.settings.securityPanel.agent_identity_extra_needed')}</p>
+              )}
+              {consentErrorCopy && (
+                <p className="text-[12px] text-muted">{consentErrorCopy}</p>
+              )}
+              {consent?.pending && consentHref && (
+                <div className="rounded-md border border-border bg-bg-elevated p-3 space-y-2">
+                  <p className="text-[13px] text-text">{i18nT('pages.settings.securityPanel.agent_identity_consent_title')}</p>
+                  <p className="text-[12px] text-muted leading-relaxed">
+                    {i18nT('pages.settings.securityPanel.agent_identity_consent_body')}
+                  </p>
+                  <a
+                    href={consentHref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[13px] text-accent hover:underline"
+                  >
+                    <ExternalLink className="lucide-inline" />
+                    {i18nT('pages.settings.securityPanel.agent_identity_consent_open')}
+                  </a>
+                </div>
+              )}
+              <div>
+                <Btn
+                  primary
+                  disabled={blocked || !dirty || nameRequired || save.isPending}
+                  onClick={() => save.mutate()}
+                >
+                  {save.isPending
+                    ? i18nT('pages.settings.securityPanel.agent_identity_saving')
+                    : i18nT('pages.settings.securityPanel.agent_identity_save')}
+                </Btn>
+              </div>
+              {data?.configured && data.gateway_url ? <GatewayCatalogCard /> : null}
+            </div>
+          )}
         </div>
       </SettingsCard>
     </SettingsSection>
@@ -2186,7 +2735,7 @@ function DocsSection() {
  * The rail states which is which before any row is read, and the two large
  * tables (137 rules, ~20 governed scopes) get a pane instead of a fold.
  */
-type SecuritySectionKey = 'posture' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'layers' | 'governance' | 'docs'
+type SecuritySectionKey = 'posture' | 'identity' | 'approval' | 'rules' | 'tailnet' | 'apps' | 'layers' | 'governance' | 'docs'
 type SecuritySectionGroup = 'status' | 'yours' | 'enforced' | 'reference'
 
 interface SecuritySectionDef {
@@ -2208,6 +2757,7 @@ interface SecuritySectionDef {
  */
 export const SECTION_LABEL_KEY: Record<SecuritySectionKey, string> = {
   posture: 'pages.settings.securityPanel.live_security_posture',
+  identity: 'pages.settings.securityPanel.agent_identity',
   approval: 'pages.settings.securityPanel.yolo_auto_approve',
   rules: 'pages.settings.securityPanel.denied_commands',
   tailnet: 'pages.settings.securityPanel.tailnet_section',
@@ -2229,6 +2779,7 @@ export const SECTION_GROUP_KEY: Record<SecuritySectionGroup, string> = {
  *  sharing a group must stay adjacent. */
 const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
   { key: 'posture', icon: <ShieldCheck size={15} />, group: 'status' },
+  { key: 'identity', icon: <IdCard className="lucide-inline" />, group: 'yours' },
   { key: 'approval', icon: <Gauge size={15} />, group: 'yours' },
   { key: 'rules', icon: <Terminal size={15} />, group: 'yours' },
   { key: 'tailnet', icon: <Network size={15} />, group: 'yours' },
@@ -2297,6 +2848,10 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
     queryFn: api.tailnetStatus,
     staleTime: 300_000,
   })
+  const { data: identity, isError: identityError } = useQuery<AgentcoreIdentityData>({
+    queryKey: ['agentcore-identity'],
+    queryFn: api.getAgentcoreIdentity,
+  })
 
   const summaryFor = (key: SecuritySectionKey): string | undefined => {
     switch (key) {
@@ -2334,6 +2889,15 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
         return cfg.agent?.apps_allow_third_party === true
           ? i18nT('pages.settings.securityPanel.state_allowed')
           : i18nT('pages.settings.securityPanel.state_blocked')
+      case 'identity':
+        if (identityError || identity === undefined) return undefined
+        return identity.configured
+          ? i18nT(
+              identity.posture === 'login'
+                ? IDENTITY_POSTURE_KEY.login
+                : IDENTITY_POSTURE_KEY.workload,
+            )
+          : i18nT(IDENTITY_POSTURE_KEY.none)
       case 'layers':
         return String(FEATURES.length)
       default:
@@ -2343,6 +2907,17 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
 
   const items = SECURITY_SECTIONS.map(section => {
     const summary = summaryFor(section.key)
+    // Identity folds label + posture into one catalog string so the rail
+    // does not render the adjacent fragment pair "Agent identity" / "Off".
+    if (section.key === 'identity' && summary) {
+      return {
+        key: section.key,
+        label: i18nT('pages.settings.securityPanel.agent_identity_rail', { status: summary }),
+        icon: section.icon,
+        group: i18nT(SECTION_GROUP_KEY[section.group]),
+        summary: undefined,
+      }
+    }
     return {
       key: section.key,
       label: i18nT(SECTION_LABEL_KEY[section.key]),
@@ -2384,6 +2959,7 @@ export function SecurityPanel({ basePath }: { basePath?: string } = {}) {
         return (
           <>
             {key === 'posture' && <PostureSection />}
+            {key === 'identity' && <AgentIdentitySection />}
             {key === 'approval' && (
               <SettingsSection title={i18nT('pages.settings.securityPanel.yolo_auto_approve')}>
                 <YoloDurationCard />

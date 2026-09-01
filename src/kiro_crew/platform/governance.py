@@ -3601,6 +3601,10 @@ def assert_governance_paths_protected() -> None:
     # integrity check must assert).
     required = (
         ".kiro/crew/security_policy.json",
+        # Exclusive lock sibling of the trust-root policy. An agent that
+        # can flock this file blocks an owner's Save → Off indefinitely.
+        ".kiro/crew/security_policy.json.lock",
+        ".kiro/crew/security_policy.json.tmp",
         ".kiro/crew/profiles",
         ".kiro/crew/admission_policy.json",
         # Denied-command opt-out ceiling — the agent must not be able to write

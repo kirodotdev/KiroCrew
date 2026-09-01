@@ -42,12 +42,20 @@ vi.mock('../../api/client', () => ({
     // crash on an undefined queryFn; the section's behaviour is covered in
     // SecurityPanel.tailnet.test.tsx.
     tailnetStatus: vi.fn(),
+    getAgentcoreIdentity: vi.fn(),
+    saveAgentcoreIdentity: vi.fn(),
+    getAgentcoreConsent: vi.fn(),
+    getAgentcoreGateway: vi.fn(),
+    verifyAgentcoreGateway: vi.fn(),
+    syncAgentcoreGatewayTarget: vi.fn(),
     listTrustedApps: vi.fn(),
     trustApp: vi.fn(),
     untrustApp: vi.fn(),
     setTrustAllApps: vi.fn(),
   },
 }))
+
+vi.mock('@radix-ui/react-select', async () => await import('../../test/__mocks__/@radix-ui/react-select'))
 
 import { api } from '../../api/client'
 import type { GovernanceDistributionData, GovernancePolicyData, SecurityPostureData, TrustedAppsData } from '../../api/client'
@@ -116,6 +124,51 @@ const TAILNET_OFF = {
   resolved_at: 0,
   state: 'off',
 } as const
+
+/** Default this-crew identity: unset and writable.
+ *
+ * The rail now reads GET /api/agentcore/identity on every mount. A bare
+ * `vi.fn()` returns undefined, which react-query rejects. `unset` is the
+ * right default here — this file covers the rest of the panel, and the
+ * section's own states are covered in the agent-identity describe.
+ */
+const IDENTITY_UNSET = {
+  configured: false,
+  posture: null,
+  workload_name: '',
+  source: 'unset' as const,
+  writable: true,
+  write_blocked: null,
+  restart_required: false,
+  extra_installed: false,
+  extra_code: null,
+  gateway_url: '',
+}
+
+const CONSENT_IDLE = { pending: false, url: null } as const
+
+const CATALOG_IDLE = {
+  code: 'no_url',
+  posture: null,
+  gateway_url: '',
+  gateway: null,
+  targets: [],
+  targets_error: null,
+  tools: { reachable: false, skip_reason: 'no_url', items: [] },
+  checks: [],
+}
+
+beforeEach(() => {
+  ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue(IDENTITY_UNSET)
+  ;(api.saveAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue(IDENTITY_UNSET)
+  ;(api.getAgentcoreConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_IDLE)
+  ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(CATALOG_IDLE)
+  ;(api.verifyAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(CATALOG_IDLE)
+  ;(api.syncAgentcoreGatewayTarget as ReturnType<typeof vi.fn>).mockResolvedValue({
+    code: 'accepted',
+    target_id: 't1',
+  })
+})
 
 function snapshot(overrides: Partial<DeniedCommandsData> = {}): DeniedCommandsData {
   return {
@@ -1669,6 +1722,7 @@ describe('SecurityPanel — inspector rail', () => {
     const rows = railRows()
     expect(rows.map(r => r.textContent)).toEqual([
       expect.stringContaining('Live Security Posture'),
+      expect.stringContaining(i18nT('pages.settings.securityPanel.agent_identity')),
       expect.stringContaining('YOLO (auto-approve)'),
       expect.stringContaining('Denied Commands'),
       expect.stringContaining('Tailnet origin'),
@@ -1978,5 +2032,456 @@ describe('SecurityPanel — review-round regressions', () => {
     // The listbox keeps exactly one accessible name — naming the wrapper too
     // made a screen reader announce it twice.
     expect(screen.getAllByRole('listbox', { name: 'Security sections' })).toHaveLength(1)
+  })
+})
+
+async function pickIdentityPosture(value: 'none' | 'workload' | 'login') {
+  const label = i18nT('pages.settings.securityPanel.agent_identity_posture')
+  fireEvent.click(await screen.findByRole('combobox', { name: label }))
+  const optionKey = {
+    none: 'pages.settings.securityPanel.agent_identity_posture_none',
+    workload: 'pages.settings.securityPanel.agent_identity_posture_workload',
+    login: 'pages.settings.securityPanel.agent_identity_posture_login',
+  }[value]
+  fireEvent.click(screen.getByRole('option', { name: i18nT(optionKey) }))
+}
+
+describe('SecurityPanel — agent identity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.deniedCommands as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.governancePolicy as ReturnType<typeof vi.fn>).mockResolvedValue(govNoPolicy())
+    ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
+    ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue(IDENTITY_UNSET)
+    ;(api.getAgentcoreConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_IDLE)
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(CATALOG_IDLE)
+    ;(api.verifyAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(CATALOG_IDLE)
+  })
+
+  it('saves a workload posture for this crew', async () => {
+    ;(api.saveAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      workload_name: 'kirocrew-e2e',
+      source: 'policy',
+      restart_required: false,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    await pickIdentityPosture('workload')
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_name')),
+      { target: { value: 'kirocrew-e2e' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }))
+
+    await waitFor(() =>
+      expect(api.saveAgentcoreIdentity).toHaveBeenCalledWith({
+        posture: 'workload',
+        gateway_url: '',
+        workload_name: 'kirocrew-e2e',
+      }),
+    )
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_restart')),
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not save when identity is on without a workload name', async () => {
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    await pickIdentityPosture('workload')
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_name_required')),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }),
+    ).toBeDisabled()
+    expect(api.saveAgentcoreIdentity).not.toHaveBeenCalled()
+  })
+
+  it('disables save when this crew\'s policy is not writable', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      writable: false,
+      write_blocked: 'fleet_override',
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_blocked_fleet_override')),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('combobox', { name: i18nT('pages.settings.securityPanel.agent_identity_posture') }),
+    ).toHaveAttribute('data-disabled')
+    expect(
+      screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }),
+    ).toBeDisabled()
+  })
+
+  it('names an unreadable policy instead of guessing fleet or signed', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      writable: false,
+      write_blocked: 'unreadable',
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_blocked_unreadable')),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_not_writable')),
+    ).not.toBeInTheDocument()
+  })
+
+  it('summarises the authored posture on the rail', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'login',
+      workload_name: 'kirocrew-alpha',
+      source: 'policy',
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    expect(
+      await screen.findByText(
+        i18nT('pages.settings.securityPanel.agent_identity_rail', {
+          status: i18nT('pages.settings.securityPanel.agent_identity_posture_login'),
+        }),
+      ),
+    ).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('kirocrew-alpha')).toBeInTheDocument()
+  })
+
+  it('shows an allowlisted sign-in link when Gateway consent is pending', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'login',
+      source: 'policy',
+    })
+    ;(api.getAgentcoreConsent as ReturnType<typeof vi.fn>).mockResolvedValue({
+      pending: true,
+      url: 'https://github.com/login/oauth/authorize',
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    const link = await screen.findByRole('link', {
+      name: i18nT('pages.settings.securityPanel.agent_identity_consent_open'),
+    })
+    expect(link).toHaveAttribute('href', 'https://github.com/login/oauth/authorize')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('saves an existing AgentCore Gateway URL for this crew', async () => {
+    ;(api.saveAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      gateway_url: 'https://gw.example.test/mcp',
+      workload_name: 'kirocrew-e2e',
+      restart_required: false,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    await pickIdentityPosture('workload')
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_name')),
+      { target: { value: 'kirocrew-e2e' } },
+    )
+    fireEvent.change(
+      screen.getByLabelText(i18nT('pages.settings.securityPanel.agent_identity_gateway_url')),
+      { target: { value: 'https://gw.example.test/mcp' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }))
+
+    await waitFor(() =>
+      expect(api.saveAgentcoreIdentity).toHaveBeenCalledWith({
+        posture: 'workload',
+        gateway_url: 'https://gw.example.test/mcp',
+        workload_name: 'kirocrew-e2e',
+      }),
+    )
+  })
+
+  it('refetches the Gateway catalog after identity save', async () => {
+    const configured = {
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload' as const,
+      source: 'policy',
+      extra_installed: true,
+      extra_code: 'ok',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      workload_name: 'kirocrew-e2e',
+    }
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue(configured)
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...CATALOG_IDLE,
+      code: 'ok',
+      posture: 'workload',
+      gateway_url: configured.gateway_url,
+    })
+    ;(api.saveAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...configured,
+      posture: 'login',
+      restart_required: false,
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_catalog'))
+    const before = (api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mock.calls.length
+    await pickIdentityPosture('login')
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_save') }))
+    await waitFor(() =>
+      expect((api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(before),
+    )
+  })
+
+  it('explains when this gateway cannot install AgentCore support', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      extra_installed: false,
+      extra_code: 'no_install_channel',
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_extra_missing_channel')),
+    ).toBeInTheDocument()
+  })
+
+  it('lists Gateway tools and verifies the connection', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      extra_installed: true,
+      extra_code: 'ok',
+    })
+    const catalog = {
+      code: 'ok',
+      posture: 'workload' as const,
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      gateway: {
+        id: 'demo-gw',
+        name: 'demo',
+        status: 'READY',
+        authorizer_type: 'AWS_IAM',
+        gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+        status_reasons: [],
+      },
+      targets: [
+        {
+          target_id: 't1',
+          name: 'docs',
+          target_type: 'MCP_SERVER',
+          status: 'READY',
+          listing_mode: 'DEFAULT',
+          last_synchronized_at: '2026-08-01T00:00:00Z',
+          pending_auth: false,
+          authorization_url: null,
+          syncable: true,
+          status_reasons: [],
+        },
+      ],
+      targets_error: null,
+      tools: { reachable: true, skip_reason: null, items: [{ name: 'search', description: 'find things' }] },
+      checks: [{ id: 'ready', ok: true, detail: 'READY' }],
+    }
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(catalog)
+    ;(api.verifyAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(catalog)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+
+    expect(await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_catalog'))).toBeInTheDocument()
+    expect(await screen.findByText('docs')).toBeInTheDocument()
+    expect(await screen.findByText('search')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_verify') }))
+    await waitFor(() => expect(api.verifyAgentcoreGateway).toHaveBeenCalled())
+    expect(api.syncAgentcoreGatewayTarget).not.toHaveBeenCalled()
+    expect(
+      screen.queryByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_sync') }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows a failed target status reason from the Gateway', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      extra_installed: true,
+      extra_code: 'ok',
+    })
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...CATALOG_IDLE,
+      code: 'ok',
+      posture: 'workload',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      targets: [
+        {
+          target_id: 'fail1',
+          name: 'public-docs',
+          target_type: 'MCP_SERVER',
+          status: 'FAILED',
+          listing_mode: 'DEFAULT',
+          last_synchronized_at: '',
+          pending_auth: false,
+          authorization_url: null,
+          syncable: true,
+          status_reasons: ['The MCP server endpoint hostname could not be resolved.'],
+        },
+      ],
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    expect(await screen.findByText('public-docs')).toBeInTheDocument()
+    expect(screen.getByText('FAILED')).toBeInTheDocument()
+    expect(
+      screen.getByText('The MCP server endpoint hostname could not be resolved.'),
+    ).toBeInTheDocument()
+  })
+
+  it('explains when the workload identity name cannot vend a token', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      extra_installed: true,
+      extra_code: 'ok',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      workload_name: 'kirocrew-e2e-n9pk1rdrea',
+    })
+    const catalog = {
+      ...CATALOG_IDLE,
+      code: 'ok',
+      posture: 'workload' as const,
+      workload_name: 'kirocrew-e2e-n9pk1rdrea',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      checks: [{ id: 'identity', ok: false, detail: 'service_linked' }],
+    }
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(catalog)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    expect(
+      await screen.findAllByText(i18nT('pages.settings.securityPanel.agent_identity_code_service_linked')),
+    ).not.toHaveLength(0)
+    expect(
+      screen.getByText(i18nT('pages.settings.securityPanel.agent_identity_check_identity'), {
+        exact: false,
+      }),
+    ).toBeInTheDocument()
+  })
+
+  it('explains when the local SigV4 proxy cannot start', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      extra_installed: true,
+      extra_code: 'ok',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      workload_name: 'kirocrew-e2e',
+    })
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...CATALOG_IDLE,
+      code: 'ok',
+      posture: 'workload',
+      workload_name: 'kirocrew-e2e',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      tools: { reachable: false, skip_reason: 'proxy_unavailable', items: [], via: null },
+      checks: [{ id: 'tools', ok: false, detail: 'proxy_unavailable' }],
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    expect(
+      await screen.findAllByText(
+        i18nT('pages.settings.securityPanel.agent_identity_code_proxy_unavailable'),
+      ),
+    ).not.toHaveLength(0)
+  })
+
+  it('explains when this crew cannot invoke the Gateway', async () => {
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      extra_installed: true,
+      extra_code: 'ok',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      workload_name: 'kirocrew-e2e',
+    })
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...CATALOG_IDLE,
+      code: 'ok',
+      posture: 'workload',
+      workload_name: 'kirocrew-e2e',
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      tools: { reachable: false, skip_reason: 'tools_denied', items: [], via: null },
+      checks: [{ id: 'invoke_scope', ok: false, detail: 'invoke_denied' }],
+    })
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    expect(
+      await screen.findAllByText(
+        i18nT('pages.settings.securityPanel.agent_identity_code_invoke_denied'),
+      ),
+    ).not.toHaveLength(0)
+  })
+
+  it('names an empty catalog when checks passed, and stays quiet when a check failed', async () => {
+    const greenEmpty = {
+      ...CATALOG_IDLE,
+      code: 'ok' as const,
+      posture: 'workload' as const,
+      gateway_url: 'https://demo-gw.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp',
+      tools: { reachable: true, skip_reason: null, items: [], via: null },
+      checks: [
+        { id: 'authorizer', ok: true, detail: 'IAM' },
+        { id: 'invoke_scope', ok: true, detail: 'ok' },
+      ],
+    }
+    ;(api.getAgentcoreIdentity as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...IDENTITY_UNSET,
+      configured: true,
+      posture: 'workload',
+      source: 'policy',
+      extra_installed: true,
+      extra_code: 'ok',
+      gateway_url: greenEmpty.gateway_url,
+      workload_name: 'kirocrew-e2e',
+    })
+    ;(api.getAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue(greenEmpty)
+    renderWithProviders(<SecurityPanel />, { route: '/?section=identity' })
+    expect(
+      await screen.findByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty')),
+    ).not.toBeInTheDocument()
+
+    ;(api.verifyAgentcoreGateway as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...greenEmpty,
+      checks: [{ id: 'authorizer', ok: false, detail: 'mismatch' }],
+    })
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.securityPanel.agent_identity_verify') }))
+    await waitFor(() => {
+      expect(
+        screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty_checks_ok')),
+      ).not.toBeInTheDocument()
+    })
+    expect(
+      screen.queryByText(i18nT('pages.settings.securityPanel.agent_identity_tools_empty')),
+    ).not.toBeInTheDocument()
   })
 })

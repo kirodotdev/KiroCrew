@@ -24,9 +24,13 @@ from kiro_crew.platform.governance import assert_governance_paths_protected
 # location.
 _GOV_FILES = (
     "~/.kiro/crew/security_policy.json",
+    "~/.kiro/crew/security_policy.json.lock",
+    "~/.kiro/crew/security_policy.json.tmp",
     "~/.kiro/crew/profiles/app-deploy-web.json",
     "~/.kiro/crew/admission_policy.json",
     "~/.kirocrew/security_policy.json",
+    "~/.kirocrew/security_policy.json.lock",
+    "~/.kirocrew/security_policy.json.tmp",
     "~/.kirocrew/profiles/app-deploy-web.json",
     "~/.kirocrew/admission_policy.json",
 )
@@ -103,7 +107,11 @@ def test_agent_fs_write_to_run_marker_denied_at_gate():
     "cmd",
     [
         "tee ~/.kiro/crew/security_policy.json",
+        "tee ~/.kiro/crew/security_policy.json.lock",
+        "tee ~/.kiro/crew/security_policy.json.tmp",
         "mv /tmp/evil.json ~/.kiro/crew/security_policy.json",
+        "mv /tmp/evil.lock ~/.kiro/crew/security_policy.json.lock",
+        "mv /tmp/evil.tmp ~/.kiro/crew/security_policy.json.tmp",
         "sed -i s/deny/allow/ ~/.kiro/crew/security_policy.json",
         "ln -sf /tmp/evil ~/.kiro/crew/profiles/app.json",
         "truncate -s0 ~/.kiro/crew/admission_policy.json",

@@ -499,6 +499,18 @@ after a child teardown); `HOST_SESSION_KEY` (`_host`) is the
 owner-dashboard catalog path and is never an ACP session. A missing session header
 or unbound proxy token is 401 and SEL-audited
 (`agentcore.sigv4_proxy`, denied) before the response is sent.
+`proxy.stop` closes still-closeable sockets — including an
+authorized hop that has already begun streaming — and any upstream
+connections, and the body read polls `_stopping` on
+`PROXY_BODY_IDLE_SECS` via `select` so Windows `rfile.read` cannot
+pin Save after `shutdown(SHUT_RDWR)` and an idle upload cannot
+time out the makefile. A silent stall (select never ready, TCP
+still open) raises after `PROXY_SOCKET_TIMEOUT_SECS` of no bytes
+so one of 16 handler slots cannot pin forever. `_forward` connects the upstream client first,
+then under the in-flight lock aborts with 503 if `stop()` already
+ran; otherwise it registers the connected client before `request()`
+so a revoked hop cannot open a new upstream after the set was
+cleared.
 Shared-runtime
 children (`create_session` / `load_session`) inject Gateway under
 the session's `crew_agent` argument, not the parent runtime's

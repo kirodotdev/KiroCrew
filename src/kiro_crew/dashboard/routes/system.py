@@ -124,10 +124,10 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/computer-use/config", handlers.api_computer_use_config_get)
     app.router.add_put("/api/computer-use/config", handlers.api_computer_use_config_save)
 
-    # This-crew AgentCore Gateway catalog (owner dashboard). The inspect
-    # and consent subsystems (and boto3 behind inspect) are imported on
-    # the FIRST request, never at boot — same rule as kas-login /
-    # session-control. Identity GET/PUT is a later PR; it reuses this wrapper.
+    # This-crew AgentCore Gateway catalog + identity (owner dashboard).
+    # Inspect, consent, and identity (and boto3 behind inspect) are imported
+    # on the FIRST request, never at boot — same rule as kas-login /
+    # session-control.
     def _lazy_agentcore(handler_name: str, module: str = "agentcore_inspect"):
         async def _dispatch(request: web.Request) -> web.StreamResponse:
             mod = importlib.import_module(f"kiro_crew.dashboard.handlers.{module}")
@@ -146,6 +146,14 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/agentcore/consent",
         _lazy_agentcore("api_agentcore_consent_get", "agentcore_consent"),
+    )
+    app.router.add_get(
+        "/api/agentcore/identity",
+        _lazy_agentcore("api_agentcore_identity_get", "agentcore_identity"),
+    )
+    app.router.add_put(
+        "/api/agentcore/identity",
+        _lazy_agentcore("api_agentcore_identity_save", "agentcore_identity"),
     )
 
     # Paid-AWS-service consent (Settings > Voice). Browser-called and

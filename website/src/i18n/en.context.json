@@ -269,6 +269,7 @@
     "pages.settings.notificationsPanel.test_sound": "Button in the Sound settings card that plays a sample of the current fallback notification sound at the current volume. \"Test\" is the VERB (try it out); phrase as an imperative action like the sibling per-category \"Test\" buttons. It only plays a tone — no notification is created or delivered, which is why the English says \"sound\".",
     "pages.settings.securityPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "pages.settings.securityPanel.off": "State value meaning disabled. Not the preposition or the adverb.",
+    "pages.settings.securityPanel.agent_identity_posture_none": "Posture picker option meaning AgentCore identity is disabled for this crew. The adjective/state, not the preposition or the adverb.",
     "pages.settings.securityPanel.tailnet_state_off": "State badge on the Tailnet origin card meaning the setting is disabled, so no tailnet name is in the dashboard origin allow-list. Sits beside \"Active\" and \"Not resolved\" as one of four states. The adjective/state, not the preposition or the adverb.",
     "pages.settings.slackPanel.add": "Verb on a button: add an entry to the list beside it. If the target language needs an object, name the thing being added.",
     "pages.settings.sttSettings.dictation_panel": "Label for the toggle in Settings > Voice that switches the recording UI between the animated dictation panel and the thin status bar.",

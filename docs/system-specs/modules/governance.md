@@ -2169,7 +2169,9 @@ capability is enabled with a known value; `None` when the ceiling is missing,
 the capability is omitted, disabled, or fail-closed-disabled.
 
 `gateway_url` (https MCP URL, no credentials, no fragment, no internal
-whitespace) and `workload_name`
+whitespace; owner-dashboard PUT also requires
+`is_agentcore_gateway_url` so login cannot attach a user JWT to an
+attacker host) and `workload_name`
 (3–255 of `[A-Za-z0-9_.-]`) are the same policy-only shape. Validators live
 in `platform/agentcore_schema.py` so policy parse does not import AWS.
 Consumption ANDs three conjuncts: the `agent_identity` adapter is on,
@@ -2178,7 +2180,34 @@ is a known value. The public `DefaultAgentIdentityProvider` is disabled, so a
 standalone host with no policy is unchanged. Standalone boot may swap
 `agent_identity` for the optional AWS adapter when that extra is opted in.
 Workload rebuild / `session/new` consult this row for Gateway MCP inject
-onto a localhost SigV4 proxy. Login posture writes a per-session `0600`
+onto a localhost SigV4 proxy. Save → Off drains live providers
+before `reload_provider_factory` so bounded `_safe_shutdown` owns
+teardown (and still runs on those drained providers if reload
+raises, so a leftover JWT cannot stay usable). Off, Login, and Workload all
+revoke those sessions and the proxy when `apply_agentcore_runtime`
+returns False (policy reload failed); PUT is 503
+`runtime_apply_failed` so a 200 cannot mean a persisted identity
+while IAM Gateway sessions remain. A
+`reload_provider_factory` error after persist is 503
+`agent_rebuild_failed`, not HTTP 500. It then waits for
+`reset_workload_proxy` to finish
+`proxy.stop` (off the loop via `asyncio.to_thread`) so a revoked
+session cannot still receive a Gateway response. In-flight sockets
+stay closeable through signing and the upstream stream so
+Save → Off can revoke a long-lived GET/SSE; `stop()` closes those
+sockets and any upstream connections rather than waiting a signed
+hop out. Header-valid but incomplete uploads, and unauthed sockets,
+are closed at stop so they cannot pin Save for
+`PROXY_SOCKET_TIMEOUT_SECS`. The body read polls `_stopping` on
+`select` (`PROXY_BODY_IDLE_SECS`) because Windows `rfile.read` is
+not unblocked promptly by `shutdown(SHUT_RDWR)` from another
+thread, and a short socket timeout would leave the makefile
+unusable after an idle pause. Both the body-read and upstream
+stream loops still raise after `PROXY_SOCKET_TIMEOUT_SECS` of no
+bytes so a silently stalled peer cannot hold a handler slot.
+New accepts recheck `_stopping` under
+the same lock that tracks those sockets. Login
+posture writes a per-session `0600`
 inbound sidecar (JWT or URL-only OAuth challenge) after bind — an
 already-expired JWT is treated as absent, not written — withholds
 non-managed MCP from the emitted `--agent` spec at rebuild and from
@@ -2253,7 +2282,35 @@ consent GET both go through `surface_consent_url`, which SEL-audits grant
 and deny (host+path only, never token bytes). A nonempty query requires
 both `client_id` and `redirect_uri` bound (`redirect_uri` to loopback
 http(s), `client_id` to that operator entry's `client_ids`); a
-query-bearing builtin URL is refused. Naming the
+query-bearing builtin URL is refused.
+Dashboard identity PUT refuses a cache-only
+distribution child (`KIROCREW_POLICY_CACHE_ONLY`) the same way as a
+fleet URL, refuses the write when `require_policy_signature` is set
+in the admission policy (so an unsigned home file cannot hot-apply
+onto a mandated-signature ceiling), and locks
+`security_policy.json.lock` around the home-file write. The rewrite creates `security_policy.json.tmp` exclusively
+and without following a link (also on the sensitive-path floor),
+locks the empty staging file down, writes every byte, `fsync`s before
+close, and refuses a zero-length write so a short `os.write` cannot
+install a truncated keystone. Publish retries
+the Windows sharing-violation window (`replace_with_retry`) and
+fsyncs the parent directory after each committed replace (and after
+a first-write rollback unlink) so a power loss cannot leave the old
+or missing policy. It unlinks the created staging file if lockdown
+or replace fails, so a
+stranded exclusive `.tmp` cannot brick later Saves. Dest-lockdown
+failure after replace rolls back through that same
+`security_policy.json.tmp` leaf (never a `.restore` sibling outside
+the floor). An existing dest that cannot be snapshotted aborts
+before replace. A first write with no previous file unlinks dest so a
+failed Save cannot leave the requested policy active
+(`unlink_with_retry`, same Windows sharing-violation budget as
+publish, then dest must be gone); if
+tmp+replace cannot land the snapshot, dest is overwritten in place
+and the snapshot is re-read before `write_failed` returns, so the
+rejected replacement cannot stay installed. A leftover regular
+`.tmp` under the exclusive flock is reclaimed; a planted staging link
+cannot become the policy. Naming the
 row here is what lets a policy pin the capability before those chokepoints
 land.
 

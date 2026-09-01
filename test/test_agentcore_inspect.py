@@ -726,8 +726,18 @@ async def test_handler_refuses_when_capability_disabled(
 
 
 @pytest.mark.asyncio
+async def test_handler_sync_requires_operator_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    _handler_isolate(monkeypatch)
+    monkeypatch.delenv(handler.GATEWAY_SYNC_ENV, raising=False)
+    resp = await handler.api_agentcore_gateway_sync(_Req({"target_id": "t1"}))
+    assert resp.status == 403
+    assert json.loads(resp.text)["code"] == "sync_not_permitted"
+
+
+@pytest.mark.asyncio
 async def test_handler_sync_requires_target_id(monkeypatch: pytest.MonkeyPatch) -> None:
     _handler_isolate(monkeypatch)
+    monkeypatch.setenv(handler.GATEWAY_SYNC_ENV, "1")
     resp = await handler.api_agentcore_gateway_sync(_Req({}))
     assert resp.status == 400
     assert json.loads(resp.text)["code"] == "invalid_target"
@@ -796,6 +806,10 @@ def test_parse_gateway_ref_rejects_unusable_hosts() -> None:
     assert inspect.parse_gateway_ref("") is None
     assert inspect.parse_gateway_ref("http://gw.example/mcp") is None
     assert inspect.parse_gateway_ref("https://example.com/mcp") is None
+    assert (
+        inspect.parse_gateway_ref("https://.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp")
+        is None
+    )
     parsed = inspect.parse_gateway_ref(GW_URL)
     assert parsed is not None
     assert parsed["id"] == "demo-gw"
@@ -816,6 +830,23 @@ def test_inspect_snapshot_unusable_and_missing_client(monkeypatch: pytest.Monkey
     monkeypatch.setattr(inspect, "_control_client", lambda region: None)
     snap = inspect.inspect_snapshot()
     assert snap["code"] == inspect.SNAPSHOT_EXTRA_MISSING
+
+
+def test_parse_mcp_json_shapes() -> None:
+    assert inspect._parse_mcp_json(b"") == {}
+    assert inspect._parse_mcp_json(b"[]") == {}
+    assert inspect._parse_mcp_json(b'{"ok": true}') == {"ok": True}
+    assert inspect._parse_mcp_json(b'event: x\ndata: {"id": 1}\n') == {"id": 1}
+    assert inspect._parse_mcp_json(b"data: not-json\n") == {}
+
+
+def test_mcp_post_refuses_remote_host() -> None:
+    with pytest.raises(ValueError, match="localhost-only"):
+        inspect._mcp_post(
+            "https://abc.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp",
+            "us-west-2",
+            {"jsonrpc": "2.0"},
+        )
 
 
 def test_handler_audit_logs_and_swallows_sel_errors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -899,6 +930,7 @@ async def test_handler_sync_rejects_bad_json_and_non_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _handler_isolate(monkeypatch)
+    monkeypatch.setenv(handler.GATEWAY_SYNC_ENV, "1")
     resp = await handler.api_agentcore_gateway_sync(_Req(ValueError("bad json")))
     assert resp.status == 400
     assert json.loads(resp.text)["code"] == "invalid_json"
@@ -913,6 +945,7 @@ async def test_handler_sync_maps_synchronize_codes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _handler_isolate(monkeypatch)
+    monkeypatch.setenv(handler.GATEWAY_SYNC_ENV, "1")
     codes = [
         ("accepted", 200),
         ("aws_denied", 403),

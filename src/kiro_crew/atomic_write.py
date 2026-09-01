@@ -358,6 +358,60 @@ def read_bytes_with_retry(path: Path | str) -> bytes:
     return target.read_bytes()
 
 
+def unlink_with_retry(path: Path | str, *, missing_ok: bool = False) -> None:
+    """``Path.unlink()``, retrying the Windows sharing-violation window.
+
+    The delete-side twin of :func:`replace_with_retry`. On Windows a file
+    cannot be deleted while another handle holds it without
+    ``FILE_SHARE_DELETE``, which Python's open does not grant, so
+    ``Path.unlink`` raises ``PermissionError`` (``WinError 32``). POSIX
+    permits deleting an open file.
+
+    Shares :data:`_REPLACE_MAX_ATTEMPTS` / :data:`_REPLACE_BACKOFF_SECONDS`
+    with the rename and read retries: all three bound the same transient.
+
+    ``FileNotFoundError`` is not retried — dest is already gone.
+    ``missing_ok=True`` swallows that the same way ``Path.unlink`` does.
+
+    On POSIX a ``PermissionError`` is a genuine access fault and is
+    re-raised immediately. The retry is gated off the event loop: a
+    caller on the gateway loop gets a single attempt rather than
+    sleeping the one loop for the whole budget.
+    """
+    target = Path(path)
+    for attempt in range(_REPLACE_MAX_ATTEMPTS - 1):
+        try:
+            target.unlink()
+            return
+        except FileNotFoundError:
+            if missing_ok:
+                return
+            raise
+        except PermissionError:
+            if not platform_compat.IS_WINDOWS:
+                raise
+            if on_event_loop():
+                logger.debug(
+                    "unlink contended at %s on the event loop; re-raising "
+                    "instead of sleeping (offload the delete to retry)",
+                    target,
+                )
+                raise
+            logger.debug(
+                "unlink contended at %s; retrying (attempt %d/%d)",
+                target,
+                attempt + 1,
+                _REPLACE_MAX_ATTEMPTS,
+            )
+            time.sleep(_REPLACE_BACKOFF_SECONDS)
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        if missing_ok:
+            return
+        raise
+
+
 def _resolved_or_none(path: Path) -> Path | None:
     """``path.resolve()``, or ``None`` when the platform cannot resolve it.
 

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import socket
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Any
@@ -181,7 +185,7 @@ def test_proxy_bounds_inflight_and_inbound_reads() -> None:
     assert "BoundedSemaphore(PROXY_MAX_INFLIGHT)" in start_src
     assert "self.connection.settimeout(PROXY_SOCKET_TIMEOUT_SECS)" in handle_src
     assert 'send_error(408, "Request Timeout")' in handle_src
-    read_at = handle_src.index("self.rfile.read")
+    read_at = handle_src.index("_read_request_body")
     recheck_at = handle_src.index("_workload_proxy_still_permitted")
     assert read_at < recheck_at
 
@@ -457,6 +461,7 @@ def test_proxy_refuses_after_capability_revoked(
     monkeypatch.setattr(
         sigv4, "_workload_proxy_still_permitted", lambda session_key="", **_k: False
     )
+    monkeypatch.setattr(sigv4, "preferred_bind_port", lambda: 0)
     proxy = sigv4.GatewaySigV4Proxy(
         f"http://{host}:{port}/mcp", region="us-east-1", require_https=False
     )
@@ -648,7 +653,7 @@ def test_proxy_rechecks_permission_after_body_read() -> None:
     from kiro_crew.platform.agentcore_sigv4 import GatewaySigV4Proxy
 
     src = inspect.getsource(GatewaySigV4Proxy._handler_class)
-    body = src.index("self.rfile.read")
+    body = src.index("_read_request_body")
     check = src.rindex("_workload_proxy_still_permitted")
     sign = src.index("sign_aws_request")
     assert body < check < sign
@@ -868,3 +873,456 @@ def test_proxy_401_is_sel_audited(monkeypatch: pytest.MonkeyPatch) -> None:
         assert (session_key, False, "proxy_auth") in seen
     finally:
         proxy.stop()
+
+
+def test_reset_workload_proxy_waits_for_stop() -> None:
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    order: list[str] = []
+
+    class _Rec:
+        def stop(self) -> None:
+            order.append("stop")
+
+    sigv4.reset_workload_proxy()
+    with sigv4._LOCK:
+        sigv4._PROXY = _Rec()  # type: ignore[assignment]
+    sigv4.reset_workload_proxy()
+    order.append("return")
+    assert order == ["stop", "return"]
+    with sigv4._LOCK:
+        assert sigv4._PROXY is None
+
+
+def test_proxy_stop_waits_for_in_flight_handler_slots() -> None:
+    from kiro_crew.platform.agentcore_sigv4 import (
+        PROXY_MAX_INFLIGHT,
+        GatewaySigV4Proxy,
+    )
+
+    slots = threading.BoundedSemaphore(PROXY_MAX_INFLIGHT)
+    assert slots.acquire(blocking=False)
+    proxy = GatewaySigV4Proxy("https://abc.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp")
+    proxy._handler_slots = slots
+    order: list[str] = []
+
+    def _release() -> None:
+        time.sleep(0.05)
+        order.append("release")
+        slots.release()
+
+    thread = Thread(target=_release)
+    thread.start()
+    proxy.stop()
+    order.append("stopped")
+    thread.join()
+    assert order == ["release", "stopped"]
+
+
+def test_proxy_stop_acquires_every_slot_without_deadline() -> None:
+    from kiro_crew.platform.agentcore_sigv4 import (
+        PROXY_MAX_INFLIGHT,
+        GatewaySigV4Proxy,
+    )
+
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    class _Slots:
+        def acquire(self, *args: Any, **kwargs: Any) -> bool:
+            calls.append((args, kwargs))
+            return True
+
+    proxy = GatewaySigV4Proxy("https://abc.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp")
+    proxy._handler_slots = _Slots()  # type: ignore[assignment]
+    proxy.stop()
+    assert len(calls) == PROXY_MAX_INFLIGHT
+    assert all(args == () and kwargs == {} for args, kwargs in calls)
+
+
+def test_proxy_stop_closes_unauthed_sockets() -> None:
+    from kiro_crew.platform.agentcore_sigv4 import GatewaySigV4Proxy
+
+    closed: list[object] = []
+
+    class _Sock:
+        def close(self) -> None:
+            closed.append(self)
+
+    sock = _Sock()
+    proxy = GatewaySigV4Proxy("https://abc.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp")
+    proxy._unauthed_requests.add(sock)
+    proxy.stop()
+    assert closed == [sock]
+    assert proxy._unauthed_requests == set()
+
+
+def test_read_request_body_aborts_immediately_when_stopping() -> None:
+    from kiro_crew.platform.agentcore_sigv4 import _read_request_body
+
+    class _RFile:
+        def read(self, n: int) -> bytes:
+            time.sleep(30)
+            return b"x" * n
+
+    class _Sock:
+        def gettimeout(self) -> float:
+            return 300.0
+
+        def settimeout(self, _t: float) -> None:
+            return None
+
+    started = time.monotonic()
+    with pytest.raises(OSError, match="stopping"):
+        _read_request_body(_RFile(), _Sock(), 64, stopping=lambda: True)
+    assert time.monotonic() - started < 1.0
+
+
+def test_read_request_body_retries_after_idle_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    reads = {"n": 0}
+    selects = {"n": 0}
+
+    class _Sock:
+        def __init__(self) -> None:
+            self.timeout = 300.0
+            self.timeouts: list[float] = []
+
+        def fileno(self) -> int:
+            return 7
+
+        def gettimeout(self) -> float:
+            return self.timeout
+
+        def settimeout(self, value: float) -> None:
+            self.timeouts.append(value)
+            self.timeout = value
+
+    class _RFile:
+        def __init__(self, sock: _Sock) -> None:
+            self._sock = sock
+
+        def read1(self, n: int) -> bytes:
+            reads["n"] += 1
+            if self._sock.timeout == 0:
+                raise BlockingIOError()
+            return b"abc"
+
+    def _select(
+        _r: object, _w: object, _x: object, _timeout: float
+    ) -> tuple[list[object], list[object], list[object]]:
+        selects["n"] += 1
+        if selects["n"] == 1:
+            return [], [], []
+        return [object()], [], []
+
+    monkeypatch.setattr(sigv4.select, "select", _select)
+    sock = _Sock()
+    body = sigv4._read_request_body(_RFile(sock), sock, 3, stopping=lambda: False)
+    assert body == b"abc"
+    assert reads["n"] == 3
+    assert selects["n"] >= 2
+    assert sigv4.PROXY_BODY_IDLE_SECS not in sock.timeouts
+
+
+def test_read_request_body_silent_stall_hits_socket_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    monkeypatch.setattr(sigv4, "PROXY_SOCKET_TIMEOUT_SECS", 0.0)
+    monkeypatch.setattr(sigv4.select, "select", lambda *_a: ([], [], []))
+
+    class _Sock:
+        def __init__(self) -> None:
+            self.timeout = 300.0
+
+        def fileno(self) -> int:
+            return 7
+
+        def gettimeout(self) -> float:
+            return self.timeout
+
+        def settimeout(self, value: float) -> None:
+            self.timeout = value
+
+    class _RFile:
+        def __init__(self, sock: _Sock) -> None:
+            self._sock = sock
+
+        def read1(self, n: int) -> bytes:
+            if self._sock.timeout == 0:
+                raise BlockingIOError()
+            raise AssertionError("blocking read must not run on a silent stall")
+
+    sock = _Sock()
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="idle timeout"):
+        sigv4._read_request_body(_RFile(sock), sock, 64, stopping=lambda: False)
+    assert time.monotonic() - started < 1.0
+
+
+def test_forward_stream_silent_stall_hits_socket_timeout() -> None:
+    import inspect
+
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    src = inspect.getsource(sigv4._read_request_body)
+    forward = inspect.getsource(sigv4.GatewaySigV4Proxy._forward)
+    assert "PROXY_SOCKET_TIMEOUT_SECS" in src
+    assert "PROXY_SOCKET_TIMEOUT_SECS" in forward
+    assert "except TimeoutError:" not in src
+    assert "except TimeoutError:" not in forward
+
+
+def test_read_request_body_does_not_timeout_buffered_reader() -> None:
+    import inspect
+
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    src = inspect.getsource(sigv4._read_request_body)
+    forward = inspect.getsource(sigv4.GatewaySigV4Proxy._forward)
+    assert "except TimeoutError:" not in src
+    assert "except TimeoutError:" not in forward
+    assert "_socket_readable" in src
+    assert "_socket_readable" in forward
+
+
+def test_proxy_stop_closes_authenticated_incomplete_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valid proxy headers + incomplete body must not stall Save → Off."""
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    monkeypatch.setattr(sigv4, "preferred_bind_port", lambda: 0)
+    monkeypatch.setattr(sigv4, "_workload_proxy_still_permitted", lambda session_key="", **_k: True)
+    proxy = sigv4.GatewaySigV4Proxy(
+        "http://127.0.0.1:9/mcp",
+        region="us-east-1",
+        require_https=False,
+    )
+    sock: socket.socket | None = None
+    try:
+        listen = proxy.start()
+        port = int(listen.rsplit(":", 1)[1].split("/", 1)[0])
+        session_key = "agent:main:main"
+        token = sigv4.bound_proxy_auth_token(proxy.client_token, session_key)
+        sock = socket.create_connection(("127.0.0.1", port), timeout=2)
+        sock.sendall(
+            (
+                "POST /mcp HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"{sigv4.PROXY_AUTH_HEADER}: {token}\r\n"
+                f"{sigv4.PROXY_SESSION_HEADER}: {session_key}\r\n"
+                "Content-Length: 64\r\n"
+                "\r\n"
+            ).encode()
+        )
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not proxy._unauthed_requests:
+            time.sleep(0.01)
+        assert proxy._unauthed_requests
+        started = time.monotonic()
+        proxy.stop()
+        assert time.monotonic() - started < 5.0
+        assert proxy._unauthed_requests == set()
+    finally:
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.close()
+        if proxy.alive:
+            proxy.stop()
+
+
+def test_proxy_keeps_authorized_socket_closeable() -> None:
+    """Save → Off must still close a hop that already passed permit."""
+    import inspect
+
+    from kiro_crew.platform.agentcore_sigv4 import GatewaySigV4Proxy
+
+    src = inspect.getsource(GatewaySigV4Proxy._handler_class)
+    check = src.rindex("_workload_proxy_still_permitted")
+    assert "unauthed_requests.discard(self.connection)" not in src[check:]
+
+
+def test_proxy_stop_closes_upstream_connections() -> None:
+    from kiro_crew.platform.agentcore_sigv4 import GatewaySigV4Proxy
+
+    closed: list[object] = []
+
+    class _Conn:
+        def close(self) -> None:
+            closed.append(self)
+
+    conn = _Conn()
+    proxy = GatewaySigV4Proxy("https://abc.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp")
+    proxy._upstream_conns.add(conn)
+    proxy.stop()
+    assert closed == [conn]
+    assert proxy._upstream_conns == set()
+
+
+def test_proxy_stop_closes_authorized_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An authorized hop must stay closeable so Save → Off cannot stall."""
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    monkeypatch.setattr(sigv4, "sign_aws_request", lambda **_k: {"Authorization": "t"})
+    monkeypatch.setattr(sigv4, "_workload_proxy_still_permitted", lambda session_key="", **_k: True)
+    monkeypatch.setattr(sigv4, "preferred_bind_port", lambda: 0)
+    proxy = sigv4.GatewaySigV4Proxy(
+        "http://127.0.0.1:9/mcp",
+        region="us-east-1",
+        require_https=False,
+    )
+    holding = threading.Event()
+
+    def _hold_forward(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+        target: str,
+        headers: Any,
+        body: bytes,
+    ) -> None:
+        holding.set()
+        deadline = time.time() + 30
+        while not proxy._stopping and time.time() < deadline:
+            time.sleep(0.05)
+
+    monkeypatch.setattr(proxy, "_forward", _hold_forward)
+    client: Thread | None = None
+    try:
+        listen = proxy.start()
+        session_key = "agent:main:main"
+
+        def _hold() -> None:
+            req = Request(
+                listen,
+                data=b"{}",
+                headers={
+                    "Content-Type": "application/json",
+                    sigv4.PROXY_AUTH_HEADER: sigv4.bound_proxy_auth_token(
+                        proxy.client_token, session_key
+                    ),
+                    sigv4.PROXY_SESSION_HEADER: session_key,
+                },
+                method="POST",
+            )
+            with contextlib.suppress(Exception):
+                urlopen(req, timeout=30)  # noqa: S310  # nosemgrep
+
+        client = Thread(target=_hold, daemon=True)
+        client.start()
+        assert holding.wait(5.0)
+        assert proxy._unauthed_requests
+        started = time.monotonic()
+        proxy.stop()
+        assert time.monotonic() - started < 5.0
+        assert proxy._unauthed_requests == set()
+    finally:
+        if client is not None:
+            client.join(timeout=2.0)
+        if proxy.alive:
+            proxy.stop()
+
+
+def test_sign_aws_request_requires_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.platform import agentcore_sigv4 as sigv4
+
+    class _Session:
+        def get_credentials(self) -> None:
+            return None
+
+    monkeypatch.setattr("botocore.session.Session", _Session)
+    with pytest.raises(RuntimeError, match="no AWS credentials"):
+        sigv4.sign_aws_request(
+            method="POST",
+            url="https://example.test/mcp",
+            headers={},
+            body=b"{}",
+            region="us-west-2",
+        )
+
+    class _Frozen:
+        access_key = "AKIATEST"
+        secret_key = "secret"
+        token = None
+
+    class _Creds:
+        def get_frozen_credentials(self) -> _Frozen:
+            return _Frozen()
+
+    headers = sigv4.sign_aws_request(
+        method="POST",
+        url="https://example.test/mcp",
+        headers={"Accept": "application/json"},
+        body=b"{}",
+        region="us-west-2",
+        credentials=_Creds(),
+    )
+    assert "Authorization" in headers
+
+
+def test_filter_incoming_headers_drops_hop_by_hop() -> None:
+    from kiro_crew.platform.agentcore_sigv4 import _filter_incoming_headers
+
+    out = _filter_incoming_headers(
+        {
+            "Accept": "application/json",
+            "Connection": "close",
+            "Keep-Alive": "timeout=5",
+            "X-Custom": "keep",
+        }
+    )
+    assert out == {"Accept": "application/json", "X-Custom": "keep"}
+
+
+def test_proxy_forward_connects_before_register() -> None:
+    """stop() must not leave a window where request() opens a new upstream."""
+    import inspect
+
+    from kiro_crew.platform.agentcore_sigv4 import GatewaySigV4Proxy
+
+    src = inspect.getsource(GatewaySigV4Proxy._forward)
+    assert src.index("conn.connect()") < src.index("_upstream_conns.add(conn)")
+    assert src.index("if self._stopping") < src.index("_upstream_conns.add(conn)")
+    assert src.index("_upstream_conns.add(conn)") < src.index("conn.request(")
+
+
+def test_proxy_forward_aborts_after_connect_when_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    from kiro_crew.platform.agentcore_sigv4 import GatewaySigV4Proxy
+
+    order: list[str] = []
+
+    class _Conn:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return
+
+        def connect(self) -> None:
+            order.append("connect")
+
+        def request(self, *args: object, **kwargs: object) -> None:
+            order.append("request")
+
+        def close(self) -> None:
+            order.append("close")
+
+        sock = None
+
+    class _Handler:
+        def send_error(self, code: int, message: str = "") -> None:
+            order.append(f"error-{code}")
+
+    monkeypatch.setattr(http.client, "HTTPConnection", _Conn)
+    proxy = GatewaySigV4Proxy("http://127.0.0.1:9/mcp", region="us-west-2", require_https=False)
+    proxy._stopping = True
+    proxy._forward(_Handler(), "POST", "http://127.0.0.1:9/mcp", {}, b"")
+    assert order == ["connect", "close", "error-503"]
+    assert proxy._upstream_conns == set()

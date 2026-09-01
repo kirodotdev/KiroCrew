@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Agent identity — Settings → Security</title>
+  <style>
+    :root {
+      --bg: #12141a;
+      --bg-elevated: #1a1d25;
+      --text: #e4e4e7;
+      --text-strong: #fafafa;
+      --muted: #7f7f88;
+      --border: #27272a;
+      --ok: #22c55e;
+      --warn: #eab308;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    .page { width: 720px; padding: 24px; }
+    h1 { font-size: 18px; color: var(--text-strong); margin: 0 0 6px; font-weight: 600; }
+    .crumb { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+    .card {
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+    }
+    .title { font-size: 13px; color: var(--text-strong); margin: 0 0 6px; }
+    .hint { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+    .field, select {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 7px 10px;
+      font: inherit;
+    }
+    .btn {
+      margin-top: 12px;
+      background: #27272a;
+      color: var(--text-strong);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 12px;
+      font: inherit;
+    }
+    ul { list-style: none; padding: 0; margin: 8px 0 12px; }
+    li { display: flex; gap: 8px; font-size: 12px; margin: 6px 0; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .tools { font-size: 12px; color: var(--muted); margin: 0; }
+    .caption { font-size: 11px; color: var(--muted); margin: 0 0 8px; letter-spacing: 0.02em; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Security</h1>
+    <p class="crumb">Settings → Security → Agent identity</p>
+
+    <section class="card" id="off">
+      <p class="caption">Off / unset</p>
+      <p class="title">Agent identity</p>
+      <p class="hint">This crew’s AgentCore identity. Workload mode can reach the Gateway without a login. Login mode only provides Gateway-approved MCP and needs a human sign-in. Off leaves this crew unchanged.</p>
+      <div class="muted" style="color:var(--muted);font-size:13px;margin-bottom:8px">This gateway has no workload name yet.</div>
+      <label>Identity</label>
+      <select><option>Off</option></select>
+    </section>
+
+    <section class="card" id="empty-ok">
+      <p class="caption">Workload · checks passed · empty catalog</p>
+      <p class="title">Gateway catalog</p>
+      <p class="hint">What this crew can see on the configured Gateway. Targets are the MCP servers, connectors, and other backends the Gateway publishes. Tools are the actions the agent can call.</p>
+      <p class="title">Connection checks</p>
+      <ul>
+        <li><span class="ok">●</span> Gateway URL is set</li>
+        <li><span class="ok">●</span> AgentCore support is installed</li>
+        <li><span class="ok">●</span> AWS can find this Gateway</li>
+        <li><span class="ok">●</span> Gateway is ready</li>
+        <li><span class="ok">●</span> Inbound auth matches this identity</li>
+        <li><span class="ok">●</span> This crew can call this Gateway</li>
+        <li><span class="ok">●</span> Tools are reachable</li>
+        <li><span class="ok">●</span> This crew can vend a workload token</li>
+      </ul>
+      <p class="title">Tools the agent can call</p>
+      <p class="tools">Checks passed, but this Gateway lists no tools. Add or sync a target, then verify again.</p>
+    </section>
+
+    <section class="card" id="login">
+      <p class="caption">Login · tools skipped until chat sign-in</p>
+      <p class="title">Gateway catalog</p>
+      <p class="hint">Login identity lists tools after someone signs in from a chat. This page cannot borrow that session.</p>
+      <p class="title">Connection checks</p>
+      <ul>
+        <li><span class="ok">●</span> Gateway URL is set</li>
+        <li><span class="ok">●</span> Inbound auth matches this identity</li>
+        <li><span class="ok">●</span> This crew can call this Gateway</li>
+      </ul>
+      <p class="title">Tools the agent can call</p>
+    </section>
+  </div>
+</body>
+</html>

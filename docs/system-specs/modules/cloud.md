@@ -123,15 +123,67 @@ session key that is no longer registered (shared-runtime leftover
 headers after child teardown), except `HOST_SESSION_KEY`. Catalog
 reads at most
 `TOOLS_LIST_MAX_BYTES + 1`, and rejects an oversized
-body rather than buffering an unbounded MCP reply. The extra does not create the
+body rather than buffering an unbounded MCP reply. ``proxy.stop``
+closes in-flight sockets (including authorized streams) and any
+upstream connections so Save → Off cannot wait forever on a
+long-lived GET/SSE, then drains handler slots. Incomplete-body reads
+poll ``_stopping`` on ``PROXY_BODY_IDLE_SECS`` via ``select``
+so a Windows ``rfile.read`` cannot hold the slot after
+``shutdown`` and a 250ms idle cannot time out the makefile.
+A silent stall still raises after ``PROXY_SOCKET_TIMEOUT_SECS``
+of no bytes so one of ``PROXY_MAX_INFLIGHT`` slots cannot pin
+forever.
+``_forward`` connects first, then under the lock aborts if
+``_stopping``; otherwise it registers the connected client
+before ``request()`` so a revoked hop cannot open a new
+upstream after ``stop()`` cleared the set. The extra does not create the
 Gateway or its targets — the operator supplies an existing MCP URL.
 
-See-and-configure on the dashboard is a later stack PR
+See-and-configure lives on this crew's dashboard
 (`GET`/`PUT /api/agentcore/identity`, Settings → Security → Agent identity).
+GET fills `workload_name` / `gateway_url` from launch env only when
+`source` is `env`; a policy row that omitted those fields stays empty
+so Save cannot persist stale process env into `security_policy.json`.
+Save → Off still persists any non-empty name/URL the operator
+submitted (including an env-only crew that had no home row) so
+re-enable does not drop the values Settings displayed.
+`_snapshot` reads the home `agentcore` row once so concurrent Save
+cannot stitch posture from one generation onto name/URL from the next.
 A hub launching another box is a different crew. Dashboard launch stays
 `none`; the operator passes `--agentcore-posture` on the CLI when the
 stack should create the AWS resource at deploy time, or writes the
-home-policy row.
+home-policy row. PUT answers 503 `agent_rebuild_failed` (and leaves
+live sessions in place) when the home file applied but
+`rebuild_agent_config` did not. Save → Off, Login, or Workload still revokes
+live sessions and the proxy when `apply_agentcore_runtime` returns
+False and answers 503 `runtime_apply_failed`. A session-revoke /
+`reload_provider_factory` error after persist is 503
+`agent_rebuild_failed`, not HTTP 500. Identity PUT also refuses cache-only
+distribution (`KIROCREW_POLICY_CACHE_ONLY`, same `write_blocked:
+distribution` as a fleet URL), refuses the write when
+`require_policy_signature` is set (`write_blocked:
+signature_required`), rejects a nonempty `gateway_url` unless
+`is_agentcore_gateway_url` (login must not attach a user JWT to an
+attacker host), and takes `security_policy.json.lock`
+around the home-file read-modify-write. A failed stage closes the
+staging handle before unlinking it, so Windows can remove the exclusive
+``.tmp`` leaf. The empty staging file is locked down before the first
+content byte, then ``os.fsync``'d before the descriptor closes, so a
+power loss cannot rename unflushed bytes. Publish uses ``replace_with_retry`` so a Windows
+sharing violation retries instead of stranding that leaf; lockdown or
+replace failure still unlinks the created staging file. A leftover
+regular ``.tmp`` (exclusive flock already held) is reclaimed; a
+staging link is still refused. Persist and apply take the dashboard config lock so
+overlapping Saves cannot stop a newer workload proxy. Successful apply stops the previous SigV4 listener, rebuilds
+(a workload apply starts a new listener), then recycles sessions.
+A workload apply does not stop the listener rebuild just started.
+Off / login still revoke the proxy after rebuild. Proxy stop, the
+owner gate, and every identity-handler SEL write are offloaded onto
+a worker thread so the settings request does not join
+`HTTPServer.shutdown` or first-use SEL mkdir on the event loop. `POST /api/agentcore/gateway/sync` is operator-gated
+(`KIROCREW_AGENTCORE_GATEWAY_SYNC=1`): the standard instance role
+omits `SynchronizeGatewayTargets`, and the dashboard catalog does
+not expose the action.
 
 The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry, and adds `--agentcore` when `AgentCorePosture` is not `none`. Voice

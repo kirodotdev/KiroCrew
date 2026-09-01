@@ -5449,6 +5449,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     "security_events.d",
     "app_admission.json",
     "security_policy.json",
+    # Exclusive lock taken by dashboard identity PUT. An agent-writable
+    # lock lets a prompt-injected process steal it or replace it with a
+    # followable link before the owner write.
+    "security_policy.json.lock",
+    # Fixed-name stage used by dashboard identity PUT. A random sibling
+    # in the data-home root is outside the floor; this leaf stays on it
+    # so the agent cannot swap the bytes before rename.
+    "security_policy.json.tmp",
     "profiles",
     # The centrally-distributed ceiling's last-known-good cache
     # (``platform/policy_distribution.py``). Gated as a DIRECTORY, and the reason

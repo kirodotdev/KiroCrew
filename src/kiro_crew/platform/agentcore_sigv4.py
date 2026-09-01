@@ -20,8 +20,11 @@ import logging
 import os
 import re
 import secrets
+import select
+import socket
 import ssl
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
 from urllib.parse import urlparse, urlunparse
@@ -38,9 +41,23 @@ PROXY_PREFERRED_PORT = 18765
 PROXY_PORT_ENV = "KIROCREW_AGENTCORE_PROXY_PORT"
 PROXY_BODY_MAX_BYTES = 16 * 1024 * 1024
 PROXY_SOCKET_TIMEOUT_SECS = 300.0
+# Incomplete-body reads poll this often so stop() can abort the
+# handler. A single rfile.read(n) on Windows is not unblocked
+# promptly by shutdown(SHUT_RDWR) from another thread (~120s).
+# This is a select() wait, never a socket read timeout: a
+# TimeoutError on a makefile / HTTPResponse leaves the buffer
+# unusable. A silent stall (select never ready, peer still open)
+# still raises after PROXY_SOCKET_TIMEOUT_SECS of no bytes.
+PROXY_BODY_IDLE_SECS = 0.25
+PROXY_BODY_READ_CHUNK = 65536
 # ThreadingHTTPServer is otherwise unbounded: one incomplete
 # Content-Length holds a thread until the process dies.
 PROXY_MAX_INFLIGHT = 16
+# Listener-thread join only. In-flight sockets stay closeable
+# through signing and upstream stream so Save → Off can revoke
+# a long-lived GET/SSE instead of waiting on slots.acquire.
+# stop() closes those sockets and any upstream conns.
+PROXY_STOP_DRAIN_SECS = 2.0
 # Per-boot token carried only in session-inject headers. Loopback is
 # same-host, not same-UID; without this the sandboxed agent can curl the
 # port and receive instance-role SigV4.
@@ -81,6 +98,140 @@ _ALLOWED_METHODS = frozenset({"GET", "POST", "DELETE", "HEAD"})
 
 _LOCK = threading.Lock()
 _PROXY: "GatewaySigV4Proxy | None" = None
+
+
+def _close_proxy_socket(sock: Any) -> None:
+    """Unblock a peer recv. ``close()`` alone can leave Darwin reads hung."""
+    with contextlib.suppress(OSError):
+        settimeout = getattr(sock, "settimeout", None)
+        if settimeout is not None:
+            settimeout(PROXY_BODY_IDLE_SECS)
+    with contextlib.suppress(OSError):
+        shutdown = getattr(sock, "shutdown", None)
+        if shutdown is not None:
+            shutdown(socket.SHUT_RDWR)
+    with contextlib.suppress(OSError):
+        sock.close()
+
+
+def _buffered_reader_ready(reader: Any) -> bool:
+    """True when a makefile/HTTPResponse already has bytes to return."""
+    for obj in (reader, getattr(reader, "fp", None), getattr(reader, "raw", None)):
+        if obj is None:
+            continue
+        pending = getattr(obj, "pending", None)
+        if callable(pending):
+            with contextlib.suppress(OSError):
+                if pending() > 0:
+                    return True
+        for attr in ("_read_buf", "_read", "_buffer"):
+            buf = getattr(obj, attr, None)
+            if isinstance(buf, (bytes, bytearray, memoryview)) and buf:
+                pos = getattr(obj, "_read_pos", 0) or 0
+                try:
+                    if len(buf) > int(pos):
+                        return True
+                except (TypeError, ValueError):
+                    return True
+    return False
+
+
+def _socket_readable(sock: Any, timeout: float) -> bool:
+    """True when *sock* has data, EOF, or is unusable. False on idle timeout.
+
+    Does not set a read timeout on the socket, so a later buffered
+    read cannot raise ``TimeoutError`` and leave the makefile unusable.
+    """
+    if sock is None:
+        return True
+    pending = getattr(sock, "pending", None)
+    if callable(pending):
+        with contextlib.suppress(OSError):
+            if pending() > 0:
+                return True
+    try:
+        ready, _, _ = select.select([sock], [], [], timeout)
+    except (OSError, ValueError, TypeError):
+        return True
+    return bool(ready)
+
+
+def _try_read_nonblocking(read_fn: Any, sock: Any, n: int) -> bytes | None:
+    """Drain leftover makefile bytes. ``None`` means the socket would block.
+
+    A timeout of 0 is a readiness probe, not an idle poll: either the
+    buffer already has bytes (read returns immediately) or recv raises
+    before the buffer is mutated.
+    """
+    if sock is None:
+        return None
+    old = None
+    try:
+        with contextlib.suppress(OSError):
+            old = sock.gettimeout()
+        with contextlib.suppress(OSError):
+            sock.settimeout(0)
+        try:
+            data = read_fn(n)
+        except (BlockingIOError, TimeoutError, InterruptedError):
+            return None
+        except ssl.SSLWantReadError:
+            return None
+        except ssl.SSLWantWriteError:
+            return None
+        # timeout=0 recv may return b"" instead of raising. That is
+        # would-block, not EOF — EOF is a blocking read after select.
+        if not data:
+            return None
+        return data
+    finally:
+        if old is not None:
+            with contextlib.suppress(OSError):
+                sock.settimeout(old)
+
+
+def _read_request_body(
+    rfile: Any,
+    sock: Any,
+    length: int,
+    *,
+    stopping: Any,
+) -> bytes:
+    """Read ``length`` bytes, waking so ``stop()`` can abort the handler.
+
+    ``rfile.read(n)`` on Windows keeps blocking after another thread
+    ``shutdown``s the accepted socket. ``select`` on the raw socket
+    lets the handler see *stopping* without timing out the makefile
+    (a ``TimeoutError`` on a buffered reader leaves it unusable).
+    """
+    if not length:
+        return b""
+    chunks: list[bytes] = []
+    remaining = length
+    read_fn = rfile.read1 if hasattr(rfile, "read1") else rfile.read
+    idle_started = time.monotonic()
+    while remaining > 0:
+        if stopping():
+            raise OSError("proxy stopping")
+        n = min(remaining, PROXY_BODY_READ_CHUNK)
+        if _buffered_reader_ready(rfile) or sock is None:
+            chunk = read_fn(n)
+        else:
+            leftover = _try_read_nonblocking(read_fn, sock, n)
+            if leftover is not None:
+                chunk = leftover
+            elif not _socket_readable(sock, PROXY_BODY_IDLE_SECS):
+                if time.monotonic() - idle_started >= PROXY_SOCKET_TIMEOUT_SECS:
+                    raise TimeoutError("proxy body idle timeout")
+                continue
+            else:
+                chunk = read_fn(n)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+        idle_started = time.monotonic()
+    return b"".join(chunks)
 
 
 def preferred_bind_port() -> int:
@@ -197,7 +348,12 @@ class GatewaySigV4Proxy:
         self.client_token = secrets.token_urlsafe(32)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._handler_slots: threading.BoundedSemaphore | None = None
         self._listen_url = ""
+        self._stopping = False
+        self._unauthed_lock = threading.Lock()
+        self._unauthed_requests: set[Any] = set()
+        self._upstream_conns: set[Any] = set()
 
     @property
     def listen_url(self) -> str:
@@ -211,8 +367,11 @@ class GatewaySigV4Proxy:
         """Bind the preferred loopback port (else ephemeral). Return the listen URL."""
         if self._httpd is not None:
             return self._listen_url
+        self._stopping = False
+        self._upstream_conns.clear()
         handler = self._handler_class()
         preferred = preferred_bind_port()
+        proxy = self
 
         class _BoundedProxyServer(ThreadingHTTPServer):
             def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -220,13 +379,25 @@ class GatewaySigV4Proxy:
                 super().__init__(*args, **kwargs)
 
             def process_request(self, request: Any, client_address: Any) -> None:
-                if not self._handler_slots.acquire(blocking=False):
-                    with contextlib.suppress(OSError):
-                        request.close()
+                if proxy._stopping:
+                    _close_proxy_socket(request)
                     return
+                if not self._handler_slots.acquire(blocking=False):
+                    _close_proxy_socket(request)
+                    return
+                with proxy._unauthed_lock:
+                    # Recheck under the same lock stop() copies from so a
+                    # request cannot register after drain has begun.
+                    if proxy._stopping:
+                        _close_proxy_socket(request)
+                        self._handler_slots.release()
+                        return
+                    proxy._unauthed_requests.add(request)
                 try:
                     super().process_request(request, client_address)
                 except Exception:
+                    with proxy._unauthed_lock:
+                        proxy._unauthed_requests.discard(request)
                     self._handler_slots.release()
                     raise
 
@@ -234,6 +405,8 @@ class GatewaySigV4Proxy:
                 try:
                     super().process_request_thread(request, client_address)
                 finally:
+                    with proxy._unauthed_lock:
+                        proxy._unauthed_requests.discard(request)
                     self._handler_slots.release()
 
         class _PreferredServer(_BoundedProxyServer):
@@ -260,6 +433,7 @@ class GatewaySigV4Proxy:
         port = httpd.server_address[1]
         path = self._upstream.path or "/mcp"
         self._httpd = httpd
+        self._handler_slots = httpd._handler_slots
         self._listen_url = f"http://{PROXY_HOST}:{port}{path}"
         thread = threading.Thread(
             target=httpd.serve_forever,
@@ -271,6 +445,22 @@ class GatewaySigV4Proxy:
         return self._listen_url
 
     def stop(self) -> None:
+        self._stopping = True
+        with self._unauthed_lock:
+            pending = list(self._unauthed_requests)
+            self._unauthed_requests.clear()
+            upstreams = list(self._upstream_conns)
+            self._upstream_conns.clear()
+        for req in pending:
+            _close_proxy_socket(req)
+        for conn in upstreams:
+            sock = getattr(conn, "sock", None)
+            if sock is not None:
+                _close_proxy_socket(sock)
+            with contextlib.suppress(OSError):
+                close = getattr(conn, "close", None)
+                if close is not None:
+                    close()
         httpd = self._httpd
         self._httpd = None
         self._listen_url = ""
@@ -282,7 +472,14 @@ class GatewaySigV4Proxy:
         thread = self._thread
         self._thread = None
         if thread is not None and thread.is_alive():
-            thread.join(timeout=2.0)
+            thread.join(timeout=PROXY_STOP_DRAIN_SECS)
+        slots = self._handler_slots
+        self._handler_slots = None
+        if slots is not None:
+            # Sockets and upstream conns were closed above so an
+            # authorized stream cannot pin a slot after revocation.
+            for _ in range(PROXY_MAX_INFLIGHT):
+                slots.acquire()
 
     def target_url(self, query: str) -> str:
         """Exact configured upstream + inbound query. Path is never client-chosen."""
@@ -348,7 +545,12 @@ class GatewaySigV4Proxy:
                     self.send_error(413, "Payload Too Large")
                     return
                 try:
-                    body = self.rfile.read(length) if length else b""
+                    body = _read_request_body(
+                        self.rfile,
+                        self.connection,
+                        length,
+                        stopping=lambda: proxy._stopping,
+                    )
                 except (TimeoutError, OSError):
                     self.send_error(408, "Request Timeout")
                     return
@@ -422,6 +624,19 @@ class GatewaySigV4Proxy:
         if parsed.query:
             path = f"{path}?{parsed.query}"
         try:
+            conn.connect()
+        except Exception:
+            with contextlib.suppress(OSError):
+                conn.close()
+            raise
+        with self._unauthed_lock:
+            if self._stopping:
+                with contextlib.suppress(OSError):
+                    conn.close()
+                handler.send_error(503, "Service Unavailable")
+                return
+            self._upstream_conns.add(conn)
+        try:
             conn.request(method, path, body=body, headers=dict(headers))
             resp = conn.getresponse()
             handler.send_response(resp.status, resp.reason)
@@ -433,18 +648,34 @@ class GatewaySigV4Proxy:
             handler.end_headers()
             setattr(handler, "_agentcore_headers_sent", True)
             if method != "HEAD":
+                sock = getattr(conn, "sock", None)
                 try:
-                    while True:
-                        chunk = resp.read1(65536)
+                    idle_started = time.monotonic()
+                    while not self._stopping:
+                        if _buffered_reader_ready(resp) or sock is None:
+                            chunk = resp.read1(65536)
+                        else:
+                            leftover = _try_read_nonblocking(resp.read1, sock, 65536)
+                            if leftover is not None:
+                                chunk = leftover
+                            elif not _socket_readable(sock, PROXY_BODY_IDLE_SECS):
+                                if time.monotonic() - idle_started >= PROXY_SOCKET_TIMEOUT_SECS:
+                                    raise TimeoutError("proxy upstream idle timeout")
+                                continue
+                            else:
+                                chunk = resp.read1(65536)
                         if not chunk:
                             break
                         handler.wfile.write(chunk)
                         handler.wfile.flush()
+                        idle_started = time.monotonic()
                 except OSError:
                     # Client or upstream dropped after headers. Do not
                     # re-raise into _handle — that path must not emit 502.
                     return
         finally:
+            with self._unauthed_lock:
+                self._upstream_conns.discard(conn)
             with contextlib.suppress(OSError):
                 conn.close()
 
@@ -483,12 +714,20 @@ def ensure_workload_proxy(upstream_url: str) -> str | None:
 
 
 def reset_workload_proxy() -> None:
-    """Stop the process-wide proxy. Tests only."""
+    """Stop the process-wide proxy and wait until the listener has drained.
+
+    ``HTTPServer.shutdown`` plus the listener join block. Callers on the
+    gateway loop (Settings PUT) must run this off the loop via
+    ``asyncio.to_thread`` so Save → Off cannot return while an in-flight
+    signed request still reaches Gateway.
+    """
     global _PROXY
     with _LOCK:
-        if _PROXY is not None:
-            _PROXY.stop()
-            _PROXY = None
+        proxy = _PROXY
+        _PROXY = None
+    if proxy is None:
+        return
+    proxy.stop()
 
 
 def workload_proxy_auth_token() -> str | None:
