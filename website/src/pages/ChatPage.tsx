@@ -254,7 +254,8 @@ import { focusComposer, focusComposerAfter, revealComposer } from './chat/compos
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip, Folder, X } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, MessageSquare, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip, Folder, X } from 'lucide-react'
+import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
@@ -7645,12 +7646,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               ))}
               </div>
               {/* Header fade — softens content passing up into the opaque title
-                  row, so it hangs off that row's bottom edge. Absolutely
-                  positioned rather than in flow: as an in-flow sibling its 24px
-                  consumed layout and pushed the pinned card that far off the
-                  header. Out of flow it overlays the transcript instead, and the
-                  pinned card (painted later, and positioned) sits above it. */}
-              <div aria-hidden className="absolute top-full inset-x-0 h-6 bg-gradient-to-b from-bg to-transparent" />
+                  row, so it hangs off that row's bottom edge (anchor="below":
+                  as an in-flow sibling its 24px consumed layout and pushed the
+                  pinned card that far off the header; out of flow it overlays
+                  the transcript and the pinned card paints above it). */}
+              <EdgeFade side="top" anchor="below" />
               </div>
               {/* Fold sentinel — zero-height, always mounted. Its top edge is the
                   line the pinned prompt sticks to (see updatePinnedPrompt). */}
@@ -7945,15 +7945,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               }}
             />
             <div className="relative">
-              {!isAtBottom && messages.length > 0 && (
-                <div className="absolute -top-10 inset-x-0 z-10 pointer-events-none flex justify-center">
-                  <button
-                    className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer pointer-events-auto transition-all duration-200 bg-bg-elevated border border-border-strong text-text hover:bg-bg-hover hover:border-accent hover:scale-[1.06] active:scale-95 active:duration-75 shadow-md"
-                    onClick={() => scrollBottom(true)}
-                    aria-label={i18nT('pages.chatPage.scroll_to_bottom')}
-                  ><ArrowDown size={14} strokeWidth={2.5} /></button>
-                </div>
-              )}
+              <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />
               {/* Status chrome never claims more than half the pane. These bars
                   are flex-flow siblings of the transcript scroller, which has an
                   automatic minimum size of 0 and collapses under pressure — an

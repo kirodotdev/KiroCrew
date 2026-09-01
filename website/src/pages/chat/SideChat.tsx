@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
+import { useChatScrollFollow } from '../../app-sdk/useChatScrollFollow'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
@@ -73,8 +74,12 @@ export default function SideChat({ slot }: { slot: string }) {
     const t = setTimeout(() => setLocalNotice(null), NOTICE_TTL_MS)
     return () => clearTimeout(t)
   }, [localNotice])
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const isNearBottomRef = useRef(true)
+  // Stick-to-bottom follow shared with ChatPane/ChatEmbed (FollowController
+  // semantics): the RO on the content wrapper re-pins on growth ANYWHERE in
+  // the transcript and on collapse shrink, and only a genuine user scroll up
+  // releases it.
+  const follow = useChatScrollFollow({ resetKey: slot })
+  const scrollRef = follow.scrollerRef
 
   const messages = reduxSide?.messages ?? []
   const isPending = reduxSide?.pending ?? false
@@ -453,19 +458,8 @@ export default function SideChat({ slot }: { slot: string }) {
     },
   })
 
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-  }, [])
-
-  const lastMessageContent = messages[messages.length - 1]?.content
-  useEffect(() => {
-    const el = scrollRef.current
-    if (el && isNearBottomRef.current) {
-      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight })
-    }
-  }, [messages.length, lastMessageContent])
+  // Scroll follow lives in useChatScrollFollow (wired on the scroller below);
+  // no tail-keyed effect — the hook's ResizeObserver sees every height change.
 
   // Select-to-Ask seed: when the user clicks "Ask" in the selection toolbar,
   // ChatPage opens this panel and fires a `side-seed` CustomEvent carrying the
@@ -578,7 +572,8 @@ export default function SideChat({ slot }: { slot: string }) {
           </button>
         </div>
       )}
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+      <div ref={scrollRef} onScroll={follow.onScroll} className="flex-1 overflow-y-auto px-3 py-2">
+        <div ref={follow.contentRef} className="space-y-2">
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted gap-2 py-8">
             {/* The icon is decoration and stays faint; the sentence is the only
@@ -600,6 +595,7 @@ export default function SideChat({ slot }: { slot: string }) {
             <span className="text-[12px] streaming-indicator">{i18nT('pages.chat.sideChat.thinking')}</span>
           </div>
         )}
+        </div>
       </div>
       {displayError && (
         <div className="px-3 py-1 text-[12px] text-danger border-t border-border">{displayError}</div>
