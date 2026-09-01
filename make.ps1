@@ -285,6 +285,22 @@ function Invoke-Frontend {
             Invoke-Step $npm @("install", "--no-audit", "--no-fund") "npm install"
         }
         Invoke-Step $npm @("run", "build") "npm run build"
+        # website/electron is its own npm package (website/package.json declares
+        # no `workspaces`), so the install above never reaches it -- and
+        # `npm test` / `npm run check` in website/ then die with MODULE_NOT_FOUND
+        # on its missing deps. Install it here, AFTER the build, so the
+        # desktop-only dependency tree cannot block building the dashboard
+        # itself (#7226).
+        Push-Location "electron"
+        try {
+            if (Test-Path "package-lock.json") {
+                Invoke-Step $npm @("ci", "--no-audit", "--no-fund") "npm ci (electron)"
+            } else {
+                Invoke-Step $npm @("install", "--no-audit", "--no-fund") "npm install (electron)"
+            }
+        } finally {
+            Pop-Location
+        }
     } finally {
         Pop-Location
     }

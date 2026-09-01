@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import configparser
 import pathlib
+import re
 import sys
 
 # --- Dist name -> importable root package mapping ---
@@ -244,6 +245,88 @@ def test_dev_extra_covers_test_imports():
             "test/conftest.py imports it at module scope, so the whole suite "
             f"fails to collect without it. Declared: {declared}"
         )
+
+
+def _dependency_group_requirements(group: str) -> list[str]:
+    """Requirement strings from a pyproject ``[dependency-groups]`` list.
+
+    Text-level, like every other pyproject read in this module: the 3.10 shard
+    has no ``tomllib`` and this gate must run there too. The list items are
+    plain double-quoted strings, so collecting quoted spans between the group's
+    opening ``[`` and its closing ``]`` reads exactly what pip's
+    ``--group`` resolver sees.
+    """
+    lines = _pyproject_text().splitlines()
+    requirements: list[str] = []
+    in_groups = in_list = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_groups = stripped.startswith("[dependency-groups]")
+            continue
+        if in_groups and not in_list:
+            if re.match(rf"{re.escape(group)}\s*=\s*\[", stripped):
+                in_list = True
+            continue
+        if in_list:
+            if stripped.startswith("]"):
+                break
+            match = re.match(r'"([^"]+)"', stripped)
+            if match:
+                requirements.append(match.group(1))
+    return requirements
+
+
+def _pinned_versions(requirements: list[str]) -> dict[str, str]:
+    """Map of normalized dist name -> exact ``==`` pin, ignoring unpinned specs."""
+    pins: dict[str, str] = {}
+    for spec in requirements:
+        if "==" not in spec:
+            continue
+        name, version = spec.split("==", 1)
+        name = name.split("[")[0].strip().lower().replace("_", "-")
+        pins[name] = version.split(";")[0].strip()
+    return pins
+
+
+def test_dev_extra_pins_agree_with_the_dev_dependency_group():
+    """Deps in BOTH the ``dev`` extra and the CI dev group must pin identically,
+    and the import-or-skip test enablers must be in the extra at all.
+
+    The group is what CI installs (``--group dev``); the extra is what
+    CONTRIBUTING.md tells a contributor to install (``.[dev]``). jsonschema and
+    PyJWT are not dev tools -- they are what makes guarded test modules RUN:
+    ``kiro_crew.config.validation`` imports jsonschema behind a try/except, so
+    an install without it silently skips the 11 config-validation guard tests
+    (pytest scores a skip as a pass), and ``test_teams_client.py``'s
+    ``importorskip`` does the same for the Teams token gate. A missing entry
+    means a locally green pytest that never ran those guards; a version skew is
+    quieter still -- both sides run, against different behavior.
+    """
+    group_pins = _pinned_versions(_dependency_group_requirements("dev"))
+    extra_pins = _pinned_versions(_extra_requirements("dev"))
+
+    assert group_pins, "pyproject.toml [dependency-groups] dev declares no == pins"
+
+    # The enablers must be present in the extra, not merely consistent-if-present.
+    for enabler in ("jsonschema", "pyjwt"):
+        assert enabler in extra_pins, (
+            f"setup.cfg [options.extras_require] dev must pin {enabler!r} in sync "
+            "with pyproject's [dependency-groups] dev -- without it a `.[dev]` "
+            "install silently skips the guard tests that import it. "
+            f"Extra pins: {sorted(extra_pins)}"
+        )
+
+    skewed = {
+        name: (extra_pins[name], group_pins[name])
+        for name in extra_pins.keys() & group_pins.keys()
+        if extra_pins[name] != group_pins[name]
+    }
+    assert not skewed, (
+        "setup.cfg dev extra pins disagree with pyproject [dependency-groups] dev "
+        f"(extra, group): {skewed}. The extra's header comment mandates keeping "
+        "them in sync -- bump both in lockstep."
+    )
 
 
 def test_python_requires_agrees_between_pyproject_and_setup_cfg():

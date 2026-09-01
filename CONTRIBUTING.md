@@ -72,11 +72,9 @@ kirocrew gateway             # start server (dashboard + messaging channels)
 The dashboard is at `http://localhost:5476`.
 
 On Windows, `.\make.ps1 build` does steps 2 and 3 in one command (the venv lands
-in `.venv\Scripts\`, and `Activate.ps1` replaces `source .venv/bin/activate`),
-except the `website/electron` sub-package — run
-`npm ci --prefix website/electron` separately before `npm test`. Read the
-[Windows guide](docs/guides/windows-install.md) first — a few features need an
-explicit opt-in there.
+in `.venv\Scripts\`, and `Activate.ps1` replaces `source .venv/bin/activate`).
+Read the [Windows guide](docs/guides/windows-install.md) first — a few features
+need an explicit opt-in there.
 
 **Messaging channels are optional**: the default `kirocrew setup` configures
 none, and the dashboard + CLI work without any channel credentials. Connect

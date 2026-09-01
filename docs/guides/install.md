@@ -202,7 +202,9 @@ venv puts its executables in `.venv\Scripts\`, and the macOS-only
 
 1. **`frontend`**: `npm ci` (or `npm install`) + `npm run build` in `website/`,
    then copies `website/dist` into `src/kiro_crew/static/dist` so the backend
-   serves the SPA.
+   serves the SPA, and installs `website/electron`'s own deps last — it is a
+   separate npm package the `website/` install never reaches, and `npm test`
+   in `website/` needs it.
 2. **`backend`**: creates `.venv` and runs an editable install with the `dev`
    extra (`pip install -e ".[dev]"`).
 
@@ -362,7 +364,7 @@ Linux, `.\make.ps1 <target>` on Windows.
 | Target | What it does |
 |--------|--------------|
 | `make build` | Frontend (npm/Vite) + backend into `.venv` |
-| `make frontend` | Dashboard only: npm build, staged into `src/kiro_crew/static/dist` |
+| `make frontend` | Frontend only: npm build staged into `src/kiro_crew/static/dist`, plus `website/electron` deps |
 | `make backend` | Backend only: `.venv` + editable install with the `dev` extra |
 | `make wheel` | Self-contained pip wheel with the dashboard bundled, into `dist/` |
 | `make backend-bin` | Frozen standalone backend binary (host arch only) |

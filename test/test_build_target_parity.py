@@ -101,6 +101,59 @@ def test_documented_target_table_covers_every_target() -> None:
     ), f"targets missing from docs/guides/install.md's target table: {undocumented}"
 
 
+def _makefile_recipe(target: str) -> str:
+    """The recipe body of one Makefile target, with comment lines stripped.
+
+    Same reasoning as ``_powershell_code``: the guards asserted below are named
+    in nearby rationale comments, so matching raw text would keep passing after
+    the recipe line itself was deleted.
+    """
+    text = (_REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+    match = re.search(rf"^{re.escape(target)}:\n((?:\t.*\n)+)", text, re.MULTILINE)
+    assert match, f"Makefile has no recipe for target {target!r}"
+    return "\n".join(
+        line for line in match.group(1).splitlines() if not line.strip().startswith("#")
+    )
+
+
+def test_frontend_target_installs_the_electron_subpackage() -> None:
+    """Both build drivers must install website/electron's own dependencies.
+
+    ``website/electron`` is a separate npm package (``website/package.json``
+    declares no ``workspaces``), so the website/ install step never reaches it.
+    A scripted build that skips it leaves ``npm test`` / ``npm run check`` in
+    website/ dying with MODULE_NOT_FOUND on electron's missing deps -- the gap
+    that made CONTRIBUTING.md grow a manual work-around note, since dropped
+    because the build owns the install (#7226).
+    """
+    recipe = _makefile_recipe("frontend")
+    assert "cd electron" in recipe, (
+        "the Makefile frontend recipe no longer enters website/electron; its "
+        "deps then go uninstalled and `npm test` in website/ breaks"
+    )
+    # Bound the window to the electron subshell: matching the rest of the
+    # recipe would let unrelated npm lines satisfy the assertion after the
+    # electron block itself lost the branch.
+    electron_part = recipe.split("cd electron", 1)[1].split(")", 1)[0]
+    assert "npm ci" in electron_part and "npm install" in electron_part, (
+        "the Makefile frontend recipe must run the ci-vs-install branch inside "
+        "website/electron, mirroring the website/ install step"
+    )
+
+    code = _powershell_code()
+    assert 'Push-Location "electron"' in code, (
+        "make.ps1's Invoke-Frontend no longer enters website/electron; its "
+        "deps then go uninstalled and `npm test` in website/ breaks on Windows"
+    )
+    # Same bound: the rest of make.ps1 has pip `"install"` invocations that
+    # would keep the assertion green after the electron block lost the branch.
+    ps_electron_part = code.split('Push-Location "electron"', 1)[1].split("Pop-Location", 1)[0]
+    assert '"ci"' in ps_electron_part and '"install"' in ps_electron_part, (
+        "make.ps1's Invoke-Frontend must run the ci-vs-install branch inside "
+        "website/electron, mirroring the website/ install step"
+    )
+
+
 def test_powershell_driver_declares_no_posix_only_step() -> None:
     """make.ps1 must not invoke the macOS-only resign step.
 
