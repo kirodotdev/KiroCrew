@@ -531,6 +531,16 @@ def _az_run(argv: list[str], *, host: str, timeout: float) -> subprocess.Complet
             [az, *argv[1:]],
             capture_output=True,
             text=True,
+            # `az devops invoke` answers with work-item JSON -- titles, descriptions
+            # and comments written by people -- so non-ASCII is the normal case, not
+            # an edge one. `text=True` alone decodes it with
+            # `locale.getpreferredencoding(False)`, which on a Windows console code
+            # page is cp950 / cp932 / cp1252. A `UnicodeDecodeError` is neither
+            # `FileNotFoundError` nor `TimeoutExpired`, so it would escape both
+            # handlers below and this chokepoint's own error contract with it; a
+            # lenient code page is quieter and worse, mojibaking every title that
+            # reaches the board. az writes UTF-8, so name it.
+            encoding="utf-8",
             timeout=timeout,
             check=False,
             env=_az_env(resolved_host),
