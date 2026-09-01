@@ -9,6 +9,7 @@ from kiro_crew.acp_server.http_backend import (
     default_base_url,
     default_secret_path,
 )
+from kiro_crew.acp_server.locations import extract_tool_locations
 from kiro_crew.acp_server.mcp_config import (
     McpConfigError,
     StdioMcpServer,
@@ -43,6 +44,7 @@ __all__ = [
     "StdioMcpServer",
     "default_base_url",
     "default_secret_path",
+    "extract_tool_locations",
     "make_prompt_handler",
     "parse_mcp_servers",
     "prompt_blocks_to_text",

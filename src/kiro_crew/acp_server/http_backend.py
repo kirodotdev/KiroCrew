@@ -148,6 +148,31 @@ def _project_paths_match(left: str, right: str) -> bool:
     return left_real == right_real
 
 
+def _sanitize_locations(raw: Any) -> list[dict[str, Any]] | None:
+    """Filter and normalize a locations list arriving from the gateway SSE stream.
+
+    Discards anything that would violate the ACP ``ToolCallLocation`` schema:
+    non-list values, non-dict entries, missing or non-string ``path``, and
+    non-positive line numbers. Returns None (not [] ) when nothing survives,
+    so ``send_tool_call`` drops the key entirely.
+    """
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path:
+            continue
+        cleaned: dict[str, Any] = {"path": path}
+        line = entry.get("line")
+        if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+            cleaned["line"] = line
+        out.append(cleaned)
+    return out or None
+
+
 def default_secret_path() -> Path:
     """Path to the gateway's owner-only internal IPC secret."""
     return config_dir() / ".local_secret"
@@ -561,7 +586,13 @@ class HttpGatewayBackend:
         elif ctype == "tool":
             title = (text.split("\n", 1)[0] or "Tool")[:120]
             self._tool_seq += 1
-            await sink.send_tool_call(f"gw-{self._tool_seq}", title, "other", status="completed")
+            await sink.send_tool_call(
+                f"gw-{self._tool_seq}",
+                title,
+                "other",
+                status="completed",
+                locations=_sanitize_locations(chunk.get("locations")),
+            )
         elif ctype == "permission":
             await self._bridge_permission(chunk, slot, sink)
         elif ctype == "error":

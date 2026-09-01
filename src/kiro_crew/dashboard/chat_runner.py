@@ -38,6 +38,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.acp_server.locations import extract_tool_locations
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.autonudge import get_instance
@@ -1763,7 +1764,7 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
     redact `event.tool_call_id` before matching against the stored value."""
     if not event.tool_call_id:
         return None
-    return {
+    meta: dict[str, Any] = {
         "tool_call_id": _redact_tool_field(event.tool_call_id),
         "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
         "input": _redact_tool_field(event.tool_input),
@@ -1773,6 +1774,18 @@ def _tool_meta(event: "LLMEvent") -> dict[str, str] | None:
         # historical rows gate-able identically to live ones.
         "kind": _redact_tool_field(event.tool_kind, limit=64),
     }
+    # Editor follow-along ("Zed follows the agent"): the ACP-server adapter
+    # reads these locations off the SSE tool frame (_build_stream_chunk) and
+    # forwards them on the session/update wire. Absent when the tool has no
+    # discoverable file target (bash, network fetches) — the extractor returns
+    # [] and we omit the key so ``_build_stream_chunk`` does the same.
+    locations = extract_tool_locations(
+        getattr(event, "tool_name", "") or "",
+        getattr(event, "raw_tool_params", None),
+    )
+    if locations:
+        meta["locations"] = locations
+    return meta
 
 
 def _tool_call_ws_payload(event: "LLMEvent") -> dict[str, str | bool]:

@@ -466,6 +466,66 @@ class TestHttpGatewayBackend:
         ]
         assert [update["toolCallId"] for update in updates] == ["gw-1", "gw-2"]
 
+    async def test_tool_frame_forwards_locations_from_sse(self) -> None:
+        # Zed follow-along: a well-formed ``locations`` array on the SSE tool
+        # chunk must reach the ACP wire on ``session/update``.
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        sink = _RecordingSink()
+        await backend._translate(
+            {
+                "type": "tool",
+                "content": "edit main.py",
+                "locations": [{"path": "/abs/main.py", "line": 7}],
+            },
+            "s",
+            sink,
+        )
+        update = next(
+            params["update"]
+            for method, params in sink.transport.notifications
+            if method == METHOD_SESSION_UPDATE
+            and params["update"].get("sessionUpdate") == "tool_call"
+        )
+        assert update["locations"] == [{"path": "/abs/main.py", "line": 7}]
+
+    async def test_tool_frame_without_locations_omits_the_key(self) -> None:
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        sink = _RecordingSink()
+        await backend._translate({"type": "tool", "content": "run tests"}, "s", sink)
+        update = next(
+            params["update"]
+            for method, params in sink.transport.notifications
+            if method == METHOD_SESSION_UPDATE
+            and params["update"].get("sessionUpdate") == "tool_call"
+        )
+        assert "locations" not in update
+
+    async def test_tool_frame_drops_malformed_location_entries(self) -> None:
+        backend = HttpGatewayBackend("http://127.0.0.1:1")
+        sink = _RecordingSink()
+        await backend._translate(
+            {
+                "type": "tool",
+                "content": "edit",
+                "locations": [
+                    {"path": ""},  # empty
+                    {"path": 5},  # non-string
+                    "junk",  # not a dict
+                    {"nope": "/a"},  # no path
+                    {"path": "/ok", "line": -1},  # bad line dropped
+                ],
+            },
+            "s",
+            sink,
+        )
+        update = next(
+            params["update"]
+            for method, params in sink.transport.notifications
+            if method == METHOD_SESSION_UPDATE
+            and params["update"].get("sessionUpdate") == "tool_call"
+        )
+        assert update["locations"] == [{"path": "/ok"}]
+
     async def test_permission_rejection_answers_rejected(self) -> None:
         runner, base, app = await _start_stub()
         backend = HttpGatewayBackend(base, agent="")

@@ -319,6 +319,7 @@ class SessionSink:
         status: str = "pending",
         raw_input: dict[str, Any] | None = None,
         content: list[dict[str, Any]] | None = None,
+        locations: list[dict[str, Any]] | None = None,
     ) -> None:
         update: dict[str, Any] = {
             "sessionUpdate": UPDATE_TOOL_CALL,
@@ -331,6 +332,10 @@ class SessionSink:
             update["rawInput"] = raw_input
         if content is not None:
             update["content"] = content
+        # Editors implement "follow the agent" by watching this field, so
+        # empty/None omits it — the schema treats absence as "no target".
+        if locations:
+            update["locations"] = locations
         await self._update(update)
 
     async def send_tool_call_update(
@@ -339,6 +344,7 @@ class SessionSink:
         *,
         status: str,
         content: list[dict[str, Any]] | None = None,
+        locations: list[dict[str, Any]] | None = None,
     ) -> None:
         update: dict[str, Any] = {
             "sessionUpdate": UPDATE_TOOL_CALL_UPDATE,
@@ -347,6 +353,8 @@ class SessionSink:
         }
         if content is not None:
             update["content"] = content
+        if locations:
+            update["locations"] = locations
         await self._update(update)
 
     async def request_permission(

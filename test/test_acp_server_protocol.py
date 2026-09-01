@@ -342,6 +342,105 @@ class TestPromptTurn:
         await h.stop()
 
 
+class TestToolCallLocationsWireFormat:
+    """Zed follows the agent by watching the ``locations`` key on tool_call frames."""
+
+    @pytest.mark.asyncio
+    async def test_send_tool_call_forwards_locations_on_wire(self) -> None:
+        async def handler(_req: PromptRequest, sink: SessionSink) -> str:
+            await sink.send_tool_call(
+                "tc-1",
+                "edit main.py",
+                "edit",
+                locations=[{"path": "/tmp/main.py", "line": 42}],
+            )
+            return STOP_REASON_END_TURN
+
+        h = _Harness(handler)
+        await h.start()
+        sid = await _new_session(h)
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": []},
+            }
+        )
+        update = await h.wait_for(
+            lambda f: f.get("method") == METHOD_SESSION_UPDATE
+            and f.get("params", {}).get("update", {}).get("toolCallId") == "tc-1"
+        )
+        upd = update["params"]["update"]
+        assert upd["locations"] == [{"path": "/tmp/main.py", "line": 42}]
+        await h.stop()
+
+    @pytest.mark.asyncio
+    async def test_empty_locations_are_dropped_on_wire(self) -> None:
+        # A no-target tool (bash, network fetch) must NOT emit an empty
+        # ``locations`` array — the schema treats absence as "no target" and
+        # Zed treats an empty array the same, but the extra bytes are noise.
+        async def handler(_req: PromptRequest, sink: SessionSink) -> str:
+            await sink.send_tool_call("tc-2", "run tests", "execute", locations=[])
+            await sink.send_tool_call_update("tc-2", status="completed", locations=None)
+            return STOP_REASON_END_TURN
+
+        h = _Harness(handler)
+        await h.start()
+        sid = await _new_session(h)
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": []},
+            }
+        )
+        # Wait for the completion update so we know both frames landed.
+        await h.wait_for(
+            lambda f: f.get("method") == METHOD_SESSION_UPDATE
+            and f.get("params", {}).get("update", {}).get("status") == "completed"
+        )
+        tool_frames = [
+            f
+            for f in h.writer.frames
+            if f.get("method") == METHOD_SESSION_UPDATE
+            and f.get("params", {}).get("update", {}).get("toolCallId") == "tc-2"
+        ]
+        assert tool_frames  # sanity
+        for f in tool_frames:
+            assert "locations" not in f["params"]["update"]
+        await h.stop()
+
+    @pytest.mark.asyncio
+    async def test_send_tool_call_update_forwards_locations_on_wire(self) -> None:
+        async def handler(_req: PromptRequest, sink: SessionSink) -> str:
+            await sink.send_tool_call_update(
+                "tc-3",
+                status="completed",
+                locations=[{"path": "/abs/x.py"}],
+            )
+            return STOP_REASON_END_TURN
+
+        h = _Harness(handler)
+        await h.start()
+        sid = await _new_session(h)
+        h.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": sid, "prompt": []},
+            }
+        )
+        update = await h.wait_for(
+            lambda f: f.get("method") == METHOD_SESSION_UPDATE
+            and f.get("params", {}).get("update", {}).get("toolCallId") == "tc-3"
+        )
+        assert update["params"]["update"]["locations"] == [{"path": "/abs/x.py"}]
+        await h.stop()
+
+
 class TestPermissionGate:
     """``request_permission`` is the inline-diff review path — fail-closed."""
 

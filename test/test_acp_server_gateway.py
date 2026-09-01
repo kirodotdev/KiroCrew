@@ -106,7 +106,14 @@ class _Sink:
         self.thoughts.append(text)
 
     async def send_tool_call(self, tool_call_id: str, title: str, kind: str, **kw: Any) -> None:
-        self.tools.append({"id": tool_call_id, "title": title, "content": kw.get("content")})
+        self.tools.append(
+            {
+                "id": tool_call_id,
+                "title": title,
+                "content": kw.get("content"),
+                "locations": kw.get("locations"),
+            }
+        )
 
     async def send_tool_call_update(self, tool_call_id: str, **kw: Any) -> None:
         self.updates.append({"id": tool_call_id, **kw})
@@ -509,3 +516,85 @@ class TestAutoApproveIsConservative:
         )
         assert len(sink.perms) == 1
         assert prov.approved == [7]
+
+
+class TestToolCallLocations:
+    """Editor follow-along: gateway derives ``locations`` from raw_tool_params."""
+
+    @pytest.mark.asyncio
+    async def test_tool_call_carries_locations(self) -> None:
+        prov = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="loc-1",
+                    title="edit",
+                    tool_kind="edit",
+                    tool_name="str_replace",
+                    raw_tool_params={"path": "/t/a.py", "oldStr": "x", "newStr": "y"},
+                ),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        sink = _Sink()
+        await make_prompt_handler(_Svc(_Sessions(prov), _Ctx()))(
+            PromptRequest(session_id="loc1", text="x"), sink
+        )
+        assert sink.tools[0]["locations"] == [{"path": "/t/a.py"}]
+
+    @pytest.mark.asyncio
+    async def test_tool_call_update_carries_locations(self) -> None:
+        prov = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL_UPDATE,
+                    tool_call_id="loc-2",
+                    tool_name="fs_read",
+                    tool_final=True,
+                    raw_tool_params={"path": "/t/b.py", "start_line": 42},
+                    tool_output="line 42\n",
+                ),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        sink = _Sink()
+        await make_prompt_handler(_Svc(_Sessions(prov), _Ctx()))(
+            PromptRequest(session_id="loc2", text="x"), sink
+        )
+        assert sink.updates[0]["locations"] == [{"path": "/t/b.py", "line": 42}]
+
+    @pytest.mark.asyncio
+    async def test_permission_request_carries_locations(self) -> None:
+        # A tool that requires an editor OK must still let the editor follow to
+        # the file being changed — otherwise the user has to open the file by
+        # hand to review the pending edit.
+        prov = _Provider(_edit_permission())
+        sink = _Sink(allow=True)
+        await make_prompt_handler(_Svc(_Sessions(prov), _Ctx()))(
+            PromptRequest(session_id="loc3", text="x"), sink
+        )
+        assert sink.perms[0]["locations"] == [{"path": "/t/a.py"}]
+
+    @pytest.mark.asyncio
+    async def test_shell_tool_has_no_locations(self) -> None:
+        prov = _Provider(
+            [
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="loc-4",
+                    title="bash",
+                    tool_kind="execute",
+                    tool_name="execute_bash",
+                    raw_tool_params={"command": "cat /tmp/x"},
+                ),
+                AcpEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        sink = _Sink()
+        await make_prompt_handler(_Svc(_Sessions(prov), _Ctx()))(
+            PromptRequest(session_id="loc4", text="x"), sink
+        )
+        # extract_tool_locations returns [] for shell tools; the sink records
+        # what it received. AcpAgentServer wire-drop for empty locations is
+        # pinned in test_acp_server_protocol.py.
+        assert sink.tools[0]["locations"] == []

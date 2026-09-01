@@ -309,6 +309,27 @@ is redacted; a `HOOK_REPLY` short-circuits the model. `diff_content` rebuilds an
 ACP `{"type":"diff", path, oldText, newText}` block so the editor renders an
 inline diff with accept/reject.
 
+### Tool-call locations (editor follow-along)
+
+An editor implements "follow the agent" by watching the `locations` field on
+each `session/update` of kind `tool_call` / `tool_call_update` (see
+`ToolCallLocation` in the vendored `acp-v1` schema): the agent attaches
+`[{path, line?}, …]` and Zed jumps its cursor to the target. kiro-cli does not
+forward a native location on its tool events, so `acp_server.locations.
+extract_tool_locations(tool_name, raw_params)` derives it from the tool's raw
+params — kiro-cli's file tools (`fs_read`, `str_replace`, `write`, …) use
+`path`; Anthropic-style tools (`Edit`, `Read`) use `file_path`. Only absolute
+paths reach the wire (schema requirement); shell-tool names always yield no
+location so a `cat /tmp/x` doesn't drag the editor away from the file the agent
+is actually editing. The standalone gateway calls the extractor at the two
+tool-emit sites (`EVENT_TOOL_CALL` and `EVENT_PERMISSION_REQUEST`) and passes
+the result to `sink.send_tool_call{,_update}`; on the daemon-backed path the
+dashboard runner stores derived locations under `msg.meta.locations` at each
+`slot.append("tool", …)` site, `_build_stream_chunk` promotes them to a
+top-level `locations` field on the SSE `type: "tool"` frame, and
+`HttpGatewayBackend._translate` forwards them through `send_tool_call` after
+`_sanitize_locations` drops any malformed entries.
+
 ## Daemon Backend (`http_backend.py`)
 
 `HttpGatewayBackend` maps ACP sessions onto dashboard chat slots via the gateway

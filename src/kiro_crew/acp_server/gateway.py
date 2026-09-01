@@ -30,6 +30,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
+from kiro_crew.acp_server.locations import extract_tool_locations
 from kiro_crew.acp_server.server import PromptHandler, PromptRequest, SessionSink
 from kiro_crew.hooks import HOOK_REPLY, TOOL_DENY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -200,12 +201,14 @@ async def _stream_turn(
                 event.tool_kind,
                 status=STATUS_PENDING,
                 content=diff_content(event.raw_tool_params),
+                locations=extract_tool_locations(event.tool_name, event.raw_tool_params),
             )
         elif kind in (EVENT_TOOL_CALL_UPDATE, EVENT_TOOL_RESULT):
             await sink.send_tool_call_update(
                 event.tool_call_id,
                 status=STATUS_COMPLETED if event.tool_final else STATUS_PENDING,
                 content=_text_content(event.tool_output),
+                locations=extract_tool_locations(event.tool_name, event.raw_tool_params),
             )
         elif kind == EVENT_PERMISSION_REQUEST:
             await _gate_tool(
@@ -275,6 +278,9 @@ async def _gate_tool(
     content = diff_content(event.raw_tool_params) or _tool_input_content(event.tool_input)
     if content is not None:
         tool_call["content"] = content
+    locations = extract_tool_locations(event.tool_name, event.raw_tool_params)
+    if locations:
+        tool_call["locations"] = locations
 
     if await sink.request_permission(tool_call):
         await provider.approve_tool(event.request_id)
