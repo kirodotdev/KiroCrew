@@ -423,7 +423,7 @@ def test_persist_turn_writes_user_and_assistant_rows():
             self.rows: list[tuple[str, str]] = []
             self.title = ""
 
-        def append(self, key, role, text):
+        def append(self, key, role, text, mid=None):
             self.rows.append((role, text))
 
         def set_title(self, key, title):

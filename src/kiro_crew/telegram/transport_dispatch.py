@@ -36,6 +36,7 @@ from kiro_crew.acp.client import AcpError
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.config.loader import ACTIVATION_MENTION, ACTIVATION_OFF
 from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.history import mint_row_mid
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging import auto_title, privacy_mode
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
@@ -2667,9 +2668,11 @@ class TelegramDispatcher:
         # drained queue and the steered continuation alike.
         if privacy_mode.is_restricted(session_key):
             return
-        self.conv_log.append(session_key, "user", user_text, agent=agent)
+        self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
+            self.conv_log.append(
+                session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
+            )
         if is_new and not auto_title.is_titled(session_key):
             # Skipped when auto-title has CLAIMED this session, because the two
             # writers race and the loser is always the generated one: the fallback

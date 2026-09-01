@@ -34,6 +34,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.dispatch import (
@@ -436,12 +437,22 @@ class WeixinDispatcher:
         is_new: bool,
         agent: str | None = None,
     ) -> None:
-        """Record the turn to conversation_log (dashboard visibility + restart)."""
+        """Record the turn to conversation_log (dashboard visibility + restart).
+
+        Each row is stamped with a durable ``mid``. A channel turn runs on the
+        dispatcher's own session, so unlike the dashboard dual-writers there is no
+        ``_ChatSlot.append`` to mint the id and hand it back -- this writer is the
+        first and only place the row exists, so it mints its own. See
+        :func:`kiro_crew.history.mint_row_mid` for why the identity has to be
+        durable rather than re-derived per materialization.
+        """
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text, agent=agent)
+        self.conv_log.append(session_key, "user", user_text, agent=agent, mid=mint_row_mid())
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text, agent=agent)
+            self.conv_log.append(
+                session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
+            )
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "WeChat"
             self.conv_log.set_title(session_key, title)

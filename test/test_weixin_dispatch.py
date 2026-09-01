@@ -615,7 +615,7 @@ def test_delivery_failure_is_not_recorded_as_success(tmp_path):
             raise RuntimeError("ilink send timeout")
 
     class Log:
-        def append(self, key, role, text, agent=None):
+        def append(self, key, role, text, agent=None, mid=None):
             rows.append((role, text))
 
         def set_title(self, key, title):
@@ -639,7 +639,7 @@ def test_persist_turn_writes_user_and_assistant_rows(tmp_path):
             self.rows: list[tuple[str, str]] = []
             self.title = ""
 
-        def append(self, key, role, text, agent=None):
+        def append(self, key, role, text, agent=None, mid=None):
             self.rows.append((role, text))
 
         def set_title(self, key, title):

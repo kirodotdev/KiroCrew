@@ -14,6 +14,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.approval import (
     TextReplyApprovalDecider,
     deliver_verdict,
@@ -494,9 +495,9 @@ class WhatsAppDispatcher:
         """Record the turn to conversation_log (dashboard visibility + restart)."""
         if self.conv_log is None:
             return
-        self.conv_log.append(session_key, "user", user_text)
+        self.conv_log.append(session_key, "user", user_text, mid=mint_row_mid())
         if reply_text:
-            self.conv_log.append(session_key, "assistant", reply_text)
+            self.conv_log.append(session_key, "assistant", reply_text, mid=mint_row_mid())
         if is_new:
             title = (user_text or "").strip().replace("\n", " ")[:40] or "WhatsApp"
             self.conv_log.set_title(session_key, title)

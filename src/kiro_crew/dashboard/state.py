@@ -53,7 +53,7 @@ from kiro_crew.dashboard.slot_queue_repository import SlotQueueRepository
 from kiro_crew.dashboard.slot_registry import SlotRegistry
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
-from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
+from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import (
@@ -3897,7 +3897,7 @@ class _ChatSlot:
             existing = msg.get("meta")
             msg["meta"] = {
                 **(existing if isinstance(existing, dict) else {}),
-                "mid": f"m-{uuid.uuid4().hex[:16]}",
+                "mid": mint_row_mid(),
             }
         self.messages.append(msg)
         self.invalidate_source_links()

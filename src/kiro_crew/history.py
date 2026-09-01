@@ -17,6 +17,7 @@ import os
 import re
 import threading
 import time as _time
+import uuid
 from collections.abc import Callable, Container, Iterator
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
@@ -861,6 +862,35 @@ def metadata_now_iso() -> str:
     it speak the same, unambiguous format.
     """
     return datetime.now().astimezone().isoformat()
+
+
+def mint_row_mid() -> str:
+    """Mint a durable per-row delivery identity for a transcript row.
+
+    The ONE place the ``meta.mid`` format is spelled. ``_ChatSlot.append`` mints
+    the id for a row that enters a dashboard window, and the dashboard
+    dual-writers (``cron_inject``, ``workflow_inject``, ``crew_chat``) read it back
+    off that append to stamp their durable copy (``row_mid``). A writer with no
+    slot to mint from -- a channel dispatcher persisting a turn it ran on its own
+    session -- has to mint the id itself, and it must produce the SAME shape,
+    because the readers match on the value, not on who wrote it.
+
+    Why a channel row needs one AT WRITE TIME: the dashboard's merge keys on
+    ``meta.mid`` and nothing else. ``isRedeliveredMessage`` drops a redelivered row
+    by it, ``olderHeadAbovePage`` cuts the retained scrollback head at it, and
+    ``rowIdentities``/``tailNotInPage`` decide by it which prior rows a page already
+    carries -- and every one of those DECLINES rather than guesses when the id is
+    absent or has changed. A row persisted without one is re-minted by each surface
+    that materializes it (``channel_slots._rebuild_window`` /
+    ``refresh_channel_window``), so one logical row carries a different identity on
+    every pass, silently degrading all three at once.
+
+    Random rather than a per-key counter, for the reason ``_ChatSlot.append``
+    gives: a counter rebased after a restore can reissue an id a restored row
+    already holds, and a colliding id makes a client DROP a real message. A
+    random id has no such failure mode.
+    """
+    return f"m-{uuid.uuid4().hex[:16]}"
 
 
 def monotonic_transcript_ts(previous: str | None, now: datetime) -> str:
