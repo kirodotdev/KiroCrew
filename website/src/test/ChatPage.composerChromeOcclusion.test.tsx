@@ -76,7 +76,11 @@ describe('composer status chrome cannot occlude the header rename editor', () =>
     // permanent thumb would leave the class assertion passing and this failing.
     expect(STACK![1]).toContain('scrollbar-overlay')
     expect(INDEX_CSS).toMatch(/\.scrollbar-overlay::-webkit-scrollbar-thumb\{background:transparent/)
-    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay:hover::-webkit-scrollbar-thumb\{background:var\(--border\)/)
+    // The token is --muted, matching the coarse-pointer rung: WCAG 1.4.11 grants
+    // hover no exemption, so the revealed thumb clears the same 3:1 floor as the
+    // persistent one. What this line pins is the hover-REVEAL shape (transparent
+    // base, painted on :hover); scrollbarThumbContrast.test.ts owns the floor.
+    expect(INDEX_CSS).toMatch(/\.scrollbar-overlay:hover::-webkit-scrollbar-thumb\{background:var\(--muted\)/)
   })
 
   it('restores a persistent thumb on coarse pointers, so a capped box has a touch affordance', () => {
