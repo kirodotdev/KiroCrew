@@ -23,6 +23,7 @@ import {
   pierreThemeType,
   type PierreDiffOptions,
 } from './config'
+import { markWorkerPoolBroken, useWorkerPoolBroken } from './workerHealth'
 
 // Registered once, at the only module that loads the library, so every surface
 // that resolves a language from a FILENAME picks the override up. Fence tags go
@@ -250,10 +251,21 @@ const workerPool = typeof window === 'undefined' || typeof Worker === 'undefined
         // bundles the worker for production but NOT when the vite dev server
         // serves it — the worker then errors at load and every surface waits
         // on a pool that never initializes.
-        workerFactory: () =>
-          new Worker(new URL('@pierre/diffs/worker/worker-portable.js', import.meta.url), {
+        // The listeners are the ONLY error detection this pool has: the
+        // manager's own handler logs and returns, leaving the request that was
+        // in flight pending forever (see ./workerHealth). Attached here
+        // because the factory is the one place we hold the Worker object.
+        workerFactory: () => {
+          const worker = new Worker(new URL('@pierre/diffs/worker/worker-portable.js', import.meta.url), {
             type: 'module',
-          }),
+          })
+          // `error` covers both a worker that throws and a worker module that
+          // fails to load; `messageerror` covers a reply that cannot be
+          // deserialized, which strands the same request just as silently.
+          worker.addEventListener('error', event => markWorkerPoolBroken(event.message || event))
+          worker.addEventListener('messageerror', () => markWorkerPoolBroken('worker message could not be deserialized'))
+          return worker
+        },
       },
       highlighterOptions: { theme: PIERRE_THEMES },
     })
@@ -287,6 +299,7 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   scrollClassName?: string
 }) {
   const dark = useIsDark()
+  const poolBroken = useWorkerPoolBroken()
   // Instance identity for churn accounting: two independently mounted blocks —
   // even with identical fence names — must never share an identity, while this
   // one instance re-rendering with streamed content must keep its own.
@@ -301,7 +314,7 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
       ? withLang
       : { ...withLang, cacheKey: contentCacheKey(withLang.name, withLang.contents, surfaceId + ':file') }
   }, [file, langHint, surfaceId])
-  const code = <File className={className} file={resolvedFile} options={resolved} />
+  const code = <File className={className} file={resolvedFile} options={resolved} disableWorkerPool={poolBroken} />
   return (
     <PierreShell>
       {scrollClassName
@@ -323,6 +336,7 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
     () => pierreDiffOptions({ themeType: pierreThemeType(dark), ...options }),
     [dark, options],
   )
+  const poolBroken = useWorkerPoolBroken()
   // Parse here rather than using <PatchDiff>: that component ASSERTS exactly
   // one complete file diff and throws otherwise, but chat patches stream
   // through partial frames (bare headers, unterminated hunks) and may carry
@@ -363,6 +377,7 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
           className={className}
           fileDiff={fileDiff}
           options={resolved}
+          disableWorkerPool={poolBroken}
           renderHeaderMetadata={i === 0 && renderHeaderMetadata ? renderHeaderMetadata : undefined}
         />
       ))}
@@ -391,6 +406,7 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, rende
     () => pierreDiffOptions({ themeType: pierreThemeType(dark), ...options }),
     [dark, options],
   )
+  const poolBroken = useWorkerPoolBroken()
   // MultiFileDiff requires at least one populated side; both-null cannot
   // happen from our call sites (DiffPanel banners the identical case away and
   // new/deleted files carry one side), but the type demands the narrowing.
@@ -410,7 +426,7 @@ export function PierreFilePairImpl({ oldFile, newFile, options, className, rende
       : { oldFile: null, newFile: keyedNew as FileContents })
   return (
     <PierreShell>
-      <MultiFileDiff className={className} {...input} options={resolved} renderHeaderMetadata={renderHeaderMetadata} renderHeaderPrefix={renderHeaderPrefix} renderHeaderFilenameSuffix={renderHeaderFilenameSuffix} />
+      <MultiFileDiff className={className} {...input} options={resolved} disableWorkerPool={poolBroken} renderHeaderMetadata={renderHeaderMetadata} renderHeaderPrefix={renderHeaderPrefix} renderHeaderFilenameSuffix={renderHeaderFilenameSuffix} />
     </PierreShell>
   )
 }

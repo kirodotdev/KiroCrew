@@ -365,6 +365,46 @@ const sp = (node?: HastElement) => {
   return { 'data-sourcepos': typeof v === 'string' ? v : undefined }
 }
 
+/** `sp` plus every attribute the sanitize schema admits for `tag`.
+ *
+ *  An MD_COMPONENTS override rebuilds its element to attach a className, and
+ *  a rebuild forwards only what it names. Naming just `sp(node)` silently
+ *  dropped every attribute `TAG_ATTRS` had already decided was safe: `<ol
+ *  start>` renumbered a fence-split step list back to 1, and a raw-HTML table
+ *  with `colspan` was admitted by sanitize and then flattened by the override.
+ *  Deriving the forward from the same table the sanitizer consults keeps the
+ *  two from drifting again — an attribute added there reaches the DOM without
+ *  a second edit here.
+ *
+ *  `className` is excluded because the override owns it. Values are narrowed to
+ *  what React will accept as an attribute; `false` is dropped rather than
+ *  forwarded, so a boolean attribute is present only when it is actually set.
+ *  hast keys stay in their own casing (`colSpan`, not `colspan`) because that
+ *  is what React expects — only the allow-list comparison is lowercased. */
+const spa = (tag: string, node?: HastElement): Record<string, string | number | boolean | undefined> => {
+  const out: Record<string, string | number | boolean | undefined> = sp(node)
+  const allowed = TAG_ATTRS[tag]
+  const props = node?.properties
+  if (!allowed || !props) return out
+  for (const [key, value] of Object.entries(props)) {
+    const k = key.toLowerCase()
+    if (k === 'classname' || k === 'class' || !allowed.has(k)) continue
+    if (typeof value === 'string' || typeof value === 'number' || value === true) out[key] = value
+  }
+  return out
+}
+
+/** `<ol type>` → the CSS `list-style-type` it stands for. Needed because the
+ *  attribute is only a presentational hint, which Tailwind's `list-style: none`
+ *  preflight overrides; the marker has to be restated as a real declaration. */
+const LIST_STYLE_TYPE: Record<string, string> = {
+  '1': 'decimal',
+  a: 'lower-alpha',
+  A: 'upper-alpha',
+  i: 'lower-roman',
+  I: 'upper-roman',
+}
+
 const MermaidBlock = memo(function MermaidBlock({ code }: { code: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ref = useRef<HTMLDivElement>(null)
@@ -977,8 +1017,8 @@ const MD_COMPONENTS: Components = {
   // horizontal scroll already handles.
   table({ node, children }) { return <div className="overflow-x-auto my-3"><table {...sp(node)} className="min-w-full border-collapse text-sm [overflow-wrap:normal] [word-break:normal]">{children}</table></div> },
   // Headers carry the column's meaning, so never break them mid-label.
-  th({ node, children }) { return <th {...sp(node)} className="text-left text-muted text-[13px] font-medium px-3 py-2 border-b border-border bg-bg-elevated whitespace-nowrap">{children}</th> },
-  td({ node, children }) { return <td {...sp(node)} className="px-3 py-2 border-b border-border text-sm">{children}</td> },
+  th({ node, children }) { return <th {...spa('th', node)} className="text-left text-muted text-[13px] font-medium px-3 py-2 border-b border-border bg-bg-elevated whitespace-nowrap">{children}</th> },
+  td({ node, children }) { return <td {...spa('td', node)} className="px-3 py-2 border-b border-border text-sm">{children}</td> },
   a: MdAnchor,
   blockquote({ node, children }) { return <blockquote {...sp(node)} className="border-l-[3px] border-accent pl-3 my-2 text-muted italic">{children}</blockquote> },
   hr({ node }) { return <hr {...sp(node)} className="border-border my-4" /> },
@@ -989,10 +1029,38 @@ const MD_COMPONENTS: Components = {
   h5({ node, children }) { const id = slugify(children); return <h5 {...sp(node)} id={id} className="text-sm font-medium mt-2 mb-1 text-text-strong">{children}</h5> },
   h6({ node, children }) { const id = slugify(children); return <h6 {...sp(node)} id={id} className="text-[13px] font-medium mt-2 mb-1 text-muted">{children}</h6> },
   ul({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ul {...sp(node)} className={isTasks ? 'list-none pl-4 my-2 space-y-1' : 'list-disc pl-8 my-2 space-y-1 marker:text-muted'}>{children}</ul> },
-  ol({ node, children, className }) { const isTasks = className?.includes('contains-task-list'); return <ol {...sp(node)} className={isTasks ? 'list-none pl-4 my-2 space-y-1' : 'list-decimal pl-8 my-2 space-y-1 marker:text-muted'}>{children}</ol> },
+  // `start` must reach the DOM, not be dropped while attaching a className: a
+  // fenced block SPLITS the message into independent markdown documents
+  // (useBlockAssembler), so the list after a code block is its own <ol> that
+  // legitimately begins at 2, 3, … Without `start` every one of those restarts
+  // at 1, which is what turned a numbered set of shell steps into four items
+  // all labelled "1.". `spa` forwards it — and `type`/`reversed` — from the
+  // same table the sanitizer consults.
+  ol({ node, children, className }) {
+    const isTasks = className?.includes('contains-task-list')
+    const type = node?.properties?.type
+    // Tailwind's preflight sets `ol { list-style: none }`. That is author CSS,
+    // so it beats the presentational hint the `type` attribute carries — simply
+    // omitting `list-decimal` for a typed list renders NO marker at all, which
+    // is worse than the wrong marker. Map the attribute to an explicit
+    // list-style-type instead, inline so it does not depend on Tailwind having
+    // scanned an arbitrary-value class. An unrecognized type keeps the decimal
+    // default.
+    const styleType = typeof type === 'string' ? LIST_STYLE_TYPE[type] : undefined
+    const typed = styleType != null && styleType !== 'decimal'
+    return (
+      <ol
+        {...spa('ol', node)}
+        style={typed ? { listStyleType: styleType } : undefined}
+        className={isTasks ? 'list-none pl-4 my-2 space-y-1' : `${typed ? '' : 'list-decimal '}pl-8 my-2 space-y-1 marker:text-muted`}
+      >
+        {children}
+      </ol>
+    )
+  },
   li({ node, children, className }) {
     const isTask = className?.includes('task-list-item')
-    if (!isTask) return <li {...sp(node)} className="text-sm leading-relaxed">{children}</li>
+    if (!isTask) return <li {...spa('li', node)} className="text-sm leading-relaxed">{children}</li>
     // Task items use block flow, NOT flex. The previous `flex items-start` row
     // broke two ways: (1) an item containing a NESTED list (tasks.md shape)
     // laid the child <ul> out BESIDE the text; (2) any item long enough to
@@ -1013,7 +1081,7 @@ const MD_COMPONENTS: Components = {
     // it also lands on the loose-mode checkbox nested inside that first <p>.
     return (
       <li
-        {...sp(node)}
+        {...spa('li', node)}
         className="text-sm leading-relaxed break-words pl-5 -indent-5 [&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:align-middle [&>ul]:indent-0 [&>ol]:indent-0 [&>p:not(:first-child)]:indent-0 [&>ul]:mt-1 [&>ol]:mt-1"
       >
         {children}
