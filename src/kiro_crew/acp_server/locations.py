@@ -16,6 +16,7 @@ must not abort the ACP stream.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -37,6 +38,29 @@ _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 def _is_absolute(path: str) -> bool:
     """Match the ACP ToolCallLocation schema requirement (absolute paths)."""
     return path.startswith("/") or bool(_WIN_DRIVE_RE.match(path))
+
+
+def _canonicalize(path: str) -> str:
+    """Resolve symlinks and ``..`` components to a canonical absolute path.
+
+    Editors compare the incoming path against their workspace root to decide
+    whether to follow. On hosts where ``$HOME`` is a symlink alias (Linux
+    automount at ``/home/<user>`` -> ``/local/home/<user>``, or macOS
+    ``/var`` -> ``/private/var``), the raw path a tool receives can point at
+    the alias while the editor's workspace root is the target — a
+    string-level containment check then rejects the file and follow-along
+    silently no-ops. ``os.path.realpath`` resolves both sides consistently.
+
+    Best-effort: on any OS error (unreadable path component, permission
+    denied) fall back to the input. Windows drive-letter paths are returned
+    unchanged because the alias problem this guards against is POSIX-only.
+    """
+    if _WIN_DRIVE_RE.match(path):
+        return path
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
 
 
 def _coerce_line(value: Any) -> int | None:
@@ -66,7 +90,7 @@ def _first_path(params: dict[str, Any]) -> str | None:
     for key in _PATH_KEYS:
         value = params.get(key)
         if isinstance(value, str) and value and _is_absolute(value):
-            return value
+            return _canonicalize(value)
     return None
 
 
@@ -117,7 +141,7 @@ def extract_tool_locations(
                     if sub_path:
                         out.append(_location(sub_path, _first_line(item)))
                 elif isinstance(item, str) and _is_absolute(item):
-                    out.append({"path": item})
+                    out.append({"path": _canonicalize(item)})
             return out
         return []
 

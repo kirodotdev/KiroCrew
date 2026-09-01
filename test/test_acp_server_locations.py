@@ -131,3 +131,71 @@ class TestBatchShapes:
             {"files": [{"path": "/a.py"}, {"path": "b.py"}]},
         )
         assert result == [{"path": "/a.py"}]
+
+
+class TestPathCanonicalization:
+    """Paths are canonicalized so ``$HOME`` symlink aliases don't defeat follow-along.
+
+    On the Linux automount split ($HOME = /home/<u>, realpath = /local/home/<u>),
+    an editor rooted at one side won't recognize a file addressed via the other.
+    Regression guard for that: the extractor must return the realpath so both
+    sides agree regardless of which alias the tool happened to receive.
+    """
+
+    def test_symlinked_directory_resolves_to_target(self, tmp_path: Any) -> None:
+        target = tmp_path / "real"
+        target.mkdir()
+        real_file = target / "a.py"
+        real_file.write_text("x = 1\n")
+        alias = tmp_path / "alias"
+        alias.symlink_to(target)
+
+        result = extract_tool_locations("fs_read", {"path": str(alias / "a.py")})
+
+        assert result == [{"path": str(real_file)}]
+
+    def test_dotdot_and_extra_slashes_collapse(self, tmp_path: Any) -> None:
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "a.py").write_text("")
+
+        raw = f"{tmp_path}//sub/./../sub/a.py"
+        result = extract_tool_locations("fs_read", {"path": raw})
+
+        assert result == [{"path": str(tmp_path / "sub" / "a.py")}]
+
+    def test_line_survives_canonicalization(self, tmp_path: Any) -> None:
+        target = tmp_path / "real"
+        target.mkdir()
+        (target / "a.py").write_text("")
+        alias = tmp_path / "alias"
+        alias.symlink_to(target)
+
+        result = extract_tool_locations("fs_read", {"path": str(alias / "a.py"), "start_line": 12})
+
+        assert result == [{"path": str(target / "a.py"), "line": 12}]
+
+    def test_nonexistent_path_is_still_returned(self, tmp_path: Any) -> None:
+        # realpath resolves as far as it can and leaves the rest unchanged;
+        # a not-yet-created file (fs_write to a new path) must still yield a
+        # location so the editor can create+open it.
+        missing = tmp_path / "not_yet.py"
+        result = extract_tool_locations("fs_write", {"path": str(missing)})
+        assert result == [{"path": str(missing)}]
+
+    def test_windows_drive_paths_are_left_alone(self) -> None:
+        # POSIX-only alias problem; on Windows, realpath's drive-letter
+        # handling would introduce a different failure mode. Leave the raw
+        # path so a Windows client's workspace comparison still matches.
+        result = extract_tool_locations("write", {"path": "C:\\src\\main.py"})
+        assert result == [{"path": "C:\\src\\main.py"}]
+
+    def test_batch_string_entries_are_canonicalized(self, tmp_path: Any) -> None:
+        target = tmp_path / "real"
+        target.mkdir()
+        (target / "a.py").write_text("")
+        alias = tmp_path / "alias"
+        alias.symlink_to(target)
+
+        result = extract_tool_locations("batch_read", {"files": [str(alias / "a.py")]})
+
+        assert result == [{"path": str(target / "a.py")}]
