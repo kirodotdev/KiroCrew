@@ -130,7 +130,14 @@ class TestScreenshotEvidenceBodyLogic:
     fixture body, so the waiver semantics are locked by behavior.
     """
 
-    def _run_step(self, tmp_path: Path, body: str, exempt: str = "false"):
+    def _run_step(
+        self,
+        tmp_path: Path,
+        body: str,
+        exempt: str = "false",
+        gh_status: int = 0,
+        fail_first: int = 0,
+    ):
         wf = yaml.safe_load(_read("screenshot-evidence.yml"))
         steps = wf["jobs"]["screenshot-evidence"]["steps"]
         step = next(
@@ -142,14 +149,33 @@ class TestScreenshotEvidenceBodyLogic:
         body_file.write_text(body, encoding="utf-8")
         # `gh api ... --jq '.body // ""'` prints the raw body: stub it with cat.
         # The sentinel proves the stub (not a real gh on PATH) served the call.
+        # `cat` is the last command, so a failed read is the stub's own exit
+        # status -- which the step now reports as a read failure instead of
+        # silently treating the empty body as a description carrying no
+        # evidence. That distinction is what keeps a broken harness from
+        # reporting itself as the gate's verdict.
         sentinel = tmp_path / "gh-stub-invoked"
         gh = tmp_path / "gh"
-        gh.write_text(
-            f'#!/bin/sh\ntouch "{sentinel}"\ncat "{body_file}"\n',
-            encoding="utf-8",
-            newline="\n",
-        )
+        attempts = tmp_path / "gh-attempts"
+        stub = f'#!/bin/sh\ntouch "{sentinel}"\nprintf x >> "{attempts}"\n'
+        if gh_status:
+            # Stand in for an API failure on every attempt (5xx, rate limit).
+            stub += f'echo "gh: could not reach the API" >&2\nexit {gh_status}\n'
+        elif fail_first:
+            # Transient: fail the first N attempts, then serve the body. The
+            # attempt tape doubles as the counter.
+            stub += (
+                f'if [ "$(wc -c < "{attempts}")" -le {fail_first} ]; then\n'
+                '  echo "gh: temporarily unavailable" >&2\n'
+                "  exit 1\n"
+                "fi\n"
+                f'cat "{body_file}"\n'
+            )
+        else:
+            stub += f'cat "{body_file}"\n'
+        gh.write_text(stub, encoding="utf-8", newline="\n")
         gh.chmod(0o755)
+        self._attempts_file = attempts
         summary = tmp_path / "summary.md"
         summary.touch()
         # HERMETIC env, not `**os.environ`. The step's outcome is decided entirely
@@ -219,6 +245,10 @@ class TestScreenshotEvidenceBodyLogic:
         body = "<!-- no-visual-delta -->\n**Why no screenshot:**\n"
         result = self._run_step(tmp_path, body)
         assert result.returncode == 1, result.stdout + result.stderr
+        # Naming the branch is what makes this test mean anything. Exit 1 alone
+        # is also what a body that never arrived produces, so the bare returncode
+        # assertion held whether or not the marker was ever seen and rejected.
+        assert "marker without a justification" in result.stdout, result.stdout
 
     def test_emphasis_opening_justification_waives(self, tmp_path):
         # A reason that opens with markdown emphasis is still a reason.
@@ -238,7 +268,36 @@ class TestScreenshotEvidenceBodyLogic:
     def test_no_marker_no_image_still_fails(self, tmp_path):
         result = self._run_step(tmp_path, "A visual change with no evidence.\n")
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "::error::" in result.stdout
+        # Assert the sentence, not just `::error::`: the step has three error
+        # branches (unreadable body, marker without justification, no evidence)
+        # and only the last one is the verdict under test.
+        assert "carries no screenshot or recording" in result.stdout, result.stdout
+
+    def test_unreadable_body_is_not_reported_as_missing_evidence(self, tmp_path):
+        # A failed API read is not an absent screenshot. The step used to
+        # discard both gh's status and its stderr, so a transient failure left
+        # the body empty and the run told the author their description carried
+        # no evidence -- sending them to fix a description that was already
+        # correct. It must still fail closed (this gate is required) while
+        # naming the read as the cause.
+        body = "![shot](https://example.test/x.png)\n"
+        result = self._run_step(tmp_path, body, gh_status=1)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Could not read this PR's description" in result.stdout, result.stdout
+        assert "carries no screenshot or recording" not in result.stdout, result.stdout
+        # Pin the retry budget: a read that never succeeds is attempted three
+        # times and then gives up, rather than once or forever.
+        assert self._attempts_file.read_bytes() == b"xxx", self._attempts_file.read_bytes()
+
+    def test_transient_read_failure_is_absorbed_by_the_retry(self, tmp_path):
+        # The failure class this gate trips on is transient, so a first-attempt
+        # 5xx must not cost the author a manual re-run: the retry reads the
+        # body on a later attempt and the gate judges the real description.
+        body = "![shot](https://example.test/x.png)\n"
+        result = self._run_step(tmp_path, body, fail_first=1)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Visual evidence found" in result.stdout, result.stdout
+        assert self._attempts_file.read_bytes() == b"xx", self._attempts_file.read_bytes()
 
     def test_image_in_body_still_passes(self, tmp_path):
         result = self._run_step(tmp_path, "![shot](https://example.test/x.png)\n")
@@ -260,6 +319,79 @@ class TestScreenshotEvidenceBodyLogic:
         result = self._run_step(tmp_path, "no evidence at all", exempt="true")
         assert result.returncode == 0, result.stdout + result.stderr
         assert "'no-screenshots' label present" in result.stdout
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the detection step runs under bash on ubuntu-latest",
+)
+class TestScreenshotEvidenceSurfaceDetection:
+    """Execute the real surface-detection step with ``git`` stubbed.
+
+    This step decides whether the evidence step runs at all, so a wrong
+    ``visual=false`` is a silent bypass of a required gate rather than a
+    visible failure. The cases below pin which of the two empty results --
+    "nothing visual changed" and "the diff could not be computed" -- produced
+    the answer.
+    """
+
+    def _run_detect(self, tmp_path: Path, git_stdout: str = "", git_status: int = 0):
+        wf = yaml.safe_load(_read("screenshot-evidence.yml"))
+        steps = wf["jobs"]["screenshot-evidence"]["steps"]
+        step = next(
+            (s for s in steps if s.get("name") == "Detect user-visible frontend changes"),
+            None,
+        )
+        assert step is not None, "step 'Detect user-visible frontend changes' not found"
+        git = tmp_path / "git"
+        if git_status:
+            body = f'echo "fatal: bad object" >&2\nexit {git_status}\n'
+        else:
+            body = f'printf %s "{git_stdout}"\n'
+        git.write_text(f"#!/bin/sh\n{body}", encoding="utf-8", newline="\n")
+        git.chmod(0o755)
+        outputs = tmp_path / "outputs.txt"
+        outputs.touch()
+        env = {
+            # tmp_path first so the `git` stub wins the lookup.
+            "PATH": f"{tmp_path}{os.pathsep}/usr/local/bin{os.pathsep}/usr/bin{os.pathsep}/bin",
+            "LC_ALL": "C",
+            "BASE_SHA": "1111111111111111111111111111111111111111",
+            "HEAD_SHA": "2222222222222222222222222222222222222222",
+            "GITHUB_OUTPUT": str(outputs),
+            "TMPDIR": str(tmp_path),
+        }
+        result = subprocess.run(
+            ["bash", "-c", step["run"]],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+        return result, outputs.read_text(encoding="utf-8")
+
+    def test_visual_path_sets_visual_true(self, tmp_path):
+        result, outputs = self._run_detect(tmp_path, git_stdout="website/src/components/Foo.tsx\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "visual=true" in outputs, outputs
+
+    def test_no_visual_path_sets_visual_false(self, tmp_path):
+        result, outputs = self._run_detect(tmp_path, git_stdout="")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "visual=false" in outputs, outputs
+
+    def test_uncomputable_diff_fails_instead_of_skipping_the_gate(self, tmp_path):
+        # The failure this pins: a failed `git diff` used to be swallowed into
+        # the same empty string as "nothing visual changed", so the step wrote
+        # visual=false, the evidence step's `if:` went false, and a REQUIRED
+        # check reported green having examined nothing. Failing open on a gate
+        # is worse than a false red, so the diff failure must surface.
+        result, outputs = self._run_detect(tmp_path, git_status=128)
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "Could not compute the diff" in result.stdout, result.stdout
+        assert "visual=false" not in outputs, outputs
 
 
 class TestCrossPlatform:

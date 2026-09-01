@@ -54,7 +54,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -uo pipefail
-          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+          # A diff this step could not COMPUTE is not a diff that touched
+          # nothing visual. `2>/dev/null || true` collapsed a failed `git diff`
+          # (a base or head object absent after a force-push race, a pruned
+          # base branch) onto the same empty string as "no visual surface
+          # changed", and the gate then skipped its own evidence step -- a
+          # required check reporting green having examined nothing. That
+          # polarity is worse than a false red, so an uncomputable diff fails
+          # loudly and is re-runnable instead.
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
             'website/src/components/**' \
             'website/src/pages/**' \
             'website/src/apps/**' \
@@ -63,8 +71,10 @@ jobs:
             ':(exclude)website/src/**/*.test.ts' \
             ':(exclude)website/src/**/*.test.tsx' \
             ':(exclude)website/src/test/**' \
-            ':(exclude)website/src/**/*.d.ts' \
-            2>/dev/null || true)"
+            ':(exclude)website/src/**/*.d.ts')"; then
+            echo "::error::Could not compute the diff between the base and head commits, so this check cannot tell whether a user-visible surface changed. This is a diff failure, not an absence of visual changes -- re-run this job."
+            exit 1
+          fi
           if [ -n "$changed" ]; then
             echo "visual=true" >> "$GITHUB_OUTPUT"
             echo "Visual surfaces touched:"
@@ -93,7 +103,43 @@ jobs:
             exit 0
           fi
 
-          body="$(gh api "repos/$REPO/pulls/$PR" --jq '.body // ""' 2>/dev/null || true)"
+          # A body this step could not READ is not a body without evidence.
+          # `2>/dev/null || true` discarded both the error text and the exit
+          # status, so a transient API failure left `body` empty and every
+          # check below missed -- and the step then blamed the description,
+          # telling an author to attach evidence their PR already carried.
+          # The common case is transient, so absorb it here rather than
+          # spending the author's re-run on it: up to three attempts with a
+          # short backoff. A read that never succeeds fails closed (this gate
+          # is required, so an unreadable body must never pass silently) while
+          # naming the read as the cause. A description that is genuinely empty
+          # reads successfully on the first attempt and falls through to the
+          # no-evidence branch, which is correct.
+          body=""
+          read_ok=""
+          for attempt in 1 2 3; do
+            if body="$(gh api "repos/$REPO/pulls/$PR" --jq '.body // ""')"; then
+              read_ok=1
+              break
+            fi
+            echo "Reading the PR description failed on attempt $attempt."
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$attempt"
+            fi
+          done
+          if [ -z "$read_ok" ]; then
+            echo "::error::Could not read this PR's description from the API after 3 attempts, so the check cannot judge whether it carries evidence. This is a read failure, not missing evidence -- re-run this job."
+            {
+              echo "### Could not read the PR description"
+              echo
+              echo "The API read for this PR's description failed on every attempt, so the"
+              echo "check could not tell whether visual evidence is present. On this"
+              echo "evidence alone there is nothing wrong with the description -- re-run"
+              echo "this job. The failing \`gh api\` output is above this summary in the"
+              echo "step log."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           # Accept any form that actually renders as an image/video for a
           # reviewer: markdown image, HTML img/video, a committed
