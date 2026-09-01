@@ -1784,7 +1784,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   // Persist the composer text against the slot it BELONGS to (composerSlotRef),
   // not the live activeSlot (see the composerSlotRef note above).
-  useEffect(() => { inputRef.current = input; const s = composerSlotRef.current; if (s) { setDraft(drafts.current, s, input); saveDraftsDebounced() } }, [input, saveDraftsDebounced]) // eslint-disable-line react-hooks/exhaustive-deps -- draft key is composerSlotRef; slot-change effect handles the transition
+  // The draft key is composerSlotRef, which a ref does not need to be a
+  // dependency of; the slot-change effect below handles the transition.
+  useEffect(() => { inputRef.current = input; const s = composerSlotRef.current; if (s) { setDraft(drafts.current, s, input); saveDraftsDebounced() } }, [input, saveDraftsDebounced])
   // Per-slot draft: save current → restore target (persisted to localStorage)
   useEffect(() => {
     // Re-hydrate from localStorage — only pull in keys we don't already have
@@ -1917,7 +1919,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     }
     // Draft key is composerSlotRef; the slot-change effect handles that
     // transition.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFiles, saveDraftsDebounced])
   // Collapsed paste blocks backing the `[ Paste #N · M lines ]` tokens in
   // `input`. Persisted per-slot via chatPasteDrafts (localStorage, 30-day TTL)
@@ -1935,7 +1936,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       saveDraftsDebounced()
     }
     // draft key is composerSlotRef; slot-change effect handles that transition.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pasteBlocks, saveDraftsDebounced])
   // Session references staged by dragging a session from the list onto this
   // pane. Serialized as LINKS on send — never the referenced transcript.
@@ -1950,7 +1950,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       saveDraftsDebounced()
     }
     // draft key is composerSlotRef; slot-change effect handles that transition.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingSessions, saveDraftsDebounced])
   /** Stage a dropped session. Ignores duplicates and overflow (addSessionRef
    *  returns the same array, so this is a no-op re-render-free path). */
@@ -6369,7 +6368,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // The tab is still created above -- it is revealed quietly instead.
       if (!search.isOpen && !isMobile) dispatch(openActivityPanel())
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- search re-identifies on every keystroke; only its isOpen flag is read
   }, [activeSlot, chatPins.length, dispatch, isMobile, isPinned, pinMessage, search.isOpen, unpinMessage])
   const handleUnpinById = useCallback((id: string) => {
     void unpinById(id).catch(() => {})

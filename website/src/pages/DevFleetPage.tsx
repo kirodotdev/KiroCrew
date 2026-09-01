@@ -870,7 +870,6 @@ export default function DevFleetPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [detail, setDetail] = useState<Record<string, any>>({})
   const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({})
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [prov, setProv] = useState<Record<string, ProvRun | null>>({})
   const [provLogOpen, setProvLogOpen] = useState<Record<string, boolean>>({})
   const provDoneTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
