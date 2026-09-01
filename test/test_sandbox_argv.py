@@ -333,8 +333,16 @@ class TestBuildSeatbeltProfile:
             lambda path: str(runtime) if os.fspath(path) == str(alias) else realpath(path),
         )
 
-        with pytest.raises(RuntimeError, match="protected voice runtime"):
+        with pytest.raises(RuntimeError, match="protected voice runtime") as excinfo:
             sandbox_mod.assert_voice_runtime_outside_agent_workspace(alias)
+
+        # The refusal names the workspace as the caller spelled it (the
+        # symlink), not its canonical resolution, and classifies a hit found
+        # only on the canonical spelling as an alias relationship.
+        message = str(excinfo.value)
+        assert os.path.abspath(str(alias)) in message
+        assert "aliases" in message
+        assert str(runtime) in message
 
     @pytest.mark.parametrize(
         ("runtime_leaf", "workspace_leaf"),
@@ -386,6 +394,162 @@ class TestBuildSeatbeltProfile:
 
         with pytest.raises(RuntimeError, match="protected voice runtime"):
             sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+    def test_voice_guard_refusal_names_both_paths_when_workspace_contains_runtime(
+        self, monkeypatch, tmp_path
+    ):
+        """Lexical 'contains' variant: both absolute paths plus the remedy."""
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        workspace = tmp_path
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+        message = str(excinfo.value)
+        assert str(workspace) in message
+        assert str(runtime) in message
+        assert "contains" in message
+        assert (
+            "Pick a project subdirectory that does not contain the Kiro Crew data home."
+            in message
+        )
+
+    def test_voice_guard_refusal_names_both_paths_when_workspace_is_inside_runtime(
+        self, monkeypatch, tmp_path
+    ):
+        """Lexical 'inside' variant: both absolute paths plus the remedy."""
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        workspace = runtime / "nested"
+        workspace.mkdir(parents=True)
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+        message = str(excinfo.value)
+        assert str(workspace) in message
+        assert str(runtime) in message
+        assert "lives inside it" in message
+        assert (
+            "Pick a project subdirectory that does not contain the Kiro Crew data home."
+            in message
+        )
+
+    def test_voice_guard_alias_refusal_names_both_paths(self, monkeypatch, tmp_path):
+        """Filesystem-identity variant: both absolute paths plus the remedy."""
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        workspace = tmp_path / "workspace"
+        runtime.mkdir(parents=True)
+        workspace.mkdir()
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        real_stat = sandbox_mod.os.stat
+        runtime_info = real_stat(runtime)
+
+        def alias_stat(path, *args, **kwargs):
+            if os.path.abspath(os.fspath(path)) == os.path.abspath(str(workspace)):
+                return runtime_info
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(sandbox_mod.os, "stat", alias_stat)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+        message = str(excinfo.value)
+        assert str(workspace) in message
+        assert str(runtime) in message
+        assert "aliases" in message
+        assert (
+            "Pick a project subdirectory that does not contain the Kiro Crew data home."
+            in message
+        )
+
+    def test_voice_guard_cannot_verify_refusal_names_the_failed_stat(
+        self, monkeypatch, tmp_path
+    ):
+        """OSError variant: workspace, runtime, the failed path, and the remedy."""
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        workspace = tmp_path / "workspace"
+        runtime.mkdir(parents=True)
+        workspace.mkdir()
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        real_stat = sandbox_mod.os.stat
+
+        def failing_stat(path, *args, **kwargs):
+            if os.path.abspath(os.fspath(path)) == os.path.abspath(str(workspace)):
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(sandbox_mod.os, "stat", failing_stat)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(workspace)
+
+        message = str(excinfo.value)
+        assert "cannot verify" in message
+        assert str(workspace) in message
+        assert str(runtime) in message
+        assert "a filesystem check failed on" in message
+        assert "Permission denied" in message
+        assert "fails closed" in message
+        assert (
+            "Pick a project subdirectory that does not contain the Kiro Crew data home."
+            in message
+        )
+        assert isinstance(excinfo.value.__cause__, OSError)
+
+    def test_voice_guard_bind_cannot_verify_refusal_names_the_failed_open(
+        self, monkeypatch
+    ):
+        """Bind-path OSError variant: workspace, failed path, and the remedy."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: ("/protected/voice-runtime",),
+        )
+
+        def failing_open(path, **_kwargs):
+            raise PermissionError(13, "Permission denied", os.fspath(path))
+
+        monkeypatch.setattr(sandbox_mod, "_open_directory_descriptor", failing_open)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace")
+
+        message = str(excinfo.value)
+        assert "cannot verify" in message
+        assert "/mutable/workspace" in message
+        assert "/protected/voice-runtime" in message
+        assert "a filesystem check failed on" in message
+        assert "Permission denied" in message
+        assert (
+            "Pick a project subdirectory that does not contain the Kiro Crew data home."
+            in message
+        )
+        assert isinstance(excinfo.value.__cause__, OSError)
 
     def test_macos_workspace_binding_uses_opened_ancestor_identities(self, monkeypatch):
         monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
@@ -541,9 +705,16 @@ class TestBuildSeatbeltProfile:
         closed: list[int] = []
         monkeypatch.setattr(sandbox_mod.os, "close", closed.append)
 
-        with pytest.raises(RuntimeError, match="protected voice runtime"):
+        with pytest.raises(RuntimeError, match="protected voice runtime") as excinfo:
             sandbox_mod.bind_voice_safe_agent_workspace("/mutable/workspace")
 
+        message = str(excinfo.value)
+        assert "/mutable/workspace" in message
+        assert "/protected/voice-runtime" in message
+        assert (
+            "Pick a project subdirectory that does not contain the Kiro Crew data home."
+            in message
+        )
         assert closed == [51, 52]
 
     @pytest.mark.asyncio

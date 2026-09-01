@@ -39,7 +39,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
@@ -338,6 +338,56 @@ def _voice_runtime_ancestor_guards() -> tuple[str, ...]:
     return _voice_runtime_paths_cache[4]
 
 
+_VOICE_GUARD_REMEDY = "Pick a project subdirectory that does not contain the Kiro Crew data home."
+
+_VoiceGuardRelationship = Literal["contains", "inside", "alias", "cannot-verify"]
+
+
+def _voice_runtime_guard_message(
+    workspace_path: str,
+    runtime_path: str,
+    relationship: _VoiceGuardRelationship,
+    failed_path: str | None = None,
+    failure_reason: str | None = None,
+) -> str:
+    """Build every variant of the voice-runtime workspace refusal.
+
+    Each variant leads with the two concrete absolute paths, keeps its own
+    distinguishing detail, and ends with the same remedy sentence, so a user
+    who picked ``~`` (an ancestor of the default ``~/.kiro/crew`` data home)
+    sees exactly which two paths collide and what to choose instead. The
+    message is operator-facing and may reach logs: it carries only the two
+    paths the caller already knows (plus, on the cannot-verify variant, the
+    path whose filesystem check failed).
+    """
+    if relationship == "contains":
+        return (
+            f"macOS agent workspace {workspace_path!r} overlaps Kiro Crew's "
+            f"protected voice runtime {runtime_path!r}: the workspace contains "
+            f"the voice runtime / data home. {_VOICE_GUARD_REMEDY}"
+        )
+    if relationship == "inside":
+        return (
+            f"macOS agent workspace {workspace_path!r} overlaps Kiro Crew's "
+            f"protected voice runtime {runtime_path!r}: the workspace is the "
+            f"voice runtime / data home or lives inside it. {_VOICE_GUARD_REMEDY}"
+        )
+    if relationship == "alias":
+        return (
+            f"macOS agent workspace {workspace_path!r} aliases Kiro Crew's "
+            f"protected voice runtime {runtime_path!r}: by filesystem identity "
+            "(a case, normalization, symlink, or firmlink alias) one of these "
+            f"paths is the other or an ancestor of the other. {_VOICE_GUARD_REMEDY}"
+        )
+    return (
+        f"cannot verify that macOS agent workspace {workspace_path!r} is "
+        f"separate from Kiro Crew's protected voice runtime {runtime_path!r}: "
+        f"a filesystem check failed on {failed_path!r} ({failure_reason}), "
+        "so the guard cannot prove the paths are disjoint and fails closed "
+        f"rather than start an agent it cannot isolate. {_VOICE_GUARD_REMEDY}"
+    )
+
+
 def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[str]) -> None:
     """Fail closed when a macOS agent workspace can reach decoder snapshots.
 
@@ -373,6 +423,12 @@ def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[st
     raw_runtime_paths = tuple(
         dict.fromkeys(os.path.abspath(path) for path in _voice_runtime_sandbox_paths())
     )
+    # Refusals always name the workspace as the caller spelled it. A hit found
+    # only on the canonical (realpath) spelling of a symlinked workspace is an
+    # alias relationship from the caller's own spelling -- formatting the
+    # resolved path instead would print the runtime path twice and omit the
+    # path the user actually configured.
+    original_workspace_path = raw_workspace_paths[0]
     for workspace_path in raw_workspace_paths:
         for runtime_path in raw_runtime_paths:
             try:
@@ -380,9 +436,16 @@ def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[st
             except ValueError:
                 continue
             if common in (workspace_path, runtime_path):
+                if workspace_path != original_workspace_path:
+                    raise RuntimeError(
+                        _voice_runtime_guard_message(original_workspace_path, runtime_path, "alias")
+                    )
                 raise RuntimeError(
-                    "macOS agent workspace overlaps Kiro Crew's protected voice "
-                    "runtime; keep the workspace and Kiro Crew data home disjoint"
+                    _voice_runtime_guard_message(
+                        workspace_path,
+                        runtime_path,
+                        "inside" if common == runtime_path else "contains",
+                    )
                 )
 
     # Path spelling is only a fast reject. Compare filesystem identities too,
@@ -395,23 +458,27 @@ def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[st
         runtime_identities = tuple(
             (info.st_dev, info.st_ino) for info in (os.stat(path) for path in raw_runtime_paths)
         )
-        if any(
-            _identity_in_ancestor_chain(identity, runtime_path)
-            for identity in workspace_identities
-            for runtime_path in raw_runtime_paths
-        ) or any(
-            _identity_in_ancestor_chain(identity, workspace_path)
-            for identity in runtime_identities
-            for workspace_path in raw_workspace_paths
-        ):
-            raise RuntimeError(
-                "macOS agent workspace aliases Kiro Crew's protected voice "
-                "runtime; keep the workspace and Kiro Crew data home disjoint"
-            )
+        for workspace_identity in workspace_identities:
+            for runtime_path in raw_runtime_paths:
+                if _identity_in_ancestor_chain(workspace_identity, runtime_path):
+                    raise RuntimeError(
+                        _voice_runtime_guard_message(original_workspace_path, runtime_path, "alias")
+                    )
+        for runtime_path, runtime_identity in zip(raw_runtime_paths, runtime_identities):
+            for workspace_path in raw_workspace_paths:
+                if _identity_in_ancestor_chain(runtime_identity, workspace_path):
+                    raise RuntimeError(
+                        _voice_runtime_guard_message(original_workspace_path, runtime_path, "alias")
+                    )
     except OSError as exc:
         raise RuntimeError(
-            "cannot verify that the macOS agent workspace is separate from "
-            "Kiro Crew's protected voice runtime"
+            _voice_runtime_guard_message(
+                raw_workspace_paths[0],
+                raw_runtime_paths[0] if raw_runtime_paths else "<unknown>",
+                "cannot-verify",
+                failed_path=getattr(exc, "filename", None) or "<unknown path>",
+                failure_reason=getattr(exc, "strerror", None) or str(exc),
+            )
         ) from exc
 
 
@@ -474,13 +541,20 @@ def bind_voice_safe_agent_workspace(
 
     workspace_fd = -1
     runtime_fds: list[int] = []
+    runtime_paths: tuple[str, ...] = ()
     try:
+        # Resolve the runtime paths before opening the workspace: a workspace
+        # open() failure lands in the OSError handler below, which names the
+        # colliding runtime path in its refusal -- resolving after the open
+        # would print "<unknown>" for exactly the failure a user hits first.
+        runtime_paths = _voice_runtime_sandbox_paths()
+
         workspace_fd = _open_directory_descriptor(workspace_path)
         workspace_identity = os.fstat(workspace_fd)
         workspace_id = (workspace_identity.st_dev, workspace_identity.st_ino)
         workspace_ancestors = set(_directory_ancestor_identities(workspace_fd))
 
-        for runtime_path in _voice_runtime_sandbox_paths():
+        for runtime_path in runtime_paths:
             runtime_fd = _open_directory_descriptor(runtime_path)
             runtime_fds.append(runtime_fd)
             runtime_identity = os.fstat(runtime_fd)
@@ -488,8 +562,11 @@ def bind_voice_safe_agent_workspace(
             runtime_ancestors = set(_directory_ancestor_identities(runtime_fd))
             if workspace_id in runtime_ancestors or runtime_id in workspace_ancestors:
                 raise RuntimeError(
-                    "macOS agent workspace overlaps Kiro Crew's protected voice "
-                    "runtime; keep the workspace and Kiro Crew data home disjoint"
+                    _voice_runtime_guard_message(
+                        os.path.abspath(workspace_path),
+                        os.path.abspath(runtime_path),
+                        "inside" if runtime_id in workspace_ancestors else "contains",
+                    )
                 )
 
         return workspace_path, workspace_fd
@@ -497,8 +574,13 @@ def bind_voice_safe_agent_workspace(
         if workspace_fd >= 0:
             os.close(workspace_fd)
         raise RuntimeError(
-            "cannot bind a macOS agent workspace separately from Kiro Crew's "
-            "protected voice runtime"
+            _voice_runtime_guard_message(
+                os.path.abspath(workspace_path),
+                os.path.abspath(runtime_paths[0]) if runtime_paths else "<unknown>",
+                "cannot-verify",
+                failed_path=getattr(exc, "filename", None) or "<unknown path>",
+                failure_reason=getattr(exc, "strerror", None) or str(exc),
+            )
         ) from exc
     except BaseException:
         if workspace_fd >= 0:
