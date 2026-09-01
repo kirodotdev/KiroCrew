@@ -37,10 +37,11 @@ as if you had typed it.
 
 Speech-to-text is on by default, and the default provider runs on this machine.
 Desktop releases already contain the recognizer and audio decoder; users only
-download their selected model. For a source/PyPI install, add the recognizer:
+download their selected model. For a source install, add the recognizer to the environment that runs the
+gateway:
 
 ```bash
-pip install "kirocrew[voice]"
+pip install 'pywhispercpp>=1.5,<2'
 ```
 
 Source environments also need a system FFmpeg for WebM, M4A, and ogg/Opus; Kiro

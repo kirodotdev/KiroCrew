@@ -12855,7 +12855,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "Il decoder audio incluso è mancante o danneggiato. Reinstalla l’app desktop {{productName}}; non installare FFmpeg separatamente.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Poi riavvia il gateway (Impostazioni → Informazioni → Riavvia gateway) in modo che possa importare i nuovi pacchetti.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "L’app desktop non può aggiungere il supporto per Transcribe: il suo Python integrato non può installare pacchetti aggiuntivi. Installa {{productName}} con pip ed esegui il gateway da quell’ambiente.",
-        "this_gateway_s_python_can_t_install_extra_packag": "Il Python di questo gateway non può installare pacchetti aggiuntivi, quindi Transcribe non può essere abilitato qui. Esegui il gateway da un ambiente Python in cui pip possa installare kirocrew[voice].",
+        "this_gateway_s_python_can_t_install_extra_packag": "Il Python di questo gateway non può installare pacchetti aggiuntivi, quindi Transcribe non può essere abilitato qui. Esegui il gateway da un ambiente Python in cui pip possa installare boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Trascrivi la voce nella casella del messaggio quando clicchi sul microfono",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "Nella maggior parte delle tastiere Windows e Linux il tasto Alt destro è AltGr, che serve a digitare caratteri accentati, quindi qui un Opzione da solo non può essere il valore predefinito.",
@@ -12951,7 +12951,7 @@
         "if_single_tenant": "se single-tenant).",
         "in_the_bot_s": "Nelle",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "è il tuo ID app, poi invia un messaggio diretto al\n              bot — tutti i passaggi del manifest nella guida alla configurazione sopra.",
-        "jwt_required": "<strong>Microsoft Teams richiede la dipendenza PyJWT.</strong> Le richieste in entrata del Bot Framework contengono un token firmato che va convalidato, quindi senza di essa il canale non si avvia. Esegui <mono>pip install \"kirocrew[teams]\"</mono> nell'ambiente in cui gira il gateway, poi riavvialo.",
+        "jwt_required": "<strong>Microsoft Teams richiede la dipendenza PyJWT.</strong> Le richieste in entrata del Bot Framework contengono un token firmato che va convalidato, quindi senza di essa il canale non si avvia. Esegui <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> nell'ambiente in cui gira il gateway, poi riavvialo.",
         "leave_empty_for_a_multi_tenant_bot": "Lascia vuoto per un bot multi-tenant",
         "loading_teams_config": "Caricamento della configurazione di Teams…",
         "localhost": "localhost",
@@ -13086,7 +13086,7 @@
         "group_allowlist_description": "chat_id dei gruppi Feishu autorizzati ad avviare un turno. Vuoto = nessun gruppo viene servito.",
         "group_allowlist_label": "ID chat di gruppo consentiti",
         "group_empty_hint": "Le chat di gruppo sono attive ma non è elencato nessun chat_id, quindi nessun gruppo viene servito. Aggiungi un chat_id oppure disattiva l’opzione.",
-        "guide_body": "Nella console per sviluppatori di Feishu crea una <mono>custom app</mono> e apri la sua pagina <mono>Credentials & Basic Info</mono> per l’<mono>App ID</mono> e l’<mono>App Secret</mono> — incollali entrambi qui sotto. Attiva poi la modalità eventi <mono>Long connection</mono> e iscriviti a <mono>im.message.receive_v1</mono>. L’<mono>open_id</mono> di ogni membro va nell’elenco dei permessi. Il canale richiede anche la sua dipendenza opzionale: esegui <mono>pip install \"kirocrew[feishu]\"</mono> nell’ambiente in cui gira il gateway, poi riavvialo.",
+        "guide_body": "Nella console per sviluppatori di Feishu crea una <mono>custom app</mono> e apri la sua pagina <mono>Credentials & Basic Info</mono> per l’<mono>App ID</mono> e l’<mono>App Secret</mono> — incollali entrambi qui sotto. Attiva poi la modalità eventi <mono>Long connection</mono> e iscriviti a <mono>im.message.receive_v1</mono>. L’<mono>open_id</mono> di ogni membro va nell’elenco dei permessi. Il canale richiede anche la sua dipendenza opzionale: esegui <mono>pip install \"lark-oapi>=1.4,<2\"</mono> nell’ambiente in cui gira il gateway, poi riavvialo.",
         "open_developer_console": "Apri la console per sviluppatori di Feishu"
       },
       "webexPanel": {

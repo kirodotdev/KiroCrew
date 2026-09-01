@@ -4357,7 +4357,11 @@ class TestDoctorStt:
         out, code = self._report(tmp_path, capsys, modules={"amazon_transcribe.client": None})
 
         assert "transcribe:  ⏹ optional cloud STT not installed" in out
-        assert "pip install 'kirocrew[voice]'" in out
+        # The cloud dependencies by name: `pip install kirocrew[voice]` resolves
+        # nowhere (this project is on no index), and it would also drag in the
+        # local recogniser this provider does not use.
+        assert "amazon-transcribe" in out
+        assert "kirocrew[" not in out
         assert code == 0
 
     def test_doctor_stt_transcribe_boto3_missing(self, tmp_path, capsys, monkeypatch):
@@ -4376,7 +4380,11 @@ class TestDoctorStt:
         )
 
         assert "boto3:       ⏹ optional AWS SDK not installed" in out
-        assert "pip install 'kirocrew[voice]'" in out
+        # The cloud dependencies by name: `pip install kirocrew[voice]` resolves
+        # nowhere (this project is on no index), and it would also drag in the
+        # local recogniser this provider does not use.
+        assert "amazon-transcribe" in out
+        assert "kirocrew[" not in out
         assert code == 0
 
     def test_doctor_stt_apple_unsupported_host_names_its_code(self, tmp_path, capsys, monkeypatch):

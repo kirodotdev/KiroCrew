@@ -150,7 +150,7 @@ describe('FeishuPanel', () => {
   it('surfaces the missing lark-oapi extra as the reason the channel is down', async () => {
     mocks.getConfig.mockResolvedValue({
       connected: false,
-      connect_error: 'lark-oapi is not installed — run: pip install "kirocrew[feishu]"',
+      connect_error: "lark-oapi is not installed — run: pip install 'lark-oapi>=1.4,<2'",
       configured: true,
       read_only: false,
       bot_token_set: true,
@@ -213,7 +213,7 @@ describe('FeishuPanel', () => {
  * records the missing SDK sits after that return.
  */
 describe('FeishuPanel missing-SDK card', () => {
-  const CMD = "/opt/venv/bin/python -m pip install 'kirocrew[feishu]'"
+  const CMD = "/opt/venv/bin/python -m pip install 'lark-oapi>=1.4,<2'"
 
   const base = {
     connected: false, connect_error: '', configured: true, read_only: false,

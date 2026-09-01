@@ -12688,7 +12688,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "अंतर्निहित ऑडियो डिकोडर मौजूद नहीं है या क्षतिग्रस्त है। {{productName}} डेस्कटॉप ऐप को फिर से इंस्टॉल करें; FFmpeg को अलग से इंस्टॉल न करें।",
         "then_restart_the_gateway_so_it_can_import_the_ne": "फिर gateway को पुनः आरंभ करें (Settings → About → Restart gateway) ताकि वह नए पैकेज इंपोर्ट कर सके।",
         "the_desktop_app_can_t_add_transcribe_support_ins": "डेस्कटॉप ऐप Transcribe समर्थन नहीं जोड़ सकता — इसका बंडल किया गया Python अतिरिक्त पैकेज इंस्टॉल नहीं कर सकता। इसके बजाय pip से {{productName}} इंस्टॉल करें और उसी एनवायरनमेंट से gateway चलाएँ।",
-        "this_gateway_s_python_can_t_install_extra_packag": "इस gateway का Python अतिरिक्त पैकेज इंस्टॉल नहीं कर सकता, इसलिए यहाँ Transcribe चालू नहीं किया जा सकता। gateway को ऐसे Python एनवायरनमेंट में चलाएँ जहाँ pip से kirocrew[voice] इंस्टॉल हो सके।",
+        "this_gateway_s_python_can_t_install_extra_packag": "इस gateway का Python अतिरिक्त पैकेज इंस्टॉल नहीं कर सकता, इसलिए यहाँ Transcribe चालू नहीं किया जा सकता। gateway को ऐसे Python एनवायरनमेंट में चलाएँ जहाँ pip से boto3 + amazon-transcribe इंस्टॉल हो सके।",
         "transcribe_voice_into_the_message_box_when_you_c": "माइक पर क्लिक करने पर आवाज़ को मैसेज बॉक्स में ट्रांसक्राइब करें",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "अधिकांश Windows और Linux कीबोर्ड में दायाँ Alt वास्तव में AltGr है, जो उच्चारण-चिह्न वाले अक्षर टाइप करने में मदद करता है — इसलिए यहाँ अकेला Option डिफ़ॉल्ट नहीं हो सकता।",
@@ -12784,7 +12784,7 @@
         "if_single_tenant": "यदि सिंगल-टेनेंट हो)।",
         "in_the_bot_s": "बॉट के",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "आपका App ID हो, फिर बॉट को DM करें —\n              पूरे manifest चरण ऊपर दी गई सेटअप गाइड में हैं।",
-        "jwt_required": "<strong>Microsoft Teams को PyJWT डिपेंडेंसी चाहिए।</strong> इनबाउंड Bot Framework अनुरोध एक साइन किया हुआ टोकन लाते हैं जिसे वेरिफ़ाई करना ज़रूरी है, इसलिए इसके बिना चैनल शुरू नहीं होगा। gateway चलाने वाले एनवायरनमेंट में <mono>pip install \"kirocrew[teams]\"</mono> चलाएँ, फिर gateway रीस्टार्ट करें।",
+        "jwt_required": "<strong>Microsoft Teams को PyJWT डिपेंडेंसी चाहिए।</strong> इनबाउंड Bot Framework अनुरोध एक साइन किया हुआ टोकन लाते हैं जिसे वेरिफ़ाई करना ज़रूरी है, इसलिए इसके बिना चैनल शुरू नहीं होगा। gateway चलाने वाले एनवायरनमेंट में <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> चलाएँ, फिर gateway रीस्टार्ट करें।",
         "leave_empty_for_a_multi_tenant_bot": "मल्टी-टेनेंट बॉट के लिए खाली छोड़ें",
         "loading_teams_config": "Teams कॉन्फ़िग लोड हो रहा है…",
         "localhost": "localhost",
@@ -12919,7 +12919,7 @@
         "group_allowlist_description": "वे Feishu ग्रुप chat_id जो एक टर्न शुरू कर सकते हैं। खाली = किसी ग्रुप को नहीं संभाला जाता।",
         "group_allowlist_label": "अनुमति वाले ग्रुप चैट ID",
         "group_empty_hint": "ग्रुप चैट चालू है पर कोई chat_id सूची में नहीं है, इसलिए किसी ग्रुप को नहीं संभाला जाता। एक chat_id जोड़ो, या टॉगल बंद करो।",
-        "guide_body": "Feishu डेवलपर कंसोल में एक <mono>custom app</mono> बनाओ और उसका <mono>Credentials & Basic Info</mono> पेज खोलकर <mono>App ID</mono> और <mono>App Secret</mono> लो — दोनों नीचे पेस्ट करो। फिर <mono>Long connection</mono> इवेंट मोड चालू करो और <mono>im.message.receive_v1</mono> सब्सक्राइब करो। हर सदस्य का <mono>open_id</mono> अनुमति-सूची में जाता है। इस चैनल को उसकी वैकल्पिक डिपेंडेंसी भी चाहिए: जिस एनवायरनमेंट में गेटवे चलता है वहाँ <mono>pip install \"kirocrew[feishu]\"</mono> चलाओ, फिर उसे रीस्टार्ट करो।",
+        "guide_body": "Feishu डेवलपर कंसोल में एक <mono>custom app</mono> बनाओ और उसका <mono>Credentials & Basic Info</mono> पेज खोलकर <mono>App ID</mono> और <mono>App Secret</mono> लो — दोनों नीचे पेस्ट करो। फिर <mono>Long connection</mono> इवेंट मोड चालू करो और <mono>im.message.receive_v1</mono> सब्सक्राइब करो। हर सदस्य का <mono>open_id</mono> अनुमति-सूची में जाता है। इस चैनल को उसकी वैकल्पिक डिपेंडेंसी भी चाहिए: जिस एनवायरनमेंट में गेटवे चलता है वहाँ <mono>pip install \"lark-oapi>=1.4,<2\"</mono> चलाओ, फिर उसे रीस्टार्ट करो।",
         "open_developer_console": "Feishu डेवलपर कंसोल खोलो"
       },
       "webexPanel": {

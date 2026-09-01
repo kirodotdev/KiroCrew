@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew import extras
 from kiro_crew.feishu.client import LarkClient
 from kiro_crew.feishu.transport import FeishuTransport
 from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
@@ -118,7 +119,7 @@ async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None"
         if orch.dashboard_state is not None:
             orch.dashboard_state.feishu_connected = False
             orch.dashboard_state.feishu_connect_error = (
-                'lark-oapi is not installed — run: pip install "kirocrew[feishu]"'
+                f"lark-oapi is not installed — run: {extras.install_hint('feishu')}"
             )
         logger.error("Feishu channel needs the lark-oapi extra; continuing without it: %s", exc)
         return None

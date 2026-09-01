@@ -12687,7 +12687,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "Der gebündelte Audiodecoder fehlt oder ist beschädigt. Installiere die {{productName}}-Desktop-App neu; installiere FFmpeg nicht separat.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Starte anschließend das Gateway neu (Einstellungen → Über → Gateway neu starten), damit es die neuen Pakete importieren kann.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "Die Desktop-App kann keine Transcribe-Unterstützung hinzufügen — ihr gebündeltes Python kann keine zusätzlichen Pakete installieren. Installiere {{productName}} stattdessen mit pip und starte das Gateway aus dieser Umgebung.",
-        "this_gateway_s_python_can_t_install_extra_packag": "Das Python dieses Gateways kann keine zusätzlichen Pakete installieren, daher lässt sich Transcribe hier nicht aktivieren. Führe das Gateway in einer Python-Umgebung aus, in der pip kirocrew[voice] installieren kann.",
+        "this_gateway_s_python_can_t_install_extra_packag": "Das Python dieses Gateways kann keine zusätzlichen Pakete installieren, daher lässt sich Transcribe hier nicht aktivieren. Führe das Gateway in einer Python-Umgebung aus, in der pip boto3 + amazon-transcribe installieren kann.",
         "transcribe_voice_into_the_message_box_when_you_c": "Stimme in das Nachrichtenfeld transkribieren, wenn Sie auf das Mikrofon klicken",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "Auf den meisten Windows- und Linux-Tastaturen ist die rechte Alt-Taste AltGr und hilft beim Tippen von Sonderzeichen — eine einzelne Wahltaste kann hier also nicht der Standard sein.",
@@ -12783,7 +12783,7 @@
         "if_single_tenant": "falls Single-Tenant).",
         "in_the_bot_s": "In den",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "Ihre App-ID ist, senden Sie dann eine Direktnachricht an den\n              Bot — vollständige Manifest-Schritte in der Einrichtungsanleitung oben.",
-        "jwt_required": "<strong>Microsoft Teams braucht die Abhängigkeit PyJWT.</strong> Eingehende Bot-Framework-Anfragen tragen ein signiertes Token, das geprüft werden muss, deshalb startet der Kanal ohne sie nicht. Führe <mono>pip install \"kirocrew[teams]\"</mono> in der Umgebung aus, in der das Gateway läuft, und starte es dann neu.",
+        "jwt_required": "<strong>Microsoft Teams braucht die Abhängigkeit PyJWT.</strong> Eingehende Bot-Framework-Anfragen tragen ein signiertes Token, das geprüft werden muss, deshalb startet der Kanal ohne sie nicht. Führe <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> in der Umgebung aus, in der das Gateway läuft, und starte es dann neu.",
         "leave_empty_for_a_multi_tenant_bot": "Für einen Multi-Tenant-Bot leer lassen",
         "loading_teams_config": "Teams-Konfiguration wird geladen…",
         "localhost": "localhost",
@@ -12918,7 +12918,7 @@
         "group_allowlist_description": "Feishu-Gruppen-chat_ids, die einen Zug auslösen dürfen. Leer = keine Gruppe wird bedient.",
         "group_allowlist_label": "Erlaubte Gruppen-Chat-IDs",
         "group_empty_hint": "Gruppenchats sind an, aber es ist keine chat_id aufgeführt — also wird keine Gruppe bedient. Füge eine chat_id hinzu oder schalte die Option aus.",
-        "guide_body": "Erstelle in der Feishu-Entwicklerkonsole eine <mono>custom app</mono> und öffne ihre Seite <mono>Credentials & Basic Info</mono> für <mono>App ID</mono> und <mono>App Secret</mono> — füge beide unten ein. Aktiviere dann den Ereignismodus <mono>Long connection</mono> und abonniere <mono>im.message.receive_v1</mono>. Die <mono>open_id</mono> jedes Mitglieds gehört in die Erlaubnisliste. Der Kanal braucht außerdem seine optionale Abhängigkeit: Führe <mono>pip install \"kirocrew[feishu]\"</mono> in der Umgebung aus, in der das Gateway läuft, und starte es dann neu.",
+        "guide_body": "Erstelle in der Feishu-Entwicklerkonsole eine <mono>custom app</mono> und öffne ihre Seite <mono>Credentials & Basic Info</mono> für <mono>App ID</mono> und <mono>App Secret</mono> — füge beide unten ein. Aktiviere dann den Ereignismodus <mono>Long connection</mono> und abonniere <mono>im.message.receive_v1</mono>. Die <mono>open_id</mono> jedes Mitglieds gehört in die Erlaubnisliste. Der Kanal braucht außerdem seine optionale Abhängigkeit: Führe <mono>pip install \"lark-oapi>=1.4,<2\"</mono> in der Umgebung aus, in der das Gateway läuft, und starte es dann neu.",
         "open_developer_console": "Feishu-Entwicklerkonsole öffnen"
       },
       "webexPanel": {

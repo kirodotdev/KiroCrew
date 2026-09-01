@@ -56,6 +56,7 @@ from typing import Any
 
 import numpy as np
 
+from kiro_crew import extras
 from kiro_crew.executors import stt_executor
 from kiro_crew.stt import models
 from kiro_crew.stt.limits import DEFAULT_IDLE_EVICT_SECS, DEFAULT_TIMEOUT_SECS
@@ -224,12 +225,12 @@ def probe() -> Availability:
                 CODE_NO_WHEEL,
                 f"no prebuilt speech recogniser for {platform.system()} "
                 f"{platform.machine()}; install a C++ toolchain and CMake, "
-                "then reinstall kirocrew[voice]",
+                f"then reinstall it with {extras.install_hint('voice')}",
             )
         return Availability(
             False,
             CODE_EXTRA_MISSING,
-            "speech recognition needs the voice extra: pip install 'kirocrew[voice]'",
+            f"speech recognition needs its voice dependencies: {extras.install_hint('voice')}",
         )
     try:
         import pywhispercpp.model  # noqa: F401

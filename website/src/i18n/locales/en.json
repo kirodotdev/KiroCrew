@@ -8056,7 +8056,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "The bundled audio decoder is missing or damaged. Reinstall the {{productName}} desktop app; do not install FFmpeg separately.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Then restart the gateway (Settings → About → Restart gateway) so it can import the new packages.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "The desktop app can't add Transcribe support — its bundled Python can't install extra packages. Install {{productName}} with pip and run the gateway from that environment instead.",
-        "this_gateway_s_python_can_t_install_extra_packag": "This gateway's Python can't install extra packages, so Transcribe can't be enabled here. Run the gateway from a Python environment where pip can install kirocrew[voice].",
+        "this_gateway_s_python_can_t_install_extra_packag": "This gateway's Python can't install extra packages, so Transcribe can't be enabled here. Run the gateway from a Python environment where pip can install boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcribe voice into the message box when you click the mic",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "On most Windows and Linux keyboards the right Alt key is AltGr, which helps type accented characters — so a lone Option cannot be the default here.",

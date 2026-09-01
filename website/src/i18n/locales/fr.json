@@ -12856,7 +12856,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "Le décodeur audio intégré est manquant ou endommagé. Réinstallez l’application de bureau {{productName}} ; n’installez pas FFmpeg séparément.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Redémarrez ensuite le gateway (Paramètres → À propos → Redémarrer le gateway) pour qu’il puisse importer les nouveaux paquets.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "L’application de bureau ne peut pas ajouter la prise en charge de Transcribe — son Python intégré ne peut pas installer de paquets supplémentaires. Installez {{productName}} avec pip et lancez le gateway depuis cet environnement.",
-        "this_gateway_s_python_can_t_install_extra_packag": "Le Python de ce gateway ne peut pas installer de paquets supplémentaires, donc Transcribe ne peut pas être activé ici. Exécutez le gateway depuis un environnement Python où pip peut installer kirocrew[voice].",
+        "this_gateway_s_python_can_t_install_extra_packag": "Le Python de ce gateway ne peut pas installer de paquets supplémentaires, donc Transcribe ne peut pas être activé ici. Exécutez le gateway depuis un environnement Python où pip peut installer boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcrire la voix dans le champ de message lorsque vous cliquez sur le micro",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "Sur la plupart des claviers Windows et Linux, la touche Alt droite est AltGr, qui sert à saisir les caractères accentués — une Option seule ne peut donc pas être la valeur par défaut ici.",
@@ -12952,7 +12952,7 @@
         "if_single_tenant": "si locataire unique).",
         "in_the_bot_s": "Dans la section du bot",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "est votre ID d'application, puis envoyez un message privé au\n              bot — étapes complètes du manifeste dans le guide de configuration ci-dessus.",
-        "jwt_required": "<strong>Microsoft Teams a besoin de la dépendance PyJWT.</strong> Les requêtes entrantes du Bot Framework portent un jeton signé qui doit être validé, donc le canal refuse de démarrer sans elle. Exécutez <mono>pip install \"kirocrew[teams]\"</mono> dans l'environnement qui exécute le gateway, puis redémarrez-le.",
+        "jwt_required": "<strong>Microsoft Teams a besoin de la dépendance PyJWT.</strong> Les requêtes entrantes du Bot Framework portent un jeton signé qui doit être validé, donc le canal refuse de démarrer sans elle. Exécutez <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> dans l'environnement qui exécute le gateway, puis redémarrez-le.",
         "leave_empty_for_a_multi_tenant_bot": "Laisser vide pour un bot multi-locataire",
         "loading_teams_config": "Chargement de la configuration Teams…",
         "localhost": "localhost",
@@ -13087,7 +13087,7 @@
         "group_allowlist_description": "chat_ids de groupes Feishu autorisés à déclencher un tour. Vide = aucun groupe n’est servi.",
         "group_allowlist_label": "ID de discussions de groupe autorisés",
         "group_empty_hint": "Les discussions de groupe sont activées mais aucun chat_id n’est listé, donc aucun groupe n’est servi. Ajoute un chat_id ou désactive l’option.",
-        "guide_body": "Dans la console développeur Feishu, crée une <mono>custom app</mono> et ouvre sa page <mono>Credentials & Basic Info</mono> pour récupérer l’<mono>App ID</mono> et l’<mono>App Secret</mono> — colle les deux ci-dessous. Active ensuite le mode d’événements <mono>Long connection</mono> et abonne-toi à <mono>im.message.receive_v1</mono>. L’<mono>open_id</mono> de chaque membre va dans la liste d’autorisation. Le canal a aussi besoin de sa dépendance optionnelle : lance <mono>pip install \"kirocrew[feishu]\"</mono> dans l’environnement qui exécute la passerelle, puis redémarre-la.",
+        "guide_body": "Dans la console développeur Feishu, crée une <mono>custom app</mono> et ouvre sa page <mono>Credentials & Basic Info</mono> pour récupérer l’<mono>App ID</mono> et l’<mono>App Secret</mono> — colle les deux ci-dessous. Active ensuite le mode d’événements <mono>Long connection</mono> et abonne-toi à <mono>im.message.receive_v1</mono>. L’<mono>open_id</mono> de chaque membre va dans la liste d’autorisation. Le canal a aussi besoin de sa dépendance optionnelle : lance <mono>pip install \"lark-oapi>=1.4,<2\"</mono> dans l’environnement qui exécute la passerelle, puis redémarre-la.",
         "open_developer_console": "Ouvrir la console développeur Feishu"
       },
       "webexPanel": {

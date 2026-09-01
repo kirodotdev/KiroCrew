@@ -857,8 +857,8 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     Egress is OFF by default: reaching here at all means an edition named a
     destination (the public default does so only when ``telemetry.otlp_endpoint``
     is a non-empty string). The OTLP exporter lives in the separate
-    ``kirocrew[otlp]`` package extra (install with ``pip install
-    "kirocrew[otlp]"``), not the hard dependency set. If a host opts in without
+    ``otlp`` package extra (install its exporter directly -- see
+    :mod:`kiro_crew.extras`), not the hard dependency set. If a host opts in without
     installing it, we log a warning and degrade to local-only rather than
     crashing telemetry init. The exporter sees only what the MetricsRecorder
     facade lets through: attributes are sanitised before they reach any reader,

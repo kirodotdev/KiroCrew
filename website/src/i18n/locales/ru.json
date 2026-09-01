@@ -13024,7 +13024,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "Встроенный аудиодекодер отсутствует или повреждён. Переустановите настольное приложение {{productName}}; не устанавливайте FFmpeg отдельно.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Затем перезапустите gateway (Настройки → О программе → Перезапустить gateway), чтобы он смог импортировать новые пакеты.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "Приложение для рабочего стола не может добавить поддержку Transcribe — его встроенный Python не может устанавливать дополнительные пакеты. Установите {{productName}} через pip и запустите gateway из этого окружения.",
-        "this_gateway_s_python_can_t_install_extra_packag": "Python этого gateway не может устанавливать дополнительные пакеты, поэтому Transcribe здесь включить нельзя. Запустите gateway из окружения Python, где pip может установить kirocrew[voice].",
+        "this_gateway_s_python_can_t_install_extra_packag": "Python этого gateway не может устанавливать дополнительные пакеты, поэтому Transcribe здесь включить нельзя. Запустите gateway из окружения Python, где pip может установить boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Расшифровывать речь в поле сообщения при нажатии на микрофон",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "На большинстве клавиатур Windows и Linux правая клавиша Alt — это AltGr, которая помогает набирать символы с диакритикой, поэтому одиночный Option не может быть здесь значением по умолчанию.",
@@ -13120,7 +13120,7 @@
         "if_single_tenant": "если однотенантный).",
         "in_the_bot_s": "В разделе бота",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "— это ваш App ID, затем напишите боту\n              в личные сообщения — полные шаги по манифесту в руководстве по настройке выше.",
-        "jwt_required": "<strong>Для Microsoft Teams нужна зависимость PyJWT.</strong> Входящие запросы Bot Framework содержат подписанный токен, который необходимо проверять, поэтому без неё канал не запустится. Выполните <mono>pip install \"kirocrew[teams]\"</mono> в окружении, где работает gateway, и перезапустите его.",
+        "jwt_required": "<strong>Для Microsoft Teams нужна зависимость PyJWT.</strong> Входящие запросы Bot Framework содержат подписанный токен, который необходимо проверять, поэтому без неё канал не запустится. Выполните <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> в окружении, где работает gateway, и перезапустите его.",
         "leave_empty_for_a_multi_tenant_bot": "Оставьте пустым для мультитенантного бота",
         "loading_teams_config": "Загрузка конфигурации Teams…",
         "localhost": "localhost",
@@ -13255,7 +13255,7 @@
         "group_allowlist_description": "Идентификаторы chat_id групп Feishu, которым разрешено запускать ход. Пусто = ни одна группа не обслуживается.",
         "group_allowlist_label": "Разрешённые ID групповых чатов",
         "group_empty_hint": "Групповые чаты включены, но ни один chat_id не указан, поэтому ни одна группа не обслуживается. Добавь chat_id или выключи переключатель.",
-        "guide_body": "В консоли разработчика Feishu создай <mono>custom app</mono> и открой её страницу <mono>Credentials & Basic Info</mono> — там <mono>App ID</mono> и <mono>App Secret</mono>, вставь оба ниже. Затем включи режим событий <mono>Long connection</mono> и подпишись на <mono>im.message.receive_v1</mono>. <mono>open_id</mono> каждого участника вносится в список разрешённых. Каналу также нужна необязательная зависимость: выполни <mono>pip install \"kirocrew[feishu]\"</mono> в окружении, где работает шлюз, и перезапусти его.",
+        "guide_body": "В консоли разработчика Feishu создай <mono>custom app</mono> и открой её страницу <mono>Credentials & Basic Info</mono> — там <mono>App ID</mono> и <mono>App Secret</mono>, вставь оба ниже. Затем включи режим событий <mono>Long connection</mono> и подпишись на <mono>im.message.receive_v1</mono>. <mono>open_id</mono> каждого участника вносится в список разрешённых. Каналу также нужна необязательная зависимость: выполни <mono>pip install \"lark-oapi>=1.4,<2\"</mono> в окружении, где работает шлюз, и перезапусти его.",
         "open_developer_console": "Открыть консоль разработчика Feishu"
       },
       "webexPanel": {

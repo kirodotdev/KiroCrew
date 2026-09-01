@@ -134,7 +134,7 @@ worst case is one dropped export cycle rather than a corrupt shard.
 | `export_interval_seconds` | `60` | Flush interval (floored to 1). |
 | `retention_days` | `0` | Age pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive day window to opt in (rec #14). |
 | `max_total_mb` | `0` | Size pruning is disabled by default to preserve pre-existing history on upgrade. Set a positive opportunistic directory budget to opt in; protected active writers can temporarily exceed it (rec #14). |
-| `otlp_endpoint` | `""` | Opt-in OTLP/HTTP metrics endpoint (e.g. `http://localhost:4318/v1/metrics`). **Empty = no network egress (default).** When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires `pip install "kirocrew[otlp]"` (rec #1). |
+| `otlp_endpoint` | `""` | Opt-in OTLP/HTTP metrics endpoint (e.g. `http://localhost:4318/v1/metrics`). **Empty = no network egress (default).** When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires `pip install "opentelemetry-exporter-otlp-proto-http==1.44.0"` (rec #1). |
 
 Field validation (`TelemetryConfig.__post_init__`): `export_interval_seconds`
 below 1 is floored to 1; negative `retention_days` / `max_total_mb` are clamped
@@ -209,7 +209,7 @@ that raises contributes nothing and is reported at WARNING, and telemetry keeps
 working local-only; the same is true when the platform context cannot be composed,
 because for an egress seam "no destinations" is the closed state.
 
-Install support with `pip install "kirocrew[otlp]"`. If a destination is supplied
+Install support with `pip install "opentelemetry-exporter-otlp-proto-http==1.44.0"`. If a destination is supplied
 but the package extra is
 not installed, telemetry
 degrades to local-only with a warning instead of crashing. The OTLP exporter

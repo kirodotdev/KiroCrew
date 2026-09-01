@@ -79,6 +79,7 @@ from kiro_crew.embeddings import (
     resolve_custom_model,
     verify_vendored_libs,
 )
+from kiro_crew.extras import install_hint
 from kiro_crew.kiro_cli import mcp_governance_may_apply, resolve_kiro_cli
 from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
@@ -2954,7 +2955,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  transcribe:  ✅ amazon_transcribe importable (optional)")
         except ImportError:
             print("  transcribe:  ⏹ optional cloud STT not installed")
-            print("               Install: pip install 'kirocrew[voice]'")
+            print(f"               Install: {install_hint('voice-aws')}")
 
         try:
             import boto3  # noqa: F401
@@ -2962,7 +2963,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             print("  boto3:       ✅ importable (optional)")
         except ImportError:
             print("  boto3:       ⏹ optional AWS SDK not installed")
-            print("               Install: pip install 'kirocrew[voice]'")
+            print(f"               Install: {install_hint('voice-aws')}")
 
     # Apple's on-device speech is a host capability rather than an install, so the
     # only useful thing to print is the reason it cannot run. Reaching a not-ok

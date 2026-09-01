@@ -12519,7 +12519,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "내장 오디오 디코더가 없거나 손상되었습니다. {{productName}} 데스크톱 앱을 다시 설치하세요. FFmpeg를 별도로 설치할 필요는 없습니다.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "그런 다음 새 패키지를 가져올 수 있도록 게이트웨이를 다시 시작하세요 (설정 → 정보 → 게이트웨이 다시 시작).",
         "the_desktop_app_can_t_add_transcribe_support_ins": "데스크톱 앱에서는 Transcribe 지원을 추가할 수 없습니다. 번들된 Python이 추가 패키지를 설치할 수 없기 때문입니다. 대신 pip로 {{productName}}을(를) 설치하고 해당 환경에서 게이트웨이를 실행하세요.",
-        "this_gateway_s_python_can_t_install_extra_packag": "이 게이트웨이의 Python은 추가 패키지를 설치할 수 없으므로 여기서는 Transcribe를 사용할 수 없습니다. pip으로 kirocrew[voice]를 설치할 수 있는 Python 환경에서 게이트웨이를 실행하세요.",
+        "this_gateway_s_python_can_t_install_extra_packag": "이 게이트웨이의 Python은 추가 패키지를 설치할 수 없으므로 여기서는 Transcribe를 사용할 수 없습니다. pip으로 boto3 + amazon-transcribe를 설치할 수 있는 Python 환경에서 게이트웨이를 실행하세요.",
         "transcribe_voice_into_the_message_box_when_you_c": "마이크를 클릭하면 음성을 메시지 입력창에 전사합니다",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "대부분의 Windows 및 Linux 키보드에서 오른쪽 Alt 키는 AltGr이며 악센트 문자를 입력하는 데 쓰입니다. 그래서 Option 단독은 여기서 기본값이 될 수 없습니다.",
@@ -12615,7 +12615,7 @@
         "if_single_tenant": "단일 테넌트인 경우).",
         "in_the_bot_s": "봇의",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "앱 ID입니다. 그다음 봇에 DM을 보내세요 —\n 전체 매니페스트 단계는 위 설정 가이드에 있습니다.",
-        "jwt_required": "<strong>Microsoft Teams에는 PyJWT 종속성이 필요합니다.</strong> 수신되는 Bot Framework 요청에는 검증해야 하는 서명된 토큰이 포함되므로 이 종속성이 없으면 채널이 시작되지 않습니다. gateway를 실행하는 환경에서 <mono>pip install \"kirocrew[teams]\"</mono>을 실행한 다음 gateway를 다시 시작하세요.",
+        "jwt_required": "<strong>Microsoft Teams에는 PyJWT 종속성이 필요합니다.</strong> 수신되는 Bot Framework 요청에는 검증해야 하는 서명된 토큰이 포함되므로 이 종속성이 없으면 채널이 시작되지 않습니다. gateway를 실행하는 환경에서 <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono>을 실행한 다음 gateway를 다시 시작하세요.",
         "leave_empty_for_a_multi_tenant_bot": "다중 테넌트 봇의 경우 비워 두세요",
         "loading_teams_config": "Teams 설정을 불러오는 중…",
         "localhost": "localhost",
@@ -12750,7 +12750,7 @@
         "group_allowlist_description": "턴을 시작할 수 있는 Feishu 그룹 chat_id. 비어 있으면 = 어떤 그룹도 처리하지 않습니다.",
         "group_allowlist_label": "허용된 그룹 채팅 ID",
         "group_empty_hint": "그룹 채팅이 켜져 있지만 chat_id가 하나도 없어 어떤 그룹도 처리되지 않습니다. chat_id를 추가하거나 토글을 끄세요.",
-        "guide_body": "Feishu 개발자 콘솔에서 <mono>custom app</mono>을 만들고 <mono>Credentials & Basic Info</mono> 페이지에서 <mono>App ID</mono>와 <mono>App Secret</mono>을 확인해 아래에 붙여 넣으세요. 그다음 이벤트 모드 <mono>Long connection</mono>을 활성화하고 <mono>im.message.receive_v1</mono>을 구독합니다. 각 구성원의 <mono>open_id</mono>를 허용 목록에 넣습니다. 이 채널에는 선택적 의존성도 필요합니다. 게이트웨이를 실행하는 환경에서 <mono>pip install \"kirocrew[feishu]\"</mono>를 실행한 뒤 재시작하세요.",
+        "guide_body": "Feishu 개발자 콘솔에서 <mono>custom app</mono>을 만들고 <mono>Credentials & Basic Info</mono> 페이지에서 <mono>App ID</mono>와 <mono>App Secret</mono>을 확인해 아래에 붙여 넣으세요. 그다음 이벤트 모드 <mono>Long connection</mono>을 활성화하고 <mono>im.message.receive_v1</mono>을 구독합니다. 각 구성원의 <mono>open_id</mono>를 허용 목록에 넣습니다. 이 채널에는 선택적 의존성도 필요합니다. 게이트웨이를 실행하는 환경에서 <mono>pip install \"lark-oapi>=1.4,<2\"</mono>를 실행한 뒤 재시작하세요.",
         "open_developer_console": "Feishu 개발자 콘솔 열기"
       },
       "webexPanel": {

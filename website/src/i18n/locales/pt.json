@@ -12855,7 +12855,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "O decodificador de áudio incluído está ausente ou danificado. Reinstale o app {{productName}} para desktop; não instale o FFmpeg separadamente.",
         "then_restart_the_gateway_so_it_can_import_the_ne": "Depois reinicie o gateway (Configurações → Sobre → Reiniciar gateway) para que ele possa importar os novos pacotes.",
         "the_desktop_app_can_t_add_transcribe_support_ins": "O aplicativo desktop não pode adicionar suporte ao Transcribe — o Python integrado não consegue instalar pacotes adicionais. Instale o {{productName}} com pip e execute o gateway a partir desse ambiente.",
-        "this_gateway_s_python_can_t_install_extra_packag": "O Python deste gateway não consegue instalar pacotes adicionais, então o Transcribe não pode ser ativado aqui. Execute o gateway em um ambiente Python onde o pip possa instalar kirocrew[voice].",
+        "this_gateway_s_python_can_t_install_extra_packag": "O Python deste gateway não consegue instalar pacotes adicionais, então o Transcribe não pode ser ativado aqui. Execute o gateway em um ambiente Python onde o pip possa instalar boto3 + amazon-transcribe.",
         "transcribe_voice_into_the_message_box_when_you_c": "Transcrever a voz na caixa de mensagem quando você clicar no microfone",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "Na maioria dos teclados Windows e Linux a tecla Alt direita é AltGr, que ajuda a digitar caracteres acentuados, então aqui um Option sozinho não pode ser o padrão.",
@@ -12951,7 +12951,7 @@
         "if_single_tenant": "se for de um único locatário).",
         "in_the_bot_s": "No bot, em",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "é o seu App ID e depois envie um DM para o\n              bot — os passos completos do manifesto estão no guia de configuração acima.",
-        "jwt_required": "<strong>O Microsoft Teams precisa da dependência PyJWT.</strong> As requisições de entrada do Bot Framework trazem um token assinado que precisa ser validado, então o canal não inicia sem ela. Execute <mono>pip install \"kirocrew[teams]\"</mono> no ambiente em que o gateway roda e reinicie-o.",
+        "jwt_required": "<strong>O Microsoft Teams precisa da dependência PyJWT.</strong> As requisições de entrada do Bot Framework trazem um token assinado que precisa ser validado, então o canal não inicia sem ela. Execute <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> no ambiente em que o gateway roda e reinicie-o.",
         "leave_empty_for_a_multi_tenant_bot": "Deixe vazio para um bot multilocatário",
         "loading_teams_config": "Carregando configuração do Teams…",
         "localhost": "localhost",
@@ -13086,7 +13086,7 @@
         "group_allowlist_description": "chat_ids de grupos do Feishu autorizados a iniciar um turno. Vazio = nenhum grupo é servido.",
         "group_allowlist_label": "IDs de conversas de grupo permitidos",
         "group_empty_hint": "As conversas de grupo estão ativas mas nenhum chat_id está listado, por isso nenhum grupo é servido. Adiciona um chat_id ou desliga a opção.",
-        "guide_body": "Na consola de desenvolvedor do Feishu, cria uma <mono>custom app</mono> e abre a página <mono>Credentials & Basic Info</mono> para obter o <mono>App ID</mono> e o <mono>App Secret</mono> — cola ambos abaixo. Depois ativa o modo de eventos <mono>Long connection</mono> e subscreve <mono>im.message.receive_v1</mono>. O <mono>open_id</mono> de cada membro entra na lista de permissões. O canal também precisa da dependência opcional: executa <mono>pip install \"kirocrew[feishu]\"</mono> no ambiente onde corre o gateway e reinicia-o.",
+        "guide_body": "Na consola de desenvolvedor do Feishu, cria uma <mono>custom app</mono> e abre a página <mono>Credentials & Basic Info</mono> para obter o <mono>App ID</mono> e o <mono>App Secret</mono> — cola ambos abaixo. Depois ativa o modo de eventos <mono>Long connection</mono> e subscreve <mono>im.message.receive_v1</mono>. O <mono>open_id</mono> de cada membro entra na lista de permissões. O canal também precisa da dependência opcional: executa <mono>pip install \"lark-oapi>=1.4,<2\"</mono> no ambiente onde corre o gateway e reinicia-o.",
         "open_developer_console": "Abrir a consola de desenvolvedor do Feishu"
       },
       "webexPanel": {

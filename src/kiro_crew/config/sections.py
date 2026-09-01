@@ -3224,7 +3224,7 @@ class TelemetryConfig:
             "http://localhost:4318/v1/metrics). EMPTY = no network egress "
             "(default). When set, aggregated metrics are ALSO pushed to this "
             "collector in addition to the local JSONL sink; requires the "
-            "kirocrew[otlp] package extra to be installed "
+            "OTLP exporter from the otlp package extra to be installed "
             "(rec #1: OTLP opt-in only, no egress by default).",
             sensitive=True,
         ),
@@ -5546,8 +5546,8 @@ class WhatsAppConfig:
     Pairs as a linked device on the operator's own WhatsApp account — there is
     no bot token. Pairing state lives in a local session database under the
     data home (``whatsapp/session.db``), created by the Settings > Channels QR
-    flow. Requires the optional ``whatsapp`` dependency extra
-    (``pip install 'kirocrew[whatsapp]'``).
+    flow. Requires the optional ``whatsapp`` dependency
+    (``pip install 'neonize==0.4.3.post0'``; see :mod:`kiro_crew.extras`).
 
     Uses the unofficial WhatsApp Web protocol; automation on a personal
     account is against WhatsApp's Terms of Service and carries a small risk

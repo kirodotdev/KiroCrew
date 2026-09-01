@@ -163,7 +163,11 @@ class TestMaybeStartFeishu:
         # both the log and the settings badge name the install command.
         assert any("needs the lark-oapi extra" in r.getMessage() for r in caplog.records)
         assert orch.dashboard_state.feishu_connected is False
-        assert 'pip install "kirocrew[feishu]"' in orch.dashboard_state.feishu_connect_error
+        # Names the DEPENDENCY, not `kirocrew[feishu]`: this project is not on an
+        # index, so the extras form fails to resolve for every user.
+        assert "lark-oapi" in orch.dashboard_state.feishu_connect_error
+        assert "pip install" in orch.dashboard_state.feishu_connect_error
+        assert "kirocrew[" not in orch.dashboard_state.feishu_connect_error
 
     @pytest.mark.asyncio
     async def test_generic_exception_swallowed(

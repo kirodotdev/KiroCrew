@@ -199,7 +199,9 @@ const shoot = async (page, heading, name) => {
     status: {
       available: false,
       code: 'stt_extra_missing',
-      detail: "speech recognition needs the voice extra: pip install 'kirocrew[voice]'",
+      detail:
+        "speech recognition needs its voice dependencies: pip install 'boto3>=1.34,<2' "
+        + "'amazon-transcribe>=0.6,<1' 'pywhispercpp>=1.5,<2'",
       model_present: false,
       models: MODELS.map((m) => ({ ...m, present: false })),
     },

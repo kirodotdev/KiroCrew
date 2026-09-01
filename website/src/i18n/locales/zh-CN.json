@@ -12519,7 +12519,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "内置的音频解码器缺失或已损坏。请重新安装 {{productName}} 桌面应用；无需单独安装 FFmpeg。",
         "then_restart_the_gateway_so_it_can_import_the_ne": "然后重启 gateway（设置 → 关于 → 重启 gateway），以便加载新安装的包。",
         "the_desktop_app_can_t_add_transcribe_support_ins": "桌面应用无法添加 Transcribe 支持——其内置的 Python 无法安装额外的包。请改用 pip 安装 {{productName}}，并从该环境运行 gateway。",
-        "this_gateway_s_python_can_t_install_extra_packag": "此 gateway 的 Python 无法安装额外的包，因此无法在这里启用 Transcribe。请在 pip 能够安装 kirocrew[voice] 的 Python 环境中运行 gateway。",
+        "this_gateway_s_python_can_t_install_extra_packag": "此 gateway 的 Python 无法安装额外的包，因此无法在这里启用 Transcribe。请在 pip 能够安装 boto3 + amazon-transcribe 的 Python 环境中运行 gateway。",
         "transcribe_voice_into_the_message_box_when_you_c": "点击麦克风时将语音转写到消息框",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "在多数 Windows 和 Linux 键盘上，右 Alt 键就是 AltGr，用来帮助输入带重音的字符 —— 所以这些平台不能用单独的 Option 作为默认值。",
@@ -12615,7 +12615,7 @@
         "if_single_tenant": "若为单租户）。",
         "in_the_bot_s": "在机器人的",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "为你的应用 ID，然后私聊\n              机器人 — 完整清单步骤见上方设置指南。",
-        "jwt_required": "<strong>Microsoft Teams 需要 PyJWT 依赖。</strong>入站的 Bot Framework 请求带有必须校验的签名令牌，因此缺少该依赖时通道不会启动。请在运行 gateway 的环境中执行 <mono>pip install \"kirocrew[teams]\"</mono>，然后重启 gateway。",
+        "jwt_required": "<strong>Microsoft Teams 需要 PyJWT 依赖。</strong>入站的 Bot Framework 请求带有必须校验的签名令牌，因此缺少该依赖时通道不会启动。请在运行 gateway 的环境中执行 <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono>，然后重启 gateway。",
         "leave_empty_for_a_multi_tenant_bot": "多租户机器人请留空",
         "loading_teams_config": "正在加载 Teams 配置…",
         "localhost": "localhost",
@@ -12750,7 +12750,7 @@
         "group_allowlist_description": "允许发起一轮对话的飞书群 chat_id。留空 = 不服务任何群。",
         "group_allowlist_label": "允许的群 chat ID",
         "group_empty_hint": "已开启群聊但未列出任何 chat_id，因此不会服务任何群。请添加一个 chat_id，或关闭该开关。",
-        "guide_body": "在飞书开放平台控制台创建一个<mono>自建应用</mono>，打开<mono>凭证与基础信息</mono>页面获取 <mono>App ID</mono> 和 <mono>App Secret</mono>，并把两者粘贴到下方。然后启用<mono>长连接</mono>事件模式，并订阅 <mono>im.message.receive_v1</mono>。每位成员的 <mono>open_id</mono> 填入白名单。该渠道还需要它的可选依赖：在运行网关的环境中执行 <mono>pip install \"kirocrew[feishu]\"</mono>，然后重启网关。",
+        "guide_body": "在飞书开放平台控制台创建一个<mono>自建应用</mono>，打开<mono>凭证与基础信息</mono>页面获取 <mono>App ID</mono> 和 <mono>App Secret</mono>，并把两者粘贴到下方。然后启用<mono>长连接</mono>事件模式，并订阅 <mono>im.message.receive_v1</mono>。每位成员的 <mono>open_id</mono> 填入白名单。该渠道还需要它的可选依赖：在运行网关的环境中执行 <mono>pip install \"lark-oapi>=1.4,<2\"</mono>，然后重启网关。",
         "open_developer_console": "打开飞书开放平台控制台"
       },
       "webexPanel": {

@@ -993,20 +993,29 @@ def _stt_prereq_commands(provider: str = "local") -> list[str]:
     An empty list means "nothing to do", which is the steady state.
     """
     cmds: list[str] = []
+    # Which extra to name depends on the provider, because the two halves are
+    # separately installable and an extra resolves ATOMICALLY: advising the full
+    # `voice` set to a cloud-only user drags in the local recogniser, which has
+    # no wheel on some platforms and fails the whole install.
+    extra = ""
     if provider == PROVIDER_LOCAL:
         # Only the missing-extra case is actionable by pip. A platform with no
         # prebuilt wheel needs a C++ toolchain instead, and the availability
         # `detail` on GET /api/stt/status is what says so.
         needs_extra = stt.availability().code == stt.CODE_EXTRA_MISSING
+        extra = "voice"
     elif provider == "transcribe":
         needs_extra = not _transcribe_extra_importable()
+        extra = "voice-aws"
     else:
         needs_extra = False
     # Suppressed where no pip channel into this interpreter exists — frozen build,
     # code-signed app bundle, pip-less or PEP 668 python. The Settings page shows
     # an unsupported notice there instead of a command that cannot succeed.
     if needs_extra and _pip_install_channel_available():
-        cmds.append(pip_extra_install_command("voice"))
+        command = pip_extra_install_command(extra)
+        if command:
+            cmds.append(command)
     if not platform_compat.is_bundled_interpreter():
         cmds.extend(_ffmpeg_install_commands())
     return cmds

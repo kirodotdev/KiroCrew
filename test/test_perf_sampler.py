@@ -217,10 +217,15 @@ class TestPySpy:
         # raw == folded stacks, so both sampling strategies emit one format.
         assert argv[argv.index("--format") + 1] == "raw"
 
-    def test_unavailable_message_explains_macos_and_the_extra(self):
+    def test_unavailable_message_explains_macos_and_the_dependency(self):
         message = perf_sampler.pyspy_unavailable_message()
         assert "task_for_pid" in message
-        assert "kirocrew[perf]" in message
+        # Names py-spy itself. `pip install kirocrew[perf]` cannot resolve --
+        # this project is published on no index -- so advising it would send the
+        # user to a guaranteed failure.
+        assert "py-spy" in message
+        assert "pip install" in message
+        assert "kirocrew[" not in message
 
     def test_candidate_paths_are_probed_before_PATH(self, monkeypatch, tmp_path):
         """A py-spy installed by homebrew/cargo/pip --user must still be found.

@@ -7,7 +7,9 @@ normalized ``LarkInbound`` frames into the async event loop via
 Outbound: ``send_reply`` wraps the sync lark-oapi REST API in
 ``run_in_executor`` so it never blocks the event loop.
 
-``lark-oapi`` is an OPTIONAL dependency (``pip install "kirocrew[feishu]"``).
+``lark-oapi`` is an OPTIONAL dependency: it ships in the ``feishu`` extra, and
+is installed on its own with ``pip install 'lark-oapi>=1.4,<2'`` (this project
+is not on an index, so ``pip install kirocrew[feishu]`` cannot resolve).
 It is imported lazily inside this module's methods so that every other module
 in the package -- including :mod:`kiro_crew.feishu.transport` and the channel
 roster in :mod:`kiro_crew.channels` -- imports cleanly on a build that does not
@@ -26,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from kiro_crew import extras
 from kiro_crew.messaging.split import split_markdown_safe
 
 logger = logging.getLogger(__name__)
@@ -170,7 +173,7 @@ class LarkClient:
         except ImportError as exc:
             raise ImportError(
                 "lark-oapi is required for the Feishu channel. "
-                "Install it with: pip install lark-oapi"
+                f"Install it with: {extras.install_hint('feishu')}"
             ) from exc
 
         # Dedicated executor for the blocking REST replies. The default

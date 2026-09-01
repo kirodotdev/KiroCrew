@@ -12688,7 +12688,7 @@
         "the_bundled_audio_decoder_is_missing_or_damaged": "বান্ডল করা অডিও ডিকোডারটি নেই বা ক্ষতিগ্রস্ত। {{productName}} ডেস্কটপ অ্যাপটি পুনরায় ইনস্টল করুন; আলাদাভাবে FFmpeg ইনস্টল করবেন না।",
         "then_restart_the_gateway_so_it_can_import_the_ne": "তারপর gateway পুনরায় চালু করুন (Settings → About → Restart gateway) যাতে এটি নতুন প্যাকেজগুলি ইমপোর্ট করতে পারে।",
         "the_desktop_app_can_t_add_transcribe_support_ins": "ডেস্কটপ অ্যাপে Transcribe সমর্থন যোগ করা যাবে না — এর অন্তর্ভুক্ত Python অতিরিক্ত প্যাকেজ ইনস্টল করতে পারে না। পরিবর্তে pip দিয়ে {{productName}} ইনস্টল করুন এবং সেই এনভায়রনমেন্ট থেকে gateway চালান।",
-        "this_gateway_s_python_can_t_install_extra_packag": "এই gateway-এর Python অতিরিক্ত প্যাকেজ ইনস্টল করতে পারে না, তাই এখানে Transcribe চালু করা যাবে না। এমন একটি Python এনভায়রনমেন্টে gateway চালান যেখানে pip দিয়ে kirocrew[voice] ইনস্টল করা যায়।",
+        "this_gateway_s_python_can_t_install_extra_packag": "এই gateway-এর Python অতিরিক্ত প্যাকেজ ইনস্টল করতে পারে না, তাই এখানে Transcribe চালু করা যাবে না। এমন একটি Python এনভায়রনমেন্টে gateway চালান যেখানে pip দিয়ে boto3 + amazon-transcribe ইনস্টল করা যায়।",
         "transcribe_voice_into_the_message_box_when_you_c": "আপনি মাইকে ক্লিক করলে ভয়েস ট্রান্সক্রাইব করে মেসেজ বক্সে বসানো হয়",
         "us_east_1": "us-east-1",
         "ptt_altgr_note": "অধিকাংশ Windows ও Linux কীবোর্ডে ডান Alt কী আসলে AltGr, যা উচ্চারণ-চিহ্নযুক্ত অক্ষর টাইপ করতে সাহায্য করে — তাই এখানে একক Option ডিফল্ট হতে পারে না।",
@@ -12784,7 +12784,7 @@
         "if_single_tenant": "যদি সিঙ্গল-টেন্যান্ট হয়)।",
         "in_the_bot_s": "বটের ভিতরে",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "হলো আপনার App ID, তারপর বটকে DM\n              করুন — সম্পূর্ণ ম্যানিফেস্ট ধাপগুলো উপরের সেটআপ গাইডে আছে।",
-        "jwt_required": "<strong>Microsoft Teams-এর জন্য PyJWT ডিপেনডেন্সি দরকার।</strong> ইনবাউন্ড Bot Framework অনুরোধে সাইন করা টোকেন থাকে যা যাচাই করা বাধ্যতামূলক, তাই এটি ছাড়া চ্যানেল চালু হবে না। gateway যে এনভায়রনমেন্টে চলে সেখানে <mono>pip install \"kirocrew[teams]\"</mono> চালাও, তারপর gateway রিস্টার্ট করো।",
+        "jwt_required": "<strong>Microsoft Teams-এর জন্য PyJWT ডিপেনডেন্সি দরকার।</strong> ইনবাউন্ড Bot Framework অনুরোধে সাইন করা টোকেন থাকে যা যাচাই করা বাধ্যতামূলক, তাই এটি ছাড়া চ্যানেল চালু হবে না। gateway যে এনভায়রনমেন্টে চলে সেখানে <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> চালাও, তারপর gateway রিস্টার্ট করো।",
         "leave_empty_for_a_multi_tenant_bot": "মাল্টি-টেন্যান্ট বটের জন্য খালি রাখুন",
         "loading_teams_config": "Teams কনফিগ লোড হচ্ছে…",
         "localhost": "localhost",
@@ -12919,7 +12919,7 @@
         "group_allowlist_description": "যেসব Feishu গ্রুপ chat_id একটি টার্ন চালাতে পারে। খালি = কোনো গ্রুপ সামলানো হয় না।",
         "group_allowlist_label": "অনুমোদিত গ্রুপ চ্যাট ID",
         "group_empty_hint": "গ্রুপ চ্যাট চালু আছে কিন্তু কোনো chat_id তালিকায় নেই, তাই কোনো গ্রুপ সামলানো হয় না। একটি chat_id যোগ করো, বা টগলটি বন্ধ করো।",
-        "guide_body": "Feishu ডেভেলপার কনসোলে একটি <mono>custom app</mono> তৈরি করো এবং তার <mono>Credentials & Basic Info</mono> পেজ খুলে <mono>App ID</mono> ও <mono>App Secret</mono> নাও — দুটোই নিচে পেস্ট করো। এরপর <mono>Long connection</mono> ইভেন্ট মোড চালু করো এবং <mono>im.message.receive_v1</mono> সাবস্ক্রাইব করো। প্রত্যেক সদস্যের <mono>open_id</mono> অনুমোদিত তালিকায় যায়। এই চ্যানেলের ঐচ্ছিক ডিপেন্ডেন্সিও দরকার: যে এনভায়রনমেন্টে গেটওয়ে চলে সেখানে <mono>pip install \"kirocrew[feishu]\"</mono> চালাও, তারপর সেটি রিস্টার্ট করো।",
+        "guide_body": "Feishu ডেভেলপার কনসোলে একটি <mono>custom app</mono> তৈরি করো এবং তার <mono>Credentials & Basic Info</mono> পেজ খুলে <mono>App ID</mono> ও <mono>App Secret</mono> নাও — দুটোই নিচে পেস্ট করো। এরপর <mono>Long connection</mono> ইভেন্ট মোড চালু করো এবং <mono>im.message.receive_v1</mono> সাবস্ক্রাইব করো। প্রত্যেক সদস্যের <mono>open_id</mono> অনুমোদিত তালিকায় যায়। এই চ্যানেলের ঐচ্ছিক ডিপেন্ডেন্সিও দরকার: যে এনভায়রনমেন্টে গেটওয়ে চলে সেখানে <mono>pip install \"lark-oapi>=1.4,<2\"</mono> চালাও, তারপর সেটি রিস্টার্ট করো।",
         "open_developer_console": "Feishu ডেভেলপার কনসোল খোলো"
       },
       "webexPanel": {

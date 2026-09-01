@@ -286,8 +286,8 @@ again.
 
 Desktop users install nothing else by hand: the app already carries the
 recognizer, decoder, and AWS client. In a source environment the recognizer and
-AWS client arrive with the optional `voice` extra
-(`pip install "kirocrew[voice]"`):
+AWS client are the optional `voice` extra, installed as its own dependencies
+(`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1' 'pywhispercpp>=1.5,<2'`):
 
 - **Intel Macs have no prebuilt recognizer.** Every other platform Kiro Crew
   supports (Apple silicon macOS, glibc and musl Linux on x86_64 and arm64, and
@@ -296,8 +296,9 @@ AWS client arrive with the optional `voice` extra
   that as its own state rather than as a missing extra, because the two need
   different fixes.
 
-  If you would rather not build it, `pip install "kirocrew[voice-aws]"` installs
-  only the AWS Transcribe client. `pip` resolves an extra all-or-nothing, so on a
+  If you would rather not build it, installing only the cloud half
+  (`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6,<1'`) gets you the AWS
+  Transcribe client on its own. `pip` resolves an extra all-or-nothing, so on a
   platform without the recognizer wheel the full `voice` extra installs *nothing* —
   including the Transcribe client, which has no such limitation. This is the way to
   get the paid provider on a host that cannot build the free one.

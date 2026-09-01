@@ -28,6 +28,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import extras
 from kiro_crew.config.loader import (
     MAX_SUBAGENTS_FIXED_FLOOR,
     SUBAGENT_AUTO_MAX_CEILING,
@@ -424,7 +425,11 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "posix")
         cmds = core_mod._stt_prereq_commands("local")
         assert len(cmds) == 1
-        assert "kirocrew[voice]" in cmds[0]
+        # The extra's own distributions, never `kirocrew[voice]`: this project is
+        # published on no index, so the extras form cannot resolve for anyone.
+        assert "kirocrew[" not in cmds[0]
+        for req in extras.requirements_for_extra("voice"):
+            assert f"'{req}'" in cmds[0]
         assert "-m pip install" in cmds[0]
         assert core_mod.shlex.quote(sys.executable) in cmds[0]
 
@@ -457,7 +462,13 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "posix")
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert len(cmds) == 1
-        assert "kirocrew[voice]" in cmds[0]
+        # The CLOUD half alone. An extra resolves atomically, so naming the full
+        # `voice` set here would drag in the local recogniser and fail the whole
+        # install on a platform that has no wheel for it.
+        assert "kirocrew[" not in cmds[0]
+        assert "pywhispercpp" not in cmds[0]
+        for req in extras.requirements_for_extra("voice-aws"):
+            assert f"'{req}'" in cmds[0]
         assert "-m pip install" in cmds[0]
         assert core_mod.shlex.quote(sys.executable) in cmds[0]
 
@@ -475,11 +486,19 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "nt")
         monkeypatch.setattr(sys, "executable", "C:\\Program Files\\Python312\\python.exe")
         cmds = core_mod._stt_prereq_commands("transcribe")
-        assert cmds == [
-            "& 'C:\\Program Files\\Python312\\python.exe' -m pip install kirocrew[voice]"
-        ]
-        # Named properties the exact match locks in:
-        assert '"' not in cmds[0]  # PS double quotes still expand $ and backtick
+        # Quoting is the shared helper's, not this module's: on Windows a
+        # specifier needs the cross-shell DOUBLE-quoted form, because cmd does
+        # not treat `'` as a quote and would redirect on a pin's `<`.
+        specs = " ".join(extras.quote_spec(r) for r in extras.requirements_for_extra("voice-aws"))
+        assert cmds == [f"& 'C:\\Program Files\\Python312\\python.exe' -m pip install {specs}"]
+        # Named properties the exact match locks in. The double-quote check is
+        # scoped to the INTERPRETER segment: a PS double-quoted path would
+        # expand `$name` and honour backticks, silently rewriting it. The
+        # SPECIFIER after `-m pip install` is deliberately double-quoted (the
+        # one form cmd and PowerShell both strip) and holds no `$` or backtick
+        # to expand -- test_extras.py pins that precondition.
+        interpreter = cmds[0].split(" -m pip install ", 1)[0]
+        assert '"' not in interpreter
         assert "`" not in cmds[0]  # never emit a PS escape character
 
     def test_transcribe_prereq_windows_metachar_paths_survive_literally(self, monkeypatch) -> None:
@@ -492,7 +511,11 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "nt")
         monkeypatch.setattr(sys, "executable", "C:\\tools\\$python\\o'brien.exe")
         cmds = core_mod._stt_prereq_commands("transcribe")
-        assert cmds == ["& 'C:\\tools\\$python\\o''brien.exe' -m pip install kirocrew[voice]"]
+        # Quoting is the shared helper's, not this module's: on Windows a
+        # specifier needs the cross-shell DOUBLE-quoted form, because cmd does
+        # not treat `'` as a quote and would redirect on a pin's `<`.
+        specs = " ".join(extras.quote_spec(r) for r in extras.requirements_for_extra("voice-aws"))
+        assert cmds == [f"& 'C:\\tools\\$python\\o''brien.exe' -m pip install {specs}"]
 
     def test_transcribe_prereq_without_install_channel_is_empty(self, monkeypatch) -> None:
         """When no install channel can make the extra importable (bundled
@@ -518,7 +541,8 @@ class TestSttPrereqCommands:
         monkeypatch.setattr(core_mod.os, "name", "posix")
         cmds = core_mod._stt_prereq_commands("transcribe")
         assert len(cmds) == 2
-        assert "kirocrew[voice]" in cmds[0]
+        assert "-m pip install" in cmds[0]
+        assert "amazon-transcribe" in cmds[0]
         assert cmds[1] == "brew install ffmpeg"
 
     def test_bundled_desktop_never_offers_a_system_decoder_command(self, monkeypatch) -> None:

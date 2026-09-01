@@ -1646,7 +1646,9 @@ class TestWhatsAppSection:
         cli_doctor._doctor_whatsapp(self._cfg(), issues)
 
         out = capsys.readouterr().out
-        assert "kirocrew[whatsapp]" in out
+        # neonize by name -- the extras form is not installable from an index.
+        assert "neonize" in out
+        assert "kirocrew[" not in out
         assert "whatsapp extra missing" in issues
 
     def test_an_installed_extra_and_a_paired_store_report_clean(

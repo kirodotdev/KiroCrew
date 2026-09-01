@@ -4962,7 +4962,7 @@
       },
       "teamsPanel": {
         "active": "Active",
-        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. Run <mono>pip install \"kirocrew[teams]\"</mono> in the environment that runs the gateway, then restart it.",
+        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. Run <mono>pip install \"PyJWT[crypto]==2.13.0\"</mono> in the environment that runs the gateway, then restart it.",
         "microsoft_app_id": "Microsoft App ID",
         "needs_setup": "Needs setup",
         "not_active": "Not active",
@@ -5215,7 +5215,7 @@
         "group_allowlist_description": "Feishu group chat_ids allowed to drive a turn. Empty = no group is served.",
         "group_allowlist_label": "Allowed group chat IDs",
         "group_empty_hint": "Group chats are on but no chat_id is listed, so no group is served. Add a chat_id, or turn the toggle off.",
-        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"kirocrew[feishu]\"</mono> in the environment that runs the gateway, then restart it.",
+        "guide_body": "In the Feishu developer console, create a <mono>custom app</mono> and open its <mono>Credentials & Basic Info</mono> page for the <mono>App ID</mono> and <mono>App Secret</mono> — paste both below. Then enable the <mono>Long connection</mono> event mode and subscribe to <mono>im.message.receive_v1</mono>. Each member’s <mono>open_id</mono> goes in the allow-list. The channel also needs its optional dependency: run <mono>pip install \"lark-oapi>=1.4,<2\"</mono> in the environment that runs the gateway, then restart it.",
         "open_developer_console": "Open Feishu developer console"
       },
       "shortcutsPanel": {
