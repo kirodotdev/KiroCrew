@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import pathlib
 import re
@@ -9626,6 +9627,201 @@ class TestJiraLinkedChanges:
         assert result[1]["issueKey"] == "B-2"
         assert result[1]["relation"] == "is duplicated by"
         assert result[1]["state"] == "closed"
+
+
+# --- Jira fix versions as the milestone equivalent (issue #2585) ---
+
+
+class TestJiraFixVersionMilestone:
+    """Tests for _jira_fix_versions and _jira_fix_version_milestone."""
+
+    def test_unreleased_version_maps_to_open_milestone(self) -> None:
+        """name -> title, releaseDate -> dueOn, unreleased -> open."""
+        fields = {
+            "fixVersions": [
+                {"name": "2.4.0", "releaseDate": "2026-09-30", "released": False},
+            ]
+        }
+        versions = source._jira_fix_versions(fields)
+        assert len(versions) == 1
+        assert source._jira_fix_version_milestone(versions[0]) == {
+            "title": "2.4.0",
+            "state": "open",
+            "dueOn": "2026-09-30",
+        }
+
+    def test_released_version_maps_to_closed(self) -> None:
+        """A shipped release is a closed milestone."""
+        version = {"name": "2.3.0", "releaseDate": "2026-06-30", "released": True}
+        assert source._jira_fix_version_milestone(version)["state"] == "closed"
+
+    def test_archived_version_maps_to_closed(self) -> None:
+        """An archived version no longer takes work, so it is not open."""
+        version = {"name": "1.0.0", "released": False, "archived": True}
+        assert source._jira_fix_version_milestone(version)["state"] == "closed"
+
+    def test_missing_release_date_keeps_the_name(self) -> None:
+        """A version with no release date still carries its target release."""
+        version = {"name": "Next", "released": False}
+        assert source._jira_fix_version_milestone(version) == {
+            "title": "Next",
+            "state": "open",
+            "dueOn": "",
+        }
+
+    def test_locale_formatted_release_date_is_not_used(self) -> None:
+        """userReleaseDate is locale-formatted, so only releaseDate feeds dueOn."""
+        version = {"name": "3.0", "releaseDate": "2026-12-01", "userReleaseDate": "01/Dec/26"}
+        assert source._jira_fix_version_milestone(version)["dueOn"] == "2026-12-01"
+
+    def test_first_usable_version_wins_over_malformed_head(self) -> None:
+        """A malformed or nameless leading entry does not hide a usable one."""
+        fields = {
+            "fixVersions": [
+                "not a dict",
+                None,
+                {"name": "   "},
+                {"name": "", "releaseDate": "2026-01-01"},
+                {"name": "4.1", "releaseDate": "2026-11-05"},
+            ]
+        }
+        versions = source._jira_fix_versions(fields)
+        assert len(versions) == 1
+        assert source._jira_fix_version_milestone(versions[0])["title"] == "4.1"
+
+    def test_name_is_trimmed(self) -> None:
+        """Surrounding whitespace in a version name is not rendered."""
+        version = {"name": "  2.5.0  "}
+        assert source._jira_fix_version_milestone(version)["title"] == "2.5.0"
+
+    def test_no_fix_versions_yields_nothing_usable(self) -> None:
+        """Missing, empty, and non-list fixVersions all yield no milestone."""
+        assert source._jira_fix_versions({}) == []
+        assert source._jira_fix_versions({"fixVersions": []}) == []
+        assert source._jira_fix_versions({"fixVersions": None}) == []
+        assert source._jira_fix_versions({"fixVersions": "1.0"}) == []
+
+    def test_multiple_versions_are_all_returned(self) -> None:
+        """The filter keeps every usable version so the caller can flag partial."""
+        fields = {
+            "fixVersions": [
+                {"name": "2.4.0"},
+                {"name": "2.5.0"},
+            ]
+        }
+        assert [v["name"] for v in source._jira_fix_versions(fields)] == ["2.4.0", "2.5.0"]
+
+    def test_milestone_keys_match_the_frontend_contract(self) -> None:
+        """The mapped shape is exactly IssueMilestone: title, state, dueOn."""
+        version = {"name": "2.4.0", "releaseDate": "2026-09-30"}
+        assert set(source._jira_fix_version_milestone(version)) == {"title", "state", "dueOn"}
+
+
+class _JiraFakeContent:
+    """Minimal ``StreamReader`` stand-in for the capped-response reader."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def iter_chunked(self, _n: int):
+        if self._body:
+            yield self._body
+
+
+class _JiraFakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self.status = 200
+        self.content = _JiraFakeContent(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
+class _JiraRecordingSession:
+    """Fake ``aiohttp.ClientSession`` that records the URL it was asked for."""
+
+    def __init__(self, body: bytes, seen: list[str]) -> None:
+        self._body = body
+        self._seen = seen
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    def get(self, url, **_kwargs):
+        self._seen.append(url)
+        return _JiraFakeResponse(self._body)
+
+
+def _jira_recording_session(monkeypatch, fields: dict) -> list[str]:
+    """Arm a fake Jira endpoint serving *fields*; return the recorded URL list."""
+    body = json.dumps({"fields": fields}).encode("utf-8")
+    seen: list[str] = []
+    monkeypatch.setattr(
+        source.aiohttp, "ClientSession", lambda *a, **kw: _JiraRecordingSession(body, seen)
+    )
+    monkeypatch.setattr(source, "_get_jira_auth", lambda host: ("e@example.com", "tok"))
+    return seen
+
+
+async def _jira_fetch(monkeypatch, fields: dict) -> tuple[dict, list[str]]:
+    """Drive ``_fetch_jira_issue`` over a canned payload; return it and the URLs."""
+    seen = _jira_recording_session(monkeypatch, fields)
+    ref = source.parse_source_url("https://acme.atlassian.net/browse/PROJ-123")
+    return await source._fetch_jira_issue(ref), seen
+
+
+class TestJiraFixVersionInPayload:
+    """End-to-end pins: the field is requested and reaches the payload."""
+
+    @pytest.mark.asyncio
+    async def test_fix_versions_is_requested_from_the_rest_api(self, monkeypatch) -> None:
+        """An unrequested field is absent from the response, so it must be asked for."""
+        _issue, seen = await _jira_fetch(monkeypatch, {"summary": "x"})
+        assert len(seen) == 1
+        assert "fixVersions" in seen[0]
+
+    @pytest.mark.asyncio
+    async def test_milestone_carries_the_fix_version(self, monkeypatch) -> None:
+        """The Issues panel milestone chip is fed by the first fix version."""
+        issue, _seen = await _jira_fetch(
+            monkeypatch,
+            {
+                "summary": "Ship it",
+                "fixVersions": [{"name": "2.4.0", "releaseDate": "2026-09-30"}],
+            },
+        )
+        assert issue["milestone"] == {
+            "title": "2.4.0",
+            "state": "open",
+            "dueOn": "2026-09-30",
+        }
+        assert "fix versions" not in issue["partialSections"]
+
+    @pytest.mark.asyncio
+    async def test_multiple_fix_versions_are_declared_partial(self, monkeypatch) -> None:
+        """Dropping the tail of a multi-release ticket is disclosed, not silent."""
+        issue, _seen = await _jira_fetch(
+            monkeypatch,
+            {
+                "summary": "Ship it twice",
+                "fixVersions": [{"name": "2.4.0"}, {"name": "2.5.0"}],
+            },
+        )
+        assert issue["milestone"]["title"] == "2.4.0"
+        assert "fix versions" in issue["partialSections"]
+
+    @pytest.mark.asyncio
+    async def test_no_fix_version_leaves_milestone_null(self, monkeypatch) -> None:
+        """A ticket with no fix version keeps the panel's 'no milestone' state."""
+        issue, _seen = await _jira_fetch(monkeypatch, {"summary": "Unscheduled"})
+        assert issue["milestone"] is None
+        assert "fix versions" not in issue["partialSections"]
 
 
 class _ReapProbe:

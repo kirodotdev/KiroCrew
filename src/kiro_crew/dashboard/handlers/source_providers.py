@@ -4069,6 +4069,43 @@ def _jira_linked_changes(fields: dict[str, Any], base_url: str) -> list[dict[str
     return changes
 
 
+def _jira_fix_versions(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the fix versions that can populate the milestone slot.
+
+    A version is usable only when it is an object carrying a non-empty
+    ``name``: the Issue panel gates the milestone chip on the object being
+    truthy, so a nameless version would render an icon with no text.  A
+    malformed leading entry therefore does not hide a usable one behind it.
+    """
+    usable: list[dict[str, Any]] = []
+    for version in _as_list(fields.get("fixVersions")):
+        if not isinstance(version, dict):
+            continue
+        if str(version.get("name") or "").strip():
+            usable.append(version)
+    return usable
+
+
+def _jira_fix_version_milestone(version: dict[str, Any]) -> dict[str, str]:
+    """Map one Jira fix version onto the ``IssueMilestone`` contract.
+
+    Jira has no milestones; a fix version is the release a ticket is
+    scheduled for, which is the same thing the panel's milestone chip
+    communicates.  ``name`` becomes the title and ``releaseDate`` (ISO, unlike
+    the locale-formatted ``userReleaseDate``) becomes ``dueOn``.
+
+    ``state`` has only GitHub's two values to choose from.  A released version
+    is done, and an archived one no longer takes work, so both map to
+    ``closed`` and everything else stays ``open``.
+    """
+    released = bool(version.get("released")) or bool(version.get("archived"))
+    return {
+        "title": str(version.get("name") or "").strip(),
+        "state": "closed" if released else "open",
+        "dueOn": str(version.get("releaseDate") or ""),
+    }
+
+
 async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
     """Fetch a Jira issue via the REST API using configured credentials.
 
@@ -4103,7 +4140,7 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         f"{base_url}/rest/api/{api_version}/issue/{issue_key}"
         f"?fields=summary,status,issuetype,assignee,description,labels,"
         f"comment,priority,reporter,created,updated,resolution,resolutiondate,"
-        f"issuelinks"
+        f"issuelinks,fixVersions"
     )
 
     # Build auth header
@@ -4258,6 +4295,14 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
             }
         )
 
+    # Fix versions -> the milestone slot. The contract holds exactly one, so a
+    # ticket scheduled for several releases surfaces the first and declares the
+    # rest partial rather than dropping them silently.
+    fix_versions = _jira_fix_versions(fields)
+    milestone = _jira_fix_version_milestone(fix_versions[0]) if fix_versions else None
+    if len(fix_versions) > 1:
+        _mark_partial(partial_sections, "fix versions")
+
     return {
         "provider": "jira",
         "url": ref.url,
@@ -4273,7 +4318,7 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         "closedBy": "",  # Jira does not expose who resolved
         "labels": labels,
         "assignees": assignees,
-        "milestone": None,  # Jira uses Fix Version, not milestones
+        "milestone": milestone,  # Jira's Fix Version is its milestone equivalent
         "commentCount": total_comments,
         "locked": False,  # Jira has no issue locking concept
         "reactions": None,  # Jira has no reactions
