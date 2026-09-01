@@ -79,6 +79,7 @@ from kiro_crew.dashboard.chat_runner import (
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_tags import (
     _bump_slot_tags_revision,
+    _dispatch_lane_changed,
     tags_write_lock,
     validate_folder_tag_ids,
 )
@@ -3087,9 +3088,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
 
                     # One shared definition of "an inheritable folder tag id"
                     # (string, in the live vocabulary) — see validate_folder_tag_ids
-                    # for why each guard exists. The READ, the intersection AND the
-                    # apply all sit under tags_write_lock (the invariant every
-                    # consumer follows, matching the channel-filing path): a folder
+                    # for why each guard exists. READ, intersection and apply are locked: a folder
                     # PATCH or tag deletion committing after an earlier read would
                     # otherwise stamp a stale tag set or resurrect a deleted id onto
                     # the new slot. Lock ordering (tags_write_lock → folder-store
@@ -3217,6 +3216,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # A pinned title must persist too (not just a folder move): without the
         # write, a restart rehydrates the previous title with a refreshable
         # "auto" origin and the background refresh may rewrite the pin.
+        lane_pin = (slot, slot_history_key(slot)) if is_new_slot and folder_applied else None
         if folder_id or title or remote_slot_key:
             # The create/recreate request has been authorized against this
             # transcript.  Do not let a rebind while the off-loop write waits on
@@ -3235,6 +3235,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 force=True,
                 expected_history_key=slot_history_key(slot),
             )
+        # After the 503/409 refusals and the save: a hook is irreversible once spawned, and
+        # `lane_pin` predates that await, so a same-key recreate cannot redirect this delta.
+        if lane_pin:
+            async with tags_write_lock(state):
+                await _dispatch_lane_changed(
+                    state, slot.key, [], list(slot.tags), request=request, pin=lane_pin
+                )
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
         # now the only thing that files a slot (the client sends no follow-up

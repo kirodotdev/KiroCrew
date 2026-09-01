@@ -452,7 +452,7 @@ class TestStopHookContinuationCount:
         store.create({"name": "probe", "event": event, "command": "true", "timeout": 30})
         seen: dict = {}
 
-        async def _capture(hook, context, hook_event):
+        async def _capture(hook, context, hook_event, **kw):
             seen.clear()
             seen.update(hook_event)
             return SimpleNamespace(

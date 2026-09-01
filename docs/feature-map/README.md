@@ -124,7 +124,7 @@ no endpoint: the preference never leaves the browser.
 | Knowledge | The document library: sources, sync, entities, graph | `?tab=knowledge` | `pages/knowledge/index.tsx` | `handlers/knowledge.py` | `GET /api/knowledge/items`, `POST /api/knowledge/sources`, `GET /api/knowledge/graph` |
 | Prompts | Reusable prompt entries from the registry | `?tab=prompts` | `pages/overview/PromptsTab.tsx` | `handlers/prompts.py` | `GET /api/prompts`, `GET /api/prompts/{name}` |
 | Steering | Always-injected steering documents | `?tab=steering` | `pages/overview/SteeringTab.tsx` | `handlers/steering.py` | `GET,POST /api/steering`, `PUT,DELETE /api/steering/{key}` |
-| Hooks | Event-triggered agent runs | `?tab=hooks` | `pages/HooksPage.tsx` | `handlers/hooks.py` | `GET,POST /api/hooks`, `PUT,DELETE /api/hooks/{hook_id}`, `GET /api/kiro-hooks` |
+| Hooks | Event-triggered agent runs | `?tab=hooks` | `pages/HooksPage.tsx`, `pages/hookEventWireValues.ts` (internal split of HooksPage — the lifecycle event names the hooks API accepts, held apart from the page so the picker's options need no i18n exemption; no user-facing entry point of its own) | `handlers/hooks.py` | `GET,POST /api/hooks`, `PUT,DELETE /api/hooks/{hook_id}`, `GET /api/kiro-hooks` |
 | Workflows | Saved dynamic-workflow definitions and their runs | `?tab=workflows` | `pages/overview/WorkflowLibraryTab.tsx` | `handlers/workflows.py` | `POST /api/workflows/run`, `GET,POST /api/workflows/definitions`, `POST /api/workflows/author` |
 
 `/agents`, `/mc-agents` and `/connections` are legacy paths that redirect here;

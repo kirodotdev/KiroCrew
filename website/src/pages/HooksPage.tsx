@@ -16,6 +16,7 @@ import { useSortableTable } from '../hooks/useSortableTable'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useArmedDelete } from '../hooks/useArmedDelete'
 import SortableHeader from '../components/SortableHeader'
+import { EVENTS } from './hookEventWireValues'
 
 import { i18nT } from '../i18n/t'
 interface Hook {
@@ -34,7 +35,6 @@ interface HookTestResult {
   stderr?: string
 }
 
-const EVENTS = ['AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']
 const MATCHER_MODES = ['glob', 'regex', 'contains']
 
 const EVENT_STYLE: Record<string, string> = {
@@ -43,11 +43,13 @@ const EVENT_STYLE: Record<string, string> = {
   PreToolUse: 'bg-aim-subtle text-aim border-aim/30',
   PostToolUse: 'bg-aim-subtle text-aim border-aim/30',
   Stop: 'bg-warn-subtle text-warn border-warn/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   AgentSpawn: 'ok', UserPromptSubmit: 'ok',
   PreToolUse: 'aim', PostToolUse: 'aim', Stop: 'warn',
+  SessionLaneChanged: 'ok',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))

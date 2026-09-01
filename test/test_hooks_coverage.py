@@ -13,6 +13,7 @@ filesystem write lands under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import logging
 import ntpath
 import os
 import platform
@@ -1637,6 +1638,48 @@ class TestScriptHookDataclasses:
         assert hook.id and hook.event == HOOK_EVENT_USER_PROMPT_SUBMIT
         assert hook.timeout == 30 and hook.enabled is True
 
+    def test_a_persisted_enabled_keeps_the_meaning_its_owner_gave_it(self):
+        """hooks.json is hand-editable and ``bool("false")`` is True, so a raw read runs it."""
+        for raw, want in (
+            ("false", False),
+            ("off", False),
+            ("no", False),
+            ("true", True),
+            (1, True),
+            (0, False),
+            (2, False),
+            ({}, False),
+        ):
+            assert ScriptHook.from_dict({"enabled": raw}).enabled is want, repr(raw)
+        assert ScriptHook.from_dict({}).enabled is True
+
+    def test_an_unreadable_enabled_says_the_hook_loaded_disabled(self, caplog):
+        """A hook that stops running must say so; silence is the failure this guards."""
+        for unreadable in ("enable", 2, None, {}):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                assert ScriptHook.from_dict({"id": "h9", "enabled": unreadable}).enabled is False
+            assert "loads DISABLED" in caplog.text, "no warning for %r" % (unreadable,)
+            assert "h9" in caplog.text
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            for readable in (True, False, "true", "off", 1, 0):
+                ScriptHook.from_dict({"enabled": readable})
+        assert caplog.text == "", "a value the coercion reads must not warn: %r" % caplog.text
+
+    def test_the_lane_event_stays_audited_and_its_token_charset_stays_narrow(self, monkeypatch):
+        """Two one-line mutations that pass silently: one un-audits a run, one admits a glob."""
+        assert hooks_mod._audit_gate_row("slot:1", "h") is True
+
+        def _writer_cannot_persist(*a, **k):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(hooks_mod, "_hook_invocation_writer", _writer_cannot_persist)
+        assert hooks_mod._audit_gate_row("slot:1", "h") is False, "a lost row must refuse the run"
+        assert not any(hooks_mod._is_token_safe(t) for t in ("*", "?", "a b", "A", "x:y", "p;q"))
+        assert all(hooks_mod._is_token_safe(t) for t in ("done", "in.review", "a_b-c", "9"))
+
     def test_result_classification(self):
         blocked = ScriptHookResult(hook_id="a", hook_name="a", event="x", exit_code=2)
         ok = ScriptHookResult(hook_id="a", hook_name="a", event="x", exit_code=0)
@@ -1822,7 +1865,7 @@ class TestScriptHookGovernance:
     @pytest.mark.asyncio
     async def test_a_denied_hook_never_spawns_a_subprocess(self, monkeypatch):
         monkeypatch.setattr(
-            hooks_mod, "_script_hooks_capability_denied", lambda sk: "capability disabled"
+            hooks_mod, "_script_hooks_capability_denied", lambda sk, app="": "capability disabled"
         )
 
         def _no_spawn(*a, **k):  # pragma: no cover - must not be reached
@@ -1838,7 +1881,7 @@ class TestScriptHookGovernance:
 
     @pytest.mark.asyncio
     async def test_the_deny_audit_never_breaks_the_caller(self, monkeypatch):
-        monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk: "nope")
+        monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk, app="": "nope")
         import kiro_crew.sel as sel_mod
 
         class _Sel:
@@ -1855,7 +1898,7 @@ class TestScriptHookGovernance:
         monkeypatch.setattr(
             hooks_mod,
             "_script_hooks_capability_denied",
-            lambda sk: seen.append(sk) or "denied",
+            lambda sk, app="": seen.append(sk) or "denied",
         )
         await run_script_hook(ScriptHook(id="h1", command="x"), "", {"session_key": "slot:9"})
         await run_script_hook(
@@ -1877,7 +1920,7 @@ class TestFireDispatch:
     def recorder(self, monkeypatch):
         calls: list[tuple[ScriptHook, str, dict]] = []
 
-        async def _fake_run(hook, context="", hook_event=None):
+        async def _fake_run(hook, context="", hook_event=None, **kw):
             calls.append((hook, context, dict(hook_event or {})))
             # One registered hook failing must not stop the ones after it.
             exit_code = 1 if hook.name == "boom" else 0
@@ -2814,3 +2857,31 @@ class TestValidateFilePathRepresentability:
         except (OSError, UnicodeEncodeError):
             pytest.skip("filesystem refuses non-UTF-8 names")
         assert validate_file_path(str(target)) is not None
+
+
+class TestIntegerSpellingsAreOptIn:
+    """The int arms belong to the hook loader, not to every config consumer.
+
+    ``_coerce_bool`` is shared with the denied-commands settings, where a bare ``1`` falls
+    through to a fail-safe default. Accepting ints unconditionally would change how those
+    unrelated values parse, so the arms are something a caller asks for.
+    """
+
+    def test_a_bare_int_falls_back_unless_the_caller_opts_in(self):
+        from kiro_crew.hooks import _coerce_bool
+
+        assert _coerce_bool(1, default=False) is False, "a shared consumer must keep failing safe"
+        assert _coerce_bool(0, default=True) is True, "a shared consumer must keep failing safe"
+
+    def test_the_hook_loader_still_reads_the_integer_spellings(self):
+        from kiro_crew.hooks import _coerce_bool
+
+        assert _coerce_bool(1, default=False, accept_ints=True) is True
+        assert _coerce_bool(0, default=True, accept_ints=True) is False
+
+    def test_a_hand_authored_integer_enabled_still_loads_enabled(self):
+        """The end the opt-in exists for: `"enabled": 1` must not load disabled."""
+        from kiro_crew.hooks import ScriptHook
+
+        assert ScriptHook.from_dict({"id": "i", "name": "i", "enabled": 1}).enabled is True
+        assert ScriptHook.from_dict({"id": "i", "name": "i", "enabled": 0}).enabled is False

@@ -4602,6 +4602,53 @@ sibling `emit_internal_read_audit(read_id)` — same audit + fail-closed contrac
 `_AUDIT_ONLY_READ_IDS` registry. Adding an allowlist entry is a security-review event; the bytes
 never reach an LLM/agent surface.
 
+### `SessionLaneChanged` — a chat session moved between board lanes
+
+The five other events are agent-turn events, so nothing could react to a session
+changing board lane. This one fires when a dashboard tag write changes a session's
+**status** tags: the tags `PUT`, the board drop, a status-tag delete (which fans out
+to every session that held the tag), and a folder-inherited tag applied at slot
+create. It is a **DELTA**, not a state snapshot — a subscriber needing the current
+tag set re-reads the live store.
+
+**Matcher grammar — frozen contract from the first subscriber.** The context is
+space-joined, direction-tagged tokens carrying the tag **id** only, each closed by
+`;`: `added:<id>;` and `removed:<id>;`. An id is bounded at both ends and a selector
+must use both bounds — the `;` stops a selector for a short id also matching an id it
+prefixes, and the `:` stops it matching one it is a suffix of. Neither bound is
+forgeable, because both are outside the id allowlist. Matching is whole-string, so
+under the default `glob` mode a selector needs wildcards and a bare id matches
+nothing:
+
+| intent | selector |
+|---|---|
+| entered a lane | `*added:<id>;*` |
+| left a lane | `*removed:<id>;*` |
+| any movement | `*:<id>;*` |
+
+In `contains` mode the same selectors work without the wildcards. Lane **names are
+deliberately not tokens**: a user-controlled string in a structural grammar has to be
+escaped injectively or one lane can forge another's token, and the resulting spelling
+would be frozen contract. Ids already select a lane and are rename-proof; a
+subscriber wanting the label resolves the ids from the payload.
+
+An id outside `[a-z0-9_.-]` is **skipped with a warning** rather than rewritten, so a
+hand-edited `tags.json` degrades matching for one tag instead of firing the wrong
+hook. Case is excluded because matching folds both sides, which would make `Done` and
+`done` share one token. A transition whose every id fails leaves an empty context and
+**does not fire** — handing an empty context to `fire` would skip filtering and run
+every hook registered for the event.
+
+**Dispatch is owner-only and off the request path.** Only the owner's dashboard
+identity may trigger a dispatch; an app-token or non-owner caller is refused and
+audited, fail-closed on an absent claim, because the claim alone let a non-owner run
+an operator's shell command under the dashboard profile. Deltas go through one bounded
+FIFO queue drained by a single worker, so a hook never delays a tag write; drops are
+logged and audited. Identity is **re-checked at drain** — a delete/recreate rebinds
+the key while a delta sits queued, and a close-out hook acting on the replacement
+session is irreversible. Unlike the five attended events, a lane run is **refused when
+its permit or start audit row cannot be written**.
+
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)
 
 User-defined kiro-cli hooks that persist across `kirocrew update`. Follows the
