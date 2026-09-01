@@ -274,8 +274,12 @@ def update_state(agent_id: str, **fields: object) -> bool:
     flight. The drain is bounded, so on a wedged FS a worker IS abandoned -- but
     that same gate then holds the conversation until the abandoned worker
     settles, so the two on-loop ``keep`` writes are deferred past it rather than
-    silently undone. Separately, on-loop callers still pay this function's fsync
-    ON the loop; moving them off-loop is tracked as #7302.
+    silently undone. Separately, an on-loop caller still pays this function's
+    fsync ON the loop. Every writer inside a run now goes off-loop through the
+    helper (#7302); the two that remain on the loop are the retention writers
+    ``_promote_conversation`` / ``release_conversation``, which are synchronous
+    functions whose other work (the ``SessionMap`` mutation) is required to stay
+    on the loop -- moving those is the rest of #7302.
     """
     p = _agent_dir(agent_id) / "state.json"
     # Off-loop callers serialize; on-loop callers keep pre-existing behaviour.

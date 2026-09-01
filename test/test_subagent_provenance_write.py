@@ -1103,3 +1103,359 @@ async def test_the_conversation_hold_covers_the_whole_drain_not_only_expiry() ->
             await asyncio.sleep(0.01)
     assert info.id not in manager._abandoned_state_writers, "hold outlived the worker"
     assert manager._conversation_busy(conv_key) is None
+
+
+async def _await_off_loop_gate(entered: Any, what: str) -> None:
+    """Wait for an off-loop write to reach its gate, BOUNDED.
+
+    The gate only fires when the write goes through ``asyncio.to_thread``, so an
+    unbounded ``await entered.wait()`` turns a regression (the write moved back
+    onto the loop) into a 120s pytest-timeout with no diagnosis -- three of those
+    is six minutes of a shared runner for one mistake. Five seconds is orders of
+    magnitude above the real gate latency (the write is a patched no-op reached
+    within one scheduling pass) and still fails in the same breath as the cause.
+    """
+    import asyncio
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+    except (asyncio.TimeoutError, TimeoutError):  # pragma: no cover - regression path
+        raise AssertionError(
+            f"the {what} write never reached asyncio.to_thread, so it ran ON the "
+            "event loop -- update_state ends in a synchronous fsync and must go "
+            "through _write_state_off_loop (#6288, #7302)"
+        ) from None
+
+
+@pytest.mark.asyncio
+async def test_pid_and_session_records_are_written_off_loop() -> None:
+    """#7302: the PID record and the session record must not fsync on the loop.
+
+    Both used to call ``update_state`` directly from ``_run_inner``, an ``async
+    def`` body, so the read-merge-rewrite plus its fsync ran on the gateway's
+    only loop -- the ``no-blocking-call-on-event-loop`` class #6288 names, three
+    lines from a provenance write that #7467 had already moved off it. Real
+    ``asyncio.to_thread`` is used here (not a passthrough double) so the thread
+    identity in the assertion is the production one.
+    """
+    import threading
+
+    sessions = _mock_sessions(served_model="model-served")
+    # The default mock reports no pid, which skips the write under test.
+    sessions.get_pid = MagicMock(return_value=4242)
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(id="offloop1", task="off-loop record task")
+    manager._agents[info.id] = info
+
+    loop_thread = threading.current_thread()
+    seen: list[tuple[str, bool]] = []
+
+    def _spy(_agent_id: str, **fields: Any) -> bool:
+        if "session_id" in fields:
+            label = "session record"
+        elif "pid" in fields:
+            label = "PID record"
+        elif "requested_model" in fields:
+            label = "provenance"
+        else:
+            label = "other"
+        seen.append((label, threading.current_thread() is loop_thread))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_spy),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    labels = [label for label, _ in seen]
+    assert labels.count("PID record") == 1, f"expected one PID record write, got {labels}"
+    assert labels.count("session record") == 1, f"expected one session record write, got {labels}"
+    on_loop = sorted({label for label, was_on_loop in seen if was_on_loop})
+    assert not on_loop, (
+        "state.json write(s) ran on the event loop: "
+        + ", ".join(on_loop)
+        + ". update_state ends in a synchronous fsync, and the reaper, every chat "
+        "turn and the heartbeat share this loop (#6288, #7302)."
+    )
+    # Off-loop is also what makes the write take update_state's per-agent lock,
+    # which on-loop callers skip (#7280) -- so this is the interleave fix too.
+    assert info._pid == 4242
+
+
+@pytest.mark.asyncio
+async def test_pid_record_write_is_drained_on_cancellation() -> None:
+    """#7302: the newly off-loop PID record inherits #7467's drain contract.
+
+    Moving a writer off the loop is what creates the detached-worker hazard in
+    the first place: cancelling a ``to_thread`` await abandons the worker, and
+    ``update_state`` rewrites the WHOLE file from the snapshot it already read.
+    Going through ``_write_state_off_loop`` rather than a bare ``to_thread`` is
+    what holds cancellation open until the worker lands.
+    """
+    import asyncio
+
+    sessions = _mock_sessions(served_model="model-served")
+    sessions.get_pid = MagicMock(return_value=4242)
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(id="piddr1", task="pid cancel task")
+    manager._agents[info.id] = info
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    landed: list[dict[str, Any]] = []
+
+    async def _gated_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        # Only the PID record carries `pid` without `session_id`; the provenance
+        # write ahead of it and every other off-loop call go straight through.
+        if "pid" not in kwargs or "session_id" in kwargs:
+            return func(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        landed.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", return_value=True),
+        patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_gated_to_thread),
+    ):
+        task = asyncio.ensure_future(manager._run_inner(info, f"subagent:{info.id}"))
+        try:
+            await _await_off_loop_gate(entered, "PID record")
+            task.cancel()
+            await _event_loop_checkpoint()
+            assert not task.done(), (
+                "cancelled _run_inner completed while the PID record write was in "
+                "flight -- the detached worker's whole-file rewrite can still roll "
+                "back a recovery run's state (#7302)"
+            )
+            assert (
+                info._state_drain_active is True
+            ), "the PID record drain did not raise the recovery-gate latch"
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert landed and landed[0]["pid"] == 4242
+    assert info._state_drain_active is False, "latch leaked past the drain"
+
+
+@pytest.mark.asyncio
+async def test_session_record_write_is_drained_on_cancellation() -> None:
+    """#7302: same contract for the session record, which also carries ``keep``.
+
+    ``keep`` is the field the two remaining on-loop writers (promote / release)
+    contend for, so an abandoned worker here is the #6298 rollback shape --
+    which is why this site needs the drain and not merely a ``to_thread``.
+    """
+    import asyncio
+
+    sessions = _mock_sessions(served_model="model-served")
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(id="sessdr1", task="session record cancel task", keep=True)
+    manager._agents[info.id] = info
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    landed: list[dict[str, Any]] = []
+
+    async def _gated_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        if "session_id" not in kwargs:
+            return func(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        landed.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", return_value=True),
+        patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_gated_to_thread),
+    ):
+        task = asyncio.ensure_future(manager._run_inner(info, f"subagent:{info.id}"))
+        try:
+            await _await_off_loop_gate(entered, "session record")
+            task.cancel()
+            await _event_loop_checkpoint()
+            assert not task.done(), (
+                "cancelled _run_inner completed while the session record write was "
+                "in flight -- its detached worker can roll back the `keep` that "
+                "promote / release write on the loop (#6298, #7302)"
+            )
+            assert (
+                info._state_drain_active is True
+            ), "the session record drain did not raise the recovery-gate latch"
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert landed and landed[0]["keep"] is True
+    assert info._state_drain_active is False, "latch leaked past the drain"
+
+
+@pytest.mark.asyncio
+async def test_shared_session_pid_write_is_drained_on_cancellation() -> None:
+    """#7302: the session-sharing PID record is the third moved site.
+
+    ``_create_shared_session`` runs on the loop from the spawn path, and its
+    ``update_state`` was the one of the three with no ``except Exception``
+    around it -- so the swap had to preserve a propagating failure while adding
+    the drain. Unlike the other two this site is reached only when
+    ``agent.session_sharing`` puts the child on the parent's runtime.
+    """
+    import asyncio
+
+    sessions = _mock_sessions(served_model="model-served")
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(
+        id="sharedpid1", task="shared session task", parent_session_key="dashboard:1"
+    )
+    manager._agents[info.id] = info
+
+    runtime = MagicMock()
+    runtime.pid = 9191
+    runtime.create_session = AsyncMock(return_value=MagicMock(session_id="sid-shared"))
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    landed: list[dict[str, Any]] = []
+
+    async def _gated_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
+        if "pid" not in kwargs:
+            return func(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        landed.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.SubagentManager._get_parent_runtime", return_value=runtime),
+        patch("kiro_crew.subagent.AcpSessionProvider", MagicMock()),
+        patch("kiro_crew.subagent.update_state", return_value=True),
+        patch("kiro_crew.subagent.asyncio.to_thread", side_effect=_gated_to_thread),
+    ):
+        task = asyncio.ensure_future(
+            manager._create_shared_session(info, f"subagent:{info.id}", "")
+        )
+        try:
+            await _await_off_loop_gate(entered, "shared-session PID record")
+            task.cancel()
+            await _event_loop_checkpoint()
+            assert not task.done(), (
+                "cancelled _create_shared_session completed while its PID record "
+                "write was in flight -- a lost pid is an orphan the reaper can no "
+                "longer reach (#7302)"
+            )
+            assert (
+                info._state_drain_active is True
+            ), "the shared-session PID drain did not raise the recovery-gate latch"
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert landed and landed[0]["pid"] == 9191
+    assert info._state_drain_active is False, "latch leaked past the drain"
+
+
+def test_no_on_loop_update_state_inside_a_coroutine() -> None:
+    """Build gate: a coroutine body must not call ``update_state`` directly.
+
+    Sibling of ``test_no_bare_to_thread_update_state_outside_the_drained_helper``
+    for the other half of the same divergence. That gate pins HOW an off-loop
+    write is performed; this one pins WHERE a write may happen at all. An
+    ``async def`` body runs on the gateway's only event loop, so a direct call
+    there is an fsync on the loop by construction (#6288) -- the exact residue
+    #7302 records, and the thing no reviewer caught across five triage passes
+    because the offending line reads identically to a legitimate one two
+    functions away.
+
+    Scope-aware, so it is deterministic rather than a substring heuristic: only
+    the INNERMOST enclosing frame counts, which is what makes a synchronous
+    helper nested inside a coroutine (the shape a worker thread runs) not an
+    offender. The two retention writers -- ``_promote_conversation_impl`` and
+    ``release_conversation_impl`` -- are synchronous ``def``s, so they are
+    outside this gate's reach by that same rule; moving them is the rest of
+    #7302 and needs its own change (their other work, the ``SessionMap``
+    mutation, is required to stay on the loop).
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    assert src.is_dir(), src
+
+    class _Scan(ast.NodeVisitor):
+        def __init__(self) -> None:
+            # (name, is_coroutine) per enclosing frame.
+            self.stack: list[tuple[str, bool]] = []
+            self.hits: list[tuple[str, int]] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.stack.append((node.name, False))
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.stack.append((node.name, True))
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            self.stack.append(("<lambda>", False))
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+            if name == "update_state" and self.stack and self.stack[-1][1]:
+                self.hits.append((self.stack[-1][0], node.lineno))
+            self.generic_visit(node)
+
+    offenders: list[str] = []
+    for path in sorted(src.rglob("*.py")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:  # pragma: no cover - unreadable source
+            continue
+        # Cheap pre-filter; a substring miss cannot hide a call, because the
+        # pattern spells the name literally.
+        if "update_state" not in text:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:  # pragma: no cover - unparseable source
+            continue
+        scan = _Scan()
+        scan.visit(tree)
+        rel = path.relative_to(src.parent.parent)
+        offenders += [f"{rel}:{line} (in {func})" for func, line in scan.hits]
+
+    assert not offenders, (
+        "`update_state(...)` called directly from a coroutine body: "
+        + ", ".join(offenders)
+        + ". A coroutine runs on the gateway's only event loop, and update_state "
+        "ends in a synchronous fsync -- route it through "
+        "`_write_state_off_loop`, which also drains the worker on cancellation "
+        "(#6288, #7302)."
+    )

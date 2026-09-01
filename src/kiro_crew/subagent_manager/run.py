@@ -866,13 +866,19 @@ class RunEventCoordinator(ManagerComponent):
         )
         # Stream results to disk for orchestrated chat.
 
-        # Record PID for orphan recovery
+        # Record PID for orphan recovery. Off-loop and drained on cancellation
+        # via _write_state_off_loop (#6288, #7302): update_state ends in a
+        # synchronous fsync, and the reaper, every chat turn and the heartbeat
+        # share this loop. Off-loop also means the write TAKES update_state's
+        # per-agent lock, which on-loop callers skip (#7280), so it can no longer
+        # interleave with another pool writer's read-merge-rewrite.
         try:
-
             pid = self._manager._sessions.get_pid(session_key)
             if pid:
                 info._pid = pid  # make available for _write_tombstone
-                update_state(info.id, pid=pid, pid_recorded_at=time.time())
+                await self._manager._write_state_off_loop(
+                    info, "PID record", pid=pid, pid_recorded_at=time.time()
+                )
         except Exception:
             logger.debug("Failed to record PID for %s", info.id, exc_info=True)
 
@@ -914,7 +920,12 @@ class RunEventCoordinator(ManagerComponent):
                         cc_cwd = str(work_dir)
                 if cc_cwd:
                     state_update["cwd"] = cc_cwd
-            update_state(info.id, **state_update)
+            # Same off-loop, drained write as the PID record above (#6288,
+            # #7302). This one also carries `keep`, the field the two remaining
+            # on-loop writers (promote / release) contend for -- taking the
+            # per-agent lock here is what orders it against any other pool
+            # writer.
+            await self._manager._write_state_off_loop(info, "session record", **state_update)
         except Exception:
             logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
 
@@ -1674,7 +1685,13 @@ class RunEventCoordinator(ManagerComponent):
         info._shared_provider = provider
         if runtime.pid:
             info._pid = runtime.pid
-            update_state(info.id, pid=runtime.pid, pid_recorded_at=time.time())
+            # Same off-loop, drained write as the non-shared spawn path's PID
+            # record (#6288, #7302). Unguarded here as before: this method has no
+            # best-effort contract, so an _atomic_write failure still propagates
+            # to the caller rather than yielding a session with no recorded pid.
+            await self._manager._write_state_off_loop(
+                info, "PID record", pid=runtime.pid, pid_recorded_at=time.time()
+            )
         logger.info(
             "Subagent %s using session sharing on runtime PID %s (session %s, key %s)",
             info.id,
