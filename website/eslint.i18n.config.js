@@ -1454,6 +1454,15 @@ export default [
     },
   },
 
+  // Wire values matched BY VALUE against the backend's event allowlist: a translated
+  // `AgentSpawn` is rejected by the API, so the picker breaks in that locale.
+  {
+    files: ['src/pages/hookEventWireValues.ts'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   // SEARCH-KEYWORD SYNONYMS ONLY: a manual overlay of extra query terms merged
   // into the Settings search corpus so a query like "dark mode" finds a setting
   // whose label does not contain those words. Every value is a term matched

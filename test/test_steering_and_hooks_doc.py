@@ -71,10 +71,10 @@ def _section(text: str, heading: str) -> str:
 
 
 class TestHookEvents:
-    """The five lifecycle events, as the page's own table lists them."""
+    """The six lifecycle events, as the page's own table lists them."""
 
     def test_event_table_lists_exactly_the_shipped_events_in_order(self, doc_text: str) -> None:
-        table = _section(doc_text, "### The five events")
+        table = _section(doc_text, "### The six events")
         rows = [ln for ln in table.splitlines() if ln.startswith("|")]
         # Row 0 is the header, row 1 the alignment rule; the rest are events.
         listed = [_backticked(r)[0] for r in rows[2:] if _backticked(r)]
@@ -95,7 +95,7 @@ class TestHookEvents:
         and makes every other non-zero exit there a block. If another event ever
         gains that power the doc's "the only event" sentence is wrong.
         """
-        body = _section(doc_text, "### The five events")
+        body = _section(doc_text, "### The six events")
         assert "`PreToolUse` is the only event whose exit code can decide" in body
         # The carve-out belongs beside the contract: PreToolUse also fires as a
         # notification once kiro-cli has already approved the call, where no exit

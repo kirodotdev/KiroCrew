@@ -77,9 +77,10 @@ describe('hooks page — lifecycle event picker', () => {
 
     // Radix Select: open, then click — a `change` on the trigger does nothing.
     fireEvent.click(trigger)
-    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(5))
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(6))
     expect(screen.getAllByRole('option').map(o => o.textContent)).toEqual([
       'AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+      'SessionLaneChanged',
     ])
 
     fireEvent.click(screen.getByRole('option', { name: 'PreToolUse' }))

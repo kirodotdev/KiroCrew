@@ -124,7 +124,7 @@ the harness's decision, not something this product reimplements.
 A hook is a shell command bound to an event. It can inject context, inspect a
 tool call before it runs, or block it outright.
 
-### The five events
+### The six events
 
 | Event | Fires | Exit 0 does |
 |---|---|---|
@@ -133,6 +133,7 @@ tool call before it runs, or block it outright.
 | `PreToolUse` | before a tool runs | allows the tool |
 | `PostToolUse` | after a tool ran | nothing |
 | `Stop` | the turn ends | usually nothing — but see the continuation contract below |
+| `SessionLaneChanged` | a session's board **status** tags change — **not wired yet: no writer emits it, so a hook on this event stays at zero runs until the emitting change lands** | nothing |
 
 `PreToolUse` is the only event whose exit code can decide anything — and only
 on the path where the gateway is the one approving the call:
@@ -209,7 +210,11 @@ a fixed glob-style vocabulary — an exact name, `prefix*`, `*suffix`,
 The form knows this and hides the mode control for those two events. On
 `UserPromptSubmit`, `AgentSpawn` and `Stop` the matcher runs against the message
 or the final assistant text, and there `matcher_mode` decides: `glob`, a
-case-insensitive `regex`, or `contains` as pipe-delimited substrings.
+case-insensitive `regex`, or `contains` as pipe-delimited substrings. On
+`SessionLaneChanged` the mode decides too, but the text it matches is the lane
+delta rather than anything a person typed: space-joined `added:<tag-id>;` and
+`removed:<tag-id>;` tokens, so a selector needs both bounds — `*added:done;*`,
+not the lane's visible name.
 
 ### Creating, testing, enabling and deleting one
 

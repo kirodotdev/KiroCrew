@@ -13,6 +13,7 @@ import fnmatch
 import hashlib as _hashlib
 import json
 import logging
+import math
 import os
 import re
 import stat as _stat
@@ -21,8 +22,8 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from dataclasses import replace as dataclasses_replace
 from pathlib import Path
@@ -77,7 +78,7 @@ from kiro_crew.security import (
     sensitive_path_refusal,
 )
 from kiro_crew.security.readonly_bash import is_read_only_bash
-from kiro_crew.sel import sel
+from kiro_crew.sel import audit_off_loop, sel, sel_is_warm, warm_sel_singleton
 from kiro_crew.session_directive import CORE_MCP_SERVER
 from kiro_crew.validation import _bounded_pattern_search
 
@@ -103,6 +104,10 @@ HOOK_EVENT_USER_PROMPT_SUBMIT = "UserPromptSubmit"
 HOOK_EVENT_PRE_TOOL_USE = "PreToolUse"
 HOOK_EVENT_POST_TOOL_USE = "PostToolUse"
 HOOK_EVENT_STOP = "Stop"
+# Not a Kiro CLI event. Fired by the dashboard when a session's status tags
+# change, so an automation can react to a board lane transition. Informational
+# only: see ``_fire_session_lane_changed`` for why it cannot block the write.
+HOOK_EVENT_SESSION_LANE_CHANGED = "SessionLaneChanged"
 
 HOOK_EVENTS = (
     HOOK_EVENT_AGENT_SPAWN,
@@ -110,6 +115,7 @@ HOOK_EVENTS = (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_STOP,
+    HOOK_EVENT_SESSION_LANE_CHANGED,
 )
 
 
@@ -276,18 +282,27 @@ class TransformHook:
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
 
 
-def _coerce_bool(value: object, default: bool) -> bool:
+def _coerce_bool(value: object, default: bool, *, accept_ints: bool = False) -> bool:
     """Coerce an operator-editable config value to a bool without ``bool()`` traps.
 
     ``config.json`` is hand-editable, and plain ``bool("false")`` is ``True`` in
     Python — a footgun that would let ``"disable_all": "false"`` silently turn
     OFF every opt-out-capable protection.  A real bool is returned as-is; a
     recognized string spelling (``true``/``false``/``1``/``0``/``yes``/``no``/
-    ``on``/``off``, case-insensitive) maps to its value; anything else falls back
-    to *default* (chosen by the caller to fail safe).
+    ``on``/``off``, case-insensitive) maps to its value; with *accept_ints* the
+    integers ``1`` and ``0`` map likewise, because refusing the number while
+    accepting its string would silently flip a hand-authored ``"enabled": 1`` to
+    the caller's default — off by default, so a shared caller's bare ``1`` still
+    falls through to its own safe default;
+    anything else falls back to *default* (chosen by the caller to fail safe).
     """
     if isinstance(value, bool):
         return value
+    if accept_ints and isinstance(value, int):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
     if isinstance(value, str):
         v = value.strip().lower()
         if v in ("true", "1", "yes", "on"):
@@ -4201,6 +4216,34 @@ def _has_global_inline_flags(pattern: str) -> bool:
     return _GLOBAL_INLINE_FLAGS_RE.match(pattern) is not None
 
 
+def _normalize_hook_number(value: object, default: float) -> float:
+    """Coerce a persisted/edited numeric bookkeeping field to a real number.
+
+    ``hooks.json`` is hand-editable, so ``last_run`` / ``run_count`` can arrive as a
+    string or ``None``. Nothing compares them until a run FINISHES, where
+    ``_merge_run_bookkeeping`` orders them against the live values -- so a bad value
+    raises ``TypeError`` after the hook already executed, and on ``PreToolUse`` the
+    caller sees the tool rejected rather than a load-time complaint.
+
+    A numeric string is PARSED rather than discarded: these two fields are the only record
+    that a hook ever ran, and degrading ``"5"`` to the default zeroes them, which the next
+    save persists -- destroying the history instead of misreading it once, on a monotonic
+    ``run_count`` that never self-corrects. Anything not a finite number still degrades to
+    the default: ``nan`` makes every comparison false, an infinity is never overtaken by a
+    real timestamp, and a bool is an ``int`` subclass that means nothing as a timestamp.
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return default
+    if not isinstance(value, (int, float)):
+        return default
+    return float(value) if math.isfinite(value) else default
+
+
 def _normalize_hook_timeout(value: object) -> int:
     """Coerce a persisted/edited timeout to an int within the allowed bounds.
 
@@ -4420,6 +4463,29 @@ class ScriptHook:
         # written so an unknown event is visibly inert rather than silently
         # remapped, matching how `matcher_mode` junk falls through to glob.
         timeout = _normalize_hook_timeout(data.get("timeout", HOOK_TIMEOUT_DEFAULT))
+        # Log the ones that fall to the default: a value the coercion cannot read turns a hook
+        # OFF, and a guard hook that stops running without saying so is the worse failure.
+        raw_enabled = data.get("enabled", True)
+        enabled = _coerce_bool(raw_enabled, default=False, accept_ints=True)
+        # Asked of the coercer rather than respelled here: a value it recognises maps to the same
+        # bool whatever default it is handed, so only a fallthrough differs under opposite ones.
+        recognized = enabled == _coerce_bool(raw_enabled, default=True, accept_ints=True)
+        if not recognized:
+            shown = redact_via_context(repr(raw_enabled))[:500]
+            logger.warning(
+                "Hook %s: enabled=%s is not a value this reads, so the hook loads DISABLED. "
+                "Accepted: true/false, yes/no, on/off, 1/0, quoted or bare.",
+                data.get("id", "?"),
+                shown,
+            )
+            # Appended, not assigned: the persisted value read above says WHY the last run
+            # failed, and the next `_save` writes this back, so replacing it would erase
+            # that history permanently on a hand-edit typo.
+            complaint = (
+                f"enabled={shown} isn't a recognized value, so the hook is disabled. "
+                "Use true/false, yes/no, on/off, or 1/0."
+            )
+            last_error = f"{last_error}; {complaint}" if last_error else complaint
         return cls(
             id=data.get("id", str(uuid.uuid4())[:8]),
             name=data.get("name", ""),
@@ -4429,11 +4495,13 @@ class ScriptHook:
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
-            enabled=data.get("enabled", True),
-            last_run=data.get("last_run", 0.0),
+            # Coerced, not taken raw: hooks.json is hand-editable and `bool("false")` is True,
+            # so a persisted string spelling would run a hook its owner had switched off.
+            enabled=enabled,
+            last_run=_normalize_hook_number(data.get("last_run", 0.0), 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
-            run_count=data.get("run_count", 0),
+            run_count=int(_normalize_hook_number(data.get("run_count", 0), 0.0)),
         )
 
 
@@ -4571,7 +4639,19 @@ class ScriptHookResult:
         return self.exit_code == 0
 
 
-def _script_hooks_capability_denied(session_key: str = "") -> str | None:
+async def _script_hooks_capability_denied_async(session_key: str = "", app: str = "") -> str | None:
+    """Resolve the gate WITHOUT walking ``profiles/`` on the event loop.
+
+    Resolution is synchronous (``_dir_fingerprint`` walks ``profiles/`` and a reload reads
+    each profile JSON), so any ``async`` caller resolving it inline stalled the loop for
+    that walk. A caller-side workaround, not the cause-level fix -- making resolution
+    non-blocking belongs in the owning module -- so it is centralised here to leave ONE
+    seam to delete rather than a hop at every call site.
+    """
+    return await asyncio.to_thread(_script_hooks_capability_denied, session_key, app)
+
+
+def _script_hooks_capability_denied(session_key: str = "", app: str = "") -> str | None:
     """Return a denial reason if governance disables ``capabilities.script_hooks``.
 
     Script hooks run an operator/agent-authored shell command in a subprocess
@@ -4581,14 +4661,23 @@ def _script_hooks_capability_denied(session_key: str = "") -> str | None:
     sandbox/redaction guards: a ``PlatformCompositionError`` propagates
     (fail-closed CPP); any other error degrades to "no opinion" (None) so a
     transient governance glitch cannot wedge every hook.
+
+    Resolution is SYNCHRONOUS: ``_dir_fingerprint`` walks ``profiles/`` and a reload
+    reads each profile JSON, so this stalls whatever thread calls it. Every ``async``
+    caller in this module therefore goes through
+    ``_script_hooks_capability_denied_async`` instead, never this function directly;
+    synchronous callers, here and elsewhere, still pay the walk on their own thread.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
     try:
         from kiro_crew.platform.governance_profiles import governance_permits
 
-        # item="" → the CapabilityGate's ``enabled`` flag is what is queried.
-        decision = governance_permits("capabilities.script_hooks", "", session_key=session_key)
+        # item="" → the CapabilityGate's ``enabled`` flag. An ``app`` bind outranks the
+        # surface, holding a Test-endpoint token to its OWN ceiling, not policy alone.
+        decision = governance_permits(
+            "capabilities.script_hooks", "", session_key=session_key, app=app
+        )
         if not getattr(decision, "permitted", True):
             return getattr(decision, "reason", "script_hooks capability disabled")
         return None
@@ -4608,34 +4697,259 @@ def _script_hooks_capability_denied(session_key: str = "") -> str | None:
         return None
 
 
-def _audit_governance_hook_decision(
-    session_key: str, hook_label: str, outcome: str, reason: str
-) -> None:
-    """Best-effort SEL audit for a script/skills-only hook governance decision.
+async def _audit_governance_hook_decision(
+    session_key: str, hook_label: str, outcome: str, reason: str, *, critical: bool = False
+) -> bool:
+    """SEL audit for a script/skills-only hook governance decision.
 
     Shared by both ``run_script_hook`` and the skills-only path in ``fire()`` to
     avoid duplicating the try/import/call pattern at every call site.
+
+    ``critical`` selects audit-or-deny for a PERMIT row: the write runs to completion
+    in a thread and a failure is REPORTED, not swallowed, so the caller can refuse
+    rather than run under a grant no record carries. A DENIAL stays best-effort.
     """
-    try:
+
+    def _write() -> None:
         sel().log_governance_decision(
             session_key=session_key,
             tool_name=hook_label,
             scope="capabilities.script_hooks",
             outcome=outcome,
             reason=reason,
+            critical=critical,
         )
+
+    if not critical:
+        await audit_off_loop(_write, "hook governance (%s)" % outcome)
+        return True
+    try:
+        await asyncio.to_thread(_write)
+        return True
     except Exception:
-        logger.debug("hook governance audit (%s) failed", outcome, exc_info=True)
+        logger.warning("hook governance permit row could not be written", exc_info=True)
+        return False
+
+
+def _hook_invocation_writer(
+    session_key: str,
+    hook_label: str,
+    outcome: str,
+    error: str = "",
+    exit_code: int | None = None,
+    critical: bool = False,
+) -> Callable[[], None]:
+    """Build the invocation row's write so both audit paths spell it once.
+
+    The awaiting path hands this to the off-loop seam; the terminal path calls it
+    inline. Deriving both from one builder keeps the two from drifting apart.
+
+    ``critical`` selects the repo's audit-or-deny contract (``sel.py``'s
+    ``log_tool_invocation``): the row is written synchronously and a filesystem
+    failure is re-raised, so a caller can refuse rather than proceed unaudited.
+    """
+
+    def _write() -> None:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            tool_name=hook_label,
+            tool_kind="script_hook",
+            outcome=outcome,
+            error=error,
+            metadata={} if exit_code is None else {"exit_code": exit_code},
+            critical=critical,
+        )
+
+    return _write
+
+
+def _audit_gate_row(session_key: str, hook_label: str) -> bool:
+    """Write the run's ``started`` invocation row, off the event loop.
+
+    AUDIT-OR-DENY for an UNATTENDED run, matching the pre-dispatch rule the MCP server
+    already follows: an unauditable invocation is refused rather than served untraced, while
+    OUTCOME rows stay fail-soft because by then the command has already run.
+
+    SEL's criterion is ATTENDEDNESS, not blast radius, so the lane event alone gates: it
+    dispatches with nobody watching. The turn-lifecycle events fire inside an attended turn,
+    so no started row is written for them at all -- nothing would read it, and refusing there
+    would trade a guard hook's availability for symmetry rather than for a reported defect.
+    Returns False only when a GATING row could not be written; the caller refuses on that.
+    """
+    try:
+        _hook_invocation_writer(
+            session_key,
+            hook_label,
+            "started",
+            # critical: a non-critical write only ENQUEUES, and a background persist failure is
+            # swallowed, so the gate below would pass on a row that never reaches disk.
+            critical=True,
+        )()
+        return True
+    except Exception:
+        # Report the failure, always: returning True would claim a record that does not exist.
+        # Whether that stops the run is the caller's decision, not this writer's.
+        logger.warning("hook start row could not be written", exc_info=True)
+        return False
+
+
+async def _audit_hook_invocation_now(
+    session_key: str, hook_label: str, outcome: str, error: str = "", exit_code: int | None = None
+) -> bool:
+    """Write the invocation row off the event loop, without risking its loss.
+
+    The write is a synchronous append and flush, so running it here stalls every
+    other task on the event loop for as long as the SEL filesystem takes. A worker
+    thread is driven by the executor rather than by the event loop, so once submitted it runs to
+    completion whatever happens to the awaiting task: a cancellation gives up the
+    WAIT and never the write. ``asyncio.shield`` cannot promise that, because a
+    shielded coroutine still needs the event loop to drive it.
+
+    Written under the audit-or-deny contract and REPORTS whether the row landed.
+    The command has already run by the time this is reached, so a failure cannot
+    deny it; returning the outcome lets the caller record the audit gap on the hook
+    instead of the run appearing recorded when it is not.
+    """
+    write = _hook_invocation_writer(
+        session_key, hook_label, outcome, error, exit_code, critical=True
+    )
+    landed = asyncio.ensure_future(asyncio.to_thread(write))
+    try:
+        await asyncio.shield(landed)
+        return True
+    except asyncio.CancelledError:
+        landed.add_done_callback(_report_abandoned_audit)
+        raise
+    except Exception:
+        logger.warning("hook invocation (%s) audit failed", outcome, exc_info=True)
+        return False
+
+
+def _report_abandoned_audit(landed: asyncio.Future) -> None:
+    """Log the outcome of a critical row whose waiter was cancelled.
+
+    The thread still finishes the write, but with nobody awaiting it a failure would
+    otherwise surface only as an unretrieved-exception warning at loop shutdown.
+    """
+    if landed.cancelled():
+        return
+    failure = landed.exception()
+    if failure is not None:
+        logger.warning("hook invocation audit failed after cancellation", exc_info=failure)
+
+
+async def _reap_and_audit_timeout_cancel(proc, hook: ScriptHook, sk: str) -> None:
+    """Reap and audit when a cancellation lands inside the timeout cleanup.
+
+    A ``CancelledError`` raised inside ``except asyncio.TimeoutError`` cannot reach
+    that try statement's sibling ``except asyncio.CancelledError`` arm, so without
+    this the killed tree can go unreaped and the invocation unlogged.
+
+    The reap goes through the ASYNC variant because the sync one spawns a blocking
+    ``taskkill /T`` on Windows and would freeze the event loop this runs on. That costs
+    nothing on POSIX, where the async variant dispatches ``os.killpg`` inline and never
+    yields. The await is bounded, and every failure -- including a cancellation
+    re-delivered at that await -- is swallowed rather than allowed to skip the audit,
+    which is what keeps the timed-out run accountable.
+    """
+    try:
+        if proc is not None and proc.returncode is None:
+            await asyncio.wait_for(
+                platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL),
+                timeout=platform_compat.REAP_TIMEOUT_SECS,
+            )
+    except (Exception, asyncio.CancelledError):
+        pass
+    hook.last_run = time.time()
+    hook.last_status = "timeout"
+    hook.last_error = f"Timed out after {hook.timeout}s"
+    hook.run_count += 1
+    if not await _audit_hook_invocation_now(
+        sk, f"run_script_hook:{hook.name or hook.id}", "timeout", error=hook.last_error
+    ):
+        hook.last_error = (hook.last_error + " (audit row not recorded)").strip()
+
+
+async def _record_cancel_before_start(hook: ScriptHook, sk: str) -> None:
+    """Book a run cancelled before its command spawned, from ANY pre-spawn await.
+
+    One definition, because the arms that need it are several and a pre-spawn await without
+    it leaves a permitted run with no bookkeeping and no outcome row -- the trail then cannot
+    say the run was abandoned rather than never attempted. Never raises: the caller re-raises
+    the cancellation, and a failed row must not replace it with an audit error.
+    """
+    hook.last_run = time.time()
+    hook.last_status = "cancelled"
+    hook.last_error = "Cancelled before the run started"
+    hook.run_count += 1
+    recorded = False
+    with suppress(Exception):
+        recorded = await _audit_hook_invocation_now(
+            sk,
+            f"run_script_hook:{hook.name or hook.id}",
+            "cancelled",
+            error=hook.last_error,
+        )
+    if not recorded:
+        hook.last_error = (hook.last_error + " (audit row not recorded)").strip()
+
+
+_REFUSAL_REBOUND = "Refused: the hook was disabled or its subject rebound before the run started"
+
+
+async def _refused_result(
+    hook: ScriptHook, refusal: str, start: float, sk: str
+) -> ScriptHookResult:
+    """Book ``refusal`` on ``hook``, shared so the gate after the prep books as the one before.
+
+    Writes the TERMINAL row too. An unattended run's ``started`` row is already on disk, and a
+    start with no outcome cannot say whether the command ran -- worse than either true answer.
+    """
+    hook.last_run = time.time()
+    hook.last_status = "error"
+    hook.last_error = refusal
+    hook.run_count += 1
+    recorded = False
+    with suppress(Exception):
+        recorded = await _audit_hook_invocation_now(
+            sk, f"run_script_hook:{hook.name or hook.id}", "rejected", error=refusal, exit_code=-1
+        )
+    if not recorded:
+        hook.last_error = (hook.last_error + " (audit row not recorded)").strip()
+    return ScriptHookResult(
+        hook_id=hook.id,
+        hook_name=hook.name,
+        event=hook.event,
+        error=hook.last_error,
+        stderr=hook.last_error,
+        # NOT 2: on PreToolUse that is the "block the tool" code, and an audit failure
+        # must not reach the caller wearing a policy decision's clothes.
+        exit_code=-1,
+        duration_ms=int((time.monotonic() - start) * 1000),
+    )
 
 
 async def run_script_hook(
-    hook: ScriptHook, context: str = "", hook_event: dict | None = None
+    hook: ScriptHook,
+    context: str = "",
+    hook_event: dict | None = None,
+    app: str = "",
+    still_current: Callable[[], bool] | None = None,
 ) -> ScriptHookResult:
     """Execute a script hook's command with timeout.
 
-    Passes hook event as JSON via STDIN (Kiro CLI compatible).
+    Passes hook event as JSON via STDIN (Kiro CLI compatible). ``app`` is the caller's
+    VERIFIED app identity where one exists: the Test endpoint supplies no session key, so
+    without it an app token is judged against policy alone and not its own ceiling.
+
+    ``still_current`` is re-checked immediately before the spawn, the LAST point the
+    caller's pinned subject can be confirmed: the governance walk above awaits.
     """
     start = time.monotonic()
+    # Warmed before the run so the audit write finds a constructed singleton instead of
+    # paying its init. No run has happened yet, so a cancellation here costs nothing.
+    if not sel_is_warm():
+        await warm_sel_singleton()
     # Governance: the ``capabilities.script_hooks`` gate (default OFF) may forbid
     # running script hooks for the active surface. Checked before the subprocess
     # spawns. The session key is carried on the hook_event when a caller threads
@@ -4643,27 +4957,79 @@ async def run_script_hook(
     sk = ""
     if hook_event:
         sk = str(hook_event.get("parent_session_key") or hook_event.get("session_key") or "")
-    gov_denied = _script_hooks_capability_denied(sk)
-    if gov_denied:
-        hook.last_run = time.time()
-        hook.last_status = "blocked"
-        hook.last_error = f"Blocked by governance: {gov_denied}"
-        hook.run_count += 1
-        _audit_governance_hook_decision(
-            sk, f"run_script_hook:{hook.name or hook.id}", "denied", gov_denied
+    # Set once this run's outcome is on the hook, so the cancellation arm below does not book
+    # a second one: `run_count` is monotonic, so a double increment never heals.
+    outcome_booked = False
+    # True until a permit is attempted: the denial arm returns before writing one.
+    permit_recorded = True
+    try:
+        gov_denied = await _script_hooks_capability_denied_async(sk, app)
+        if gov_denied:
+            hook.last_run = time.time()
+            hook.last_status = "blocked"
+            hook.last_error = f"Blocked by governance: {gov_denied}"
+            hook.run_count += 1
+            outcome_booked = True
+            await _audit_governance_hook_decision(
+                sk, f"run_script_hook:{hook.name or hook.id}", "denied", gov_denied
+            )
+            return ScriptHookResult(
+                hook_id=hook.id,
+                hook_name=hook.name,
+                event=hook.event,
+                error=f"Blocked by governance policy: {gov_denied}",
+                exit_code=2,  # PreToolUse "block tool" convention
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+        # EVERY permitted run files one. Only the gating event's is critical: refusing an
+        # attended run over a lost row would disarm a guard when auditing is already broken.
+        gates = hook.event == HOOK_EVENT_SESSION_LANE_CHANGED
+        permit_recorded = await _audit_governance_hook_decision(
+            sk, f"run_script_hook:{hook.name or hook.id}", "allowed", "permitted", critical=gates
         )
-        return ScriptHookResult(
-            hook_id=hook.id,
-            hook_name=hook.name,
-            event=hook.event,
-            error=f"Blocked by governance policy: {gov_denied}",
-            exit_code=2,  # PreToolUse "block tool" convention
-            duration_ms=int((time.monotonic() - start) * 1000),
-        )
+    except asyncio.CancelledError:
+        # The gate and the permission row are awaits too, so a cancellation here must book the
+        # run exactly as the start-row arm below does rather than leaving it unrecorded.
+        if not outcome_booked:
+            await _record_cancel_before_start(hook, sk)
+        raise
+    start_write = asyncio.ensure_future(
+        asyncio.to_thread(lambda: _audit_gate_row(sk, f"run_script_hook:{hook.name or hook.id}"))
+        if gates
+        else asyncio.sleep(0, result=True)
+    )
+    try:
+        # Shielded: the row lands in a worker thread that a cancelled await does not stop, and
+        # this sits above the try whose CancelledError arm would otherwise pair it.
+        started_recorded = await asyncio.shield(start_write)
+    except asyncio.CancelledError:
+        with suppress(Exception, asyncio.CancelledError):
+            await start_write
+        await _record_cancel_before_start(hook, sk)
+        raise
+
+    # AUDIT-OR-DENY, and the only place either row refuses: with nobody watching, a run that
+    # cannot be recorded does not run. Attended events never refuse -- that disarms a guard.
+    refusal = ""
+    if not started_recorded or not permit_recorded:
+        refusal = "Refused: the run's audit record could not be written"
+    elif still_current is not None and not still_current():
+        # First of two reads, and the cheap one: it skips the spawn prep entirely. The
+        # BINDING read is the one below, which no await separates from the spawn.
+        refusal = _REFUSAL_REBOUND
+    if refusal:
+        return await _refused_result(hook, refusal, start, sk)
     # Build hook event JSON for STDIN
     if hook_event is None:
         hook_event = {"hook_event_name": hook.event, "cwd": os.getcwd()}
     stdin_data = json.dumps(hook_event).encode()
+
+    # Bound before the try: cancellation can arrive while the subprocess is still being
+    # created, and the handlers below reap through this name.
+    proc: asyncio.subprocess.Process | None = None
+    # Set once the terminal status and run_count are recorded, so the cancellation arm
+    # can tell a run that already finished from one interrupted mid-flight.
+    outcome_recorded = False
 
     try:
         # circular import: sandbox → registry → apps → hooks, so import at call time
@@ -4696,6 +5062,13 @@ async def run_script_hook(
         wrapped_argv, env, cleanup_path = await sandboxed_spawn_argv_async(
             argv, env=env, _prepare=sandboxed_spawn_argv
         )
+        # The prep above awaits, so the pin is re-read HERE, with the spawn as the next
+        # statement: a same-key rebind inside that await would run against the replacement.
+        if still_current is not None and not still_current():
+            if cleanup_path:
+                with suppress(OSError):
+                    os.unlink(cleanup_path)
+            return await _refused_result(hook, _REFUSAL_REBOUND, start, sk)
         # Process-group isolation for clean tree-kill on timeout. Pass both flags
         # explicitly (NOT **dict unpack — breaks mypy's Popen overload resolution
         # on the build fleet): start_new_session=True is a no-op on Windows,
@@ -4777,6 +5150,17 @@ async def run_script_hook(
             hook.last_status = "error"
             hook.last_error = stderr_safe or f"Exited with code {exit_code}"
         hook.run_count += 1
+        outcome_recorded = True
+        if not await _audit_hook_invocation_now(
+            sk,
+            f"run_script_hook:{hook.name or hook.id}",
+            hook.last_status,
+            error=hook.last_error,
+            exit_code=exit_code,
+        ):
+            # The command already ran, so this cannot deny it. Recording the gap keeps a
+            # run that reached no audit distinguishable from one that did.
+            hook.last_error = (hook.last_error + " (audit row not recorded)").strip()
         return ScriptHookResult(
             hook_id=hook.id,
             hook_name=hook.name,
@@ -4791,7 +5175,7 @@ async def run_script_hook(
         # platform_compat: killpg on POSIX, taskkill /T on Windows (os.killpg /
         # signal.SIGKILL are POSIX-only and would AttributeError on win32).
         try:
-            if proc.returncode is None:
+            if proc is not None and proc.returncode is None:
                 # Async variant offloads the Windows taskkill spawn — the hook
                 # timeout path already runs on the event loop, so we never want
                 # to stall it further while taskkill.exe walks the tree
@@ -4806,6 +5190,10 @@ async def run_script_hook(
                     _read_capped_stream(proc.stderr, _HOOK_STREAM_CAP_BYTES),
                 )
                 await proc.wait()
+        except asyncio.CancelledError:
+            # The sibling CancelledError arm cannot catch this, so reap and audit here.
+            await _reap_and_audit_timeout_cancel(proc, hook, sk)
+            raise
         except Exception:
             pass
         elapsed = int((time.monotonic() - start) * 1000)
@@ -4813,13 +5201,45 @@ async def run_script_hook(
         hook.last_status = "timeout"
         hook.last_error = f"Timed out after {hook.timeout}s"
         hook.run_count += 1
+        if not await _audit_hook_invocation_now(
+            sk, f"run_script_hook:{hook.name or hook.id}", "timeout", error=hook.last_error
+        ):
+            hook.last_error = (hook.last_error + " (audit row not recorded)").strip()
         return ScriptHookResult(
             hook_id=hook.id,
             hook_name=hook.name,
             event=hook.event,
-            error=f"Timed out after {hook.timeout}s",
+            error=hook.last_error,
             duration_ms=elapsed,
         )
+    except asyncio.CancelledError:
+        # A BaseException, so it passed every branch below AND the timeout arm's
+        # tree-kill: reap and audit here, then RE-RAISE.
+        try:
+            if proc is not None and proc.returncode is None:
+                await platform_compat.kill_process_tree_async(proc.pid, platform_compat.SIGKILL)
+                await asyncio.gather(
+                    _read_capped_stream(proc.stdout, _HOOK_STREAM_CAP_BYTES),
+                    _read_capped_stream(proc.stderr, _HOOK_STREAM_CAP_BYTES),
+                )
+                await proc.wait()
+        except Exception:
+            pass
+        # A cancellation during the terminal audit arrives with the run already counted,
+        # so repeating this would double a monotonic counter and relabel a finished run.
+        if not outcome_recorded:
+            hook.last_run = time.time()
+            hook.last_status = "cancelled"
+            hook.last_error = "Cancelled before completion"
+            hook.run_count += 1
+            if not await _audit_hook_invocation_now(
+                sk,
+                f"run_script_hook:{hook.name or hook.id}",
+                "cancelled",
+                error=hook.last_error,
+            ):
+                hook.last_error = (hook.last_error + " (audit row not recorded)").strip()
+        raise
     except Exception as exc:
         elapsed = int((time.monotonic() - start) * 1000)
         safe_error = redact_via_context(str(exc))
@@ -4827,6 +5247,12 @@ async def run_script_hook(
         hook.last_status = "error"
         hook.last_error = safe_error[:500]
         hook.run_count += 1
+        if not await _audit_hook_invocation_now(
+            sk, f"run_script_hook:{hook.name or hook.id}", "error", error=hook.last_error
+        ):
+            # Same reason as the other terminal paths: a run that reached no audit must stay
+            # distinguishable from one that did, and this arm was the only one still silent.
+            hook.last_error = (hook.last_error + " (audit row not recorded)").strip()
         return ScriptHookResult(
             hook_id=hook.id,
             hook_name=hook.name,
@@ -4861,7 +5287,11 @@ class ScriptHookStore:
         # snapshot taken BEFORE B's change and drops it. Re-entrant because the
         # persist path is called from inside the same held section.
         self._mutex = threading.RLock()
+        # Readers are served an immutable snapshot so a mutation still inside
+        # _atomic_mutation, or one it rolled back, is never observable.
+        self._snapshot: tuple[ScriptHook, ...] = ()
         self._load()
+        self._publish_snapshot()
 
     def _load(self) -> None:
         if not self._path.exists():
@@ -4966,10 +5396,15 @@ class ScriptHookStore:
             webhooks.write_json_atomic(self._path, data)
 
     def list_all(self) -> list[ScriptHook]:
-        return list(self._hooks.values())
+        return list(self._snapshot)
 
     def get(self, hook_id: str) -> ScriptHook | None:
+        # The LIVE object, so a mutation reaches no reader until record_run_bookkeeping runs.
         return self._hooks.get(hook_id)
+
+    def record_run_bookkeeping(self) -> None:
+        """Persist and republish after a run mutated a live hook from ``get``."""
+        self._persist_current()
 
     @contextmanager
     def _atomic_mutation(self):
@@ -4987,12 +5422,41 @@ class ScriptHookStore:
         restore nothing. The set is small (tens of hooks), so the copy is cheap
         next to the fsync it guards.
         """
-        snapshot = copy.deepcopy(self._hooks)
+        # Captured under the mutex for the same reason the publish takes it: a
+        # concurrent insert or delete during this copy raises RuntimeError.
+        with self._mutex:
+            snapshot = copy.deepcopy(self._hooks)
         try:
             yield
         except BaseException:
-            self._hooks = snapshot
+            # Restore IN PLACE, not by rebinding: `update` and `toggle` edit the stored
+            # object, and a caller that already holds it keeps the rolled-back edit.
+            with self._mutex:
+                for hook_id, pristine in snapshot.items():
+                    live = self._hooks.get(hook_id)
+                    if live is not None and live is not pristine:
+                        live.__dict__.update(pristine.__dict__)
+                self._hooks = snapshot
             raise
+        # Only here, past every raise: the mutation and its save both succeeded,
+        # so this is the first moment the change is committed and publishable.
+        self._publish_snapshot()
+
+    def _publish_snapshot(self) -> None:
+        """Republish the reader snapshot from committed state.
+
+        Deep-copied because ``update`` mutates a stored hook in place: sharing the
+        objects would publish a field edit before it was persisted, and would keep
+        publishing it after a failed save rolled ``self._hooks`` back. Mutations are
+        rare and reads are hot, so paying the copy per commit is the right side.
+
+        Takes the mutex itself rather than trusting each caller to hold it: iterating
+        ``self._hooks`` while another thread inserts or deletes raises RuntimeError,
+        and two of the three call sites do not hold it. Reentrant, so the caller that
+        does nests for free; in-memory only, so it never spans a file lock or fsync.
+        """
+        with self._mutex:
+            self._snapshot = tuple(copy.deepcopy(h) for h in self._hooks.values())
 
     def create(self, data: dict) -> ScriptHook:
         hook = ScriptHook.from_dict(data)
@@ -5071,6 +5535,70 @@ class ScriptHookStore:
             self._save()
         return hook
 
+    def _is_still_committed_enabled(self, hook_id: str) -> bool:
+        """Is this hook STILL enabled in the committed snapshot?
+
+        :meth:`_committed_fire_targets` freezes ``enabled`` along with the command, and the
+        reading it awaits a matcher offload and a capability check -- so a hook
+        disabled in that window would otherwise fire from the frozen copy. Only the DECISION
+        is re-read here; the command still comes from the copy, which is what keeps a
+        rolled-back update's command from executing.
+        """
+        return any(
+            committed.id == hook_id and committed.enabled is True for committed in self._snapshot
+        )
+
+    def _committed_fire_targets(self, event: str) -> list["ScriptHook"]:
+        """FROZEN copies of the committed hooks for ``event``.
+
+        ``_atomic_mutation`` edits ``self._hooks`` BEFORE its save and rolls back by
+        REBINDING ``self._hooks``, which does not un-mutate an object a caller already
+        holds. So handing out the stored hook lets a failed update's command execute
+        anyway -- the command is read at execution time, after any check -- and an
+        executed shell command has no undo. A private deep copy closes that window by
+        construction: what runs is what reached disk, whatever a concurrent writer
+        does to the stored object meanwhile.
+
+        Bookkeeping therefore lands on the copy, so a run must hand it back through
+        :meth:`_merge_run_bookkeeping`. Reading ``_snapshot`` needs no lock: it is
+        rebound, never mutated, and is published only past every raise.
+        """
+        return [
+            copy.deepcopy(committed)
+            for committed in self._snapshot
+            if committed.enabled is True and committed.event == event
+        ]
+
+    def _merge_run_bookkeeping(self, executed: list[tuple["ScriptHook", int, float]]) -> None:
+        """Fold finished runs' status into the stored hooks. Does NOT publish.
+
+        Publishing is the caller's, conditioned on the durable write: a reader served a
+        folded snapshot the save then dropped would show a run that vanishes at the next
+        restart, so :meth:`_merge_and_persist` republishes only past a successful save.
+
+        Each entry carries the run's own pre-run counters, and only the DIFFERENCE is
+        applied: ``run_count`` is monotonic, so assigning the copy's value outright
+        would silently roll back a concurrent run's increment, and status is taken only
+        when this run actually recorded one. Called off the event loop, because CRUD
+        writers hold the mutex across their file lock and fsync. A hook deleted mid-run
+        is dropped.
+        """
+        if not executed:
+            return
+        with self._mutex:
+            for ran, base_count, base_run in executed:
+                live = self._hooks.get(ran.id)
+                if live is None:
+                    continue
+                if ran.run_count > base_count:
+                    live.run_count += ran.run_count - base_count
+                # Monotonic in time: two fires can overlap, and the one that finishes
+                # second may be the OLDER run, whose status must not clobber the newer.
+                if ran.last_run != base_run and ran.last_run >= live.last_run:
+                    live.last_run = ran.last_run
+                    live.last_status = ran.last_status
+                    live.last_error = ran.last_error
+
     async def fire(
         self,
         event: str,
@@ -5082,6 +5610,8 @@ class ScriptHookStore:
         parent_session_key: str | None = None,
         agent_role: str | None = None,
         hook_continuation_count: int = 0,
+        event_payload: dict | None = None,
+        still_current: Callable[[], bool] | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -5120,6 +5650,14 @@ class ScriptHookStore:
             # Stamped unconditionally so the keys are always present.
             hook_event["hook_continuation_count"] = hook_continuation_count
             hook_event["stop_hook_active"] = hook_continuation_count > 0
+        elif event == HOOK_EVENT_SESSION_LANE_CHANGED:
+            # The DELTA is the point: with ``tags`` alone every consumer keeps its own
+            # prior snapshot to answer "was Done just added?", diffing in every subscriber.
+            #
+            # Defaults for all three keys are stamped first, so a hook that always reads
+            # one never KeyErrors on an addition-only change even if a caller omits it.
+            hook_event.update({"slot": "", "added": [], "removed": []})
+            hook_event.update(event_payload or {})
         if tool_name:
             hook_event["tool_name"] = tool_name
         if tool_input is not None:
@@ -5133,100 +5671,146 @@ class ScriptHookStore:
         if agent_role:
             hook_event["agent_role"] = agent_role
 
-        for hook in list(self._hooks.values()):
-            if not hook.enabled or hook.event != event:
-                continue
-            # Matcher filtering: for tool hooks, match tool name; for others, match context
-            if hook.matcher:
-                if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
-                    if not _tool_matches(hook.matcher, tool_name):
-                        continue
-                elif context:
-                    # Offload to a thread: regex mode spawns a bounded subprocess
-                    # (_bounded_pattern_search), which must not block the event loop.
-                    matched = await asyncio.to_thread(
-                        _context_matches, hook.matcher, hook.matcher_mode, context
+        ran_hooks: list[tuple["ScriptHook", int, float]] = []
+        # ONE guard for the whole loop: the matcher offload and the capability await
+        # are awaits too, and by then earlier hooks already carry bookkeeping.
+        try:
+            for hook in self._committed_fire_targets(event):
+                # Matcher filtering: for tool hooks, match tool name; for others, match context
+                if hook.matcher:
+                    if event in (HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE):
+                        if not _tool_matches(hook.matcher, tool_name):
+                            continue
+                    elif context:
+                        # Offload to a thread: regex mode spawns a bounded subprocess
+                        # (_bounded_pattern_search), which must not block the event loop.
+                        matched = await asyncio.to_thread(
+                            _context_matches, hook.matcher, hook.matcher_mode, context
+                        )
+                        if not matched:
+                            continue
+                # Skills-only hooks inject a skill-loading directive with no subprocess.
+                # Meaningful only for UserPromptSubmit/AgentSpawn: elsewhere it has no consumer.
+                if (
+                    hook.skills
+                    and not hook.command
+                    and event
+                    in (
+                        HOOK_EVENT_USER_PROMPT_SUBMIT,
+                        HOOK_EVENT_AGENT_SPAWN,
                     )
-                    if not matched:
+                ):
+                    # Skills-only hooks respect the same capability gate as command hooks:
+                    # a disabled capabilities.script_hooks is not bypassable by omitting command.
+                    sk = parent_session_key or ""
+                    gov_denied = await _script_hooks_capability_denied_async(sk)
+                    if gov_denied:
+                        ran_hooks.append((hook, hook.run_count, hook.last_run))
+                        hook.last_run = time.time()
+                        hook.last_status = "blocked"
+                        hook.last_error = f"Blocked by governance: {gov_denied}"
+                        hook.run_count += 1
+                        await _audit_governance_hook_decision(
+                            sk, f"skills_only_hook:{hook.name or hook.id}", "denied", gov_denied
+                        )
+                        logger.info(
+                            "Hook %s (%s): skills-only blocked by governance: %s",
+                            hook.name,
+                            event,
+                            gov_denied,
+                        )
                         continue
-            # Skills-only hooks: inject skill-loading directive without subprocess.
-            # Only meaningful for UserPromptSubmit/AgentSpawn — on tool hooks or Stop
-            # the synthesized "Load skills:" text has no consumer.
-            if (
-                hook.skills
-                and not hook.command
-                and event
-                in (
-                    HOOK_EVENT_USER_PROMPT_SUBMIT,
-                    HOOK_EVENT_AGENT_SPAWN,
-                )
-            ):
-                # Governance: skills-only hooks must respect the same capability
-                # gate as command hooks — a disabled capabilities.script_hooks
-                # must not be bypassable by omitting the command field.
-                sk = parent_session_key or ""
-                gov_denied = _script_hooks_capability_denied(sk)
-                if gov_denied:
+                    # Filed for every skills-only run, as base did. Non-critical: this branch
+                    # is reachable only from ``_SKILLS_ONLY_EVENTS``, both attended.
+                    if not await _audit_governance_hook_decision(
+                        sk,
+                        f"skills_only_hook:{hook.name or hook.id}",
+                        "allowed",
+                        "skills-only hook permitted",
+                    ):
+                        ran_hooks.append((hook, hook.run_count, hook.last_run))
+                        hook.last_run = time.time()
+                        hook.last_status = "error"
+                        hook.last_error = "Refused: the run's audit record could not be written"
+                        hook.run_count += 1
+                        continue
+                    # The last look before injection: unlike the command path below, no
+                    # await follows here, so no still_current callback can catch a disable.
+                    if not self._is_still_committed_enabled(hook.id):
+                        continue
+                    skills_directive = " ".join(f"${s.split('/')[-1]}" for s in hook.skills)
+                    ran_hooks.append((hook, hook.run_count, hook.last_run))
                     hook.last_run = time.time()
-                    hook.last_status = "blocked"
-                    hook.last_error = f"Blocked by governance: {gov_denied}"
+                    hook.last_status = "ok"
+                    hook.last_error = ""
                     hook.run_count += 1
-                    _audit_governance_hook_decision(
-                        sk, f"skills_only_hook:{hook.name or hook.id}", "denied", gov_denied
+                    result = ScriptHookResult(
+                        hook_id=hook.id,
+                        hook_name=hook.name,
+                        event=hook.event,
+                        stdout=f"Load skills: {skills_directive}",
+                        exit_code=0,
+                        duration_ms=0,
                     )
+                    results.append(result)
                     logger.info(
-                        "Hook %s (%s): skills-only blocked by governance: %s",
+                        "Hook %s (%s): skills-only injection (%d skills)",
                         hook.name,
                         event,
-                        gov_denied,
+                        len(hook.skills),
                     )
                     continue
-                # Audit the allow decision before proceeding.
-                _audit_governance_hook_decision(
-                    sk,
-                    f"skills_only_hook:{hook.name or hook.id}",
-                    "allowed",
-                    "skills-only hook permitted",
+                # Fast path only: run_script_hook's OWN governance walk and audit writes await
+                # after this, so this is not the last look -- the callback below is.
+                if not self._is_still_committed_enabled(hook.id):
+                    continue
+                ran_hooks.append((hook, hook.run_count, hook.last_run))
+                hid, outer = hook.id, still_current
+                # UNATTENDED events only. The refusal this arms returns exit_code=-1, and
+                # chat_runner reads any non-0/2 exit from a PreToolUse hook as BLOCKED, so on
+                # an attended event a hook disabled mid-fire would DENY the call it would have
+                # allowed while enabled -- inverting "attended events never refuse". The
+                # committed-state pre-check above already SKIPS a disabled hook; only a lane
+                # run, with nobody watching, is worth refusing this late.
+                last_look = (
+                    (lambda: self._is_still_committed_enabled(hid) and (outer is None or outer()))
+                    if event == HOOK_EVENT_SESSION_LANE_CHANGED
+                    else None
                 )
-                skills_directive = " ".join(f"${s.split('/')[-1]}" for s in hook.skills)
-                hook.last_run = time.time()
-                hook.last_status = "ok"
-                hook.last_error = ""
-                hook.run_count += 1
-                result = ScriptHookResult(
-                    hook_id=hook.id,
-                    hook_name=hook.name,
-                    event=hook.event,
-                    stdout=f"Load skills: {skills_directive}",
-                    exit_code=0,
-                    duration_ms=0,
+                result = await run_script_hook(
+                    hook,
+                    context,
+                    hook_event,
+                    still_current=last_look,
                 )
                 results.append(result)
                 logger.info(
-                    "Hook %s (%s): skills-only injection (%d skills)",
+                    "Hook %s (%s): %s in %dms (exit=%d)",
                     hook.name,
                     event,
-                    len(hook.skills),
+                    hook.last_status,
+                    result.duration_ms,
+                    result.exit_code,
                 )
-                continue
-            result = await run_script_hook(hook, context, hook_event)
-            results.append(result)
-            logger.info(
-                "Hook %s (%s): %s in %dms (exit=%d)",
-                hook.name,
-                event,
-                hook.last_status,
-                result.duration_ms,
-                result.exit_code,
-            )
+        except BaseException:
+            # EVERY exceptional exit, not just cancellation: a later hook raising
+            # would otherwise discard the monotonic run_count of hooks already run.
+            with suppress(Exception):
+                await asyncio.to_thread(self._merge_and_persist, ran_hooks)
+            raise
         # Snapshot INSIDE the worker under the mutex, not here: capturing on the
         # loop and persisting later leaves the same interleaving window a
         # concurrent CRUD mutation could fall into.
-        await asyncio.to_thread(self._persist_current)
+        await asyncio.to_thread(self._merge_and_persist, ran_hooks)
         return results
 
-    def _persist_current(self) -> None:
-        """Persist the live hook set, serialised against CRUD mutations.
+    def _merge_and_persist(self, executed: list[tuple["ScriptHook", int, float]]) -> None:
+        """ONE hop: as two, the await between them committed the fold and skipped the write."""
+        self._merge_run_bookkeeping(executed)
+        self._persist_current()
+
+    def _persist_current(self) -> bool:
+        """Persist the live hook set, serialised against CRUD mutations. True if written.
 
         This path only records status bookkeeping after a fire; the hook set
         itself is unchanged. `_save` refuses to write over an unreadable
@@ -5244,10 +5828,17 @@ class ScriptHookStore:
                 logger.warning(
                     "Could not persist hook status bookkeeping: %s. "
                     "Hook execution continues; %s needs repair before "
-                    "hook edits can be saved.",
+                    "hook edits can be saved. Readers keep the previously persisted "
+                    "run status rather than a fold this write did not durably record.",
                     exc,
                     self._path,
                 )
+                return False
+            # Readers are served the snapshot, so run status would otherwise freeze at the
+            # last CRUD write. Republished only PAST the durable write: a snapshot the save
+            # dropped would show the API a run that disappears at the next restart.
+            self._publish_snapshot()
+            return True
 
     def _save_snapshot(self, hooks_data: list[dict]) -> None:
         """Thread-safe save using pre-captured hook snapshot."""
@@ -5320,3 +5911,422 @@ async def fire_tool_hooks(
         )
     except Exception:
         logger.debug("PreToolUse hook error", exc_info=True)
+
+
+async def _fire_session_lane_changed(
+    hook_store: ScriptHookStore | None,
+    slot_key: str,
+    added: list[str],
+    removed: list[str],
+    still_current: Callable[[], bool] | None = None,
+) -> None:
+    """Fire SessionLaneChanged hooks for a board lane transition.
+
+    Informational only, and deliberately so. ``run_script_hook`` treats exit code 2 as
+    blocking, which ``PreToolUse`` uses to deny a tool call; this event must NOT honour
+    that -- the tag write is already applied and the drag already happened, so a veto
+    would only make the board unusable when a hook breaks. Every exception is swallowed,
+    and the caller dispatches off the request path so a slow hook cannot delay the
+    response. The matcher context and session key are DERIVED here rather than passed:
+    every caller computed them identically, and the only freedom was getting one wrong.
+
+    ``still_current`` is re-checked immediately before EACH hook runs, not just once at
+    dequeue: the matcher thread-hop and the ``profiles/`` governance walk both await, and a
+    same-key delete/recreate inside that window would point an irreversible close-out hook
+    at the replacement session.
+
+    The context is what a hook's ``matcher`` is evaluated against. Its token grammar --
+    direction-tagged, id-only, ``;``-terminated, and why display names are deliberately not
+    tokens -- is documented once on ``_session_lane_matcher_context``, which builds it.
+
+    The session key is the caller's EFFECTIVE key (``dashboard:<slot>``) so the
+    ``capabilities.script_hooks`` gate resolves the profile bound to the originating
+    surface. A BARE slot id would miss the ``dashboard:`` prefix ``sel._infer_source``
+    classifies on and bind the ``slack`` fallback -- the wrong surface, not none.
+    """
+    if hook_store is None:
+        return
+    matcher_context = _session_lane_matcher_context(added, removed)
+    if not matcher_context:
+        # No id survived token validation, and ``fire`` consults a matcher ONLY when the
+        # context is non-empty -- so dispatching would run EVERY hook, not this lane's.
+        logger.debug(
+            "SessionLaneChanged not fired for %s: no valid tag id to match on",
+            slot_key,
+        )
+        return
+    # Empty slot key stays empty rather than becoming a bare ``dashboard:``
+    # prefix, so the gate still falls back to policy-only resolution as before.
+    session_key = f"dashboard:{slot_key}" if slot_key else ""
+    try:
+        await hook_store.fire(
+            HOOK_EVENT_SESSION_LANE_CHANGED,
+            context=matcher_context,
+            event_payload={
+                "slot": slot_key,
+                "added": list(added),
+                "removed": list(removed),
+            },
+            parent_session_key=session_key or None,
+            still_current=still_current,
+        )
+    except Exception:
+        logger.debug("SessionLaneChanged hook error", exc_info=True)
+
+
+# SessionLaneChanged delivery: ONE bounded FIFO delta queue drained by ONE worker.
+# Order is total, which subsumes the per-session order the event promises.
+#
+# MAXSIZE bounds MEMORY, sized so a status-tag delete's fan-out is absorbed rather than
+# shed; the SINGLE worker bounds REAL RESOURCES, since a dispatch can spawn a subprocess.
+_LANE_QUEUE_MAXSIZE = 512
+# Overflow is already audited; this is the only warning early enough to act on.
+_LANE_QUEUE_WARN_DEPTH = 128
+# MAXSIZE bounds how MANY items are held, not how large one is. Over-long values are
+# SKIPPED, never shortened: a truncated id or key aliases to a DIFFERENT lane or session.
+_LANE_KEY_MAXLEN = 200
+_LANE_TAG_MAXLEN = 64
+_LANE_TAGS_MAXCOUNT = 64
+# The matcher grammar's token charset, as an ALLOWLIST: refusing only the structural
+# separators still admits glob metacharacters, and the grammar is read by ``fnmatch``.
+# LOWERCASE ONLY, because ``_context_matches`` folds case: admitting both cases would
+# let two ids differing only in case alias to one lane and fire each other's hooks.
+_TOKEN_ALLOWED = re.compile(r"\A[a-z0-9_.-]+\Z")
+
+
+def _is_token_safe(raw: str) -> bool:
+    """Whether an id can be a matcher token without breaking the grammar.
+
+    Only ids reach a token and they are generated, so in practice this holds. It is
+    checked anyway because ``tags.json`` is persisted state a human can edit: a malformed
+    id is skipped rather than rewritten, degrading matching for one tag instead of firing
+    the wrong hook, and the skip is logged by the caller.
+
+    An ALLOWLIST, not a screen for the separators. Refusing whitespace, ``:`` and ``;``
+    still admits glob metacharacters, and the grammar is consumed by ``fnmatch``: an id of
+    ``*`` makes the selector written for it (``*added:*;*``) match EVERY lane change,
+    running that tag's hook on sessions it was never registered for. Enumerating the safe
+    characters refuses that whole class rather than the separators that were foreseen.
+
+    ``.`` is admitted because it can do none of that, so a lane a person named
+    ``in.review`` by hand reaches the matcher instead of vanishing from it. Case is NOT:
+    ``_context_matches`` folds both sides, so ``Done`` and ``done`` would share one token
+    and each fire the other's hook, which is worse than skipping one tag.
+    """
+    return bool(_TOKEN_ALLOWED.match(raw))
+
+
+# One bounded queue and one worker, created lazily on the running loop.
+#
+# A strong ref to the worker is held here because asyncio keeps only a weak
+# reference to a task: without this the worker can be garbage collected mid-drain
+# and the hooks it would have run silently never run.
+_LANE_QUEUE: asyncio.Queue | None = None
+_LANE_WORKER: asyncio.Task | None = None
+# Queue and worker bind to ONE loop, and a suite runs many: reused across loops, deltas
+# park behind a worker that can never be scheduled and read as silently dropped events.
+_LANE_QUEUE_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _reset_lane_dispatch_state() -> None:
+    """Drop the queues and workers. For tests, which run one loop per test.
+
+    Cancels rather than awaits: the caller is usually a synchronous fixture
+    teardown running after its loop has already closed, where there is nothing
+    left to await on. The cancel is GUARDED on that loop for the same reason: a
+    cancellation cannot be delivered once the loop that would deliver it is gone,
+    so calling it there accomplishes nothing and leaves a pending task to be
+    collected. Dropping the reference is the whole of the cleanup available.
+    """
+    global _LANE_QUEUE_LOOP, _LANE_QUEUE, _LANE_WORKER
+    if _LANE_WORKER is not None and not _LANE_WORKER.get_loop().is_closed():
+        _LANE_WORKER.cancel()
+    _LANE_WORKER = None
+    _LANE_QUEUE = None
+    _LANE_QUEUE_LOOP = None
+
+
+async def _lane_dispatch_worker(queue: asyncio.Queue) -> None:
+    """Drain the queue forever, isolating every fire.
+
+    A single failing fire must not strand the rest of the queue: dispatch is
+    best-effort by contract, and one unreachable hook cannot be allowed to
+    silence the remaining sessions' cleanup. ``task_done`` is in a ``finally`` so
+    a raising fire still releases the ``join()`` a caller may be waiting on.
+    """
+    while True:
+        store, item = await queue.get()
+        try:
+            if not item.is_current():
+                # Early-out before any await; run_script_hook re-checks before the spawn.
+                logger.warning(
+                    "SessionLaneChanged dropped for %s: the slot was rebound while "
+                    "queued, so the delta no longer describes the live session",
+                    item.slot_key,
+                )
+
+                def _audit_rejected(key: str = item.slot_key) -> None:
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="hooks.session_lane_changed",
+                        outcome="rejected",
+                        source="dashboard",
+                        resources=key[:200],
+                        error="slot rebound while queued; hook not run",
+                    )
+
+                await audit_off_loop(_audit_rejected, "lane dispatch rejected")
+                continue
+            await _fire_session_lane_changed(
+                store,
+                slot_key=item.slot_key,
+                added=item.added,
+                removed=item.removed,
+                still_current=item.is_current,
+            )
+        except Exception:
+            logger.warning(
+                "SessionLaneChanged fire failed for %s; continuing",
+                item.slot_key,
+                exc_info=True,
+            )
+        finally:
+            queue.task_done()
+
+
+def _lane_dispatch_queue() -> asyncio.Queue | None:
+    """The delta queue, creating it and its worker on first use.
+
+    Returns ``None`` when no loop is running, which is the synchronous unit-test
+    path: there is nothing to schedule a worker on, and refusing here keeps the
+    refusal attributable instead of surfacing later as a queue nobody drains.
+    """
+    global _LANE_QUEUE_LOOP, _LANE_QUEUE, _LANE_WORKER
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    if _LANE_QUEUE is None or _LANE_QUEUE_LOOP is not loop:
+        _LANE_WORKER = None
+        _LANE_QUEUE_LOOP = loop
+        _LANE_QUEUE = asyncio.Queue(maxsize=_LANE_QUEUE_MAXSIZE)
+    if _LANE_WORKER is None or _LANE_WORKER.done():
+        # A cancelled worker, or one that let a BaseException escape the per-item
+        # handler, stays non-None forever -- reusing it drains nothing.
+        _LANE_WORKER = asyncio.create_task(_lane_dispatch_worker(_LANE_QUEUE))
+    return _LANE_QUEUE
+
+
+def _session_lane_matcher_context(
+    added: list[str],
+    removed: list[str],
+) -> str:
+    """Build the matcher context for ``SessionLaneChanged``. THE EVENT'S CONTRACT.
+
+    Lives here beside ``HOOK_EVENT_SESSION_LANE_CHANGED`` rather than in the
+    dashboard writer that happens to trigger it, because the token grammar is what
+    a hook author writes a matcher against -- it is the event's contract, and a
+    caller-local helper invites a second, divergent spelling. Private because
+    ``_fire_session_lane_changed`` derives the context itself: the GRAMMAR is
+    public surface, the function that builds it has no caller outside this module.
+
+    Tokens are DIRECTION-TAGGED and carry the tag ID only, each closed by a
+    terminating ``;``: ``added:<id>;``, ``removed:<id>;``. An id is bounded at BOTH
+    ends, and a selector must use both bounds. The ``;`` stops a selector for a
+    short id also matching a longer id it PREFIXES; the ``:`` stops it matching one
+    it is a SUFFIX of. The direction-tagged forms get the leading bound free from
+    ``added:``/``removed:``, which is why the direction-free form must spell the
+    ``:`` itself -- ``*<id>;*`` would fire on every lane whose id ENDS with that id
+    (a hook on ``abc`` firing for ``xabc``), and for a close-out hook that is an
+    irreversible action on the wrong session. Neither bound is forgeable: ``:`` and
+    ``;`` are both outside the id allowlist, so no id can contain either. Direction is in the grammar because the motivating
+    case is
+    "a session ENTERED Done" and an untagged context cannot express it -- a
+    ``<id>`` matcher would fire on leaving the lane too.
+
+    Matching is whole-string, so a SELECTOR NEEDS WILDCARDS under the default
+    ``glob`` mode -- a bare id matches NOTHING:
+
+        entered a lane      ``*added:<id>;*``
+        left a lane         ``*removed:<id>;*``
+        any movement        ``*:<id>;*``
+
+    In ``contains`` mode the same selectors work without the wildcards.
+
+    NAMES ARE DELIBERATELY NOT TOKENS. Emitting them alongside ids read better --
+    an author could write ``*added:In_Review*`` for a lane shown as "In Review" --
+    but it put a user-controlled string into a structural grammar, and that cost
+    more than it bought. Whitespace divides tokens and ``:`` divides a direction
+    from its value, so a name had to be escaped or one lane could forge another's
+    token; a collapsing sanitizer turned out to be many-to-one (``In Review``,
+    ``In:Review`` and a literal ``In_Review`` all became ``In_Review``), which
+    fires a destructive close-out hook for the WRONG lane, so the escape had to be
+    injective; and the resulting spelling (``*added:In_20Review*``) would be frozen
+    contract from the first subscriber onward.
+
+    Ids already select a lane, are rename-proof, and contain no separator to
+    escape, so dropping names removes the whole forgery surface rather than
+    guarding it. The asymmetry settles the sequencing: adding name tokens later is
+    ADDITIVE, removing them later is BREAKING, and this event ships with zero
+    subscribers -- so not freezing that grammar is free today and expensive later.
+    A subscriber wanting the human-readable label reads ``added``/``removed`` from
+    the payload and resolves the ids it finds there.
+
+    CAN return an empty string, and the caller must treat that as "do not fire".
+    A transition whose every id fails validation below leaves no tokens, and
+    ``fire`` consults a matcher ONLY when the context is non-empty -- so handing an
+    empty context to ``fire`` would skip filtering and run every hook registered
+    for the event, on a lane none of them named. ``_fire_session_lane_changed``
+    checks for it and refuses; this function does not raise, because the tag write
+    it follows has already been applied.
+    """
+    tokens: list[str] = []
+    for direction, ids in (("added", added), ("removed", removed)):
+        for tid in ids:
+            # ``tags.json`` is hand-editable, so the annotation is a contract not a
+            # guarantee: a number here would raise after the write, or break the grammar.
+            if not isinstance(tid, str) or not _is_token_safe(tid):
+                logger.warning(
+                    "lane hook: tag id %r cannot be a matcher token, so this lane is absent "
+                    "from the hook context; rename it to lowercase letters, digits, _, . or -",
+                    tid,
+                )
+                continue
+            tagged = f"{direction}:{tid};"
+            if tagged not in tokens:
+                tokens.append(tagged)
+    return " ".join(tokens)
+
+
+@dataclass(frozen=True)
+class SessionLaneDelta:
+    """One session's status-tag transition, as the event delivers it.
+
+    A typed item rather than a dict so the bulk scheduler needs no coercion: the
+    single-item and many-item paths carry identical, checked fields.
+
+    Every field is IRREDUCIBLE state the caller alone knows. The matcher context
+    and the governance session key were once fields too, and both were derived
+    from the fields below identically at every construction site -- so the only
+    thing a caller could contribute was a divergent spelling that fires the wrong
+    hook. ``_fire_session_lane_changed`` derives them instead.
+
+    The post-change tag set was a field too, delivered as a ``tags`` payload key.
+    It is gone: the event is a DELTA, and a subscriber needing current state must
+    re-read the live store.
+    """
+
+    slot_key: str
+    added: list[str]
+    removed: list[str]
+    # Re-checked AT DRAIN: a delete/recreate rebinds the key while this sits queued,
+    # and a close-out hook acting on the replacement session is irreversible.
+    is_current: Callable[[], bool]
+
+
+def _bounded_lane_delta(item: SessionLaneDelta) -> SessionLaneDelta | None:
+    """The item as the queue may RETAIN it, or ``None`` if it may not be retained.
+
+    Called at the enqueue, because a bound checked later bounds nothing: the memory
+    is already held. ``None`` for an over-long key, since a key is the session's
+    identity and no prefix of it names the same session -- and for an over-COUNT field,
+    because a SLICED delta is a wrong one: the caller counts and audits a rejection, where
+    a truncation would name transitions that happened and omit others just as silently.
+    """
+    if max(len(item.added), len(item.removed)) > _LANE_TAGS_MAXCOUNT:
+        return None
+    added = [t for t in item.added if len(t) <= _LANE_TAG_MAXLEN]
+    removed = [t for t in item.removed if len(t) <= _LANE_TAG_MAXLEN]
+    if len(item.slot_key) > _LANE_KEY_MAXLEN or not (added or removed):
+        return None
+    return dataclasses_replace(item, added=added, removed=removed)
+
+
+async def dispatch_session_lane_changed_bulk(
+    hook_store: ScriptHookStore | None,
+    *,
+    items: list[SessionLaneDelta],
+) -> None:
+    """Enqueue a batch of SessionLaneChanged deltas. Never waits for hook execution.
+
+    The queue hand-off is what the caller awaits. The one exception is the LOSS path
+    below, which awaits the rejection's audit write -- a thread hop, not a hook.
+
+    Returns nothing, deliberately. Refusal is not the CALLER's error: the tag write
+    has already applied and the event is informational by contract, so a caller
+    branching on it would be deciding something it has no remedy for. Losses are
+    recorded where they can be acted on instead -- one warning AND one SEL record
+    (``outcome=rejected``) per batch; no running loop is the unit-test path.
+
+    EVERY HOLDER GETS ITS OWN QUEUE ENTRY. Deleting a status tag removes it from every
+    session holding that lane, and a bounded queue ABSORBS that fan-out rather than
+    shedding it, so the deletion path is the same path as every other transition.
+
+    The alternative this still refuses is awaiting the fires in the writer, which would
+    let a slow or hanging hook effectively veto an admin endpoint.
+
+    TWO losses, both counted: a delta whose key or every tag id is over its bound is
+    unretainable, and a full queue drops what will not fit -- which one large fan-out
+    can reach by arithmetic while the drain is healthy. The SEL row carries the
+    overflow keys only: an over-long key is itself the field refused.
+    """
+    # The app-caller gate runs at both writers via ``_lane_dispatch_is_permitted``,
+    # deliberately not here: a refused caller never reaches this function at all.
+    if hook_store is None or not items:
+        return
+
+    overflowed: list[SessionLaneDelta] = []
+    unbounded = 0
+    for item in items:
+        bounded = _bounded_lane_delta(item)
+        if bounded is None:
+            unbounded += 1
+            continue
+        queue = _lane_dispatch_queue()
+        if queue is None:
+            return
+        try:
+            queue.put_nowait((hook_store, bounded))
+        except asyncio.QueueFull:
+            overflowed.append(bounded)
+
+    # One drain worker serves this queue, so a hook sitting on its timeout delays
+    # every fire behind it while nothing is yet lost.
+    depth_queue = _lane_dispatch_queue()
+    if depth_queue is not None and depth_queue.qsize() >= _LANE_QUEUE_WARN_DEPTH:
+        logger.warning(
+            "lane dispatch queue depth %d of %d: fires are waiting behind the single "
+            "drain worker, so a slow hook is delaying the rest",
+            depth_queue.qsize(),
+            _LANE_QUEUE_MAXSIZE,
+        )
+
+    if not (overflowed or unbounded):
+        return
+
+    logger.warning(
+        "SessionLaneChanged dispatch dropped %d of %d item(s): %d to a full queue "
+        "(bound %d), %d to a field bound",
+        len(overflowed) + unbounded,
+        len(items),
+        len(overflowed),
+        _LANE_QUEUE_MAXSIZE,
+        unbounded,
+    )
+
+    def _audit_dropped() -> None:
+        sel().log_api_access(
+            caller="dashboard",
+            # Renamed with the event: a stale ``hooks.session_tags_changed`` here would
+            # collide with the records of a future all-tags event. Nothing queries it yet.
+            operation="hooks.session_lane_changed",
+            outcome="rejected",
+            source="dashboard",
+            resources=",".join(i.slot_key for i in overflowed)[:200],
+            error=(
+                f"{len(overflowed)} dropped to a full queue (bound {_LANE_QUEUE_MAXSIZE}), "
+                f"{unbounded} to a field bound; hook(s) not run"
+            ),
+        )
+
+    await audit_off_loop(_audit_dropped, "SessionLaneChanged drop")
