@@ -8763,6 +8763,7 @@
         "stop_subagent": "サブエージェント {{name}} を停止",
         "stop_this_subagent": "このサブエージェントを停止",
         "tool_other": "ツール {{count}} 個",
+        "waiting_for_your_approval_to_start": "開始の承認をお待ちしています",
         "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中"
       },
       "subagentRunCard": {
@@ -8774,6 +8775,7 @@
         "open_in_the_subagents_panel": "サブエージェントパネルで開く",
         "open_subagents_panel": "サブエージェントパネルを開く",
         "waiting": "待機中",
+        "waiting_for_your_approval_to_start": "開始の承認をお待ちしています",
         "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中"
       },
       "taskProgressBar": {

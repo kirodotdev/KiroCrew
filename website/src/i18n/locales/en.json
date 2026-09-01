@@ -5998,12 +5998,14 @@
         "stop_this_subagent": "Stop this subagent",
         "tool_one": "{{count}} tool",
         "tool_other": "{{count}} tools",
+        "waiting_for_your_approval_to_start": "Waiting for your approval to start",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "subagentRunCard": {
         "open_in_the_subagents_panel": "Open in the Subagents panel",
         "open_subagents_panel": "Open Subagents panel",
         "waiting": "waiting",
+        "waiting_for_your_approval_to_start": "Waiting for your approval to start",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "taskProgressBar": {

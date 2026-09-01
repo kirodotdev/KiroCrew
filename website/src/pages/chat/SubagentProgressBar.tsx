@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react'
-import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight } from 'lucide-react'
+import { Bot, X, AlertTriangle, Loader2, CheckCircle, AlertCircle, Square, RotateCcw, Clock, ChevronRight, Hand } from 'lucide-react'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, sseSubagentDone } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, sseSubagentDone, isAwaitingSpawnApproval } from '../../store/chatSlice'
 import { api } from '../../api/client'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { SubagentActivity } from '../../types'
@@ -125,7 +125,12 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
     const rank = (a: SubagentActivity) => (a.retrying ? 0 : a.stalled ? 1 : a.status === 'pending' ? 2 : 3)
     return act.sort((x, y) => rank(x) - rank(y))
   }, [all])
-  const running = activeList.length
+  // Runs PARKED on an unanswered spawn approval. They are registered and
+  // active, but no process was ever launched — they are blocked on the user, so
+  // they get their own tally instead of inflating the spinning running count
+  // that told the user work was in progress (#7318).
+  const awaiting = useMemo(() => activeList.filter(isAwaitingSpawnApproval).length, [activeList])
+  const running = activeList.length - awaiting
   // Histogram counts across the WHOLE wave (terminal agents included) so a
   // failure mid-wave is visible in the header instead of silently dropping
   // out of the running-only list.
@@ -139,12 +144,15 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
   const failedIds = useMemo(() => all.filter(a => a.status === 'error').map(a => a.id), [all])
   const activeListRef = useRef(activeList)
   activeListRef.current = activeList
-  // Mount when anything is in flight — running OR queued. Including queued is
-  // what makes the chip (1) appear the instant a wave is accepted, before the
-  // first agent's subagent_spawn arrives, and (2) stay mounted across the
-  // staggered ramp instead of flickering out whenever running momentarily hits
-  // zero between staggered starts.
-  const hasActive = running > 0 || queued > 0
+  // Mount when anything is in flight — running OR queued OR parked on an
+  // approval. Including queued is what makes the chip (1) appear the instant a
+  // wave is accepted, before the first agent's subagent_spawn arrives, and (2)
+  // stay mounted across the staggered ramp instead of flickering out whenever
+  // running momentarily hits zero between staggered starts. `awaiting` is named
+  // separately because it is no longer part of `running`: a wave whose only
+  // member is parked on an approval has running === 0, and without this term
+  // the chip — the one surface naming what is blocking it — would unmount.
+  const hasActive = running > 0 || queued > 0 || awaiting > 0
   const visibleList = activeList.slice(0, CHIP_MAX_ROWS)
   const hiddenCount = activeList.length - visibleList.length
   // Only running/tool agents are cancellable via spawnDelete; pending agents
@@ -231,6 +239,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
             <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
+            {awaiting > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-awaiting-count" title={i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}><Hand size={12} /> {awaiting}</span>}
             {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
             {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
@@ -292,7 +301,19 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                       <span className="min-w-0 flex-1 truncate text-text">{agentLabel}</span>
                       <span className="shrink-0 font-mono tabular-nums text-muted/50">{elapsed}{i18nT('pages.chat.subagentProgressBar.s')}{typeof a.toolCount === 'number' && a.toolCount > 0 ? ` · ${i18nT('pages.chat.subagentProgressBar.tool', { count: a.toolCount })}` : ''}</span>
                     </span>
-                    {a.retrying ? (
+                    {isAwaitingSpawnApproval(a) ? (
+                      /* Checked BEFORE retrying/stalled: a parked run never
+                         executed, so the watchdog's silence-based stall verdict
+                         (and a retry attributed to a backend hiccup) would both
+                         be describing an absence this row can already explain
+                         exactly. Naming the approval is strictly more specific
+                         than either, and it is the one state the user can act
+                         on. */
+                      <span className="text-warn flex items-center gap-1">
+                        <Hand size={11} className="shrink-0" />
+                        <span className="truncate">{i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}</span>
+                      </span>
+                    ) : a.retrying ? (
                       <span className="text-info flex items-center gap-1">
                         <Loader2 size={11} className="shrink-0 animate-spin" />
                         <span className="truncate">{i18nT('pages.chat.subagentProgressBar.backend_hiccup_retrying')}</span>

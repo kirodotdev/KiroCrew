@@ -14,10 +14,10 @@
  * the Subagents side panel.
  */
 import { memo } from 'react'
-import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square } from 'lucide-react'
+import { Bot, Loader2, CheckCircle2, AlertCircle, Clock, Square, Hand } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { openActivityToTab, selectSubagent, switchSlot } from '../../store/chatSlice'
+import { openActivityToTab, selectSubagent, switchSlot, isAwaitingSpawnApproval } from '../../store/chatSlice'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import type { ChatMessage, SubagentActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from './types'
@@ -131,16 +131,22 @@ const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 
 /** Terminal statuses, tallied across the launch's own ids only. */
 function tally(agents: (SubagentActivity | undefined)[]) {
-  let running = 0, done = 0, failed = 0, stopped = 0, unknown = 0
+  let running = 0, awaiting = 0, done = 0, failed = 0, stopped = 0, unknown = 0
   for (const a of agents) {
     if (!a) { unknown++; continue }
-    if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') running++
+    // A run parked on an unanswered spawn approval launched no process, so it
+    // is not running — it used to be counted here, which is what made this card
+    // claim "1 agent running" for a wave that was in fact blocked on the user
+    // (#7318). A `'pending'` entry with no approval_id keeps the old treatment:
+    // it is active but not attributable to an approval.
+    if (isAwaitingSpawnApproval(a)) awaiting++
+    else if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') running++
     else if (a.status === 'done') done++
     else if (a.status === 'error') failed++
     else if (a.status === 'stopped') stopped++
     else unknown++
   }
-  return { running, done, failed, stopped, unknown }
+  return { running, awaiting, done, failed, stopped, unknown }
 }
 
 const SubagentRunCard = memo(function SubagentRunCard({
@@ -239,13 +245,18 @@ const SubagentRunCard = memo(function SubagentRunCard({
       <span className="shrink-0 mt-0.5">
         {counts.running > 0
           ? <Loader2 size={15} className="text-accent animate-spin" />
-          : counts.failed > 0
-            ? <AlertCircle size={15} className="text-danger" />
-            : settled > 0
-              ? <CheckCircle2 size={15} className="text-green-500" />
-              : queued > 0
-                ? <Clock size={15} className="text-muted" />
-                : <Bot size={15} className="text-accent/70" />}
+          // Nothing is executing but something is blocked on the user. Ranked
+          // above `failed` deliberately: a failure is history, an unanswered
+          // approval is the one state on this card the user can still act on.
+          : counts.awaiting > 0
+            ? <Hand size={15} className="text-warn" />
+            : counts.failed > 0
+              ? <AlertCircle size={15} className="text-danger" />
+              : settled > 0
+                ? <CheckCircle2 size={15} className="text-green-500" />
+                : queued > 0
+                  ? <Clock size={15} className="text-muted" />
+                  : <Bot size={15} className="text-accent/70" />}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
@@ -258,6 +269,15 @@ const SubagentRunCard = memo(function SubagentRunCard({
               title={i18nT('pages.chat.subagentRunCard.waiting_to_start_queued_behind_the_concurrency_l')}
             >
               <Clock size={10} aria-hidden /> {queued} {i18nT('pages.chat.subagentRunCard.waiting')}
+            </span>
+          )}
+          {counts.awaiting > 0 && (
+            <span
+              className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-warn-subtle border border-warn/20 text-warn"
+              data-testid="subagent-card-awaiting"
+              title={i18nT('pages.chat.subagentRunCard.waiting_for_your_approval_to_start')}
+            >
+              <Hand size={10} aria-hidden /> {counts.awaiting}
             </span>
           )}
           {counts.done > 0 && (

@@ -8763,6 +8763,7 @@
         "stop_subagent": "停止子代理 {{name}}",
         "stop_this_subagent": "停止此子代理",
         "tool_other": "{{count}} 个工具",
+        "waiting_for_your_approval_to_start": "等待你的批准后开始",
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队"
       },
       "subagentRunCard": {
@@ -8774,6 +8775,7 @@
         "open_in_the_subagents_panel": "在“子代理”面板中打开",
         "open_subagents_panel": "打开子代理面板",
         "waiting": "等待中",
+        "waiting_for_your_approval_to_start": "等待你的批准后开始",
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队"
       },
       "taskProgressBar": {

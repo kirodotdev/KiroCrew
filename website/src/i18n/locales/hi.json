@@ -8889,6 +8889,7 @@
         "stop_this_subagent": "इस सबएजेंट को रोकें",
         "tool_one": "{{count}} टूल",
         "tool_other": "{{count}} टूल",
+        "waiting_for_your_approval_to_start": "शुरू होने के लिए तुम्हारी मंज़ूरी की प्रतीक्षा",
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में"
       },
       "subagentRunCard": {
@@ -8905,6 +8906,7 @@
         "open_in_the_subagents_panel": "सबएजेंट पैनल में खोलें",
         "open_subagents_panel": "सबएजेंट पैनल खोलें",
         "waiting": "प्रतीक्षा में",
+        "waiting_for_your_approval_to_start": "शुरू होने के लिए तुम्हारी मंज़ूरी की प्रतीक्षा",
         "waiting_to_start_queued_behind_the_concurrency_l": "शुरू होने की प्रतीक्षा — समांतरता सीमा के कारण कतार में"
       },
       "taskProgressBar": {
