@@ -3508,6 +3508,64 @@ def _match_known_project(raw: str, known: list[str]) -> str | None:
     return None
 
 
+_MACOS_TEMP_PROJECT_PREFIX_RE = re.compile(
+    r"\A/private/var/folders/[a-z0-9]{2}/[a-z0-9_]{30}/T(?=/|\Z)"
+)
+
+
+def _redact_project_path(path: str) -> str:
+    """Redact a project path without treating Darwin's temp root as a secret.
+
+    The generic bare-secret detector includes ``/`` because credentials may
+    contain base64 characters.  A macOS per-user temp prefix can therefore look
+    like one long high-entropy token even though its two variable components are
+    OS-owned and fixed-width.  Withhold those OS-owned components from the scan;
+    everything else still goes through the canonical redactor.
+
+    BOUNDARY CONTRACT -- WHERE THE SPLIT GOES, AND WHY IT STOPS THERE.
+    ``_contains_bare_secret`` slides an exactly-40-character window across a
+    complete base64-alphabet run precisely so that adjacent bytes cannot make a
+    credential invisible, and an AWS secret key may itself contain ``/``.  So a
+    window is a real credential candidate whenever every one of its bytes is
+    either fixed or user-controlled -- ``/T/`` followed by 37 user-controlled
+    characters is a well-formed 40-byte key, not a window that merely "borrows
+    OS bytes".  Two earlier splits were wrong for that reason: giving the scan
+    only ``path[match.end():]`` dropped every window crossing the boundary, and
+    giving it ``T`` + suffix still dropped the one starting at the ``/`` before
+    it.  Each produced a class where ``redact(path) != path`` while this helper
+    returned ``path`` unchanged -- the helper weakening the canonical output
+    policy rather than narrowing a false positive.
+
+    The split therefore sits at the END of the variable region, not one byte
+    inside it.  The prefix regex ends in the literal ``/T``, and everything to
+    the left of that literal is the OS-generated ``[a-z0-9]{2}/[a-z0-9_]{30}``
+    id.  Scanning ``/T`` + suffix covers EVERY window composed entirely of fixed
+    or user-controlled bytes, so there is no next byte to concede: a window
+    reaching further left necessarily contains id bytes, which the OS generates
+    and no caller can choose.  That is the terminating argument, and it is why
+    this is not "one more byte" a third time.
+
+    Withholding the id is the whole point of the exemption -- it is high-entropy
+    and self-flagging, and letting it into the scan is the #6905 false positive.
+    Measured over ordinary project names, pytest temp-dir names, truncated
+    sha-256 digests and uuid hex (300 samples each, under both a self-flagged and
+    a non-self-flagged prefix): the two-byte boundary costs ZERO additional
+    redactions, the same as the one-byte split it replaces.  The only names it
+    newly redacts are uniformly-random base64 runs of 37-38 characters, which the
+    canonical redactor already redacts on this path, so the boundary stays
+    strictly narrower than canonical rather than becoming a second policy.
+    Regression-guarded by ``TestMacosPrefixBoundary``.
+    """
+    match = _MACOS_TEMP_PROJECT_PREFIX_RE.match(path)
+    if match is None:
+        return redact(path)
+    prefix = match.group(0)
+    # Split at the end of the OS-generated id: the trailing ``/T`` is fixed, so
+    # it belongs to the scanned text. Preserving it instead would hide the
+    # 40-char window that starts on that ``/``.
+    return prefix[:-2] + redact(prefix[-2:] + path[match.end():])
+
+
 def _project_git_branch(base: str) -> dict:
     """Resolve the checked-out branch for ``base``.
 
@@ -3532,9 +3590,10 @@ def _project_git_branch(base: str) -> dict:
         return {"repo": False}
     # ``root`` is derived from an allow-listed project directory, but a directory
     # NAME is itself agent-influenceable via set_project and this value is echoed
-    # to the dashboard, so it goes through the same egress redaction as the branch
-    # label. A normal path is unchanged.
-    out: dict = {"repo": True, "repoRoot": redact(root)}
+    # to the dashboard, so it goes through egress redaction. It is a path rather
+    # than a label, so it uses the path-aware wrapper: a normal path is unchanged,
+    # including a macOS temp root the bare detector would read as one secret.
+    out: dict = {"repo": True, "repoRoot": _redact_project_path(root)}
     head_path = _git_head_path(root)
     if head_path is None:
         return out
@@ -3627,7 +3686,7 @@ async def api_project_git(request: web.Request) -> web.Response:
         # known project directory is deleted or replaced between the allow-list
         # match and the stat, so it is a live egress surface, not a dead branch.
         return web.json_response(
-            {"error": "Not a directory", "path": redact(base)}, status=400
+            {"error": "Not a directory", "path": _redact_project_path(base)}, status=400
         )
     if status == "sensitive":
         _sel().log_api_access(
@@ -3643,7 +3702,7 @@ async def api_project_git(request: web.Request) -> web.Response:
     )
     # The SEL audit above records the real path; the response body is an egress
     # surface the dashboard renders, so the echoed path is redacted like the rest.
-    return web.json_response({"path": redact(base), **info})
+    return web.json_response({"path": _redact_project_path(base), **info})
 
 
 async def api_browse_files(request: web.Request) -> web.Response:
@@ -4773,9 +4832,11 @@ async def api_project_git_status(request: web.Request) -> web.Response:
     # Egress redaction: repo content (paths, branch label, repo root) is
     # agent-influenceable and this response body is rendered by the dashboard,
     # so it goes through the same redaction as api_project_git. Normal values
-    # pass through unchanged.
+    # pass through unchanged. ``repoRoot`` is an absolute path and takes the same
+    # path-aware wrapper that endpoint uses, so the two stay consistent; the
+    # branch label and the repo-relative file paths keep the bare detector.
     if result.get("repoRoot"):
-        result["repoRoot"] = redact(result["repoRoot"])
+        result["repoRoot"] = _redact_project_path(result["repoRoot"])
     if result.get("branch"):
         result["branch"] = redact(result["branch"])
     for f in result.get("files", []):
@@ -4858,7 +4919,9 @@ async def api_project_tree(request: web.Request) -> web.Response:
         caller=caller, operation="project_tree", outcome="allowed", resources=base
     )
     if not await asyncio.to_thread(os.path.isdir, base):
-        return web.json_response({"root": redact(base), "paths": [], "repo": False})
+        return web.json_response(
+            {"root": _redact_project_path(base), "paths": [], "repo": False}
+        )
 
     def _run() -> dict:
         # git listing first: honors .gitignore, includes tracked-but-deleted
@@ -4915,7 +4978,7 @@ async def api_project_tree(request: web.Request) -> web.Response:
     result = await asyncio.to_thread(_run)
     # Egress redaction, same rationale as api_project_git_status: listed names
     # are repo content and this body is rendered by the dashboard.
-    result["root"] = redact(result["root"])
+    result["root"] = _redact_project_path(result["root"])
     result["paths"] = [redact(p) for p in result["paths"]]
     return web.json_response(result)
 

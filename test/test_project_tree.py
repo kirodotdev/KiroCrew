@@ -131,6 +131,59 @@ class TestProjectTree:
         assert "AKIAIOSFODNN7EXAMPLE" not in data["root"]
 
     @pytest.mark.asyncio
+    async def test_not_a_directory_root_takes_the_path_aware_redactor(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """The early arm carries the same absolute project path as the listing.
+
+        Same defect and same fix as /api/project/git's repoRoot: a macOS
+        per-user temp root scans as one high-entropy token and the Files tab
+        renders `[REDACTED: credential]` where the path belongs. Reached with a
+        real non-directory rather than by patching `os.path.isdir`, which is
+        process-global and breaks unrelated lazy imports.
+        """
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        known = tmp_path / "project.txt"
+        known.write_text("not a directory")
+
+        seen: list[str] = []
+        real = files_mod._redact_project_path
+
+        def spy(value: str) -> str:
+            seen.append(value)
+            return real(value)
+
+        monkeypatch.setattr(files_mod, "_redact_project_path", spy)
+        async with TestClient(TestServer(_make_app(str(known)))) as client:
+            resp = await client.get(f"/api/project/tree?path={known}")
+            data = await resp.json()
+        assert data["paths"] == []
+        assert seen == [str(known)]
+
+    @pytest.mark.asyncio
+    async def test_listing_root_takes_the_path_aware_redactor(self, repo, mock_sel, monkeypatch):
+        """`root` is absolute and takes the path-aware redactor; `paths` are
+        project-relative, carry no OS temp prefix, and stay on the canonical
+        one. Pinned on the call because the two agree off-Darwin."""
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        seen: list[str] = []
+        real = files_mod._redact_project_path
+
+        def spy(value: str) -> str:
+            seen.append(value)
+            return real(value)
+
+        monkeypatch.setattr(files_mod, "_redact_project_path", spy)
+        async with TestClient(TestServer(_make_app(str(repo)))) as client:
+            resp = await client.get(f"/api/project/tree?path={repo}")
+            data = await resp.json()
+        assert data["repo"] is True
+        assert seen == [str(repo)]
+        assert "a.txt" in data["paths"]
+
+    @pytest.mark.asyncio
     async def test_git_repo_lists_tracked_and_untracked(self, repo, mock_sel):
         (repo / "untracked.md").write_text("hi\n")
         (repo / "ignored.log").write_text("nope\n")
