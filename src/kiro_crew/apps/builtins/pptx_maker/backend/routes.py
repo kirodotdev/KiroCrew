@@ -77,6 +77,7 @@ from kiro_crew.apps.builtins.pptx_maker.backend import (
 )
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import FileTooLargeError
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
@@ -202,9 +203,9 @@ _BITMAP_FTYP_MAGIC = b"ftyp"
 # body (see `_BITMAP_URI_TERMINATORS`), which covers every separator rather than an
 # enumerated few.
 #
-# Case-sensitive on purpose: `[A-Z0-9]{16}` over a lowercased body would match ordinary
-# mixed-case base64 constantly.
-_ENCODED_CREDENTIAL_RE = re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}")
+# Case-sensitive on purpose: the shared spelling's uppercase-only body over a
+# lowercased body would match ordinary mixed-case base64 constantly.
+_ENCODED_CREDENTIAL_RE = re.compile(AWS_KEY_ID)
 
 
 # Characters that legitimately END a `data:` URI in the artifact formats the engine

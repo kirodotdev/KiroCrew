@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
+from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.identity_stores import fenced_home_dirs
 from kiro_crew.sel import SecurityEvent, SecurityEventLog
@@ -9088,7 +9089,7 @@ _EXFIL_PATTERNS = re.compile(
     r"(?:"
     r"[A-Za-z0-9+/=]{40,}"  # base64-like blob (40+ chars)
     r"|%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}"  # heavy URL-encoding (20+ encoded chars)
-    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"  # AWS access key ID
+    f"|{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
     r"|(?:ssh-rsa|ssh-ed25519)[\s+%]"  # SSH public key
     r"|BEGIN[\s+%](?:RSA|DSA|EC|OPENSSH)[\s+%]PRIVATE[\s+%]KEY"  # private key header
     r"|xox[bpas]-[0-9a-zA-Z-]+"  # Slack token
@@ -9415,7 +9416,8 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
 # amazonaws.com domain.  Values are validated to prevent spoofing.
 _S3_PRESIGNED_RE = re.compile(
     r"X-Amz-Algorithm=AWS4-HMAC-SHA256"
-    r".*X-Amz-Credential=(?:AKIA|ASIA)[A-Z0-9]{16}(?:%2F|/)"
+    f".*X-Amz-Credential={AWS_KEY_ID}"  # shared spelling: credential_patterns
+    r"(?:%2F|/)"
     r".*X-Amz-Expires=\d{1,6}"
     r".*X-Amz-Signature=[0-9a-f]{64}",
     re.IGNORECASE,
@@ -9441,7 +9443,8 @@ _S3_PRESIGNED_PARAMS = frozenset(
 # than exempted, so attacker-controlled data cannot be smuggled through.
 _STS_TOKEN_RE = re.compile(r"^(?:FwoGZX|IQoJb3JpZ2lu)[A-Za-z0-9+/=%]{1,2000}$")
 _CREDENTIAL_RE = re.compile(
-    r"^(?:AKIA|ASIA)[A-Z0-9]{16}(?:%2F|/)[0-9]{8}"
+    f"^{AWS_KEY_ID}"  # shared spelling: credential_patterns
+    r"(?:%2F|/)[0-9]{8}"
     r"(?:%2F|/)[a-z0-9-]+(?:%2F|/)s3(?:%2F|/)aws4_request$"
 )
 _SIGNATURE_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -9485,7 +9488,7 @@ def _is_safe_presigned(domain: str, query: str) -> bool:
 # hashes — are benign).
 _HARD_CREDENTIAL_RE = re.compile(
     r"(?:"
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}"  # AWS access key ID
+    f"{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
     r'|(?:SecretAccessKey|aws_secret_access_key)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
     r'|(?:SessionToken|aws_session_token)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
     r'|(?:AccessKeyId|aws_access_key_id)["\']?\s*[:=]\s*["\']?[^\s"\',}]+'
@@ -9900,7 +9903,7 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
 _CREDENTIAL_PATTERNS = re.compile(
     r"(?:"
     # ── AWS ──
-    r"(?:AKIA|ASIA)[A-Z0-9]{16}"  # AWS access key ID
+    f"{AWS_KEY_ID}"  # AWS access key ID (shared spelling: credential_patterns)
     # key-value forms: tolerate an optional closing quote after the key name and an
     # optional opening quote before the value so JSON (`"aws_secret_access_key": "v"`)
     # is redacted, not just bare `key=v` / `key: v`. Without the `["']?` the closing
@@ -10096,7 +10099,7 @@ _CREDENTIAL_PATTERNS = re.compile(
     # 6750 `b64token`) stops at whitespace/quotes, so neither over-captures. A
     # Bearer header carrying a JWT redacts as one match (the Bearer class subsumes
     # the JWT); a bare JWT is still caught independently (defense in depth).
-    r"|eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES)
+    f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
     r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
     r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
     r")",

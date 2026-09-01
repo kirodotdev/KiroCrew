@@ -54,6 +54,7 @@ from typing import IO, Literal, NamedTuple, overload
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +405,11 @@ def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
 # alphanumeric run (where extra chars change the case-restore candidates)
 # stays out of scope.
 _AWS_KEY_ANYCASE_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Za-z0-9]{16}(?![A-Za-z0-9])",
+    # Prefixes come from the shared home; the BODY deliberately does not. This net
+    # is mixed-case and boundary-bounded, so it is a different pattern from the
+    # scrubber's uppercase-only one rather than another spelling of it.
+    f"(?<![A-Za-z0-9])(?:{AWS_KEY_ID_PREFIXES})"
+    r"[A-Za-z0-9]{16}(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 

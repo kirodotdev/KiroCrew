@@ -22,6 +22,7 @@ import math
 import re
 from typing import Dict, Optional, Union
 
+from kiro_crew.credential_patterns import AWS_KEY_ID
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # ---------------------------------------------------------------------------
@@ -68,7 +69,7 @@ RESOURCE_ATTR_PROCESS_START_TIME = "kirocrew.process.start_time"
 # Patterns that indicate high-entropy / credential-shaped values.
 _HIGH_ENTROPY_PATTERNS: list[re.Pattern[str]] = [
     # AWS access key ID (AKIA) + STS temporary security credentials (ASIA)
-    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
+    re.compile(AWS_KEY_ID),
     # AWS SecretAccessKey= pattern
     re.compile(r"SecretAccessKey\s*=", re.IGNORECASE),
     # Private key headers

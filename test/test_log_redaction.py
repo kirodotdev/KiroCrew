@@ -104,43 +104,6 @@ class TestSecretRedactionFilter:
         result = filt.redact(f"token: {jwe}")
         assert "eyJhbGciOiJkaXIifQ" not in result
 
-    def test_jwt_spelling_matches_security_scrubber(self) -> None:
-        """The local JWT spelling stays in parity with ``security.py``'s.
-
-        ``log_redaction`` is a bootstrap import leaf and cannot import
-        ``security.py``; this TEST can, and pins the two spellings together so
-        the duplicated pattern homes cannot silently drift.
-        """
-        import kiro_crew.security as security_mod
-
-        source = open(security_mod.__file__, encoding="utf-8").read()
-        assert r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}" in source, (
-            "security.py's derived JWS/JWE spelling changed — update "
-            "log_redaction._JWT_RE to match and keep this pin in sync."
-        )
-
-    def test_aws_spelling_is_superset_of_security_scrubber(self) -> None:
-        """The local AWS pattern stays a superset of ``security.py``'s.
-
-        The local spelling deliberately adds the ``ABIA``/``ACCA`` prefixes
-        (wider matching is fail-closed for redaction). This pin fails when
-        ``security.py`` changes its base spelling — the local superset must
-        then be re-derived — or if the local pattern ever stops covering the
-        base prefixes.
-        """
-        import kiro_crew.security as security_mod
-
-        source = open(security_mod.__file__, encoding="utf-8").read()
-        assert r"(?:AKIA|ASIA)[A-Z0-9]{16}" in source, (
-            "security.py's AWS key-ID spelling changed — re-derive "
-            "log_redaction._AWS_KEY_ID_RE's superset and update this pin."
-        )
-        # The local pattern must cover everything the base spelling covers.
-        from kiro_crew.log_redaction import _AWS_KEY_ID_RE
-
-        for prefix in ("AKIA", "ASIA"):
-            assert _AWS_KEY_ID_RE.search(prefix + "0123456789ABCDEF")
-
 
 def _make_record(msg: str, exc_info: object = None) -> logging.LogRecord:
     """Create a record through the LIVE factory — how ``logging`` itself does it."""

@@ -35,6 +35,8 @@ import logging
 import re
 from typing import Callable, Optional
 
+from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT
+
 logger = logging.getLogger(__name__)
 
 # Bearer tokens: RFC 6750 token68 charset (case-insensitive to catch
@@ -45,28 +47,22 @@ _BEARER_RE = re.compile(r"Bearer [A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
 # alphanumerics. Precise enough for near-zero false positives, and the ID is
 # the searchable half of a leaked AWS credential pair.
 #
-# These live LOCALLY rather than importing ``security.py``'s scrubbing
-# helpers: this module is a deliberate import leaf (it installs at CLI
-# bootstrap before heavy modules load, and ``test_zero_vault_imports`` pins
-# its dependency-free shape). The JWT spelling below is identical to
-# ``security.py``'s; this AWS spelling is a DELIBERATE SUPERSET of
-# ``security.py``'s ``(?:AKIA|ASIA)[A-Z0-9]{16}`` (adds the ``ABIA``/``ACCA``
-# prefixes — wider matching is fail-closed for redaction).
-# ``test_log_redaction.py`` pins BOTH relationships so the homes cannot
-# silently drift.
-# No word-boundary assertions: a key rendered adjacent to word characters
-# (``aws_AKIA…``, ``key=AKIA…x``) has no ``\b`` between ``_`` and ``A`` and
-# would slip past a bounded pattern. Over-matching inside a longer token is
-# the fail-closed direction for a redaction floor.
-_AWS_KEY_ID_RE = re.compile(r"(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}")
+# The spellings come from ``credential_patterns``, the single home this module
+# and ``security.py``'s scrubber both import. That module imports nothing at
+# all, so it does not compromise this module's import-leaf shape (it installs
+# at CLI bootstrap, before heavy modules load, and cannot import
+# ``security.py``). The redaction spelling is a DELIBERATE SUPERSET of the
+# scrubber's -- it adds the ``ABIA``/``ACCA`` prefixes, because wider matching
+# is fail-closed for redaction -- and it is BUILT from the scrubber spelling's
+# own fragments, so that relationship holds by construction rather than by a
+# test comparing two hand-written strings.
+_AWS_KEY_ID_RE = re.compile(AWS_KEY_ID_REDACTION)
 
-# Standalone JWTs: same derived spelling as ``security.py``'s scrubber —
-# ``eyJ`` header plus 2-4 further dot-separated base64url segments, covering
-# 3-segment JWS AND 4-5-segment JWE (dir/ECDH-ES). Catches tokens logged
-# OUTSIDE a ``Bearer `` scheme — JSON-embedded, bare, or assignment-style.
-# ``test_log_redaction.py`` pins parity with ``security.py``'s spelling so the
-# two homes cannot silently drift.
-_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){2,4}")
+# Standalone JWTs: the shared ``eyJ`` header plus 2-4 further dot-separated
+# base64url segments, covering 3-segment JWS AND 4-5-segment JWE (dir/ECDH-ES).
+# Catches tokens logged OUTSIDE a ``Bearer `` scheme -- JSON-embedded, bare, or
+# assignment-style. Same string object as the scrubber's JWS/JWE branch.
+_JWT_RE = re.compile(JWT_MULTI_SEGMENT)
 
 
 class SecretRedactionFilter:
