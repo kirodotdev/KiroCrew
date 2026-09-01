@@ -17,6 +17,7 @@ import {
   MessageSquare, Archive, Trash2, MoreHorizontal,
 } from 'lucide-react'
 import Clickable from '../../components/Clickable'
+import { FolderBody } from '../../components/FolderBody'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
@@ -217,33 +218,9 @@ const DOT: Record<string, string> = {
   done: 'var(--ok)',
 }
 
-// Sessions' collapse mechanic: a grid that animates 1fr <-> 0fr, children stay
-// mounted (ChatSidebar.tsx FolderBody).
-function FolderBody({ open, children }: { open: boolean; children?: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateRows: open ? '1fr' : '0fr',
-        transition: 'grid-template-rows 0.15s ease-out',
-      }}
-    >
-      <div
-        style={{
-          overflow: 'hidden',
-          visibility: open ? 'visible' : 'hidden',
-          padding: open ? '2px' : 0,
-        }}
-        // `inert` is not in the standard React 18 HTMLAttributes typing; add it via
-        // a spread (exempt from excess-property checks) so the closed subtree is
-        // non-interactive exactly as before (inert="" when collapsed).
-        {...(open ? {} : { inert: '' })}
-      >
-        {children}
-      </div>
-    </div>
-  )
-}
+// Sessions' collapse mechanic, shared with the chat sidebar rather than copied:
+// the local copy of this component kept reserving layout height for its closed
+// rows after the sidebar's copy was fixed, which is the whole reason it moved.
 
 interface CommentRowProps {
   req: Request
