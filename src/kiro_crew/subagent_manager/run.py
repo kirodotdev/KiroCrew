@@ -315,13 +315,22 @@ class RunEventCoordinator(ManagerComponent):
     async def _run_impl(self, info: SubagentInfo) -> None:
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
+        info.timeout_secs = self._manager._default_timeout
         try:
             await asyncio.wait_for(
-                self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
+                self._manager._run_inner(info, session_key), timeout=info.timeout_secs
             )
+            if info.outcome == "completed":
+                self._manager._observe_timeout_usage(info, completed=True)
         except asyncio.TimeoutError:
             if not info.reaped:
-                info.error = f"Timed out after {self._manager._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
+                learned = self._manager._observe_timeout_usage(info, completed=False)
+                adjustment = (
+                    f"; future runs use {learned // 60} minutes"
+                    if learned > info.timeout_secs
+                    else ""
+                )
+                info.error = f"Timed out after {info.timeout_secs // 60} minutes{adjustment} [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "timeout")
