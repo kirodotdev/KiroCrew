@@ -23,7 +23,7 @@ import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, isSupersededPagingRejection,
-  appendMessage, appendSlotMessage, resumeFromHistory, forkSlot,
+  appendMessage, appendSlotMessage, resumeFromHistory, clearUnresumableResume, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy,
   selectContinuable,
@@ -286,7 +286,8 @@ import { ErrorCard } from './chat/ErrorCard'
 import WorkflowProgressBar from './chat/WorkflowProgressBar'
 import { tryQuickSend } from '../lib/quickSend'
 import { rewindWithRollback } from '../lib/rewindCall'
-import { isChatPageSurface } from '../utils/channelOrigin'
+import { isChatPageSurface, slotChannelLabel } from '../utils/channelOrigin'
+import { findSurfaceBySlotMode, surfaceLabel } from '../surfaces/registry'
 import { errMessage } from '../utils/thunkError'
 
 
@@ -909,6 +910,55 @@ const REFUSED_PRESS_TITLE_KEYS = {
 type RefusedPressAction = keyof typeof REFUSED_PRESS_TITLE_KEYS
 
 /**
+ * Sentence for the unresumable-resume notice, built from the raw facts the chat
+ * slice records (#5925).
+ *
+ * The slice stores `{ key, title, surface, reason }` rather than a finished
+ * string because a reducer cannot localize: the label for a session's origin is
+ * derived from its KEY, and that derivation lives at the render site. Keyed on
+ * the stored key alone, because the resume being narrated often came from
+ * another surface entirely (the command palette, a notification) whose row is
+ * nowhere in this page's lists.
+ *
+ * `reason: 'failed'` gets its own sentence: nothing was resumed, so there is no
+ * surface to name, and telling the user it "belongs to" somewhere would be a
+ * guess.
+ *
+ * For `reason: 'surface'` the label is resolved, never interpolated raw. The
+ * wire `surface` is a MACHINE value (`member`, `subagent`), so dropping it into
+ * localized copy renders lowercase machine vocabulary mid-sentence -- and its
+ * empty case reads "it's a Session session". So: the localized dashboard label
+ * for a dashboard key, the channel label for a channel key, the surface
+ * registry's own label when the mode is a registered surface, and otherwise a
+ * sentence that names no surface at all -- and does not say "surface" either,
+ * which is vocabulary a user meets only in settings prose.
+ *
+ * The registry lookup depends on `surfaces/builtins` having been imported (it
+ * registers by module side effect, from `App.tsx`), which always holds wherever
+ * this page renders. A miss degrades to the surface-free sentence rather than to
+ * a wrong label, so the coupling cannot produce a lie.
+ *
+ * The message keys moved to this namespace with the notice; #3640's string said
+ * "from the chat sidebar", which names a surface three of the four resume entry
+ * points never touch. The two label keys stay under `pages.chatSidebar.*`
+ * because the sidebar's own row still renders them.
+ */
+function unresumableNoticeMessage(r: { key: string; title: string; surface: string; reason: 'surface' | 'failed' }): string {
+  const title = r.title || r.key
+  if (r.reason === 'failed') {
+    return i18nT('pages.chatPage.could_not_open_this_session', { title })
+  }
+  const registered = findSurfaceBySlotMode(r.surface)
+  const surface = r.key.startsWith('dashboard')
+    ? i18nT('pages.chatSidebar.dashboard_source')
+    : slotChannelLabel(r.key) || (registered ? surfaceLabel(registered) : '')
+  if (!surface) {
+    return i18nT('pages.chatPage.this_session_is_not_a_chat_session', { title })
+  }
+  return i18nT('pages.chatPage.this_session_cannot_be_opened_in_chat', { title, surface })
+}
+
+/**
  * Where a jump-to-message came from, because the three entry points owe the
  * reader different copy when the target cannot be found.
  *
@@ -964,6 +1014,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Create-in-flight, so the flyout's New button can go inert exactly like the
   // sidebar's does instead of accepting a second click.
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
+  // The one post-resolve answer for every resume entry point (#5925); rendered
+  // above the composer, which is the only place all of them can see.
+  const unresumableResume = useAppSelector(s => s.chat.unresumableResume)
   const activeSlot = useAppSelector(s => s.chat.activeSlot)
   // tool_call_ids in THIS slot that have a live MCP App render payload. Passed
   // to TurnBlock so app-bearing rows (which mount an interactive iframe) never
@@ -4193,7 +4246,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
   const handleResumeSession = useCallback(async (key: string, title: string) => {
     try {
-      await dispatch(resumeFromHistory({ key, title })).unwrap()
+      const result = await dispatch(resumeFromHistory({ key, title })).unwrap()
+      // The cleanup below is the SECOND half of a swap: it retires the tab the
+      // resumed session is replacing. A resume that answered with a surface
+      // this page cannot display never performs the first half -- the reducer
+      // short-circuits, so `activeSlot` still names the tab the user is in and
+      // the history row is still in the list. Running the cleanup anyway
+      // deleted that tab and discarded the text just typed into it, while the
+      // session the user asked for never opened (#5925). `ok` alone cannot
+      // tell the two apart: the wire request succeeds either way, which is why
+      // the thunk returns `surface` at all (#3624).
+      if (!result.ok || !isChatPageSurface(result.surface)) return
       if (activeSlot && activeSlot !== key) {
         delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]; prevSlot.current = null; saveDrafts()
         dispatch(deleteSlot(activeSlot)).unwrap().catch(() => {})
@@ -7409,6 +7472,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           <div role="status" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
             <span className="text-sm text-text flex-1">{pinStatus}</span>
             <button onClick={dismissPinStatus} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="w-4 h-4" /></button>
+          </div>
+        )}
+        {/* Every resume entry point converges here (#5925): the sidebar row,
+            this page's own "Continue a previous chat" list, the notification
+            panel's Resume button and the two command-palette providers all end
+            on /chat -- and the two providers are plain modules with no component
+            of their own, so one shared site is what lets them narrate at all.
+
+            It sits with the pane-level banners above, OUTSIDE the
+            split / no-slot / transcript ternary below, because a resume can land
+            here with NO active slot at all (a palette or notification resume
+            while no tab is open) -- and that ternary's `!activeSlot` branch
+            renders only the empty state, so a notice placed inside the transcript
+            branch was silent in exactly that case.
+
+            Deliberately NOT in the sidebar, where #3640 first put it: that
+            pane's Older Sessions section starts closed, so a notice inside it is
+            invisible to anyone who had not already opened it, which is everyone
+            arriving from the other three paths. */}
+        {unresumableResume && (
+          <div className="mx-4 mt-2 mb-0" data-testid="unresumable-resume-error">
+            <ErrorNotice
+              message={unresumableNoticeMessage(unresumableResume)}
+              onDismiss={() => dispatch(clearUnresumableResume())}
+              variant="block"
+            />
           </div>
         )}
         {/* Floating sessions opener — mobile only, and only on a chat with

@@ -696,6 +696,33 @@ interface ChatState {
   history: SessionInfo[]
   historyHasMore: boolean
   historyOffset: number
+  /** The last resume that did not land the user in a session they can use, or
+   *  null. This is the ONE post-resolve check for every resume entry point
+   *  (#5925): the predicates live in `resumeFromHistory`'s own cases, so a
+   *  caller does not have to re-derive "did this resume actually work" to give
+   *  feedback -- and the two command-palette providers, which are plain modules
+   *  with no component of their own, get feedback they could not render
+   *  themselves.
+   *
+   *  `reason` separates the two ways a resume disappoints, because they need
+   *  different sentences: `surface` means it succeeded but landed on a surface
+   *  the chat page cannot display, `failed` means it did not succeed at all
+   *  (a rejected request, or a fulfilled payload that says `ok: false`). Before
+   *  the `failed` half existed, the rarer path was the very dead click this
+   *  field was added to kill.
+   *
+   *  Raw facts, not a sentence: the render site localizes the surface label
+   *  from `key`, which only it knows how to read. Lifecycle matches the
+   *  per-component notice #3640 shipped -- cleared on dismiss or on the next
+   *  resume attempt. */
+  unresumableResume: { key: string; title: string; surface: string; reason: 'surface' | 'failed' } | null
+  /** requestId of the most recent `resumeFromHistory.pending`. Latest-click-
+   *  wins for the notice above: rapid clicks each start a resume, and an
+   *  EARLIER one resolving after a LATER one must not narrate a row the user
+   *  has already moved past. Supersedes the sidebar's component-local
+   *  sequence ref, which could only order ITS OWN clicks -- a palette resume
+   *  racing a sidebar resume was unordered before. */
+  lastResumeRequestId: string | null
   pendingInput: string | null
   /** Transient feedback for agent-rebind failures shared by the picker and
    *  global cycle shortcuts. The App shell owns rendering and expiry. */
@@ -909,6 +936,8 @@ const initialState: ChatState = {
   history: [],
   historyHasMore: false,
   historyOffset: 0,
+  unresumableResume: null,
+  lastResumeRequestId: null,
   pendingInput: null,
   agentSwitchNotice: null,
   creatingSlot: false,
@@ -2902,6 +2931,11 @@ const chatSlice = createSlice({
       // App shell's expiry effect instead of inheriting the previous timer.
       state.agentSwitchNotice = action.payload === null ? null : { message: action.payload }
     },
+    /** Dismiss the unresumable-surface notice (#5925). Deliberately does NOT
+     *  clear `lastResumeRequestId`: that ordering token belongs to the resume
+     *  in flight, and forgetting it would let an older resume's late answer
+     *  re-open a notice the user just closed. */
+    clearUnresumableResume(state) { state.unresumableResume = null },
     setQuestionCard(state, action: PayloadAction<{ slot: string; ask_id?: string; card_id?: string; questions: ChatState['pendingQuestions'][string]['questions']; fresh?: boolean }>) {
       // Defensive init: existing test fixtures build partial preloaded state
       // without this key.
@@ -5230,14 +5264,42 @@ const chatSlice = createSlice({
           state.subagents = {}
         }
       })
+      .addCase(resumeFromHistory.pending, (state, action) => {
+        // A new attempt supersedes whatever the previous one narrated, and its
+        // requestId becomes the only answer allowed to write the notice below.
+        state.lastResumeRequestId = action.meta.requestId
+        state.unresumableResume = null
+      })
       .addCase(resumeFromHistory.fulfilled, (state, action) => {
         // A resume that resolved to a surface ChatPage cannot display must not
         // mutate this slice at all: consuming the history row while the notice
         // says "can't be opened" reads as data loss, and switching activeSlot
         // to an undisplayable slot is the silent bounce #3624 exists to stop.
-        // The wire resume itself already happened (the caller's notice handles
-        // telling the user); the row stays reachable in Older Sessions.
-        if (action.payload.ok && !isChatPageSurface(action.payload.surface)) return
+        // The wire resume itself already happened; the row stays reachable in
+        // Older Sessions.
+        //
+        // `!ok` shares this early return for the same reason -- nothing was
+        // resumed, so nothing here may move -- but it is a DIFFERENT story to
+        // tell, hence the `reason` split. Both are recorded rather than left
+        // for each caller to re-derive: this is the one place that already
+        // knows the resume did not leave the user in a usable session, so
+        // every entry point -- sidebar row, ChatPage's "Continue a previous
+        // chat" list, the notification panel, and the two palette providers
+        // that have no component to render into -- reads the same answer
+        // (#5925).
+        if (!action.payload.ok || !isChatPageSurface(action.payload.surface)) {
+          // Guarded on the ordering token so a stale answer cannot narrate a
+          // row the user has moved past.
+          if (action.meta.requestId === state.lastResumeRequestId) {
+            state.unresumableResume = {
+              key: action.meta.arg.key,
+              title: action.meta.arg.title,
+              surface: action.payload.surface ?? '',
+              reason: action.payload.ok ? 'surface' : 'failed',
+            }
+          }
+          return
+        }
         if (action.payload.ok) {
           // The row just became an open tab, so it leaves the Older-sessions
           // pane — that pane is the complement of the tab list, and leaving the
@@ -5276,6 +5338,21 @@ const chatSlice = createSlice({
           state.slotState = 'idle'
           state.pendingTurnSlot = null
           setPagingCursor(state, action.payload.hasMore, action.payload.nextBefore)
+        }
+      })
+      .addCase(resumeFromHistory.rejected, (state, action) => {
+        // The likeliest failure of all: `api.resumeChatSlot` throws on any
+        // non-2xx, so a 404/409/5xx or a dropped connection lands HERE, not on
+        // the `ok: false` branch above. Every caller's handling of it was a
+        // silent swallow -- ChatPage's `catch {}`, the palette providers'
+        // `void dispatch`, the notification panel's console log -- so the click
+        // looked exactly as dead as the bug this field exists to fix.
+        if (action.meta.requestId !== state.lastResumeRequestId) return
+        state.unresumableResume = {
+          key: action.meta.arg.key,
+          title: action.meta.arg.title,
+          surface: '',
+          reason: 'failed',
         }
       })
       .addCase(deleteHistorySession.fulfilled, (state, action) => {
@@ -5319,7 +5396,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearUnresumableResume, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

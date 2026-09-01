@@ -26,8 +26,7 @@ import { computeRecentRank, recencyTintShadow, clampTintCount } from '../utils/r
 import { computeActiveSubtree, folderIsHidden, folderOffersHide } from '../utils/folderVisibility'
 import { groupHistoryByFolder } from '../utils/groupHistoryByFolder'
 import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
-import { isChatPageSurface, slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
-import ErrorNotice from '../components/ErrorNotice'
+import { slotChannelLabel, slotChannelNamespace } from '../utils/channelOrigin'
 import { toolStatusLabel } from '../utils/toolStatusLabel'
 import { sessionRefBlockReason, type SessionRefBlockReason } from '../utils/sessionRefs'
 import { SearchInput, Input, Btn, IconButton, IconButtonGroup, Badge } from '../components/ui'
@@ -2369,16 +2368,12 @@ function ChatSidebar({
   const [seedError, setSeedError] = useState('')
   const [slotFilter, setSlotFilter] = useState('')
   const [historyFilter, setHistoryFilter] = useState('')
-  // A resumed history row whose surface ChatPage cannot display (e.g. a
-  // dashboard session) used to succeed on the wire and then silently bounce
-  // the user back to whatever slot was already open, indistinguishable from a
-  // dead click (#3624). Set right after such a resume resolves; cleared on
-  // dismiss or the next resume attempt.
-  const [unresumableNotice, setUnresumableNotice] = useState<string | null>(null)
-  // Monotonic guard for the resume promise chain below: rapid successive row
-  // clicks each start a resume, and an EARLIER one resolving after a LATER one
-  // must not show (or clear) feedback for a row the user has moved past.
-  const resumeSeqRef = useRef(0)
+  // A resumed history row whose surface ChatPage cannot display used to succeed
+  // on the wire and then silently bounce the user back to whatever slot was
+  // already open, indistinguishable from a dead click (#3624). Neither the
+  // check nor the notice lives here any more: `resumeFromHistory` records the
+  // outcome on the chat slice and ChatPage renders it above the composer, so
+  // the four sibling resume entry points get the same feedback (#5925).
   // Digest of session keys + titles (NOT status), fed to both searches as their
   // revalidate signal. Sorted+joined so reordering `slots` alone cannot refetch.
   const slotTitleDigest = useMemo(
@@ -6474,14 +6469,13 @@ function ChatSidebar({
                   <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setHistoryFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
                 )}
               </div>
-              {unresumableNotice && (
-                <ErrorNotice
-                  message={unresumableNotice}
-                  onDismiss={() => setUnresumableNotice(null)}
-                  variant="block"
-                  className="mt-1.5"
-                />
-              )}
+              {/* The unresumable-surface notice used to live here. It moved to
+                  ChatPage's shared notice slot above the composer (#5925): this
+                  pane starts CLOSED (`historyOpen` defaults false), so a notice
+                  inside it can only ever be seen by someone who had already
+                  opened it -- which is nobody arriving from the command palette,
+                  a notification, or ChatPage's own "Continue a previous chat"
+                  list. One always-visible site serves all of them. */}
             </div>
             {/* scroll-shadow already fades the top/bottom edge as its
              *  scrollability cue, so the bar itself is redundant here. */}
@@ -6564,33 +6558,15 @@ function ChatSidebar({
                   const remoteInstanceName = (s as { instance_name?: string }).instance_name
                   const activateRow = () => {
                     // A remote row never resumes here, so it can never produce the
-                    // unresumable notice below — the pane switch IS its outcome.
+                    // unresumable notice above — the pane switch IS its outcome.
                     if (remoteInstanceId) { selectInstance(remoteInstanceId); return }
-                    // Resume, then check whether the resolved surface is one ChatPage
-                    // can actually show. The request itself succeeds either way
-                    // (`ok`), so `ok` alone cannot tell a genuinely usable resume
-                    // apart from one that will bounce right back (#3624).
-                    setUnresumableNotice(null)
-                    const seq = ++resumeSeqRef.current
+                    // No post-resolve check here: `resumeFromHistory` itself
+                    // records an undisplayable-surface answer on the slice
+                    // (#5925), which is what the notice above renders. Keeping
+                    // a second copy of that predicate per call site is how the
+                    // four sibling entry points ended up giving no feedback at
+                    // all while this one did.
                     dispatch(resumeFromHistory({ key: s.key, title: s.title || s.key }))
-                      .unwrap()
-                      .then(result => {
-                        // Latest-click-wins: an earlier resume resolving late must
-                        // not narrate a row the user has already moved past.
-                        if (seq !== resumeSeqRef.current) return
-                        if (result.ok && !isChatPageSurface(result.surface)) {
-                          // Name the surface from the WIRE answer the check itself
-                          // used. The key-prefix heuristic stays only as the
-                          // localized label for the known dashboard case and as a
-                          // last-resort fallback -- interpolating it for arbitrary
-                          // surfaces mislabels them (e.g. "a Session session").
-                          const noticeSurface = isDashboard ? surfaceLabel : (result.surface || surfaceLabel)
-                          setUnresumableNotice(
-                            i18nT('pages.chatSidebar.this_session_cannot_be_opened_from_the_chat_side', { title: s.title || s.key, surface: noticeSurface }),
-                          )
-                        }
-                      })
-                      .catch(() => { /* resumeFromHistory itself never rejects on an API-level failure; a genuine rejection has nothing more useful to add here. */ })
                   }
                   return (
                     <div className={`group relative flex items-start gap-2.5 pr-4 py-2 rounded-md text-sm transition-all select-none ${!connected ? 'text-muted opacity-50 cursor-not-allowed' : 'text-muted hover:text-text hover:bg-bg-hover cursor-pointer'}`} style={{ paddingLeft: '10px' }} title={s.title || s.key} {...offlineProps(connected, 'resume sessions')} role="button" tabIndex={0} aria-disabled={!connected} onKeyDown={e => {
