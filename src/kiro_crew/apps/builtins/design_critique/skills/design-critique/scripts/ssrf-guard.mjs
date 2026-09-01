@@ -152,4 +152,3 @@ export async function installSsrfGuard(target, allowOrigin = null) {
   }
 }
 
-export const _test = { ipDisallowed, isLoopbackIp, hostVerdict }

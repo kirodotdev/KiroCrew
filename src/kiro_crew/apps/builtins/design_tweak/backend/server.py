@@ -63,6 +63,7 @@ from kiro_crew.platform_compat import (
     trusted_system_bin,
 )
 from kiro_crew.security import (
+    DENIED_ROOT_PARTS,
     get_credential_patterns,
     is_sensitive_path,
     path_contains_sensitive,
@@ -214,10 +215,11 @@ _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")  # queue file id safety
 
 # The only hosts this backend will ever fetch from (dev-server reverse proxy).
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
-# Credential dirs a previewed "project" folder may never be. The shared
+# Credential dirs a previewed "project" folder may never be, shared with
+# design_critique's local-target guard via kiro_crew.security. The shared
 # `is_sensitive_path()` floor covers the crew home and the governance trust
 # root; these are the plain dot-dirs it does not need to know about.
-_DENIED_ROOT_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker"})
+_DENIED_ROOT_PARTS = DENIED_ROOT_PARTS
 
 _PICK_LOCK = threading.Lock()  # one native folder picker at a time
 
@@ -2550,9 +2552,12 @@ _PROJECT_SECRET_NAMES: frozenset[str] = frozenset(
     }
 )
 # Whole directories, matched on any path component. `.docker` holds
-# `config.json`, whose `auths` entries are registry credentials.
-_PROJECT_SECRET_DIRS: frozenset[str] = frozenset(
-    {".git", ".hg", ".svn", ".ssh", ".aws", ".gnupg", ".gpg", ".azure", ".kube", ".docker"}
+# `config.json`, whose `auths` entries are registry credentials. Derived from the
+# shared credential denylist so an entry added there propagates to this
+# static-file-serving guard automatically; the extras are VCS metadata and
+# credential dirs specific to what a previewed project tree may contain.
+_PROJECT_SECRET_DIRS: frozenset[str] = DENIED_ROOT_PARTS | frozenset(
+    {".git", ".hg", ".svn", ".gpg", ".azure"}
 )
 # Private-key / keystore material by extension. `.key` is the conventional TLS
 # private-key name (`server.key`); it is also Apple Keynote's extension, which is

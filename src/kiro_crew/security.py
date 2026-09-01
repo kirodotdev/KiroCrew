@@ -6941,6 +6941,18 @@ def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) ->
     return False
 
 
+# Credential dot-dirs denied as a path COMPONENT anywhere in an app-picked local
+# folder. This broadens the `is_sensitive_path()` floor below, which resolves its
+# entries relative to $HOME and pins `.kube`/`.docker` to single leaf files
+# (`config`, `config.json`): membership here denies these directory names at any
+# depth and covers those two dirs whole. `path_contains_sensitive()` supplies the
+# complementary ancestor/root protection. Owned here so every consumer
+# (design_critique's local-target guard, design_tweak's project-folder guard)
+# screens against the same set — a credential directory added for one app is
+# automatically denied by the others.
+DENIED_ROOT_PARTS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker"})
+
+
 def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     """Return True if the path points to a read+write-sensitive location.
 
