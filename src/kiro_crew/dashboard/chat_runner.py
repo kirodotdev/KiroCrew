@@ -834,42 +834,52 @@ def _backfill_canonical_model(client: Any, provider: str) -> str:
     return model_registry.canonicalize_for_provider(prov_model, provider)
 
 
-def _pinned_model_withheld(client: Any, model: str, provider: str) -> bool:
-    """True when the live session cannot run the model this slot is pinned to.
+def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None:
+    """Whether the live session can run the model this slot is pinned to.
+
+    ``True`` withheld, ``False`` runnable, ``None`` **unknown**. The third state
+    is the reason this exists as its own function: the verdict is carried in the
+    slots payload (#1819) so the composer stops re-deriving "usable?" from
+    picker-list membership, and a consumer must be able to tell "the account
+    cannot run this" from "nothing has told us yet". Every fail-open branch
+    below is a genuine unknown, not a runnable answer:
+
+    * no pin, or the ``auto`` sentinel -- nothing to judge;
+    * ``claude_code`` / the claude backend -- ``slot.model`` holds a canonical
+      key (or a prefixed provider id) against BARE advertised ids, and comparing
+      those two namespaces would call every legitimate model unusable (see
+      :func:`model_is_unusable`'s namespace note);
+    * a provider with no ``available_models`` getter, or one that raised;
+    * an empty advertised set -- no session yet, or a backend that omits
+      ``models``. :func:`model_is_unusable` folds this into "allow the send",
+      which is the right call for the WIRE; for a DISPLAYED verdict it has to
+      stay distinguishable from an entitled answer, so it is caught here.
 
     ``providers.acp`` withholds an inherited/persisted model the account is not
     entitled to and leaves the session on the backend default, so the turn
-    succeeds — but nothing told the user, and the composer chip plus the picker
+    succeeds -- but nothing told the user, and the composer chip plus the picker
     went on reporting a model no turn would ever use (observed after a plan
     downgrade: the chip still read ``claude-opus-5`` while every turn ran on
     auto). This is the read side of that withhold, using the SAME predicate so
     the two cannot disagree about what "usable" means.
 
-    The caller only REPORTS on a true result — it does not clear the pin. The
-    withhold already keeps the model off the wire and the frontend already
-    displays the effective model, so a stale pin is inert and recovers by itself
-    if entitlement returns.
-
-    Only the kiro/acp path is checked. ``slot.model`` is a bare dotted wire id
-    there — the same namespace ``session/new`` advertises — while claude_code
-    holds canonical keys against bare advertised ids, and comparing those two
-    namespaces would call every legitimate model unusable (see
-    :func:`model_is_unusable`'s namespace note). ``model_is_unusable`` itself
-    fails open on an empty advertised set, so a session that advertised nothing
-    (or a provider with no getter) leaves the pin alone: entitlement unknown is
-    not entitlement denied.
+    A ``True`` verdict is REPORTED, never acted on: the caller does not clear the
+    pin. The withhold already keeps the model off the wire, so a stale pin is
+    inert and recovers by itself if entitlement returns.
     """
     if not model or model == "auto" or is_claude_code(provider):
-        return False
+        return None
     if getattr(client, "is_claude_backend", False):
-        return False
+        return None
     getter = getattr(client, "available_models", None)
     if not callable(getter):
-        return False
+        return None
     try:
         advertised = advertised_model_ids(getter())
     except Exception:
-        return False
+        return None
+    if not advertised:
+        return None
     return model_is_unusable(model, advertised)
 
 
@@ -3068,6 +3078,13 @@ async def _consume_pending_reset(
     torn_down = False
     if slot._pending_reset_history_key:
         pending_key = slot._pending_reset_history_key
+        # This reset does not go through `_reset_slot_session`, so it drops the
+        # withhold verdict itself: a project change can resolve a different
+        # agent, and the next session may advertise a different model list. Done
+        # BEFORE the await and regardless of the outcome -- a teardown that
+        # failed leaves the session in a state this slot cannot vouch for, and
+        # "unknown" is the direction that fails open.
+        slot.record_model_withheld(None)
         try:
             await state.sessions.reset(pending_key)
             torn_down = True
@@ -3111,6 +3128,12 @@ async def _consume_pending_reset(
                 )
                 return torn_down
             torn_down = True
+            # The discarded conversation is the one that advertised the model
+            # list, so its verdict goes with it. AFTER the await here, unlike the
+            # reset above: a refusal is a normal outcome on this path (turn in
+            # flight -> flag stays armed, session untouched), so dropping before
+            # would forget a verdict that is still accurate.
+            slot.record_model_withheld(None)
             if slot._pending_discard_conversation_key == discard_key:
                 slot._pending_discard_conversation_key = None
         except Exception:
@@ -5419,6 +5442,11 @@ async def _run_chat(
         # provider so a kiro/acp dotted id (which collides with a claude_code
         # alias spelling) is left as-is.
         withheld_pin = False
+        # None = no verdict this spawn: either nothing is pinned (the backfill
+        # branch below) or the pin is unjudgeable here (see
+        # `_pinned_model_verdict`). Bound before the branch so the backfill path
+        # cannot leave it undefined.
+        verdict: bool | None = None
         if not slot.model and not slot._active_fallback_model:
             # The fallback-active guard is load-bearing: while a throttle
             # fallback is serving this session, the provider's resolved model
@@ -5429,7 +5457,22 @@ async def _run_chat(
             # fallback's duration; the next non-fallback turn backfills as
             # before.
             slot.model = _backfill_canonical_model(client, provider_name) or slot.model
-        elif (is_new or resumed) and _pinned_model_withheld(client, slot.model, provider_name):
+        elif is_new or resumed:
+            # Record the verdict for BOTH answers, not only the withhold: it is
+            # carried in the slots payload (#1819) so the composer reads the
+            # backend's own answer instead of inferring "usable?" from whether
+            # /api/models happened to list the row.
+            #
+            # Recorded UNCONDITIONALLY, including the None (unknown) answer. This
+            # session is a fresh or reloaded one, so whatever the slot was
+            # carrying describes a session that no longer exists: a replacement
+            # that advertises nothing (a dead provider, a backend that omits
+            # `models`) must publish "not known" rather than inherit the previous
+            # session's entitlement. `record_model_withheld(None)` stores exactly
+            # that, and the frontend fails open on it.
+            verdict = _pinned_model_verdict(client, slot.model, provider_name)
+            slot.record_model_withheld(verdict)
+        if verdict:
             withheld_pin = True
             # The session just advertised what this account can run, and the pin
             # is not on the list — the spawn withheld it, so this session runs on
@@ -10043,6 +10086,14 @@ async def _run_chat(
                 except Exception:
                     logger.debug("Stream cleanup failed", exc_info=True)
             if _acquired and (needs_session_reset or needs_conversation_discard):
+                # Neither branch below goes through `_reset_slot_session`, so the
+                # withhold verdict is dropped here: both replace the session that
+                # advertised the model list (an agent switch can even change the
+                # provider), and the verdict describes that session. Dropped for
+                # both branches and before the await, so a failed teardown leaves
+                # the slot at "unknown" rather than carrying a verdict it can no
+                # longer vouch for.
+                slot.record_model_withheld(None)
                 try:
                     if needs_conversation_discard:
                         # Poisoned-conversation escalation: clear ONLY the

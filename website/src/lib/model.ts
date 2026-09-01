@@ -5,7 +5,10 @@
  *  visibly after a plan downgrade, where the slot stays pinned to a premium
  *  model the account can no longer run. The backend withholds such a model at
  *  spawn and runs the session on its own default, so displaying the pin would
- *  name a model no turn will use.
+ *  name a model no turn will use. The slots payload carries the backend's own
+ *  verdict for that case (`model_withheld`), so the answer is read rather than
+ *  cross-referenced out of the two lists; list membership is only the fallback
+ *  for a slot that has no verdict yet.
  */
 
 import { canonicalKey } from '../providers/modelRegistry'
@@ -45,16 +48,32 @@ export function normalizeModelKey(name: string): string {
 
 /** The model id to DISPLAY for a slot pinned to `pinned`.
  *
- *  Returns `'auto'` when the pin is absent from `models` — the picker's list is
- *  narrowed to what the live session says the account can run, so a pin that is
- *  not on it is one the backend withholds.
+ *  `withheld` is the backend's OWN verdict for this pin, carried in the slots
+ *  payload (`model_withheld`), and it wins whenever it exists: it was computed
+ *  at spawn against the live session's advertised list — the same list the
+ *  withhold itself is applied from — so it answers "will a turn use this pin?"
+ *  directly. `true` -> `auto`, `false` -> the pin. Inferring the answer from
+ *  picker-list membership instead made every filter applied to `/api/models` an
+ *  entitlement signal: deprecated ids are dropped there BEFORE the entitlement
+ *  narrowing, so a deprecated-but-runnable pin had no row to match and read as
+ *  `auto` (#1819).
+ *
+ *  `null`/`undefined` is the third state — no verdict yet (no session has
+ *  advertised a comparable list for this pin) — and it must fail open, so it
+ *  falls back to the list-membership heuristic below. Unknown is not denied.
+ *
+ *  Without a verdict: returns `'auto'` when the pin is absent from `models`,
+ *  since the picker's list is narrowed to what the live session says the account
+ *  can run.
  *
  *  `degraded` is the authority on whether the list can be trusted, and it must
  *  come from `modelsDegraded(providerId)` — NOT from the list's shape. A cached
  *  multi-row list served while `/api/models` is failing looks perfectly healthy
  *  by length while being arbitrarily stale, so length alone would relabel a pin
  *  the account has (re)gained access to. When `degraded` is true the pin is
- *  returned untouched: entitlement unknown is not entitlement denied.
+ *  returned untouched: entitlement unknown is not entitlement denied. It gates
+ *  the heuristic only — a verdict does not come from that list, so a stale list
+ *  says nothing about it.
  *
  *  This is a DISPLAY decision only. Never feed the result into a write — a
  *  lossy label must not become persisted state (see ChatPage's pin-to-agent
@@ -64,16 +83,23 @@ export function displayModel(
   pinned: string,
   models: { name: string }[],
   degraded = false,
+  withheld: boolean | null | undefined = null,
 ): string {
   const key = normalizeModelKey(pinned)
   if (!key || key === 'auto') return 'auto'
-  if (degraded || models.length === 0) return pinned
+  if (withheld === true) return 'auto'
   // Return the LIST's spelling of the match, not the caller's. Matching is
   // normalized (dotted vs dashed, case) but `ModelDropdownList` highlights on
   // exact `activeModel === m.name`, so handing back the raw pin would show a
   // model in the chip that checks no row — e.g. a config pin `claude-opus-4.8`
   // against an advertised `claude-opus-4-8`.
   const match = models.find(m => normalizeModelKey(m.name) === key)
+  // Verdict says runnable: show it even when the list omits the row. There is no
+  // row to highlight in that case, which is inherent — a filtered-out model
+  // cannot be a picker row — and naming the user's actual pin beats naming
+  // `auto`, which no turn will run either.
+  if (withheld === false) return match ? match.name : pinned
+  if (degraded || models.length === 0) return pinned
   return match ? match.name : 'auto'
 }
 

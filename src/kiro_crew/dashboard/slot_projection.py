@@ -195,6 +195,14 @@ class SlotProjection:
             "agent": slot.agent,
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
+            # The backend's own withhold verdict for `model`: true = the account
+            # cannot run the pin (this session is on the backend default), false
+            # = it can, null = not known yet. Carried so the frontend reads the
+            # answer instead of inferring it from whether the pin appears in
+            # `GET /api/models` -- a list every unrelated filter (deprecation,
+            # curation) narrows, which silently turned those filters into
+            # entitlement signals (#1819). DISPLAY only; never a write source.
+            "model_withheld": slot.model_withheld,
             "reasoning_effort": slot.reasoning_effort,
             "mode": slot.mode,
             "surface": slot.mode,

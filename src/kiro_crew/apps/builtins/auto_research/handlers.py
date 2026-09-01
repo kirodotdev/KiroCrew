@@ -443,7 +443,7 @@ def _campaign_model(config: dict) -> str:
 
     Availability is NOT screened here: no advertised-model list exists outside a
     live session. If the pick stops being served, the session layer's withhold
-    (``_pinned_model_withheld`` in chat_runner) KEEPS the pin, runs the worker on
+    (``_pinned_model_verdict`` in chat_runner) KEEPS the pin, runs the worker on
     the backend default, and posts a notice card — but that card lands in the
     app-owned ``research-<cid>`` transcript, which the Research Lab page does not
     render, so the fallback is not visible on this app's own surfaces.
@@ -1797,7 +1797,7 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
     # Pin the campaign's explicit model pick on the worker slot ('' = inherit
     # the research agent's / backend's default resolution — never a hardcoded
     # id here). If a concrete pick is not served for this account, the session
-    # layer's withhold (_pinned_model_withheld) KEEPS the pin and runs the
+    # layer's withhold (_pinned_model_verdict) KEEPS the pin and runs the
     # worker on the backend default — the notice it posts lands in the hidden
     # research-<cid> transcript, not on the Research Lab page.
     campaign_model = row["model"] or ""

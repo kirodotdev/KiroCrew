@@ -2928,6 +2928,8 @@ class _ChatSlot:
         "title",
         "agent",
         "model",
+        "_model_withheld",
+        "_model_withheld_for",
         "reasoning_effort",
         "mode",
         "workspace",
@@ -3087,6 +3089,12 @@ class _ChatSlot:
         self.title = title or key
         self.agent = agent
         self.model = model
+        # Spawn-time withhold verdict for `model`, and the model id it was
+        # computed for. Read through the `model_withheld` property, never these
+        # two directly: the pairing is what makes the verdict self-invalidating
+        # when any of slot.model's writers re-pins the slot.
+        self._model_withheld: bool = False
+        self._model_withheld_for: str = ""
         # Reasoning effort: "" = provider default, else one of low/medium/high/max.
         # Currently consumed by an alternate ACP backend (--effort flag); ACP wired later.
         self.reasoning_effort: str = ""
@@ -4146,6 +4154,47 @@ class _ChatSlot:
     def queue_depth(self) -> int:
         """Number of prompts currently queued behind the active turn."""
         return len(self._queue)
+
+    @property
+    def model_withheld(self) -> bool | None:
+        """Whether the live session withholds this slot's pinned model.
+
+        Tri-state, and the third state carries as much information as the other
+        two: ``True`` the account cannot run the pin (the spawn withheld it and
+        the session is on the backend default), ``False`` it can, ``None``
+        **unknown** -- no session has advertised a comparable list for this pin
+        yet. The frontend must fail open on ``None`` (see ``displayModel``);
+        unknown is not denied.
+
+        Recorded per model id, not per slot: the verdict answers a question
+        about ONE pin, so it is reported only while the slot still carries the
+        model it was computed for. That makes every writer of ``slot.model``
+        (the picker, the bulk pick, the rollback, the restore paths, the
+        canonical backfill) invalidate it for free -- a stale verdict outliving
+        a re-pin would be a display that names the wrong model, and there are
+        too many writers to keep an explicit reset at each one.
+
+        DISPLAY only. This is never a write source: the pin is deliberately
+        KEPT when withheld (it is inert and self-heals on re-upgrade), and the
+        pin-to-agent row writes ``slot.model`` itself.
+        """
+        if not self.model or self._model_withheld_for != self.model:
+            return None
+        return self._model_withheld
+
+    def record_model_withheld(self, withheld: bool | None) -> None:
+        """Pin a spawn-time withhold verdict to the model it was computed for.
+
+        ``None`` forgets the verdict (back to unknown) -- what a session
+        teardown does, since the verdict describes the session that advertised
+        the list, not the slot.
+        """
+        if withheld is None:
+            self._model_withheld = False
+            self._model_withheld_for = ""
+            return
+        self._model_withheld = withheld
+        self._model_withheld_for = self.model or ""
 
     @property
     def is_restricted(self) -> bool:

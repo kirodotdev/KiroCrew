@@ -245,11 +245,18 @@ export default function ChatPane({
   const availableModels = useAvailableModels()
   const modelDD = useFilteredDropdown(availableModels)
   // See ChatPage: display what will actually run, not a pin the account lost
-  // access to. The degraded flag gates it — a cached list served while
-  // /api/models fails is stale and cannot disprove entitlement — and is
-  // subscribed to, since it can flip while the served list stays identical.
+  // access to. The slot's own `model_withheld` verdict answers that when the
+  // backend has one; the degraded flag gates only the list-membership fallback —
+  // a cached list served while /api/models fails is stale and cannot disprove
+  // entitlement — and is subscribed to, since it can flip while the served list
+  // stays identical.
   const _modelsDegraded = useModelsDegraded(provider.id)
-  const shownModel = displayModel(paneSlot?.model || '', availableModels, _modelsDegraded)
+  const shownModel = displayModel(
+    paneSlot?.model || '',
+    availableModels,
+    _modelsDegraded,
+    paneSlot?.model_withheld,
+  )
 
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —

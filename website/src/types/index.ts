@@ -768,6 +768,15 @@ export interface ChatSlot {
    *  and it reports "" rather than guessing whenever resolution is unsettled — so
    *  a consumer must treat absent as "no news", never as a mismatch. */
   effective_agent?: string
+  /** The backend's verdict on whether the live session can run `model`:
+   *  `true` it cannot (the spawn withheld the pin and the session is on the
+   *  backend default), `false` it can, `null`/absent NOT KNOWN YET — no session
+   *  has advertised a comparable list for this pin.
+   *
+   *  Consumers must fail open on the unknown state (`displayModel` does): it is
+   *  the absence of an answer, never a denial. DISPLAY only — the pin is
+   *  deliberately kept when withheld, so this must not drive a write. */
+  model_withheld?: boolean | null
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
