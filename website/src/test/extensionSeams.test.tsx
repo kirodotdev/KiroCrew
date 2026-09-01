@@ -43,7 +43,6 @@ import {
   registerMobileConnectRenderer,
   getMobileConnectRenderers,
   canRenderMobileConnectKind,
-  BUILTIN_MOBILE_CONNECT_KINDS,
 } from '../components/mobileConnectRenderers'
 import { apiTransport } from '../api/apiTransport'
 // Importing the client installs the blessed transport (installApiTransport runs
