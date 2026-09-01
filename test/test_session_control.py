@@ -2792,11 +2792,20 @@ def test_a_mirror_link_landing_during_the_await_still_refuses(tmp_path, monkeypa
 def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
     """The ceiling is read from live state, so it can fill inside the window too.
 
+    The ceiling is lowered for this test because what is under test is WHEN it is
+    read, not what it is: minting the production 500 slots is superlinear and cost
+    ~17s of pure setup for no extra property. The caller's own slot stays under the
+    lowered cap -- asserted below -- so the refusal can only come from the fill that
+    lands inside the await.
+
     Mutation guard: checking the cap only before the await lets two concurrent
     creations land over the ceiling.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
+    monkeypatch.setattr(sc, "MAX_LIVE_SLOTS", 3)
+    # Without this the test could pass on a cap checked only BEFORE the await.
+    assert state.live_slot_count() < sc.MAX_LIVE_SLOTS
 
     def _resolve_then_fill(_workspace):
         for i in range(sc.MAX_LIVE_SLOTS):

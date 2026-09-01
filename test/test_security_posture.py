@@ -123,7 +123,9 @@ def _scope_body(scope: ast.AST):
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _gate_side_baseline_log_sites(source: str) -> set[tuple[int, str]]:
+def _gate_side_baseline_log_sites(
+    source: str, *, tree: ast.AST | None = None
+) -> set[tuple[int, str]]:
     """Find log/audit writes in *source* whose text came from a BASELINE redactor.
 
     The property, not a name: a baseline redactor's result reaches a log write —
@@ -141,7 +143,8 @@ def _gate_side_baseline_log_sites(source: str) -> set[tuple[int, str]]:
     Returns ``{(lineno, "<log call>")}`` — the count is what the ratchet pins;
     the rendering is for the failure message.
     """
-    tree = ast.parse(source)
+    if tree is None:
+        tree = ast.parse(source)
     scopes: list[ast.AST] = [tree]
     scopes += [
         node
@@ -266,17 +269,20 @@ def _package_baseline_log_census() -> "tuple[tuple[str, int], ...]":
     cannot parse is a module it cannot see, and skipping one quietly is how a
     scan-based gate goes blind.
     """
-    from pathlib import Path
+    from source_corpus import parsed_candidates, src_root  # noqa: PLC0415
 
-    pkg = Path(security.__file__).resolve().parent
+    pkg = src_root()
     found: list[tuple[str, int]] = []
-    for path in sorted(pkg.rglob("*.py")):
+    # Every name in `_BASELINE_REDACTORS` starts with "redact", so a module
+    # without that text cannot hold a site and is not worth parsing. The
+    # SyntaxError is still not swallowed (`skip_syntax_errors=False`).
+    for path, source, tree in parsed_candidates(("redact",), skip_syntax_errors=False):
         rel = path.relative_to(pkg).as_posix()
         if rel.startswith(("_vendor/", "testing/")):
             continue
         if "/tests/" in rel or rel.endswith("_test.py"):
             continue
-        sites = _gate_side_baseline_log_sites(path.read_text(encoding="utf-8"))
+        sites = _gate_side_baseline_log_sites(source, tree=tree)
         if sites:
             found.append((rel, len(sites)))
     return tuple(found)
