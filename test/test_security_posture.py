@@ -234,7 +234,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "dashboard/chat_runner.py": 10,
     "dashboard/chat_title.py": 1,
     "dashboard/handlers/discover.py": 3,
-    "dashboard/handlers/files.py": 3,
+    "dashboard/handlers/files.py": 1,
     "dashboard/handlers/hooks.py": 1,
     "dashboard/handlers/messaging.py": 12,
     "dashboard/handlers/updates.py": 1,
