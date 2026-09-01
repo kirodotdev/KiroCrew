@@ -86,7 +86,7 @@ def test_card_prefixes_all_exist_in_python() -> None:
 
 
 def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
-    """The runner's two synthetic prompts must open with a card-known marker.
+    """Every synthetic prompt the runner injects must open with a card-known marker.
 
     They are built from the prefixes rather than hardcoding the marker, so this
     guards the composition (a lost f-string prefix) as well as the marker set.
@@ -96,7 +96,9 @@ def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
     known = set(_card_prefixes().values())
     for msg in _SYNTHETIC_RECOVERY_MSGS:
         marker = msg.split("\n", 1)[0]
-        assert marker in known, f"synthetic recovery prompt opens with {marker!r}, which no card matches"
+        assert (
+            marker in known
+        ), f"synthetic recovery prompt opens with {marker!r}, which no card matches"
         assert msg.split("\n", 1)[1].strip(), "marker line is not followed by a body"
 
 
@@ -122,6 +124,11 @@ def test_synthetic_recovery_messages_carry_a_known_marker() -> None:
         # happened — the loop was force-stopped.
         "hook_loop_halted",
         "nudge_cap_reached",
+        # The post-compaction continuation card. Its own pair because nothing
+        # errored: reusing the backend-error labels would send the reader looking
+        # for a fault, when the earlier messages were deliberately summarized.
+        "context_compacted",
+        "summarized_mid_turn_continuing",
     ],
 )
 def test_new_card_labels_are_in_the_english_catalog(key: str) -> None:

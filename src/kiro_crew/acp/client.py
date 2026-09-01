@@ -41,6 +41,7 @@ from kiro_crew.acp._dispatch import (
     derive_edit_diff,
     extract_tool_purpose,
     make_unified_diff,
+    parse_claude_compaction_notice,
     parse_prompt_token_usage,
     parse_session_modes,
     parse_usage_cost,
@@ -2532,6 +2533,13 @@ class AcpClient:
         # of the generic timeout error.
         self._compaction_failed_at: float | None = None
         self._compaction_failed_turn: bool = False
+        # Set when the claude backend's "Compacting..." notice is seen inside a
+        # turn and cleared by its terminal notice. Only a MANUAL /compact gets a
+        # terminal from the adapter (see parse_claude_compaction_notice), so an
+        # automatic mid-turn compaction leaves this armed and the dispatch loop
+        # settles it with a synthetic `completed` at turn end. Without that, a
+        # consumer showing a compacting state would never leave it.
+        self._claude_compaction_pending: bool = False
         # Liveness oracle for the stale-turn gate: before ending a silent turn
         # at _STALE_TURN_TIMEOUT, consult /proc evidence so a backend that is
         # provably working (CPU/IO movement in the subprocess subtree) is not
@@ -4640,6 +4648,7 @@ class AcpClient:
             self._retire_liveness_state()
             self._compaction_failed_at = None
             self._compaction_failed_turn = False
+            self._claude_compaction_pending = False
             deadline = time.monotonic() + timeout
             consecutive_empty = 0
             last_data_ts = time.monotonic()
@@ -4911,6 +4920,10 @@ class AcpClient:
                     if isinstance(result, dict):
                         reason = result.get("stopReason", "") or ""
                     self._track_prompt_usage(result)
+                    # Close out an automatic claude compaction. The returned
+                    # event is discarded — this API yields str — but the context
+                    # counts it drops are what the meter reads next turn.
+                    self._settle_claude_compaction(reason)
                     self._last_stop_reason = reason
                     self._turn_done.set()
                     return
@@ -4924,6 +4937,14 @@ class AcpClient:
                     self._track_usage_update(msg)
                     chunk, is_thinking = self._extract_text_chunk(msg)
                     if chunk and not is_thinking:
+                        # A claude compaction notice is a control frame wearing
+                        # assistant text. This API yields str, so the event has
+                        # nowhere to go — but the state change still applies and
+                        # the chunk is still forwarded. Recognizing a notice is a
+                        # guess about bare prose, so dropping it here would let
+                        # one wrong guess erase a real answer with nothing left
+                        # to recover it from.
+                        self._claude_compaction_event(chunk)
                         self.last_prompt_stats.text_chunks += 1
                         yield chunk
                         if _is_tool_interrupted_marker(chunk):
@@ -5024,6 +5045,13 @@ class AcpClient:
                 # Flush any remaining tool results before completing
                 for tr_event in await asyncio.to_thread(self._read_new_tool_results_sync):
                     yield tr_event
+                # An automatic claude compaction never sends its own terminal —
+                # close it out here, BEFORE EVENT_COMPLETE, so a consumer that
+                # reads the terminal to leave its compacting state sees it
+                # inside the turn rather than after the turn it belongs to.
+                _compaction_settle = self._settle_claude_compaction(reason)
+                if _compaction_settle is not None:
+                    yield _compaction_settle
                 # Turn is over — disarm the stall watchdog.
                 self._tool_dispatched = False
                 self._last_stop_reason = reason
@@ -5043,6 +5071,19 @@ class AcpClient:
             elif action == "update":
                 self._track_usage_update(msg)
                 chunk, is_thinking = self._extract_text_chunk(msg)
+                _notice_chunk = False
+                if chunk and not is_thinking:
+                    # The claude backend reports compaction as plain assistant
+                    # text. Emit the compaction status event every consumer
+                    # already handles, then fall through and yield the chunk too:
+                    # the event is a side effect, not a replacement for the text.
+                    # The chunk carries ``control_notice`` so a consumer can show
+                    # it without counting it as the turn's answer — the ACP layer
+                    # owns the classification, and nothing downstream re-parses.
+                    _compaction_event = self._claude_compaction_event(chunk)
+                    if _compaction_event is not None:
+                        yield _compaction_event
+                        _notice_chunk = True
                 if chunk:
                     # Before yielding text, check for tool results from JSONL
                     for tr_event in await asyncio.to_thread(self._read_new_tool_results_sync):
@@ -5051,7 +5092,7 @@ class AcpClient:
                     if not is_thinking:
                         self.last_prompt_stats.text_chunks += 1
                         self._stale_eligible = True
-                    yield AcpEvent(kind=kind, text=chunk)
+                    yield AcpEvent(kind=kind, text=chunk, control_notice=_notice_chunk)
                     if not is_thinking and _is_tool_interrupted_marker(chunk):
                         # kiro-cli's built-in security filter cancelled the turn's tools.
                         # It will not send a ``complete`` response — synthesize one so the
@@ -5551,6 +5592,9 @@ class AcpClient:
                 if isinstance(result, dict):
                     reason = result.get("stopReason", "") or ""
                 self._track_prompt_usage(result)
+                # See send_message_stream: settle for the context counts, drop
+                # the event this API cannot yield.
+                self._settle_claude_compaction(reason)
                 self._last_stop_reason = reason
                 self._turn_done.set()
                 return "".join(output)
@@ -5564,6 +5608,13 @@ class AcpClient:
                 self._track_usage_update(msg)
                 chunk, is_thinking = self._extract_text_chunk(msg)
                 if chunk and not is_thinking:
+                    # Apply the claude compaction state change, then KEEP the
+                    # chunk. This path returns one string callers treat as the
+                    # agent's answer, and a caller that wants the notice out of
+                    # that string subtracts it with
+                    # strip_claude_compaction_notices; dropping it here would
+                    # silently truncate a real answer on a misclassification.
+                    self._claude_compaction_event(chunk)
                     output.append(chunk)
                     self.last_prompt_stats.text_chunks += 1
                     if _is_tool_interrupted_marker(chunk):
@@ -6477,6 +6528,96 @@ class AcpClient:
         elif s_type == "completed":
             self._compaction_failed_at = None
             self.last_prompt_stats.reset_after_compaction()
+
+    def _claude_compaction_event(self, chunk: str) -> AcpEvent | None:
+        """Reclassify a claude-agent-acp compaction notice chunk as an event.
+
+        The Claude adapter reports compaction as plain assistant text rather
+        than an out-of-band notification, so this is the claude-side twin of
+        ``_handle_compaction_status``: it applies the same state mutations
+        (arm/disarm the post-failure budget, drop the stale context counts) and
+        returns the EVENT_COMPACTION_STATUS every consumer already understands.
+        ``None`` means the chunk is ordinary assistant text and must be yielded
+        as-is.
+
+        Backend-gated: the markers are anchored and kiro-cli has no reason to
+        emit them, but only the Claude adapter is a KNOWN producer, so no other
+        backend's prose can be reinterpreted as a control frame here.
+
+        Callers MUST still forward the text. The event is a SIDE EFFECT, never
+        a substitute for the chunk: the adapter ships these notices as ordinary
+        assistant text with no marker of any kind, so recognizing one is a guess
+        about prose, and a layer that swallowed the chunk would turn any wrong
+        guess into deleted model output. A caller that yields structured events
+        marks the forwarded chunk ``control_notice`` instead, so a consumer can
+        show the text without counting it as the turn's own answer.
+
+        A terminal is only accepted while a compaction is actually in flight.
+        ``Compacting completed.`` standing alone is just prose — a user can ask
+        for exactly that reply — and swallowing it would delete the answer AND
+        reset the context counters against a window nobody summarized.  The
+        ``started`` arm cannot be gated the same way: it is what arms the flag.
+        """
+        parsed = parse_claude_compaction_notice(chunk) if self._is_claude else None
+        if parsed is None:
+            return None
+        status_type, detail = parsed
+        if status_type != "started" and not self._claude_compaction_pending:
+            return None
+        logger.info("Compaction status (claude): %s", status_type)
+        self._claude_compaction_pending = status_type == "started"
+        if status_type == "completed":
+            self._compaction_failed_at = None
+            self.last_prompt_stats.reset_after_compaction()
+        elif status_type == "failed":
+            logger.warning("Compaction failed (claude): %s", detail or "no reason reported")
+            # Arm the bounded post-failure wait, exactly as the kiro-cli path
+            # does: the backend may never answer the prompt this compaction
+            # was for.
+            self._compaction_failed_at = time.monotonic()
+        # Backend-echoed text on its way to the dashboard — redact before it can
+        # reach any surface (parity with the kiro-cli/KAS compaction summaries).
+        return AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=redact_text(detail))
+
+    def _settle_claude_compaction(self, reason: str) -> AcpEvent | None:
+        """Synthesize the terminal an AUTOMATIC claude compaction never sends.
+
+        The adapter emits ``Compacting completed.`` only from the SDK's
+        ``compact_result`` status, which it documents as the manual ``/compact``
+        signal; an automatic mid-turn compaction takes its ``compact_boundary``
+        case instead and emits only a ``usage_update``.  So the turn ends with a
+        dangling ``started``.  Called at the turn's terminal, this closes it out
+        so consumers leave their compacting state and the context meter resets.
+
+        Reporting ``completed`` is a statement about what the backend did, not a
+        guess — but ONLY for *reason* ``end_turn``.  The turn having reached its
+        own natural terminal is the whole evidence that the compaction finished:
+        a compaction that had FAILED would have said so (the adapter emits its
+        failure text from the same status handler that emits the success text).
+        A turn that ends any other way — cancelled by the user's Stop, refused,
+        or cut off on a limit — carries no such evidence, so it settles the
+        pending flag WITHOUT claiming success: no ``completed`` event, no
+        context-counter reset, and no clearing of a recorded failure.  Otherwise
+        pressing Stop mid-compaction would fabricate a successful compaction and
+        reset the meter against a context that was never actually summarized.
+        """
+        if not self._claude_compaction_pending:
+            return None
+        self._claude_compaction_pending = False
+        if reason != STOP_REASON_END_TURN:
+            logger.info(
+                "Compaction status (claude): pending compaction abandoned, turn ended %r",
+                reason or "unknown",
+            )
+            return None
+        logger.info("Compaction status (claude): completed (synthesized at turn end)")
+        self._compaction_failed_at = None
+        self.last_prompt_stats.reset_after_compaction()
+        # ``synthesized`` marks this terminal as manufactured at the turn's end
+        # rather than observed mid-turn. It arrives AFTER every text chunk of the
+        # turn, so a consumer that treats a compaction terminal as a segment
+        # boundary would discard the answer a backend produced after compacting.
+        return AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed", title="", synthesized=True)
 
     async def wait_for_compaction(self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS) -> dict:
         """Read messages until compaction completed/failed arrives. Returns status dict.

@@ -12,8 +12,9 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  * `src/kiro_crew/dashboard/state.py` (REFUSAL_RECOVERY_PREFIX,
  * STALE_RECOVERY_PREFIX, TOOL_STALL_RECOVERY_PREFIX, CONN_RECOVERY_PREFIX,
  * BUSY_RECOVERY_PREFIX, POSTTOKEN_RECOVERY_PREFIX,
- * EMPTY_RESPONSE_RECOVERY_PREFIX, HOOK_CONTINUATION_RECOVERY_PREFIX,
- * HOOK_HALTED_RECOVERY_PREFIX, SUBAGENT_SYNTHESIS_PREFIX).
+ * EMPTY_RESPONSE_RECOVERY_PREFIX, COMPACTION_RECOVERY_PREFIX,
+ * HOOK_CONTINUATION_RECOVERY_PREFIX, HOOK_HALTED_RECOVERY_PREFIX,
+ * SUBAGENT_SYNTHESIS_PREFIX).
  *
  * Detection is by content prefix rather than a meta flag on purpose: the rows
  * are appended with a plain CSS-class meta ("msg msg-inject"), and matching the
@@ -30,6 +31,7 @@ export type RecoveryKind =
   | 'posttoken'
   | 'empty'
   | 'promise_only'
+  | 'compaction'
   | 'manual'
   | 'hook'
   | 'hook_halted'
@@ -66,6 +68,12 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['posttoken', '[Interrupted turn — automatic recovery]'],
   ['empty', '[Empty response — automatic recovery]'],
   ['promise_only', '[Unfinished action — automatic recovery]'],
+  // The context window filled mid-turn, the backend summarized, and the turn
+  // then ended without finishing the request. Distinct from `posttoken`: nothing
+  // errored and nothing was lost — the earlier messages were deliberately
+  // replaced by a summary — so its copy names compaction as the cause rather
+  // than reporting a backend fault the user might go looking for.
+  ['compaction', '[Context compacted — automatic recovery]'],
   // The only USER-initiated entry in this family. Kept here because the row is
   // the same shape (an `inject` continuation the model reads), but its copy must
   // not claim an automatic recovery — a person pressed Continue.
@@ -205,6 +213,19 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       kind,
       title: i18nT('pages.chat.recoveryCard.action_not_taken'),
       detail: i18nT('pages.chat.recoveryCard.announced_no_action_continuing'),
+      chip: '',
+      body,
+    }
+  }
+
+  if (kind === 'compaction') {
+    // Title states the event (the context was compacted mid-turn); detail names
+    // that cause plus the one automatic continuation, matching every sibling's
+    // "cause · attempt" shape.
+    return {
+      kind,
+      title: i18nT('pages.chat.recoveryCard.context_compacted'),
+      detail: i18nT('pages.chat.recoveryCard.summarized_mid_turn_continuing'),
       chip: '',
       body,
     }
@@ -412,6 +433,7 @@ export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: P
     kind === 'posttoken' ||
     kind === 'empty' ||
     kind === 'promise_only' ||
+    kind === 'compaction' ||
     kind === 'manual' ||
     kind === 'hook' ||
     kind === 'synthesis' ||

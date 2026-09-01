@@ -985,7 +985,6 @@ test/test_queue_receipt.py
 test/test_quick_send.py
 test/test_read_bounded_json.py
 test/test_recovery_card_parity.py
-test/test_recovery_card_prefixes.py
 test/test_redact_meta_snapshot.py
 test/test_redaction_mirror_parity.py
 test/test_refresh_tokens.py

@@ -2460,6 +2460,14 @@ EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
 # happened and the turn still billed. Body: _PROMISE_ONLY_CONTINUE_MSG in
 # chat_utils. One bounded attempt (slot._promise_only_retries), never a loop.
 PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
+# Prefix on the runner-injected continuation sent when the BACKEND compacted the
+# conversation in the middle of a turn and then ended the turn without finishing
+# the work. The compaction itself succeeded — nothing failed — but the request
+# that was in flight when the context filled was abandoned, and the turn lands
+# looking clean (a settled footer with elapsed time), so without this the chat
+# just stops. Body: _COMPACTION_CONTINUE_MSG in chat_utils. One bounded attempt
+# (slot._compaction_continue_retries), never a loop.
+COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
 # Prefix on the continuation injected when the USER pressed Continue on an
 # interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
 # *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
@@ -3073,6 +3081,7 @@ class _ChatSlot:
         "_empty_response_retries",
         "_promise_only_retries",
         "_promise_only_stop_gen",
+        "_compaction_continue_retries",
         "_batch_rejected",
         "_compaction_fail_streak",
         "_compaction_fail_cooldown_until",
@@ -3493,6 +3502,13 @@ class _ChatSlot:
         # is enqueued; the dispatch-point purge compares against it to catch a Stop
         # that pressed AND resolved to idle while the continuation waited (#2696).
         self._promise_only_stop_gen: int = 0
+        # One bounded synthetic continuation when the BACKEND compacted the
+        # conversation mid-turn and then ended the turn without finishing the
+        # work (see COMPACTION_RECOVERY_PREFIX). Bounded separately from the
+        # promise-only budget: the two failure modes are independent, and a turn
+        # that hits one must not be denied recovery from the other. Reset like
+        # the other per-turn retry budgets on a landed turn.
+        self._compaction_continue_retries: int = 0
         self._batch_rejected: bool = False
         # Per-turn compaction-status failure tracking (Mesh compaction-spam
         # fix). Distinct from SessionManager._compact_cooldown_until, which

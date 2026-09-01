@@ -272,6 +272,7 @@ logger = logging.getLogger(__name__)
 # classify them identically to the turn logic here). Re-exported under their
 # historical names so existing imports keep working.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402
+    _COMPACTION_CONTINUE_MSG,
     _EMPTY_AUTO_CONTINUE_MSG,
     _POSTTOKEN_RECOVER_MSG,
     _PROMISE_ONLY_CONTINUE_MSG,
@@ -287,6 +288,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     is_synthetic_recovery_item,
     mint_options_token,
     payload_for_replay,
+    should_continue_after_compaction,
     should_notice_leaked_tool_call,
     should_recover_promise_only,
     subagents_attached,
@@ -517,6 +519,31 @@ def _redacted_hook_block(event: Any, pre_hook_results: Any) -> tuple[str, str]:
         _redact_display_text(event.title),
         _redact_display_text(_pre_tool_block_reason(pre_hook_results)),
     )
+
+
+def _answer_text_only(segment_text: str, notice_chunks: list[str]) -> str:
+    """*segment_text* with the turn's recorded backend control notices removed.
+
+    A control notice (the claude adapter's "Compacting...") arrives as ordinary
+    assistant text and is deliberately left in the text path: it streams,
+    flushes and persists like any other chunk, so the user still sees what the
+    backend said. Two earlier shapes tried to keep it out of the accumulator
+    instead, and each was defeated by a different layer -- the rolling redactor
+    withholds a trailing run until the next feed, and the one terminal flush is
+    itself guarded on this same accumulator being non-empty, so a notice-only
+    turn emitted nothing at all.
+
+    Only the post-compaction gate needs to distinguish a notice from the turn's
+    own ANSWER, so the subtraction happens here, at that single call site, and
+    nowhere else. Each recorded chunk is removed ONCE: they are the exact
+    strings that were appended, so this reconstructs what the turn contributed
+    of its own rather than pattern-matching prose.
+    """
+    answer = segment_text
+    for chunk in notice_chunks:
+        if chunk:
+            answer = answer.replace(chunk, "", 1)
+    return answer
 
 
 def _refined_tool_row_content(existing: str, new_title: str) -> str | None:
@@ -4249,10 +4276,16 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     _stop_since_enqueue = _cur_stop_gen != getattr(slot, "_promise_only_stop_gen", _cur_stop_gen)
     _user_input = bool(getattr(slot, "_pending_steers", None)) or _has_user_queued_followup(slot)
     if _should_suppress_requeue(slot) or slot._stopping or _stop_since_enqueue or _user_input:
+        # Both auto-continuations carry the same hazard and the same fix: the
+        # post-compaction resume would re-drive a request the user has since
+        # stopped or replaced. Purge either one, and reset whichever one-shot
+        # budget was spent (both resets are idempotent, so no need to tell them
+        # apart per item).
+        _purgeable = (_PROMISE_ONLY_CONTINUE_MSG, _COMPACTION_CONTINUE_MSG)
         superseded = [
             q
             for q in slot._queue
-            if is_synthetic_payload_item(q) and q.get("content") == _PROMISE_ONLY_CONTINUE_MSG
+            if is_synthetic_payload_item(q) and q.get("content") in _purgeable
         ]
         if superseded:
             for q in superseded:
@@ -4266,6 +4299,7 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
             # first legitimate recovery. Reset the stop-gen snapshot too so a stale
             # value cannot re-trigger this block on a later drain.
             slot._promise_only_retries = 0
+            slot._compaction_continue_retries = 0
             slot._promise_only_stop_gen = _cur_stop_gen
             # The earlier "auto-continuing once" notice and the card's "continuing
             # automatically" detail now stand uncorrected; append a one-line
@@ -5153,6 +5187,23 @@ async def _run_chat(
     needs_conversation_discard = False
     _auth_required = False
     saw_compaction = False
+    # True once a compaction STARTED notice landed this turn, so the terminal
+    # branch can tell "the backend compacted in the middle of this turn" from
+    # "no compaction happened". kiro-cli sends started/completed/failed and the
+    # claude backend's notices are normalized into the same vocabulary by
+    # AcpClient, so this reads identically on both.
+    _compaction_started = False
+    # True only once a compaction reached the COMPLETED terminal. Deliberately
+    # narrower than `saw_compaction`, which _broadcast_compaction_result also
+    # sets for `failed`: the post-compaction continuation tells the model "the
+    # summary above is authoritative", and after a FAILED compaction there is no
+    # summary, so continuing on that flag would hand the model a false premise.
+    _compaction_completed = False
+    # Assistant-text chunks this turn that were backend CONTROL notices rather
+    # than the model's answer. They stay in `assistant_text` and in every
+    # downstream path; this list exists only so the post-compaction gate can
+    # subtract them (see _answer_text_only) without re-parsing the prose.
+    _compaction_notice_chunks: list[str] = []
     _turn_tool_calls = 0  # tool dispatches this turn (refusal diagnostic)
     # Snapshot of slot._stop_generation at turn start. `_stop_state` snaps back
     # to "idle" once a Stop resolves, so a Stop pressed AND resolved during the
@@ -5168,6 +5219,13 @@ async def _run_chat(
     # continuation (see the promise-only guard near turn completion). Like
     # _retrying_empty it suppresses success-recording for this non-landing turn.
     _recovering_promise = False
+    # Set when the context was compacted mid-turn, the turn then ended without
+    # finishing the request, and we injected one continuation. Same un-landed
+    # semantics as _recovering_promise — and load-bearing for termination: the
+    # budget-reset block below would otherwise zero
+    # `_compaction_continue_retries` on this very turn, un-spending the one-shot
+    # and letting a continuation that overflows again recover forever.
+    _recovering_compaction = False
     # Set when the turn ended with a tool-call block leaked into its text and
     # the notice was surfaced (#6112). Same un-landed semantics as
     # _recovering_promise: the turn announced work it never did, so it must not
@@ -6362,6 +6420,18 @@ async def _run_chat(
                 safe_chunk, _ = redact_exfiltration_urls(event.text)
                 safe_chunk, _ = redact_credentials(safe_chunk)
                 assistant_text += safe_chunk
+                if event.control_notice:
+                    # A backend control notice that arrived as assistant text
+                    # (the claude adapter's "Compacting..."). It accumulates,
+                    # streams and persists exactly like any other chunk — the
+                    # text path is deliberately untouched, because every attempt
+                    # to special-case it there was swallowed by a later layer.
+                    # Record it instead, so the post-compaction gate can tell
+                    # the turn's own ANSWER from a control frame: a notice
+                    # counted as an answer would shadow the continuation branch
+                    # and leave the request unanswered — the exact hang this PR
+                    # exists to fix.
+                    _compaction_notice_chunks.append(safe_chunk)
                 # Mirror into the never-reset whole-turn buffer so a plan
                 # emitted before later tool calls survives the tool-boundary
                 # reset of assistant_text above (planning turn only).
@@ -8169,11 +8239,37 @@ async def _run_chat(
                     _refusal_notices[:] = _still_pending
             elif event.kind == EVENT_COMPACTION_STATUS:
                 logger.debug("Main loop: compaction event text=%r", event.text)
+                if event.text == "started":
+                    # Show the compacting state (input disabled, hourglass) for
+                    # an AUTOMATIC mid-turn compaction too. This used to be
+                    # emitted only from the `/compact` branch below, so a
+                    # backend that compacted on its own left the UI looking
+                    # like an ordinary long turn. The terminal notice appended
+                    # by _broadcast_compaction_result clears the state, and the
+                    # provider layer guarantees a terminal arrives — the claude
+                    # backend's automatic compaction has none of its own, so
+                    # AcpClient synthesizes one at turn end.
+                    _compaction_started = True
+                    state.broadcast_ws(
+                        "chat_message",
+                        {"slot": slot.key, "role": "compacting", "content": ""},
+                    )
                 if _broadcast_compaction_result(state, slot, event):
                     saw_compaction = True
+                    if event.text == "completed":
+                        _compaction_completed = True
                     _produced_visible_output = True
-                    assistant_text = ""
-                    _wsred.reset()
+                    if not event.synthesized:
+                        # A REAL mid-turn terminal IS a segment boundary: text
+                        # streamed before it belongs to the window that was just
+                        # summarized, so it must not carry into the segment
+                        # flushed afterwards. A SYNTHESIZED terminal is not a
+                        # boundary — it is manufactured once the turn has ended,
+                        # so every chunk of the turn already sits in
+                        # `assistant_text`, and clearing it here would delete the
+                        # answer a backend produced AFTER compacting.
+                        assistant_text = ""
+                        _wsred.reset()
             elif event.kind == EVENT_CLEAR_STATUS:
                 slot.messages.clear()
                 # The boundary was captured against the pre-clear message
@@ -8796,8 +8892,12 @@ async def _run_chat(
             "Compaction check: first_word=%r saw_compaction=%s", first_word, saw_compaction
         )
         if first_word == "/compact" and not saw_compaction:
-            # Clear streamed "Compacting conversation..." text from kiro-cli
-            # (claude-agent-acp doesn't stream that, but the cleanup is harmless).
+            # Clear streamed "Compacting conversation..." text from kiro-cli.
+            # claude-agent-acp streams its own "Compacting..." notice, which the
+            # ACP layer recognises and reports as a status event WITHOUT deleting
+            # the chunk (`parse_claude_compaction_notice`) — so on that backend
+            # the notice is cleared by this same purge rather than by suppression
+            # upstream.
             slot.purge_chunks()
             assistant_text = ""
             _wsred.reset()
@@ -8807,6 +8907,14 @@ async def _run_chat(
             # claude-agent-acp performs /compact synchronously inside session/prompt;
             # there is no out-of-band _kiro.dev/compaction/status notification, so
             # EVENT_COMPLETE is the done signal. Skip the kiro-only async wait.
+            #
+            # This arm is now a FALLBACK, not the normal path: the ACP layer
+            # translates the adapter's own "Compacting..." / "Compacting
+            # completed." notices into EVENT_COMPACTION_STATUS, so a manual
+            # /compact on this backend normally leaves `saw_compaction` True and
+            # never reaches here. It still earns its place — if the adapter
+            # reworks those literals the translation stops matching, and this
+            # keeps `/compact` acknowledged instead of silent.
             #
             # Note: the success message is hardcoded so no redaction pass is
             # needed today. If claude-agent-acp ever returns a compaction
@@ -8878,7 +8986,27 @@ async def _run_chat(
                 # valid, so the same call re-sends the real counts as-is.
                 state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
 
-        if assistant_text:
+        # What the turn produced OF ITS OWN: `assistant_text` minus any backend
+        # control notice that arrived as assistant text (the claude adapter's
+        # "Compacting..."). The notice stays in `assistant_text` — it is real
+        # output and must stream, flush and persist — but it is not an answer,
+        # and the branch below is what decides whether one was given.
+        _answer_text = _answer_text_only(assistant_text, _compaction_notice_chunks)
+
+        # A turn whose ONLY assistant text was such a notice still has to reach
+        # the wire and the transcript, but it must not take the answer branch:
+        # the post-compaction continuation is an `elif` UNDER that branch, so
+        # entering it would shadow the continuation and leave the request
+        # unanswered — the exact hang this PR exists to fix. Flush here and fall
+        # through to the chain. (This is also why the notice cannot simply be
+        # kept out of `assistant_text`: the answer branch owns the only terminal
+        # `_flush_text_stream`, and the rolling redactor withholds the notice
+        # until something flushes it, so a skipped notice was emitted nowhere.)
+        if assistant_text and not _answer_text:
+            _flush_text_stream()
+            _flush_segment(state, slot, assistant_text, broadcast=False)
+
+        if _answer_text:
             # ── Plan format validation (planning turn only) ─────
             # `_orch_planning` excludes stage-execution turns, so a stage turn
             # whose output contains plan-like text can never re-arm/re-count.
@@ -8959,6 +9087,74 @@ async def _run_chat(
                 "Response declined by the model. Try rephrasing your request.",
                 "msg msg-err",
             )
+        elif not _armed_final and should_continue_after_compaction(
+            # The context window filled mid-turn, the backend summarized, and the
+            # turn then ended without finishing the request — the "hangs after
+            # Compacting..." symptom. kiro-cli self-heals (it re-sends the pending
+            # request once compaction settles, see `handle_compaction_loop_event`);
+            # the Claude backend does NOT, so the resume has to be injected here.
+            #
+            # Placed BEFORE the empty-response ladder below deliberately: that
+            # ladder's first rung silently replays the ORIGINAL prompt, which on a
+            # compaction-interrupted turn restarts work that already completed and
+            # is no longer in context. This arm goes straight to a CONTINUATION
+            # payload instead, telling the model the summary above is authoritative.
+            compaction_started=_compaction_started,
+            # COMPLETED only, never merely "settled": a failed compaction also
+            # reaches a terminal, and continuing after one would tell the model a
+            # summary it can rely on exists when the context was never summarized.
+            compaction_settled=_compaction_completed,
+            # An explicit `/compact` IS the user's whole request; it ended exactly
+            # as asked, so there is nothing pending to continue.
+            user_requested_compaction=(first_word == "/compact"),
+            # The turn's own answer (see `_answer_text` above), not the raw
+            # segment: this gate must not mistake "the backend said it was
+            # compacting" for "the request was answered".
+            final_segment_text=_answer_text,
+            stop_reason=_stop_reason,
+            end_turn_reason=STOP_REASON_END_TURN,
+            prompt_depth=_prompt_depth,
+            compaction_continue_retries=slot._compaction_continue_retries,
+            is_cancelled=(_stop_reason == STOP_REASON_CANCELLED),
+            refusal_reasons=_refusal_reasons,
+            in_stage_execution=slot._in_stage_execution,
+            # Same user-intent gates the promise-only arm uses, for the same
+            # reasons: a Stop pressed during compaction can surface here as a plain
+            # end_turn, and a user follow-up already queued must win over a
+            # synthetic continuation rather than be jumped ahead of.
+            stop_in_progress=_should_suppress_requeue(slot),
+            stop_generation_unchanged=(
+                getattr(slot, "_stop_generation", _stop_gen_turn_start) == _stop_gen_turn_start
+            ),
+            queue_empty=not _has_user_queued_followup(slot),
+            no_pending_steers=(not getattr(slot, "_pending_steers", None)),
+        ):
+            slot._compaction_continue_retries += 1
+            logger.info(
+                "Post-compaction stall for slot %s — context was summarized "
+                "mid-turn and the turn ended without finishing; injecting one "
+                "continuation (tool_calls=%d credits=%.4f)",
+                slot.key,
+                _turn_tool_calls,
+                _turn_credits,
+            )
+            slot.append(
+                "notice",
+                "ℹ️ The context was compacted mid-turn and the response stopped "
+                "there — continuing automatically.",
+                "msg msg-info",
+            )
+            _queue_recovery(
+                0,
+                _COMPACTION_CONTINUE_MSG,
+                kind=SYNTHETIC_RECOVERY_KIND,
+                payload=RecoveryPayload.CONTINUATION,
+            )
+            # Snapshot for the dispatch-point purge, same as the promise-only arm:
+            # catches a Stop that pressed AND resolved back to idle while the
+            # continuation sat in the queue.
+            slot._promise_only_stop_gen = getattr(slot, "_stop_generation", 0)
+            _recovering_compaction = True
         elif (
             _stop_reason != STOP_REASON_CANCELLED
             and not _produced_visible_output
@@ -9306,7 +9502,12 @@ async def _run_chat(
         # neither a re-queue nor an unacted turn is a landed turn, so all must
         # preserve the counters (an unacted turn that reset budgets would also
         # mask the transient-failure retry accounting).
-        if not _retrying_empty and not _recovering_promise and not _noticed_leak:
+        if (
+            not _retrying_empty
+            and not _recovering_promise
+            and not _recovering_compaction
+            and not _noticed_leak
+        ):
             # A non-zero stall budget reaching this reset on an OK turn is a
             # COMPLETED recovery cycle: the stall branches return early, so the
             # only way here with an armed budget is the synthetic recovery turn
@@ -9345,6 +9546,12 @@ async def _run_chat(
             # half-covered. A promise-only recovery turn is NOT landed, so it is
             # excluded here and the increment it made persists until a real turn lands.
             slot._promise_only_retries = 0
+            # Same contract for the post-compaction one-shot: re-arm per landed
+            # turn, so a long session that compacts more than once is recovered
+            # each time. A compaction-recovery turn is not landed, so its own
+            # increment survives until a real turn lands — which is what keeps a
+            # continuation that overflows again from looping.
+            slot._compaction_continue_retries = 0
             # NOTE: the poisoned-conversation streak/one-shot
             # (_prestream_exhausted_cycles / _poisoned_reset_used) are NOT
             # unconditionally reset here: this block also runs for CANCELLED
@@ -9367,7 +9574,12 @@ async def _run_chat(
 
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for slot %s", slot.key)
-        elif not _retrying_empty and not _recovering_promise and not _noticed_leak:
+        elif (
+            not _retrying_empty
+            and not _recovering_promise
+            and not _recovering_compaction
+            and not _noticed_leak
+        ):
             _maybe_consolidate(state, slot)
         state.sessions.check_context_usage(session_key, client)
         pct = client.context_usage_pct()
@@ -9376,6 +9588,7 @@ async def _run_chat(
             _stop_reason != STOP_REASON_CANCELLED
             and not _retrying_empty
             and not _recovering_promise
+            and not _recovering_compaction
             and not _noticed_leak
         ):
             # An unacted turn (promise-only, or a tool call leaked as text) is

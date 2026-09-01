@@ -463,6 +463,28 @@ class AcpEvent:
     # MCP OAuth notification fields (EVENT_MCP_OAUTH_REQUEST):
     server_name: str = ""
     oauth_url: str = ""
+    #: True when this text chunk is a backend CONTROL NOTICE that arrived as
+    #: ordinary assistant text -- today only the claude adapter's compaction
+    #: notices, which it emits as plain ``agent_message_chunk`` content with no
+    #: marker of any kind (see ``parse_claude_compaction_notice``).
+    #:
+    #: The chunk is still delivered, because classifying one is a GUESS about
+    #: prose and a layer that dropped it would turn any wrong guess into deleted
+    #: model output. This flag lets a consumer show the text while not counting it
+    #: as the turn's own ANSWER -- the distinction the dashboard needs to decide
+    #: whether a compacted turn still owes a reply. Recognition stays in the ACP
+    #: layer: a consumer that re-parsed the text would be re-deciding a protocol
+    #: question it does not own.
+    control_notice: bool = False
+    #: True when this event was SYNTHESIZED by the client rather than read off a
+    #: backend frame. Only the claude compaction terminal sets it: an automatic
+    #: compaction sends no terminal of its own, so one is manufactured once the
+    #: turn ends (``AcpClient._settle_claude_compaction``). A consumer that
+    #: treats a compaction terminal as a MID-TURN segment boundary must NOT do so
+    #: for a synthesized one -- it arrives after every text chunk of the turn, so
+    #: acting on it as a boundary discards whatever the backend produced after
+    #: compacting.
+    synthesized: bool = False
     # Native subagent list (EVENT_SUBAGENT_LIST) — kiro-cli per-subagent state.
     subagents: list[dict[str, Any]] | None = None
     #: True when the frame behind this event named no owner and was fanned out to

@@ -559,6 +559,77 @@ def parse_text_chunk(update: dict[str, Any]) -> tuple[str | None, bool]:
     return None, False
 
 
+# claude-agent-acp has no out-of-band compaction notification: where kiro-cli
+# sends ``_kiro.dev/compaction/status`` and KAS sends its summarization kinds
+# under ``_meta.kiro``, the Claude adapter reports compaction as PLAIN
+# ``agent_message_chunk`` TEXT, indistinguishable from model prose to any
+# client.  Verbatim from the shipped adapter (``dist/acp-agent.js``, the
+# ``status`` case of its SDK-message switch):
+#
+#   status === "compacting"          -> "Compacting..."
+#   compact_result === "success"     -> "\n\nCompacting completed."
+#   compact_result === "failed"      -> "\n\nCompacting failed{reason}"
+#
+# where ``reason`` is ``": " + compact_error`` or ``"."``.  Recognising these
+# here makes the Claude backend the third producer of EVENT_COMPACTION_STATUS,
+# so every consumer that already handles the kiro-cli and KAS shapes (the
+# dashboard notice + context-meter reset, the messaging drivers, and
+# ``wait_for_compaction``) works on Claude with no per-surface change.
+#
+# The notice TEXT is still forwarded on every path: classifying one of these
+# literals is a guess about bare prose, so a layer that dropped the chunk would
+# turn any wrong guess into deleted model output. Structured consumers get the
+# chunk flagged ``AcpEvent.control_notice`` instead, which lets them show it
+# without counting it as the turn's own answer.
+#
+# Only ``compact_result`` carries a terminal, and per the adapter's own comment
+# the SDK sends it for MANUAL ``/compact`` only: an AUTOMATIC mid-turn
+# compaction takes the adapter's ``compact_boundary`` case, which emits a
+# ``usage_update`` and no text at all.  So an auto-compaction produces a
+# ``started`` with no terminal, and callers must settle it at turn end rather
+# than waiting for one (see ``AcpClient._dispatch_events``).
+_CLAUDE_COMPACTION_STARTED_MARKER = "Compacting..."
+_CLAUDE_COMPACTION_COMPLETED_MARKER = "Compacting completed."
+_CLAUDE_COMPACTION_FAILED_MARKER = "Compacting failed"
+
+
+def parse_claude_compaction_notice(chunk: str) -> tuple[str, str] | None:
+    """Classify a claude-agent-acp compaction notice chunk.
+
+    Returns ``(status_type, detail)`` with ``status_type`` in
+    ``started``/``completed``/``failed`` — the same vocabulary kiro-cli's
+    ``_kiro.dev/compaction/status`` and KAS's summarization kinds already use —
+    or ``None`` when *chunk* is not one of the adapter's notices.
+
+    Matched on the STRIPPED chunk (the adapter prefixes the two terminals with
+    ``\\n\\n``), and every arm is anchored to a WHOLE chunk.  ``started`` and
+    ``completed`` are exact equality; ``failed`` accepts only the two shapes the
+    adapter actually emits — bare ``Compacting failed.`` or
+    ``Compacting failed: <reason>`` — rather than any chunk merely STARTING with
+    the marker.  Anchoring is the point, and it has to hold on all three arms: a
+    model that opens a real answer with "Compacting failed because…" would
+    otherwise be reclassified as a control notice and have its output erased
+    from the transcript.
+
+    The returned detail is NOT redacted: it is backend-echoed text, so callers
+    that surface it must pass it through their own redaction the same way they
+    already do for the kiro-cli/KAS compaction summaries.
+    """
+    text = chunk.strip()
+    if not text:
+        return None
+    if text == _CLAUDE_COMPACTION_STARTED_MARKER:
+        return "started", ""
+    if text == _CLAUDE_COMPACTION_COMPLETED_MARKER:
+        return "completed", ""
+    if text in (_CLAUDE_COMPACTION_FAILED_MARKER, f"{_CLAUDE_COMPACTION_FAILED_MARKER}."):
+        return "failed", ""
+    reason_prefix = f"{_CLAUDE_COMPACTION_FAILED_MARKER}: "
+    if text.startswith(reason_prefix):
+        return "failed", text[len(reason_prefix) :].strip().rstrip(".")
+    return None
+
+
 _ACP_SHELL_KIND = "execute"
 
 
@@ -1578,6 +1649,7 @@ __all__ = [
     "parse_usage_cost",
     "parse_prompt_token_usage",
     "parse_text_chunk",
+    "parse_claude_compaction_notice",
     "make_unified_diff",
     "select_tool_title",
     "is_shell_kind",

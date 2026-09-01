@@ -284,29 +284,67 @@ class TestToLlmEventFieldParity:
         "todo",
     }
 
+    @staticmethod
+    def _distinguishable(field: "dataclasses.Field") -> object | None:
+        """A value for *field* that its default cannot be mistaken for.
+
+        ``None`` means the field cannot be driven from its declared default
+        (``default_factory`` or required), and the caller skips it.
+        """
+        default = field.default
+        if default is dataclasses.MISSING:
+            return None
+        if isinstance(default, bool):
+            return not default
+        if isinstance(default, str):
+            return "sentinel-" + field.name
+        if isinstance(default, int):
+            return default + 7
+        if isinstance(default, float):
+            return default + 1.5
+        if default is None:
+            return {"sentinel": field.name}
+        return None
+
     def test_all_acp_event_fields_forwarded_or_allowlisted(self):
         """_to_llm_event must forward every AcpEvent field not in the
-        intentionally-dropped allowlist."""
-        all_fields = {f.name for f in dataclasses.fields(AcpEvent)}
-        # Build a source event with kind (required positional)
-        src = AcpEvent(kind="test")
+        intentionally-dropped allowlist.
+
+        Every field is driven to a value its DEFAULT cannot be mistaken for.
+        That is the whole point: an omitted field arrives at the default, so a
+        guard that compares against the default cannot fail for an omission —
+        which is the only bug this exists to catch. The earlier default-valued
+        version passed while ``synthesized`` was being dropped, disarming a
+        dashboard guard on the primary interactive surface.
+        """
+        driven: dict[str, object] = {}
+        undrivable: set[str] = set()
+        for f in dataclasses.fields(AcpEvent):
+            if f.name == "kind":
+                continue
+            value = self._distinguishable(f)
+            if value is None:
+                # default_factory (options, usage) — covered by the dedicated
+                # propagation tests above rather than by this sweep.
+                undrivable.add(f.name)
+                continue
+            driven[f.name] = value
+
+        src = AcpEvent(kind="sentinel-kind", **driven)
         result = AcpProvider._to_llm_event(src)
 
-        forwarded: set[str] = set()
-        for f in dataclasses.fields(AcpEvent):
-            src_val = getattr(src, f.name)
-            out_val = getattr(result, f.name)
-            # If the output matches the source default, it was forwarded
-            # (since we only set kind, all others are at their defaults).
-            if out_val == src_val:
-                forwarded.add(f.name)
-
-        # Verify with non-default values to be certain (kind is always set).
-        missing = all_fields - forwarded - self._INTENTIONALLY_DROPPED
+        dropped = {name for name, value in driven.items() if getattr(result, name) != value}
+        missing = dropped - self._INTENTIONALLY_DROPPED
         assert not missing, (
             f"AcpEvent fields not forwarded by _to_llm_event and not in "
             f"allowlist: {sorted(missing)}. Either add them to _to_llm_event "
             f"or document why in _INTENTIONALLY_DROPPED."
+        )
+        # The allowlist must not outlive the omission it documents.
+        assert self._INTENTIONALLY_DROPPED - undrivable <= dropped, (
+            "allowlisted field(s) are actually forwarded now: "
+            f"{sorted(self._INTENTIONALLY_DROPPED - undrivable - dropped)}. "
+            "Remove them from _INTENTIONALLY_DROPPED."
         )
 
     def test_intentionally_dropped_fields_exist_on_acp_event(self):
