@@ -611,7 +611,7 @@ than an automatic readiness failure.
 
 ### Denied Commands (`security.py` + `hooks.py`)
 
-First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). ada credential patterns are NOT in Kiro Crew's denied commands — kiro-cli has its own built-in deny list for `ada credentials` that cannot be overridden via agent config.
+First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`) — each a stable `id`, a Python regex `pattern`, a `category`, and a human `description` — blocking destructive and credential-exfiltrating operations. They are enforced **only** at Kiro Crew's own `hooks.py` PreToolUse gate (`HookManager.on_tool_call` → `PolicyAuthority.is_denied`), never by kiro-cli. They are no longer a raw `deniedCommands` array injected into a kiro agent JSON, so there is no `execute_bash`/`shell` tool-settings copy and no project-dir `agents/defaults.json` override for them. Built-ins are **default-ON but user-DISABLEABLE** from Settings → Security (see "Denied-command rules, opt-out state, and read-only auto-approve" below). Patterns for deployment-specific credential-vending CLIs are NOT in this catalog — a composed edition contributes those itself, either as an un-weakenable `SecurityOverlay` pattern or as a user-disableable rule through the `denied_rules` seam.
 
 **Credential exfiltration blocks**:
 - `.*echo.*\$AWS_SECRET.*`, `.*echo.*\$AWS_ACCESS.*`, `.*echo.*\$AWS_SESSION.*` — env var echo
@@ -623,9 +623,9 @@ First-class `DeniedCommandRule` records in `BUILTIN_DENIED_RULES` (`security.py`
 - `aws s3 cp .* s3://.*`, `aws s3 mv .* s3://.*`, `aws s3 sync .* s3://.*` — file upload exfiltration
 - `.*cat.*/\.aws/.*`, `.*cat.*/\.ssh/.*`, etc. — direct credential file reads
 
-**Allowed operations** (system prompt explicitly permits):
-- `ada credentials update` — blocked by kiro-cli's built-in deny list (not KiroCrew). Users must run ada in their own terminal; `credential_process` in `~/.aws/config` handles automatic refresh for AWS CLI commands
-- `ada profile add/list/print/delete` — also blocked by kiro-cli
+**Allowed operations** (not denied by this catalog):
+- `ada credentials update` — NOT denied by this catalog. A composed edition may deny the credential-*vending* form through its own `SecurityOverlay`; where it does, the supported pattern is to run the vending command in your own terminal once and let `credential_process` in `~/.aws/config` refresh automatically for AWS CLI calls
+- `ada profile add/list/print/delete` — NOT denied by this catalog either
 - `aws sts assume-role` — cross-account access
 - AWS CLI commands (`describe-*`, `list-*`, `get-*`, `filter-*`, `s3 cp`, `s3 ls`, etc.) — work via `credential_process`
 
