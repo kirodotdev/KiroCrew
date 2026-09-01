@@ -578,7 +578,10 @@ jobs:
     name: Backend Tests
     needs: [changes]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The slowest 3.12 shard runs ~29 minutes, so a 30-minute cap kills the
+    # job at the coverage step with every test green and Coverage Gate then
+    # reds on the missing shard artifact. Same budget as backend-test-windows.
+    timeout-minutes: 40
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
@@ -720,12 +723,12 @@ jobs:
   # Python (3.12: the preferred Windows runtime; numpy 1.x ships no 3.13
   # Windows wheel), duration-balanced shards like the POSIX matrix,
   # trace-free (--no-cov: the coverage-combine job merges ubuntu shards
-  # only). Timeout is higher than the POSIX job: windows-latest runners
-  # run the same tests measurably slower.
+  # only).
   backend-test-windows:
     name: Backend Tests (Windows)
     runs-on: windows-latest
-    # windows-latest runs the same shards measurably slower than POSIX.
+    # Same 40-minute budget as backend-test; windows-latest runs the same
+    # shards measurably slower, so this job has the least headroom of the two.
     timeout-minutes: 40
     strategy:
       # Full failure picture across shards, same as backend-test.
