@@ -662,3 +662,67 @@ def test_chat_runner_does_not_bind_steer_capable_dashboard_turns() -> None:
     text = (_src_root() / "dashboard" / "chat_runner.py").read_text(encoding="utf-8")
     assert "Dashboard turns stay unbound" in text
     assert "await publish_turn_identity(state.sessions, session_key)" in text
+
+
+def test_every_human_dispatcher_prepares_gateway_before_get_or_create() -> None:
+    """First human turn must attach the login sidecar before session/new."""
+    src = _src_root()
+    surfaces = [
+        src / "messaging" / "dispatch.py",
+        src / "slack" / "handler.py",
+        src / "slack" / "transport_dispatch.py",
+        src / "telegram" / "transport_dispatch.py",
+        src / "discord" / "transport_dispatch.py",
+    ]
+    missing: list[str] = []
+    for path in surfaces:
+        text = path.read_text(encoding="utf-8")
+        prep = text.find("await prepare_turn_gateway")
+        spawn_idxs = [
+            idx
+            for idx in (
+                text.find("await sessions.get_or_create"),
+                text.find("await self.sessions.get_or_create"),
+            )
+            if idx >= 0
+        ]
+        spawn = min(spawn_idxs) if spawn_idxs else -1
+        if prep < 0 or spawn < 0 or prep > spawn:
+            missing.append(str(path.relative_to(src)))
+        elif "agent=" not in text[prep:spawn]:
+            missing.append(f"{path.relative_to(src)} (prepare omits agent=)")
+    assert not missing, (
+        "dispatcher(s) still spawn ACP before Gateway attach: "
+        f"{missing}. Call prepare_turn_gateway before get_or_create so "
+        "session/new reads the login sidecar on the first human turn, "
+        "and pass agent= so a crew profile that denies AgentCore withholds."
+    )
+
+
+def test_shared_pipeline_prepare_is_exclusive_only() -> None:
+    """Prepare attaches the login sidecar; group turns must not stage a raw_id."""
+    pipeline = (_src_root() / "messaging" / "dispatch.py").read_text(encoding="utf-8")
+    assert "await prepare_turn_gateway(" in pipeline
+    assert "exclusive_bind_raw_id" in pipeline
+    assert "exclusive_principal" in pipeline
+
+
+def test_discord_and_telegram_prepare_gate_bind_on_inbound_provenance() -> None:
+    """Synthetic Discord/Telegram turns must not stage the human user_id.
+
+    AutoNudge sets ``InboundMessage.bind_principal`` False. Exclusive-DM
+    drains stay unbound; shared-room drains still set it False.
+    Prepare is the bind that writes the login sidecar; publish after acquire
+    is metadata-only. Gating only the later publish still attaches human
+    credentials to an unattended turn.
+    """
+    src = _src_root()
+    for rel in ("discord/transport_dispatch.py", "telegram/transport_dispatch.py"):
+        text = (src / rel).read_text(encoding="utf-8")
+        assert "await prepare_turn_gateway(" in text
+        assert "raw_id=" in text
+        assert "msg.bind_principal" in text, (
+            f"{rel} still stages prepare_turn_gateway with an unconditional "
+            "user_id. Gate raw_id on msg.bind_principal so AutoNudge and "
+            "drain replay retract leftover human credentials."
+        )

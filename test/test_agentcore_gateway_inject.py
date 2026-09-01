@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from typing import Any
 
 import pytest
@@ -30,6 +31,9 @@ class _ForcedOn(DefaultAgentIdentityProvider):
 
     def gateway_mcp_spec(self) -> dict[str, object] | None:
         return self._spec
+
+    def status(self) -> dict[str, object]:
+        return {"credentialKind": "m2m", "vaultedOwnerToken": False}
 
 
 def _install(*, posture: str, spec: dict[str, Any] | None) -> None:
@@ -147,6 +151,22 @@ def test_rebuild_preserves_non_agentcore_gateway_headers() -> None:
         reset_context()
 
 
+def test_login_withhold_drops_command_only_edition_servers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "kiro_crew.agent._extra_mcp_servers",
+        lambda: {"edition-cli": {"command": "npx", "args": ["-y", "foo"]}},
+    )
+    try:
+        _install(posture="login", spec={"url": "https://gw.example.test/mcp"})
+        mcp: dict[str, Any] = {}
+        _merge_edition_mcp(mcp)
+        assert "edition-cli" not in mcp
+    finally:
+        reset_context()
+
+
 def test_session_injects_loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
     from kiro_crew.platform.agentcore_sigv4 import (
         PROXY_AGENT_HEADER,
@@ -161,14 +181,14 @@ def test_session_injects_loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     try:
         _install(posture="workload", spec={"url": "http://127.0.0.1:18765/mcp"})
-        servers = session_gateway_servers("agent:main:main", agent="researcher")
+        servers = session_gateway_servers("dashboard:1", agent="researcher")
         assert len(servers) == 1
         assert servers[0]["url"] == "http://127.0.0.1:18765/mcp"
         assert servers[0]["type"] == "http"
-        digest = bound_proxy_auth_token("proxy-test-token", "agent:main:main", "researcher")
+        digest = bound_proxy_auth_token("proxy-test-token", "dashboard:1", "researcher")
         assert servers[0]["headers"] == [
             {"name": PROXY_AUTH_HEADER, "value": digest},
-            {"name": PROXY_SESSION_HEADER, "value": "agent:main:main"},
+            {"name": PROXY_SESSION_HEADER, "value": "dashboard:1"},
             {"name": PROXY_AGENT_HEADER, "value": "researcher"},
         ]
     finally:
@@ -184,7 +204,7 @@ def test_session_withholds_loopback_without_proxy_token(
     )
     try:
         _install(posture="workload", spec={"url": "http://127.0.0.1:18765/mcp"})
-        assert session_gateway_servers("agent:main:main") == []
+        assert session_gateway_servers("dashboard:1") == []
     finally:
         reset_context()
 
@@ -192,7 +212,7 @@ def test_session_withholds_loopback_without_proxy_token(
 def test_session_never_injects_unsigned_https() -> None:
     try:
         _install(posture="workload", spec={"url": "https://gw.example.test/mcp"})
-        assert session_gateway_servers("agent:main:main") == []
+        assert session_gateway_servers("dashboard:1") == []
     finally:
         reset_context()
 
@@ -237,13 +257,46 @@ def test_runtime_session_new_injects_loopback(monkeypatch: pytest.MonkeyPatch) -
     try:
         _install(posture="workload", spec={"url": "http://127.0.0.1:18765/mcp"})
         servers = _mcp_servers_for_session(
-            None, "kirocrew", session_key="agent:main:main", backend=ACP_BACKEND_KIRO
+            None, "kirocrew", session_key="dashboard:1", backend=ACP_BACKEND_KIRO
         )
         assert any(item.get("name") == GATEWAY_SERVER_NAME for item in servers)
         headers = next(
             item.get("headers") or [] for item in servers if item.get("name") == GATEWAY_SERVER_NAME
         )
         assert any(pair.get("name") == PROXY_AUTH_HEADER for pair in headers)
+    finally:
+        reset_context()
+
+
+def test_workload_discards_persisted_login_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leftover login bearer must not reach session/new after a posture flip."""
+    from kiro_crew.platform.agentcore_gateway import inbound_sidecar_path
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.agentcore_sigv4.workload_proxy_auth_token",
+        lambda: "proxy-test-token",
+    )
+    try:
+        _install(posture="workload", spec={"url": "http://127.0.0.1:18765/mcp"})
+        path = inbound_sidecar_path("dashboard:1")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "url": "https://gw.example.test/mcp",
+                    "headers": {"Authorization": "Bearer leftover-login-jwt"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        servers = session_gateway_servers("dashboard:1")
+        assert len(servers) == 1
+        assert servers[0]["url"] == "http://127.0.0.1:18765/mcp"
+        dumped = str(servers)
+        assert "leftover-login-jwt" not in dumped
+        assert "https://gw.example.test/mcp" not in dumped
     finally:
         reset_context()
 

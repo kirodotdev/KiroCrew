@@ -5511,6 +5511,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # whole DIRECTORY so atomic-write temps and every sidecar file are
     # covered.
     "agentcore-inbound",
+    # Authored non-managed MCP stashed while login withhold filters the
+    # runtime ``--agent`` spec. Owner-only, same class as inbound JWTs:
+    # an agent that could write it would restore arbitrary MCP commands
+    # when posture leaves login; a reader learns the operator's withheld
+    # servers. Classified as the whole DIRECTORY so atomic-write temps
+    # cannot sit as an unfenced sibling of a file leaf.
+    "agentcore-authored-mcp",
     # Which checkout the gateway executes (Dev Fleet "Make live"). The pointer is
     # resolved during startup and exec'd into, so a writable one is arbitrary
     # code execution in the gateway's own identity — the agent must not be able
@@ -9436,6 +9443,12 @@ def _valid_oauth_extension_path(path: str) -> bool:
 _OAUTH_EXTENSION_MEMO: dict[
     tuple[str, tuple[int, int] | None], frozenset[tuple[str, str]]
 ] = {}
+# Last successful parse of optional per-entry ``client_ids``. Cleared
+# with the host+path memo so a rewrite cannot keep a stale allowlist.
+_OAUTH_EXTENSION_CLIENTS_LIVE: dict[tuple[str, str], frozenset[str]] = {}
+_CLIENT_ID_CAP = 32
+_CLIENT_ID_MAX_LEN = 256
+_LOOPBACK_OAUTH_REDIRECT_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
@@ -9466,6 +9479,7 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
             return cached
         if stat_key is None:
             _OAUTH_EXTENSION_MEMO.clear()
+            _OAUTH_EXTENSION_CLIENTS_LIVE.clear()
             _OAUTH_EXTENSION_MEMO[memo_key] = frozenset()
             return frozenset()
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -9473,6 +9487,7 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
         logger.debug(
             "oauth_endpoints.json unreadable; ignoring extension file", exc_info=True
         )
+        _OAUTH_EXTENSION_CLIENTS_LIVE.clear()
         return frozenset()
 
     approved = _validate_operator_oauth_entries(raw)
@@ -9480,6 +9495,8 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
     # test suite that rewrites the file hundreds of times should not accrete.
     _OAUTH_EXTENSION_MEMO.clear()
     _OAUTH_EXTENSION_MEMO[memo_key] = approved
+    _OAUTH_EXTENSION_CLIENTS_LIVE.clear()
+    _OAUTH_EXTENSION_CLIENTS_LIVE.update(_extract_operator_oauth_clients(raw))
     return approved
 
 
@@ -9524,6 +9541,61 @@ def _validate_operator_oauth_entries(raw: object) -> frozenset[tuple[str, str]]:
             continue
         approved.add((host_norm, path))
     return frozenset(approved)
+
+
+def _extract_operator_oauth_clients(
+    raw: object,
+) -> dict[tuple[str, str], frozenset[str]]:
+    """Optional ``client_ids`` per valid host+path. Invalid ids are skipped."""
+    if not isinstance(raw, dict):
+        return {}
+    entries = raw.get(_ENDPOINT_EXTENSION_ENTRIES_KEY)
+    if not isinstance(entries, list):
+        return {}
+    out: dict[tuple[str, str], frozenset[str]] = {}
+    for entry in entries[:_ENDPOINT_EXTENSION_CAP]:
+        if not isinstance(entry, dict):
+            continue
+        host = entry.get("host")
+        path = entry.get("path")
+        if not isinstance(host, str) or not isinstance(path, str):
+            continue
+        host_norm = host.lower()
+        if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(
+            path
+        ):
+            continue
+        raw_ids = entry.get("client_ids")
+        if not isinstance(raw_ids, list):
+            continue
+        ids: set[str] = set()
+        for item in raw_ids[:_CLIENT_ID_CAP]:
+            if isinstance(item, str) and item and len(item) <= _CLIENT_ID_MAX_LEN:
+                ids.add(item)
+        if ids:
+            out[(host_norm, path)] = frozenset(ids)
+    return out
+
+
+def _operator_consent_client_ids(host: str, path: str) -> frozenset[str]:
+    """Trusted ``client_id`` values for one operator-extended endpoint."""
+    _load_operator_oauth_endpoints()
+    return _OAUTH_EXTENSION_CLIENTS_LIVE.get((host.lower(), path), frozenset())
+
+
+def _is_loopback_oauth_redirect(uri: str) -> bool:
+    """True when *uri* is an http(s) loopback redirect with no userinfo."""
+    if not isinstance(uri, str) or not uri.strip():
+        return False
+    try:
+        parsed = urlparse(uri.strip())
+    except ValueError:
+        return False
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return False
+    if "@" in parsed.netloc or parsed.params or parsed.fragment:
+        return False
+    return parsed.hostname.lower() in _LOOPBACK_OAUTH_REDIRECT_HOSTS
 
 
 # Per-process dedupe for the extension-used audit event, so repeated checks of
@@ -9589,6 +9661,54 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
         _emit_oauth_extension_used_event(*key)
         return True
     return False
+
+
+def allow_agentcore_consent_url(url: str) -> bool:
+    """True when *url* is an HTTPS, no-port, exact-match allowlisted consent endpoint.
+
+    Reuses the operator-OAuth keystone (``oauth_endpoints.json``) plus the
+    code-owned builtin set. An unknown host, explicit port, userinfo,
+    fragment, or non-HTTPS scheme is refused.     Host + path approve the
+    endpoint. A nonempty query requires both ``client_id`` and
+    ``redirect_uri`` bound: ``redirect_uri`` to a loopback http(s) URL,
+    ``client_id`` to the matching operator entry's ``client_ids``.
+    Builtin endpoints have no client list, so a query-bearing builtin
+    URL is refused. There is no second AgentCore keystone file.
+    """
+    if not isinstance(url, str):
+        return False
+    stripped = url.strip()
+    if not stripped:
+        return False
+    try:
+        parsed = urlparse(stripped)
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return False
+    try:
+        if parsed.port is not None:
+            return False
+    except ValueError:
+        return False
+    if "@" in parsed.netloc:
+        return False
+    if parsed.params or ";" in parsed.path or parsed.fragment:
+        return False
+    host = parsed.hostname.lower()
+    path = parsed.path
+    if not _approved_oauth_authorization_endpoint(host, path):
+        return False
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    client_vals = query.get("client_id") or []
+    redirect_vals = query.get("redirect_uri") or []
+    if not parsed.query:
+        return True
+    if len(client_vals) != 1 or len(redirect_vals) != 1:
+        return False
+    if not _is_loopback_oauth_redirect(redirect_vals[0]):
+        return False
+    return client_vals[0] in _operator_consent_client_ids(host, path)
 
 
 # S3 presigned URLs contain X-Amz-Signature (a 64-char hex string) that

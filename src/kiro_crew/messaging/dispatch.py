@@ -6,6 +6,7 @@ This module owns the sequence every non-Slack channel dispatcher runs around
     governance gate
     -> hook auto-reply                   (HOOK_REPLY short-circuits, no session)
     -> renderer.on_turn_start()          (typing indicator before cold start)
+    -> prepare_turn_gateway               (login sidecar before session/new)
     -> sessions.get_or_create + set_channel
     -> publish_turn_identity
     -> ctx_builder.build_message         (off-loop, embeds block)
@@ -38,6 +39,7 @@ from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import (
     channel_inbound_permitted,
     exclusive_bind_raw_id,
+    prepare_turn_gateway,
     publish_turn_identity,
 )
 from kiro_crew.messaging.link import (
@@ -559,6 +561,21 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # always did. Widening the call for everyone would make the new field's
         # cost fall on channels that gain nothing from it.
         extra: dict[str, Any] = {"model": turn.model} if turn.model else {}
+        bind_raw_id = exclusive_bind_raw_id(
+            turn.principal_raw_id,
+            exclusive=turn.exclusive_principal,
+            session_key=session_key,
+        )
+        await prepare_turn_gateway(
+            sessions,
+            session_key,
+            principal_bind_kwargs(
+                turn.user_text,
+                surface=turn.channel_type,
+                raw_id=bind_raw_id,
+            ),
+            agent=turn.agent or "",
+        )
         provider, is_new, resumed = await sessions.get_or_create(
             session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
         )

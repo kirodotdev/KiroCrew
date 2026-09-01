@@ -8,13 +8,14 @@ user.
 
 A companion may *annotate* (attach a verified JWT) through
 ``AgentIdentityProvider.annotate_principal``. It may not replace ``subject``.
-Gateway inbound attach is a later stack PR — this module only derives,
-annotates, and stores.
+Gateway sidecar attach/clear runs in ``prepare_session_gateway``
+**before** ``get_or_create``, not here.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from types import ModuleType
 from typing import Any, Mapping
@@ -25,10 +26,7 @@ from kiro_crew.constants import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
 )
-from kiro_crew.platform.context import (
-    async_safe_context_call,
-    current_context,
-)
+from kiro_crew.platform.context import async_safe_context_call, current_context
 from kiro_crew.platform.interfaces import SessionPrincipal
 from kiro_crew.platform_compat import IS_POSIX, current_user_sid, local_user_id
 
@@ -175,21 +173,25 @@ def cli_os_user() -> str:
     return sid.strip() if isinstance(sid, str) else ""
 
 
-def clear_session_principal(sessions: Any, session_key: str) -> None:
-    """Drop stored principal metadata and invoke a retract hook if present.
+async def clear_session_principal(sessions: Any, session_key: str) -> None:
+    """Drop the bound principal and retract live inbound credentials.
 
-    This PR's production unbind is ``publish_turn_identity`` calling
-    ``set_principal(None)`` — metadata only. This helper is the later-stack
-    seam: once :meth:`SessionManager.retract_principal_credentials` recycles
-    the ACP child, callers that need retract go through here so the hook
-    cannot be skipped. Nothing in this layer's turn path calls it.
+    ``set_principal(None)`` is metadata-only.
+    :meth:`SessionManager.retract_principal_credentials` recycles the ACP
+    child and drops the inbound sidecar / bearer so a synthetic turn cannot
+    reuse a human JWT. Call this **before** ``get_or_create``: after
+    acquire it would recycle the provider this turn just created.
+    Automated turns therefore unbind via ``publish_turn_identity``
+    (metadata only) once the session lease is held.
     """
     setter = getattr(sessions, "set_principal", None)
     if callable(setter):
         setter(session_key, None)
     retract = getattr(sessions, "retract_principal_credentials", None)
     if callable(retract):
-        retract(session_key)
+        result = retract(session_key)
+        if inspect.isawaitable(result):
+            await result
 
 
 def inherit_parent_principal(parent: SessionPrincipal, *, session_key: str) -> SessionPrincipal:
@@ -241,13 +243,19 @@ async def bind_session_principal(
 
     ``sessions.set_principal`` is the SessionManager hook; a stub without it
     is a no-op store so identity binding can never break a turn.
-    Gateway inbound attach is a later stack PR.
     """
     principal = derive_session_principal(surface=surface, raw_id=raw_id, session_key=session_key)
     annotated = await apply_principal_annotation(principal)
-    setter = getattr(sessions, "set_principal", None)
-    if callable(setter):
-        setter(session_key, annotated)
+    try:
+        setter = getattr(sessions, "set_principal", None)
+        if callable(setter):
+            setter(session_key, annotated)
+    except Exception:
+        logger.debug(
+            "bind_session_principal store failed for %s",
+            session_key,
+            exc_info=True,
+        )
     return annotated
 
 

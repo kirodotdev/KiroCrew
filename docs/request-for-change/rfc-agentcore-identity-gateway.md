@@ -3,7 +3,7 @@ title: AgentCore Identity and Gateway — Crew agent identity and token vending
 status: draft
 author: kyle
 created: 2026-08-27
-last-audited: 2026-08-27
+last-audited: 2026-08-29
 audited-at: 152c00e99
 doc-pr:
 implementation-prs: []
@@ -558,8 +558,7 @@ replace `subject` with a client-supplied user id.
 
 | Surface | `subject` | JWT available? |
 |---|---|---|
-| Dashboard (companion SSO) | `dashboard+{idp_sub}` | Yes — `ForJWT` (`login` posture) |
-| Dashboard (OSS token auth) | `dashboard+{local_owner}` | No JWT. `ForUserId` only in `workload` posture, and only if the local owner is the host principal |
+| Dashboard | **unbound** — `_run_chat` publishes the pid sidecar only. A queued follow-up, a linked Slack reply, or another tab can steer the same slot, so binding the opener would run that later speaker under the opener's credentials. Exclusive dashboard ownership is out of scope. | No. Login-posture `ForJWT` attach is channel/CLI exclusive. Workload Gateway (the localhost SigV4 proxy) remains available without a bound principal. |
 | Slack / Discord / … | `{channel}+{provider_user_id}` | JWT only if companion SSO has bound that channel user (`login`). Else `ForUserId` only in `workload` |
 | CLI | `cli+{os_user}` | Same as local owner |
 | Cron / TaskRunner | `cron+{job_owner}` (the operator who created the job, persisted at create time) | No interactive JWT. `workload`: M2M Gateway only. `login`: Gateway absent |
@@ -802,7 +801,7 @@ v1 implementation: `security.allow_agentcore_consent_url` reuses
 `oauth_endpoints.json` (no second keystone). Settings → Security shows
 an allowlisted GET `/api/agentcore/consent` link; unknown hosts return
 403 `consent_host_refused`. Login never attaches Gateway for `cron:` /
-`taskrunner:` keys. Workload user/OBO without
+`taskrunner:` / `subagent:` / `hook:` / `_bg` / `_hb` keys. Workload user/OBO without
 `status().vaultedOwnerToken` writes a deny sidecar (`disabled: true`).
 SEL `agentcore.consent_url` / `agentcore.unattended_denied` log
 host+path / session+subject only — never token bytes.

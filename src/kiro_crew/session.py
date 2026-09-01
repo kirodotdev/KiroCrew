@@ -1438,6 +1438,14 @@ class SessionManager:
         self._pool._warm_pool = value
 
     @property
+    def _last_claim_spawn(self) -> float | None:
+        return self._pool._last_claim_spawn
+
+    @_last_claim_spawn.setter
+    def _last_claim_spawn(self, value: float | None) -> None:
+        self._pool._last_claim_spawn = value
+
+    @property
     def _pool_fill_lock(self) -> asyncio.Lock:
         return self._pool._pool_fill_lock
 
@@ -1534,6 +1542,11 @@ class SessionManager:
         self._compaction_state = CompactionState()
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
         self._session_map = SessionMap()
+        # Serializes sidecar install + provider.start() per session key so a
+        # leftover bearer cannot reach session/new under the wrong principal.
+        # Distinct from the per-session turn semaphore: that lease is held
+        # only after registration, and start() is what reads the sidecar.
+        self._create_locks: dict[str, asyncio.Lock] = {}
 
         self._pool = WarmSessionPool(
             cast(Any, self),
@@ -2262,15 +2275,104 @@ class SessionManager:
         if session:
             session.principal = principal
 
-    def retract_principal_credentials(self, key: str) -> None:
+    def _creation_lock_for(self, key: str) -> asyncio.Lock:
+        """Per-key lock that serializes sidecar install + ``provider.start``.
+
+        Covers warm-pool claimants and cold creators. ``setdefault`` is
+        event-loop safe: no await between get and set.
+        """
+        return self._create_locks.setdefault(key, asyncio.Lock())
+
+    async def _install_staged_gateway_sidecar(self, key: str) -> None:
+        """Write the staged sidecar without consuming it or recycling.
+
+        Distinct from ``_apply_staged_gateway`` so the pre-pool source pin
+        stays valid. Called under the creation reservation before
+        ``provider.start``. A warm-pool hit whose fill already ran
+        ``session/new`` is discarded when AgentCore is on so this start
+        is the handshake that reads the sidecar.
+        """
+        from kiro_crew.platform.agentcore_gateway import install_staged_gateway_sidecar
+
+        await install_staged_gateway_sidecar(key)
+
+    def _resolve_claim_identity(
+        self, agent: str | None, extra_factory_kwargs: dict[str, Any]
+    ) -> tuple[str, object]:
+        """Canonical crew + watchdog for a warm-pool claim.
+
+        Same identity rule as the provider factory so discard, rekey, and
+        cold start cannot disagree. Runs off the loop (file reads +
+        jsonschema). An explicit ``crew_agent`` kwarg wins, including "".
+        """
+        claim_kwarg = extra_factory_kwargs.get("crew_agent")
+        cfg = KiroCrewConfig.load()
+        crew = _resolve_allocation_crew_identity(
+            cfg,
+            agent,
+            None if claim_kwarg is None else str(claim_kwarg),
+        )
+        return crew, _load_allocation_watchdog_settings(crew)
+
+    def _gateway_requires_fresh_session(self, key: str, *, agent: str = "") -> bool:
+        """True when a warm-pool ``session/new`` cannot carry this turn's Gateway.
+
+        ``agent`` is the resolved crew identity (``crew_agent`` kwarg, then
+        crew-namespace ``agent``, else empty) — the same string rekey uses.
+        """
+        from kiro_crew.platform.agentcore_gateway import gateway_requires_fresh_session
+
+        return gateway_requires_fresh_session(key, agent=agent)
+
+    async def _apply_staged_gateway(self, key: str) -> bool:
+        """Apply a staged login Gateway bind under this session's lease.
+
+        Returns True when the live ACP child was recycled and the caller
+        must cold-start. A credential-drop failure propagates so the turn
+        cannot continue with a leftover bearer.
+        """
+        from kiro_crew.platform.agentcore_gateway import apply_staged_session_gateway
+
+        return await apply_staged_session_gateway(self, key)
+
+    async def _apply_staged_gateway_under_lease(self, key: str, sess: _Session) -> bool:
+        """Apply staged Gateway while *sess* holds the turn lease.
+
+        Recycle (True) or any exception releases that lease so a later
+        ``get_or_create`` cannot block forever on a semaphore nobody owns.
+        False leaves the lease held — the caller is returning the session.
+        """
+        try:
+            recycled = await self._apply_staged_gateway(key)
+        except BaseException:
+            sess.semaphore.release()
+            raise
+        if recycled:
+            sess.semaphore.release()
+        return recycled
+
+    async def retract_principal_credentials(self, key: str) -> None:
         """Drop live inbound credentials for *key* after a principal unbind.
 
-        This layer only stores metadata on ``_Session.principal``. Gateway
-        sidecar / ACP-child recycle lands in a later stack PR; until then
-        this is a documented no-op so every unbind goes through
+        ``set_principal(None)`` is metadata-only. This hook recycles the
+        ACP child and clears the inbound sidecar so a synthetic reuse
+        cannot keep the previous human JWT / bearer. Callers go through
         :func:`kiro_crew.platform.agent_identity.clear_session_principal`
-        and cannot skip the retract hook once it exists.
+        so retract cannot be skipped when the metadata is cleared.
         """
+        key = self._fold_key(key)
+        from kiro_crew.platform.agentcore_gateway import (
+            GatewayCredentialError,
+            _recycle_live_session,
+            clear_inbound_sidecar,
+        )
+
+        recycled = await _recycle_live_session(self, key, why="unbind")
+        if not recycled:
+            raise GatewayCredentialError(
+                f"cannot retract leftover Gateway credentials for busy session {key}"
+            )
+        clear_inbound_sidecar(key)
 
     def set_approval_policy(self, key: str, policy: str) -> None:
         """Update a folded session approval policy with audit logging."""

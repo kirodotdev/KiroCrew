@@ -3309,7 +3309,9 @@ class TestReregisterRefreshesAgents:
         monkeypatch.setattr(bridges_mod, "_registration_denied", lambda *a, **k: "")
         # manifest with mcpServers truthy
         monkeypatch.setattr(
-            bridges_mod, "_register_mcp_servers", lambda n, m, live_port=None: ["srv"]
+            bridges_mod,
+            "_register_mcp_servers",
+            lambda n, m, live_port=None, io_failures=None: ["srv"],
         )
         monkeypatch.setattr(
             bridges_mod, "_register_agents",
@@ -3732,7 +3734,7 @@ class TestRefreshAppAgentsReportsIoFailures:
         import kiro_crew.apps.bridges as brmod
         self._wire(monkeypatch, brmod, tmp_path)
 
-        def _fake(app_name, manifest, app_root, io_failures=None):
+        def _fake(app_name, manifest, app_root, io_failures=None, **_kwargs):
             if io_failures is not None:
                 io_failures.append("app--agent.json")
             return []
@@ -3748,7 +3750,7 @@ class TestRefreshAppAgentsReportsIoFailures:
         self._wire(monkeypatch, brmod, tmp_path)
         monkeypatch.setattr(
             brmod, "_register_agents",
-            lambda app_name, manifest, app_root, io_failures=None: [],
+            lambda app_name, manifest, app_root, io_failures=None, **_kwargs: [],
         )
 
         collected: list[str] = []

@@ -37,6 +37,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import (
     channel_inbound_permitted,
     exclusive_bind_raw_id,
+    prepare_turn_gateway,
     publish_turn_identity,
 )
 from kiro_crew.messaging.link import canonical_key
@@ -434,6 +435,20 @@ async def handle_message_transport(
             or agent_override
             or _get_default_agent()
             or _DEFAULT_KIROCREW_AGENT
+        )
+        await prepare_turn_gateway(
+            sessions,
+            session_key,
+            principal_bind_kwargs(
+                text,
+                surface="slack",
+                raw_id=exclusive_bind_raw_id(
+                    user_id,
+                    exclusive=channel.startswith("D"),
+                    session_key=session_key,
+                ),
+            ),
+            agent=_agent or "",
         )
         client, is_new, resumed = await sessions.get_or_create(
             session_key, agent=_agent, channel_id=channel

@@ -69,6 +69,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import (
     channel_inbound_permitted,
     exclusive_bind_raw_id,
+    prepare_turn_gateway,
     publish_turn_identity,
 )
 from kiro_crew.messaging.link import (
@@ -605,6 +606,20 @@ class DiscordDispatcher:
             # fast path returns a reused session before it consults the argument.
             # That is exactly what ``!model``'s reply promises ("applies to your
             # next conversation") when one is already live, so the two agree.
+            await prepare_turn_gateway(
+                self.sessions,
+                session_key,
+                principal_bind_kwargs(
+                    text,
+                    surface="discord",
+                    raw_id=exclusive_bind_raw_id(
+                        user_id if msg.bind_principal else "",
+                        exclusive=not thread_id,
+                        session_key=session_key,
+                    ),
+                ),
+                agent=agent or "",
+            )
             provider, is_new, resumed = await self.sessions.get_or_create(
                 session_key,
                 agent=agent,

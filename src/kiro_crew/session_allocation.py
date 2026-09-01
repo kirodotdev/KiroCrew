@@ -127,6 +127,7 @@ class _AllocationOwner(Protocol):
     _pool_agent: str
     _pool_cwd: str
     _warm_pool: asyncio.Queue[tuple[LLMProvider, float]]
+    _last_claim_spawn: float | None
     _background_tasks: set[asyncio.Task[Any]]
     _bg_runtime: Any | None
 
@@ -159,6 +160,18 @@ class _AllocationOwner(Protocol):
     def _parent_runtime_kwargs(self, parent_session_key: str) -> dict[str, Any]: ...
 
     async def _drain_and_claim(self, agent: str | None) -> LLMProvider | None: ...
+
+    def _creation_lock_for(self, key: str) -> asyncio.Lock: ...
+
+    async def _install_staged_gateway_sidecar(self, key: str) -> None: ...
+
+    def _resolve_claim_identity(
+        self, agent: str | None, extra_factory_kwargs: dict[str, Any]
+    ) -> tuple[str, object]: ...
+
+    def _gateway_requires_fresh_session(self, key: str, *, agent: str = "") -> bool: ...
+
+    async def _apply_staged_gateway_under_lease(self, key: str, session: Any) -> bool: ...
 
     def _record_pool_decision(self, decision: str, key: str) -> None: ...
 
@@ -996,6 +1009,48 @@ class SessionAllocationService:
         cache[agent] = (model, directory_mtime, now)
         return model
 
+    async def _reclaim_create_lock_after_late_claim(
+        self,
+        owner: _AllocationOwner,
+        key: str,
+        create_lock: asyncio.Lock,
+        previous: Any,
+        *,
+        speculative: bool,
+    ) -> tuple[LLMProvider, bool, bool] | None:
+        """Reacquire the reservation after a late-claim release.
+
+        A successor can register while this claimant does not hold the
+        lock. Route that session through lease/apply instead of
+        installing this claimant's sidecar onto its provider.
+
+        Returns a ready ``(provider, is_new, resumed)`` when a successor
+        kept the key. ``None`` means this caller still owns the
+        reservation (lock held) and must install its sidecar.
+        """
+        while True:
+            await create_lock.acquire()
+            try:
+                async with self._lock:
+                    current = self._sessions.get(key)
+                    recycling = current is not None and owner._recycling.get(key) is current
+                if current is None or recycling or current is previous:
+                    return None
+            except BaseException:
+                create_lock.release()
+                raise
+            create_lock.release()
+            if await owner._reacquire_and_validate(key, current):
+                first_turn = current.first_turn
+                if not speculative:
+                    current.first_turn = self._deps.first_turn_nothing_armed
+                if await owner._apply_staged_gateway_under_lease(key, current):
+                    previous = current
+                    continue
+                return current.provider, first_turn.is_new, first_turn.resumed
+            await owner._evict_stale_session(key, current)
+            previous = current
+
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None:
         """Dispatch blocking provider teardown away from the event-loop thread."""
         kill = self._deps.get_sync_kill_provider()
@@ -1109,11 +1164,21 @@ class SessionAllocationService:
                 first_turn = session.first_turn
                 if not speculative:
                     session.first_turn = self._deps.first_turn_nothing_armed
-                return session.provider, first_turn.is_new, first_turn.resumed
-            await owner._evict_stale_session(key, session)
-            if not owner._provider_factory:
-                raise RuntimeError("No provider factory configured")
-            factory = owner._provider_factory
+                if await owner._apply_staged_gateway_under_lease(key, session):
+                    # Recycle popped this occupant and released its lease
+                    # so a waiter blocked in `_reacquire_and_validate`
+                    # observes the eviction instead of hanging on a
+                    # semaphore that no longer sits in the session map.
+                    if not owner._provider_factory:
+                        raise RuntimeError("No provider factory configured")
+                    factory = owner._provider_factory
+                else:
+                    return session.provider, first_turn.is_new, first_turn.resumed
+            else:
+                await owner._evict_stale_session(key, session)
+                if not owner._provider_factory:
+                    raise RuntimeError("No provider factory configured")
+                factory = owner._provider_factory
 
         # Model resolution reads agent JSON and therefore stays off the loop.
         if model is None:
@@ -1134,6 +1199,24 @@ class SessionAllocationService:
         if speculative and resume_sid and not speculative_resume:
             raise SpeculativeResumeRefused(key)
 
+        # Staged Gateway stays in the ContextVar through start/register.
+        # Applying here (before the same-key winner holds the semaphore)
+        # is what let two Discord users overwrite one sidecar and start
+        # with the other's bearer. Apply after acquire, below.
+        # Both warm-pool claimants and cold creators write the sidecar
+        # via ``_install_staged_gateway_sidecar`` (peek, no take) under
+        # one per-key creation lock so session/new cannot read a leftover
+        # or concurrent bearer. That method is not ``_apply_staged_gateway``.
+        # The lock is released by one outer finally across install /
+        # start / register; a factory exception or cancellation while
+        # waiting for ``_start_sem`` cannot leave it held. A pool process
+        # already completed session/new at fill; when AgentCore is on it
+        # is discarded after install so a fresh start() injects Gateway.
+        # An unregistered claim is put back in that same finally.
+        # Apply after that finally — the lock is not reentrant and apply
+        # may recurse.
+
+        # Try warm pool first (no resume — pooled processes have no prior session)
         self._deps.logger.info(
             "Pool decision: key=%s resume_sid=%s model=%s agent=%s "
             "pool_size=%d pool_qsize=%d cwd=%s pool_cwd=%s",
@@ -1163,147 +1246,247 @@ class SessionAllocationService:
         else:
             pool_decision = ""
 
-        pooled = None if pool_decision else await owner._drain_and_claim(agent)
-        if not pool_decision:
-            pool_decision = "hit" if pooled is not None else "miss_empty"
-        owner._record_pool_decision(pool_decision, key)
-        if pooled is not None:
-            provider = pooled
-            try:
-                if self._deps.is_acp_provider(provider):
-                    claim_kwarg = extra_factory_kwargs.get("crew_agent")
-
-                    def resolve_claim_watchdog() -> tuple[str, object]:
-                        # Resolve from a fresh config off-loop.  AcpClient.rekey
-                        # resets prompt cost/context state while rebinding the
-                        # handle and watchdog to the claiming crew.
-                        config = self._deps.load_config()
-                        crew = self._deps.resolve_crew_identity(
-                            config,
-                            agent,
-                            None if claim_kwarg is None else str(claim_kwarg),
-                        )
-                        return crew, self._deps.load_watchdog_settings(crew)
-
-                    claim_crew, claim_watchdog = await asyncio.to_thread(resolve_claim_watchdog)
-                    cast(Any, provider).client.rekey(
-                        key,
-                        channel_id,
-                        crew_agent=claim_crew,
-                        watchdog=claim_watchdog,
-                    )
-                    if model:
-                        pool_model = (
-                            owner._resolve_agent_model(owner._pool_agent)
-                            if owner._pool_agent
-                            else None
-                        )
-                        if self._deps.is_claude_backend(provider):
-                            switch_model = self._deps.to_provider_id(model, "claude_code")
-                            comparable_pool = (
-                                self._deps.to_provider_id(pool_model, "claude_code")
-                                if pool_model
-                                else pool_model
-                            )
-                        else:
-                            switch_model = self._deps.to_acp_id(model)
-                            comparable_pool = (
-                                self._deps.to_acp_id(pool_model) if pool_model else pool_model
-                            )
-                        if pool_model and switch_model != comparable_pool:
-                            try:
-                                advertised = self._deps.advertised_model_ids(
-                                    provider.available_models()
-                                )
-                            except Exception:  # pragma: no cover - defensive
-                                advertised = []
-                            if advertised and self._deps.model_is_unusable(
-                                switch_model, advertised
-                            ):
-                                self._deps.logger.warning(
-                                    "Pool post-claim: model %s is not available to this "
-                                    "account; leaving the claimed process on %s",
-                                    switch_model,
-                                    pool_model,
-                                )
-                            else:
-                                await cast(Any, provider).client.set_model(switch_model)
-                                self._deps.logger.info(
-                                    "Pool post-claim: switched model to %s",
-                                    switch_model,
-                                )
-                self._deps.logger.info(
-                    "Claimed warm-pool process for %s (agent=%s)",
-                    key,
-                    agent or owner._pool_agent,
-                )
-                owner._schedule_replenish()
-            except (asyncio.CancelledError, Exception):
-                owner._dispatch_hard_kill(provider)
-                raise
-        else:
-            effective_cwd = cwd
-            if not effective_cwd and resume_sid:
-                stored_cwd = owner._session_map.get_cwd(key)
-                if stored_cwd and Path(stored_cwd).is_dir():
-                    effective_cwd = stored_cwd
-                    self._deps.logger.info("Resume CWD override for %s: %s", key, stored_cwd)
-            provider = factory(
-                key,
-                agent=agent,
-                channel_id=channel_id,
-                model_override=model,
-                cwd=effective_cwd,
-                extra_env=extra_env,
-                **extra_factory_kwargs,
-            )
-            provider_switched = False
-            if resume_sid:
-                is_claude_now = self._deps.is_claude_provider(
-                    provider
-                ) or self._deps.is_claude_backend(provider)
-                current_provider = (
-                    constants.provider_label_claude
-                    if is_claude_now
-                    else self._deps.provider_label(provider)
-                )
-                if self._deps.detect_provider_switch(owner._session_map, key, current_provider):
-                    resume_sid = None
-                    provider_switched = True
-                    owner._session_map.clear_sid(key)
-
-            if resume_sid:
-                if self._deps.is_acp_provider(provider):
-                    cast(Any, provider).client.set_resume_session_id(resume_sid)
-                    self._deps.logger.info(
-                        "Attempting session/load for %s (sid=%s)", key, resume_sid
-                    )
-                elif self._deps.is_claude_provider(provider):
-                    cast(Any, provider).set_resume_session_id(resume_sid)
-                    self._deps.logger.info("CC resume for %s (sid=%s)", key, resume_sid)
-            async with self._start_sem:
-                try:
-                    await provider.start()
-                except (asyncio.CancelledError, Exception):
-                    owner._dispatch_hard_kill(provider)
-                    raise
-
-        # start() has published the PID, but registry ownership is not visible
-        # until the lock section below. Shield this narrow orphan-sweep window.
-        starting_pid = getattr(getattr(provider, "client", None), "_pid", None)
-        if not isinstance(starting_pid, int):
-            process = getattr(provider, "_proc", None)
-            starting_pid = (
-                process.pid if process is not None and process.returncode is None else None
-            )
-        if not isinstance(starting_pid, int):
-            starting_pid = None
-        if starting_pid is not None:
-            self._starting_pids.add(starting_pid)
-
+        # Claim only after the per-key reservation. Claiming first is what
+        # orphans a process when this coroutine is cancelled while waiting
+        # for the lock, or when sidecar install fails before register.
+        create_lock = owner._creation_lock_for(key)
+        create_held = False
+        starting_pid: int | None = None
         won_race_session: Any | None = None
         duplicate_provider: LLMProvider | None = None
+        unregistered_pool: LLMProvider | None = None
+        unregistered_spawn: float | None = None
+        claim_crew = ""
+        provider: LLMProvider | None = None
         try:
+            # Pooled and cold creators share this reservation so a warm-pool
+            # claimant cannot rewrite the inbound file while start() reads it.
+            await create_lock.acquire()
+            create_held = True
+            late_claim = None
+            async with self._lock:
+                existing = self._sessions.get(key)
+                recycling = existing is not None and owner._recycling.get(key) is existing
+                if existing is not None and not recycling:
+                    late_claim = existing
+            if late_claim is not None:
+                # Do not hold the create lock across the session semaphore
+                # (a recycler that wants this lock after releasing the
+                # turn lease would deadlock).
+                create_lock.release()
+                create_held = False
+                if not pool_decision:
+                    pool_decision = "miss_empty"
+                owner._record_pool_decision(pool_decision, key)
+                session = late_claim
+                if await owner._reacquire_and_validate(key, session):
+                    first_turn = session.first_turn
+                    if not speculative:
+                        session.first_turn = self._deps.first_turn_nothing_armed
+                    if await owner._apply_staged_gateway_under_lease(key, session):
+                        if not owner._provider_factory:
+                            raise RuntimeError("No provider factory configured")
+                        factory = owner._provider_factory
+                        ready = await self._reclaim_create_lock_after_late_claim(
+                            owner,
+                            key,
+                            create_lock,
+                            session,
+                            speculative=speculative,
+                        )
+                        if ready is not None:
+                            return ready
+                        create_held = True
+                        await owner._install_staged_gateway_sidecar(key)
+                    else:
+                        return session.provider, first_turn.is_new, first_turn.resumed
+                else:
+                    await owner._evict_stale_session(key, session)
+                    if not owner._provider_factory:
+                        raise RuntimeError("No provider factory configured")
+                    factory = owner._provider_factory
+                    ready = await self._reclaim_create_lock_after_late_claim(
+                        owner,
+                        key,
+                        create_lock,
+                        session,
+                        speculative=speculative,
+                    )
+                    if ready is not None:
+                        return ready
+                    create_held = True
+                    await owner._install_staged_gateway_sidecar(key)
+            else:
+                if not pool_decision:
+                    unregistered_pool = await owner._drain_and_claim(agent)
+                    if unregistered_pool is not None:
+                        unregistered_spawn = owner._last_claim_spawn
+                    pool_decision = "hit" if unregistered_pool is not None else "miss_empty"
+                owner._record_pool_decision(pool_decision, key)
+                await owner._install_staged_gateway_sidecar(key)
+                if unregistered_pool is not None:
+                    # Same identity as rekey / cold start — a surface profile
+                    # that denies AgentCore must not keep a process whose
+                    # selected crew profile permits it.
+                    claim_crew, _ = await asyncio.to_thread(
+                        owner._resolve_claim_identity,
+                        agent,
+                        extra_factory_kwargs,
+                    )
+                if unregistered_pool is not None and await asyncio.to_thread(
+                    owner._gateway_requires_fresh_session, key, agent=claim_crew
+                ):
+                    # Fill already ran session/new with an empty key and no
+                    # inbound sidecar. Apply after register would see the
+                    # fingerprint we just wrote and skip recycle, so login
+                    # JWT and workload SigV4 would never reach the child.
+                    owner._dispatch_hard_kill(unregistered_pool)
+                    unregistered_pool = None
+                    owner._schedule_replenish()
+                    self._deps.logger.info(
+                        "Warm-pool process for %s already completed session/new; "
+                        "discarding so Gateway inject runs on a fresh start",
+                        key,
+                    )
+            if unregistered_pool is not None:
+                provider = unregistered_pool
+                unregistered_pool = None
+                try:
+                    if self._deps.is_acp_provider(provider):
+                        claim_kwarg = extra_factory_kwargs.get("crew_agent")
+
+                        def resolve_claim_watchdog() -> tuple[str, object]:
+                            # Resolve from a fresh config off-loop.  AcpClient.rekey
+                            # resets prompt cost/context state while rebinding the
+                            # handle and watchdog to the claiming crew.
+                            config = self._deps.load_config()
+                            crew = self._deps.resolve_crew_identity(
+                                config,
+                                agent,
+                                None if claim_kwarg is None else str(claim_kwarg),
+                            )
+                            return crew, self._deps.load_watchdog_settings(crew)
+
+                        claim_crew, claim_watchdog = await asyncio.to_thread(resolve_claim_watchdog)
+                        cast(Any, provider).client.rekey(
+                            key,
+                            channel_id,
+                            crew_agent=claim_crew,
+                            watchdog=claim_watchdog,
+                        )
+                        if model:
+                            pool_model = (
+                                owner._resolve_agent_model(owner._pool_agent)
+                                if owner._pool_agent
+                                else None
+                            )
+                            if self._deps.is_claude_backend(provider):
+                                switch_model = self._deps.to_provider_id(model, "claude_code")
+                                comparable_pool = (
+                                    self._deps.to_provider_id(pool_model, "claude_code")
+                                    if pool_model
+                                    else pool_model
+                                )
+                            else:
+                                switch_model = self._deps.to_acp_id(model)
+                                comparable_pool = (
+                                    self._deps.to_acp_id(pool_model) if pool_model else pool_model
+                                )
+                            if pool_model and switch_model != comparable_pool:
+                                try:
+                                    advertised = self._deps.advertised_model_ids(
+                                        provider.available_models()
+                                    )
+                                except Exception:  # pragma: no cover - defensive
+                                    advertised = []
+                                if advertised and self._deps.model_is_unusable(
+                                    switch_model, advertised
+                                ):
+                                    self._deps.logger.warning(
+                                        "Pool post-claim: model %s is not available to this "
+                                        "account; leaving the claimed process on %s",
+                                        switch_model,
+                                        pool_model,
+                                    )
+                                else:
+                                    await cast(Any, provider).client.set_model(switch_model)
+                                    self._deps.logger.info(
+                                        "Pool post-claim: switched model to %s",
+                                        switch_model,
+                                    )
+                    self._deps.logger.info(
+                        "Claimed warm-pool process for %s (agent=%s)",
+                        key,
+                        agent or owner._pool_agent,
+                    )
+                    owner._schedule_replenish()
+                except (asyncio.CancelledError, Exception):
+                    owner._dispatch_hard_kill(provider)
+                    # Outer BaseException also kills a live provider.
+                    provider = None
+                    raise
+            else:
+                effective_cwd = cwd
+                if not effective_cwd and resume_sid:
+                    stored_cwd = owner._session_map.get_cwd(key)
+                    if stored_cwd and Path(stored_cwd).is_dir():
+                        effective_cwd = stored_cwd
+                        self._deps.logger.info("Resume CWD override for %s: %s", key, stored_cwd)
+                provider = factory(
+                    key,
+                    agent=agent,
+                    channel_id=channel_id,
+                    model_override=model,
+                    cwd=effective_cwd,
+                    extra_env=extra_env,
+                    **extra_factory_kwargs,
+                )
+                provider_switched = False
+                if resume_sid:
+                    is_claude_now = self._deps.is_claude_provider(
+                        provider
+                    ) or self._deps.is_claude_backend(provider)
+                    current_provider = (
+                        constants.provider_label_claude
+                        if is_claude_now
+                        else self._deps.provider_label(provider)
+                    )
+                    if self._deps.detect_provider_switch(owner._session_map, key, current_provider):
+                        resume_sid = None
+                        provider_switched = True
+                        owner._session_map.clear_sid(key)
+
+                if resume_sid:
+                    if self._deps.is_acp_provider(provider):
+                        cast(Any, provider).client.set_resume_session_id(resume_sid)
+                        self._deps.logger.info(
+                            "Attempting session/load for %s (sid=%s)", key, resume_sid
+                        )
+                    elif self._deps.is_claude_provider(provider):
+                        cast(Any, provider).set_resume_session_id(resume_sid)
+                        self._deps.logger.info("CC resume for %s (sid=%s)", key, resume_sid)
+                async with self._start_sem:
+                    try:
+                        await provider.start()
+                    except (asyncio.CancelledError, Exception):
+                        owner._dispatch_hard_kill(provider)
+                        # Outer BaseException also kills a live provider.
+                        provider = None
+                        raise
+
+            # start() has published the PID, but registry ownership is not visible
+            # until the lock section below. Shield this narrow orphan-sweep window.
+            starting_pid = getattr(getattr(provider, "client", None), "_pid", None)
+            if not isinstance(starting_pid, int):
+                process = getattr(provider, "_proc", None)
+                starting_pid = (
+                    process.pid if process is not None and process.returncode is None else None
+                )
+            if not isinstance(starting_pid, int):
+                starting_pid = None
+            if starting_pid is not None:
+                self._starting_pids.add(starting_pid)
+
             resumed = False
             if self._deps.is_acp_provider(provider):
                 resumed = cast(Any, provider).client.resumed
@@ -1391,11 +1574,24 @@ class SessionAllocationService:
                     self._deps.inc_session_created()
                     result = (provider, True, resumed)
         except BaseException:
-            owner._dispatch_hard_kill(provider)
+            if provider is not None:
+                owner._dispatch_hard_kill(provider)
             raise
         finally:
+            if unregistered_pool is not None:
+                # Still ours and never registered — put it back so a
+                # cancel or install failure cannot orphan the process.
+                # Keep the original spawn: resetting to now would let
+                # repeated sidecar/install failures keep a process
+                # beyond the configured TTL.
+                spawn = unregistered_spawn if unregistered_spawn is not None else time.monotonic()
+                owner._warm_pool.put_nowait((unregistered_pool, spawn))
+                unregistered_pool = None
             if starting_pid is not None:
                 self._starting_pids.discard(starting_pid)
+            if create_held:
+                create_lock.release()
+                create_held = False
 
         if won_race_session is not None:
             if duplicate_provider is not None:
@@ -1411,6 +1607,29 @@ class SessionAllocationService:
                 first_turn = won_race_session.first_turn
                 if not speculative:
                     won_race_session.first_turn = self._deps.first_turn_nothing_armed
+                if await owner._apply_staged_gateway_under_lease(key, won_race_session):
+                    if not owner._provider_factory:
+                        raise RuntimeError("No provider factory configured")
+                    maximum = constants.won_race_max_retries
+                    if _won_race_retries >= maximum:
+                        raise RuntimeError(
+                            f"get_or_create({key!r}) exceeded {maximum} "
+                            "won-race retries — session kept going stale between "
+                            "acquire and re-validate"
+                        )
+                    return await owner.get_or_create(
+                        key,
+                        agent=agent,
+                        channel_id=channel_id,
+                        approval_policy=approval_policy,
+                        model=model,
+                        cwd=cwd,
+                        extra_env=extra_env,
+                        speculative=speculative,
+                        speculative_resume=speculative_resume,
+                        _won_race_retries=_won_race_retries + 1,
+                        **extra_factory_kwargs,
+                    )
                 return (
                     won_race_session.provider,
                     first_turn.is_new,
@@ -1436,4 +1655,11 @@ class SessionAllocationService:
                 **extra_factory_kwargs,
             )
 
+        # Creator path: start() already read the peek-installed sidecar.
+        # Consume the staged bind without re-vending — a second vend
+        # mints a fresh token, changes the fingerprint, and recycles
+        # this child until won-race retries exhaust.
+        from kiro_crew.platform.agentcore_gateway import take_staged_gateway
+
+        take_staged_gateway(key)
         return result

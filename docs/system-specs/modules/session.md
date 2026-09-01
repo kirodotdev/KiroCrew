@@ -375,7 +375,7 @@ key. `user_jwt` stays `None` until a companion annotates.
 | Dashboard | **unbound** — `_run_chat` publishes the pid sidecar only. A queued follow-up, a linked Slack reply, or another tab can steer the same slot, so binding the opener would run that later speaker under the opener's credentials. The verified `request["user"]` claim is still carried on the queue item for provenance (`SlotQueueRepository` stamps `_principal_surface` / `_principal_raw_id` when both are set); it is not a session principal. |
 | Slack / Discord / Telegram / … | `{channel}+{provider_user_id}` — exclusive-speaker sessions only. Shared-group conversations and `unified:{agent}` buckets stay unbound so a mid-turn steer from another member cannot run under the originator's credentials. `drive_turn` binds `ChannelTurn.principal_raw_id` only when `exclusive_principal` is true (default false) and the key is not unified. Slack / Discord / Telegram gate `raw_id` on the DM discriminator they already carry (IM `D…` / no guild thread / `chat_type == "private"`). |
 | CLI | `cli+{passwd name}` from the process UID on POSIX, or `cli+{token SID}` on Windows, via `bind_cli_principal`. Never `LOGNAME` / `USER` / `USERNAME`. Unbound when the lookup fails. |
-| Cron / TaskRunner | **unbound** — unattended turns publish the pid sidecar only and clear any leftover human principal |
+| Cron / TaskRunner / hook / channel-agent / unknown | **unbound** — unattended turns publish the pid sidecar only and clear any leftover human principal. `cli_chat` binds as a human; `dashboard:` / channel-namespace spellings bind only when a staged turn names both surface and raw ID, or a live login sidecar proves the key. An unbound `(None, None)` stage stays unattended. `channel:` is `run_channel_agent`, not a human ChannelTurn. A custom `ctx.agent` session name is unattended. |
 | Subagent | inherit parent `subject`; child's `session_key` |
 | Injected cron / subagent-completion envelopes | **not a user** — `is_injected_envelope` is true; `derive_session_principal_for_injected` returns `None`. A normal user message raises `ValueError` so a silent `None` cannot look like "skip bind". |
 
@@ -395,33 +395,83 @@ and a core-derived `raw_id`, the same function binds the principal:
    caller, not the transcript).
 
 Callers that omit `surface` / `raw_id` write only the pid sidecar.
-Dashboard chat (`chat_runner._run_chat`) binds `surface="dashboard"`
-and `raw_id` from the verified `request["user"]` claim **only when
-`_directive_user_origin` is true and both identity fields are
-present**. Queued human turns stamp the same fields on the queue
-entry so drain can forward them; a busy-slot message that only
-carries `_directive_user_origin` would otherwise clear the
-principal. Automated turns omit `raw_id`, so `principal_bind_kwargs`
-returns `{}` regardless of message text — a user-typed cron/nudge
-prefix is not a bind signal. Unattended channel injectors (Slack
-AutoNudge, Discord/Webex synthetics with `bind_principal=False`)
-omit `raw_id` the same way and publish **after** `get_or_create`
-acquires the session, so a concurrent human turn cannot have its
-principal cleared while it still holds the lease. Exclusive-DM
-queue drains also pass `bind_principal=False` until every collapsed
-entry preserves trusted provenance — AutoNudge queues unbound and
-must not rebind a human principal on replay. Those turns
-(app-token, cron, taskrunner, synthesis, AutoNudge, exclusive- and
-shared-room drains) publish the pid
-sidecar and clear leftover principal
-**metadata** (`set_principal(None)` inside `publish_turn_identity`).
-This layer has no live inbound credentials to retract.
-`clear_session_principal` / `retract_principal_credentials` are the
-later-stack seam for recycling an ACP child and dropping a sidecar;
-they are not on this PR's production unbind path. Channel dispatchers
-pass `{channel_type, provider_user_id}` the same way without a second
-session key. `tool_input` cannot supply `subject` / `userId` —
-`reject_tool_input_identity` refuses those kwargs.
+Dashboard chat (`chat_runner._run_chat`) always publishes without
+binding a principal — exclusive dashboard ownership is out of
+scope, and login-posture `ForJWT` attach is channel/CLI exclusive.
+The verified `request["user"]` claim stays on the queue item for
+provenance only. Automated turns omit `raw_id`, so
+`principal_bind_kwargs` returns `{}` regardless of message text —
+a user-typed cron/nudge prefix is not a bind signal. Unattended
+channel injectors (Slack AutoNudge, Discord/Webex synthetics with
+`bind_principal=False`) omit `raw_id` the same way and publish
+**after** `get_or_create` acquires the session, so a concurrent
+human turn cannot have its principal cleared while it still holds
+the lease. Exclusive-DM queue drains also pass
+`bind_principal=False` until every collapsed entry preserves
+trusted provenance — AutoNudge queues unbound and must not rebind
+a human JWT on replay. Those
+turns (app-token, cron, taskrunner, synthesis, AutoNudge, exclusive-
+and shared-room drains) publish the pid sidecar without bind — metadata
+`set_principal(None)` only. `clear_session_principal` after
+`get_or_create` would recycle the provider this turn just acquired.
+
+Channel dispatchers and the dashboard **stage** Gateway via
+`prepare_turn_gateway` / `prepare_session_gateway` before
+`get_or_create`. `prepare_turn_gateway` forwards `surface` /
+`raw_id` only when `channel_namespace_of(session_key)` equals
+that surface — a Slack DM routed onto a dashboard slot stages
+an unbound principal so the dashboard owner cannot inherit the
+Slack JWT. `SessionManager.get_or_create` installs the
+staged sidecar under a per-key creation reservation that covers
+**both** warm-pool claimants and cold creators, **before**
+`provider.start()`, so `session/new` / `session/load` cannot
+read a leftover or concurrent bearer. The reservation is
+acquired before `_drain_and_claim`, and released by one outer
+`finally` across install, start, and register — a factory
+exception, a cancel while waiting for the lock or the start
+semaphore, or an install failure cannot leave the lock held or
+orphan a claimed pool process (the `finally` puts an
+unregistered claim back). A late-claim reuse releases before
+waiting on the session semaphore. After that wait, reacquiring
+the reservation rechecks the registry: a successor that
+registered while the lock was released is routed through
+lease/apply instead of installing this claimant's sidecar onto
+the successor's provider. A warm-pool process already
+completed `session/new` at fill with an empty key and no
+sidecar; when AgentCore is on (login or workload) that process
+is discarded after install so a fresh `start()` is the
+handshake that injects Gateway. The discard decision uses the
+same resolved crew identity as session creation/rekey
+(`crew_agent` kwarg, then crew-namespace `agent`, else empty)
+so a surface profile that denies AgentCore cannot keep a
+process whose selected crew profile permits it. An
+unregistered claim returned to the pool keeps its original
+spawn time so a failed claim cannot reset TTL. The install
+peeks and does not
+`take()` the ContextVar. A successful creator then consumes
+the staged bind without re-vending — a second vend would mint
+a fresh token, change the fingerprint, and recycle the child
+just started until won-race retries exhaust. Existing-session
+and won-race-loser paths still apply after the lease and
+recycle if the fingerprint changed. Apply runs after that
+`finally` because the lock is not reentrant and apply may
+recurse. The staged ContextVar is not consumed before that
+acquire, so two Discord users posting into a new thread cannot
+overwrite one sidecar.
+A pre-lease apply is what raced JWTs and recycled an in-flight
+stream. When apply recycles the child, `get_or_create` retries
+so the next `session/new` reads the sidecar.
+Callers without `get_or_create` (CLI, unit tests) attach in
+`prepare_session_gateway`. Attach, install, and apply pass the
+selected crew identity into the capability check so a task
+profile that denies AgentCore withholds the sidecar even when
+the surface profile permits it. A failed recycle or sidecar unlink
+releases the turn lease and then raises `GatewayCredentialError`
+so a later `get_or_create` cannot block forever on a semaphore
+nobody owns, and the turn cannot continue with a leftover bearer. An unbound prepare also recycles when a live principal remains
+even if the sidecar was already cleared. `tool_input` cannot supply
+`subject` / `userId` — `reject_tool_input_identity` refuses those
+kwargs.
 
 Workload Gateway MCP is injected only on `session/new` as the live
 loopback SigV4 listen URL. The default Kiro transport is `AcpRuntime`
@@ -454,8 +504,14 @@ children (`create_session` / `load_session`) inject Gateway under
 the session's `crew_agent` argument, not the parent runtime's
 identity; subagent and task-runner callers pass the child agent. `login` uses JWT
 inbound, not instance IAM. The principal must already be known *before*
-`session/new` so a later login sidecar can attach on the first human
-turn. Login inbound sidecars are a later stack PR.
+`session/new` so a login sidecar can attach on the first human turn.
+Login posture writes a `0600` inbound sidecar (JWT or URL-only OAuth
+challenge) and `session/new` reads it; unattended login sessions
+(`cron:`, `taskrunner:`, `subagent:`, `hook:`, `channel:`, `meetings-`, `wf:` /
+`wf-pool:` / `wf-author:` / `wf-unpooled:`, `_bg`, `_hb`) never attach. A companion JWT whose `expires_at` is already in the past is
+treated as absent before the sidecar is written, so `session/new`
+cannot delete it and attach rewrite it in a recycle loop. Expiry of a
+live sidecar recycles the ACP child before a new sidecar is written.
 
 ## Stop Orchestration
 

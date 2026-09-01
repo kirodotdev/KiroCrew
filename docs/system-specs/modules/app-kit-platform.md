@@ -130,6 +130,9 @@ registering an app's servers there leaked that app's private tools into surfaces
 that never installed it, and a dead HTTP entry there broke EVERY kiro session, not
 just the app's. KiroCrew sessions read only the agent config (`includeMcpJson` is
 pinned False in `agent.py`), so the narrower target is also sufficient.
+Under AgentCore `login` posture, materialized app-agent specs pin the
+same flag and keep only managed `kirocrew-*` servers after policy merge
+so kiro-cli cannot inherit or exec an ambient leftover.
 
 **Migration is finished at boot, not at disable.** `reconcile_enabled_app_resources`
 scrubs the app's entries out of the legacy shared file for every ENABLED app on
@@ -1648,7 +1651,10 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   dead URL kiro-cli dials every session or a live backend with no MCP entry.
   `AppProcess.mcp_healthy` records the value last SUCCESSFULLY written — **tri-state**,
   where `None` means *unknown* (no write has been confirmed) and only `False` means
-  confirmed-scrubbed, so it must never be read as a plain boolean. Each sweep
+  confirmed-scrubbed, so it must never be read as a plain boolean. Login withhold
+  is unlanded in the same way: `_register_mcp_servers` scrubs app-namespaced
+  servers and reports `io_failures` so `_gate_mcp_registration` returns False
+  and the watch retries after posture leaves `login`. Each sweep
   reconciles when the verdict changed **or** when that record is behind the verdict.
   The terminal exited-process path consults it too, and does not return until the entry
   is reconciled or the record is dropped. That path is the one place where giving up is

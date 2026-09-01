@@ -899,8 +899,13 @@ def _register_agents(
     manifest: AppManifest,
     app_root: Path,
     io_failures: list[str] | None = None,
+    prior_agents: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Materialize app agent JSONs into ~/.kiro/agents/ with namespaced names.
+
+    ``prior_agents``, when supplied, is a snapshot keyed by
+    materialized filename so :func:`_preserve_user_agent_edits` can
+    merge user-owned fields without a second disk read.
 
     ``io_failures``, when supplied, collects the agents skipped because of an OS-level
     read or write error. That is deliberately NARROWER than "declared minus registered":
@@ -936,6 +941,9 @@ def _register_agents(
         agents_dir.mkdir(parents=True, exist_ok=True)
         policy = _agent_mcp_policy(app_name)
         own_servers = _own_mcp_servers(app_name)
+        from kiro_crew.agent import _MANAGED_MCP_SERVERS, _login_mcp_withhold
+
+        login_withhold = _login_mcp_withhold()
 
         for agent_path_str in manifest.agents:
             agent_path = app_root / agent_path_str
@@ -995,8 +1003,14 @@ def _register_agents(
             link_path = agents_dir / link_name
 
             # Snapshot the user's own edits BEFORE the unlink below — after it there
-            # is nothing left to read (see _preserve_user_agent_edits).
-            prior_on_disk = _read_agent_config(link_path)
+            # is nothing left to read (see _preserve_user_agent_edits). A
+            # fail-closed login refresh unlinks first, so the caller passes
+            # the pre-unlink snapshot in ``prior_agents``.
+            prior_on_disk: dict[str, Any] | None = (
+                prior_agents.get(link_name) if prior_agents is not None else None
+            )
+            if prior_on_disk is None:
+                prior_on_disk = _read_agent_config(link_path)
 
             # Drop a legacy SYMLINK from an older Kiro Crew (which pointed at a file
             # inside the app) so the write below lands a real file at this path.
@@ -1013,8 +1027,12 @@ def _register_agents(
             try:
                 # The app's own servers are always granted -- they are declared by
                 # the manifest, not chosen by the user, and the agent's `tools`
-                # already references them.
-                if own_servers:
+                # already references them. Login withhold is the exception:
+                # kiro-cli loads this file's mcpServers even when mcp.json
+                # was scrubbed, so a leftover command would still exec.
+                if login_withhold:
+                    agent_data["mcpServers"] = {}
+                elif own_servers:
                     agent_data["mcpServers"] = {
                         **own_servers,
                         **(agent_data.get("mcpServers") or {}),
@@ -1036,6 +1054,19 @@ def _register_agents(
                 _servers = merged.get("mcpServers")
                 if isinstance(_servers, dict):
                     merged["mcpServers"] = _strip_ungoverned_auto_approve(_servers)
+                # Login: policy merge can copy an ambient command from global
+                # mcp.json after the empty-map wipe, and kiro-cli inherits
+                # that file when includeMcpJson is omitted. Pin both closed
+                # after preserve so a leftover grant cannot exec.
+                if login_withhold:
+                    merged["includeMcpJson"] = False
+                    _servers = merged.get("mcpServers")
+                    if isinstance(_servers, dict):
+                        merged["mcpServers"] = {
+                            name: spec
+                            for name, spec in _servers.items()
+                            if name in _MANAGED_MCP_SERVERS
+                        }
                 # The map above is FINAL — every source of servers has been merged —
                 # so this is the one point a dangling `@` grant is decidable. Warn,
                 # never reject: kiro-cli just skips the ref, so the agent works
@@ -2166,7 +2197,10 @@ def _schedule_unresolvable_warning(app_name: str, server_name: str, cfg: dict) -
 
 
 def _register_mcp_servers(
-    app_name: str, manifest: AppManifest, live_port: int | None = None
+    app_name: str,
+    manifest: AppManifest,
+    live_port: int | None = None,
+    io_failures: list[str] | None = None,
 ) -> list[str]:
     """Register app-provided MCP servers into KiroCrew's agent config.
 
@@ -2175,6 +2209,9 @@ def _register_mcp_servers(
     :func:`_resolve_live_mcp_url`) so a ``backend.port:"auto"`` app whose backend landed
     on a non-default port is still reachable by agents. ``live_port`` lets the boot/enable
     path pass the just-allocated port directly (health not yet confirmed).
+
+    ``io_failures``, when supplied, collects a withheld login register so the
+    health path does not record the empty list as landed.
 
     FAIL-SAFE for ``backend.port:"auto"`` HTTP servers (regression fix):
     a manifest's ``mcpServers.<name>.url`` carries an ILLUSTRATIVE
@@ -2194,56 +2231,107 @@ def _register_mcp_servers(
     """
     if not manifest.mcpServers:
         return []
+    from kiro_crew.agent import _login_mcp_withhold
+
     resolved_port = _live_port_for(app_name, live_port)
     registered: list[str] = []
     skipped: list[str] = []
+    withheld = False
     # Reconcile guard OUTSIDE _mcp_lock: that order is fixed everywhere, so a health
     # transition and a lifecycle registration can never deadlock against each other.
+    # Withhold is evaluated inside the lock, immediately before write: login
+    # can flip after a pre-lock peek, and a stale False would put app MCP
+    # back over a just-withheld rebuild.
     with _health_reconcile_guard(), _mcp_lock():
-        mcp_data = _read_mcp_json_unlocked(strict=True)
-        servers = mcp_data.setdefault("mcpServers", {})
-        for server_name, server_config in manifest.mcpServers.items():
-            namespaced = f"{app_name}:{server_name}"
-            cfg = dict(server_config) if isinstance(server_config, dict) else server_config
-            if isinstance(cfg, dict):
-                cfg = _pin_host_cli_command(app_name, cfg)
-            is_http = isinstance(cfg, dict) and bool(cfg.get("url"))
-            if is_http and not resolved_port:
-                # No live backend → registering the manifest's dead default-port URL would
-                # break every kiro session. Skip it AND scrub any stale entry so a prior
-                # (now-dead) registration can't keep poisoning the provider path.
-                servers.pop(namespaced, None)
-                skipped.append(namespaced)
-                continue
-            if is_http:
-                cfg["url"] = _resolve_live_mcp_url(app_name, cfg["url"], live_port=resolved_port)
-                cfg.pop("disabled", None)  # backend is live — ensure enabled
-            else:
-                # A stdio entry: resolve a bare interpreter to an absolute one — the
-                # app's venv python when present, else the running interpreter (see
-                # `resolve_stdio_command`) — and surface an unresolvable command
-                # instead of letting the tools go silently missing.
+        if _login_mcp_withhold():
+            mcp_data = _read_mcp_json_unlocked(strict=True)
+            servers = mcp_data.setdefault("mcpServers", {})
+            for server_name in manifest.mcpServers:
+                servers.pop(f"{app_name}:{server_name}", None)
+            mcp_data["mcpServers"] = dict(strip_ungoverned_auto_approve(servers))
+            _write_mcp_json_unlocked(mcp_data)
+            withheld = True
+        else:
+            mcp_data = _read_mcp_json_unlocked(strict=True)
+            servers = mcp_data.setdefault("mcpServers", {})
+            for server_name, server_config in manifest.mcpServers.items():
+                namespaced = f"{app_name}:{server_name}"
+                cfg = (
+                    dict(server_config)
+                    if isinstance(server_config, dict)
+                    else server_config
+                )
                 if isinstance(cfg, dict):
-                    cfg = resolve_stdio_command(cfg, app_root=app_dir(app_name))
-                    _schedule_unresolvable_warning(app_name, server_name, cfg)
-                    # This file is consumed by kiro-cli, which applies a declared
-                    # env per key — an app manifest naming a PATH fragment would
-                    # hand its server that fragment as the WHOLE PATH. Emit
-                    # through the shared normalization point (env.emit_env).
-                    env = cfg.get("env")
-                    if isinstance(env, dict):
-                        cfg = {**cfg, "env": emit_env(env)}
-            servers[namespaced] = cfg
-            registered.append(namespaced)
-        # LAST governance pass before this map hits disk. This file IS read by
-        # kiro-cli, and an `autoApprove` on an entry here auto-approves that
-        # server locally with NO permission request — so a manifest that ships
-        # `autoApprove` on a governed server would bypass the PreToolUse gate and
-        # the ceiling's denial, the same second route the agent-config writers
-        # already close. Strip a governed grant here too; the tools stay, they
-        # just go through the gate. Idempotent and a no-op on an ungoverned host.
-        mcp_data["mcpServers"] = dict(strip_ungoverned_auto_approve(servers))
-        _write_mcp_json_unlocked(mcp_data)
+                    cfg = _pin_host_cli_command(app_name, cfg)
+                is_http = isinstance(cfg, dict) and bool(cfg.get("url"))
+                if is_http and not resolved_port:
+                    # No live backend → registering the manifest's dead default-port
+                    # URL would break every kiro session. Skip it AND scrub any
+                    # stale entry so a prior (now-dead) registration can't keep
+                    # poisoning the provider path.
+                    servers.pop(namespaced, None)
+                    skipped.append(namespaced)
+                    continue
+                if is_http:
+                    cfg["url"] = _resolve_live_mcp_url(
+                        app_name, cfg["url"], live_port=resolved_port
+                    )
+                    cfg.pop("disabled", None)  # backend is live — ensure enabled
+                else:
+                    # A stdio entry: resolve a bare interpreter to an absolute
+                    # one — the app's venv python when present, else the running
+                    # interpreter (see `resolve_stdio_command`) — and surface an
+                    # unresolvable command instead of letting the tools go
+                    # silently missing.
+                    if isinstance(cfg, dict):
+                        cfg = resolve_stdio_command(cfg, app_root=app_dir(app_name))
+                        _schedule_unresolvable_warning(app_name, server_name, cfg)
+                        # This file is consumed by kiro-cli, which applies a
+                        # declared env per key — an app manifest naming a PATH
+                        # fragment would hand its server that fragment as the
+                        # WHOLE PATH. Emit through the shared normalization
+                        # point (env.emit_env).
+                        env = cfg.get("env")
+                        if isinstance(env, dict):
+                            cfg = {**cfg, "env": emit_env(env)}
+                servers[namespaced] = cfg
+                registered.append(namespaced)
+            # LAST governance pass before this map hits disk. This file IS read
+            # by kiro-cli, and an `autoApprove` on an entry here auto-approves
+            # that server locally with NO permission request — so a manifest
+            # that ships `autoApprove` on a governed server would bypass the
+            # PreToolUse gate and the ceiling's denial, the same second route
+            # the agent-config writers already close. Strip a governed grant
+            # here too; the tools stay, they just go through the gate.
+            # Idempotent and a no-op on an ungoverned host.
+            mcp_data["mcpServers"] = dict(strip_ungoverned_auto_approve(servers))
+            _write_mcp_json_unlocked(mcp_data)
+    if withheld:
+        logger.info(
+            "Skipped MCP registration for app %s; login posture withholds "
+            "non-managed servers",
+            app_name,
+        )
+        # Health treats an empty register with no io_failures as landed.
+        # Withhold is temporary: leaving login must retry, so report unlanded.
+        if io_failures is not None:
+            io_failures.append(f"{app_name}: login withhold")
+        # mcp.json is stripped above; materialized app-agent specs are a
+        # second load path. Rematerialize now so a leftover command cannot
+        # keep running until the next boot reconcile.
+        try:
+            _register_agents(
+                app_name, manifest, _app_resource_root(app_name), io_failures=io_failures
+            )
+        except Exception:  # noqa: BLE001 — withhold must still report unlanded
+            logger.warning(
+                "Login withhold: could not rematerialize agents for app %s",
+                app_name,
+                exc_info=True,
+            )
+            if io_failures is not None:
+                io_failures.append(f"{app_name}:<all agents>")
+        return []
     logger.info(
         "Registered %d MCP server(s) for app %s (live_port=%s); skipped %d HTTP server(s) "
         "with no live backend: %s",
@@ -2303,7 +2391,9 @@ def reregister_app_mcp_servers(
         return []
     if not manifest.mcpServers:
         return []
-    registered = _register_mcp_servers(app_name, manifest, live_port=live_port)
+    registered = _register_mcp_servers(
+        app_name, manifest, live_port=live_port, io_failures=io_failures
+    )
     # Refresh the app's AGENTS after the live server lands. register_app runs
     # _register_agents AFTER _register_mcp_servers precisely because agents COPY
     # the registered spec into their own config; this live-port path (health
@@ -2650,7 +2740,9 @@ def register_app(app_name: str) -> RegistrationResult:
 
 
 def refresh_app_agents(
-    app_name: str, io_failures: list[str] | None = None
+    app_name: str,
+    io_failures: list[str] | None = None,
+    prior_agents: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Re-materialize just this app's agent configs.
 
@@ -2663,6 +2755,10 @@ def refresh_app_agents(
     write error, so a caller that RETRIES can tell a transient failure from the several
     permanent reasons this returns an empty list — a self-managed app, a denied one, or a
     manifest declaring no agents are all "nothing for us to do", not failures.
+
+    ``prior_agents`` is an optional snapshot keyed by materialized filename
+    (``<app>--<agent>.json``) so :func:`_preserve_user_agent_edits` can
+    merge user-owned fields even when the caller already read the files.
     """
     manifest = get_app_manifest(app_name)
     if not manifest or not manifest.agents:
@@ -2678,7 +2774,9 @@ def refresh_app_agents(
     if _registration_denied(app_name, action="resource_register", app_root=app_root):
         _deregister_agents(app_name)
         return []
-    return _register_agents(app_name, manifest, app_root, io_failures=io_failures)
+    return _register_agents(
+        app_name, manifest, app_root, io_failures=io_failures, prior_agents=prior_agents
+    )
 
 
 def reconcile_enabled_app_resources() -> dict[str, int]:

@@ -2436,11 +2436,12 @@ class GatewayOrchestrator:
         CONSTRUCTION deliberately stays on the loop thread:
         ``SessionManager.__init__`` creates asyncio primitives (locks,
         semaphores, queues), so hopping the whole method into a worker thread
-        would trade a blocking bug for a thread-affinity one. (Other sync
-        filesystem steps — e.g. agent-config install — remain on the loop;
-        they are bounded small-file work, not usage-scaled. The builtin-skills
+        would trade a blocking bug for a thread-affinity one. Agent-config
+        install stays off the loop via ``asyncio.to_thread`` and skips
+        app-agent leftover-verify (``app_agent_refresh=False``) so
+        login rematerialization cannot delay readiness. The builtin-skills
         sync verifies user-owned trees before replacing them, so it runs as a
-        tracked background task in a worker thread and never gates readiness.)
+        tracked background task in a worker thread and never gates readiness.
         """
         if not self._slack_enabled:
             logger.info("Slack not configured — starting without the Slack gateway")
@@ -2454,11 +2455,13 @@ class GatewayOrchestrator:
         except Exception:
             logger.warning("Dep check failed", exc_info=True)
 
-        # Auto-install agent config so MCP servers are always up to date
+        # Auto-install agent config so MCP servers are always up to date.
+        # Off the loop, and without leftover-verify: walking every enabled
+        # app is usage-scaled and must not gate readiness.
         try:
             from kiro_crew.agent import rebuild_agent_config  # circular import
 
-            path = rebuild_agent_config()
+            path = await asyncio.to_thread(rebuild_agent_config, app_agent_refresh=False)
             logger.info("Agent config installed: %s", path)
 
             # Deliver shim + one-time stale-MCP purge automatically — the

@@ -60,6 +60,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import (
     channel_inbound_permitted,
     exclusive_bind_raw_id,
+    prepare_turn_gateway,
     publish_turn_identity,
 )
 from kiro_crew.messaging.link import (
@@ -701,6 +702,20 @@ class TelegramDispatcher:
             # Skipped when muted, as in the Discord twin.
             if not muted:
                 await renderer.on_turn_start()
+            await prepare_turn_gateway(
+                self.sessions,
+                session_key,
+                principal_bind_kwargs(
+                    text,
+                    surface="telegram",
+                    raw_id=exclusive_bind_raw_id(
+                        str(user_id) if msg.bind_principal else "",
+                        exclusive=getattr(msg, "chat_type", "private") == "private",
+                        session_key=session_key,
+                    ),
+                ),
+                agent=agent or "",
+            )
             provider, is_new, resumed = await self.sessions.get_or_create(
                 session_key,
                 agent=agent,

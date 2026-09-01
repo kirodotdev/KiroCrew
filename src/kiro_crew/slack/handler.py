@@ -87,6 +87,7 @@ from kiro_crew.messaging.commands import (
 from kiro_crew.messaging.identity import (
     channel_inbound_permitted,
     exclusive_bind_raw_id,
+    prepare_turn_gateway,
     publish_turn_identity,
 )
 from kiro_crew.messaging.link import canonical_key
@@ -3115,6 +3116,20 @@ async def handle_message(
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None
+        await prepare_turn_gateway(
+            sessions,
+            session_key,
+            principal_bind_kwargs(
+                text,
+                surface="slack",
+                raw_id=exclusive_bind_raw_id(
+                    user_id,
+                    exclusive=channel.startswith("D"),
+                    session_key=session_key,
+                ),
+            ),
+            agent=_agent or "",
+        )
         client, is_new, resumed = await sessions.get_or_create(
             session_key, agent=_agent, channel_id=channel
         )

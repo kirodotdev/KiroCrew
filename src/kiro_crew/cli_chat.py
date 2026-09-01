@@ -30,7 +30,7 @@ from kiro_crew.hooks import (
     mcp_identity_ref,
     target_paths,
 )
-from kiro_crew.platform.agent_identity import bind_cli_principal
+from kiro_crew.platform.agent_identity import bind_cli_principal, cli_os_user
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -284,10 +284,29 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     provider: LLMProvider = build_provider_factory(cfg)(
         _CLI_SESSION_KEY, agent=agent_name, channel_id=channel_id
     )
-    # Bind ``cli+{os_user}`` before the ACP child starts so a later login
-    # Gateway inject can read the principal at session/new. The CLI has no
-    # SessionManager; the principal lives on the provider until then.
-    await bind_cli_principal(_CliPrincipalStore(provider), session_key=_CLI_SESSION_KEY)
+    # Bind ``cli+{os_user}`` and attach the login sidecar before the ACP
+    # child starts so session/new sees the principal-bound Gateway. The
+    # CLI has no SessionManager; the principal lives on the provider.
+    store = _CliPrincipalStore(provider)
+    await bind_cli_principal(store, session_key=_CLI_SESSION_KEY)
+    try:
+        from kiro_crew.platform.agentcore_gateway import (
+            GatewayCredentialError,
+            prepare_session_gateway,
+        )
+
+        raw_id = await asyncio.to_thread(cli_os_user)
+        await prepare_session_gateway(
+            _CLI_SESSION_KEY,
+            surface="cli" if raw_id else None,
+            raw_id=raw_id or None,
+            sessions=store,
+            agent=agent_name,
+        )
+    except GatewayCredentialError:
+        raise
+    except Exception:
+        logger.debug("prepare_session_gateway failed for CLI", exc_info=True)
     # Built once per process, not per request: a permission request must not
     # depend on a config read succeeding while the turn is parked.
     gate = _build_tool_gate(agent_name or "")

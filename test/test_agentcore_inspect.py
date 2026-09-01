@@ -601,6 +601,33 @@ def test_synchronize_rejects_empty_id(monkeypatch: pytest.MonkeyPatch) -> None:
     assert inspect.synchronize_target("  ")["code"] == "invalid_target"
 
 
+def test_catalog_refused_consent_url_is_sel_audited(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew.sel import sel
+
+    secret = "SECRETTOKEN"
+    client = _Client(
+        targets=[{"targetId": "t1", "name": "docs", "status": "AUTHENTICATING"}],
+        details={
+            "t1": {
+                "targetId": "t1",
+                "status": "AUTHENTICATING",
+                "authorizationUrl": (f"https://evil.example.test/oauth/authorize?code={secret}"),
+            }
+        },
+    )
+    _isolate(monkeypatch, client=client)
+    snap = inspect.inspect_snapshot()
+    assert snap["targets"][0]["authorization_url"] is None
+    events = [e for e in sel().recent(limit=50) if e.get("operation") == "agentcore.consent_url"]
+    assert events
+    # recent() is newest-first; [-1] is a leftover grant from another test.
+    latest = events[0]
+    assert latest.get("outcome") == "denied"
+    assert latest.get("resources") == "evil.example.test/oauth/authorize"
+    dumped = json.dumps(events + [snap])
+    assert secret not in dumped
+
+
 def test_snapshot_scrubs_token_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _Client(
         gateway={

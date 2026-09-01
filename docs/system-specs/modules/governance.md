@@ -2178,7 +2178,82 @@ is a known value. The public `DefaultAgentIdentityProvider` is disabled, so a
 standalone host with no policy is unchanged. Standalone boot may swap
 `agent_identity` for the optional AWS adapter when that extra is opted in.
 Workload rebuild / `session/new` consult this row for Gateway MCP inject
-onto a localhost SigV4 proxy. Login attach is a later stack PR. Naming the
+onto a localhost SigV4 proxy. Login posture writes a per-session `0600`
+inbound sidecar (JWT or URL-only OAuth challenge) after bind — an
+already-expired JWT is treated as absent, not written — withholds
+non-managed MCP from the emitted `--agent` spec at rebuild and from
+`_register_mcp_servers`, which re-evaluates that gate inside `_mcp_lock`
+immediately before write so a concurrent login flip cannot restore app
+MCP, and from materialized app-agent specs (those files embed the
+app's command independently of `mcp.json`; after policy merge the
+login write also pins `includeMcpJson` false and keeps only managed
+`kirocrew-*` servers so an ambient grant cannot re-copy a command)
+(a governance or posture lookup error withholds; an explicit
+capability denial or a confirmed non-login posture does not)
+(authored
+leftovers are stashed to the owner-only data-home sidecar `stash.json`
+under `agentcore-authored-mcp` and
+restored when posture leaves login; the sidecar unlinks only when
+every restored name survives command validation; an unreadable
+sidecar is atomically replaced with the live extract so retract
+cannot drop the only remaining runtime copy (a write failure
+aborts before retract); that same
+leave-login rebuild rematerializes enabled app-agent specs in
+place so embedded MCP commands return after the host write
+without unlinking first (user `model`/`description`/`toolsSettings`
+survive); a login rebuild writes the filtered host spec first, then
+fail-closed refresh snapshots those user-owned fields, rematerializes
+in place, and prunes stale `<app>--*.json` names afterward (a swallowed
+prune `OSError` is a leftover failure). Apps with `resources="app"`
+manage their own agents and are skipped so a no-op refresh cannot
+prune or neutralize those files. Fail-closed login also walks
+disabled apps and prunes their leftovers so a failed disable
+unlink cannot leave a withheld command on disk. Login leftover-verify
+loads `list_apps()` before the host write and reuses that snapshot
+for fail-closed refresh and neutralize, so a later catalog I/O
+failure cannot skip listed-app leftover-verify. Only agents
+positively associated with a listed app are mutated — an unclaimed
+`--` filename is not a leftover (a custom `research--local.json`
+must survive). On any I/O or leftover
+failure it empties remaining listed-app `mcpServers` and pins
+`includeMcpJson` false (user `model`/`description`/`toolsSettings`
+survive) then aborts so a leftover command cannot sit under a
+successful login emit or stay executable after the host write.
+Gateway boot runs the host rebuild off the
+event loop (`asyncio.to_thread`) with
+`app_agent_refresh=False` so leftover-verify cannot delay
+readiness; Identity PUT still rematerializes. A later login rebuild merges the
+live extract into that sidecar and keeps `@server/tool` refs whose
+server name is still present; restore applies stash specs over dest
+even when dest equals the assembled live source (that equality
+cannot distinguish an agent-local override from a source edit until
+source baselines exist); only a sibling alias takeover
+drops the leftover command and its prior `@name` refs; an explicit
+empty `sourceServers` is "no live sources" (a deleted source plus a
+same-name agent override must not inherit the prior ownership list,
+or restore treats the override as a vanished source and drops it);
+the prior list is kept only when the key is absent; source
+`mcp.json` is never write-through), and never attaches for unattended
+sessions. Unattended is the default: `cli_chat` binds as a human;
+`dashboard:` / channel-namespace *spellings* bind as a human only
+when a staged turn names both a surface and a raw ID, or a live
+login sidecar proves the key. An unbound prepare that stages
+`(None, None)` (dashboard turns stay unbound so a queued follow-up
+can steer the slot) stays unattended so denial is SEL-audited
+(`ctx.agent(session="slack:forged")` stays unattended). A custom
+`ctx.agent(..., session="custom")` key, `channel:` /
+`meetings-` / `wf:` / cron / TaskRunner / hook / subagent are
+unattended. Workload user/OBO still needs a vaulted owner token
+even when the key looks interactive. Consent URLs are allowlisted through
+`security.allow_agentcore_consent_url` (the operator-OAuth keystone plus
+the builtin set). `consent_snapshot` evaluates `_identity_on(HOST_SESSION_KEY)`
+so a `surface:host` AgentCore deny cannot return a live URL through the
+unknown surface an empty key would classify as. Catalog inspect and the
+consent GET both go through `surface_consent_url`, which SEL-audits grant
+and deny (host+path only, never token bytes). A nonempty query requires
+both `client_id` and `redirect_uri` bound (`redirect_uri` to loopback
+http(s), `client_id` to that operator entry's `client_ids`); a
+query-bearing builtin URL is refused. Naming the
 row here is what lets a policy pin the capability before those chokepoints
 land.
 

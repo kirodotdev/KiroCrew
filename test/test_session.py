@@ -921,24 +921,26 @@ class TestCancelRaceCondition:
         mgr = SessionManager(cfg, provider_factory=factory)
         original_lock = mgr._lock
 
-        class CancelOnSecondLock:
-            """First acquire (fast path) passes through; second (registration) cancels."""
+        class CancelAfterStartOnLock:
+            """Cancel the first ``_lock`` acquire after ``start()`` succeeded.
 
-            def __init__(self):
-                self._calls = 0
+            ``get_or_create`` also takes ``_lock`` for the late-claim peek
+            before ``start()``, so "second acquire == registration" is stale.
+            The contract under test is the post-start / pre-register window.
+            """
 
             async def __aenter__(self):
-                self._calls += 1
-                if self._calls >= 2:
+                if mock_provider.start.await_count:
                     raise asyncio.CancelledError
                 return await original_lock.__aenter__()
 
             async def __aexit__(self, *a):
-                if self._calls < 2:
-                    return await original_lock.__aexit__(*a)
+                if mock_provider.start.await_count:
+                    return None
+                return await original_lock.__aexit__(*a)
 
         with patch.object(SessionManager, "_dispatch_hard_kill") as mock_kill:
-            mgr._lock = CancelOnSecondLock()
+            mgr._lock = CancelAfterStartOnLock()
             with pytest.raises(asyncio.CancelledError):
                 await mgr.get_or_create("test-cancel-2")
 

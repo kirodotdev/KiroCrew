@@ -27,8 +27,14 @@ own gate model is [computer-use](../system-specs/modules/computer-use.md).
 | `~/.kiro/agents/kirocrew.json` | Kiro Crew gateway (`agent.rebuild_agent_config`) | The rendered Kiro agent: model + tools + merged `mcpServers` | kiro-cli, when spawned as the `kirocrew` agent |
 | `~/.kiro/settings/mcp.json` | User | Kiro global MCP servers | kiro-cli for all agents; merged into Kiro Crew's agent file at render time |
 | `~/.kiro/crew/mcp.json` | User, via the dashboard MCP panel | specific to Kiro Crew additions and per-server tool disables | Kiro Crew gateway only |
+| `~/.kiro/crew/agentcore-authored-mcp/stash.json` | Kiro Crew gateway (login withhold) | Durable copy of non-managed `mcpServers` plus `@server` / `@server/tool` refs withheld from the runtime `--agent` spec | Restore when AgentCore posture leaves `login`; unlink only after every restored server name is still in the written `mcpServers` (a validation drop must not delete the sole durable copy). An unreadable sidecar is atomically replaced with the live extract so retract cannot drop the only remaining runtime copy; a write failure aborts before retract. Later login rebuilds merge by collision-resolved server name (numeric suffixes included) and replace a stash spec that no longer matches the live spec at that alias (sibling delete must not resurrect the leftover command under the remaining source's alias). `sourceServers: []` is an empty live catalog, not "keep the prior list" — a deleted source plus a same-name agent override must not stay marked as source-owned. App-agent files under login also pin `includeMcpJson` false and keep only managed `kirocrew-*` after policy merge. A login rebuild writes the filtered host spec first; fail-closed refresh then rematerializes in place and prunes stale ``<app>--*.json``. Apps with `resources="app"` manage their own agents and are skipped so a no-op refresh cannot prune or neutralize those files. Fail-closed login also walks disabled apps and prunes their leftovers so a failed disable unlink cannot leave a withheld command on disk. Login leftover-verify loads `list_apps()` before the host write and reuses that snapshot for fail-closed refresh and neutralize. Only agents positively associated with a listed app are mutated — an unclaimed `--` filename is not a leftover. Restore applies stash specs over dest even when dest equals the assembled live source until source baselines distinguish agent-local overrides from source edits. On refresh failure remaining listed-app `mcpServers` are emptied and `includeMcpJson` pinned false (user fields survive) before the rebuild aborts. Leave-login rematerializes in place (no prune). Gateway boot skips that walk (`app_agent_refresh=False`); Identity PUT still rematerializes off the event loop (`asyncio.to_thread`). |
 
-`rebuild_agent_config()` writes exactly **one** file, `~/.kiro/agents/kirocrew.json`.
+`rebuild_agent_config()` writes exactly **one** runtime agent file, `~/.kiro/agents/kirocrew.json`.
+Under AgentCore `login` posture that file is the **filtered** spec kiro-cli
+reads (`--agent`): only managed `kirocrew-*` servers. Operator customizations
+that already lived in `kirocrew.json` are stashed to the owner-only sidecar
+above and restored when posture leaves login. Source `mcp.json` files are
+never write-through.
 There is no second rendered agent file and no agent-file renderer for any other
 provider: Kiro Crew is KiroACP-only.
 
@@ -41,7 +47,9 @@ extension point `McpToolingProvider.extra_mcp_scopes()`
 (`platform/defaults.py`) returns `[]`. So in this repo:
 
 - `agent._extra_mcp_scope_globals()` yields no paths, so the rebuild merges the
-  Kiro global only.
+  Kiro global only. Login stash reconcile (`_source_mcp_specs`) walks the same
+  extra-scope paths, so a companion provider-global delete is not treated as
+  still live and restore cannot resurrect it.
 - `mcp_discovery._extra_scope_sources()` yields no extra scopes, so discovery
   scans the two core files only.
 - `dashboard/handlers/mcp.py`'s apply and uninstall paths write the Kiro scope
@@ -230,7 +238,18 @@ now prompts.
 `~/.kiro/agents/kirocrew.json` has two independent writers: this whole-file
 regenerator and the app-MCP registration path
 (`apps.bridges._register_mcp_servers`), which does a read-modify-write of the
-same file under `bridges._mcp_lock`. A register landing between the rebuild's
+same file under `bridges._mcp_lock`. Login withhold is the same emit-time
+gate on both writers: a governance or posture lookup error withholds
+non-managed servers; `_register_mcp_servers` re-evaluates that gate
+inside `_mcp_lock` immediately before write so a concurrent login flip
+cannot restore app MCP after a withheld rebuild. A withheld register still
+returns an empty list (nothing was mounted) but appends to `io_failures`
+when the caller supplied one, so health reconcile does not record the
+scrub as landed and retries after login ends. The same withhold also
+clears `mcpServers` on materialized `~/.kiro/agents/<app>--*.json`
+specs (kiro-cli loads those commands even after `mcp.json` is
+scrubbed) and rematerializes them from `_register_mcp_servers` and
+from a login rebuild. A register landing between the rebuild's
 app-server snapshot and its write would be silently erased by the full-file
 regeneration, so the rebuild takes that same lock across a final re-read and
 merge of the app-namespaced servers. An app server is dropped only when its app
