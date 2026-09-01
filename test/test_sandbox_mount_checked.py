@@ -213,8 +213,8 @@ def test_all_mounts_succeeding_lets_the_exec_proceed(tmp_path: Path) -> None:
     [
         (1, "propagation"),
         (2, "credential directory"),
-        (3, "exposing read-only directory"),
-        (4, "sealing read-only directory"),
+        (3, "exposing read-only path"),
+        (4, "sealing read-only path"),
         (5, "sensitive file"),
         (6, "ssh key directory"),
     ],
@@ -319,13 +319,13 @@ _ARMS: dict[str, tuple[str, str]] = {
     ),
     "site3": (
         "_mount_or_die(target, target, _MS_BIND,\n"
-        '                              "exposing read-only directory %s" % d)',
+        '                              "exposing read-only path %s" % d)',
         "_libc.mount(target, target, None, _MS_BIND, None)",
     ),
     "site4": (
         "_mount_or_die(target, target,\n"
         "                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY,\n"
-        '                              "sealing read-only directory %s" % d)',
+        '                              "sealing read-only path %s" % d)',
         "_libc.mount(target, target, None, _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
     ),
     "site5": (
