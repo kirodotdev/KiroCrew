@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.jsonl_util import RECORD_CAP, UnreadableRecord, strict_records
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,13 @@ _DEFAULT_AGENT = "kirocrew"  # key for unnamed/default-agent runs (§4.3 keying)
 _DEFAULT_WINDOW = 50  # samples retained + considered per agent
 _DEFAULT_MIN_SAMPLES = 3  # before trusting learned over the configured fallback
 _DEFAULT_PERCENTILE = 0.90
+
+# Longest single RECORD the reader will materialise. This log is agent-writable,
+# and its read feeds compact_cost_log's rewrite of the same file, so an over-cap
+# record aborts the read rather than being skipped. Named here so a test can move
+# the dial; a real sample is a tiny object (agent, mem_gb, cpu_cores, ts), so the
+# shared cap has enormous headroom over anything legitimate.
+_RECORD_CAP = RECORD_CAP
 
 
 def _cost_log_path() -> Path:
@@ -56,23 +64,54 @@ def append_cost_sample(agent: str, mem_gb: float, cpu_cores: float) -> None:
 
 
 def _read_samples() -> list[dict]:
-    """Read all valid JSONL records; skip corrupt lines; [] if missing."""
+    """Read all valid JSONL records; skip corrupt lines; [] if missing.
+
+    The degrading view of :func:`_read_samples_checked`, for the read-only
+    percentile consumer. :func:`compact_cost_log` must NOT use this one -- it
+    rewrites the log from what it parsed, so it needs the completeness flag.
+    """
+    rows, _complete = _read_samples_checked()
+    return rows
+
+
+def _read_samples_checked() -> tuple[list[dict], bool]:
+    """Return the log's records, and whether they are ALL of them.
+
+    The second element is False when a record exceeded :data:`_RECORD_CAP` and
+    was therefore refused. That cannot be treated like a corrupt line: this log
+    is agent-writable, so one crafted newline-free line would otherwise be
+    materialised whole, and
+    :func:`kiro_crew.jsonl_util.strict_records` stops the read instead of
+    skipping it. The rows read before that point are kept -- they are real
+    samples the percentile consumer can still use -- but the flag has to reach
+    :func:`compact_cost_log`, which REPLACES the file with what it parsed and
+    would otherwise delete the refused record permanently.
+    """
     out: list[dict] = []
+    complete = True
     try:
-        with open(_cost_log_path(), encoding="utf-8") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    rec = json.loads(raw)
-                except ValueError:
-                    continue  # skip corrupt line, keep going
-                if isinstance(rec, dict):
-                    out.append(rec)
+        path = _cost_log_path()
+        try:
+            with open(path, "rb") as fh:
+                for raw in strict_records(fh, path, cap=_RECORD_CAP):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        rec = json.loads(raw)
+                    except ValueError:
+                        continue  # skip corrupt line, keep going
+                    if isinstance(rec, dict):
+                        out.append(rec)
+        except UnreadableRecord:
+            complete = False
+            # "unreadable", not "over-cap": UnreadableRecord also covers invalid
+            # UTF-8, and this line is what an operator sees, so naming only the
+            # cap would point them at a size problem that may not exist.
+            logger.warning("cost log has a record that could not be read; read as incomplete")
     except (FileNotFoundError, OSError):
-        return []
-    return out
+        return [], True
+    return out, complete
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -129,8 +168,17 @@ def compact_cost_log(window: int = _DEFAULT_WINDOW) -> None:
     Safe to call anytime; a sample appended in the brief read→replace window
     may be dropped, which is harmless for an approximate p90. No-op when the
     log is already within bounds.
+
+    Fails closed on an incomplete read. This function REPLACES the log with the
+    records it parsed, so trimming from a partial read would permanently delete
+    the over-cap record the reader refused -- the same reason
+    ``session_storage``'s manifest reader aborts instead of skipping. Leaving
+    the log untrimmed costs bounded disk; compacting would cost data.
     """
-    samples = _read_samples()
+    samples, complete = _read_samples_checked()
+    if not complete:
+        logger.warning("cost log unreadable in full; skipping compaction to avoid data loss")
+        return
     if not samples:
         return
     by_agent: dict[str, list[dict]] = {}

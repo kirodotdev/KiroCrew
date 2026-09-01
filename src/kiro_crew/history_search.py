@@ -17,6 +17,8 @@ from collections.abc import Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
+from kiro_crew.jsonl_util import bounded_records
+
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
 
@@ -1207,8 +1209,9 @@ class SessionCatalogProjection:
         not read" from "no text", and that distinction is load-bearing (a read
         failure must not be cached).
         """
-        with open(self._log._path(key), encoding="utf-8") as handle:
-            for line in handle:
+        path = self._log._path(key)
+        with open(path, "rb") as handle:
+            for line in bounded_records(handle, path, label="history_search"):
                 line = line.strip()
                 if not line:
                     continue
