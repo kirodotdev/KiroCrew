@@ -3278,18 +3278,17 @@ def _seed_kas_permissions(config: dict[str, Any]) -> None:
     if config.get("permissions") is not None:
         return
 
-    # circular import: `kiro_crew.acp.__init__` pulls in the runtime, which reaches
-    # back into config/agent — and it is also the whole ACP stack, which this
-    # module has no business dragging onto the gateway boot path just to write one
-    # JSON field. The imported module itself depends on nothing in the package.
-    from kiro_crew.acp.kas_permissions import (  # noqa: PLC0415
-        allowed_tools_to_permissions,
+    # Routed through the agent-sdk boundary: ``drivers.acp`` is the one layer
+    # permitted to import ``kiro_crew.acp``, and agent.py's direct-import count
+    # is a shrink-only baseline that must not grow. Function-local for the same
+    # boot-path reason as every import here — this module has no business
+    # dragging the ACP stack onto the gateway boot path just to write one JSON
+    # field.
+    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+        derived_agent_permissions,
     )
 
-    derived = allowed_tools_to_permissions(
-        config.get("allowedTools"), agent_id=Path(AGENT_FILENAME).stem
-    )
-    config["permissions"] = derived if derived is not None else {"rules": []}
+    config["permissions"] = derived_agent_permissions(config.get("allowedTools"), AGENT_FILENAME)
 
 
 def _may_auto_approve(ref: str) -> bool:
@@ -5148,16 +5147,17 @@ def _install_conductor_agent() -> None:
     # as a literal: the rules come out byte-identical, a later edit to
     # ``allowedTools`` carries through, and a ceiling that strips a grant strips
     # its KAS rule with it (a hand-written ``kirocrew-core/*`` allow would have
-    # survived the filter on the KAS backend). ``{"rules": []}`` when nothing
-    # qualifies — the key's mere PRESENCE is what makes KAS load the spec at all.
-    from kiro_crew.acp.kas_permissions import (  # noqa: PLC0415 - circular import
-        allowed_tools_to_permissions,
+    # survived the filter on the KAS backend). Routed through the agent-sdk
+    # boundary like the pipeline conductor below: ``drivers.acp`` is the one
+    # layer permitted to import ``kiro_crew.acp``, and agent.py's direct-import
+    # count is a shrink-only baseline that must not grow.
+    from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+        derived_agent_permissions,
     )
 
-    derived = allowed_tools_to_permissions(
-        config["allowedTools"], agent_id=Path(_CONDUCTOR_AGENT_FILENAME).stem
+    config["permissions"] = derived_agent_permissions(
+        config["allowedTools"], _CONDUCTOR_AGENT_FILENAME
     )
-    config["permissions"] = derived if derived is not None else {"rules": []}
     kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = kiro_agents_dir_path() / _CONDUCTOR_AGENT_FILENAME
     _atomic_json_write(path, config)
