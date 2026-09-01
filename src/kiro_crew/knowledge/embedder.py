@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import embeddings as _embeddings
+from kiro_crew.embeddings import PRIORITY_NORMAL
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE
 
@@ -110,13 +111,20 @@ class InProcessEmbedder:
             return self._available
         return await run_in_embed_pool(self.is_available)
 
-    def embed(self, text: str) -> list[float] | None:
-        """Embed a single text. Returns float list or None on failure."""
+    def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
+        """Embed a single text. Returns float list or None on failure.
+
+        *priority* is the scheduling class (``PRIORITY_*``) forwarded to the
+        shared backend, which orders competing callers on the one in-process
+        model and sizes its thread pool per class — corpus loops pass
+        ``PRIORITY_BULK`` so they run on the reduced bulk pool and an
+        interactive embed is served ahead of them.
+        """
         if not text.strip():
             return None
         if not self.is_available():
             return None
-        vec = self._get_embedder().embed(text)
+        vec = self._get_embedder().embed(text, priority=priority)
         if vec is None:
             # The backend stopped producing vectors (reset/reload failure) —
             # invalidate the cached availability so the next call re-probes
@@ -125,9 +133,18 @@ class InProcessEmbedder:
         return vec
 
     def embed_for_item(
-        self, title: str, summary: str | None, content: str | None = None
+        self,
+        title: str,
+        summary: str | None,
+        content: str | None = None,
+        *,
+        priority: int = PRIORITY_NORMAL,
     ) -> list[float] | None:
-        """Embed title + summary + chunk content for knowledge items."""
+        """Embed title + summary + chunk content for knowledge items.
+
+        *priority* is forwarded to :meth:`embed` (see there); the default keeps
+        every existing caller on the normal interactive class.
+        """
         parts = [title]
         if summary:
             parts.append(summary)
@@ -142,7 +159,7 @@ class InProcessEmbedder:
                 )
                 content = content[: self.content_budget]
             parts.append(content)
-        return self.embed(" ".join(parts))
+        return self.embed(" ".join(parts), priority=priority)
 
 
 # Keep the old name as an alias so references to OllamaEmbedder in type

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
+from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_NORMAL, bulk_pace_delay
 from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.security import (
     is_sensitive_path,
@@ -1230,8 +1232,30 @@ def count_stale_items(store, sig: str, *, now: datetime | None = None) -> int:
         (sig, cutoff)).fetchone()["c"]
 
 
+def _embed_row_paced(embedder, title, summary, content, priority: int,
+                     pace: bool) -> "tuple[list[float] | None, float]":
+    """Embed one row and derive its pace delay, both on the worker thread.
+
+    Runs via ``run_in_executor`` — the inference is the CPU floor, and the
+    delay is computed here rather than on the event loop because
+    ``bulk_pace_delay`` re-reads the duty cycle from ``config.json`` on every
+    call (an uncached stat + read + parse that must not run per row on the
+    gateway loop; the no-blocking-call-on-event-loop rule). This is the same
+    division the vector-memory sweep uses: measure and derive on the sweep's
+    own thread, never on the loop. Measuring around the embed call itself also
+    keeps the executor queue wait out of the paced elapsed. The delay derives
+    from measured elapsed time (0.0 for ``elapsed <= 0``), so a row that
+    failed fast paces to nothing on its own — failures need no separate
+    branch. Returns ``(vec, delay)``; ``delay`` is always 0.0 when unpaced.
+    """
+    started = _time.monotonic()
+    vec = embedder.embed_for_item(title, summary, content, priority=priority)
+    delay = bulk_pace_delay(_time.monotonic() - started) if pace else 0.0
+    return vec, delay
+
+
 async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
-                             force: bool = False) -> int:
+                             force: bool = False, pace: bool = True) -> int:
     """Re-embed active items in place, stamping the current embedding signature.
 
     Sig-gated by default: only items whose stored ``embedding_sig`` differs from the
@@ -1247,9 +1271,24 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
 
     Serial single-item embed (the in-process embedder is the CPU floor and fans out
     internally); batch size is only the commit/progress cadence, not a throttle.
+
+    ``pace`` keys the sweep's resource envelope on attendance. This is an
+    unattended corpus loop when the watcher self-heal fires it — to a user, a
+    full-corpus re-embed at full speed is indistinguishable from a runaway
+    process — so the paced default embeds at ``PRIORITY_BULK`` (the reduced
+    ``memory.embedding_bulk_threads`` pool) and idles between rows per
+    ``memory.embedding_bulk_duty`` (see :func:`kiro_crew.embeddings.bulk_pace_delay`).
+    Paced is the default so a caller that forgets the argument gets the quiet
+    behaviour. ``pace=False`` is for a sweep a human explicitly asked for and is
+    watching a progress bar on: it embeds at ``PRIORITY_NORMAL`` and never idles.
+    ``pace`` selects the scheduling class as well as the idling — an attended
+    sweep that only skipped the pauses would stay on the reduced bulk pool and
+    run several times slower than before pacing existed, on exactly the path
+    declared "full speed".
     """
     loop = asyncio.get_running_loop()
     sig = embedder_signature(embedder)
+    priority = PRIORITY_BULK if pace else PRIORITY_NORMAL
     processed = 0
     failed = 0
     # Keep the COUNT predicate and the page predicate as separate strings so neither
@@ -1278,9 +1317,30 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
         if not rows:
             break
         for row in rows:
-            vec = await loop.run_in_executor(
-                None, embedder.embed_for_item, row["title"], row["summary"], row["content"]
+            # functools.partial rather than a local closure: run_in_executor
+            # forwards positional args only, and the partial names the bound
+            # arguments at the call site instead of one hop away in a nested
+            # def. Embed + delay derivation both happen on the worker thread
+            # (see _embed_row_paced); only the idle itself runs here.
+            vec, delay = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    _embed_row_paced,
+                    embedder,
+                    row["title"], row["summary"], row["content"],
+                    priority, pace,
+                ),
             )
+            if delay > 0:
+                # Idle between this row's inference and its write — the
+                # interruption-safe point: a sweep killed mid-pause leaves the
+                # row's sig stale and the next sweep re-embeds it, the same
+                # idempotent contract every row it never reached already has.
+                # ``await asyncio.sleep`` is this coroutine's equivalent of the
+                # vector-memory sweep's on-thread pause: it yields the event
+                # loop and holds neither the DB connection nor the model, so an
+                # interactive embed arriving mid-pause is served at full speed.
+                await asyncio.sleep(delay)
             now_iso = datetime.now().isoformat()
             # Per-item SQLite writes are OFFLOADED (asyncio.to_thread): a sync
             # write can block up to the busy_timeout under a concurrent writer,

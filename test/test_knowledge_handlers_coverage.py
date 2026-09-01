@@ -1029,7 +1029,7 @@ class TestRebuildEmbeddingsJob:
     async def test_completed_job_records_processed_count(self, store, monkeypatch):
         job_id = _add_job(store, "reb-1")
 
-        async def _fake_rebuild(_store, _emb, *, job_id, force):
+        async def _fake_rebuild(_store, _emb, *, job_id, force, pace):
             return 5
 
         monkeypatch.setattr(f"{MODULE}.rebuild_embeddings", _fake_rebuild)

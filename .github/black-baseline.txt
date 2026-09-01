@@ -816,7 +816,6 @@ test/test_knowledge_ingest_magic_byte.py
 test/test_knowledge_items_source_filter.py
 test/test_knowledge_kiroignore.py
 test/test_knowledge_project_docs.py
-test/test_knowledge_search_upgrade.py
 test/test_knowledge_source_spend.py
 test/test_knowledge_sync_local_file.py
 test/test_knowledge_workspace_autosource.py
