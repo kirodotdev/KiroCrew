@@ -90,6 +90,15 @@ describe('latinLeaks', () => {
     expect(latinLeaks('Español')).toEqual([])
   })
 
+  it('exempts the Connections launch-set provider brands', () => {
+    // The default-on gallery renders these registry names as plain text on the
+    // capabilities-mcp surface; they are DNT proper nouns, not catalog leaks.
+    for (const brand of ['Atlassian', 'Linear', 'Notion', 'Stripe', 'Vercel']) {
+      expect(ALWAYS_LATIN).toContain(brand)
+      expect(latinLeaks(brand)).toEqual([])
+    }
+  })
+
   it('removes longer terms first, so GitHub does not leave a bare Hub', () => {
     expect(ALWAYS_LATIN).toContain('Git')
     expect(ALWAYS_LATIN).toContain('GitHub')

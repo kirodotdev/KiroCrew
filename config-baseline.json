@@ -7469,10 +7469,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Connections UI",
-      "help": "Show the Connections gallery (held for a later release).",
+      "help": "Show the Connections services gallery (set false to hide it).",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "timezone",

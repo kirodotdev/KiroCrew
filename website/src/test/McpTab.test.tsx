@@ -50,8 +50,9 @@ beforeEach(() => {
   Object.values(mockApi).forEach(m => m.mockReset())
   mockApi.mcpServers.mockResolvedValue([server('alpha'), server('beta')])
   mockApi.mcpGlobalScopes.mockResolvedValue({ scopes: [] })
-  // connections_ui is launch-held OFF by default; the in-place sign-in only
-  // renders when a test opts it on. Off ⇒ managed rows fall to the chat prose.
+  // A config with no `connections_ui` key is the shipped default, and it now
+  // resolves the gate ON — so the in-place sign-in is available to any managed
+  // row unless a test pulls the escape hatch with an explicit false.
   mockApi.kirocrewConfig.mockResolvedValue({})
 })
 
@@ -275,11 +276,12 @@ describe('McpTab needs_auth status', () => {
   /**
    * #6274: a row that needs a sign-in AND resolves to a curated Connections
    * provider (name === slug AND url === the registry mcp_url) can start the
-   * sign-in in place, reusing the headless mint engine — but ONLY when the
-   * Connections UI is unlocked (`connections_ui: true`). A non-resolvable row,
-   * or the flag held closed, keeps the chat prose unchanged — minting is never
-   * offered for arbitrary URLs (parked maintainer decision #4286), and the mint
-   * engine is not a released surface while the gallery is held.
+   * sign-in in place, reusing the headless mint engine — but only while the
+   * Connections UI is on, which is now the default. A non-resolvable row, or an
+   * instance that pulled the `connections_ui: false` escape hatch, keeps the chat
+   * prose unchanged — minting is never offered for arbitrary URLs (parked
+   * maintainer decision #4286), and with no cards on screen chat is again the
+   * only authorize prompt.
    */
   it('offers an in-place Sign in on a resolvable managed row when connections_ui is on', async () => {
     mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: true })
@@ -300,11 +302,33 @@ describe('McpTab needs_auth status', () => {
     expect(screen.queryByRole('link', { name: /Go to chat/ })).not.toBeInTheDocument()
   })
 
-  it('FIX 1: falls back to the chat prose on a resolvable managed row when connections_ui is OFF', async () => {
-    // The mint engine is launch-held behind connections_ui. With it off, even a
-    // registry-resolvable row must show the same chat guidance a non-registry row
-    // does — chat stays the only authorize prompt while the gallery is closed.
-    mockApi.kirocrewConfig.mockResolvedValue({}) // flag off (also the default)
+  it('offers the in-place Sign in with no connections_ui key at all — the shipped default', async () => {
+    // The launch flip reaches this surface too: an install that never set the
+    // flag gets the same in-place sign-in an explicit `true` gets. `beforeEach`
+    // already mocks a config with no Connections key, so this test deliberately
+    // does not override it.
+    mockApi.mcpServers.mockResolvedValue([
+      {
+        ...remote('needs_auth'),
+        name: 'notion',
+        url: 'https://mcp.notion.com/mcp',
+        authChallenge: true,
+        authGrantPresent: false,
+      },
+    ])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sign in/ })).toBeInTheDocument())
+    expect(screen.queryByRole('link', { name: /Go to chat/ })).not.toBeInTheDocument()
+  })
+
+  it('FIX 1: falls back to the chat prose on a resolvable managed row when connections_ui is explicitly false', async () => {
+    // The escape hatch has to reach the mint engine, not just the gallery: with
+    // `connections_ui: false` even a registry-resolvable row must show the same
+    // chat guidance a non-registry row does, because that instance has no cards
+    // and chat is once again the only authorize prompt.
+    mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: false })
     mockApi.mcpServers.mockResolvedValue([
       {
         ...remote('needs_auth'),

@@ -212,11 +212,11 @@ interface McpTabProps {
 export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
   const provider = useProvider()
   const queryClient = useQueryClient()
-  // The in-place sign-in reuses the Connections mint engine, which is launch-held
-  // behind the `connections_ui` flag (the gallery it belongs to is not yet
-  // released). When the flag is off, a managed row falls through to the SAME chat
-  // guidance a non-registry row shows — chat stays the only authorize prompt while
-  // the gallery is closed (see useConnectionsUi docstring).
+  // The in-place sign-in reuses the Connections mint engine, so it follows the
+  // `connections_ui` escape hatch: on by default, and on an instance that set the
+  // flag false there are no Connections cards, so a managed row falls through to
+  // the SAME chat guidance a non-registry row shows — chat is again the only
+  // authorize prompt (see useConnectionsUi docstring).
   const connectionsUi = useConnectionsUiEnabled()
   const [mcpFilter, setMcpFilter] = useState('')
   // Multi-provider server browser (Add Server button) — discovery lives in

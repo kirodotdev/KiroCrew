@@ -1,9 +1,15 @@
 /**
- * The Connections services gallery is merged on main but held for a later
- * release. These tests lock the gate CLOSED by default: the value that decides
- * whether the gallery is reachable must be `true` and nothing else, so an
- * absent config, a failed fetch, or a truthy-but-not-true value all keep it
- * hidden.
+ * The Connections services gallery ships ON, with `connections_ui: false` kept as
+ * an escape hatch. These tests pin both halves of that: the gate opens for an
+ * install that never set the flag, and an instance that explicitly set it false
+ * still gets everything hidden.
+ *
+ * They also pin the LAUNCH SET, which is a separate decision from the gate. The
+ * gate says whether a gallery renders; `launch_gate_passed` in the registry says
+ * which providers it may offer. GitHub has not passed that gate — its OAuth-app
+ * registration is outstanding — so flipping the gate on must not put a GitHub card
+ * on screen. Asserting it here, on the exported list, catches a registry edit that
+ * a render test would only catch if it happened to name the provider.
  *
  * The predicate is asserted directly rather than through a full render because
  * CapabilitiesPage pulls in the whole tab surface (crews, templates, hooks,
@@ -16,31 +22,64 @@
  */
 import { describe, it, expect } from 'vitest'
 import { connectionsUiEnabled } from '../hooks/useConnectionsUi'
+import { CONNECTION_PROVIDERS } from '../pages/connections/registry'
 
 const CONNECTIONS_UI_FLAG = 'connections_ui'
 
 describe('Connections UI gate', () => {
-  it('is closed when config has not loaded', () => {
-    expect(connectionsUiEnabled(undefined)).toBe(false)
+  it('is OPEN when the flag is absent from an otherwise populated config', () => {
+    // The shipped default: every install that never touched the flag.
+    expect(connectionsUiEnabled({ auto_update: true, theme: 'dark' })).toBe(true)
   })
 
-  it('is closed when the flag is absent from an otherwise populated config', () => {
-    expect(connectionsUiEnabled({ auto_update: true, theme: 'dark' })).toBe(false)
+  it('is OPEN for a config that carries nothing at all', () => {
+    expect(connectionsUiEnabled({})).toBe(true)
   })
 
-  it('is closed for truthy values that are not exactly true', () => {
-    // A string "true" from a hand-edited config, or a 1 from a JSON round-trip,
-    // must not open a held feature.
-    for (const value of ['true', 1, 'yes', {}, []] as unknown[]) {
-      expect(connectionsUiEnabled({ [CONNECTIONS_UI_FLAG]: value })).toBe(false)
-    }
+  it('is OPEN on an explicit boolean true', () => {
+    expect(connectionsUiEnabled({ [CONNECTIONS_UI_FLAG]: true })).toBe(true)
   })
 
-  it('is closed when explicitly disabled', () => {
+  it('is CLOSED when explicitly disabled — the escape hatch', () => {
     expect(connectionsUiEnabled({ [CONNECTIONS_UI_FLAG]: false })).toBe(false)
   })
 
-  it('opens only on an explicit boolean true', () => {
-    expect(connectionsUiEnabled({ [CONNECTIONS_UI_FLAG]: true })).toBe(true)
+  it('is CLOSED until the config has actually been read', () => {
+    // `undefined` is both "still loading" and "the fetch failed". The opt-out
+    // lives in the config, so an unread config is no basis to ignore it: opening
+    // here would flash the gallery at a user who turned it off and fire its
+    // status queries on their behalf.
+    expect(connectionsUiEnabled(undefined)).toBe(false)
+    expect(connectionsUiEnabled(null)).toBe(false)
+  })
+
+  it('is CLOSED for a config that is not an object', () => {
+    for (const value of ['', 'yes', 0, 7, true] as unknown[]) {
+      expect(connectionsUiEnabled(value)).toBe(false)
+    }
+  })
+
+  it('is CLOSED for present-but-not-exactly-true values', () => {
+    // A string "false" from a hand-edited config must actually disable the
+    // feature rather than silently reading as "not false, so on". Only an exact
+    // `true` re-asserts the default, so every sloppy value fails safe — which
+    // is now off.
+    for (const value of ['false', 'true', 0, 1, 'yes', {}, []] as unknown[]) {
+      expect(connectionsUiEnabled({ [CONNECTIONS_UI_FLAG]: value })).toBe(false)
+    }
+  })
+})
+
+describe('the launched card set', () => {
+  it('withholds GitHub, whose launch gate has not passed', () => {
+    expect(CONNECTION_PROVIDERS.map(provider => provider.slug)).not.toContain('github')
+  })
+
+  it('offers only providers that passed the launch gate and clear vendor approval', () => {
+    expect(CONNECTION_PROVIDERS.length).toBeGreaterThan(0)
+    for (const provider of CONNECTION_PROVIDERS) {
+      expect(provider.launch_gate_passed).toBe(true)
+      expect(provider.vendor_approval_pending).toBe(false)
+    }
   })
 })

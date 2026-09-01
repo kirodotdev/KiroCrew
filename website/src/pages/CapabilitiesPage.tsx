@@ -17,19 +17,19 @@ import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
 
 
 /**
- * Opt-in flag for the Connections services gallery.
+ * Escape hatch for the Connections services gallery.
  *
- * The Connections work (provider registry, OAuth relay, card gallery) is merged
- * on main but held for a later release, so the gallery must not be reachable in
- * a shipped build. When the flag is absent — the default for every install —
- * this tab renders the pre-existing MCP Servers table, exactly as it did before
- * the gallery landed.
+ * The Connections work (provider registry, OAuth relay, card gallery) ships ON:
+ * with no `connections_ui` key — the state of every install that never touched
+ * it — this tab's Services panel offers the launched provider cards. Setting
+ * `connections_ui: false` in the running instance's `$KIROCREW_HOME/config.json`
+ * empties that panel again, leaving the MCP Servers sub-tab as the only way to
+ * reach a server. Config is read live, so no gateway restart is needed either
+ * way.
  *
- * A flag rather than a revert because the team asked to keep the code on main
- * and test from there: set `connections_ui: true` in the running instance's
- * `$KIROCREW_HOME/config.json` to exercise the gallery locally. Config is read
- * live, so no gateway restart is needed. The predicate lives in
- * hooks/useConnectionsUi so chat's banner gate reads the same answer.
+ * The predicate lives in hooks/useConnectionsUi so chat's banner gate reads the
+ * same answer. WHICH providers a launched gallery offers is decided per provider
+ * in pages/connections/registry.ts, not here.
  */
 
 export default function CapabilitiesPage() {

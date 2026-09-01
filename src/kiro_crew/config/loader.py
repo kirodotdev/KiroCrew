@@ -2209,10 +2209,10 @@ class KiroCrewConfig:
     #: is a strict ``=== true``, so coercing e.g. the string ``"true"`` would
     #: only make the two ends disagree about what was configured.
     connections_ui: bool = field(
-        default=False,
+        default=True,
         metadata=_meta(
             "Connections UI",
-            "Show the Connections gallery (held for a later release).",
+            "Show the Connections services gallery (set false to hide it).",
         ),
     )
     #: Top-level sections that were PRESENT on disk but not a JSON object, and
@@ -3554,7 +3554,7 @@ class KiroCrewConfig:
                 cursor_motion=_safe_bool(computer_use_data.get("cursor_motion", False), False),
             ),
             auto_update=data.get("auto_update", True),
-            connections_ui=_safe_bool(data.get("connections_ui", False), False),
+            connections_ui=_safe_bool(data.get("connections_ui", True), True),
             _degraded_sections=frozenset(_degraded | _OBSERVED_DEGRADED_SECTIONS),
             timezone=data.get("timezone", ""),
             snapshot_dir=data.get("snapshot_dir", ""),

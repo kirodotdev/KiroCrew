@@ -61,13 +61,19 @@ def test_flag_set_true_reaches_the_masked_get(tmp_path, monkeypatch):
     assert _frontend_says_enabled(_masked(cfg))
 
 
-def test_flag_absent_leaves_the_gallery_off(tmp_path, monkeypatch):
-    """Default posture: a config that never mentions the flag stays closed."""
+def test_flag_absent_defaults_the_gallery_on(tmp_path, monkeypatch):
+    """Launch posture: a config that never mentions the flag ships the gallery.
+
+    The N8 flip is only real if the BACKEND defaults the field on: the loader
+    materializes ``connections_ui`` into every masked GET, so a frontend that
+    tolerates an absent key still reads a confirmed ``false`` from a default-off
+    backend and the launch never fires on a real install.
+    """
     _point_loader_at(tmp_path, monkeypatch, {"agent": {"provider": "acp"}})
     masked = _masked(KiroCrewConfig.load())
 
-    assert masked.get(FLAG) is False
-    assert not _frontend_says_enabled(masked)
+    assert masked.get(FLAG) is True
+    assert _frontend_says_enabled(masked)
 
 
 def test_flag_set_false_leaves_the_gallery_off(tmp_path, monkeypatch):
@@ -78,20 +84,22 @@ def test_flag_set_false_leaves_the_gallery_off(tmp_path, monkeypatch):
     assert not _frontend_says_enabled(masked)
 
 
-def test_a_non_bool_value_fails_closed(tmp_path, monkeypatch):
-    """``"true"`` is not ``true``: an unparseable value must not open the gate.
+def test_a_non_bool_value_falls_back_to_the_default(tmp_path, monkeypatch):
+    """``"true"`` is not ``true``: an unparseable value falls back to the default.
 
-    Same posture as ``computer_use.cursor_motion`` — for a flag that reveals a
-    held-for-release surface, a value Kiro Crew cannot read means "off", never
-    the reverse. Coercing the string would also hand the frontend a value its
-    strict ``=== true`` check rejects anyway, so the two would disagree about
-    what the operator configured.
+    Pre-launch this pinned fail-CLOSED, because the flag revealed a
+    held-for-release surface. Default-on inverts the safety direction: the flag
+    is now an opt-OUT, and the only honest reading of a value Kiro Crew cannot
+    parse is the same fallback every other ``_safe_bool`` field takes — the
+    default — never a guess at operator intent. An explicit boolean ``false``
+    remains the one way to hide the gallery (pinned separately below), and the
+    frontend still receives a real boolean either way.
     """
     _point_loader_at(tmp_path, monkeypatch, {FLAG: "true"})
     cfg = KiroCrewConfig.load()
 
-    assert cfg.connections_ui is False
-    assert not _frontend_says_enabled(_masked(cfg))
+    assert cfg.connections_ui is True
+    assert _frontend_says_enabled(_masked(cfg))
 
 
 def test_flag_survives_a_config_write(tmp_path, monkeypatch):
