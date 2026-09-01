@@ -18,5 +18,4 @@
 #   python3 scripts/check_sync_io_in_async.py --report
 63 src/kiro_crew/dashboard/handlers/knowledge.py
 15 src/kiro_crew/knowledge/ingestion.py
-1 src/kiro_crew/knowledge/sync.py
-6 src/kiro_crew/knowledge/watcher.py
+2 src/kiro_crew/knowledge/watcher.py

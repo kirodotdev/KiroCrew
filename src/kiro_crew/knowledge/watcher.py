@@ -179,6 +179,19 @@ class KnowledgeWatcher:
             else:
                 logger.debug("Knowledge project-docs discovery still failing: %s", sig)
 
+    async def _store_rows(self, sql: str, params: tuple = ()) -> list:
+        """Run a sweep query off the event loop.
+
+        The sweep is a background coroutine on the gateway's loop, and sqlite
+        reads are synchronous: a contended database can hold one for as long as
+        ``busy_timeout``, stalling every other task on the loop. ``KnowledgeStore``
+        keeps a connection per THREAD, so a worker thread gets its own rather
+        than sharing the loop's -- the same reason the sweep's writes hop out
+        too. Rows come back detached, so the caller uses them normally.
+        """
+        return await asyncio.to_thread(
+            lambda: self.store.db.execute(sql, params).fetchall())
+
     async def _scan(self):
         """Check all watched sources for changes."""
         # Pick up a newly-created workspace drop folder before scanning, so a
@@ -192,12 +205,13 @@ class KnowledgeWatcher:
         sweep_chunks_used = 0
 
         # Folder sources (local_folder, obsidian_vault)
-        folder_rows = self.store.db.execute(
-            "SELECT id, uri, source_type, properties FROM sources WHERE source_type IN ({})".format(
+        folder_rows = await self._store_rows(
+            "SELECT id, uri, source_type, properties, sync_status FROM sources "
+            "WHERE source_type IN ({})".format(
                 ",".join("?" for _ in FOLDER_SOURCE_TYPES)
             ),
             tuple(FOLDER_SOURCE_TYPES),
-        ).fetchall()
+        )
         ws_base: str | None = None
         chunk_budget: int | None = None
         for row in folder_rows:
@@ -211,7 +225,12 @@ class KnowledgeWatcher:
             try:
                 source = dict(row)
                 props = self._parse_props(source.get("properties"))
-                if props.get("sync_status") in ("paused", "pending_confirmation"):
+                # Read from the sync_status COLUMN, the single source of truth
+                # the dashboard and SyncScheduler also read. This used to read a
+                # copy inside the properties JSON, so a pause recorded only in
+                # the column still walked and delete-reconciled the whole folder
+                # every sweep.
+                if source.get("sync_status") in ("paused", "pending_confirmation"):
                     continue
                 budget: int | None = None
                 if props.get(AUTO_ADDED_PROP):
@@ -279,9 +298,10 @@ class KnowledgeWatcher:
                 logger.exception("Error scanning folder source %s", row["uri"])
 
         # Single-file sources (local_file)
-        rows = self.store.db.execute(
-            "SELECT id, uri, properties FROM sources WHERE source_type = 'local_file'"
-        ).fetchall()
+        rows = await self._store_rows(
+            "SELECT id, uri, properties, sync_status FROM sources "
+            "WHERE source_type = 'local_file'"
+        )
 
         for row in rows:
             try:
@@ -292,18 +312,29 @@ class KnowledgeWatcher:
                     logger.warning("Skipping sensitive path: %s", uri)
                     continue
                 if not Path(uri).exists():
-                    # Mark missing
-                    props = self._parse_props(row["properties"])
-                    if props.get("sync_status") != "missing":
-                        props["sync_status"] = "missing"
-                        self.store.update_source(row["id"], properties=json.dumps(props))
+                    # Mark missing in the COLUMN. Writing it into the properties
+                    # JSON instead left the row's visible state stale -- the
+                    # Library renders the column, so a file that had vanished
+                    # went on showing 'synced'. ``if_sync_status`` because the
+                    # value under test came from the snapshot at the top of the
+                    # sweep: a row a manual sync has moved since is left alone
+                    # and re-examined next sweep.
+                    if row["sync_status"] != "missing":
+                        await asyncio.to_thread(
+                            self.store.update_source, row["id"],
+                            sync_status="missing", if_sync_status=row["sync_status"])
                     continue
 
                 mtime = os.stat(uri).st_mtime
                 props = self._parse_props(row["properties"])
                 stored_mtime = props.get("mtime", 0)
-
-                if mtime > stored_mtime:
+                # A row that reads 'missing' has been away, and the mtime gate
+                # cannot speak for it: a restore preserving the archived mtime
+                # (cp -p, rsync -t, tar -x) puts different content on disk under
+                # an mtime that never advanced, so the gate reports 'unchanged'
+                # about a file it has not read. Deletion is exactly the event
+                # that breaks the mtime heuristic, so read the content instead.
+                if mtime > stored_mtime or row["sync_status"] == "missing":
                     # Check content hash to avoid re-ingesting touched-but-unchanged files
                     content_hash = await asyncio.get_running_loop().run_in_executor(
                         None, self._hash_file, Path(uri)
@@ -322,20 +353,42 @@ class KnowledgeWatcher:
                             # persisting mtime/hash so the file is re-evaluated on
                             # the next scan -- raising knowledge.max_ingest_file_mb
                             # (config is read live) then recovers it automatically.
-                            self.store.db.execute(
-                                "UPDATE sources SET sync_status = 'error' WHERE id = ?",
-                                (row["id"],))
-                            self.store.db.commit()
+                            await asyncio.to_thread(
+                                self.store.update_source, row["id"], sync_status="error")
                             continue
                         # Re-read props after ingest (ingest may update them)
-                        source = self.store.get_source_by_uri(uri)
+                        source = await asyncio.to_thread(
+                            self.store.get_source_by_uri, uri)
                         if source:
                             props = self._parse_props(source.get("properties"))
                     props["mtime"] = mtime
                     props["content_hash"] = content_hash
-                    self.store.update_source(row["id"], properties=json.dumps(props))
+                    await asyncio.to_thread(
+                        self.store.update_source, row["id"], properties=json.dumps(props))
+                if row["sync_status"] == "missing":
+                    # The file is back, so the marker has to come off, and the
+                    # CAS on 'missing' is what decides whether this write is the
+                    # one to do it. An ingestion that ran has already written the
+                    # column -- 'synced' when it stored the document, 'error' on
+                    # a partial write -- and moves the row off 'missing', so this
+                    # no-ops. It fires for the outcome that writes NO status: the
+                    # duplicate gate, which refuses the write because a holder
+                    # already holds this exact document (verified under its write
+                    # lock) and deletes this source's superseded items. Without
+                    # this the marker would sit on a file that is present and
+                    # accounted for. Deliberately LAST, after the read: claiming
+                    # 'synced' before reading the file would leave that claim
+                    # standing if the read then failed -- a failed ingest raises,
+                    # so control never reaches here.
+                    await asyncio.to_thread(
+                        self.store.update_source, row["id"],
+                        sync_status="synced", if_sync_status="missing")
             except Exception:
-                logger.exception("Error checking source %s", row.get("uri", row["id"]))
+                # sqlite3.Row has no .get(): the previous spelling raised
+                # AttributeError from inside the handler, which replaced the real
+                # error with a confusing one AND escaped the loop, abandoning
+                # every source after this one for the rest of the sweep.
+                logger.exception("Error checking source %s", row["uri"] or row["id"])
 
         # After file-level reconciliation, self-heal vectors left stale by an
         # embedding-setup change (model/budget) -- the file gates above never fire

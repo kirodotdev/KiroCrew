@@ -1215,7 +1215,6 @@ async def confirm_source(request: web.Request) -> web.Response:
         _sel_log("source.confirm_denied", source_id=source_id, reason="sensitive_path")
         return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
     props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
-    props["sync_status"] = "active"
     props.pop("scan_paused", None)
     store.update_source(source_id, properties=props, sync_status="active")
     _sel_log("source.confirm", source_id=source_id)
@@ -1242,12 +1241,9 @@ async def pause_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
     props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
     props["scan_paused"] = True
-    # Keep the JSON copy in sync with the column: the watcher's pre-scan skip
-    # reads properties["sync_status"] (it selects `properties`, not the column),
-    # so leaving this stale meant a paused folder was still fully walked and
-    # delete-reconciled every sweep -- only the deeper scan_paused gate in
-    # folder_watcher stopped the ingestion. confirm/resume already do this.
-    props["sync_status"] = "paused"
+    # The watcher's pre-scan skip reads the sync_status COLUMN, so this write is
+    # what stops the sweep from walking and delete-reconciling the whole folder;
+    # the deeper scan_paused gate in folder_watcher stops the ingestion itself.
     store.update_source(source_id, properties=props, sync_status="paused")
     _sel_log("source.pause", source_id=source_id)
     return web.json_response({"status": "paused"})
@@ -1267,7 +1263,6 @@ async def resume_source(request: web.Request) -> web.Response:
         return web.json_response({"error": "Path is restricted for security reasons"}, status=403)
     props = json.loads(row["properties"]) if isinstance(row["properties"], str) else (row["properties"] or {})
     props.pop("scan_paused", None)
-    props["sync_status"] = "active"
     store.update_source(source_id, properties=props, sync_status="active")
     _sel_log("source.resume", source_id=source_id)
     # Trigger scan to pick up remaining files

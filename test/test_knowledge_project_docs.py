@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -99,11 +98,11 @@ class TestRegistration:
         sid, created = ensure_project_doc_source(store, str(root))
         assert created and sid
         row = store.db.execute(
-            "SELECT source_type, uri, properties FROM sources WHERE id = ?", (sid,)
+            "SELECT source_type, uri, sync_status FROM sources WHERE id = ?", (sid,)
         ).fetchone()
         assert row["source_type"] == "local_folder"
         assert row["uri"] == str(root)
-        assert json.loads(row["properties"])["sync_status"] == "active"
+        assert row["sync_status"] == "active"
 
     def test_second_call_reuses_the_row(self, store, tmp_path):
         root = _repo(tmp_path)
@@ -117,10 +116,10 @@ class TestRegistration:
                                   uri=str(root), properties={"sync_status": "paused"})
         sid, created = ensure_project_doc_source(store, str(root))
         assert sid == manual and created is False
-        # Their explicit choice survives: properties are not overwritten.
-        props = json.loads(store.db.execute(
-            "SELECT properties FROM sources WHERE id = ?", (sid,)).fetchone()["properties"])
-        assert props["sync_status"] == "paused"
+        # Their explicit choice survives: the row's state is not overwritten.
+        row = store.db.execute(
+            "SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["sync_status"] == "paused"
 
     def test_dismissed_root_is_not_re_registered(self, store, tmp_path):
         root = _repo(tmp_path)

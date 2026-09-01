@@ -152,9 +152,12 @@ class TestEnsureDropSource:
 
     def test_seeded_active_so_the_watcher_scans_it(self, store, tmp_path):
         ensure_drop_source(store, str(tmp_path))
-        status = _props(store, str(tmp_path))["sync_status"]
+        # The COLUMN is the single source of truth the watcher's pre-scan skip
+        # reads, so that is where the seeded state has to land.
+        status = store.get_source_by_uri(str(tmp_path))["sync_status"]
         assert status == "active"
         assert status not in ("paused", "pending_confirmation")
+        assert "sync_status" not in _props(store, str(tmp_path))
 
     def test_marks_source_auto_added(self, store, tmp_path):
         ensure_drop_source(store, str(tmp_path))
@@ -595,8 +598,10 @@ class TestPauseSurvivesRestart:
             row = s2.get_source_by_uri(str(drop))
             assert row is not None, "paused empty folder source was orphan-deleted"
             assert row["id"] == sid
-            props = json.loads(row["properties"])
-            assert props["sync_status"] == "paused"
+            # The COLUMN is the single source of truth, so that is where the
+            # pause has to still be readable after a restart.
+            assert row["sync_status"] == "paused"
+            assert json.loads(row["properties"])["scan_paused"] is True
         finally:
             s2.close()
 
