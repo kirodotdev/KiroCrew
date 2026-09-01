@@ -8613,6 +8613,11 @@ def is_sensitive_bash_command(
     if native_result:
         return native_result
 
+    # ── Pass 4: alternate traversal tools rooted above a fenced path ──
+    alt_result = _check_alt_traversal_reaches_fence(command)
+    if alt_result:
+        return alt_result
+
     # IMDS access via any IP encoding (decimal, hex, octal, IPv6-mapped)
     imds_result = _check_imds_access(command, enabled_ids=enabled_ids)
     if imds_result:
@@ -14706,6 +14711,1837 @@ _IMDS_IP = "169.254.169.254"
 # because canonicalize_ip returns native IPv6 unchanged; mirrors embeddings.py's
 # SSRF gate which also blocks it (CWE-918 dual-stack parity).
 _IMDS_IPV6 = "fd00:ec2::254"
+
+
+# ── Alternate traversal tools that reach a fenced path ──
+#
+# ``find`` is not the only program that factors a fenced path into a root plus a
+# name and then hands the result to a reader, and each tool spells the same shape
+# with its own grammar::
+#
+#     fd '^\.env$' ~/.kiro/crew -x cat        positional regex, exec is -x/-X
+#     fd -e key . ~/.kiro/crew -X cat         extension filter, batched exec
+#     grep -r secret ~/.kiro/crew             the reader IS the traversal
+#     rg --files ~/.kiro/crew | xargs cat     --files makes ripgrep a lister
+#     du -a ~/.kiro/crew | xargs cat          size lister used as a path producer
+#
+# The question this pass asks is the reverse-direction one
+# :func:`path_contains_sensitive` already answers for bulk operations -- does the
+# root HOLD a fenced path -- so a recursive read rooted above a credential store
+# is refused whatever name it goes looking for. A recursive read delivers every
+# file under its root, so narrowing by the pattern cannot make the store
+# unreachable: ``grep -r`` opens ``.env`` regardless of which lines it prints.
+#
+# This is NOT a producer allow-list and must not become one. Enumerating the
+# programs that are SAFE fails OPEN, because every tool nobody thought of reads as
+# covered. Each grammar below only ever ADDS a denial, so a traversal tool this
+# pass does not know is exactly as gated as it was before, and the shapes still
+# open are named in the residuals rather than half-closed:
+#
+#   * ``locate``/``plocate`` have NO root operand -- the database supplies the
+#     path -- so the root-containment clause every rule here rests on has nothing
+#     to test. Its pattern alone would have to carry the signal, and a pattern
+#     test recognising only the leaf names the fence DECLARES would still miss
+#     ``locate id_rsa | xargs cat`` (``.ssh`` is fenced as a whole directory, so
+#     no leaf name is declared for it) while reading as covered. Naming it here is
+#     the honest half of that trade.
+#   * A name list delivered through a command substitution (``cat $(fd …)``) or a
+#     ``while read`` loop instead of ``xargs``.
+#   * A whole-directory COPIER rooted at the fence: ``tar -cf out.tar
+#     ~/.kiro/crew``, ``cp -r ~/.kiro/crew /tmp``, ``zip -r``, or a direct
+#     ``rsync -r`` (as opposed to the lister-pipe spelling, which IS covered
+#     because ``rsync`` reads as a sink there). These reach the same bytes without
+#     searching for them, so they are the same delivery with a different verb --
+#     but treating copiers as traversals is a new program class with its own false
+#     positives (``cp -r ./src /tmp`` must stay allowed, and a copier names its
+#     DESTINATION as an operand too), which is a separate change rather than one
+#     more entry here. Named so this list does not read as complete.
+#   * A traversal that names no root at all AFTER a ``cd`` into the fence
+#     (``cd ~/.kiro/crew; rg secret``). A root spelled relative to a ``cd`` IS
+#     covered -- the bases that ``cd`` moves to are collected and relative roots are
+#     joined onto them -- but with no operand at all there is nothing to join, and
+#     the working directory this pass can see is the gateway's rather than the
+#     shell's. The explicit-root spelling of the same read is denied here, and the
+#     no-root one is denied by the cd-taint pass.
+#   * A traversal that names NO root at all, reached through a word this pass does
+#     not recognise as something-that-runs-a-program (``busybox rg secret``,
+#     ``stdbuf -o L rg secret``). The traversal itself is still FOUND -- it is
+#     matched by its own name wherever it sits -- but a reading that was not in the
+#     program position is not allowed to assume the working directory, because a
+#     bare mention of a program name is ordinary text (``which rg``,
+#     ``sudo cp rg /usr/bin/``) and assuming it would refuse those outright
+#     whenever the gateway runs from a directory that holds the crew home. Every
+#     spelling that NAMES its root is covered whatever precedes it.
+#
+# Cost, stated plainly: a recursive content read rooted at the crew data-home or
+# its workspace root is refused, because both hold declared credential leaves
+# (``.env``, ``token_signing.key``, the Notes vault's PAT). Scoping the read to a
+# subdirectory that holds none of them is allowed and is the intended spelling.
+
+#: ``fd`` and the Debian/Ubuntu name for the same binary.
+_FD_PROGRAM_NAMES: frozenset[str] = frozenset({"fd", "fdfind"})
+
+#: ``fd``'s ``find -exec`` equivalents. Presence of any of these makes the
+#: traversal deliver file CONTENT rather than a name list, so no separate sink is
+#: needed for the read to happen.
+_FD_EXEC_FLAGS: frozenset[str] = frozenset({"-x", "-X", "--exec", "--exec-batch"})
+
+#: GNU grep and its aliases. ``rgrep`` is recursive without a flag.
+#: ``ugrep`` is GNU-compatible: it takes a pattern and needs ``-r``/``--recursive``
+#: to walk, so it shares grep's grammar and grep's recursion test rather than
+#: needing a rule of its own.
+_GREP_PROGRAM_NAMES: frozenset[str] = frozenset(
+    {"grep", "egrep", "fgrep", "ugrep"}
+)
+
+#: Greppers that recurse with NO flag at all, so naming the root is the whole
+#: command. ``ag`` (the_silver_searcher) and ``ack`` belong here for the same reason
+#: ``rgrep`` does, and leaving them out made the fix one renamed binary wide: this
+#: module already names both in :data:`_DATA_CONSUMER_PROGRAMS`, so they were known
+#: tools sitting outside the only set that would have caught them.
+_ALWAYS_RECURSIVE_GREP_NAMES: frozenset[str] = frozenset(
+    {"rgrep", "ag", "ack", "ack-grep"}
+)
+
+#: The long spellings that turn grep into a traversal. The short forms are
+#: recognised by scanning cluster letters (``-rn`` is ``-r -n``), which a set of
+#: whole tokens cannot see.
+_GREP_RECURSIVE_LONG_FLAGS: frozenset[str] = frozenset(
+    {"--recursive", "--dereference-recursive"}
+)
+
+#: GNU grep's OTHER recursive switch: ``-d recurse`` / ``--directories=recurse``
+#: sets the directory ACTION rather than passing a recursion flag, and it
+#: traverses exactly as ``-r`` does. Its argument is what carries the meaning, so
+#: the value is matched rather than the flag.
+_GREP_DIRECTORIES_FLAGS: frozenset[str] = frozenset({"-d", "--directories"})
+_GREP_RECURSE_ACTION = "recurse"
+
+#: ripgrep, which is recursive with no flag at all.
+_RIPGREP_PROGRAM_NAMES: frozenset[str] = frozenset({"rg"})
+
+#: ripgrep's pure-lister mode: ``--files`` prints paths without opening them, so
+#: it needs a sink before anything is disclosed. ``-l``/``--files-with-matches``
+#: is NOT here -- it still opens every file to decide whether to print it.
+_RIPGREP_LISTER_FLAGS: frozenset[str] = frozenset({"--files"})
+
+#: Flags that supply the search pattern, so the first positional is a ROOT rather
+#: than the pattern. Getting this wrong in the other direction is what matters:
+#: with one of these present, nothing is exempted from the root test.
+_PATTERN_SUPPLYING_FLAGS: frozenset[str] = frozenset(
+    {"-e", "--regexp", "-f", "--file", "--files", "--type-list"}
+)
+
+#: The subset of the above whose pattern arrives as a VALUE. ``--files`` and
+#: ``--type-list`` are modes that take no argument, so consuming the next word
+#: after them would swallow a root.
+_PATTERN_VALUE_FLAGS: frozenset[str] = frozenset(
+    {"-e", "--regexp", "-f", "--file"}
+)
+
+#: Flags whose value IS a traversal root. Their value is always tested, never
+#: exempted as the pattern: ``fd --search-path ~/.kiro/crew '^\.env$' -x cat``
+#: puts the root in the first positional slot, so a pattern exemption that only
+#: counted positionals skipped the root itself.
+_ROOT_SUPPLYING_FLAGS: frozenset[str] = frozenset(
+    {"--search-path", "--base-directory"}
+)
+
+#: Programs whose whole job is to emit paths under a root. Harmless alone; they
+#: matter when a sink turns the list into content.
+_PATH_LISTER_PROGRAMS: frozenset[str] = frozenset({"du"})
+
+#: Programs that take the name list on stdin and run a command per name, which is
+#: what converts a lister into a read.
+_NAME_LIST_EXEC_PROGRAMS: frozenset[str] = frozenset({"xargs", "parallel"})
+
+#: Anything that opens a file it is handed. Union of the two sets the module
+#: already maintains so a verb added to either reaches this pass with no second
+#: edit.
+#: Readers the two module sets above do not carry, because those sets answer a
+#: different question -- which VERB names a read in a path-shaped command -- while
+#: this one asks which program, handed a file NAME, emits its bytes. Omission here
+#: is fail-OPEN: a lister piped into an unlisted reader reads as emitting names
+#: only. So the boundary is drawn generously, and includes the compressors and
+#: digest tools, whose output is a faithful copy of a file for anyone who can read
+#: it back.
+_ALT_EXTRA_READER_PROGRAMS: frozenset[str] = frozenset(
+    {
+        # `git hash-object -w` writes each file's CONTENT into a readable repository
+        # object and `git cat-file` prints it back; `rsync --files-from=-` copies the
+        # named files wholesale. Measured before adding: of fifteen reader spellings
+        # probed, twelve already denied, so these are the holes in a near-complete
+        # set rather than the start of an open-ended table.
+        "git",
+        "rsync",
+        "dd",
+        "install",
+        "shred",
+        "split",
+        "csplit",
+        "iconv",
+        "expand",
+        "unexpand",
+        "rev",
+        "pr",
+        "fmt",
+        "base32",
+        "basenc",
+        "cksum",
+        "sum",
+        "b2sum",
+        "shasum",
+        "sha1sum",
+        "sha224sum",
+        "sha384sum",
+        "sha512sum",
+        "openssl",
+        "gzip",
+        "gunzip",
+        "zcat",
+        "bzip2",
+        "bunzip2",
+        "bzcat",
+        "xz",
+        "unxz",
+        "xzcat",
+        "zstd",
+        "zstdcat",
+        "lz4",
+        "tar",
+        "cpio",
+        "cmp",
+        "vimdiff",
+        "hexdump",
+        "bat",
+        "batcat",
+    }
+)
+
+#: Anything that opens a file it is handed.
+_ALT_CONTENT_READER_PROGRAMS: frozenset[str] = (
+    _NORMALIZER_READ_VERBS | _DATA_CONSUMER_PROGRAMS | _ALT_EXTRA_READER_PROGRAMS
+)
+
+#: ``env``'s directory flag. Its value is a directory the command is run FROM, so
+#: it is a traversal base rather than an operand to skip past.
+_ENV_CHDIR_FLAGS: frozenset[str] = frozenset({"-C", "--chdir"})
+
+#: ``env``'s command-string flag. Its value is a whole command rather than an
+#: operand, so the payload is re-tokenized as its own stages.
+_ENV_COMMAND_STRING_FLAGS: frozenset[str] = frozenset({"-S", "--split-string"})
+
+#: Words that mean "run the thing that follows". Peeling them is what keeps
+#: ``command grep -r . ~/.kiro/crew`` from being read as a stage that runs
+#: ``command``, which no rule here matches. The same three the ``cd`` walk
+#: unwraps, plus ``exec``, which replaces the shell with the traversal.
+_ALT_EXEC_WRAPPER_PROGRAMS: frozenset[str] = frozenset(
+    {"builtin", "command", "exec", "&"}
+)
+
+#: ``exec -a NAME prog`` takes a value, so the name must be skipped with the flag
+#: or it is read as the program.
+_ALT_WRAPPER_VALUE_FLAGS: frozenset[str] = frozenset({"-a"})
+
+#: Programs that run the argv that FOLLOWS them, adjusting only how it runs.
+#: ``nice grep -r . ~/.kiro/crew`` is the same read as the bare ``grep``, and
+#: reading the first word as the program saw ``nice`` and matched no rule.
+#: Unlike :data:`_ALT_EXEC_WRAPPER_PROGRAMS` these are ordinary programs rather
+#: than shell builtins, but for this pass they play one role: whatever follows is
+#: the traversal.
+_ALT_ARGV_FORWARDING_PROGRAMS: frozenset[str] = frozenset(
+    {
+        "nice",
+        "nohup",
+        "stdbuf",
+        "setsid",
+        "ionice",
+        "chrt",
+        "taskset",
+        "time",
+        "timeout",
+        "sudo",
+        "doas",
+    }
+)
+
+#: A wrapper's own POSITIONAL argument, which is not the program: ``timeout``'s
+#: duration (``5``, ``1.5m``), ``taskset``'s CPU mask (``0x3``), ``chrt``'s
+#: priority. Matched by SHAPE rather than by a per-wrapper table, because a table
+#: entry omitted is a wrapper whose duration gets read as the program word.
+_ALT_WRAPPER_OPERAND_RE = re.compile(
+    r"\A(?:[0-9]+(?:\.[0-9]+)?[smhd]?|0[xX][0-9a-fA-F]+)\Z"
+)
+
+#: Executable suffixes Windows appends to a program name. ``_program_basename``
+#: deliberately leaves them on -- the checks that care spell them in their own
+#: pattern (``_SELF_PROGRAM_RE``, ``_PYTHON_PROGRAM_RE``) -- so this pass strips
+#: them itself, otherwise ``grep.exe -r . ~/.kiro/crew`` matched no rule.
+_ALT_WINDOWS_EXE_SUFFIXES: tuple[str, ...] = (".exe", ".com", ".bat", ".cmd")
+
+#: ``env``'s own options, split by whether the value is a separate word. Skipping
+#: them is what keeps ``env -i grep -r . ~/.kiro/crew`` from reading ``-i`` as the
+#: program; a spelling missing from the value set costs one skipped operand, never
+#: a missed program, because the scan stops at the first non-flag word either way.
+_ENV_VALUE_FLAGS: frozenset[str] = frozenset(
+    {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}
+)
+
+#: Every program name this pass treats as a traversal. A stage is scanned for one
+#: of these ANYWHERE in it rather than only in the program position, because
+#: everything that can sit in front of a program -- a wrapper, an applet
+#: dispatcher, a wrapper option's value -- is an unbounded set, and enumerating it
+#: put the miss one unlisted spelling away (``stdbuf -o L grep -r``,
+#: ``busybox grep -r``, ``timeout -s KILL 5 rg``).
+_ALT_TRAVERSAL_PROGRAMS: frozenset[str] = (
+    _FD_PROGRAM_NAMES
+    | _GREP_PROGRAM_NAMES
+    | _ALWAYS_RECURSIVE_GREP_NAMES
+    | _RIPGREP_PROGRAM_NAMES
+    | _PATH_LISTER_PROGRAMS
+)
+
+#: Every name this pass ROUTES a decision on -- the traversals, the name-list
+#: executors that turn a lister into a read, the shells and verbs that carry a
+#: command string, and ``env``. A word in any of these roles can arrive through a
+#: variable, so resolution has to cover the whole set and not just the traversals:
+#: an unresolved ``$X`` in the executor slot hid a sink, and an unresolved ``$S`` in
+#: the shell slot hid a payload.
+_ALT_ROUTED_PROGRAMS: frozenset[str] = (
+    _ALT_TRAVERSAL_PROGRAMS
+    | _NAME_LIST_EXEC_PROGRAMS
+    | _NESTED_SHELL_PROGRAMS
+    | _NESTED_SHELL_VERBS
+    | _ENV_SPLIT_PROGRAMS
+)
+
+#: How many operands one unit of construction budget pays for. Building a reading
+#: copies the operand tail, so the cost is proportional to its length rather than
+#: flat: charging one unit per token left 3,000 tokens building 3,000 slices of
+#: 3,000 entries, which is the O(N^2) MEMORY half of the wedge. Sized so an ordinary
+#: command -- a handful of operands -- still charges a single unit.
+_ALT_OPERANDS_PER_UNIT = 64
+
+#: How short an abbreviation of a GNU long option is honoured. getopt_long accepts
+#: any UNAMBIGUOUS prefix, so ``--rec`` and ``--recurs`` are ``--recursive`` and a
+#: set of whole tokens saw neither. Ambiguity is judged against the flags this pass
+#: knows rather than against the tool's full option table, which over-matches in
+#: the denial direction only; the floor keeps ``--r`` from standing for anything.
+_ALT_MIN_LONG_FLAG_PREFIX = 3
+
+#: How deep a nested command-string payload is followed. A shell inside a shell is
+#: a real spelling and stacking them is the obvious way to bury a traversal, so the
+#: limit is generous; :data:`_ALT_MAX_STAGES` is what actually bounds the work, so
+#: depth does not have to be tight to keep an attacker-shaped string cheap.
+_ALT_NESTED_DEPTH_LIMIT = 12
+
+#: Ceiling on the stages collected from one command. Payload extraction branches,
+#: so depth alone bounds the walk's height and not its width.
+_ALT_MAX_STAGES = 512
+
+#: Ceiling on how many variable RESOLUTIONS one command may cost. Every operand is
+#: tried against every value every name it mentions was ever assigned, which is a
+#: product -- and a single stage can carry thousands of prefix assignments without
+#: tripping :data:`_ALT_MAX_STAGES`, because it is still one stage. Measured before
+#: this bound existed: k=200 cost 1.1s, k=600 cost 11s, k=1500 cost 62s of
+#: SYNCHRONOUS CPU. This gate runs on the gateway's single asyncio loop, so that is
+#: not slowness, it is a wedge -- the shape the module's own pass-1b comment records
+#: as a prior production hang. The budget is far above any real command (a handful
+#: of variables against a handful of roots) and exhausting it REFUSES.
+_ALT_MAX_RESOLUTIONS = 4096
+
+
+class _AltWorkBudget:
+    """One command's budget for the alt-traversal walk, charged from every axis.
+
+    The first version of this budget counted only variable resolutions, and it was
+    decremented inside the assignment-HISTORY loop -- which never runs for a command
+    that assigns nothing. That left the readings x operands product unbounded, so a
+    single stage of repeated traversal words (``rg rg … rg /tmp``) spent 21 seconds
+    of synchronous CPU on the event loop for a 1.8 KB string while every declared
+    budget read as untouched.
+
+    So the budget is per COMMAND rather than per call, and it is charged wherever
+    the walk does real work: each operand examined, each expansion reading tried,
+    each candidate handed to :func:`path_contains_sensitive`. Whichever dimension an
+    attacker grows, the same counter runs out.
+
+    Two ways to spend, because the walk has two kinds of caller -- but only ONE
+    meaning for running out:
+
+    * :meth:`spend` raises, for code inside the main loop's ``try``;
+    * :meth:`charge` reports, for callers that run OUTSIDE that ``try`` and must not
+      raise past it.
+
+    Both record :attr:`exhausted`, and :func:`_check_alt_traversal_reaches_fence`
+    refuses whenever it is set. That single flag is the whole point of this class's
+    third revision. The previous version let :meth:`drain` return False and had each
+    caller "stop enumerating and return what they have", which reads as prudent and
+    is a FAIL-OPEN: a 5,000-token padding stage spent the budget, the traversal
+    token-scan that is the only catcher of an applet-dispatched grep was silently
+    dropped, and ``busybox grep -r secret ~/.kiro/crew`` was allowed. That was the
+    third limit in this PR whose exhaustion path failed open (the round-5 stage
+    budget and the round-12 brace cap were the other two, each introduced while
+    fixing the previous one), so the fix is the CLASS: running out of budget can no
+    longer be expressed as a smaller answer, only as a refusal.
+
+    :func:`_alt_pipeline_stages_bounded` already had this shape for stage
+    truncation; this makes the two agree.
+    """
+
+    __slots__ = ("remaining", "exhausted")
+
+    def __init__(self, total: int) -> None:
+        self.remaining = total
+        self.exhausted = False
+
+    def spend(self, reason: str = "work") -> None:
+        """Charge one unit, raising :class:`_AltResolutionBudget` when overdrawn."""
+        self.remaining -= 1
+        if self.remaining < 0:
+            self.exhausted = True
+            raise _AltResolutionBudget(reason)
+
+    def charge(self, units: int = 1) -> bool:
+        """Charge *units*; False once overdrawn. Never raises, always RECORDS.
+
+        Takes an amount because some work is proportional rather than flat: building
+        one reading copies an operand tail, so a stage with a huge tail must pay for
+        it or the memory grows quadratically while a per-item counter reads as
+        barely touched.
+
+        A False return means the caller must stop, and it also means the command can
+        no longer be judged -- which is why it sets :attr:`exhausted` rather than
+        leaving the caller to decide what a partial answer means.
+        """
+        if self.remaining <= 0:
+            self.exhausted = True
+            return False
+        self.remaining -= max(1, units)
+        if self.remaining <= 0:
+            self.exhausted = True
+        return True
+
+
+class _AltResolutionBudget(Exception):
+    """Raised when a command's variable resolution exceeds its budget.
+
+    Carried as an exception rather than a sentinel return so the refusal cannot be
+    mistaken for "no fenced root found" by any caller in the chain.
+    """
+
+
+def _alt_pipeline_stages(command: str, depth: int = 0) -> list[list[str]]:
+    """Split *command* into per-stage token lists.
+
+    Segments come from :func:`_split_shell_segments` (quote-aware, and it declines
+    to split inside a substitution), then each segment is split again on an
+    unquoted ``|`` because a pipeline's stages are separate programs and this pass
+    identifies a program by its own first token.
+
+    A command STRING carried as a flag value -- ``sh -c '…'``, ``env -S '…'`` -- is
+    re-tokenized and its stages appended, bounded by
+    :data:`_ALT_NESTED_DEPTH_LIMIT`. Without that, wrapping the traversal in a
+    shell hid it completely: the outer stage's program is ``sh`` and the real
+    command was just one quoted operand.
+
+    Stages are returned FLAT, with no record of which pipeline they belonged to.
+    That is deliberate: the sink test below asks whether the command contains a
+    reader anywhere, and over-approximating across a ``&&`` boundary can only add
+    a denial. Pairing each lister with only its own downstream stages would be the
+    narrower answer and is not worth the grammar.
+    """
+    stages, _truncated = _alt_pipeline_stages_bounded(command, depth)
+    return stages
+
+
+def _alt_pipeline_stages_bounded(
+    command: str, depth: int = 0, assignments: dict[str, str] | None = None
+) -> tuple[list[list[str]], bool]:
+    """*command*'s stages, plus whether the stage budget cut the walk short.
+
+    The budget exists so an attacker-shaped string cannot make this pass expensive,
+    but dropping the stages past it silently made the budget itself the bypass:
+    600 copies of ``echo x`` in front of ``rg . ~/.kiro/crew`` pushed the traversal
+    past the cap, so it was never inspected. The caller is told, so exhaustion
+    becomes a REFUSAL rather than a gap -- a command with this many stages is not a
+    shape anyone types, so denying it costs nothing real.
+    """
+    stages: list[list[str]] = []
+    _alt_collect_stages(command, depth, stages, assignments)
+    return stages, len(stages) >= _ALT_MAX_STAGES
+
+
+def _alt_collect_stages(
+    command: str,
+    depth: int,
+    stages: list[list[str]],
+    assignments: dict[str, str] | None = None,
+) -> None:
+    """Append *command*'s stages, and its payloads' stages, to *stages*.
+
+    Recursion is bounded by BOTH the depth limit and the running length of
+    *stages*, which is why the accumulator is threaded through rather than each
+    level returning its own list: payload extraction branches, so a per-level
+    depth cap bounds only the height of the walk.
+    """
+    for segment in _split_shell_segments(command):
+        for piece in _split_unquoted_pipes(segment):
+            if not piece.strip():
+                continue
+            if len(stages) >= _ALT_MAX_STAGES:
+                return
+            try:
+                tokens = normalize_shell_command(piece)
+            except Exception:
+                continue
+            if not tokens:
+                continue
+            stages.append(tokens)
+            if depth < _ALT_NESTED_DEPTH_LIMIT:
+                for payload in _alt_command_string_payloads(tokens, assignments):
+                    _alt_collect_stages(payload, depth + 1, stages, assignments)
+
+
+def _alt_command_string_payloads(
+    tokens: list[str], assignments: dict[str, str] | None = None
+) -> list[str]:
+    """The command STRINGS these tokens carry as a flag value.
+
+    ``sh -c 'cat "$@"'`` and ``env -S 'grep -r . ~/.kiro/crew'`` both hold a whole
+    command where an operand would normally sit, so the text has to be read as a
+    command rather than as data.
+
+    The scan looks for the SHELL (or ``env``) token itself and then reads that
+    program's own grammar, rather than treating a bare ``-c`` as a command-string
+    flag wherever it appears. Two reasons, and both matter: ``-c`` means something
+    else entirely on other programs (``head -c 100``, ``wc -c``), and a shell's
+    ``-c`` clusters with its other short options -- ``bash -lc 'rg . ~/.kiro/crew'``
+    is the spelling a tool actually emits, and matching the whole token missed it.
+
+    :func:`_nested_shell_payloads` -- the extractor the self-protection floor
+    already uses -- is unioned in rather than replaced by the scan above, because
+    the two cover different spellings and a payload missed is a traversal never
+    looked at. It adds a shell reached through a variable (``$SHELL -c``), a
+    herestring (``bash <<< '…'``), a payload after ``-c --``, an array expansion run
+    as a command line, GNU ``sed``'s ``s///e`` replacement, and a multiword alias.
+    The scan above adds the one it declines: a payload GLUED to a short cluster
+    (``sh -c'rg . …'``), whose token holds characters its flag pattern rejects.
+    Extracting text that turns out not to be a command costs nothing here -- it
+    re-tokenizes to stages that match no traversal rule. The result is de-duplicated
+    because the two extractors agree on most spellings, and re-staging one payload
+    twice doubles the walk below it for no new reading.
+    """
+    payloads: list[str] = list(_nested_shell_payloads(tokens))
+    for index, token in enumerate(tokens):
+        # Resolved, not literal: `S=sh; "$S" -c '…'` carries a payload and the
+        # literal `$S` named no shell.
+        program = _alt_resolved_program_word(token, assignments or {})
+        if program in _NESTED_SHELL_PROGRAMS:
+            payloads.extend(_alt_shell_c_payloads(tokens[index + 1 :]))
+        elif program in _ENV_SPLIT_PROGRAMS:
+            payloads.extend(_alt_env_s_payloads(tokens[index + 1 :]))
+        elif program in _NESTED_SHELL_VERBS:
+            # `eval` and `source`/`.` take the command as ORDINARY operands rather
+            # than as a flag value, and bash joins them with a space before
+            # executing. Quoting the whole thing (`eval 'rg . ~/.kiro/crew'`) is
+            # the spelling that hid the traversal completely: the stage's own
+            # tokens are `eval` and one opaque word.
+            operands = [word for word in tokens[index + 1 :] if not word.startswith("-")]
+            if operands:
+                payloads.append(" ".join(operands))
+    deduped: list[str] = []
+    for payload in payloads:
+        if payload not in deduped:
+            deduped.append(payload)
+    return deduped
+
+
+def _alt_shell_c_payloads(argv: list[str]) -> list[str]:
+    """The command strings a shell's ``-c`` carries, in every spelling of it.
+
+    ``-c`` takes a value, so it ends a short-option cluster: the command is either
+    glued onto the cluster (``-c'cmd'``) or the next word (``-c 'cmd'``,
+    ``-lc 'cmd'``).
+    """
+    payloads: list[str] = []
+    for index, token in enumerate(argv):
+        if token.startswith("--"):
+            continue
+        if not token.startswith("-") or len(token) < 2:
+            continue
+        cluster = token[1:]
+        position = cluster.find("c")
+        if position == -1:
+            continue
+        glued = cluster[position + 1 :]
+        if glued:
+            payloads.append(glued)
+            bound = _alt_positional_bound_payload(glued, argv[index + 1 :])
+            if bound:
+                payloads.append(bound)
+        elif index + 1 < len(argv):
+            payloads.append(argv[index + 1])
+            # The words AFTER the command string are its positional parameters.
+            bound = _alt_positional_bound_payload(
+                argv[index + 1], argv[index + 2 :]
+            )
+            if bound:
+                payloads.append(bound)
+    return payloads
+
+
+def _alt_env_s_payloads(argv: list[str]) -> list[str]:
+    """The command strings ``env``'s ``--split-string`` carries."""
+    payloads: list[str] = []
+    for index, token in enumerate(argv):
+        flag, sep, glued = token.partition("=")
+        if sep and flag in _ENV_COMMAND_STRING_FLAGS:
+            if glued:
+                payloads.append(glued)
+            continue
+        if token in _ENV_COMMAND_STRING_FLAGS:
+            if index + 1 < len(argv):
+                payloads.append(argv[index + 1])
+            continue
+        if token.startswith("-S") and len(token) > 2:
+            payloads.append(token[2:])
+    return payloads
+
+
+def _split_unquoted_pipes(segment: str) -> list[str]:
+    """Split on ``|`` outside quotes, leaving ``||`` alone.
+
+    ``_split_shell_segments`` consumes ``||`` as a separator before this runs, so
+    a doubled bar does not normally arrive here. It is still handled, so the
+    helper is correct on any fragment rather than only on that caller's output.
+
+    ``|&`` is bash's pipe-with-stderr and is ONE operator: consuming only the bar
+    left ``&`` as the next stage's first word, so the reader after it was never
+    looked at (``rg --files ~/.kiro/crew |& xargs cat``).
+
+    A BARE ``&`` backgrounds what precedes it and starts a new command, so it is a
+    separator too. ``_split_shell_segments`` breaks on ``&&`` but not on one ``&``,
+    which left ``echo start & grep -r secret ~/.kiro/crew`` as a single stage whose
+    program read as ``echo`` -- anything placed before the ``&`` hid the traversal
+    after it. An ``&`` belonging to a redirection (``2>&1``, ``>&2``) is NOT a
+    separator, so a preceding ``>`` or ``<`` keeps it joined.
+    """
+    pieces: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(segment)
+    while i < n:
+        ch = segment[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                buf.append(segment[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            buf.append(ch)
+            buf.append(segment[i + 1])
+            i += 2
+            continue
+        if ch == "|":
+            pieces.append("".join(buf))
+            buf = []
+            # `||` and `|&` are both two-character operators; step over the second
+            # character so it does not become the next stage's program word.
+            i += 2 if i + 1 < n and segment[i + 1] in ("|", "&") else 1
+            continue
+        if ch == "&":
+            # `&&` is already a segment separator upstream, and an `&` that belongs
+            # to a redirection is data, not a separator.
+            previous = "".join(buf).rstrip()
+            if (i + 1 < n and segment[i + 1] == "&") or previous.endswith((">", "<")):
+                buf.append(ch)
+                i += 1
+                continue
+            pieces.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    pieces.append("".join(buf))
+    return pieces
+
+
+def _alt_program_word(token: str) -> str:
+    """The program *token* names, lowercased, with a Windows suffix removed.
+
+    ``_program_basename`` keeps ``.exe`` on purpose, so every comparison in this
+    pass would miss the Windows spelling of the same program.
+    """
+    program = _program_basename(token).lower()
+    for suffix in _ALT_WINDOWS_EXE_SUFFIXES:
+        if program.endswith(suffix):
+            return program[: -len(suffix)]
+    return program
+
+
+_ALT_GLOB_METACHARS = "*?["
+_ALT_MAX_BRACE_ALTERNATIVES = 16
+
+
+def _alt_brace_expansions(candidate: str) -> list[str]:
+    """*candidate* with its FIRST brace group expanded into alternatives.
+
+    One level is deliberate. Nested braces multiply, and this is a fail-closed
+    check: each alternative is tested on its own, so a nested group that stays
+    unexpanded still leaves a wildcard or a literal for the caller to answer.
+    """
+    open_at = candidate.find("{")
+    if open_at == -1:
+        return [candidate]
+    close_at = candidate.find("}", open_at)
+    if close_at == -1:
+        return [candidate]
+    body = candidate[open_at + 1 : close_at]
+    if not body or "," not in body:
+        return [candidate]
+    prefix, suffix = candidate[:open_at], candidate[close_at + 1 :]
+    alternatives = body.split(",")
+    expansions = [
+        f"{prefix}{alternative}{suffix}"
+        for alternative in alternatives[:_ALT_MAX_BRACE_ALTERNATIVES]
+    ]
+    if len(alternatives) > _ALT_MAX_BRACE_ALTERNATIVES:
+        # Dropping the overflow silently made the cap the bypass: padding a brace
+        # with 16 harmless alternatives pushed the fenced one out of range and the
+        # gate answered no while bash expanded it anyway. Every other overflow in
+        # this pass fails CLOSED, so this one does too -- by emitting the group's
+        # own parent, which is the same containment answer the wildcard branch
+        # gives, rather than by raising the cap to the next number an attacker
+        # would exceed.
+        parent = os.path.dirname(prefix)
+        if parent:
+            expansions.append(parent)
+    return expansions
+
+
+def _alt_glob_root_readings(candidate: str) -> list[str]:
+    """The paths a GLOB or BRACE root could expand to, as far as text can say.
+
+    The shell expands ``rg . ~/.kiro/cr*`` before this gate is ever asked, so the
+    literal candidate holds no fence and answered no while ripgrep walked the crew
+    home. Two expansions, each a concrete path the shell will really try:
+
+    * brace alternatives are enumerated, because ``~/.kiro/{crew,other}`` names the
+      crew home outright in one of them;
+    * a wildcard is answered by the directory that CONTAINS it. Which entries
+      ``cr*`` matches depends on the filesystem at run time, so the honest question
+      is whether the directory being globbed holds a fenced path -- exactly the
+      question this pass asks of every other root.
+
+    That second rule is fail-closed by construction: a glob whose parent holds the
+    fence is refused even when the pattern would not have matched the fenced entry
+    (``*`` skips dotfiles, so ``~/*`` misses ``.kiro``). Scoping the read to a
+    subdirectory is the same spelling this pass already asks for elsewhere, and the
+    alternative -- expanding globs against the real filesystem inside a security
+    gate -- makes the answer depend on directory contents at check time.
+
+    A candidate with no metacharacter returns nothing, so an ordinary path costs one
+    scan of its own characters.
+    """
+    if not candidate or not any(ch in candidate for ch in "*?[{"):
+        return []
+    readings: list[str] = []
+    for expanded in _alt_brace_expansions(candidate):
+        cuts = [expanded.index(ch) for ch in _ALT_GLOB_METACHARS if ch in expanded]
+        if not cuts:
+            if expanded not in readings:
+                readings.append(expanded)
+            continue
+        parent = os.path.dirname(expanded[: min(cuts)])
+        if parent and parent not in readings:
+            readings.append(parent)
+    return readings
+
+
+def _alt_positional_bound_payload(payload: str, argv: list[str]) -> str | None:
+    """*payload* with the shell's POSITIONAL parameters substituted.
+
+    ``bash -c 'rg . "$1"' _ ~/.kiro/crew`` hands the root in as ``$1``, so
+    re-staging the payload text alone left ``$1`` unresolved and the traversal named
+    no root at all. The words after a command string are exactly what the shell
+    binds: the first is ``$0``, the rest are ``$1`` onward, and ``$@``/``$*`` stand
+    for all of them.
+
+    Returns None when the payload references no positional, so the ordinary case
+    adds no second reading to re-stage.
+    """
+    if not argv or "$" not in payload:
+        return None
+    positional = argv[1:]
+    if not positional:
+        return None
+    bound = payload
+    joined = " ".join(positional)
+    for marker in ('"$@"', "'$@'", "$@", '"$*"', "'$*'", "$*"):
+        bound = bound.replace(marker, joined)
+    # Descending, so `${1}` is spent before `$1` can match its opening two bytes.
+    for index in range(min(len(positional), 9), 0, -1):
+        value = positional[index - 1]
+        bound = bound.replace("${" + str(index) + "}", value)
+        bound = bound.replace(f"${index}", value)
+    return bound if bound != payload else None
+
+
+def _alt_long_flag_matches(flag: str, candidates: frozenset[str]) -> bool:
+    """Does *flag* spell one of *candidates*, allowing GNU prefix abbreviation?
+
+    ``getopt_long`` accepts any unambiguous prefix of a long option, so
+    ``grep --rec`` and ``grep --recurs`` recurse exactly as ``--recursive`` does
+    and ``--direct=recurse`` sets the directory action exactly as
+    ``--directories=recurse`` does. Comparing whole tokens saw only the fully
+    spelled form, which made every abbreviation a bypass.
+
+    Short flags are answered exactly: they cluster, so they are read letter by
+    letter by the callers that care, and a one-letter prefix means nothing.
+
+    Only flags whose presence ADDS a denial are matched this way. The exemptions --
+    the pattern-supplying flags, ``rg --files`` -- stay exact on purpose, so an
+    abbreviation there fails towards blocking rather than towards allowing.
+    """
+    if flag in candidates:
+        return True
+    if not flag.startswith("--"):
+        return False
+    if len(flag) - 2 < _ALT_MIN_LONG_FLAG_PREFIX:
+        return False
+    return any(candidate.startswith(flag) for candidate in candidates)
+
+
+def _alt_resolved_program_word(token: str, assignments: dict[str, str]) -> str:
+    """The program *token* names, resolved through the command's own assignments.
+
+    ``R=rg; "$R" --hidden . ~/.kiro/crew`` runs ripgrep, and reading the token
+    literally saw ``$R`` and matched no rule -- the same indirection the ROOT
+    operands already resolve through :func:`_expansion_readings`, applied to the
+    program slot as well.
+
+    Every reading is tried and the first that names a word this pass ROUTES ON wins,
+    so a braced or operator spelling (``"${R}"``) resolves too. When none does, the
+    literal reading is returned unchanged, so a token that is simply not a variable
+    costs one dictionary lookup.
+
+    Resolving only the traversal names left the pass's other lookups reading ``$X``:
+    ``X=xargs; rg --files ~/.kiro/crew | "$X" cat`` hid the SINK and
+    ``S=sh; "$S" -c 'rg . ~/.kiro/crew'`` hid the payload CARRIER, so both ran while
+    the gate matched nothing. Every role this pass keys a decision on is resolved.
+    """
+    program = _alt_program_word(token)
+    if program in _ALT_ROUTED_PROGRAMS or not assignments:
+        return program
+    for reading in _expansion_readings(token, assignments):
+        candidate = _alt_program_word(reading)
+        if candidate in _ALT_ROUTED_PROGRAMS:
+            return candidate
+        # An unquoted expansion that resolves to SEVERAL words is argv, not one
+        # word: `G='grep -r'; $G secret ~/.kiro/crew` runs grep recursively, and
+        # reading the whole string as the program named no tool.
+        head = _alt_expansion_argv(reading)
+        if head and _alt_program_word(head[0]) in _ALT_ROUTED_PROGRAMS:
+            return _alt_program_word(head[0])
+    return program
+
+
+def _alt_program_readings(
+    token: str,
+    assignments: dict[str, str],
+    history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> list[str]:
+    """Every program *token* could name, across each value its variable ever held.
+
+    :func:`_alt_resolved_program_word` resolves through last-wins assignments, which
+    is what the shell finally leaves the name set to -- but not what an EARLIER
+    stage already ran. ``R=rg; "$R" . ~/.kiro/crew; R=echo`` reassigns after the
+    read, so the last-wins reading was ``echo``, matched no traversal, and ripgrep
+    walked the crew home. The roots have resolved against assignment history since
+    round eight; the program slot is the same indirection and now shares it.
+
+    Charged through :meth:`_AltWorkBudget.charge`, not ``spend``: this runs outside
+    the main loop's ``try``, so an exhausted budget stops the enumeration instead of
+    raising past it. The root check that follows is charged from the same counter,
+    so an exhausted command still refuses.
+    """
+    programs: list[str] = []
+    # One walk, shared with every other slot: `_alt_token_readings` owns the history
+    # expansion, so this no longer keeps a second copy of it.
+    for reading in _alt_token_readings(token, assignments, history, budget):
+        candidate = _alt_resolved_program_word(reading, assignments)
+        if candidate and candidate not in programs:
+            programs.append(candidate)
+    if not programs:
+        programs.append(_alt_program_word(token))
+    return programs
+
+
+def _alt_expansion_argv(reading: str) -> list[str]:
+    """*reading* split into argv words, when it carries more than one.
+
+    Word splitting is what the shell does to an UNQUOTED expansion, so a variable
+    holding ``grep -r`` contributes two words to the command line. Returns an empty
+    list for the ordinary single-word case so callers can skip cheaply.
+    """
+    if not reading or (" " not in reading and "\t" not in reading):
+        return []
+    try:
+        words = reading.split()
+    except Exception:  # pragma: no cover - split does not raise on str
+        return []
+    return words if len(words) > 1 else []
+
+
+def _alt_stage_readings(
+    tokens: list[str],
+    assignments: dict[str, str],
+    history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> list[tuple[str, list[str], bool]]:
+    """Every ``(program, operands, may_assume_cwd)`` this stage could be running.
+
+    Two readings, and the second is what closes the wrapper class:
+
+    * the stage HEAD, with everything that can sit in front of a program peeled
+      (:func:`_alt_stage_head`). This is the reading that may fall back to the
+      working directory when the traversal names no root at all, because a word in
+      the program position with no root operand really is ``rg secret`` walking
+      ``.``;
+    * EVERY other token that names a traversal program. Enumerating what may
+      precede a program is unbounded -- ``command``, ``nice``, ``sudo``,
+      ``busybox``, ``stdbuf -o L``, ``timeout -s KILL 5``, and the next wrapper
+      nobody listed -- so the traversal is found by its own name wherever it sits
+      instead of by its position. These readings require an EXPLICIT root that
+      reaches the fence: a bare mention of a program name is ordinary text
+      (``which rg``, ``sudo cp rg /usr/bin/``), and letting it assume the working
+      directory would refuse those outright whenever the gateway runs from a
+      directory that holds the crew home.
+
+    The head reading is usually one of the scanned ones as well. The duplicate is
+    harmless -- both readings ask the same question of the same operands -- and
+    keeping them independent is what lets the cwd fallback belong to exactly one.
+    """
+    readings: list[tuple[str, list[str], bool]] = []
+    # Hashed rather than scanned: the `not in readings` test this replaces was O(N)
+    # per reading, which made CONSTRUCTION quadratic on a stage of N traversal words
+    # -- before the root check's budget was ever consulted.
+    seen: set[tuple[str, tuple[str, ...], bool]] = set()
+    head, head_operands = _alt_stage_head(tokens, assignments)
+    if head:
+        readings.append((head, head_operands, True))
+        seen.add((head, tuple(head_operands), True))
+    for index, token in enumerate(tokens):
+        # Charged BEFORE resolution: examining a token costs a history scan even
+        # when it names no variable, so the per-token cost must be paid whether or
+        # not it turns out to route anywhere.
+        if budget is not None and not budget.charge():
+            return readings
+        for program in _alt_program_readings(token, assignments, history, budget):
+            if program not in _ALT_TRAVERSAL_PROGRAMS:
+                continue
+            # Building a reading is real work -- it copies the operand tail -- so it
+            # is charged in PROPORTION to that tail rather than one flat unit, which
+            # is what bounds the memory as well as the CPU. `charge` rather than
+            # `spend`: this runs OUTSIDE the main loop's try, so exhaustion stops
+            # enumerating instead of raising past it, and the root check that
+            # follows refuses on the same spent counter.
+            if budget is not None:
+                units = 1 + (len(tokens) - index - 1) // _ALT_OPERANDS_PER_UNIT
+                if not budget.charge(units):
+                    return readings
+            operands = tokens[index + 1 :]
+            # When the token was a MULTIWORD expansion, the words after its program
+            # are operands too (`G='grep -r'` carries the `-r` that makes it
+            # recurse), so they lead the operand list rather than being dropped.
+            for candidate in _expansion_readings(token, assignments or {}):
+                words = _alt_expansion_argv(candidate)
+                if words and _alt_program_word(words[0]) == program:
+                    operands = words[1:] + operands
+                    break
+            key = (program, tuple(operands), False)
+            if key not in seen:
+                seen.add(key)
+                readings.append((program, operands, False))
+    return readings
+
+
+def _alt_stage_head(
+    tokens: list[str], assignments: dict[str, str] | None = None
+) -> tuple[str, list[str]]:
+    """The stage's program basename and the operands that follow it.
+
+    Everything that can sit in FRONT of the real program word is peeled: a
+    ``NAME=value`` prefix, a declaration keyword (:data:`_DECLARATION_BUILTINS`),
+    a shell execution wrapper (:data:`_ALT_EXEC_WRAPPER_PROGRAMS`), an
+    argv-forwarding program (:data:`_ALT_ARGV_FORWARDING_PROGRAMS`), and ``env`` --
+    each with its OWN options, because those options occupy exactly the slot the
+    program word would::
+
+        env -i grep -r . ~/.kiro/crew        `-i` read as the program
+        command grep -r . ~/.kiro/crew       `command` read as the program
+        exec -a x grep -r . ~/.kiro/crew     `-a`'s value read as the program
+        nice grep -r . ~/.kiro/crew          `nice` read as the program
+        timeout 5 grep -r . ~/.kiro/crew     the duration read as the program
+
+    A wrapper's own positional argument is recognised by SHAPE
+    (:data:`_ALT_WRAPPER_OPERAND_RE`) rather than by a per-wrapper table, so a
+    wrapper whose argument nobody enumerated does not read as the program.
+
+    Peeling repeats, so a stacked spelling (``command env -i grep``,
+    ``nohup nice rg``) resolves too. :func:`_alt_program_word` resolves a quoted,
+    path-qualified or ``.exe`` spelling to the same name.
+    """
+    index = 0
+    value_flags: frozenset[str] = frozenset()
+    peeling_options = False
+    while index < len(tokens):
+        token = tokens[index]
+        if _SHELL_ASSIGN_RE.match(token):
+            index += 1
+            continue
+        program = _alt_resolved_program_word(token, assignments or {})
+        if (
+            program in _DECLARATION_BUILTINS
+            or program in _ALT_EXEC_WRAPPER_PROGRAMS
+            or program in _ALT_ARGV_FORWARDING_PROGRAMS
+        ):
+            peeling_options = True
+            value_flags = _ALT_WRAPPER_VALUE_FLAGS
+            index += 1
+            continue
+        if program in _ENV_SPLIT_PROGRAMS:
+            peeling_options = True
+            value_flags = _ENV_VALUE_FLAGS
+            index += 1
+            continue
+        if peeling_options and token.startswith("-") and token != "-":
+            flag = token.partition("=")[0]
+            # A separate-word value would otherwise be read as the program.
+            if "=" not in token and flag in value_flags:
+                index += 1
+            index += 1
+            continue
+        if peeling_options and _ALT_WRAPPER_OPERAND_RE.match(token):
+            index += 1
+            continue
+        return program, tokens[index + 1 :]
+    return "", []
+
+
+def _alt_assignments(stages: list[list[str]]) -> dict[str, str]:
+    """Every ``NAME=value`` the command itself sets, across all stages.
+
+    A traversal root is routinely held in a variable the same line assigns
+    (``D=$HOME/.kiro/crew; rg . "$D"``). Each stage is tokenized on its own, so
+    without this the ``$D`` operand stayed literal and the fence was never
+    consulted. ``$HOME`` is already expanded by ``normalize_shell_command``, so the
+    recorded value is an absolute path.
+
+    ``+=`` appends, matching bash, so a root assembled in two steps resolves too.
+
+    A declaration keyword assigns just as a bare ``NAME=value`` segment does, so
+    the scan looks past it and its options -- ``export D=$HOME/.kiro/crew`` recorded
+    nothing while bash set ``D``, which put the root back out of reach. Read from
+    :data:`_DECLARATION_BUILTINS`, the same table the segment walk uses.
+    """
+    assignments: dict[str, str] = {}
+    for tokens in stages:
+        declaring = False
+        for token in tokens:
+            program = _alt_program_word(token)
+            if program in _DECLARATION_BUILTINS:
+                declaring = True
+                continue
+            if (
+                program in _ALT_EXEC_WRAPPER_PROGRAMS
+                or program in _ALT_ARGV_FORWARDING_PROGRAMS
+                or program in _ENV_SPLIT_PROGRAMS
+            ):
+                continue
+            if declaring and token.startswith("-") and token != "-":
+                continue
+            match = _SHELL_ASSIGN_RE.match(token)
+            if not match:
+                break
+            name, append, value = match.group(1), match.group(2), match.group(3)
+            assignments[name] = (assignments.get(name, "") + value) if append else value
+    return assignments
+
+
+def _alt_root_operands(
+    program: str, operands: list[str], assignments: dict[str, str] | None = None
+) -> list[str]:
+    """The operands that could name a traversal ROOT.
+
+    Every operand is tested rather than the ones a per-tool grammar would classify
+    as a root: tracking which flags take a value needs a table per tool, and each
+    omission from such a table is a MISS, while testing a flag's value as if it
+    were a root only adds a denial -- and a flag value naming a credential store
+    (``--search-path ~/.kiro/crew``) is security-relevant wherever it sits.
+
+    ONE operand is exempted: the search PATTERN of ``fd``/``grep``/``rg``, which is
+    text to look for and not a place to look in. Without the exemption, searching
+    source for a reference to the crew home was refused::
+
+        grep -r "$HOME/.kiro" ./src      the pattern normalizes to a fenced parent
+        rg '~/.kiro/crew' src/
+
+    The exemption is the FIRST positional and only when no flag supplied the
+    pattern. Two things keep it from hiding a root. A value that arrives through a
+    root-supplying flag (:data:`_ROOT_SUPPLYING_FLAGS`) is pulled out first and
+    always tested, because that value occupies the positional slot the pattern
+    would otherwise hold. And when a flag supplied the pattern -- see
+    :func:`_alt_pattern_is_flag_supplied`, which reads glued and clustered
+    spellings too -- or ``rg --files`` takes no pattern at all, every positional is
+    a root and nothing is exempted.
+
+    ``du`` is the one program here that names ONLY roots, so it is the only one
+    exempt from the exemption. ``rgrep`` takes a pattern exactly as ``grep`` does,
+    so it shares the rule rather than routing through the all-operands branch.
+
+    When a flag DID supply the pattern, that flag's value is dropped and every
+    positional stays a root. Returning the operands untouched tested the value as
+    a root, so ``grep -re "$HOME/.kiro" ./src`` was refused while the equivalent
+    positional spelling was allowed -- the same false positive the exemption
+    exists to prevent, reached through the other spelling.
+    """
+    if program in _PATH_LISTER_PROGRAMS:
+        return operands
+    if _alt_pattern_is_flag_supplied(operands, assignments):
+        return _alt_without_pattern_flag_values(operands, assignments)
+    forced: list[str] = []
+    rest: list[str] = []
+    expect_root_value = False
+    for token in operands:
+        if expect_root_value:
+            forced.append(token)
+            expect_root_value = False
+            continue
+        flag, sep, glued = token.partition("=")
+        if _alt_long_flag_matches(flag, _ROOT_SUPPLYING_FLAGS):
+            if sep:
+                forced.append(glued)
+            else:
+                expect_root_value = True
+            continue
+        rest.append(token)
+    remaining: list[str] = list(forced)
+    skipped = False
+    past_end_of_flags = False
+    for token in rest:
+        # `--` ends option parsing, so the word after it is the PATTERN even when
+        # it is dash-prefixed. Requiring a non-dash token skipped that pattern and
+        # exempted the ROOT instead: `grep -r -- -foo ~/.kiro/crew` read clean.
+        if not skipped and token == "--":
+            past_end_of_flags = True
+            remaining.append(token)
+            continue
+        if not skipped and (past_end_of_flags or not token.startswith("-")):
+            skipped = True
+            continue
+        remaining.append(token)
+    return remaining
+
+
+def _alt_pattern_flag_supplies_a_value(flag: str) -> bool:
+    """Does *flag* name a pattern flag whose value is a SEPARATE word?
+
+    Abbreviation makes this two questions rather than one. ``--reg`` can only be
+    ``--regexp``, which takes a value, so the next word is the pattern. ``--fil``
+    prefixes both ``--file`` (takes a value) and ``--files`` (a mode that takes
+    none), and consuming the next word on that reading would swallow the ROOT -- so
+    an abbreviation shared with a no-value flag consumes nothing. Real tools reject
+    an ambiguous abbreviation outright; here the ambiguous reading simply keeps
+    every positional a root, which is the fail-closed answer.
+    """
+    if not _alt_long_flag_matches(flag, _PATTERN_VALUE_FLAGS):
+        return False
+    if flag in _PATTERN_VALUE_FLAGS:
+        return True
+    return not _alt_long_flag_matches(
+        flag, _PATTERN_SUPPLYING_FLAGS - _PATTERN_VALUE_FLAGS
+    )
+
+
+def _alt_without_pattern_flag_values(
+    operands: list[str], assignments: dict[str, str] | None = None
+) -> list[str]:
+    """*operands* minus the value each pattern-supplying flag carries.
+
+    The value is the text being searched FOR, so testing it as a root refuses an
+    ordinary source search whose pattern happens to spell a fenced path. Both
+    spellings are dropped: a separate word (``-e PAT``, ``--regexp PAT``) and a
+    ``=``-glued one (``--regexp=PAT``). A value glued to a short cluster
+    (``-ePAT``) stays in the list -- the token keeps its ``-e`` prefix, so it does
+    not resolve to a directory and answers no on its own.
+    """
+    kept: list[str] = []
+    expect_value = False
+    for token in operands:
+        if expect_value:
+            expect_value = False
+            continue
+        if token == "--" or "--" in _alt_token_readings(token, assignments or {}):
+            kept.append(token)
+            continue
+        flag, sep, _glued = token.partition("=")
+        if _alt_long_flag_matches(flag, _PATTERN_SUPPLYING_FLAGS):
+            # `rg --files` supplies no pattern and takes no value.
+            if not sep and _alt_pattern_flag_supplies_a_value(token):
+                expect_value = True
+            continue
+        if token.startswith("--") or not token.startswith("-") or len(token) < 2:
+            kept.append(token)
+            continue
+        # A short pattern flag inside a CLUSTER. A value-taking letter ends the
+        # cluster, so `-re PAT` carries its value in the next word while `-rePAT`
+        # glues it on. Matching whole tokens saw neither, so `grep -re "$HOME/.kiro"
+        # ./src` still tested the pattern as a root.
+        cluster = token[1:]
+        position = next(
+            (i for i, letter in enumerate(cluster) if letter in ("e", "f")), None
+        )
+        if position is None:
+            kept.append(token)
+            continue
+        if position == len(cluster) - 1:
+            expect_value = True
+        continue
+    return kept
+
+
+def _alt_pattern_is_flag_supplied(
+    operands: list[str], assignments: dict[str, str] | None = None
+) -> bool:
+    """Did a FLAG supply the search pattern, leaving every positional a root?
+
+    Short pattern flags take a value, so they end a cluster and the value may be
+    glued onto it: ``-e secret``, ``-esecret`` and ``-refoo`` all supply the
+    pattern. Matching whole tokens saw only the first, so the exemption below
+    fired on ``grep -r -esecret ~/.kiro/crew`` and dropped the credential-store
+    root -- a false NEGATIVE, which is the direction that actually costs
+    something. The cluster scan is case-sensitive on purpose: lowercase ``-e``/
+    ``-f`` name the pattern, while uppercase ``-E``/``-F`` only choose a regex
+    dialect.
+    """
+    for token in operands:
+        # `--` can arrive through a variable (`E=--; grep -r "$E" -e …`), and missing
+        # it left `-e` reading as a pattern flag that swallowed the ROOT as its value.
+        if token == "--" or "--" in _alt_token_readings(token, assignments or {}):
+            return False
+        # Matched by unique prefix, because a pattern flag NOBODY recognised is a
+        # pattern flag not seen -- which exempts the first positional as the
+        # pattern, and in `grep -r --reg=secret ~/.kiro/crew` that positional is the
+        # ROOT. Missing a pattern flag drops a root; seeing one too eagerly only
+        # keeps every positional a root, so the two directions are not symmetric.
+        if _alt_long_flag_matches(token.partition("=")[0], _PATTERN_SUPPLYING_FLAGS):
+            return True
+        if token.startswith("--"):
+            continue
+        if token.startswith("-") and len(token) > 1:
+            if any(letter in ("e", "f") for letter in token[1:]):
+                return True
+    return False
+
+
+#: A command substitution opening in an assignment's value. Either spelling means
+#: the value is computed at run time, so the gate cannot know what the variable holds.
+_ALT_UNRESOLVED_SUBST_RE = re.compile(r"\$\(|`")
+
+
+def _alt_substitution_assignment_fences(stages: list[list[str]]) -> dict[str, str]:
+    """Assigned names whose value is COMPUTED, mapped to a fence their stage names.
+
+    ``D=$(printf %s "$HOME/.kiro/crew"); rg . "$D"`` reaches the store, and nothing
+    in the recorded value says so: the tokenizer splits the substitution across
+    words, so the value is the truncated ``$(printf`` while the fenced path sits in
+    a separate token of the same stage. Reading the substitution body off the value
+    therefore cannot see it, and evaluating the substitution is not on offer.
+
+    What is reliable is the pair of facts this returns: the value opens a
+    substitution, so the gate CANNOT know what the variable holds; and the stage
+    computing it names the fenced directory in plain text. A traversal rooted at
+    such a variable then fails closed.
+
+    Requiring the stage to name a fence is what keeps the honest spellings working:
+    ``D=$(pwd)`` and ``D=$(printf %s "./src")`` name none, so they resolve normally.
+    """
+    fences: dict[str, str] = {}
+    for tokens in stages:
+        computed: list[str] = []
+        for token in tokens:
+            match = _SHELL_ASSIGN_RE.match(token)
+            if match and _ALT_UNRESOLVED_SUBST_RE.search(match.group(3)):
+                computed.append(match.group(1))
+        if not computed:
+            continue
+        for token in tokens:
+            # The closing `)` of the substitution rides on the last word.
+            for cand in _path_candidates(token.rstrip(")`\"'")):
+                if cand and not cand.startswith("-") and path_contains_sensitive(cand):
+                    for name in computed:
+                        fences.setdefault(name, cand)
+                    break
+    return fences
+
+
+def _alt_assignment_history(stages: list[list[str]]) -> dict[str, list[str]]:
+    """Every value each name is assigned, in order, not just the last one.
+
+    :func:`_alt_assignments` is last-wins, which matches what the shell finally
+    holds but not what an EARLIER stage read: in
+    ``D=$HOME/.kiro/crew; rg . "$D"; D=/tmp`` the traversal ran against the crew
+    home and the recorded value was ``/tmp``, so a trailing reassignment hid the
+    root. Every value a name ever takes is a value some stage could have used, so
+    each one is tested and the fenced reading wins.
+
+    ``+=`` appends to whatever the name held at that point, matching bash, so the
+    accumulated form is what is recorded for that step.
+    """
+    history: dict[str, list[str]] = {}
+    current: dict[str, str] = {}
+    for tokens in stages:
+        for token in tokens:
+            match = _SHELL_ASSIGN_RE.match(token)
+            if not match:
+                continue
+            name, append, value = match.group(1), match.group(2), match.group(3)
+            current[name] = (current.get(name, "") + value) if append else value
+            versions = history.setdefault(name, [])
+            if current[name] not in versions:
+                versions.append(current[name])
+    return history
+
+
+def _alt_cd_bases(
+    stages: list[list[str]],
+    assignments: dict[str, str],
+    history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> list[str]:
+    """Directories a ``cd`` on this command line moves to.
+
+    A traversal root is routinely spelled RELATIVE to a directory the same line
+    entered (``cd ~/.kiro && rg . crew``), and resolving it against the gateway's
+    own directory answered no while the shell walked the crew home. The normalizer
+    pass tracks the same bases for its own operand checks; this is the one question
+    that pass cannot answer, because it asks whether a path IS fenced while this
+    pass asks whether a directory HOLDS a fenced path -- and the crew home holds
+    without being.
+
+    ``cd`` takes ONE operand, so the scan stops at the first non-flag word. Bounded
+    by the same cap the normalizer's base list uses.
+    """
+    bases: list[str] = []
+
+    def _remember(raw: str) -> None:
+        for reading in _alt_token_readings(raw, assignments, history, budget):
+            for cand in _path_candidates(reading):
+                if cand and cand not in bases:
+                    bases.append(cand)
+
+    for tokens in stages:
+        # `env --chdir DIR prog …` enters DIR before running prog, so that value is
+        # a traversal base exactly as `cd DIR` is. It was being skipped as one of
+        # env's own option values, which let `env --chdir "$HOME/.kiro/crew" grep -r
+        # secret .` resolve its `.` against the gateway's directory instead.
+        expect_chdir = False
+        for token in tokens:
+            if expect_chdir:
+                _remember(token)
+                expect_chdir = False
+                continue
+            flag, sep, glued = token.partition("=")
+            # Prefix-matched, not exact: `env --chd DIR` enters DIR exactly as
+            # `--chdir DIR` does, and comparing whole tokens made every GNU
+            # abbreviation a bypass. `-C` is short, so it still answers exactly.
+            if _alt_long_flag_matches(flag, _ENV_CHDIR_FLAGS):
+                if sep:
+                    _remember(glued)
+                else:
+                    expect_chdir = True
+
+        program, operands = _alt_stage_head(tokens, assignments)
+        # Membership in the set this module already owns rather than the literal
+        # `"cd"`: five of its six verbs were uncovered, so `pushd ~/.kiro && rg .
+        # crew` walked the fence while the `cd` spelling denied. A verb added to
+        # `_CHDIR_VERBS` now reaches this pass with no second edit.
+        if program.lower() not in _CHDIR_VERBS_LOWER:
+            continue
+        for token in operands:
+            if token.startswith("-"):
+                continue
+            _remember(token)
+            break
+    return bases[:_MAX_TRACKED_BASES]
+
+
+def _alt_root_reaching_fence(
+    operands: list[str],
+    assignments: dict[str, str],
+    cd_bases: list[str] | None = None,
+    subst_fences: dict[str, str] | None = None,
+    assignment_history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> str | None:
+    """Which operand names a directory that HOLDS a fenced path, if any.
+
+    ``key=value`` and glued-redirect spellings come from :func:`_path_candidates`,
+    the same extraction the operand checks in the normalizer pass use, and
+    :func:`_expansion_readings` supplies every value an operand carrying an
+    expansion could take -- so a root held in a variable is judged on its value,
+    not on the literal ``$D``.
+
+    Three readings of one operand, because a root reaches the fence three ways:
+
+    * the operand as written;
+    * the BODY of any command substitution written inside the operand itself;
+    * the operand JOINED onto each ``cd`` base, for a root spelled relative to a
+      directory the same line entered.
+
+    A root held in a variable the command COMPUTED is handled separately, by
+    :func:`_alt_substitution_assignment_fences` -- see there for why the value
+    itself cannot carry the answer.
+
+    A non-path operand costs nothing: a pattern like ``secret`` resolves under the
+    gateway's directory and holds no fence, so it answers no.
+    """
+    bases = cd_bases or []
+    history = assignment_history or {}
+    # Markers built ONCE per name instead of once per (operand, name), and one
+    # scratch dict mutated in place instead of a fresh O(names) copy per value.
+    markers = {name: (f"${name}", "${" + name + "}") for name in history}
+    scratch = dict(assignments) if history else {}
+    # Per COMMAND, not per call: this function runs once per reading, and it was the
+    # readings x operands product -- not the variable history -- that wedged the
+    # gate for tens of seconds on a command that assigns nothing at all.
+    work = budget if budget is not None else _AltWorkBudget(_ALT_MAX_RESOLUTIONS)
+    for token in operands:
+        work.spend("operand")
+        # A root the command COMPUTED cannot be resolved from the text, so a
+        # variable whose assignment stage named a fence answers with that fence.
+        for name, fenced in (subst_fences or {}).items():
+            if f"${name}" in token or f"${{{name}}}" in token:
+                return fenced
+        # Each name is tried against EVERY value it is ever assigned, because a
+        # later reassignment does not unwind what an earlier stage already read.
+        readings = list(_expansion_readings(token, assignments))
+        for name, versions in history.items():
+            plain, braced = markers[name]
+            if plain not in token and braced not in token:
+                continue
+            restore = scratch.get(name)
+            for value in versions:
+                work.spend(name)
+                scratch[name] = value
+                for extra in _expansion_readings(token, scratch):
+                    if extra not in readings:
+                        readings.append(extra)
+            if restore is None:
+                scratch.pop(name, None)
+            else:
+                scratch[name] = restore
+        for reading in readings:
+            candidates = list(_path_candidates(reading))
+            for body in _substitution_bodies(reading):
+                candidates.extend(_path_candidates(body))
+            for cand in candidates:
+                if not cand or cand == "-" or cand.startswith("--"):
+                    continue
+                work.spend("candidate")
+                if path_contains_sensitive(cand):
+                    return cand
+                # A glob is expanded by the shell before this gate sees a path, so
+                # the literal candidate holds no fence while the expansion does.
+                for expanded in _alt_glob_root_readings(cand):
+                    work.spend("glob")
+                    if path_contains_sensitive(expanded):
+                        return expanded
+                # A relative root resolves against the `cd`, not against us.
+                if bases and not os.path.isabs(cand) and not cand.startswith("~"):
+                    for base in bases:
+                        joined = os.path.join(base, cand)
+                        if path_contains_sensitive(joined):
+                            return joined
+    return None
+
+
+def _alt_implicit_cwd_root() -> str | None:
+    """The fenced-holding answer for a traversal given no root at all.
+
+    ``fd .env -x cat`` walks the working directory, so the root is real even
+    though no operand names it.
+    """
+    return "." if path_contains_sensitive(".") else None
+
+
+def _alt_names_an_explicit_root(operands: list[str]) -> bool:
+    """Did the traversal name a directory to walk?
+
+    Only a traversal that named NONE falls back to the working directory. Testing
+    the fallback unconditionally meant a gateway launched from the home directory
+    refused every recursive read, including one explicitly rooted at a clean tree
+    (``grep -r TODO ./src``), because the home directory holds the crew data-home.
+    The explicit root is what the command actually walks, so once one is named the
+    working directory is not consulted.
+    """
+    for token in operands:
+        if token.startswith("-") or token == "--":
+            continue
+        for cand in _path_candidates(token):
+            if not cand or cand == "-":
+                continue
+            if _is_path_like(cand):
+                return True
+            try:
+                if os.path.isdir(cand):
+                    return True
+            except (OSError, ValueError):
+                continue
+    return False
+
+
+def _alt_token_readings(
+    token: str,
+    assignments: dict[str, str],
+    history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> list[str]:
+    """Every spelling *token* could have once the command's assignments apply.
+
+    A FLAG and a SINK program are as reachable through a variable as a root is
+    (``R=-r; grep "$R" secret ~/.kiro/crew``, ``C=cat; rg --files … | xargs "$C"``),
+    and comparing the literal token saw ``$R`` and matched nothing. The literal
+    reading is kept alongside the resolved ones, so a token that is not an
+    expansion answers exactly as before.
+
+    When *history* is supplied, EVERY value a name ever held is tried, not just the
+    one the command finally leaves set. A later reassignment does not unwind what an
+    earlier stage already read, so ``R=-r; grep "$R" secret ~/.kiro/crew; R=-n``
+    really does recurse. That rule reached only the ROOT slot until round fourteen --
+    the recursion flag, the sink program and the chdir base each resolved through
+    this function with the last-wins view alone, so the same trailing-reassignment
+    trick worked on all three while the root spelling denied. It lives HERE rather
+    than at those three call sites so a slot added later inherits it instead of
+    needing a fourth copy.
+
+    The scratch dict is built LAZILY, only once a name's marker actually appears in
+    the token: copying it per token charged nothing and cost O(assignments) on every
+    token that mentioned no variable at all.
+    """
+    if not assignments or "$" not in token:
+        return [token]
+    readings = [token]
+    for reading in _expansion_readings(token, assignments):
+        if reading not in readings:
+            readings.append(reading)
+    if not history:
+        return readings
+    scratch: dict[str, str] | None = None
+    for name, versions in history.items():
+        if f"${name}" not in token and "${" + name + "}" not in token:
+            continue
+        if scratch is None:
+            scratch = dict(assignments)
+        restore = scratch.get(name)
+        for value in versions:
+            if budget is not None and not budget.charge():
+                break
+            scratch[name] = value
+            for extra in _expansion_readings(token, scratch):
+                if extra not in readings:
+                    readings.append(extra)
+        if restore is None:
+            scratch.pop(name, None)
+        else:
+            scratch[name] = restore
+    return readings
+
+
+def _grep_is_recursive(
+    operands: list[str],
+    assignments: dict[str, str] | None = None,
+    history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> bool:
+    """Does this grep invocation traverse directories?
+
+    Short flags cluster, so the LETTERS of every single-dash token are scanned
+    rather than the token compared whole: ``-rn`` is ``-r -n``, and it is the
+    spelling a person actually types. Everything after ``--`` is an operand.
+
+    ``-d recurse`` / ``--directories=recurse`` is grep's other recursive mode and
+    traverses identically, so the directory ACTION is read as well as the flags --
+    the value carries the meaning, in either the glued or the separate-word form.
+
+    Every operand is judged on all of its readings (:func:`_alt_token_readings`),
+    because the flag itself can arrive through a variable: ``R=-r; grep "$R" secret
+    ~/.kiro/crew`` recurses, and the literal ``$R`` matched no rule. The scan stays
+    indexed by OPERAND so the ``-d`` lookahead still reads the next operand rather
+    than the next reading of the same one.
+    """
+    resolved = assignments or {}
+    readings = [
+        _alt_token_readings(token, resolved, history, budget) for token in operands
+    ]
+
+    def _next_operand_is_recurse(index: int) -> bool:
+        return index + 1 < len(readings) and any(
+            reading == _GREP_RECURSE_ACTION for reading in readings[index + 1]
+        )
+
+    for index, group in enumerate(readings):
+        # `--` ends option parsing, and only its literal spelling does: a variable
+        # whose VALUE is `--` still arrives as one word to this pass either way.
+        if operands[index] == "--":
+            break
+        for token in group:
+            if _alt_long_flag_matches(token, _GREP_RECURSIVE_LONG_FLAGS):
+                return True
+            flag, sep, glued = token.partition("=")
+            if _alt_long_flag_matches(flag, _GREP_DIRECTORIES_FLAGS):
+                # The action is either glued on (`--directories=recurse`) or the
+                # next word (`--directories recurse`, `-d recurse`).
+                if sep:
+                    if glued == _GREP_RECURSE_ACTION:
+                        return True
+                elif _next_operand_is_recurse(index):
+                    return True
+                continue
+            if token.startswith("--"):
+                continue
+            if token.startswith("-") and len(token) > 1:
+                cluster = token[1:]
+                if any(letter in ("r", "R") for letter in cluster):
+                    return True
+                # `-d` takes a value, so it ends the cluster: the argument is
+                # either glued onto it (`-drecurse`, `-ndrecurse`) or the next word
+                # (`-d recurse`, `-nd recurse`). Scanning the whole cluster is what
+                # catches the clustered spellings a person actually types.
+                position = cluster.find("d")
+                if position != -1:
+                    glued_action = cluster[position + 1 :]
+                    if glued_action:
+                        if glued_action == _GREP_RECURSE_ACTION:
+                            return True
+                    elif _next_operand_is_recurse(index):
+                        return True
+    return False
+
+
+def _alt_sink_program_names(
+    operands: list[str],
+    assignments: dict[str, str] | None = None,
+    history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> list[str]:
+    """Every program name a name-list executor could actually run.
+
+    The direct payload, plus -- when that payload is a shell -- the programs
+    inside its ``-c`` command string. ``xargs sh -c 'cat "$@"' sh`` runs ``cat``,
+    and reading only the direct payload saw ``sh`` and called it clean.
+
+    The payload word is resolved through the command's own assignments for the same
+    reason the traversal's program word is: ``C=cat; rg --files … | xargs "$C"``
+    runs a reader, and the literal ``$C`` named none.
+    """
+    resolved = assignments or {}
+    names: list[str] = []
+    for token in operands:
+        if token.startswith("-"):
+            continue
+        for reading in _alt_token_readings(token, resolved, history, budget):
+            names.append(_alt_program_word(reading))
+            # A QUOTED template is a whole command in one token, so the word above
+            # was the entire string and matched no reader: `parallel 'cat {}'` read
+            # as a program literally named `cat {}`. Splitting it makes the quoted
+            # spelling agree with the unquoted payload it is equivalent to, which
+            # already denied.
+            for word in _alt_expansion_argv(reading):
+                names.append(_alt_program_word(word))
+    for payload in _alt_command_string_payloads(operands, resolved):
+        for tokens in _alt_pipeline_stages(payload, _ALT_NESTED_DEPTH_LIMIT - 1):
+            program, _rest = _alt_stage_head(tokens, resolved)
+            if program:
+                names.append(program)
+    return names
+
+
+def _alt_has_reader_sink(
+    stages: list[list[str]],
+    assignments: dict[str, str] | None = None,
+    history: dict[str, list[str]] | None = None,
+    budget: "_AltWorkBudget | None" = None,
+) -> bool:
+    """Does any stage turn a name list into file content?
+
+    ``xargs``/``parallel`` run their payload once per name, so the payload's
+    program is what decides. A bare ``| cat`` is NOT a sink: it prints the name
+    list on stdin, it does not open the files those names point to.
+
+    EVERY operand is examined rather than only the first non-flag one, because
+    several of ``xargs``'s own flags take a value (``-n 1``, ``-P 4``, ``-I {}``)
+    and that value sits exactly where the payload would -- so the first non-flag
+    token can be ``1`` rather than ``cat``. Scanning on can only add a denial, and
+    a non-payload operand that happens to share a reader's name is not a shape
+    worth a per-flag table.
+    """
+    resolved = assignments or {}
+    for tokens in stages:
+        program, operands = _alt_stage_head(tokens, resolved)
+        if program not in _NAME_LIST_EXEC_PROGRAMS:
+            continue
+        for name in _alt_sink_program_names(operands, resolved, history, budget):
+            if name in _ALT_CONTENT_READER_PROGRAMS:
+                return True
+    return False
+
+
+def _check_alt_traversal_reaches_fence(command: str) -> str | None:
+    """Is a non-``find`` traversal rooted at a directory that holds a fenced path?
+
+    Three shapes, each with its own delivery question:
+
+    * ``grep -r``/``rg`` in matching mode open every file under the root, so the
+      traversal IS the read and no sink is needed.
+    * ``fd`` with ``-x``/``-X`` runs a reader per hit, which is the same delivery
+      ``find -exec`` performs.
+    * ``fd`` without an exec flag, ``rg --files`` and ``du -a`` emit names only, so
+      they are refused only when the command also contains a sink that opens them.
+
+    Returns a denial reason, or None when clean.
+    """
+    stages, truncated = _alt_pipeline_stages_bounded(command)
+    if not stages:
+        return None
+    assignments = _alt_assignments(stages)
+    if assignments:
+        # Staging runs before the assignments are known -- they are derived FROM the
+        # stages -- so a payload carried by a variable-named shell (`S=sh; "$S" -c
+        # '…'`) had nothing to resolve against on the first pass. Re-stage with them
+        # and union: the second pass only ever adds stages, under the same budget.
+        second, also_truncated = _alt_pipeline_stages_bounded(
+            command, assignments=assignments
+        )
+        truncated = truncated or also_truncated
+        for tokens in second:
+            if tokens not in stages:
+                stages.append(tokens)
+    if truncated:
+        # The budget stopped the walk, so any stage past it was never read. Refusing
+        # is the only honest answer: allowing would make the cap the bypass.
+        return (
+            "Blocked: command has more pipeline stages than this gate inspects "
+            f"({_ALT_MAX_STAGES}), so a traversal in it cannot be ruled out"
+        )
+    assignment_history = _alt_assignment_history(stages)
+    # ONE budget for the whole command, created BEFORE the slots that resolve
+    # history so none of them is uncharged. Threading `history` into these three in
+    # round 14 without the budget is what reopened the wedge: they resolved every
+    # operand against every historical value with nothing counting.
+    work = _AltWorkBudget(_ALT_MAX_RESOLUTIONS)
+    sink = _alt_has_reader_sink(stages, assignments, assignment_history, work)
+    cd_bases = _alt_cd_bases(stages, assignments, assignment_history, work)
+    subst_fences = _alt_substitution_assignment_fences(stages)
+    for tokens in stages:
+        for program, operands, may_assume_cwd in _alt_stage_readings(
+            tokens, assignments, assignment_history, work
+        ):
+            delivers: bool
+            # A flag can arrive through a variable just as a root can, so each
+            # operand is matched on all of its readings.
+            operand_readings = [
+                reading
+                for token in operands
+                for reading in _alt_token_readings(
+                    token, assignments, assignment_history, work
+                )
+            ]
+            if program in _FD_PROGRAM_NAMES:
+                delivers = sink or any(
+                    _alt_long_flag_matches(token.partition("=")[0], _FD_EXEC_FLAGS)
+                    for token in operand_readings
+                )
+            elif program in _ALWAYS_RECURSIVE_GREP_NAMES:
+                delivers = True
+            elif program in _GREP_PROGRAM_NAMES:
+                if not _grep_is_recursive(
+                    operands, assignments, assignment_history, work
+                ):
+                    continue
+                delivers = True
+            elif program in _RIPGREP_PROGRAM_NAMES:
+                # The lister flag stays EXACT: an abbreviation nobody recognised
+                # leaves ripgrep in matching mode here, which needs no sink and so
+                # denies rather than allows.
+                lister = any(
+                    token.partition("=")[0] in _RIPGREP_LISTER_FLAGS
+                    for token in operand_readings
+                )
+                delivers = sink if lister else True
+            elif program in _PATH_LISTER_PROGRAMS:
+                delivers = sink
+            else:
+                continue
+            if not delivers:
+                continue
+            roots = _alt_root_operands(program, operands, assignments)
+            try:
+                root = _alt_root_reaching_fence(
+                    roots,
+                    assignments,
+                    cd_bases,
+                    subst_fences,
+                    assignment_history,
+                    work,
+                )
+            except _AltResolutionBudget:
+                # The command costs more variable resolution than this gate spends,
+                # so it cannot be judged. Refusing is the only honest answer, and it
+                # is also what stops the cost from being the attack.
+                return (
+                    "Blocked: command requires more traversal analysis than this "
+                    f"gate performs ({_ALT_MAX_RESOLUTIONS} units), so a traversal "
+                    "in it cannot be ruled out"
+                )
+            if (
+                root is None
+                and may_assume_cwd
+                and not _alt_names_an_explicit_root(roots)
+            ):
+                root = _alt_implicit_cwd_root()
+            if root is not None:
+                return (
+                    "Blocked: recursive traversal rooted at a directory that holds "
+                    f"a sensitive credential path ({program}: {root[:80]})"
+                )
+    if work.exhausted:
+        # ONE place decides what running out means, and it means refuse. Any helper
+        # that stopped early returned a PARTIAL answer, so "no fenced root found" is
+        # not something this walk is entitled to conclude -- a padding stage that
+        # spends the budget would otherwise delete the very reading that catches an
+        # applet-dispatched traversal.
+        return (
+            "Blocked: command requires more traversal analysis than this gate "
+            f"performs ({_ALT_MAX_RESOLUTIONS} units), so a traversal in it cannot "
+            "be ruled out"
+        )
+    return None
 
 
 def _check_imds_access(
