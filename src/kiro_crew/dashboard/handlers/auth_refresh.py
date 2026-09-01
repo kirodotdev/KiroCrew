@@ -640,7 +640,7 @@ async def _verified_peer_key(request: web.Request, claimed_peer_key: str = "") -
     rebind then could not pin is precisely the gap this pair closes.
     """
     trust = request.app.get("tailnet_trust")
-    if not (isinstance(trust, TailnetTrust) and trust.trust_identity and trust.allowed_logins):
+    if not (isinstance(trust, TailnetTrust) and trust.enforces_identity):
         return ""
     try:
         peer = await resolve_forwarded_peer(request, trust)
@@ -683,7 +683,7 @@ async def _rebind_rotated_token_to_peer(
     separate decision and does not belong in a change about phone sessions.
     """
     trust = request.app.get("tailnet_trust")
-    if isinstance(trust, TailnetTrust) and trust.trust_identity and trust.allowed_logins:
+    if isinstance(trust, TailnetTrust) and trust.enforces_identity:
         peer = await resolve_forwarded_peer(request, trust)
         if peer is not None:
             bind_token_peer(access_token, peer_pin_key(peer, trust.pin_scope), session_exp)

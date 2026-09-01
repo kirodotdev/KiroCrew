@@ -57,6 +57,7 @@ from kiro_crew.dashboard.revocation_gen import (  # noqa: F401  # re-exports
 from kiro_crew.dashboard.tailnet import (
     ForwardedPeer,
     TailnetTrust,
+    is_forwarded_tailnet_request,
     login_allowed,
     peer_pin_key,
     peer_pin_key_for_claim,
@@ -2109,8 +2110,7 @@ def token_auth_middleware(
         peer: ForwardedPeer | None = None
         if (
             tailnet_trust is not None
-            and tailnet_trust.trust_identity
-            and tailnet_trust.allowed_logins
+            and tailnet_trust.enforces_identity
             and (
                 bool(request.query.get("token"))
                 or any(c.startswith(("mc_token_", "mc_refresh_")) for c in request.cookies)
@@ -2132,6 +2132,40 @@ def token_auth_middleware(
                     error="login not in allowed_logins",
                 )
                 _log_auth(request, peer.login, "denied", "tailnet login not allowed")
+                return _deny(request, "tailnet login not allowed")
+            if (
+                peer is None
+                and tailnet_trust.identity_unknown
+                and is_forwarded_tailnet_request(request, tailnet_trust)
+            ):
+                # Config load could not read the operator's allowlist, and this
+                # forwarded tailnet peer could not be attributed either (daemon
+                # down, timeout, or a header that disagreed). Falling through
+                # here would admit it on the token alone — which is exactly the
+                # widening this gate exists to stop, so the "unknown policy"
+                # deny would announce itself and then not happen.
+                #
+                # Distinct from the ordinary enabled path, where an unresolved
+                # peer deliberately falls through (fail-closed on identity,
+                # fail-open on availability): there the operator's allowlist is
+                # KNOWN, so availability is the only thing at stake. Here the
+                # restriction itself is missing, and there is nothing left to be
+                # available for.
+                #
+                # ``is_forwarded_tailnet_request`` is what keeps this from being
+                # a lockout: a local request resolves to no peer for an entirely
+                # different reason and is not touched, so the operator can still
+                # reach the dashboard to repair config.json.
+                _sel = _sel_fn()
+                _sel.log_api_access(
+                    caller=request.remote or "",
+                    operation="tailnet_peer_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error="tailnet allowlist unreadable and peer unresolved",
+                )
+                _log_auth(request, "", "denied", "tailnet identity policy unreadable")
                 return _deny(request, "tailnet login not allowed")
         # Audit attribution (RFC §3): when a peer resolved, the trail names a
         # person; otherwise it stays the immediate peer address as today.

@@ -587,11 +587,19 @@ def _effective_mobile_setup(cfg: KiroCrewConfig, login: str) -> tuple[bool, list
 
 
 def _running_tailnet_trust_ready(request: web.Request, login: str) -> bool:
-    """Whether this process can enforce a persistent phone session right now."""
+    """Whether this process can enforce a persistent phone session right now.
+
+    Asks ``enforces_identity`` rather than spelling the conjunction out again:
+    the property exists so every site answering "is tailnet identity in force"
+    answers the same way, and a fifth hand-written spelling is the drift it was
+    added to prevent. Behaviour here is unchanged either way -- an unreadable
+    policy carries an empty allowlist, so ``login_allowed`` already refused --
+    but a future change to what enforcement means now reaches this site too.
+    """
     trust = request.app.get("tailnet_trust")
     if not isinstance(trust, tailnet.TailnetTrust):
         return False
-    return trust.trust_identity and tailnet.login_allowed(login, trust.allowed_logins)
+    return trust.enforces_identity and tailnet.login_allowed(login, trust.allowed_logins)
 
 
 async def api_tailnet_mobile_configure(request: web.Request) -> web.Response:

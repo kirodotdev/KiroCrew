@@ -158,8 +158,31 @@ def _actual_type_name(value: object) -> str:
 #:   the loader's comprehension and would inject ``/etc`` as an allowed
 #:   relocate root, where the repaired default ``[]`` means home-only.
 #:
-#: Exact-match only: this is a per-path judgment, not a subtree rule.
-_FAIL_CLOSED_PATHS = frozenset({"publish", "publish.allowed_destinations"})
+#: * ``dashboard`` (the section) and ``dashboard.tailscale``: same open
+#:   direction, one narrowing deeper. ``dashboard.tailscale.allowed_logins``
+#:   is the ONLY restriction on which tailnet peer may authenticate, and its
+#:   default is the empty list — which the loader turns into
+#:   ``trust_identity = False``, i.e. **no login restriction at all**. So
+#:   repairing either enclosing object dropped the operator's allowlist and
+#:   admitted every tailnet peer holding a token, where before only an
+#:   allowlisted login was admitted. Note the deeper
+#:   ``dashboard.tailscale.allowed_logins`` itself needs no entry: at three
+#:   segments it is already past ``_apply_field_default``'s depth cap, so a
+#:   malformed list value is kept today.
+#:
+#: Exact-match only: this is a per-path judgment, not a subtree rule. The
+#: registry is only half of a fix — a preserved value changes nothing unless
+#: the loader RECORDS the degradation and a gate reads
+#: ``KiroCrewConfig.degraded_sections``. Both halves exist for every path
+#: listed here; adding a path without them just keeps evidence nobody reads.
+_FAIL_CLOSED_PATHS = frozenset(
+    {
+        "publish",
+        "publish.allowed_destinations",
+        "dashboard",
+        "dashboard.tailscale",
+    }
+)
 
 
 def _apply_field_default(data: dict, dot_path: str) -> bool:

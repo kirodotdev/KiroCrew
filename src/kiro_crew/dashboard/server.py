@@ -37,10 +37,13 @@ from kiro_crew.config import data_home
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     consume_managed_service_launch_environment,
+    degraded_config_files,
     load_loop_stall_exit_after,
     refresh_config_meta_stamp,
     refresh_materialized_agents,
     resolve_loop_stall_exit_after,
+    tailnet_effective_allowed_logins,
+    tailnet_identity_unknown,
 )
 from kiro_crew.dashboard import (
     cautious_boot,
@@ -3323,13 +3326,21 @@ async def start_dashboard(
     # Off by default; resolved in a thread so the daemon call cannot stall the
     # loop; "" whenever Tailscale is absent, stopped, or produced nothing that
     # validated.
-    _ts_cfg = KiroCrewConfig.load().dashboard.tailscale
+    _cfg = KiroCrewConfig.load()
+    _ts_cfg = _cfg.dashboard.tailscale
     _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
     # Identity trust (RFC §2–§3.1): validated at config load, governance
     # ceiling applied inside the shared helper — ONE code path for both
     # startup surfaces, so they cannot drift.
     _tailnet_trust = await tailnet.governed_tailnet_trust(
-        _ts_cfg.trust_identity, tuple(_ts_cfg.allowed_logins), _ts_cfg.pin_scope
+        _ts_cfg.trust_identity,
+        tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
+        _ts_cfg.pin_scope,
+        # An unreadable tailnet policy resolves allowed_logins to [] and so
+        # trust_identity to False, which is "no login restriction". The values
+        # alone cannot tell that from "never configured"; degraded_sections can.
+        identity_unknown=tailnet_identity_unknown(_cfg.degraded_sections),
+        unreadable_files=tuple(degraded_config_files(_cfg.degraded_sections)),
     )
     if _tailnet_host:
         logger.info(
@@ -4081,12 +4092,17 @@ async def start_api_server(
     # The MCP route surface is identical to the dashboard's, so the middleware
     # chain must be too. Host-allowlist source of truth is shared with the CSRF
     # Origin check via build_allowed_origins/build_allowed_hosts (see origin.py).
-    _ts_cfg = KiroCrewConfig.load().dashboard.tailscale
+    _cfg = KiroCrewConfig.load()
+    _ts_cfg = _cfg.dashboard.tailscale
     _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
     # Same identity-trust value as start_dashboard, via the same shared helper
     # — the auth surface is identical, so the middleware inputs must be too.
     _tailnet_trust = await tailnet.governed_tailnet_trust(
-        _ts_cfg.trust_identity, tuple(_ts_cfg.allowed_logins), _ts_cfg.pin_scope
+        _ts_cfg.trust_identity,
+        tailnet_effective_allowed_logins(_cfg.degraded_sections, _ts_cfg.allowed_logins),
+        _ts_cfg.pin_scope,
+        identity_unknown=tailnet_identity_unknown(_cfg.degraded_sections),
+        unreadable_files=tuple(degraded_config_files(_cfg.degraded_sections)),
     )
     app["allowed_origins"] = build_allowed_origins(
         port,

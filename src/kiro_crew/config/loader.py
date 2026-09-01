@@ -3054,7 +3054,65 @@ class TailscaleConfig:
     )
 
 
-def _tailscale_config_from(raw: object) -> TailscaleConfig:
+#: ``degraded_sections`` key for "the operator wrote a tailnet identity policy
+#: this load could not read". Its own key rather than reusing ``"dashboard"``
+#: so the tailnet gate denies on exactly the narrowing it enforces, and an
+#: unrelated malformed ``dashboard`` value does not.
+DEGRADED_TAILSCALE = "dashboard.tailscale"
+
+
+def tailnet_identity_unknown(sections: frozenset[str]) -> bool:
+    """Whether *sections* means the tailnet login allowlist could not be read.
+
+    Three shapes lose it, at three depths: an unreadable config FILE, an
+    unreadable ``dashboard`` section, and an unreadable ``dashboard.tailscale``
+    value. All three resolve ``allowed_logins`` to the empty list, which the
+    loader turns into ``trust_identity = False`` — i.e. no login restriction —
+    so the gate has to treat them alike.
+
+    Lives here, beside the keys it names, because BOTH server startup surfaces
+    ask it. Asking twice in two places is how the tailnet feature shipped a
+    drift bug before (see ``governed_tailnet_trust``).
+    """
+    return bool(sections & {DEGRADED_WHOLE_CONFIG, "dashboard", DEGRADED_TAILSCALE})
+
+
+def tailnet_effective_allowed_logins(
+    sections: frozenset[str], allowed_logins: list[str] | tuple[str, ...]
+) -> tuple[str, ...]:
+    """The parsed allowlist reduced to what is safe to ENFORCE from *sections*.
+
+    Degradation comes in two severities and only one of them invalidates the
+    value that was parsed:
+
+    * A whole config FILE could not be read (:data:`DEGRADED_WHOLE_CONFIG`).
+      ``config.local.json`` is deep-merged OVER ``config.json``, and an overlay
+      may exist precisely to NARROW the base -- so a lost overlay leaves the
+      base's wider list standing and every login the operator removed is
+      admitted again. The parsed list is not the effective policy, it is a
+      stale one, so nothing may be enforced from it: the allowlist is empty and
+      every peer is denied, matching how the publish gate treats an unreadable
+      file.
+    * A section or field inside a file that WAS read (``dashboard``,
+      :data:`DEGRADED_TAILSCALE`). Whatever parsed is literally what the
+      operator wrote in a file this load could see, so it is kept: access
+      narrows to the entries that survived, and the administrator whose own
+      login parsed fine is not locked out mid-repair.
+
+    Both cases still enforce -- see :func:`tailnet_identity_unknown`. This
+    decides only WHOSE logins may satisfy that enforcement.
+    """
+    if DEGRADED_WHOLE_CONFIG in sections:
+        return ()
+    return tuple(allowed_logins)
+
+
+def _tailscale_config_from(
+    raw: object,
+    degraded: set[str] | None = None,
+    *,
+    key_present: bool = False,
+) -> TailscaleConfig:
     """Build the validated :class:`TailscaleConfig` (RFC §3/§3.1 load rules).
 
     Two rules, both narrowing-only so a typo can never widen access:
@@ -3065,11 +3123,126 @@ def _tailscale_config_from(raw: object) -> TailscaleConfig:
       shared corporate tailnet would hand the dashboard to all of them.
     * An unrecognised ``pin_scope`` falls back to ``"node"`` (the narrower
       scope) with a logged warning — never to ``"login"``.
+
+    Both rules resolve to a *narrower* value, which is right for an operator
+    typo and wrong for a value that was LOST: ``allowed_logins`` is the only
+    restriction on which tailnet peer may authenticate, so losing it resolves
+    to "identity trust off", i.e. no login restriction at all. Absent is
+    genuinely unconfigured; MALFORMED is the operator having asked for a
+    restriction this load cannot read, and it is recorded in *degraded* under
+    :data:`DEGRADED_TAILSCALE` so the gate can deny instead of admitting every
+    tailnet peer (the shape that reopened the publish allowlist, #4057).
+
+    ``key_present`` separates the two states a bare value cannot: a MISSING
+    ``tailscale`` key and one written as JSON ``null`` both arrive here as
+    ``None``. Only the second is the operator having written something, so only
+    it degrades -- reading ``None`` alone as malformed would deny every install
+    that simply has no tailscale section. Callers that do not know pass nothing
+    and get the absent reading, which is what the direct-value tests rely on.
     """
+    if (key_present and raw is None) or (raw is not None and not isinstance(raw, dict)):
+        # Reached only because "dashboard.tailscale" is a fail-closed path in
+        # config/validation.py; without that entry the malformed value is
+        # repaired to the default before this runs and there is nothing to see.
+        # An explicit null counts: the operator had to write the key to produce
+        # it, which is the absent-versus-malformed line this whole fix turns on.
+        if degraded is not None:
+            degraded.add(DEGRADED_TAILSCALE)
+        _OBSERVED_DEGRADED_SECTIONS.add(DEGRADED_TAILSCALE)
+        logger.warning(
+            "config: 'dashboard.tailscale' is not a JSON object (got %s) — the "
+            "tailnet login allowlist is unknown, so tailnet peers are DENIED "
+            "until the file is fixed and the gateway restarted",
+            type(raw).__name__,
+        )
     data = _safe_dict(raw)
     enabled = _safe_bool(data.get("enabled"), False)
     trust_identity = _safe_bool(data.get("trust_identity"), False)
+    if "trust_identity" in data and not isinstance(data.get("trust_identity"), bool):
+        # The same class as the allowlist itself, one field over, and the field
+        # is the restriction's own ON switch -- so it is the most permissive
+        # default in the section. ``_safe_bool`` returns the default for
+        # anything non-boolean, and that default is False, so `"true"` (a
+        # quoted boolean, the commonest hand-edit slip) or `1` reads as "the
+        # operator never asked for identity trust" and the perfectly valid
+        # allowlist beside it stops being enforced.
+        #
+        # Recording it enforces the allowlist AS WRITTEN rather than denying
+        # everyone: the entries parsed from a readable file are kept, so the
+        # operator's own login still works and every peer they did not name is
+        # refused. That is the closest honest reading of a config whose intent
+        # to enable was garbled but whose list of who to admit was not.
+        if degraded is not None:
+            degraded.add(DEGRADED_TAILSCALE)
+        _OBSERVED_DEGRADED_SECTIONS.add(DEGRADED_TAILSCALE)
+        logger.warning(
+            "config: 'dashboard.tailscale.trust_identity' is not a boolean (got "
+            "%s) — it is the switch for the tailnet login allowlist, so the "
+            "allowlist is enforced as written and every peer it does not name "
+            "is DENIED until the file is fixed and the gateway restarted",
+            type(data.get("trust_identity")).__name__,
+        )
     raw_logins = data.get("allowed_logins")
+    # The allowlist is only ever CONSULTED when identity trust is on, so a
+    # malformed value in it loses nothing when the operator cleanly said off (or
+    # never said on). Recording a degradation there would turn a typo in an
+    # inert field into a forwarded-tailnet lockout, against a config that -- read
+    # correctly -- permits those peers. A malformed FLAG is different: intent is
+    # unknown, so the allowlist has to be treated as live.
+    #
+    # Presence is tested with ``in`` rather than ``is not None`` throughout: a
+    # key written as JSON null is the operator having written something
+    # unusable, not having left it out, and only the second is consent.
+    _allowlist_is_live = trust_identity or (
+        "trust_identity" in data and not isinstance(data.get("trust_identity"), bool)
+    )
+    if _allowlist_is_live and "allowed_logins" in data and not isinstance(raw_logins, list):
+        # Same class one level down, and reachable WITHOUT a registry entry:
+        # a three-segment path is past _apply_field_default's depth cap, so the
+        # malformed value survives validation already. Recorded rather than
+        # merely logged, because the log line below only fires when
+        # trust_identity happens to be readable AND true — a config whose
+        # trust_identity was lost in the same edit would say nothing at all.
+        if degraded is not None:
+            degraded.add(DEGRADED_TAILSCALE)
+        _OBSERVED_DEGRADED_SECTIONS.add(DEGRADED_TAILSCALE)
+        logger.warning(
+            "config: 'dashboard.tailscale.allowed_logins' is not a list (got "
+            "%s) — the tailnet login allowlist is unknown, so tailnet peers "
+            "are DENIED until the file is fixed and the gateway restarted",
+            type(raw_logins).__name__,
+        )
+    elif (
+        _allowlist_is_live
+        and isinstance(raw_logins, list)
+        and any(not (isinstance(entry, str) and entry.strip()) for entry in raw_logins)
+    ):
+        # A LIST whose entries are not usable logins, e.g. [1] or ["a@b", None].
+        # The comprehension below silently drops them, so an all-invalid
+        # narrowing parses to [] — indistinguishable from "no restriction
+        # configured", which is the exact silent widening this fix exists to
+        # stop, and the same entry-level shape publish.allowed_destinations
+        # already handles. An EMPTY list is NOT this case: that is a readable,
+        # if mistaken, statement, and the trust_identity rule below already
+        # refuses it with its own error.
+        #
+        # Unlike publish, the surviving entries are KEPT rather than zeroed.
+        # The publish gate denies one whole action, so a partial allowlist
+        # there has nowhere safe to land; this gate decides per peer, so
+        # keeping the parseable logins narrows access to exactly what the
+        # operator demonstrably wrote, while the degradation record still
+        # denies every peer they did not name. Zeroing would instead lock out
+        # the administrator whose own login parsed fine — a self-inflicted
+        # outage in the middle of a config repair.
+        if degraded is not None:
+            degraded.add(DEGRADED_TAILSCALE)
+        _OBSERVED_DEGRADED_SECTIONS.add(DEGRADED_TAILSCALE)
+        logger.warning(
+            "config: 'dashboard.tailscale.allowed_logins' carries entr(y/ies) "
+            "that are not non-empty strings — the tailnet login allowlist is "
+            "not what was written, so any peer it does not name is DENIED "
+            "until the file is fixed and the gateway restarted",
+        )
     allowed_logins = [
         entry.strip()
         for entry in (raw_logins if isinstance(raw_logins, list) else [])
@@ -8597,7 +8770,11 @@ class KiroCrewConfig:
             ),
             dashboard=DashboardConfig(
                 url=dashboard_data.get("url", ""),
-                tailscale=_tailscale_config_from(dashboard_data.get("tailscale")),
+                tailscale=_tailscale_config_from(
+                    dashboard_data.get("tailscale"),
+                    _degraded,
+                    key_present="tailscale" in dashboard_data,
+                ),
                 restore_sessions=dashboard_data.get("restore_sessions", False),
                 qr_session_until_restart=_safe_bool(
                     dashboard_data.get("qr_session_until_restart"), True
