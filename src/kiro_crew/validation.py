@@ -105,9 +105,22 @@ ALLOWED_LESSON_SCOPES = frozenset({"global", "workspace"})
 # Allowed cron schedule kinds
 ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 
-# Allowed hook events
+# Allowed hook events for the hook create/update API.
+#
+# Three event allowlists exist and they diverge INTENTIONALLY; a follow-up must
+# not "fix" the drift by syncing them. test_session_lane_changed_hook.py pins all
+# three memberships together with this rationale:
+#   * hooks.HOOK_EVENTS        -- what the dispatcher can fire. Carries every event.
+#   * this set                 -- what the registration API accepts. A
+#                                 dashboard-internal event still has to be here,
+#                                 or hand-editing hooks.json is the only way to
+#                                 register a hook for it.
+#   * agent._VALID_HOOK_EVENTS -- what a generated kiro-cli agent config may
+#                                 contain. SessionLaneChanged must stay OUT:
+#                                 kiro-cli rejects a spec naming an event it does
+#                                 not know, so adding it there breaks the config.
 ALLOWED_HOOK_EVENTS = frozenset(
-    {"AgentSpawn", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
+    {"AgentSpawn", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionLaneChanged"}
 )
 
 # Valid agent name pattern (alphanumeric, hyphens, underscores)

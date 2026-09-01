@@ -95,6 +95,10 @@ HOOK_EVENT_USER_PROMPT_SUBMIT = "UserPromptSubmit"
 HOOK_EVENT_PRE_TOOL_USE = "PreToolUse"
 HOOK_EVENT_POST_TOOL_USE = "PostToolUse"
 HOOK_EVENT_STOP = "Stop"
+# Not a Kiro CLI event. Fired by the dashboard when a session's status tags
+# change, so an automation can react to a board lane transition. Informational
+# only: see ``_fire_session_lane_changed`` for why it cannot block the write.
+HOOK_EVENT_SESSION_LANE_CHANGED = "SessionLaneChanged"
 
 HOOK_EVENTS = (
     HOOK_EVENT_AGENT_SPAWN,
@@ -102,6 +106,7 @@ HOOK_EVENTS = (
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_STOP,
+    HOOK_EVENT_SESSION_LANE_CHANGED,
 )
 
 
@@ -3770,6 +3775,24 @@ class ScriptHookResult:
         return self.exit_code == 0
 
 
+async def _script_hooks_capability_denied_async(session_key: str = "") -> str | None:
+    """Resolve the gate WITHOUT walking ``profiles/`` on the event loop.
+
+    One seam rather than a hop at each caller, and unconditional rather than keyed
+    on the event: resolution is synchronous (``_dir_fingerprint`` walks ``profiles/``
+    and a reload reads each profile JSON), so any ``async`` caller that resolved it
+    inline stalled the event loop for that walk. Scoping the offload to one event was tried
+    and withdrawn -- it put an equality branch in shared dispatch that every future
+    event would grow, and left the other events stalling anyway.
+
+    Still a caller-side workaround, not the cause-level fix: making resolution itself
+    non-blocking, or caching the fingerprint, belongs in the owning module and would
+    make this wrapper unnecessary. Centralised here so that change has ONE seam to
+    delete rather than a hop at every call site.
+    """
+    return await asyncio.to_thread(_script_hooks_capability_denied, session_key)
+
+
 def _script_hooks_capability_denied(session_key: str = "") -> str | None:
     """Return a denial reason if governance disables ``capabilities.script_hooks``.
 
@@ -3780,6 +3803,12 @@ def _script_hooks_capability_denied(session_key: str = "") -> str | None:
     sandbox/redaction guards: a ``PlatformCompositionError`` propagates
     (fail-closed CPP); any other error degrades to "no opinion" (None) so a
     transient governance glitch cannot wedge every hook.
+
+    Resolution is SYNCHRONOUS: ``_dir_fingerprint`` walks ``profiles/`` and a reload
+    reads each profile JSON, so this stalls whatever thread calls it. Every ``async``
+    caller in this module therefore goes through
+    ``_script_hooks_capability_denied_async`` instead, never this function directly;
+    synchronous callers, here and elsewhere, still pay the walk on their own thread.
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
@@ -3842,7 +3871,7 @@ async def run_script_hook(
     sk = ""
     if hook_event:
         sk = str(hook_event.get("parent_session_key") or hook_event.get("session_key") or "")
-    gov_denied = _script_hooks_capability_denied(sk)
+    gov_denied = await _script_hooks_capability_denied_async(sk)
     if gov_denied:
         hook.last_run = time.time()
         hook.last_status = "blocked"
@@ -4283,6 +4312,7 @@ class ScriptHookStore:
         parent_session_key: str | None = None,
         agent_role: str | None = None,
         hook_continuation_count: int = 0,
+        event_payload: dict | None = None,
     ) -> list[ScriptHookResult]:
         """Fire all enabled hooks matching the given event. Returns results.
 
@@ -4321,6 +4351,23 @@ class ScriptHookStore:
             # Stamped unconditionally so the keys are always present.
             hook_event["hook_continuation_count"] = hook_continuation_count
             hook_event["stop_hook_active"] = hook_continuation_count > 0
+        elif event == HOOK_EVENT_SESSION_LANE_CHANGED:
+            # The DELTA is the point. With ``tags`` alone every consumer has to
+            # persist its own prior snapshot to answer "was Done just added?",
+            # which is the polling problem relocated rather than solved.
+            #
+            # Carried as ONE mapping rather than a parameter each: this signature
+            # already takes a per-event set for the tool events, and adding four
+            # more here would make every future event widen it again (review-flagged
+            # -- ``SessionTagsChanged`` is already reserved). The caller owns the
+            # key names, which keeps the event's payload contract beside the event
+            # rather than spread across this signature.
+            #
+            # Defaults are stamped for all three keys before the caller's mapping is
+            # applied, so a hook that always reads one never KeyErrors on a
+            # removal-only or addition-only change even if a caller omits it.
+            hook_event.update({"slot": "", "added": [], "removed": []})
+            hook_event.update(event_payload or {})
         if tool_name:
             hook_event["tool_name"] = tool_name
         if tool_input is not None:
@@ -4366,7 +4413,7 @@ class ScriptHookStore:
                 # gate as command hooks — a disabled capabilities.script_hooks
                 # must not be bypassable by omitting the command field.
                 sk = parent_session_key or ""
-                gov_denied = _script_hooks_capability_denied(sk)
+                gov_denied = await _script_hooks_capability_denied_async(sk)
                 if gov_denied:
                     hook.last_run = time.time()
                     hook.last_status = "blocked"
@@ -4521,3 +4568,396 @@ async def fire_tool_hooks(
         )
     except Exception:
         logger.debug("PreToolUse hook error", exc_info=True)
+
+
+async def _fire_session_lane_changed(
+    hook_store: ScriptHookStore | None,
+    slot_key: str,
+    added: list[str],
+    removed: list[str],
+) -> None:
+    """Fire SessionLaneChanged hooks for a board lane transition.
+
+    Informational only, and deliberately so. ``run_script_hook`` treats exit
+    code 2 as blocking, which ``PreToolUse`` uses to deny a tool call; this
+    event must NOT honour that. By the time it fires the tag write has already
+    been applied in memory (persistence is best-effort and may still be pending)
+    and the user has already performed the drag, so letting a hook veto it would
+    make the board unusable whenever a hook is broken rather than preventing
+    anything. Every exception is therefore swallowed, and the caller dispatches
+    this off the request path so a slow hook cannot delay the response either.
+
+    The matcher context and the governance session key are DERIVED HERE from the
+    delta rather than passed in. Both were once parameters, and every caller
+    computed them identically from the other arguments -- redundant surface whose
+    only degree of freedom was getting one wrong, which fires the wrong hook or
+    binds the wrong governance profile. Deriving them leaves one spelling.
+
+    The context is what a hook's ``matcher`` is evaluated against. Its tokens are
+    DIRECTION-TAGGED and carry the tag ID only -- ``added:<id>;``, ``removed:<id>;``
+    -- so that the motivating case, "a session ENTERED Done", is expressible at
+    all; an untagged context would fire an entering hook on leaving the lane as
+    well. Display names are deliberately NOT tokenized (see
+    ``_session_lane_matcher_context``): they are payload, not grammar. Note the
+    default matcher mode is ``glob`` and ``_context_matches`` fnmatches the WHOLE
+    string, so a selector needs wildcards: ``*added:<id>;*`` for entering,
+    ``*removed:<id>;*`` for leaving, ``*<id>;*`` for either. The trailing ``;``
+    TERMINATES the id: without it a selector for a short id also matches every
+    longer id it prefixes, firing the wrong lane's hook.
+
+    The session key is the caller's EFFECTIVE key (``dashboard:<slot>``), so the
+    ``capabilities.script_hooks`` governance gate resolves the profile bound to the
+    originating surface. Without it the gate falls back to policy-only resolution
+    and a profile that denies script hooks for that surface is never consulted;
+    with a BARE slot id, ``sel._infer_source`` misses the ``dashboard:`` prefix it
+    classifies on and hits the bare-key ``slack`` fallback instead -- binding the
+    wrong surface rather than none. Only dashboard writers fire this event, so the
+    prefix is applied once, here.
+    """
+    if hook_store is None:
+        return
+    matcher_context = _session_lane_matcher_context(added, removed)
+    if not matcher_context:
+        # No id in this transition survived token validation, so there is no token
+        # to filter on -- and ``fire`` consults a matcher ONLY when the context is
+        # non-empty. Dispatching now would therefore skip filtering and run EVERY
+        # hook registered for the event, including one whose matcher names a
+        # different lane; for a destructive close-out hook that is the worst
+        # available outcome. Dropping the fire stays inside this event's
+        # at-most-once, best-effort contract. Firing the wrong lane's hook does
+        # not, so refuse rather than fan out.
+        logger.debug(
+            "SessionLaneChanged not fired for %s: no valid tag id to match on",
+            slot_key,
+        )
+        return
+    # Empty slot key stays empty rather than becoming a bare ``dashboard:``
+    # prefix, so the gate still falls back to policy-only resolution as before.
+    session_key = f"dashboard:{slot_key}" if slot_key else ""
+    try:
+        await hook_store.fire(
+            HOOK_EVENT_SESSION_LANE_CHANGED,
+            context=matcher_context,
+            event_payload={
+                "slot": slot_key,
+                "added": list(added),
+                "removed": list(removed),
+            },
+            parent_session_key=session_key or None,
+        )
+    except Exception:
+        logger.debug("SessionLaneChanged hook error", exc_info=True)
+
+
+# SessionLaneChanged delivery: ONE bounded FIFO delta queue drained by ONE worker.
+# Order is total, which subsumes the per-session order the event promises.
+#
+# WHY NOT A CAP ON IN-FLIGHT TASKS. This bound used to be applied at scheduling
+# time: past a cap of 8 concurrent dispatches the delta was DROPPED and audited.
+# The ceiling was real, but it shed precisely the burst this event exists to
+# serve. Two of them are ordinary, not pathological: a person dragging several
+# cards while one slow hook runs, and deleting a status tag, which fans out to
+# every session holding that lane. The motivating subscriber runs IRREVERSIBLE
+# close-out work, so a shed delta is not a delayed effect, it is a missing one --
+# a ticket that never closes, with nothing but an audit record to say so.
+#
+# A queue keeps the same guarantee against exhaustion while DEFERRING instead of
+# DISCARDING. The two bounds are separate on purpose:
+#
+#   * ``_LANE_QUEUE_MAXSIZE`` bounds MEMORY. Each entry is a small frozen
+#     dataclass, so this is set well above any plausible number of sessions
+#     holding one lane on a single dashboard. That headroom is what lets the
+#     deletion path drop its dedicated coalescer: a per-holder enqueue is now
+#     absorbed rather than shed, so the fan-out no longer needs to be folded into
+#     one task to survive.
+#   * the SINGLE worker bounds REAL RESOURCES -- a dispatch can run a hook command,
+#     i.e. a subprocess with its own file descriptors, so concurrency stays at one.
+#
+# A worker pool sharded by session was tried and withdrawn: it bought cross-session
+# latency isolation the at-most-once contract already tolerates -- see the spec.
+_LANE_QUEUE_MAXSIZE = 512
+# The matcher grammar's token charset, as an ALLOWLIST: refusing only the structural
+# separators still admits glob metacharacters, and the grammar is read by ``fnmatch``.
+# LOWERCASE ONLY, because ``_context_matches`` folds case: admitting both cases would
+# let two ids differing only in case alias to one lane and fire each other's hooks.
+_TOKEN_ALLOWED = re.compile(r"\A[a-z0-9_-]+\Z")
+
+
+def _is_token_safe(raw: str) -> bool:
+    """Whether an id can be a matcher token without breaking the grammar.
+
+    Only ids reach a token, and ids are ``uuid4().hex[:12]`` or a seeded lane key,
+    so in practice this holds. It is checked anyway because ``tags.json`` is
+    persisted state a human can edit, and a malformed id is corrupt data: it is
+    skipped rather than rewritten, degrading matching for one tag instead of
+    firing the wrong hook.
+
+    An ALLOWLIST, not a screen for separators. Whitespace would SPLIT one token in
+    two, ``:`` would forge the opposite direction (a left-the-lane cleanup on a
+    session that just entered it), and ``;`` terminates a token, without which a
+    hand-edited short id is matched by any selector written for an id it prefixes.
+    But refusing only those three still admits glob metacharacters, and the grammar
+    is consumed by ``fnmatch``: an id of ``*`` makes the selector written for it
+    (``*added:*;*``) match EVERY lane change, running that tag's hook on sessions it
+    was never registered for. Enumerating the safe characters refuses that whole
+    class rather than the separators that happened to be foreseen.
+    """
+    return bool(_TOKEN_ALLOWED.match(raw))
+
+
+# One bounded queue and one worker, created lazily on the running loop.
+#
+# A strong ref to the worker is held here because asyncio keeps only a weak
+# reference to a task: without this the worker can be garbage collected mid-drain
+# and the hooks it would have run silently never run.
+_LANE_QUEUE: asyncio.Queue | None = None
+_LANE_WORKER: asyncio.Task | None = None
+# An ``asyncio.Queue`` and the task
+# draining it are bound to ONE loop, and a test suite (or an in-process gateway
+# restart) runs many; reusing them across loops would park deltas behind a worker
+# that can never be scheduled again, and that failure reads as a silently dropped
+# event rather than as a wrong loop.
+_LANE_QUEUE_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _reset_lane_dispatch_state() -> None:
+    """Drop the queues and workers. For tests, which run one loop per test.
+
+    Cancels rather than awaits: the caller is usually a synchronous fixture
+    teardown running after its loop has already closed, where there is nothing
+    left to await on. The cancel is GUARDED on that loop for the same reason: a
+    cancellation cannot be delivered once the loop that would deliver it is gone,
+    so calling it there accomplishes nothing and leaves a pending task to be
+    collected. Dropping the reference is the whole of the cleanup available.
+    """
+    global _LANE_QUEUE_LOOP, _LANE_QUEUE, _LANE_WORKER
+    if _LANE_WORKER is not None and not _LANE_WORKER.get_loop().is_closed():
+        _LANE_WORKER.cancel()
+    _LANE_WORKER = None
+    _LANE_QUEUE = None
+    _LANE_QUEUE_LOOP = None
+
+
+async def _lane_dispatch_worker(queue: asyncio.Queue) -> None:
+    """Drain the queue forever, isolating every fire.
+
+    A single failing fire must not strand the rest of the queue: dispatch is
+    best-effort by contract, and one unreachable hook cannot be allowed to
+    silence the remaining sessions' cleanup. ``task_done`` is in a ``finally`` so
+    a raising fire still releases the ``join()`` a caller may be waiting on.
+    """
+    while True:
+        store, item = await queue.get()
+        try:
+            await _fire_session_lane_changed(
+                store,
+                slot_key=item.slot_key,
+                added=item.added,
+                removed=item.removed,
+            )
+        except Exception:
+            logger.warning(
+                "SessionLaneChanged fire failed for %s; continuing",
+                item.slot_key,
+                exc_info=True,
+            )
+        finally:
+            queue.task_done()
+
+
+def _lane_dispatch_queue() -> asyncio.Queue | None:
+    """The delta queue, creating it and its worker on first use.
+
+    Returns ``None`` when no loop is running, which is the synchronous unit-test
+    path: there is nothing to schedule a worker on, and refusing here keeps the
+    refusal attributable instead of surfacing later as a queue nobody drains.
+    """
+    global _LANE_QUEUE_LOOP, _LANE_QUEUE, _LANE_WORKER
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    if _LANE_QUEUE is None or _LANE_QUEUE_LOOP is not loop:
+        _LANE_WORKER = None
+        _LANE_QUEUE_LOOP = loop
+        _LANE_QUEUE = asyncio.Queue(maxsize=_LANE_QUEUE_MAXSIZE)
+    if _LANE_WORKER is None:
+        _LANE_WORKER = asyncio.create_task(_lane_dispatch_worker(_LANE_QUEUE))
+    return _LANE_QUEUE
+
+
+def _session_lane_matcher_context(
+    added: list[str],
+    removed: list[str],
+) -> str:
+    """Build the matcher context for ``SessionLaneChanged``. THE EVENT'S CONTRACT.
+
+    Lives here beside ``HOOK_EVENT_SESSION_LANE_CHANGED`` rather than in the
+    dashboard writer that happens to trigger it, because the token grammar is what
+    a hook author writes a matcher against -- it is the event's contract, and a
+    caller-local helper invites a second, divergent spelling. Private because
+    ``_fire_session_lane_changed`` derives the context itself: the GRAMMAR is
+    public surface (it is specified in the hooks spec), the function that builds it
+    has no caller outside this module.
+
+    Tokens are DIRECTION-TAGGED and carry the tag ID only, each closed by a
+    terminating ``;``: ``added:<id>;``, ``removed:<id>;``. The terminator is what
+    makes an id boundary explicit, so a selector for a short id cannot also match a
+    longer id that it prefixes. Direction is in the grammar because the motivating
+    case is
+    "a session ENTERED Done" and an untagged context cannot express it -- a
+    ``<id>`` matcher would fire on leaving the lane too.
+
+    Matching is whole-string, so a SELECTOR NEEDS WILDCARDS under the default
+    ``glob`` mode -- a bare id matches NOTHING:
+
+        entered a lane      ``*added:<id>;*``
+        left a lane         ``*removed:<id>;*``
+        any movement        ``*<id>;*``
+
+    In ``contains`` mode the same selectors work without the wildcards.
+
+    NAMES ARE DELIBERATELY NOT TOKENS. Emitting them alongside ids read better --
+    an author could write ``*added:In_Review*`` for a lane shown as "In Review" --
+    but it put a user-controlled string into a structural grammar, and that cost
+    more than it bought. Whitespace divides tokens and ``:`` divides a direction
+    from its value, so a name had to be escaped or one lane could forge another's
+    token; a collapsing sanitizer turned out to be many-to-one (``In Review``,
+    ``In:Review`` and a literal ``In_Review`` all became ``In_Review``), which
+    fires a destructive close-out hook for the WRONG lane, so the escape had to be
+    injective; and the resulting spelling (``*added:In_20Review*``) would be frozen
+    contract from the first subscriber onward.
+
+    Ids already select a lane, are rename-proof, and contain no separator to
+    escape, so dropping names removes the whole forgery surface rather than
+    guarding it. The asymmetry settles the sequencing: adding name tokens later is
+    ADDITIVE, removing them later is BREAKING, and this event ships with zero
+    subscribers -- so not freezing that grammar is free today and expensive later.
+    A subscriber wanting the human-readable label reads ``added``/``removed`` from
+    the payload and resolves the ids it finds there.
+
+    CAN return an empty string, and the caller must treat that as "do not fire".
+    A transition whose every id fails validation below leaves no tokens, and
+    ``fire`` consults a matcher ONLY when the context is non-empty -- so handing an
+    empty context to ``fire`` would skip filtering and run every hook registered
+    for the event, on a lane none of them named. ``_fire_session_lane_changed``
+    checks for it and refuses; this function does not raise, because the tag write
+    it follows has already been applied.
+    """
+    tokens: list[str] = []
+    for direction, ids in (("added", added), ("removed", removed)):
+        for tid in ids:
+            # ``tags.json`` is persisted state, so the annotation is a contract
+            # rather than a guarantee: a hand-edited or legacy entry can hold a
+            # number, and formatting it into a token would either raise after the
+            # tag write already persisted -- turning a completed write into a 500
+            # the caller cannot interpret -- or emit a token that breaks the
+            # grammar. Skip it instead; that degrades matching for one tag.
+            if not isinstance(tid, str) or not _is_token_safe(tid):
+                continue
+            tagged = f"{direction}:{tid};"
+            if tagged not in tokens:
+                tokens.append(tagged)
+    return " ".join(tokens)
+
+
+@dataclass(frozen=True)
+class SessionLaneDelta:
+    """One session's status-tag transition, as the event delivers it.
+
+    A typed item rather than a dict so the bulk scheduler needs no coercion: the
+    single-item and many-item paths carry identical, checked fields.
+
+    Every field is IRREDUCIBLE state the caller alone knows. The matcher context
+    and the governance session key were once fields too, and both were derived
+    from the fields below identically at every construction site -- so the only
+    thing a caller could contribute was a divergent spelling that fires the wrong
+    hook. ``_fire_session_lane_changed`` derives them instead.
+
+    The post-change tag set was a field too, delivered as a ``tags`` payload key.
+    It is gone: the event is a DELTA, and a subscriber needing current state must
+    re-read the live store, which the spec already required of it.
+    """
+
+    slot_key: str
+    added: list[str]
+    removed: list[str]
+
+
+def dispatch_session_lane_changed_bulk(
+    hook_store: ScriptHookStore | None,
+    *,
+    items: list[SessionLaneDelta],
+) -> None:
+    """Enqueue a batch of SessionLaneChanged deltas. Never blocks the caller.
+
+    Returns nothing, deliberately. This once reported whether a task was
+    scheduled, but no caller read it and none should: refusal is not an error for
+    the CALLER, because the tag write has already been applied and this event is
+    informational by contract, so a caller branching on it would be deciding
+    something it has no remedy for. Refusals are recorded where they can be acted
+    on instead -- an overflow logs a warning AND writes an SEL record
+    (``outcome=rejected``); no running loop is the unit-test path.
+
+    EVERY HOLDER GETS ITS OWN QUEUE ENTRY. Deleting a status tag removes it from
+    every session holding that lane, and this used to be folded into a single
+    task purely so the old in-flight cap could not shed all but the first few
+    holders. With a bounded queue the fan-out is ABSORBED rather than shed, so
+    the fold is gone and with it the special case: the deletion path is now the
+    same path as every other transition, which is one fewer shape to reason about
+    when a hook misbehaves.
+
+    The alternative this still refuses is awaiting the fires in the writer. That
+    would let a slow or broken hook delay -- and by hanging, effectively veto --
+    an admin endpoint that already awaits one save per holder.
+
+    Overflow is the one remaining loss, and it is bounded and audited rather
+    than routine. It takes more than ``_LANE_QUEUE_MAXSIZE`` queued deltas,
+    which has two distinct causes: hooks are not draining at all, or one
+    synchronous call enqueued more than the bound in a single pass, since the
+    dispatcher never awaits and a large enough fan-out reaches the bound by
+    arithmetic while the drain is perfectly healthy.
+    """
+    # The app-caller gate runs at both writers via ``_lane_dispatch_is_permitted``,
+    # deliberately not here: a refused caller never reaches this function at all.
+    if hook_store is None or not items:
+        return
+
+    overflowed: list[SessionLaneDelta] = []
+    for item in items:
+        queue = _lane_dispatch_queue()
+        if queue is None:
+            return
+        try:
+            queue.put_nowait((hook_store, item))
+        except asyncio.QueueFull:
+            overflowed.append(item)
+
+    if not overflowed:
+        return
+
+    logger.warning(
+        "SessionLaneChanged dispatch dropped (%d of %d item(s)): queue full (bound %d)",
+        len(overflowed),
+        len(items),
+        _LANE_QUEUE_MAXSIZE,
+    )
+    try:
+        sel().log_api_access(
+            caller="dashboard",
+            # Renamed with the event: this is a QUERYABLE surface. The spec
+            # reserves ``SessionTagsChanged`` for a future all-tags event, so a
+            # stale ``hooks.session_tags_changed`` here would collide with that
+            # event's audit records once it lands. Corrected now, while nothing
+            # queries it.
+            operation="hooks.session_lane_changed",
+            outcome="rejected",
+            source="dashboard",
+            resources=",".join(i.slot_key for i in overflowed)[:200],
+            error=(
+                f"dispatch queue full (bound {_LANE_QUEUE_MAXSIZE}); "
+                f"{len(overflowed)} hook(s) not run"
+            ),
+        )
+    except Exception:
+        logger.debug("SessionLaneChanged drop audit failed", exc_info=True)

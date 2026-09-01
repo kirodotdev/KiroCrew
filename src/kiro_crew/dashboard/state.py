@@ -6996,6 +6996,25 @@ class DashboardState:
             if "status" not in t:
                 t["status"] = t.get("id") in seed_ids
                 mutated = True
+            elif not isinstance(t["status"], bool):
+                # NORMALISE AT THE CAUSE, once, on the only path a non-bool can
+                # enter the vocabulary. Every writer already stores a real bool
+                # (tag create, and both update handlers), so persisted state is
+                # the sole entry point: a legacy row, or a hand edit. Left
+                # alone, the STRING "false" is TRUTHY, which forced each reader
+                # of this field to test ``is True`` rather than truthiness to
+                # stay correct -- and not all of them did, so the drop handler
+                # classified an inactive tag as a board lane while the lane
+                # filter did not. Repairing the value here makes plain
+                # truthiness correct for every reader, and the save below
+                # persists the repair so it happens once rather than per read.
+                raw = t["status"]
+                t["status"] = (
+                    raw.strip().lower() in ("true", "1", "yes", "on")
+                    if isinstance(raw, str)
+                    else bool(raw)
+                )
+                mutated = True
         if not file_existed and not self._tags:
             # Fresh install (no tags.json on disk) — seed the default vocabulary.
             self._tags = [dict(t) for t in self._DEFAULT_TAGS]
