@@ -23,6 +23,18 @@ Hooks receive JSON via STDIN:
 - **Exit 2**: (PreToolUse only) block tool execution, STDERR returned to LLM
 - **Other**: failed, STDERR shown as warning
 
+> **Kiro Crew divergence** (script hooks in `hooks.json`, managed from the
+> dashboard's Hooks page): for a `preToolUse` hook, any exit that is neither 0
+> nor 2 — including a timeout, a crash, or an unexecutable command — **blocks
+> the tool** instead of warning. Exit 0 is a delivered allow and exit 2 a
+> delivered deny; every other outcome is an undelivered verdict, and the gate
+> fails closed (`BLOCKED:<hook>:<detail>`). There is no per-hook opt-out, so a
+> `preToolUse` hook must reserve nonzero exits for "block" — a hook that exits
+> 1 to mean "issues found, but proceed" will deny the tool. Non-gating events
+> (`postToolUse`, `userPromptSubmit`, `stop`) keep the warn-only behavior
+> above. See [learn-cron-dashboard](../../system-specs/modules/learn-cron-dashboard.md),
+> § Tool-Refusal Recovery.
+
 ## Tool matching
 
 Use `matcher` field. Supports canonical names and aliases:
@@ -44,6 +56,9 @@ Runs when user submits prompt. Receives `prompt` field. Exit 0 → STDOUT added 
 
 ### PreToolUse
 Runs before tool execution. Can block (exit 2). Receives `tool_name`, `tool_input`.
+
+> **Kiro Crew:** any non-0/2 exit also blocks — see the divergence note under
+> [Hook output](#hook-output).
 
 ### PostToolUse
 Runs after tool execution. Receives `tool_name`, `tool_input`, `tool_response`.

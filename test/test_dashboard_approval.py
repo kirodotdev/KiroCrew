@@ -22,7 +22,7 @@ from kiro_crew.dashboard.state import (
     parse_cls_meta,
 )
 from kiro_crew.history import ConversationLog
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ToolHookResult
+from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult, ToolHookResult
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -563,8 +563,13 @@ class TestApprovalModes:
         """
         cb = _context_builder(ToolHookResult.auto_approve())
         hook_store = _make_hook_store()
+        # spec= pins the mock to real ScriptHookResult fields, so a renamed
+        # production field (e.g. `error`) fails here instead of silently
+        # matching a truthy child mock.
         hook_store.fire = AsyncMock(
-            return_value=[MagicMock(hook_name="policy-gate", **result_kwargs)]
+            return_value=[
+                MagicMock(spec=ScriptHookResult, hook_name="policy-gate", **result_kwargs)
+            ]
         )
         state, client = _make_state(tmp_path, context_builder=cb, hook_store=hook_store)
         slot = _make_slot()
@@ -591,7 +596,14 @@ class TestApprovalModes:
         hook_store = _make_hook_store()
         hook_store.fire = AsyncMock(
             return_value=[
-                MagicMock(exit_code=0, stdout="", stderr="", error="", hook_name="policy-gate")
+                MagicMock(
+                    spec=ScriptHookResult,
+                    exit_code=0,
+                    stdout="",
+                    stderr="",
+                    error="",
+                    hook_name="policy-gate",
+                )
             ]
         )
         state, client = _make_state(tmp_path, context_builder=cb, hook_store=hook_store)
