@@ -50,6 +50,7 @@ from kiro_crew.dashboard import (
     channel_slots,
     chat,
     handlers,
+    handlers_instances,
     tailnet,
     tailnet_serve,
 )
@@ -402,6 +403,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
         "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
+        # MCP-only crew-scoped session reads (crew= scope on search_chat_history
+        # / list_sessions / get_chat_session). Prefix matching covers
+        # "/api/crew-sessions/search|list|read". No browser caller — the
+        # dashboard's own federated read is the owner-guarded
+        # "/api/instances/search-sessions". Without this entry the tools'
+        # internal-secret calls fall through to cookie auth and are refused.
+        "/api/crew-sessions",
         # MCP-only (session_ledger_read / session_ledger_record tools); no
         # browser caller. Prefix matching covers "/api/session-ledger/record".
         # Without this entry the tools' internal-secret calls fall through to
@@ -1313,6 +1321,14 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/session-control/read", _deferred_session_control("api_session_control_read")
     )
+    # Crew-scoped session reads (the crew= scope on the session read MCP tools).
+    # Registered HERE, not in the dashboard-only connections block, so the
+    # headless --slack-only server exposes the same MCP surface as the dashboard;
+    # all three are on _STRICT_INTERNAL_API_PATHS (internal-secret, no browser
+    # caller), exactly like /api/sessions/summarize.
+    app.router.add_get("/api/crew-sessions/search", handlers_instances.api_crew_sessions_search)
+    app.router.add_get("/api/crew-sessions/list", handlers_instances.api_crew_sessions_list)
+    app.router.add_get("/api/crew-sessions/read", handlers_instances.api_crew_sessions_read)
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
     app.router.add_post("/api/browser/install", handlers.api_browser_install_start)

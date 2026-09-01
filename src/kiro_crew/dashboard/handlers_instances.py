@@ -20,22 +20,24 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import json
 import logging
 import math
 import re
 from typing import TYPE_CHECKING
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.context import RECALL_ROLES
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     build_transfer_bundle_async,
     local_instance_label,
 )
-from kiro_crew.history import SEARCH_MIN_CHARS
+from kiro_crew.history import INCOGNITO_MEMORY_MODES, SEARCH_MIN_CHARS
 from kiro_crew.instances.constants import (
     PROXY_PATH_MAX_DECODE_PASSES,
     PROXY_REQUEST_BODY_MAX_BYTES,
@@ -68,8 +70,16 @@ logger = logging.getLogger(__name__)
 _PEER_FIELD_MAX_CHARS = 2048
 
 
-def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "") -> None:
-    """Emit a SEL audit event for an instances control-plane action."""
+def _audit(
+    operation: str, outcome: str, *, request_id: str = "", error: str = "", caller: str = ""
+) -> None:
+    """Emit a SEL audit event for an instances control-plane action.
+
+    ``caller`` records the originating MCP session key (the internal-secret
+    request's ``X-Session-Key``) for the crew-scoped reads, so an audit reviewer
+    can see WHICH agent session read a remote crew's history — the exact
+    cross-crew disclosure this surface enables. Omitted for browser/owner routes.
+    """
     try:
         sel().log_tool_invocation(
             session_key="dashboard:instances",
@@ -78,6 +88,7 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
             request_id=request_id,
             source="dashboard",
             error=error,
+            metadata={"caller": caller} if caller else None,
         )
     except Exception:  # audit must never break the request path
         logger.debug("SEL audit failed for instances_%s", operation, exc_info=True)
@@ -900,6 +911,349 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
             break
     _audit("search_sessions", "success", request_id=f"{len(connected)} peers")
     return web.json_response({"sessions": merged, "unreachable": unreachable})
+
+
+# ── MCP crew-scoped session reads (STRICT internal-secret; no browser caller) ──
+#
+# These three GET endpoints back the ``crew=`` scope on the kirocrew-core
+# session read tools (search_chat_history / list_sessions / get_chat_session).
+# They are MCP-only: the tools reach the gateway over the ``X-Internal-Secret``
+# handshake and cannot present as an owner-dashboard request, so they do NOT
+# ride ``api_instances_search_sessions``' owner guard — they authenticate as the
+# gateway's own trusted local caller (``internal_auth``), exactly like
+# ``/api/sessions/summarize``. The remote data itself stays gated by the tunnel
+# credential, which never leaves ``SshTunnelManager``.
+#
+# Transport reuse (no fourth hand-rolled copy of the peer-request dance):
+# ``search`` rides ``mgr.search_sessions_remote``; ``list``/``read`` ride the
+# generic ``mgr.proxy_request`` carrier, buffered here under a byte cap. Every
+# field a peer returns is untrusted input — clamped then re-redacted locally
+# before it reaches the caller.
+
+_CREW_REPLY_MAX_BYTES = 8_000_000  # cap a peer list/transcript reply BEFORE decode
+# A bounded read must return within the MCP client's _get timeout (10s): a
+# reachable-but-slow peer that overruns would otherwise be reported to the agent
+# as "unreachable". Kept under 10s with margin.
+_CREW_PROXY_TIMEOUT = 8.0
+
+
+async def _require_internal_secret(request: web.Request, operation: str) -> "web.Response | None":
+    """Refuse a crew-read that did not present a verified ``X-Internal-Secret``.
+
+    Mirrors ``handlers.session_control._require_internal``: strict-internal is
+    not self-enforcing at the handler (a header-absent request falls through to
+    cookie auth, and a ``local_only=False`` deployment reclassifies strict as
+    mixed), so the identity these reads disclose remote session data on must be
+    backed by the secret, not by whatever cookie a browser sends. ``None`` when
+    authentic; the 403 response otherwise.
+    """
+    if request.get("internal_auth") is not True:
+        _audit(operation, "denied", error="internal secret required")
+        return web.json_response(
+            {"error": "forbidden", "code": "internal_secret_required"}, status=403
+        )
+    # Owner-only, like the federated search route: an app-token identity
+    # (``request["app"]`` set to a non-empty app id) must not read remote-crew
+    # sessions even holding the internal secret — this discloses cross-crew data
+    # exactly as api_instances_search_sessions does, which excludes app tokens via
+    # is_owner_dashboard_request. The browser-user half of that guard is omitted
+    # deliberately: an internal-secret MCP call carries no dashboard ``user``, so
+    # requiring one would reject every legitimate owner-agent call.
+    if request.get("app"):
+        _audit(operation, "denied", error="app token not allowed")
+        return web.json_response({"error": "forbidden", "code": "owner_only"}, status=403)
+    return None
+
+
+async def _resolve_crew_id(state: "DashboardState", crew: str) -> "str | None":
+    """Map a crew id-or-name to a registered instance id, or ``None`` if unknown.
+
+    ``reg.list`` re-reads instances.json under a threading lock, so it is run off
+    the loop (same rule as every other registry touch in these handlers).
+    """
+    if not crew:
+        return None
+    try:
+        reg = _registry(state)
+        entries = await asyncio.to_thread(reg.list)
+    except Exception:
+        return None
+    # Resolve an exact id FIRST across ALL entries, so an id can never be
+    # shadowed by an earlier entry whose NAME happens to equal it; only then
+    # fall back to a name match.
+    for e in entries:
+        if getattr(e, "id", None) == crew:
+            return e.id
+    for e in entries:
+        if getattr(e, "name", None) == crew:
+            return e.id
+    return None
+
+
+def _redact_field(value: object, *, clamp: bool = True) -> str:
+    """Re-redact one untrusted peer string; clamp short fields (title/snippet).
+
+    ``clamp`` bounds a metadata field to ``_PEER_FIELD_MAX_CHARS`` (a hostile
+    peer must not ship megabyte titles); transcript message bodies pass
+    ``clamp=False`` since they are legitimately long and are already bounded by
+    the ``_CREW_REPLY_MAX_BYTES`` buffer cap. Redaction runs BEFORE the clamp so a
+    credential straddling ``_PEER_FIELD_MAX_CHARS`` is not split into an unmatched
+    fragment (the ``chat_persistence`` preview precedent); the whole reply is
+    already byte-bounded, so redacting first never feeds the regexes an unbounded
+    string.
+    """
+    if not isinstance(value, str) or not value:
+        return ""
+    value, _ = _h.redact_exfiltration_urls(value)
+    value, _ = _h.redact_credentials(value)
+    if clamp:
+        value = value[:_PEER_FIELD_MAX_CHARS]
+    return value
+
+
+async def _crew_proxy_json(mgr, instance_id: str, path: str, params: "dict[str, str]"):
+    """GET a peer path over the tunnel; return decoded JSON (list|dict) or None.
+
+    Buffers under a byte cap BEFORE decoding — a peer is untrusted input, so an
+    unbounded body must not exhaust hub memory before any per-field clamp runs.
+    Bounded by a total-time budget (``_CREW_PROXY_TIMEOUT``) so a reachable-but-
+    slow peer returns within the MCP client's own read timeout instead of being
+    misreported as unreachable. Raises ``ProxyRequestError`` (transport /
+    credential / timeout) for the caller to map to a status; returns ``None`` on a
+    non-2xx, oversized, or malformed reply.
+    """
+
+    async def _fetch():
+        async with mgr.proxy_request(instance_id, "GET", path, params=params) as resp:
+            if not 200 <= resp.status < 300:
+                return None
+            chunks: list[bytes] = []
+            received = 0
+            async for chunk in resp.content.iter_chunked(65536):
+                received += len(chunk)
+                if received > _CREW_REPLY_MAX_BYTES:
+                    return None
+                chunks.append(chunk)
+        if not chunks:
+            return None
+        try:
+            return json.loads(b"".join(chunks))
+        except Exception:
+            return None
+
+    try:
+        return await asyncio.wait_for(_fetch(), timeout=_CREW_PROXY_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise ProxyRequestError(
+            "proxy_peer_timeout",
+            "peer did not return within the read budget",
+            http_status=504,
+        ) from None
+
+
+async def api_crew_sessions_search(request: web.Request) -> web.Response:
+    """GET /api/crew-sessions/search?crew=&q=&limit= — MCP crew-scoped search.
+
+    Rides the existing ``mgr.search_sessions_remote``; re-redacts every peer row
+    here (that method returns the raw peer payload — the federated route is what
+    normally redacts it).
+    """
+    denied = await _require_internal_secret(request, "crew_search")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    crew = sanitize_string(request.query.get("crew", "")).strip()[:64]
+    q = sanitize_string(request.query.get("q", "")).strip()[:256]
+    if len(q) < SEARCH_MIN_CHARS:
+        # A sub-threshold query still passed the internal-secret gate, so record
+        # the decision (mirrors api_instances_search_sessions' short-query audit).
+        _audit(
+            "crew_search",
+            "success",
+            request_id="short-query",
+            caller=request.headers.get("X-Session-Key", ""),
+        )
+        return web.json_response({"sessions": []})
+    try:
+        limit = max(1, min(int(request.query.get("limit", "10")), 50))
+    except (TypeError, ValueError):
+        limit = 10
+    mgr = getattr(state, "instances_manager", None)
+    iid = await _resolve_crew_id(state, crew) if mgr is not None else None
+    if mgr is None or iid is None:
+        _audit("crew_search", "denied", request_id=crew, error="unknown crew")
+        return web.json_response({"error": "unknown crew", "code": "crew_unknown"}, status=404)
+    ok, payload = await mgr.search_sessions_remote(iid, q, limit)
+    if not ok:
+        code = str(payload.get("code", "crew_unreachable"))
+        _audit("crew_search", "failure", request_id=iid, error=code)
+        return web.json_response(
+            {"error": _redact_field(payload.get("error")) or "unreachable", "code": code},
+            status=502,
+        )
+    rows = payload.get("sessions") if isinstance(payload, dict) else None
+    out: list[dict] = []
+    if isinstance(rows, list):
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("key")
+            if not isinstance(key, str) or not key or len(key) > _PEER_FIELD_MAX_CHARS:
+                continue
+            if row.get("memory_mode") in INCOGNITO_MEMORY_MODES:
+                continue  # mirror the local tool's incognito/temporary exclusion
+            out.append(
+                {
+                    "key": key,
+                    "title": _redact_field(row.get("title")),
+                    "snippet": _redact_field(row.get("snippet")),
+                    "date": _redact_field(row.get("created") or row.get("date")),
+                }
+            )
+    _audit(
+        "crew_search",
+        "success",
+        request_id=iid,
+        caller=request.headers.get("X-Session-Key", ""),
+    )
+    return web.json_response({"sessions": out})
+
+
+async def api_crew_sessions_list(request: web.Request) -> web.Response:
+    """GET /api/crew-sessions/list?crew=&limit= — MCP crew-scoped session list."""
+    denied = await _require_internal_secret(request, "crew_list")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    crew = sanitize_string(request.query.get("crew", "")).strip()[:64]
+    try:
+        limit = max(1, min(int(request.query.get("limit", "20")), 100))
+    except (TypeError, ValueError):
+        limit = 20
+    mgr = getattr(state, "instances_manager", None)
+    iid = await _resolve_crew_id(state, crew) if mgr is not None else None
+    if mgr is None or iid is None:
+        _audit("crew_list", "denied", request_id=crew, error="unknown crew")
+        return web.json_response({"error": "unknown crew", "code": "crew_unknown"}, status=404)
+    try:
+        data = await _crew_proxy_json(
+            mgr, iid, "/api/sessions", {"limit": str(limit), "preview": "1"}
+        )
+    except ProxyRequestError as e:
+        _audit("crew_list", "failure", request_id=iid, error=e.code)
+        return web.json_response({"error": e.message, "code": e.code}, status=e.http_status)
+    if not isinstance(data, dict):
+        _audit("crew_list", "failure", request_id=iid, error="malformed")
+        return web.json_response(
+            {"error": "peer returned a malformed reply", "code": "crew_malformed_reply"},
+            status=502,
+        )
+    rows = data.get("sessions")
+    out: list[dict] = []
+    if isinstance(rows, list):
+        for row in rows[:limit]:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("key")
+            if not isinstance(key, str) or not key or len(key) > _PEER_FIELD_MAX_CHARS:
+                continue
+            if row.get("memory_mode") in INCOGNITO_MEMORY_MODES:
+                continue  # mirror the local tool's incognito/temporary exclusion
+            item: dict = {"key": key, "title": _redact_field(row.get("title"))}
+            for field in ("agent", "created"):
+                redacted = _redact_field(row.get(field))
+                if redacted:
+                    item[field] = redacted
+            msgs = row.get("messages")
+            if isinstance(msgs, (int, float)) and not isinstance(msgs, bool):
+                try:
+                    if math.isfinite(msgs):
+                        item["messages"] = msgs
+                except OverflowError:
+                    pass
+            preview = row.get("preview")
+            if isinstance(preview, str) and preview:
+                item["preview"] = _redact_field(preview)
+            out.append(item)
+    _audit(
+        "crew_list",
+        "success",
+        request_id=iid,
+        caller=request.headers.get("X-Session-Key", ""),
+    )
+    return web.json_response({"sessions": out})
+
+
+async def api_crew_sessions_read(request: web.Request) -> web.Response:
+    """GET /api/crew-sessions/read?crew=&key=&max_messages= — MCP transcript read.
+
+    The peer route is ``/api/sessions/{key}``; the key is vetted (no separators,
+    no ``..``) and percent-encoded into the path so it cannot traverse.
+    """
+    denied = await _require_internal_secret(request, "crew_read")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    crew = sanitize_string(request.query.get("crew", "")).strip()[:64]
+    key = request.query.get("key", "")
+    try:
+        max_messages = max(1, min(int(request.query.get("max_messages", "50")), 200))
+    except (TypeError, ValueError):
+        max_messages = 50
+    if (
+        not key
+        or "/" in key
+        or "\\" in key
+        or key in ("..", ".")
+        or len(key) > _PEER_FIELD_MAX_CHARS
+    ):
+        return web.json_response(
+            {"error": "invalid session_key", "code": "crew_bad_key"}, status=400
+        )
+    mgr = getattr(state, "instances_manager", None)
+    iid = await _resolve_crew_id(state, crew) if mgr is not None else None
+    if mgr is None or iid is None:
+        _audit("crew_read", "denied", request_id=crew, error="unknown crew")
+        return web.json_response({"error": "unknown crew", "code": "crew_unknown"}, status=404)
+    peer_path = "/api/sessions/" + quote(key, safe="")
+    try:
+        # exclude_incognito=1: the peer refuses (empty) an incognito/temporary
+        # transcript, so this read enforces the same EB-7b exclusion the local
+        # get_chat_session does — not just the search/list discovery filter.
+        data = await _crew_proxy_json(mgr, iid, peer_path, {"exclude_incognito": "1"})
+    except ProxyRequestError as e:
+        _audit("crew_read", "failure", request_id=iid, error=e.code)
+        return web.json_response({"error": e.message, "code": e.code}, status=e.http_status)
+    # api_session_detail returns a raw message ARRAY (not wrapped).
+    if not isinstance(data, list):
+        _audit("crew_read", "failure", request_id=iid, error="malformed")
+        return web.json_response(
+            {"error": "peer returned a malformed reply", "code": "crew_malformed_reply"},
+            status=502,
+        )
+    # Mirror get_chat_session: keep only RECALL_ROLES (drops system/tool/thinking
+    # rows the local tool excludes), THEN tail-cap to max_messages. Incognito is
+    # enforced on BOTH sides now: search/list drop incognito/temporary rows
+    # (discovery), and this read sent exclude_incognito=1 so the peer returns an
+    # empty transcript for a marked session (same-version peers; the discovery
+    # filter is the version-independent floor).
+    recall = [m for m in data if isinstance(m, dict) and str(m.get("role", "")) in RECALL_ROLES]
+    out: list[dict] = []
+    for message in recall[-max_messages:]:
+        role = message.get("role")
+        out.append(
+            {
+                "role": str(role)[:64] if isinstance(role, str) and role else "?",
+                "content": _redact_field(message.get("content"), clamp=False),
+            }
+        )
+    _audit(
+        "crew_read",
+        "success",
+        request_id=iid,
+        caller=request.headers.get("X-Session-Key", ""),
+    )
+    return web.json_response({"messages": out})
 
 
 async def api_instances_send_session(request: web.Request) -> web.Response:

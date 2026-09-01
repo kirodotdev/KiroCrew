@@ -2619,6 +2619,14 @@ KNOWLEDGE_ADD_DOCUMENT_SCHEMA = ToolSchema(
 # ISO calendar date (YYYY-MM-DD) for the chat-history date filters.
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Remote-crew scope selector for the read tools: a registered instance id or
+# display NAME. The registry accepts arbitrary display names (spaces, Unicode),
+# so the pattern must too — a tight [A-Za-z0-9_.-] set silently broke crew=<name>
+# for an ordinary name. It only bars control characters. The value is
+# url-encoded onto the proxy leg and used for an EXACT registry match (an unknown
+# value 404s), never interpolated into a path, and never echoed in a response body.
+_CREW_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
+
 SEARCH_CHAT_HISTORY_SCHEMA = ToolSchema(
     tool_name="search_chat_history",
     fields=[
@@ -2627,6 +2635,7 @@ SEARCH_CHAT_HISTORY_SCHEMA = ToolSchema(
         FieldSpec("before", str, required=False, max_len=10, pattern=_ISO_DATE_RE),
         FieldSpec("after", str, required=False, max_len=10, pattern=_ISO_DATE_RE),
         FieldSpec("all_workspaces", bool, required=False, default=False),
+        FieldSpec("crew", str, required=False, max_len=64, pattern=_CREW_RE),
     ],
 )
 
@@ -2636,6 +2645,7 @@ GET_CHAT_SESSION_SCHEMA = ToolSchema(
         FieldSpec("session_key", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("max_messages", int, required=False, min_val=1, max_val=200, default=50),
         FieldSpec("all_workspaces", bool, required=False, default=False),
+        FieldSpec("crew", str, required=False, max_len=64, pattern=_CREW_RE),
     ],
 )
 
@@ -2645,6 +2655,7 @@ LIST_SESSIONS_SCHEMA = ToolSchema(
         FieldSpec("limit", int, required=False, min_val=1, max_val=100, default=20),
         FieldSpec("all_workspaces", bool, required=False, default=False),
         FieldSpec("summarize", bool, required=False, default=False),
+        FieldSpec("crew", str, required=False, max_len=64, pattern=_CREW_RE),
     ],
 )
 

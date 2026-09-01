@@ -1256,11 +1256,22 @@ async def api_sessions_search(request: web.Request) -> web.Response:
 
 
 async def api_session_detail(request: web.Request) -> web.Response:
-    """GET /api/sessions/{key} — return messages for a session."""
+    """GET /api/sessions/{key} — return messages for a session.
+
+    ``?exclude_incognito=1`` (opt-in) refuses an incognito/temporary transcript,
+    returning ``[]``. The crew-scoped read proxy (``crew=`` on get_chat_session)
+    sets it so a remote agent cannot read a marked session that the local
+    get_chat_session also refuses (EB-7b). The dashboard's own click-through does
+    NOT set it, so its behavior is unchanged.
+    """
     state: DashboardState = request.app["state"]
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response([])
+    if request.query.get("exclude_incognito") in ("1", "true", "yes"):
+        meta = state.conversation_log.get_metadata(key)
+        if is_incognito_transcript((meta or {}).get("memory_mode")):
+            return web.json_response([])
     return web.json_response(state.conversation_log.read_messages(key))
 
 

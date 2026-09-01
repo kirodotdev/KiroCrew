@@ -49,6 +49,7 @@ mint, diagnostics, injection validation, run-marker) plus
 - [13. The SSM connection method (`connection_method`)](#13-the-ssm-connection-method-connection_method)
 - [14. Session transfer (send a session to another instance)](#14-session-transfer-send-a-session-to-another-instance)
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
+- [16. Crew-scoped session reads (the `crew=` MCP scope)](#16-crew-scoped-session-reads-the-crew-mcp-scope)
 
 ---
 
@@ -1433,3 +1434,96 @@ neither resume nor delete it:
 - Any federated-endpoint failure in the UI — including the `403` when the
   instances feature is off — falls back to the plain local search, which is
   always the floor.
+
+---
+
+## 16. Crew-scoped session reads (the `crew=` MCP scope)
+
+§15 gives the **dashboard** a federated read; this gives the **agent** one. The
+three kirocrew-core session read tools — `search_chat_history`, `list_sessions`,
+`get_chat_session` — take an optional `crew=<id|name>`. Without it they read the
+local `ConversationLog` exactly as before; with it they read that remote crew's
+own sessions over the tunnel. The local (no-`crew`) path is byte-for-byte
+unchanged, so a peerless install and every existing call are unaffected.
+
+### 16.1 Why a new endpoint set, not the §15 route
+
+The MCP process is a separate process from the gateway and reaches it over the
+`X-Internal-Secret` handshake — it cannot present as an owner *dashboard*
+request, which is what `api_instances_search_sessions` (§15) requires. Rather
+than teach that bulk-disclosure route a second identity type (dual-auth on the
+one endpoint that fans every peer's titles/snippets is exactly the shape that
+invited the §6 proxy's repeated findings), the agent gets its own three GET
+endpoints:
+
+| endpoint | backs | peer route reached |
+|---|---|---|
+| `GET /api/crew-sessions/search?crew=&q=&limit=` | `search_chat_history` | `/api/sessions/search` |
+| `GET /api/crew-sessions/list?crew=&limit=` | `list_sessions` | `/api/sessions` |
+| `GET /api/crew-sessions/read?crew=&key=&max_messages=` | `get_chat_session` | `/api/sessions/{key}` |
+
+They are **STRICT internal-secret** (`_STRICT_INTERNAL_API_PATHS`, prefix
+`/api/crew-sessions`) — no browser calls them, exactly like
+`/api/sessions/summarize`. They are registered in `_register_mcp_routes`, NOT the
+dashboard-only route block, so the headless `--slack-only` gateway exposes the
+same MCP surface as the dashboard (a dashboard-only registration would 404 the
+tools in that mode). Each handler re-asserts `internal_auth` itself
+(`_require_internal_secret`): strict is not self-enforcing at the handler, since
+a header-absent request falls through to cookie auth and a `local_only=False`
+deployment reclassifies strict paths as mixed, and these reads disclose remote
+session data. `crew` is a **query param** (not a `{id}` path segment) so the
+paths stay static and match the strict prefix set cleanly; the handler resolves
+it against the registry — an **exact id first, then a name** (so an id is never
+shadowed by another entry whose name collides with it) — off the loop, and 404s
+an unknown crew. The tool schema's `crew` pattern accepts any registry display
+name (spaces/Unicode; control characters barred), because the registry allows
+them and a tighter charset silently broke `crew=<name>` for ordinary names.
+
+### 16.2 Transport reuse — no fourth hand-rolled peer request
+
+`search` rides the existing `mgr.search_sessions_remote` (§15.1). `list` and
+`read` ride the **generic `mgr.proxy_request` carrier** (§6) — the same
+`_peer_target`/`_peer_cookie_header` invariant holds: the token never leaves the
+manager, travels as the port-scoped cookie, and gets one transparent re-mint on
+`401/403`. So no new peer-request method is added; the handlers only buffer the
+response. Buffering is byte-capped **before** decode (`_CREW_REPLY_MAX_BYTES`,
+8 MB) because a peer is untrusted input — an unbounded body must not exhaust hub
+memory before any per-field clamp runs.
+
+### 16.3 Peer replies are untrusted input (same rule as §15.3)
+
+Every field a peer returns is re-shaped locally: only known keys are copied,
+types are checked, `key` is length-bounded, and human text is **redacted (local
+credential + exfiltration patterns) BEFORE any clamp** — the peer's own
+redaction is not taken on faith, and redacting first keeps a credential
+straddling `_PEER_FIELD_MAX_CHARS` from being split into an unmatched fragment.
+Search titles/snippets and list previews are then clamped to
+`_PEER_FIELD_MAX_CHARS`; transcript **message bodies are redacted without that
+short clamp** (legitimately long, already bounded by the 8 MB buffer cap). Two
+guarantees of the local tools are carried onto the crew path: **incognito /
+temporary sessions are excluded** — `search` and `list` drop any peer row whose
+`memory_mode` is in `INCOGNITO_MEMORY_MODES`, so an agent never even discovers
+such a key (a per-session incognito check on `read`'s raw-array response needs a
+peer metadata endpoint that does not exist yet — a tracked follow-up; the
+discovery-path exclusion is the enforced half); and **`read` filters to
+`RECALL_ROLES`** before tail-capping, dropping the `system`/tool rows that
+`get_chat_session` also excludes. `read` additionally vets the `session_key` (no
+separator, no `..`) and percent-encodes it into the peer path so it cannot
+traverse — the same "validate then rebuild" discipline as the §6 proxy. The
+`list`/`read` proxy read is bounded by a total-time budget (`_CREW_PROXY_TIMEOUT`,
+under the MCP client's own read timeout) so a reachable-but-slow peer maps to a
+clean `504` rather than a false "unreachable". Every call emits a SEL audit event
+(`instances_crew_search|crew_list|crew_read`) carrying the resolved instance id
+**and the originating MCP caller's session key**, so an audit reviewer can see
+which agent session read which remote crew's history.
+
+### 16.4 What the scope does NOT do
+
+- **Search-and-read only.** There is no crew-scoped write, resume, or delete;
+  the agent cannot continue a remote session through these tools.
+- **Connected peers only.** An offline crew returns a clean "unreachable" error,
+  never a silent empty result.
+- **Not federated.** Unlike §15, a crew read targets exactly one named crew — it
+  does not fan out across every connection.
+- **No cross-scope filters.** Local-only knobs (`before`/`after`/
+  `all_workspaces` on search, `summarize` on list) do not apply in `crew` mode.
