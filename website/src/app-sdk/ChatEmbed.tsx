@@ -61,6 +61,11 @@ export interface ChatEmbedProps {
   aboveComposer?: ReactNode
 }
 
+/** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
+ *  render, so `deriveFollowUpOptions` below would re-run (and hand FollowUpBar a new
+ *  options array) on every render of an embed whose poll has not answered yet. */
+const EMPTY_MESSAGES: ChatMessage[] = []
+
 /** Minimal shape of the chat-slot payload consumed by this embed. */
 interface ChatSlotData {
   messages?: ChatMessage[]
@@ -92,7 +97,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
     },
   })
 
-  const messages = slotData?.messages ?? []
+  const messages = slotData?.messages ?? EMPTY_MESSAGES
   const running = slotData?.running ?? false
   const title = slotData?.title ?? ''
 
@@ -232,7 +237,7 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
       if (rejected.length === approvalIds.length) throw (rejected[0] as PromiseRejectedResult).reason
       return results
     },
-    [slotKey, refetch],
+    [api, slotKey, refetch],
   )
 
   return (

@@ -5,7 +5,7 @@
  *  a programmatic expansion, so a failed-and-rolled-back server expand cannot
  *  surprise-collapse a column that was explicitly opened. */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { boardCollapseKey, boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
+import { boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
 
 beforeEach(() => localStorage.clear())
 

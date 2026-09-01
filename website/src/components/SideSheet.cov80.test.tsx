@@ -82,6 +82,7 @@ describe('SideSheet', () => {
   it('stops keydown from reaching the page shortcuts underneath', () => {
     const onOuterKeyDown = vi.fn()
     render(
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- passive propagation probe: the wrapper stands in for the page listening underneath and the assertion is that the key NEVER reaches it, so giving it a role or focus would make it a control the test says nothing about
       <div onKeyDown={onOuterKeyDown}>
         <SideSheet open onClose={vi.fn()} label="zzq-sheet" header={<span>zzq-h</span>}>
           <p>zzq-body</p>

@@ -3233,6 +3233,7 @@
         "copy_markdown": "Скопировать Markdown",
         "dismiss": "Убрать",
         "edit_resend": "Изменить и отправить снова",
+        "open_image": "Открыть изображение",
         "open_in_file_explorer": "Открыть в проводнике",
         "open_in_finder": "Открыть в Finder",
         "pinned_files": "Закреплённые файлы",
@@ -3457,7 +3458,8 @@
         "starting": "Начинается новая сессия…"
       },
       "petWidget": {
-        "dismiss_bubble": "Закрыть сообщение"
+        "dismiss_bubble": "Закрыть сообщение",
+        "open_chat": "Открыть чат с {{name}}"
       },
       "petdex": {
         "by_name": "По имени или ссылке",

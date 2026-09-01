@@ -689,7 +689,12 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     queryKey: ['kirocrew-agents'],
     queryFn: () => api.kirocrewAgents(),
   })
-  const agents: KiroCrewAgent[] = agentsData?.agents || []
+  // Memoised for the empty case: a bare `|| []` hands out a new array on every
+  // render, which defeats every `useMemo` downstream that keys on the roster
+  // (`sharedTargets`). React Query's structural sharing keeps `agentsData`
+  // identical until the roster actually changes, so this is stable between
+  // fetches that return the same rows.
+  const agents = useMemo<KiroCrewAgent[]>(() => agentsData?.agents || [], [agentsData])
   const defaultAgent = agentsData?.default_agent || ''
 
   const { data: installedAgents } = useQuery({
@@ -804,7 +809,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     setEditModel(a.model || INHERIT_MODEL)
     setEditEffort(a.reasoning_effort || '')
     setSheet({ mode: 'edit', name: a.name })
-  }, [defaultAgent])
+  }, [])
 
   const closeSheet = useCallback(() => { sheetEpoch.current += 1; setSheet(null); setError(''); setConfirmDelete(false) }, [])
 

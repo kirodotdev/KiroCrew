@@ -3097,6 +3097,7 @@
         "copy_markdown": "Markdownをコピー",
         "dismiss": "閉じる",
         "edit_resend": "編集して再送信",
+        "open_image": "画像を開く",
         "open_in_file_explorer": "エクスプローラーで開く",
         "open_in_finder": "Finder で開く",
         "pinned_files": "ピン留めファイル",
@@ -3321,7 +3322,8 @@
         "starting": "フレッシュセッションを開始しています…"
       },
       "petWidget": {
-        "dismiss_bubble": "メッセージを閉じる"
+        "dismiss_bubble": "メッセージを閉じる",
+        "open_chat": "{{name}}とのチャットを開く"
       },
       "petdex": {
         "by_name": "名前またはリンク",

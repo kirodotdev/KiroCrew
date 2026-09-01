@@ -77,7 +77,15 @@ export function useFileArtifactComments({
     enabled: !!slug,
     staleTime: 30_000,
   })
-  const durableComments = slug ? (commentsQuery.data?.comments ?? []) : []
+  // Memoized because it is the dep of rootIdOf / unreadRootIds / markThreadRead:
+  // the `[]` fallback (no slug, or the query not yet resolved) is a fresh array
+  // each render, which would rebuild all three — and every consumer memo keyed
+  // on them — on every render. React Query keeps `data` referentially stable
+  // between refetches that resolve deep-equal, so this changes only on real data.
+  const durableComments = useMemo(
+    () => (slug ? (commentsQuery.data?.comments ?? []) : []),
+    [slug, commentsQuery.data?.comments],
+  )
   const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
   const invalidate = useCallback(() => {
     if (slug) qc.invalidateQueries({ queryKey: ['artifact-comments', slug] })

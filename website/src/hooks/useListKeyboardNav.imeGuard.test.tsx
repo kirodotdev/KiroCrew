@@ -22,7 +22,7 @@ function Harness(props: Partial<UseListKeyboardNavOptions>) {
     onClose: () => {},
     ...props,
   })
-  return <input data-testid="host-input" />
+  return <input data-testid="host-input" aria-label="host input" />
 }
 
 afterEach(() => {

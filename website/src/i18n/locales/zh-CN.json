@@ -3053,6 +3053,7 @@
         "copy_markdown": "复制 Markdown",
         "dismiss": "忽略",
         "edit_resend": "编辑并重新发送",
+        "open_image": "打开图片",
         "open_in_file_explorer": "在文件资源管理器中打开",
         "open_in_finder": "在 Finder 中打开",
         "pinned_files": "已置顶文件",
@@ -3277,7 +3278,8 @@
         "starting": "正在开始新会话…"
       },
       "petWidget": {
-        "dismiss_bubble": "关闭消息"
+        "dismiss_bubble": "关闭消息",
+        "open_chat": "打开与 {{name}} 的聊天"
       },
       "petdex": {
         "by_name": "按名称或链接",

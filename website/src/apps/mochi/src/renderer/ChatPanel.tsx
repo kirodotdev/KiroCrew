@@ -34,13 +34,14 @@ import {
 import Clickable from '../../../../components/Clickable'
 import { familyGrantIsDistinct, trustBasePattern, truncateCommandLabel } from '../shared/trustPatterns'
 import Markdown from 'react-markdown'
+import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import { rehypeSanitize, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
 import { mdImageDestToPath } from '../../../../utils/fileTokens'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import { useImeGuard } from '../../../../hooks/useImeGuard'
-import type { ApprovalRequest, ChatMessage } from '../shared/types'
+import type { ChatMessage } from '../shared/types'
 import { applyTheme, type ThemeId } from '../shared/themes'
 import { PINNED_PANEL_WIDTH } from '../shared/constants'
 import { formatShortcut } from '../shared/shortcut'
@@ -318,6 +319,11 @@ const PinnedChip: React.FC<{
 
   if (!clickable) {
     return (
+      // Hover intent only: the two listeners reveal the chip's own unpin button and
+      // nothing else. This branch is the chip that has no path to open, so the
+      // wrapper carries no action a keyboard could reach — the reachable control is
+      // the <button> inside `body`.
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- passive hover reveal, not an interaction; the only action lives on the nested <button>
       <div
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -350,6 +356,18 @@ interface ChatPanelProps {
   onTogglePinned?: () => void
   pinnedPanelVisible?: boolean
   pinnedFileCount?: number
+}
+
+/**
+ * The two fields of a `slots:update` entry this panel reads.
+ *
+ * Named locally rather than pulled from the bridge, which publishes the frame as
+ * `unknown[]`: the panel cares only about finding the mochi slot and whether it is
+ * running, and a wider claim would assert fields nothing here checks.
+ */
+interface SlotFrame {
+  key?: string
+  running?: boolean
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelVisible, onTogglePinned, pinnedPanelVisible, pinnedFileCount }) => {
@@ -385,6 +403,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     } else if (ssDisplay) {
       setSsAnim('ssOut')
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- drives the thumbnail animation off a `screenshot` transition only; `ssDisplay` is this effect's OWN output, read as the latest value at fire time purely to ask "is there still a thumbnail to animate out". Depending on it would re-run the effect on its own write and replay 'ssIn' over a running animation.
   }, [screenshot])
 
   const onSsAnimEnd = () => {
@@ -424,8 +443,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     setGatewayStarting(false)
     setGatewayMsg('')
   }, [isOnline])
-  // Only the setter is used upstream; the array itself is never read.
-  const [, setPendingApprovals] = useState<ApprovalRequest[]>([])
+  // Only the setter is used upstream; the array itself is never read. It holds
+  // nothing but the request id because that is all the three predicates below it
+  // (dedup on arrival, clear on resolve) ever touch — the frames come off the
+  // bridge as untyped records with the bridge's own shape (`tool`, `toolInput`,
+  // ...), not an `ApprovalRequest`, so typing it as one would be a claim the
+  // value contradicts.
+  const [, setPendingApprovals] = useState<{ id: string }[]>([])
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null)
   const [showClearConfirm, setShowClearConfirm] = useState(false)
   const [showResetConfirm, setShowResetConfirm] = useState(false)
@@ -593,11 +617,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
 
   // Theme
   useEffect(() => {
-    api?.getMochiConfig?.().then((c: any) => {
+    api?.getMochiConfig?.().then((c) => {
       setPetName(resolvePetName(c))
-      applyTheme((c?.theme as ThemeId) || 'mocha')
+      // `theme` is not part of PetConfig — the pet bridge types only the appearance
+      // fields it reacts to — so it is read through a narrow view of the same
+      // settings object rather than by widening that type.
+      applyTheme((c as { theme?: string } | undefined)?.theme || 'mocha')
     })
-    api?.getConfig?.().then((c: any) => {
+    api?.getConfig?.().then((c) => {
       // Upstream read agentBackend.mode here to show a "connecting" banner while
       // it started a REMOTE gateway. The builtin is same-origin — the gateway is
       // already up if this page loaded at all.
@@ -620,11 +647,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     const off = api?.onStateChange?.((s: string) => setPetState(s))
     const offMood = api?.onMood?.((mood: string) => setPetMood(mood === 'neutral' ? '' : mood))
     const offPeek = api?.onPeeking?.((v: boolean) => setIsPeeking(v))
-    const offConfig = api?.onConfigUpdated?.((m: any) => {
+    const offConfig = api?.onConfigUpdated?.((m) => {
       setPetName(resolvePetName(m))
       if (m?.theme) applyTheme(m.theme as ThemeId)
       // Refresh shortcuts from full config (onConfigUpdated only sends mochi slice)
-      api?.getConfig?.().then((c: any) => {
+      api?.getConfig?.().then((c) => {
         if (c?.shortcuts) {
           const f = formatShortcut
           setShortcuts({
@@ -640,13 +667,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
 
   useEffect(() => {
     // Load history from KiroCrew slot
-    api?.getChatHistory?.().then((history: any) => {
+    api?.getChatHistory?.().then((history) => {
       if (Array.isArray(history)) {
+        // The bridge answers untyped rows, so the shape is asserted per FIELD here
+        // rather than trusted wholesale: the filter is what guarantees `role` is one
+        // of the two this panel renders, and a row missing a timestamp gets 0.
         const mapped = history
-          .filter((m: any) => m.role === 'user' || m.role === 'assistant')
-          .map((m: any, i: number) => ({
-            id: `hist-${i}`, role: m.role, content: m.content,
-            timestamp: m.timestamp || 0,
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m, i): ChatMessage => ({
+            id: `hist-${i}`, role: m.role as ChatMessage['role'], content: m.content as string,
+            timestamp: (m.timestamp as number) || 0,
           }))
         setAllHistory(mapped)
         setMessages(mapped.slice(-INITIAL_HISTORY))
@@ -708,9 +738,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     })
 
     // Complete messages (user + assistant)
-    const offMsg = api?.onChatMessage?.((msg: any) => {
+    const offMsg = api?.onChatMessage?.((msg) => {
       if (msg.role) {
-        const withTs = { ...msg, timestamp: msg.timestamp || Date.now() }
+        // The frame IS a chat message; the bridge types it as an untyped record, so
+        // the shape is claimed once here instead of at each read below.
+        const withTs = { ...msg, timestamp: msg.timestamp || Date.now() } as ChatMessage
         // Cancel any pending streaming RAF and clear buffer to prevent stale chunks
         if (streamRaf) { cancelAnimationFrame(streamRaf); streamRaf = null }
         streamBuffer = ''
@@ -757,9 +789,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       setCloudAutoConnecting(switching)
       if (switching) setIsOnline(false)
     })
-    const offSlots = api?.onSlotsUpdate?.((slots: any[]) => {
+    const offSlots = api?.onSlotsUpdate?.((slots) => {
       // Track whether the mochi-pet slot is running
-      const mochiSlot = slots.find((s: any) => s.key === 'mochi')
+      const mochiSlot = (slots as SlotFrame[]).find((s) => s.key === 'mochi')
       const running = mochiSlot?.running ?? false
       setSlotRunning(running)
       // A TRANSITION out of running is the end of a turn. A bare `!running` is not:
@@ -800,12 +832,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
         setAttachments((prev) => [...prev, ...added])
       })()
     })
-    const offApproval = api?.onApprovalRequest?.((req: any) => {
+    const offApproval = api?.onApprovalRequest?.((req) => {
       // Dedup by request_id: the same pending approval can arrive more than once
       // (a re-broadcast, or a permission frame replayed alongside history), and a
       // duplicate would add a second card with a colliding React key.
-      const msgId = `approval-${req.id}`
-      setPendingApprovals(prev => prev.some(a => a.id === req.id) ? prev : [...prev, req])
+      const reqId = String(req.id)
+      const msgId = `approval-${reqId}`
+      setPendingApprovals(prev => prev.some(a => a.id === reqId) ? prev : [...prev, { id: reqId }])
       setMessages(prev => prev.some(m => m.id === msgId) ? prev : [...prev, {
         id: msgId,
         role: 'assistant',
@@ -837,7 +870,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
       }
     })
 
-    const offTheme = api?.onThemeChanged?.((themeId: string) => { applyTheme(themeId as any) })
+    const offTheme = api?.onThemeChanged?.((themeId: string) => { applyTheme(themeId) })
 
     const offCtx = api?.onContextUsage?.((pct: number) => setContextPct(pct))
 
@@ -1402,23 +1435,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
           padding: '4px 10px', borderTop: '1px solid var(--border)',
           animation: `${ssAnim} 0.2s ease forwards`,
         }}>
-          <div style={{ position: 'relative', width: 40, height: 40, display: 'inline-block' }}
+          {/* Opening the crop full size is a CONTROL, so it must be tab-reachable and
+              fire on Enter/Space — and it belongs on this CONTAINER rather than on the
+              <img>. An image has no interactive role it may take, and the dismiss dot
+              is absolutely positioned against this box, so it cannot move inside a
+              wrapper button either. `Clickable` supplies role=button, tabIndex and the
+              key handling, and its keydown guard already ignores keys arriving from the
+              nested dismiss <button>. The hover listeners stay where they were: they
+              only fade that dot in and out. */}
+          <Clickable
+            onClick={() => openLightbox(ssDisplay)}
+            aria-label={i18nT('apps.mochi.chatPanel.open_image')}
+            style={{ position: 'relative', width: 40, height: 40, display: 'inline-block', cursor: 'zoom-in' }}
             onMouseEnter={(e) => { const b = e.currentTarget.querySelector('.x-btn') as HTMLElement; if (b) b.style.opacity = '1' }}
             onMouseLeave={(e) => { const b = e.currentTarget.querySelector('.x-btn') as HTMLElement; if (b) b.style.opacity = '0' }}
           >
+            {/* Empty alt because the container carries the accessible name: describing
+                the thumbnail again here would announce one control twice. */}
             <img
               src={`data:image/png;base64,${ssDisplay}`}
-              onClick={() => openLightbox(ssDisplay)}
+              alt=""
               style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)', cursor: 'zoom-in' }}
             />
-            <button className="x-btn" onClick={removeScreenshot} aria-label={i18nT('apps.mochi.chatPanel.remove_screenshot')} style={{
+            {/* Dismiss must not also open the lightbox now that the container is the
+                control the click would otherwise reach. */}
+            <button className="x-btn" onClick={(e) => { e.stopPropagation(); removeScreenshot() }} aria-label={i18nT('apps.mochi.chatPanel.remove_screenshot')} style={{
               position: 'absolute', top: -4, right: -4, width: 16, height: 16,
               background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: '50%',
               color: 'var(--text-muted)', fontSize: 10, lineHeight: '14px', textAlign: 'center',
               cursor: 'pointer', opacity: 0, transition: 'opacity 0.15s', padding: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}><X size={10} /></button>
-          </div>
+          </Clickable>
         </div>
       )}
       <style>{`
@@ -1599,8 +1647,19 @@ const LocalImage: React.FC<{ path: string; onClickImage?: (src: string) => void 
   // consumer wants to DO something with the file -- open it in the OS viewer --
   // and a data URL cannot be opened. Passing the rendered URL made each call
   // site look wired while doing nothing.
-  return <img src={src} onClick={() => onClickImage?.(path)}
-    style={{ maxWidth: 200, maxHeight: 200, borderRadius: 4, marginTop: 4, cursor: 'zoom-in' }} />
+  //
+  // A real <button>, not a clickable <img>: the transcript renders the image at
+  // 200px, so opening the file at full size is a CONTROL, and only the native
+  // element puts it in the tab order and fires it on Enter/Space. `inline-flex`
+  // with zero chrome keeps the image inline and at exactly its own size, and the
+  // button carries the accessible name so the image takes an empty alt rather
+  // than being announced twice.
+  return <button type="button" onClick={() => onClickImage?.(path)}
+    aria-label={i18nT('apps.mochi.chatPanel.open_image')}
+    style={{ display: 'inline-flex', padding: 0, border: 'none', background: 'none', cursor: 'zoom-in' }}>
+    <img src={src} alt=""
+      style={{ maxWidth: 200, maxHeight: 200, borderRadius: 4, marginTop: 4, cursor: 'zoom-in' }} />
+  </button>
 }
 
 /**
@@ -1670,15 +1729,25 @@ const MD_REMARK = [remarkGfm, remarkVerbatimUnknownTags]
  */
 const MD_REHYPE = [rehypeRaw, rehypeSanitize]
 
-const mdComponents: Record<string, React.FC<any>> = {
-  a: (p: any) => <a {...p} style={{ color: 'var(--accent)', textDecoration: 'none', cursor: 'pointer' }}
-    onMouseEnter={(e: any) => (e.currentTarget.style.textDecoration = 'underline')}
-    onMouseLeave={(e: any) => (e.currentTarget.style.textDecoration = 'none')}
-    onClick={(e: any) => { e.preventDefault(); const href = p.href; if (href) api?.openExternal?.(href) }} />,
-  table: (p: any) => <table style={{ borderCollapse: 'collapse', fontSize: 11, width: '100%', margin: '4px 0' }} {...p} />,
-  th: (p: any) => <th style={{ border: '1px solid var(--border)', padding: '3px 6px', textAlign: 'left', fontWeight: 600 }} {...p} />,
-  td: (p: any) => <td style={{ border: '1px solid var(--border)', padding: '3px 6px' }} {...p} />,
-  code: (p: any) => {
+/**
+ * Typed against react-markdown's own `Components`, so each override receives the
+ * real props of the tag it replaces (the same contract the dashboard's
+ * MarkdownRenderer uses) instead of an `any` that hides a misspelled prop.
+ */
+const mdComponents: Components = {
+  // `href` and the children are restated after the spread — both already arrive in
+  // `p`, so this is the same anchor at runtime — because an <a> whose href is only
+  // ever supplied by a spread is indistinguishable from a bare <a onClick>: it is
+  // not focusable and Enter does not fire it, and neither a reader nor the linter
+  // can tell it apart from a real link.
+  a: (p) => <a {...p} href={p.href} style={{ color: 'var(--accent)', textDecoration: 'none', cursor: 'pointer' }}
+    onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')}
+    onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}
+    onClick={(e) => { e.preventDefault(); const href = p.href; if (href) api?.openExternal?.(href) }}>{p.children}</a>,
+  table: (p) => <table style={{ borderCollapse: 'collapse', fontSize: 11, width: '100%', margin: '4px 0' }} {...p} />,
+  th: (p) => <th style={{ border: '1px solid var(--border)', padding: '3px 6px', textAlign: 'left', fontWeight: 600 }} {...p} />,
+  td: (p) => <td style={{ border: '1px solid var(--border)', padding: '3px 6px' }} {...p} />,
+  code: (p) => {
     const match = /language-(\w+)/.exec(p.className || '')
     if (match) {
       return <MochiCodeBlock lang={match[1]} code={String(p.children).replace(/\n$/, '')} />
@@ -1690,8 +1759,8 @@ const mdComponents: Record<string, React.FC<any>> = {
     }
     return <code style={{ background: 'var(--bg-input)', borderRadius: 3, padding: '1px 4px', fontSize: 11 }} {...p} />
   },
-  pre: (p: any) => <>{p.children}</>,
-  p: (p: any) => {
+  pre: (p) => <>{p.children}</>,
+  p: (p) => {
     // Detect file paths in paragraph text and render as FileChip
     const children = React.Children.toArray(p.children)
     const processed = children.map((child, i) => {
@@ -1711,10 +1780,10 @@ const mdComponents: Record<string, React.FC<any>> = {
     })
     return <p style={{ margin: '2px 0' }}>{processed}</p>
   },
-  ul: (p: any) => <ul style={{ margin: '2px 0', paddingLeft: 16 }} {...p} />,
-  ol: (p: any) => <ol style={{ margin: '2px 0', paddingLeft: 16 }} {...p} />,
-  li: (p: any) => <li style={{ marginBottom: 1 }} {...p} />,
-  img: (p: any) => {
+  ul: (p) => <ul style={{ margin: '2px 0', paddingLeft: 16 }} {...p} />,
+  ol: (p) => <ol style={{ margin: '2px 0', paddingLeft: 16 }} {...p} />,
+  li: (p) => <li style={{ marginBottom: 1 }} {...p} />,
+  img: (p) => {
     const src = p.src
     // Any LOCAL FILE path goes through LocalImage, which reads the bytes over the
     // app API and renders a data URL. A bare `<img src="/Users/…/x.png">` cannot
@@ -1732,7 +1801,10 @@ const mdComponents: Record<string, React.FC<any>> = {
       // opens a file, and openLightbox rejects data: URLs for that reason.
       return <LocalImage path={src} onClickImage={() => api?.openLightbox?.(src)} />
     }
-    return <img {...p} style={{ maxWidth: '100%', borderRadius: 4, marginTop: 4, cursor: 'zoom-in' }} />
+    // The markdown author's own alt text, defaulting to '' — an image written
+    // without one is decorative, and an explicit empty alt is what tells a screen
+    // reader to skip it instead of falling back to reading out the URL.
+    return <img {...p} alt={p.alt ?? ''} style={{ maxWidth: '100%', borderRadius: 4, marginTop: 4, cursor: 'zoom-in' }} />
   },
 }
 
@@ -2034,9 +2106,12 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
   // started honouring the tag. Attachments, options and widgets each count as
   // content, so only a genuinely empty message is dropped.
   const hasVisibleText = text.replace(/<[^>]*>/g, '').trim() !== ''
+  // Bound to a const so the narrowing survives into the click handler below, which
+  // is a closure and would otherwise see the optional field again.
+  const shot = message.screenshot
   const hasOtherContent =
     options.length > 0 ||
-    !!(message as any).screenshot ||
+    !!shot ||
     text.includes('![') ||
     hasWidgets(text)
   if (!hasVisibleText && !hasOtherContent) return null
@@ -2050,10 +2125,18 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
           borderRadius: isUser ? '10px 10px 2px 10px' : '10px 10px 10px 2px',
           background: isUser ? 'var(--bubble-user)' : 'var(--bubble-assistant)',
         }}>
-          {(message as any).screenshot && (
-            <img src={`data:image/png;base64,${(message as any).screenshot}`}
-              onClick={() => onImageClick?.((message as any).screenshot)}
-              style={{ width: '100%', maxWidth: 200, borderRadius: 4, marginBottom: 4, cursor: 'zoom-in' }} />
+          {shot && (
+            // A real <button>, not a clickable <img>: the bubble caps the image at
+            // 200px, so opening it full size is a CONTROL and must be tab-reachable
+            // and Enter/Space-activated. Zero chrome and the same width bounds as the
+            // image had, so the thumbnail is unchanged; the button carries the
+            // accessible name, hence the empty alt.
+            <button type="button" onClick={() => onImageClick?.(shot)}
+              aria-label={i18nT('apps.mochi.chatPanel.open_image')}
+              style={{ display: 'block', width: '100%', maxWidth: 200, padding: 0, border: 'none', background: 'none', cursor: 'zoom-in' }}>
+              <img src={`data:image/png;base64,${shot}`} alt=""
+                style={{ width: '100%', borderRadius: 4, marginBottom: 4, cursor: 'zoom-in' }} />
+            </button>
           )}
           <div style={{ wordBreak: 'break-word', fontSize: 12, lineHeight: 1.4, overflow: 'hidden' }}>
             {isUser

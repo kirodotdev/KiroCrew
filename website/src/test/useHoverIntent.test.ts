@@ -21,6 +21,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useHoverIntent, HOVER_OPEN_MS, HOVER_CLOSE_MS } from '../hooks/useHoverIntent'
 
+/** The synthetic ArrowDown `arrowDown()` hands the hook: a keyboard event whose
+ *  `preventDefault` is observable, so a test can assert the hook called it. */
+type ArrowDownEvent = React.KeyboardEvent & { wasPrevented(): boolean }
+
 describe('useHoverIntent', () => {
   beforeEach(() => { vi.useFakeTimers() })
   afterEach(() => { vi.useRealTimers() })
@@ -96,7 +100,7 @@ describe('useHoverIntent', () => {
       key: 'ArrowDown',
       preventDefault: () => { prevented = true },
       wasPrevented: () => prevented,
-    } as unknown as React.KeyboardEvent & { wasPrevented(): boolean }
+    } as unknown as ArrowDownEvent
   }
 
   it('ArrowDown opens immediately and reports keyboard intent', () => {
@@ -106,13 +110,13 @@ describe('useHoverIntent', () => {
     expect(result.current.open).toBe(true)
     expect(result.current.openedBy).toBe('keyboard')
     // preventDefault so ArrowDown does not also scroll the page.
-    expect((e as any).wasPrevented()).toBe(true)
+    expect((e as ArrowDownEvent).wasPrevented()).toBe(true)
   })
 
   it('ignores other keys on the trigger', () => {
     const { result } = renderHook(() => useHoverIntent())
     for (const key of ['ArrowUp', 'Enter', ' ', 'Tab', 'a']) {
-      act(() => { result.current.triggerProps.onKeyDown({ key, preventDefault() {} } as any) })
+      act(() => { result.current.triggerProps.onKeyDown({ key, preventDefault() {} } as unknown as React.KeyboardEvent) })
       expect(result.current.open, key).toBe(false)
     }
   })

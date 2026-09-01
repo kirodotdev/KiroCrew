@@ -1349,15 +1349,18 @@ jobs:
 
       - name: Lint
         working-directory: website
-        # Blocking: fails on any eslint error and on any NEW warning above the
-        # current baseline. Ratchet --max-warnings down toward 0 as the
-        # pre-existing warnings (no-explicit-any, jsx-a11y, no-console) are burned
-        # down; do not raise it.
+        # Blocking, and the tree is at ZERO: the ceiling is a hard zero rather than
+        # a stored baseline, so any warning a change introduces fails here. A hard
+        # zero is the only ceiling that needs no bookkeeping — there is no count to
+        # re-measure and no ceiling that can drift above the truth.
         #
-        # The ceiling must EQUAL the measured count, not sit above it: slack is
-        # silent admission, and a warning that lands inside it never surfaces
-        # again. Re-measure with `cd website && npx eslint src/` when burning down.
-        run: npx eslint src/ --max-warnings 597
+        # NEVER raise this number. A warning admitted into slack never surfaces
+        # again: it is indistinguishable from the pre-existing ones and nothing
+        # downstream reports it. Fix the warning, or — if the code is genuinely
+        # right — suppress that one line with
+        # `// eslint-disable-next-line <rule> -- <why the code is correct>`, which
+        # is reviewable in the diff where a raised ceiling is not.
+        run: npx eslint src/ --max-warnings 0
 
       - name: Copy/paste detection
         working-directory: website

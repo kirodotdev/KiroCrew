@@ -24,21 +24,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -71,6 +71,8 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatFolder, ChatSlot } from '../types'
 
 /** Three sessions: one Alpha, one Beta, one untagged. */
 const SLOTS = [
@@ -79,7 +81,7 @@ const SLOTS = [
   { key: 'k-none', title: 'untagged session', running: false, messages: 2 },
 ]
 
-function renderSidebar(slots: any[] = SLOTS, revealRequest: { key: string; nonce: number } | null = null) {
+function renderSidebar(slots: ChatSlot[] = SLOTS, revealRequest: { key: string; nonce: number } | null = null) {
   // Spread the real slice defaults: RTK REPLACES a slice with preloadedState
   // rather than merging, so a partial drops keys the reducers assume exist.
   const defaults = createTestStore().getState()
@@ -91,12 +93,12 @@ function renderSidebar(slots: any[] = SLOTS, revealRequest: { key: string; nonce
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
+    } as unknown as RootState['dashboard'],
     chat: {
       ...defaults.chat,
       activeSlot: null, slotStatusDetail: {},
       revealRequest, revealNonce: revealRequest?.nonce ?? 0,
-    } as any,
+    } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -131,7 +133,7 @@ const FOLDER_SLOTS = [
  *  `refetchOnMount: false` are load-bearing: the api mock resolves chatFolders()
  *  to [], so an on-mount refetch would drop the folders and every "this folder
  *  is gone" assertion below would pass without the guard doing anything. */
-function renderWithFolders(slots: any[] = FOLDER_SLOTS, folders: any[] = FOLDERS) {
+function renderWithFolders(slots: ChatSlot[] = FOLDER_SLOTS, folders: ChatFolder[] = FOLDERS) {
   const defaults = createTestStore().getState()
   const store = createTestStore({
     dashboard: {
@@ -141,8 +143,8 @@ function renderWithFolders(slots: any[] = FOLDER_SLOTS, folders: any[] = FOLDERS
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { ...defaults.chat, activeSlot: null, slotStatusDetail: {}, revealRequest: null, revealNonce: 0 } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { ...defaults.chat, activeSlot: null, slotStatusDetail: {}, revealRequest: null, revealNonce: 0 } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: {
     queries: { retry: false, staleTime: Infinity, refetchOnMount: false }, mutations: { retry: false },

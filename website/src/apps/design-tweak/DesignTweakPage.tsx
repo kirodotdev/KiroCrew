@@ -538,6 +538,13 @@ export default function DesignTweak() {
   // Sole consumer is the payload path quoted into the agent prompt.
   const healthQuery = useQuery({ queryKey: DT_KEY.health, queryFn: fetchHealth, retry: false })
   const dataDir = healthQuery.data?.dataDir || ''
+  // The prompt quotes a payload path built from the data home, and the sender
+  // must not close over `dataDir` — the health read settles after the first
+  // render, so a captured copy is the empty string and the agent is handed a
+  // path with no data home in it. A ref is read at send time instead (same
+  // reason as `previewIdRef` below).
+  const dataDirRef = useRef(dataDir)
+  useEffect(() => { dataDirRef.current = dataDir }, [dataDir])
 
   const projects = projectsQuery.data?.projects ?? NO_PROJECTS
   const activeId = projectsQuery.data?.activeId ?? ''
@@ -840,7 +847,7 @@ export default function DesignTweak() {
   // calling `/send` again would only report `already` and dispatch nothing.
   const deliverSealed = useCallback(async (snap: Request, req: Request) => {
     const sealedComments = snap.comments || []
-    const msg = REQUEST_PROMPT(snap, sealedComments, requestPayloadPath(dataDir, req.id))
+    const msg = REQUEST_PROMPT(snap, sealedComments, requestPayloadPath(dataDirRef.current, req.id))
 
     // Route into THIS web app's dedicated session so every request for the
     // app is a turn in the same conversation.
@@ -1756,8 +1763,17 @@ export default function DesignTweak() {
         </div>
       </div>
 
-      {/* drag handle = the gap between panels */}
+      {/* drag handle = the gap between panels. `separator` is the role a resize
+          strip carries across the dashboard, and it takes a name so a screen
+          reader announces the divider rather than an anonymous gap. It stays
+          OUT of the tab order: the width it adjusts is cosmetic, both panels
+          scroll and stay fully operable at any width, so there is no content or
+          control here that only the pointer can reach. */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- pointer-only splitter: `onMouseDown` starts the drag, and a separator with no tab stop has no keyboard operation to mirror it with */}
       <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={i18nT('apps.designTweak.layout.drag_to_resize')}
         onMouseDown={onDragStart}
         title={i18nT('apps.designTweak.layout.drag_to_resize')}
         className="shrink-0 cursor-col-resize"
@@ -1864,6 +1880,7 @@ export default function DesignTweak() {
                   If you need to change this, change WHERE the frame is served from
                   (server.py `_StaticInjectHandler`), not this attribute.
                 */}
+                {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad` is a resource event on the frame (the preview finished loading, so seed the overlay), not a gesture, so it has no keyboard equivalent to add */}
                 <iframe
                   ref={iframeRef}
                   src={previewSrc}

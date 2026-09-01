@@ -16,8 +16,8 @@ describe('rehypeSanitize allowlist (React #290 fix)', () => {
     // so it never reaches the HTML parser that used to lowercase it.
     expect(container.textContent).toContain('<dynamoDBClient>')
     // Should NOT produce an actual dynamoDBClient element
-    expect(container.querySelector('dynamoDBClient' as any)).toBeNull()
-    expect(container.querySelector('dynamodbclient' as any)).toBeNull()
+    expect(container.querySelector('dynamoDBClient')).toBeNull()
+    expect(container.querySelector('dynamodbclient')).toBeNull()
   })
 
   it('renders nested unknown tags with children as escaped text', () => {

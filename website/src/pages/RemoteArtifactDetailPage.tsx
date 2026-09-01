@@ -94,10 +94,16 @@ export default function RemoteArtifactDetailPage() {
   // view_url at the top level. Flatten so content_type (and title/owner/version)
   // resolve — otherwise isHtml is always false and the page renders raw source
   // instead of the iframe.
-  const meta = raw?.artifact ?? raw
-  const art: RemoteArtifactDetail | undefined = raw
-    ? { ...meta, content: raw.content ?? meta?.content, view_url: raw.view_url ?? meta?.view_url }
-    : undefined
+  // Memoized because this object is the dep of `onAddAnchored` (it reads
+  // `current_version` for the anchor) and, via `art?.content`, of the srcdoc
+  // memo: rebuilt every render it would rebuild both, and a new srcdoc string
+  // remounts the sandboxed iframe. React Query keeps `data` referentially stable
+  // between refetches that resolve deep-equal, so this changes only on real data.
+  const art: RemoteArtifactDetail | undefined = useMemo(() => {
+    if (!raw) return undefined
+    const meta = raw.artifact ?? raw
+    return { ...meta, content: raw.content ?? meta.content, view_url: raw.view_url ?? meta.view_url }
+  }, [raw])
   const comments = commentsQuery.data?.comments ?? []
   const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
 
@@ -376,6 +382,7 @@ export default function RemoteArtifactDetailPage() {
             ) : (
               <div ref={mdScrollerRef} className="relative rounded-xl border border-border bg-card overflow-auto p-5" style={{ minHeight: 480, height: 'calc(100vh - 240px)' }}>
                 {isMarkdown
+                  // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a passive drag-select probe over the rendered prose, not a control: onMouseUp only reads back a text selection so the popover can offer to comment on that quote, and there is no action to activate. Giving the wrapper a role and tabIndex would announce a phantom button around the whole document and put a focus stop in front of the text.
                   ? <div ref={mdPreviewRef} onMouseUp={handleMdMouseUp} className="msg-content text-sm leading-relaxed"><MarkdownRenderer content={art.content ?? ''} /></div>
                   : <pre className="text-[13px] text-text whitespace-pre-wrap break-words font-mono">{art.content ?? ''}</pre>}
                 {isMarkdown && comments.length > 0 && (

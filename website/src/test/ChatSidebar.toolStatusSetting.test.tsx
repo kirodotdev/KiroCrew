@@ -21,21 +21,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -69,6 +69,8 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
 const TOOL_DETAIL = {
   kind: 'tool',
@@ -77,7 +79,7 @@ const TOOL_DETAIL = {
   ts: 1,
 }
 
-function renderSidebar(slots: any[], chat: Record<string, unknown>) {
+function renderSidebar(slots: ChatSlot[], chat: Record<string, unknown>) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots, approvalMode: 'normal',
@@ -85,8 +87,8 @@ function renderSidebar(slots: any[], chat: Record<string, unknown>) {
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, goalLoops: {}, ...chat } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, goalLoops: {}, ...chat } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -113,7 +115,7 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — tool status honors simplifiedToolNames', () => {
-  const slots = [{ key: 'k', title: 'sess', running: true, messages: 5, last_message: 'stale' }]
+  const slots = [{ key: 'k', title: 'sess', running: true, messages: 5, last_message: 'stale' }] as unknown as ChatSlot[]
 
   it('shows the agent purpose when the setting is on', () => {
     const { getByText, queryByText } = renderSidebar(slots, { slotStatusDetail: { k: TOOL_DETAIL } })

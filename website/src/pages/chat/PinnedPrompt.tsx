@@ -299,6 +299,7 @@ export default function PinnedPrompt({
             {expanded && shown.length > 0 && (
               <span className="flex flex-wrap gap-2 my-1">
                 {shown.map(src => (
+                  // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph), not a user interaction; there is nothing here for a keyboard to reach
                   <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
                     onError={() => markFailed(src)}
                     className="h-20 w-auto max-w-[160px] rounded object-cover ring-1 ring-inset forced-colors:border ring-border" />
@@ -343,6 +344,7 @@ export default function PinnedPrompt({
                   full-size image, and the taller card only moves the hand-off line
                   DOWN (see PINNED_PREVIEW_LINES). */}
               {!expanded && shown.map(src => (
+                // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle event (drop the 404'd src so `shown` falls back to the ImageOff glyph), not a user interaction; there is nothing here for a keyboard to reach
                 <img key={src} src={pinnedImageUrl(src)} alt="" loading="lazy"
                   onError={() => markFailed(src)}
                   className={`inline-block align-middle mr-1.5 rounded-sm object-cover ring-1 ring-inset forced-colors:border ring-border ${

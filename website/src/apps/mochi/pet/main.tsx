@@ -38,6 +38,10 @@ class PetErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: unknown): void {
+    // The fallback renders NOTHING by design (an error card over the desktop is worse
+    // than a briefly absent pet) and the retry then hides the symptom, so nothing else
+    // records that the pet vanished or why.
+    // eslint-disable-next-line no-console -- sole trace of a crash whose fallback is empty
     console.error('[mochi-pet] render crashed; retrying shortly', error)
     setTimeout(() => this.setState({ failed: false }), RETRY_RENDER_MS)
   }

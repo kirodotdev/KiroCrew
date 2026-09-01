@@ -197,6 +197,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
       const phase = installPhases[serverKey(selectedServer)]
       if (!phase || phase.step === 'error') handleInstall(selectedServer)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `ime` is excluded deliberately: useImeGuard returns a fresh object each render whose methods all close over a ref-held latch, so every copy reads the same live composition state at fire time. Depending on it would rebuild this handler on every render and buy nothing.
   }, [moveSelection, selectedServer, installedOverride, installPhases, handleInstall, queryClient])
 
   return (

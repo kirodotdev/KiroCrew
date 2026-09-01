@@ -28,15 +28,17 @@ vi.mock('../api/client', () => ({
 
 import { ChatHeaderMenu } from '../pages/ChatPage'
 import { registerPopout, __resetForTests, __setNavigateForTests } from '../utils/chatPopout'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
 const dashboardState = {
   status: {}, connected: true, slots: [], approvalMode: 'normal',
   channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
   subagentRunning: {}, subagentDetails: {}, subagentText: {},
   sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-} as any
+} as unknown as RootState['dashboard']
 
-const slot = { key: 'chat-1', title: 'My Session' } as any
+const slot = { key: 'chat-1', title: 'My Session' } as unknown as ChatSlot
 
 function renderMenu() {
   const store = createTestStore({ dashboard: { ...dashboardState, slots: [{ ...slot }] } })

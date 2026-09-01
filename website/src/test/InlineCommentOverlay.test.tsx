@@ -10,15 +10,15 @@ class FakeRO {
   disconnect() {}
 }
 
-let origRaf: any
-let origCaf: any
+let origRaf: typeof globalThis.requestAnimationFrame
+let origCaf: typeof globalThis.cancelAnimationFrame
 
 beforeEach(() => {
-  (globalThis as any).ResizeObserver = FakeRO
+  globalThis.ResizeObserver = FakeRO
   origRaf = globalThis.requestAnimationFrame
   origCaf = globalThis.cancelAnimationFrame
-  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 1 }) as any
-  globalThis.cancelAnimationFrame = (() => {}) as any
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { cb(0); return 1 }) as typeof globalThis.requestAnimationFrame
+  globalThis.cancelAnimationFrame = (() => {}) as typeof globalThis.cancelAnimationFrame
 })
 
 afterEach(() => {

@@ -75,7 +75,10 @@ export function MochiSnipHost() {
     // overlay is already up, and a second frame would stack overlays.
     if (busy || frame !== null) return
     if (!isScreenSnipSupported()) {
-      // A SILENT return here reads as "the shortcut is broken". Say why.
+      // A SILENT return here reads as "the shortcut is broken". Say why: a Mochi
+      // window has no notice surface to render a refusal on, and the caller is a
+      // global accelerator with nothing to return a reason to.
+      // eslint-disable-next-line no-console -- names the missing capability where nothing else can
       console.warn('[mochi] screen capture unavailable: getDisplayMedia is not exposed in this window')
       return
     }
@@ -86,8 +89,12 @@ export function MochiSnipHost() {
       // surfaces the permission dialog in the refused case, but a cancel and a
       // silent rejection look identical from here, so log it either way.
       if (canvas !== null) setFrame(canvas)
+      // eslint-disable-next-line no-console -- the only record the shortcut ran: no frame means no overlay
       else console.warn('[mochi] screen capture produced no frame (cancelled or refused)')
     } catch (err) {
+      // The reason is the only thing separating an OS/permission refusal from a bug
+      // in captureScreen, and nothing above this catch surfaces either one.
+      // eslint-disable-next-line no-console -- carries the rejection reason nothing else reports
       console.warn('[mochi] screen capture failed', err)
     } finally {
       setBusy(false)

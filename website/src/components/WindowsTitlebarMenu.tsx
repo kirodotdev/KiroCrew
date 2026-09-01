@@ -168,6 +168,12 @@ export default function WindowsTitlebarMenu() {
   }, [activeMenuId, collapseMenu, expanded, openMenu])
 
   return (
+    // The nav's onKeyDown is the menu bar's key model (Escape, ArrowLeft/Right
+    // between menus, ArrowDown into the popup), delegated here because focus
+    // legitimately sits on any of the triggers or on an item inside the popup.
+    // It has no pointer counterpart — every activatable affordance is a
+    // <Clickable> child — so it adds a keyboard path rather than missing one.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- keyboard-only delegated handler for the descendant triggers, not an action on the nav itself
     <nav
       ref={navRef}
       className="win-titlebar-menu flex h-full shrink-0 items-center gap-0.5"

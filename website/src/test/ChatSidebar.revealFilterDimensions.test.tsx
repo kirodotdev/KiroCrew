@@ -34,21 +34,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -81,18 +81,20 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
 const RUNNING_ONLY_LS_KEY = 'mc-session-running-only'
 const TAG_FILTER_LS_KEY = 'mc-session-tag-filter'
 
 /** `k-alpha` is running and tagged Alpha; `k-beta` is neither, so it is the row
  *  every filter below excludes and therefore the reveal target throughout. */
-const SLOTS = [
+const SLOTS: ChatSlot[] = [
   { key: 'k-alpha', title: 'alpha session', running: true, messages: 2, tags: ['t1'] },
   { key: 'k-beta', title: 'beta session', running: false, messages: 2, tags: ['t2'] },
-]
+] as unknown as ChatSlot[]
 
-function renderSidebar(slots: any[] = SLOTS) {
+function renderSidebar(slots: ChatSlot[] = SLOTS) {
   // Spread the real slice defaults: RTK REPLACES a slice with preloadedState
   // rather than merging, so a partial drops keys the reducers assume exist.
   const defaults = createTestStore().getState()
@@ -104,12 +106,12 @@ function renderSidebar(slots: any[] = SLOTS) {
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
+    } as unknown as RootState['dashboard'],
     chat: {
       ...defaults.chat,
       activeSlot: null, slotStatusDetail: {},
       revealRequest: null, revealNonce: 0,
-    } as any,
+    } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])

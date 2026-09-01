@@ -948,9 +948,15 @@ export default function DesignCritiquePage() {
       const i = idxOf.get(f)!; const s = sevOf(f.severity); const on = active === i
       const cx = (b.x + (b.w || 0) / 2) * 100, cy = (b.y + (b.h || 0) / 2) * 100
       return (
+        // Role, tab stop, click and keydown are gated on the SAME `interactive`
+        // flag: a pin on the report canvas is a complete button widget, and the
+        // copy overlaid on the lightbox image carries hover styling only. The rule
+        // cannot evaluate the ternary role, so it reads the widget as a bare span.
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- role="button" + tabIndex 0 + Enter/Space ship together on the branch that has the click
         <span
           key={'mk' + i} title={pinNo.get(f) + '. ' + f.title}
           role={interactive ? 'button' : undefined}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop exists only on the `interactive` branch, which is also the one that gets role="button"
           tabIndex={interactive ? 0 : undefined}
           aria-label={interactive ? pinNo.get(f) + '. ' + f.title : undefined}
           onMouseEnter={() => setActive(i)} onMouseLeave={() => setActive(null)}

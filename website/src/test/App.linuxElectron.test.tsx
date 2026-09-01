@@ -20,7 +20,7 @@ import { renderWithProviders } from './helpers'
 
 // Must run before src/lib/electron.ts is imported (module-level consts).
 vi.hoisted(() => {
-  ;(window as any).kirocrew = { isElectron: true, platform: 'linux', linuxFrameless: true }
+  ;(window as unknown as { kirocrew: { isElectron: boolean; platform: string; linuxFrameless: boolean } }).kirocrew = { isElectron: true, platform: 'linux', linuxFrameless: true }
 })
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -65,7 +65,7 @@ Object.defineProperty(window, 'matchMedia', {
     removeEventListener: vi.fn(),
   })),
 })
-globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as any
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import App from '../App'
 import { isLinuxFramelessElectron, isMacElectron, isWinElectron } from '../lib/electron'

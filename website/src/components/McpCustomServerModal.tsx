@@ -285,6 +285,11 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
               <input
                 type="checkbox"
                 checked={enableNow}
+                // Named from the SAME key as the visible text beside it: the
+                // wrapping label makes that text a click target, this names the
+                // control, and the muted sentence after it is elaboration the
+                // name deliberately leaves out.
+                aria-label={i18nT('components.mcpCustomServerModal.enable_immediately')}
                 onChange={(e) => setEnableNow(e.target.checked)}
                 className="accent-[var(--accent)]"
               />

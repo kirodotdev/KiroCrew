@@ -1446,16 +1446,25 @@ export default function App() {
   // or URL bar also exits through the top and pops the header; that false
   // positive is transient (the header closes as soon as the pointer re-enters
   // below the band) and is accepted in exchange for the slam working uniformly.
+  //
+  // Depends on the two `openNow` callbacks, NOT on the hover-intent objects that
+  // carry them: useHoverIntent returns a fresh object literal every render, so
+  // depending on the objects would tear down and re-add this document listener on
+  // every render of the whole app shell. `openNow` is a useCallback keyed on
+  // `enabled` (= focusActive), so the listener is re-subscribed exactly when focus
+  // mode flips — which is also when the effect's own guard changes answer.
+  const { openNow: openTopPeek } = topPeek
+  const { openNow: openRailPeek } = railPeek
   useEffect(() => {
     if (!focusActive) return
     const onOut = (e: MouseEvent) => {
       if (e.relatedTarget !== null) return
-      if (e.clientY <= 20) topPeek.openNow()
-      else if (e.clientX <= 20) railPeek.openNow()
+      if (e.clientY <= 20) openTopPeek()
+      else if (e.clientX <= 20) openRailPeek()
     }
     document.addEventListener('mouseout', onOut)
     return () => document.removeEventListener('mouseout', onOut)
-  }, [focusActive, topPeek.openNow, railPeek.openNow])
+  }, [focusActive, openTopPeek, openRailPeek])
   // A header-owned popover keeps the header on screen.
   //
   // The instance switcher's menu is portaled to document.body (Radix), so moving

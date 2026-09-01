@@ -152,6 +152,7 @@ export function createSessionsProvider(deps: SessionsProviderDeps): ResourceProv
         fetchSessions(q),
         fetchFolders
           ? fetchFolders().catch((err) => {
+              // eslint-disable-next-line no-console -- the distinct signal the comment above requires: results still render, so a swallowed folder failure is otherwise indistinguishable from "no folders"
               console.warn(
                 '[palette] session folder fetch failed; rendering results without folder chips',
                 err,

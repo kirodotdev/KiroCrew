@@ -2074,6 +2074,7 @@
         "copy_markdown": "Copy markdown",
         "dismiss": "Dismiss",
         "edit_resend": "Edit & resend",
+        "open_image": "Open image",
         "pinned_files": "Pinned Files",
         "pins": "Pins",
         "preview": "Preview",
@@ -2295,7 +2296,8 @@
         "starting": "Starting fresh session…"
       },
       "petWidget": {
-        "dismiss_bubble": "Dismiss message"
+        "dismiss_bubble": "Dismiss message",
+        "open_chat": "Open chat with {{name}}"
       },
       "petdex": {
         "by_name": "By name or link",

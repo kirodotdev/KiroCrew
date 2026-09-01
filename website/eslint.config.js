@@ -107,6 +107,28 @@ export default [
     },
   },
   {
+    // `.mjs` build/codegen scripts under `src/` are matched by no other block, so
+    // without this one they lint against an EMPTY rule set: the `no-eval` directive
+    // in `crew-ghost-sprite.gen.mjs` sits above a real `eval()` and is reported as
+    // unused, which is a warning that can never be burned down without deleting a
+    // true statement. Enabling the rule the directive names makes it live, so the
+    // exemption is a deliberate, reviewed one instead of an accident of config
+    // coverage — and a second `eval()` here would now be an error.
+    //
+    // This block is ONE rule wide on purpose and that is a known gap: `.mjs` here
+    // still gets no `no-unused-vars`, no `no-undef`, none of the base set the
+    // `.{ts,tsx}` block above carries. It is scoped to the rule an existing
+    // directive already named rather than guessing a rule set for a file type with
+    // exactly one member (`crew-ghost-sprite.gen.mjs`). A SECOND `.mjs` file under
+    // `src/` inherits that near-empty coverage silently, so widening this is the
+    // right move the moment one lands — a codegen script wants different rules from
+    // an application module, which is the decision being deferred, not skipped.
+    files: ['src/**/*.mjs'],
+    rules: {
+      'no-eval': 'error',
+    },
+  },
+  {
     // Test doubles are exempt: a `vi.mock` that swaps a portalled Radix dropdown
     // for a plain <select> is the ESTABLISHED way to make one driveable in jsdom
     // (Radix commits discrete events through flushSync, which throws inside

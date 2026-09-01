@@ -113,6 +113,7 @@ describe('SessionColorSwatches', () => {
   it('swallows key events so the surrounding menu does not act on them', () => {
     const onKeyDown = vi.fn()
     render(
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- passive propagation probe: the wrapper stands in for the surrounding menu and the assertion is that the key NEVER reaches it, so giving it a role or focus would make it a control the test says nothing about
       <div onKeyDown={onKeyDown}>
         <SessionColorSwatches slotKey="zzq-slot" />
       </div>,

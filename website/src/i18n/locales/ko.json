@@ -3097,6 +3097,7 @@
         "copy_markdown": "Markdown 복사",
         "dismiss": "닫기",
         "edit_resend": "편집 후 재전송",
+        "open_image": "이미지 열기",
         "open_in_file_explorer": "파일 탐색기에서 열기",
         "open_in_finder": "Finder에서 열기",
         "pinned_files": "고정된 파일",
@@ -3321,7 +3322,8 @@
         "starting": "새 세션을 시작하는 중…"
       },
       "petWidget": {
-        "dismiss_bubble": "메시지 닫기"
+        "dismiss_bubble": "메시지 닫기",
+        "open_chat": "{{name}}와(과) 채팅 열기"
       },
       "petdex": {
         "by_name": "이름 또는 링크로",

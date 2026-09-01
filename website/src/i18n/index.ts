@@ -217,6 +217,7 @@ export async function changeLanguage(code: string): Promise<void> {
   // installed by `init()` and is undefined before it.
   if (import.meta.env.DEV && i18next.isInitialized
       && !i18next.hasResourceBundle(resolved, NAMESPACE)) {
+    // eslint-disable-next-line no-console -- the report the block above specifies: throwing is ruled out
     console.error(
       `i18n: no catalog is registered for '${resolved}', so this switch renders `
         + 'English. Import from `i18n/all` rather than `i18n` — same exports, same '

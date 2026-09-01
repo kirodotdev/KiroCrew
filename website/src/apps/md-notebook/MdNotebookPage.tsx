@@ -2063,6 +2063,7 @@ export default function MdNotebookPage() {
           </div>
 
           {/* Note list. Dropping on the background files a note at the root. */}
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- drag-drop only: this is the list's scroll background, which has no activation of its own, so a role and tab stop would add a focus stop that does nothing */}
           <div
             style={{ flex: 1, overflowY: 'auto', padding: '8px' }}
             onDragOver={e => {

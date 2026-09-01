@@ -103,6 +103,7 @@ const SpriteRendererInner: React.FC<SpriteRendererProps> = ({
 
   const dw = displaySize || frameWidth
   const dh = displaySize || frameHeight
+  // eslint-disable-next-line jsx-a11y/control-has-associated-label -- a pure rendering surface, not a control: it carries no role, no handler and nothing focusable, and its meaning comes from the labelled slot card that mounts it
   return <canvas ref={canvasRef} width={frameWidth} height={frameHeight} style={{ width: dw, height: dh, imageRendering: 'pixelated' }} />
 }
 

@@ -164,7 +164,7 @@ describe('Issue Radar at narrow widths', () => {
   })
 
   it('names the LIST in the Back control, not one item from it', async () => {
-    const s = await shell()
+    await shell()
     // `changeRequestTitle` is singular ("Pull Request") and reads as the item you
     // are looking at; Back returns to the list, which is the plural.
     // The PR pane owns its own Back control now, so the label lives there.

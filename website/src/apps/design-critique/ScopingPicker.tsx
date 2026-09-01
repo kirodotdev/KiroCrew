@@ -86,6 +86,15 @@ export default function ScopingPicker(p: Props) {
                 const isDragging = dragId === s.id
                 const canDrag = ord >= 0 && picked.length > 1
                 return (
+                  // Role, tab stop, click and keydown are gated on the SAME `off`
+                  // flag, so a pickable row is a complete checkbox widget
+                  // (role + tabIndex 0 + Enter/Space) and the unrenderable one keeps
+                  // only the drag cleanup handlers — onDragEnd/onDrop, which are
+                  // pointer-only and do nothing but preventDefault and clear dragId.
+                  // Those two are in the rule's handler set, which is part of why it
+                  // fires; it also cannot credit the ternary role, so it reads the
+                  // widget as a bare div.
+                  // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- role="checkbox" + tabIndex 0 + Enter/Space ship together on the branch that has the click
                   <div
                     key={s.id}
                     style={{ ...S.pickRow, ...(off ? S.pickRowOff : {}), ...(isDragging ? S.pickRowDrag : {}) }}

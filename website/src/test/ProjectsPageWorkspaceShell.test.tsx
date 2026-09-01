@@ -18,7 +18,7 @@ import {
 import type { ProjectRun } from '../types'
 
 vi.mock('../pages/ProjectDetailPage', () => ({ default: () => <div data-testid="project-detail">Detail</div> }))
-vi.mock('../components/AgentSelector', () => ({ default: () => <select data-testid="agent-select" /> }))
+vi.mock('../components/AgentSelector', () => ({ default: () => <select data-testid="agent-select" aria-label="agent" /> }))
 
 vi.mock('../api/client', () => ({
   api: {

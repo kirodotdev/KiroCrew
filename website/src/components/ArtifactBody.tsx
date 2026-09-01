@@ -421,6 +421,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
           {!everLoaded && (
             <div aria-hidden className="absolute inset-0 bg-card" />
           )}
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a document-load lifecycle handler (it arms the silent-document watch and reveals the frame), not a user interaction; the frame's own content is what a keyboard reaches, and nothing here can be triggered from one */}
           <iframe
             ref={iframeRef}
             src={blobUrl}
@@ -520,6 +521,7 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
             </span>
           </div>
         ) : (
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle handler (degrade to the "could not be loaded" notice), not a user interaction; there is nothing here for a keyboard to reach
           <img
             src={url}
             alt={alt}

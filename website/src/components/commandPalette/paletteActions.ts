@@ -100,7 +100,12 @@ export function usePaletteActions(): PaletteActions {
 
   const { mutate: doCreateSlot } = useMutation({
     mutationFn: () => dispatch(createSlot(undefined)).unwrap(),
-    onError: (err: unknown) => { console.error('[palette] failed to create session:', err) },
+    onError: (err: unknown) => {
+      // The palette has already closed by the time this settles, so there is no
+      // surface left to render the failure on and no other record of it.
+      // eslint-disable-next-line no-console -- sole diagnostic for a failed session create; without it the row silently does nothing
+      console.error('[palette] failed to create session:', err)
+    },
   })
 
   const insertToken = useCallback((token: string) => {

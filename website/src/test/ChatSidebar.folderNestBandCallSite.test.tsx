@@ -15,7 +15,7 @@
  * but must resolve as REORDER under the measured 26px header (22 > 0.8*26=20.8).
  */
 import { describe, it, expect } from 'vitest'
-import type { DroppableContainer, ClientRect } from '@dnd-kit/core'
+import type { Active, DroppableContainer, ClientRect } from '@dnd-kit/core'
 import { sidebarCollision } from '../pages/ChatSidebar'
 
 // jsdom builds a ClientRect-shaped literal, not a DOMRect instance. dnd-kit's
@@ -73,10 +73,10 @@ function runCollision(pointerY: number, headerHeightPx: number) {
       // branch runs, which is the one exercising isFolderNestBand.
       data: { current: { type: 'folder', subtree: [] } },
       rect: { current: { initial: null, translated: null } },
-    } as any,
+    } as Active,
     collisionRect: blockRect,
     droppableRects,
-    droppableContainers: [target] as any,
+    droppableContainers: [target],
     pointerCoordinates: { x: 100, y: pointerY },
   })
 }

@@ -264,6 +264,7 @@ export function ImageThumb({ a }: { a: Artifact }) {
   }
   return (
     <div className="flex items-center justify-center max-h-[300px] overflow-hidden bg-bg-elevated p-2">
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad/onError are image-load lifecycle handlers (learn the natural size, else degrade to the "could not be loaded" tile), not user interactions; the thumb stays a plain image with nothing for a keyboard to reach */}
       <img
         src={`/api/artifacts/${a.slug}/asset`}
         alt={a.image?.alt || a.name}

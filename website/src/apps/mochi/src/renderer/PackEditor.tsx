@@ -295,9 +295,16 @@ function SlotPopover({ slotKey, slots, filled, anchorRect, onSelectFile, onUseSa
     // announces the buttons with no grouping, and the repo rule (rightly)
     // blocks a div that handles clicks but names no role. The onClick only
     // contains the event so the outside-click closer does not fire.
+    //
+    // `tabIndex={-1}` makes the container programmatically focusable without
+    // adding a stop in the tab order: role="menu" declares that focus is
+    // MANAGED here (useMenuKeyboard moves it onto the first row), and the rows
+    // are the tabbable surface.
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events -- the onClick is a propagation guard, not a command; every command in this menu is a <button role="menuitem"> child and the arrow/Home/End/Tab contract lives in useMenuKeyboard, so a keydown here would swallow keys it has nothing to activate with
     <div
       ref={popoverRef}
       role="menu"
+      tabIndex={-1}
       aria-label={slotLabel(slotKey)}
       style={popStyle}
       onClick={(e) => e.stopPropagation()}
@@ -405,8 +412,8 @@ export const PackEditor: React.FC<PackEditorProps> = ({ existingPack, onSave, on
           name: existingPack.name ?? '', author: existingPack.author ?? '',
           description: existingPack.description ?? '', flipX: false, slots: filled,
         })
-      } catch (err: any) {
-        setError(err?.message || i18nT('apps.mochi.errors.load_pack_data'))
+      } catch (err) {
+        setError((err instanceof Error ? err.message : '') || i18nT('apps.mochi.errors.load_pack_data'))
       }
     })()
     return () => { cancelled = true }
@@ -448,8 +455,8 @@ export const PackEditor: React.FC<PackEditorProps> = ({ existingPack, onSave, on
         ...prev,
         [key]: { content, filename, format },
       }))
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.import_file'))
+    } catch (err) {
+      setError((err instanceof Error ? err.message : '') || i18nT('apps.mochi.errors.import_file'))
     }
     setLoadingSlot(null)
   }, [])
@@ -517,8 +524,8 @@ export const PackEditor: React.FC<PackEditorProps> = ({ existingPack, onSave, on
 
       const savedMeta: PackMeta = result?.value ?? result
       onSave(savedMeta)
-    } catch (err: any) {
-      setError(err?.message || i18nT('apps.mochi.errors.save'))
+    } catch (err) {
+      setError((err instanceof Error ? err.message : '') || i18nT('apps.mochi.errors.save'))
     }
     setSaving(false)
   }, [canSave, saving, slots, name, author, description, existingPack, onSave])

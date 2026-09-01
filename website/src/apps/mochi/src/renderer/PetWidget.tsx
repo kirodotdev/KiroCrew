@@ -7,7 +7,13 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { i18nT } from '../../../../i18n/t'
 import type { PetState, PetMood } from '../shared/types'
-import type { PackManifest , SpriteConfig } from '../shared/appearanceTypes'
+import type {
+  MoodAnimationMap,
+  PackManifest,
+  PackMeta,
+  SpriteConfig,
+  StateAnimationMap,
+} from '../shared/appearanceTypes'
 import { BUBBLE_COLORS, applyThemeVarsOnly, type ThemeId } from '../shared/themes'
 import { useDisplayActivation } from './hooks/useDisplayActivation'
 import { useMood } from './hooks/useMood'
@@ -61,7 +67,23 @@ function colorize(raw: string, cm: ColorMap | null): string {
 import { PET_W, PET_H, BUBBLE_W } from '../shared/constants'
 import { BUBBLE_LAYOUT_DEFAULTS } from '../shared/bubbleLayout'
 
-import { api } from '../mochiApi'
+import { api, type InlineAnimation } from '../mochiApi'
+
+/**
+ * The live appearance-switch payload.
+ *
+ * The bridge declares it as an open record because it merges two shapes: `{ packId }`
+ * alone for the built-in cat (whose art is compiled in here), and a flattened
+ * `PackDetail` for every other pack. The fields the pet reads are named here so a
+ * missing guard is a compile error rather than a silent `undefined`.
+ */
+type ActivePackChange = {
+  packId?: string
+  meta?: PackMeta
+  animations?: Record<string, string | InlineAnimation>
+  sprite?: SpriteConfig
+  flipX?: boolean
+}
 
 /**
  * Builds an AnimationResolver from pack detail data returned by IPC.
@@ -69,12 +91,17 @@ import { api } from '../mochiApi'
  * mapping state/mood names (e.g. 'idle', 'happy') to raw animation content.
  * We reconstruct the manifest and build a contentMap keyed by filenames.
  */
-function buildResolverFromPackDetail(data: { meta: any; animations: Record<string, string | { content: string; format: string }> }): AnimationResolver | null {
+function buildResolverFromPackDetail(data: {
+  // Both optional, because the guard below is what the two call sites rely on:
+  // the live-switch payload carries neither key for the built-in cat.
+  meta?: PackMeta
+  animations?: Record<string, string | InlineAnimation>
+}): AnimationResolver | null {
   const { meta, animations } = data
   if (!meta || !animations) return null
 
-  const states: Record<string, string> = {}
-  const moods: Record<string, string> = {}
+  const states: Partial<StateAnimationMap> = {}
+  const moods: MoodAnimationMap = {}
   const contentMap: Record<string, string> = {}
 
   const requiredStates = ['idle', 'walking', 'thinking', 'working', 'error', 'offline']
@@ -91,9 +118,9 @@ function buildResolverFromPackDetail(data: { meta: any; animations: Record<strin
     const filename = `${key}${ext}`
     contentMap[filename] = content
     if (requiredStates.includes(key) || optionalStates.includes(key)) {
-      states[key] = filename
+      states[key as keyof StateAnimationMap] = filename
     } else if (moodNames.includes(key)) {
-      moods[key] = filename
+      moods[key as keyof MoodAnimationMap] = filename
     }
   }
 
@@ -115,8 +142,12 @@ function buildResolverFromPackDetail(data: { meta: any; animations: Record<strin
 
   const manifest: PackManifest = {
     meta,
-    states: states as any,
-    moods: moods as any,
+    // Partial BY DESIGN, which is why the accumulator above is a `Partial` and only
+    // this one line asserts it complete: `idle` is the sole required slot (see the
+    // guard above) and the resolver falls back to it for every slot a pack leaves
+    // out, so padding the map with art the pack does not ship would be the lie.
+    states: states as StateAnimationMap,
+    moods,
   }
 
   return new AnimationResolver(manifest, contentMap)
@@ -135,6 +166,13 @@ const BubbleOverlay: React.FC<{
   // tree on the first bubble render.
   const bc = BUBBLE_COLORS[themeId] ?? BUBBLE_COLORS.kirocrew
 
+  // Deliberately dependency-LESS: the bubble carries no ResizeObserver, so
+  // re-measuring on every commit is the only thing that notices a text or layout
+  // change (the tail and the clamp are computed from the measured width). The
+  // update chain still terminates in one extra commit — `w !== measuredW` stops
+  // the local write, and the parent's `onHeightMeasured` setter bails out on an
+  // identical height.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- measure-after-every-render, see above: a dep list would freeze the measurement at the deps' last change and mis-place the tail for every later text change.
   useEffect(() => {
     if (wrapRef.current) {
       const w = wrapRef.current.offsetWidth
@@ -175,13 +213,19 @@ const BubbleOverlay: React.FC<{
       zIndex: 10, cursor: 'pointer',
       animation: bubbleFading ? 'fadeOut 0.3s ease-in forwards' : 'fadeIn 0.3s ease-out',
     }}
-      // The bubble dismisses on click, which makes it a control. It lives in a
-      // transparent always-on-top window, so it is deliberately NOT focusable
-      // (tabbing an overlay has nowhere to go) — role plus a name is what a
-      // screen reader needs to announce it as dismissible.
+      // The bubble dismisses on click, which makes it a control: role plus a name
+      // is what a screen reader needs to announce it as dismissible, and Enter or
+      // Space runs the SAME dismiss the click does. Focus is real rather than
+      // decorative — this page also runs as a plain browser tab (the pet's dev
+      // preview), where it is reachable by keyboard; inside the transparent
+      // always-on-top overlay the key handler is simply never reached.
       role="button"
+      tabIndex={0}
       aria-label={i18nT('apps.mochi.petWidget.dismiss_bubble')}
       onClick={onDismiss}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onDismiss() }
+      }}
     >
       {!bubbleAbove && tail('down')}
       <div style={{
@@ -288,8 +332,15 @@ export const PetWidget: React.FC = () => {
   // Load initial pet state, theme config, and active appearance pack
   useEffect(() => {
     api?.getPetState?.().then((s: PetState) => { if (s) setState(s) })
-    api?.getMochiConfig?.().then((c: any) => {
-      if (c?.theme) { setThemeId(c.theme); applyThemeVarsOnly(c.theme) }
+    api?.getMochiConfig?.().then((c) => {
+      // `theme` sits OUTSIDE the pet-facing subset `getMochiConfig` declares — it is
+      // a stored key the pet honours when the settings still carry one — so it is
+      // read off the raw record rather than asserted onto the config type.
+      const storedTheme = (c as Record<string, unknown> | undefined)?.theme
+      if (typeof storedTheme === 'string' && storedTheme) {
+        setThemeId(storedTheme)
+        applyThemeVarsOnly(storedTheme as ThemeId)
+      }
       setPetName(resolvePetName(c))
       // Only fetch pack detail for non-cat packs: default-mochi uses hardcoded
       // SVG fallbacks (compiled in via Vite ?raw) so it can be recoloured.
@@ -298,11 +349,11 @@ export const PetWidget: React.FC = () => {
       const packId = resolveActivePackId(c)
       if (packId === BUILTIN_MOCHI_ID) {
         // Load saved colorMap for default-mochi
-        api?.presetsGetColorMap?.('default-mochi').then((cm: any) => {
+        api?.presetsGetColorMap?.('default-mochi').then((cm) => {
           if (cm && Object.keys(cm).length > 0) setMochiColorMap(cm)
         }).catch(() => {})
       } else {
-        api?.galleryGetPackDetail?.(packId).then((data: any) => {
+        api?.galleryGetPackDetail?.(packId).then((data) => {
           if (data?.meta && data?.animations) {
             const newResolver = buildResolverFromPackDetail(data)
             if (newResolver) setResolver(newResolver)
@@ -330,8 +381,9 @@ export const PetWidget: React.FC = () => {
   // Keep theme + language in sync with config changes
   useEffect(() => {
     const off = api?.onThemeChanged?.((id: string) => { setThemeId(id as ThemeId); applyThemeVarsOnly(id as ThemeId) })
-    const offCfg = api?.onConfigUpdated?.((m: any) => {
-      if (m?.theme) { setThemeId(m.theme); applyThemeVarsOnly(m.theme) }
+    // The bridge publishes the whole settings record, of which the pet reads one key.
+    const offCfg = api?.onConfigUpdated?.((m: { theme?: string }) => {
+      if (m?.theme) { setThemeId(m.theme); applyThemeVarsOnly(m.theme as ThemeId) }
     })
     const offColor = api?.onColorMapChanged?.((data: { packId: string; colorMap: ColorMap }) => {
       if (data.packId === 'default-mochi') {
@@ -359,12 +411,12 @@ export const PetWidget: React.FC = () => {
   }, [])
 
   useEffect(() => {
-    const off = api?.onGalleryActiveChanged?.((data: any) => {
+    const off = api?.onGalleryActiveChanged?.((data: ActivePackChange) => {
       if (data?.packId === 'default-mochi') {
         setOpacity(0)
         setTimeout(() => { setResolver(null); setSpriteConfig(null); setPackFlipX(false); setOpacity(1) }, 150)
         // Restore saved colorMap for default-mochi
-        api?.presetsGetColorMap?.('default-mochi').then((cm: any) => {
+        api?.presetsGetColorMap?.('default-mochi').then((cm) => {
           setMochiColorMap(cm && Object.keys(cm).length > 0 ? cm : null)
         }).catch(() => {})
         return
@@ -425,7 +477,7 @@ export const PetWidget: React.FC = () => {
     // Fallback to cached default-mochi SVGs (with colorMap applied)
     if (moodRef.current !== 'neutral') return fallbackUriCache.mood[moodRef.current] || fallbackUriCache.state.idle
     return fallbackUriCache.state[s] || fallbackUriCache.state.idle
-  }, [resolver, fallbackUriCache])
+  }, [resolver, fallbackUriCache, moodRef])
 
   const applyDisplayState = useCallback((s: PetState) => {
     const oldSvg = resolveSvg(displayState)
@@ -582,6 +634,23 @@ export const PetWidget: React.FC = () => {
         onMouseDown={(e) => { if (isWalking) cancelWalk(); onMouseDown(e) }}
         onDoubleClick={(e) => { e.preventDefault(); clearPersistentMood(); api?.openChat?.() }}
         onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY }) }}
+        // The pet body is the widget's one control — press to drag, double-click to
+        // open chat, right-click for the menu — so it carries a role, a name and a
+        // tab stop. Enter and Space run the SAME activation the double-click does,
+        // and the focus is real rather than decorative: this page also runs as a
+        // plain browser tab (the pet's dev preview), where it is reachable by
+        // keyboard; inside the transparent overlay window the handler is simply
+        // never reached.
+        role="button"
+        tabIndex={0}
+        aria-label={i18nT('apps.mochi.petWidget.open_chat', { name: petName })}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            clearPersistentMood()
+            api?.openChat?.()
+          }
+        }}
       >
         {(() => {
           // Task 9.2: Determine if current animation is Lottie or SVG
@@ -595,9 +664,13 @@ export const PetWidget: React.FC = () => {
             if (isPeekState) {
               const peekKey = (effectiveState === 'thinking' || effectiveState === 'working') ? 'peekThinking' : 'peeking'
               const fallbackKey = (effectiveState === 'thinking' || effectiveState === 'working') ? 'thinking' : 'idle'
+              // `peeking`/`peekThinking` are pack SLOTS, not members of the state
+              // machine, and the resolver handles both explicitly (see its own
+              // `state as string` tests) while typing its parameter to the six
+              // PetStates — so reaching that branch needs the widening bridge.
               currentSource = resolver.hasState(peekKey)
-                ? resolver.resolve(peekKey as any, 'neutral')
-                : resolver.resolve(fallbackKey as any, 'neutral')
+                ? resolver.resolve(peekKey as unknown as PetState, 'neutral')
+                : resolver.resolve(fallbackKey, 'neutral')
             } else {
               currentSource = resolver.resolve(effectiveState, moodRef.current)
             }
@@ -657,6 +730,11 @@ export const PetWidget: React.FC = () => {
           return (
             <img
               src={resolveSvg(effectiveState)}
+              // Decorative: the art is the pet's ornament and carries no information
+              // of its own — the wrapping control supplies the accessible name, and
+              // the pet's actual state reaches the user through the bubble. Naming
+              // the pose here would announce it a second time on every transition.
+              alt=""
               style={{
                 width: PET_W, height: PET_H, opacity, flexShrink: 0,
                 transition: 'opacity 200ms ease-in-out', pointerEvents: 'none',

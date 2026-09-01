@@ -99,6 +99,12 @@ function buildBody(
   return body
 }
 
+/** One row of `GET /api/models`. The payload is kiro-cli's own `--list-models`
+ *  output after the backend's filtering, so nothing here is guaranteed: the
+ *  current spelling is `model_name`, `name` is the legacy one, and a row that
+ *  carries neither is unusable. */
+type ModelRow = { model_name?: string; name?: string; display_name?: string }
+
 interface Props {
   job?: CronJob // if provided, edit mode
   /** Seed values for a NEW job (create mode). Ignored when `job` is set. */
@@ -144,7 +150,15 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
     queryKey: ['models'],
     queryFn: async () => {
       const m = await api.models()
-      return Array.isArray(m) ? m.map((x: any) => ({ name: x.model_name || x.name, description: x.display_name || '' })) : []
+      // A row carrying neither spelling is dropped, not mapped to '': '' is
+      // this form's own value for "inherit" (the `clearLabel` row, see
+      // `modelOptions` below), so aliasing an unusable row onto it would render
+      // a second, duplicate inherit option that silently clears the override.
+      if (!Array.isArray(m)) return []
+      return m.flatMap((x: ModelRow) => {
+        const name = x.model_name || x.name
+        return name ? [{ name, description: x.display_name || '' }] : []
+      })
     },
   })
   const [channel, setChannel] = useState(defaults.channel)

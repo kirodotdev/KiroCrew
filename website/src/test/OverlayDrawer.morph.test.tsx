@@ -23,13 +23,24 @@ import OverlayDrawer from '../components/OverlayDrawer'
 
 let reduceMotion = false
 
+/** The framer-motion props this mock READS; every other prop lands in `rest` and
+ *  is forwarded to the plain DOM element, which is what the index signature is for. */
+interface MotionMockProps {
+  [prop: string]: unknown
+  children?: React.ReactNode
+  initial?: { clipPath?: string }
+  animate?: { clipPath?: string }
+  exit?: { clipPath?: string }
+  transition?: unknown
+}
+
 // Capture what framer-motion is ASKED to animate. The real library cannot run
 // projection in jsdom, so the props are the observable surface.
 vi.mock('framer-motion', async () => {
   const React = await import('react')
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const { children, initial, animate, exit, transition, ...rest } = props
+    React.forwardRef((props: MotionMockProps, ref: React.Ref<unknown>) => {
+      const { children, initial, animate, exit, transition: _transition, ...rest } = props
       return React.createElement(tag, {
         ...rest,
         ref,
@@ -40,7 +51,7 @@ vi.mock('framer-motion', async () => {
     })
   return {
     motion: new Proxy({}, { get: (_t, tag: string) => make(tag) }),
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     useReducedMotion: () => reduceMotion,
   }
 })

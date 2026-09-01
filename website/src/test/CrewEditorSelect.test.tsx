@@ -98,37 +98,52 @@ vi.mock('../components/SimpleSelect', () => ({
     optionLabels?: string[]
     clearLabel?: string
     'aria-label'?: string
-  }) => (
-    <div>
-      <button type="button" role="combobox" aria-label={ariaLabel} aria-expanded={false}>
-        {optionLabels?.[options.indexOf(value)] ?? value ?? clearLabel}
-      </button>
-      {clearLabel && (
-        <button type="button" role="option" aria-selected={value === ''} onClick={() => onChange('')}>
-          {clearLabel}
-        </button>
-      )}
-      {options.map((o, i) => (
+  }) => {
+    /* `role="combobox"` owes ARIA an `aria-controls`, so the option rows sit in a real
+       listbox the trigger names — the stub's whole point is to keep the accessible
+       surface the tests query. The id is derived from the label because two of these
+       stubs can be mounted at once and their ids have to stay distinct. The action row
+       stays OUTSIDE the listbox: it is not an option. */
+    const listboxId = `zzq-listbox-${(ariaLabel ?? 'unlabelled').replace(/\W+/g, '-')}`
+    return (
+      <div>
         <button
-          key={o}
           type="button"
-          role="option"
-          aria-selected={o === value}
-          onClick={() => onChange(o)}
+          role="combobox"
+          aria-label={ariaLabel}
+          aria-expanded={false}
+          aria-controls={listboxId}
         >
-          {optionLabels?.[i] ?? o}
+          {optionLabels?.[options.indexOf(value)] ?? value ?? clearLabel}
         </button>
-      ))}
-      {action && (
-        <button type="button" onClick={action.onSelect}>{action.label}</button>
-      )}
-    </div>
-  ),
+        <div role="listbox" id={listboxId}>
+          {clearLabel && (
+            <button type="button" role="option" aria-selected={value === ''} onClick={() => onChange('')}>
+              {clearLabel}
+            </button>
+          )}
+          {options.map((o, i) => (
+            <button
+              key={o}
+              type="button"
+              role="option"
+              aria-selected={o === value}
+              onClick={() => onChange(o)}
+            >
+              {optionLabels?.[i] ?? o}
+            </button>
+          ))}
+        </div>
+        {action && (
+          <button type="button" onClick={action.onSelect}>{action.label}</button>
+        )}
+      </div>
+    )
+  },
 }))
 
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
-import CrewAvatar from '../components/CrewAvatar'
 
 function createTestStore() {
   return configureStore({

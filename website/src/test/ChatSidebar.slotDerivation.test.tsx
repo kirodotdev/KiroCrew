@@ -30,21 +30,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -72,6 +72,8 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
 const UNREAD_DOT_TITLE = 'Agent finished — your turn'
 // Default recency window is 1h, so these sit either side of it.
@@ -85,7 +87,7 @@ const wf = (over: Record<string, unknown> = {}) => ({
 })
 
 function renderSidebar(
-  slots: any[],
+  slots: ChatSlot[],
   chat: Record<string, unknown> = {},
   { activeSlotProp = null, unreadSlots = [] }: { activeSlotProp?: string | null; unreadSlots?: string[] } = {},
 ) {
@@ -96,8 +98,8 @@ function renderSidebar(
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, workflowRuns: {}, goalLoops: {}, ...chat } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {}, workflowRuns: {}, goalLoops: {}, ...chat } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -126,7 +128,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
       { key: 'a', title: 'alpha', running: false, messages: 1, last_turn_ts: STALE },
       { key: 'b', title: 'bravo', running: true, messages: 2, last_turn_ts: FRESH },
       { key: 'c', title: 'charlie', running: false, messages: 3, last_turn_ts: FRESH, pinned: true },
-    ]
+    ] as unknown as ChatSlot[]
     const { getByText } = renderSidebar(slots)
     expect(getByText('alpha')).toBeTruthy()
     expect(getByText('bravo')).toBeTruthy()
@@ -140,7 +142,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [
       { key: 'run', title: 'long running turn', running: true, messages: 5, last_turn_ts: STALE },
       { key: 'idle', title: 'stale and idle', running: false, messages: 2, last_turn_ts: STALE },
-    ]
+    ] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(slots)
     expect(getByText('long running turn')).toBeTruthy()
     expect(queryByText('stale and idle')).toBeNull()
@@ -152,7 +154,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [
       { key: 'fresh', title: 'recently active', running: false, messages: 2, last_turn_ts: FRESH },
       { key: 'old', title: 'long forgotten', running: false, messages: 2, last_turn_ts: STALE },
-    ]
+    ] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(slots)
     expect(getByText('recently active')).toBeTruthy()
     expect(queryByText('long forgotten')).toBeNull()
@@ -163,7 +165,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [
       { key: 'k-loop', title: 'looping session', running: false, messages: 5, last_turn_ts: STALE },
       { key: 'k-idle', title: 'idle session', running: false, messages: 2, last_turn_ts: STALE },
-    ]
+    ] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(slots, {
       goalLoops: { 'k-loop': { cycle_count: 7, max_cycles: 24 } },
     })
@@ -176,7 +178,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [
       { key: 'k-wf', title: 'workflow session', running: false, messages: 5, last_turn_ts: STALE },
       { key: 'k-idle', title: 'idle session', running: false, messages: 2, last_turn_ts: STALE },
-    ]
+    ] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(slots, { workflowRuns: { wf_000001: wf() } })
     expect(getByText('workflow session')).toBeTruthy()
     expect(queryByText('idle session')).toBeNull()
@@ -185,7 +187,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
   it('`midTurn` is the RAW turn flag: an idle-between-cycles loop shows its last message', () => {
     // The widened flag is TRUE here (the goal loop widens it), so resolving
     // this from the widened value would print "Thinking…" for an idle row.
-    const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, last_message: 'cycle 7 output' }]
+    const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, last_message: 'cycle 7 output' }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
       { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
@@ -196,7 +198,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
   })
 
   it('`midTurn` true mid-turn: the same loop row carries the live tool status instead', () => {
-    const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, last_message: 'cycle 7 output' }]
+    const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, last_message: 'cycle 7 output' }] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(
       slots,
       { activeSlot: 'k', goalLoops: { k: { cycle_count: 7, max_cycles: 24 } }, slotStatusDetail: { k: { text: 'Reading gateway.log' } } },
@@ -208,7 +210,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
   })
 
   it('`unread` reaches the row gutter as the "your turn" dot', () => {
-    const slots = [{ key: 'k', title: 'answered', running: false, messages: 5, last_message: 'final answer' }]
+    const slots = [{ key: 'k', title: 'answered', running: false, messages: 5, last_message: 'final answer' }] as unknown as ChatSlot[]
     const { queryByTitle } = renderSidebar(slots, {}, { unreadSlots: ['k'] })
     expect(queryByTitle(UNREAD_DOT_TITLE)).toBeTruthy()
   })
@@ -218,7 +220,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [
       { key: 'u', title: 'unread session', running: false, messages: 2, last_turn_ts: FRESH },
       { key: 'r', title: 'read session', running: false, messages: 2, last_turn_ts: FRESH },
-    ]
+    ] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(slots, {}, { unreadSlots: ['u'] })
     expect(getByText('unread session')).toBeTruthy()
     expect(queryByText('read session')).toBeNull()
@@ -229,7 +231,7 @@ describe('sidebar slot derivation — every derived value still reaches the row'
     const slots = [
       { key: 'p', title: 'pinned session', running: false, messages: 2, last_turn_ts: FRESH, pinned: true },
       { key: 'q', title: 'loose session', running: false, messages: 2, last_turn_ts: FRESH },
-    ]
+    ] as unknown as ChatSlot[]
     const { getByText, queryByText } = renderSidebar(slots)
     expect(getByText('pinned session')).toBeTruthy()
     expect(queryByText('loose session')).toBeNull()

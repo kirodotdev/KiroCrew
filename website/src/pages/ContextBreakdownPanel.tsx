@@ -214,6 +214,7 @@ function Bar({ segs, widthPct }: { segs: Seg[]; widthPct: number }) {
         style={{ width: `${widthPct}%` }}
       >
         {segs.map(seg => (
+          // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- hover-reveal only: the three listeners position a tooltip and the segment has no action to perform, so there is nothing for a keyboard to activate. The same colour→label mapping is spelled out by the legend below, so a non-pointer reader is not left without the information.
           <div
             key={seg.key}
             className="h-full min-w-0 cursor-default"

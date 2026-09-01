@@ -3113,6 +3113,7 @@
         "copy_markdown": "মার্কডাউন কপি করো",
         "dismiss": "খারিজ করুন",
         "edit_resend": "সম্পাদনা করে আবার পাঠান",
+        "open_image": "ছবি খোলো",
         "open_in_file_explorer": "File Explorer-এ খুলুন",
         "open_in_finder": "Finder-এ খুলুন",
         "pinned_files": "পিন করা ফাইল",
@@ -3337,7 +3338,8 @@
         "starting": "নতুন সেশন শুরু হচ্ছে…"
       },
       "petWidget": {
-        "dismiss_bubble": "বার্তা বন্ধ করো"
+        "dismiss_bubble": "বার্তা বন্ধ করো",
+        "open_chat": "{{name}}-এর সাথে চ্যাট খোলো"
       },
       "petdex": {
         "by_name": "নাম বা লিঙ্ক দিয়ে",

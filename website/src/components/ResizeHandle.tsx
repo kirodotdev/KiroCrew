@@ -30,11 +30,17 @@ export default function ResizeHandle({
   max?: number
 }) {
   return (
+    // ARIA gives `separator` two flavours and jsx-a11y only models the static
+    // one: a FOCUSABLE separator is the window-splitter widget, which owns both
+    // a tab stop and the arrow keys below. The rule cannot tell the two apart,
+    // so it reads the widget as decorative furniture.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- focusable separator = the window-splitter widget; onKeyDown IS its documented operation
     <div
       {...handleProps}
       role="separator"
       aria-orientation="vertical"
       aria-label={label}
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- the tab stop exists only when `onNudge` makes the splitter operable, which is what promotes it to a widget
       tabIndex={onNudge ? 0 : undefined}
       aria-valuenow={value}
       aria-valuemin={min}

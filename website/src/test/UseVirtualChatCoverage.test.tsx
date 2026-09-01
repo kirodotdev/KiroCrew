@@ -53,14 +53,6 @@ function makeScroller(initial: Geom, opts: { withScrollTo?: boolean } = {}) {
   return { el, state, writes }
 }
 
-/** Pin an element's rect so the header-offset derivation is deterministic. */
-function stubRectTop(node: HTMLElement, top: number) {
-  node.getBoundingClientRect = (() => ({
-    top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top,
-    toJSON: () => ({}),
-  })) as HTMLElement['getBoundingClientRect']
-}
-
 interface Item { id: string }
 const getKey = (it: Item) => it.id
 const mkItems = (n: number): Item[] => Array.from({ length: n }, (_, i) => ({ id: `m${i}` }))

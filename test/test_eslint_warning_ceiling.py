@@ -1,16 +1,20 @@
-"""The frontend eslint warning ceiling has ONE numeric source.
+"""The frontend eslint warning ceiling has ONE numeric source, and it is zero.
 
-The ceiling is a ratchet: CI runs `eslint src/ --max-warnings <n>`, so a warning
-count at or below `<n>` is green and anything above is red. Two things make that
-ratchet stop ratcheting, and neither shows up as a failing check:
+CI runs `eslint src/ --max-warnings <n>`, so a warning count at or below `<n>` is
+green and anything above is red. The tree carries no warnings, which makes `<n>`
+zero the only ceiling that needs no bookkeeping. Two things would quietly undo
+that, and neither shows up as a failing check of its own:
 
 * **Slack.** A ceiling above the measured count is a budget new warnings land
-  inside, silently, until it is exhausted. Only running eslint can measure that,
-  so it is not pinned here -- the gate itself is that test.
-* **Transcription.** Prose that repeats the number goes stale the first time
-  anyone burns the ceiling down, and then documents a gate that no longer
-  exists. That is what these tests pin, because it is cheap to pin and because a
-  stale ceiling in a doc is what makes the next burn-down look already done.
+  inside, silently, until it is exhausted -- and a warning admitted that way is
+  indistinguishable from the rest. With the tree at zero, any non-zero ceiling
+  IS slack, so that is pinned here directly rather than left to prose in the
+  workflow asking the next author not to lift it.
+* **Transcription.** Prose that repeats a *drifting* number goes stale the first
+  time anyone moves the ceiling, and then documents a gate that no longer
+  exists; a stale ceiling in a doc is also what makes the next burn-down look
+  already done. That is pinned too, but only while the ceiling can drift --
+  see `test_the_ceiling_is_not_transcribed_into_prose`.
 """
 
 from __future__ import annotations
@@ -50,16 +54,45 @@ def test_the_lint_gate_declares_a_ceiling() -> None:
     )
 
 
+def test_the_ceiling_is_zero() -> None:
+    """The tree is at zero warnings, so any non-zero ceiling is pure slack.
+
+    The workflow comment asks the next author not to lift it; this is the half
+    that does not depend on the comment being read. A ceiling raised to admit one
+    warning re-creates the drifting baseline the hard zero replaced, and nothing
+    else in CI reports that -- eslint exits 0 either way.
+    """
+    ceiling = _CEILING.search(_ci_text())
+    assert ceiling is not None
+
+    assert ceiling.group(1) == "0", (
+        f"ci.yml's eslint ceiling is {ceiling.group(1)}, not 0. The frontend tree "
+        "carries no warnings, so anything above zero is a budget new warnings land "
+        "inside unseen. Fix the warning, or suppress the one line it names with "
+        "`// eslint-disable-next-line <rule> -- <why the code is correct>`, which is "
+        "reviewable in the diff where a lifted ceiling is not"
+    )
+
+
 def test_the_ceiling_is_not_transcribed_into_prose() -> None:
-    """Docs describe the ratchet; they must not restate its current value.
+    """Docs describe the ratchet; they must not restate a value that can drift.
 
     A number copied into prose is correct exactly until the ceiling moves, and
     the reader who finds the stale copy concludes the burn-down already happened.
     Refer to the gate instead, so there is one place to change.
+
+    This applies only while the ceiling is a *stored count*. At zero there is
+    nothing to go stale -- `test_the_ceiling_is_zero` is what holds the value, so
+    the ceiling cannot move without that test failing first -- and a doc quoting
+    the gate's real invocation (`--max-warnings 0`) is accurate prose, not a
+    transcription. Scanning for the literal `0` would ban exactly that, and would
+    also fire on any unrelated digit in a `max-warnings` sentence.
     """
     ceiling = _CEILING.search(_ci_text())
     assert ceiling is not None
     value = ceiling.group(1)
+    if value == "0":
+        return
 
     offenders: list[str] = []
     for root in _PROSE:

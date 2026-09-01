@@ -86,6 +86,7 @@ export default function SessionGridView({
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the three fields read are listed individually; `useSessionGrid` returns a fresh object literal every render, so depending on `grid` itself would rebind the document listener on every render while covering nothing these deps miss
   }, [grid.focusedId, grid.leaves, grid.splitLeaf])
 
   const { data: slots = [] } = useQuery<Slot[]>({
@@ -103,6 +104,7 @@ export default function SessionGridView({
     grid.pruneAgainst(slots.map((s) => s.key))
     // Depend on the stable pruneAgainst callback (useCallback []), not the whole grid
     // object (new literal each render) — avoids re-scheduling the effect every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above: `grid` is a new literal every render and `pruneAgainst` is the only member this effect calls
   }, [slots, grid.pruneAgainst])
 
   // Fork source = the focused session pane, else the first session pane in the grid.
@@ -247,6 +249,7 @@ function PlaceholderPane({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={i18nT('components.sessionGridView.search_sessions')}
+          aria-label={i18nT('components.sessionGridView.search_sessions')}
           className="flex-1 min-w-0 bg-bg-elevated border border-border rounded px-2 py-1 text-[13px] text-text placeholder:text-muted outline-none focus-visible:border-accent"
         />
         <button onClick={onSplitRight} title={i18nT('components.sessionGridView.split_right_d')} aria-label={i18nT('components.sessionGridView.split_right')} className={ctrlBtn}>

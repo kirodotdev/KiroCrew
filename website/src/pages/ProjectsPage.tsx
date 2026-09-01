@@ -133,7 +133,7 @@ export default function ProjectsPage() {
     setSelectedRun(next)
     setEditingName(false)
     if (isMobile) rail.collapse()
-  }, [isMobile, rail.collapse])
+  }, [isMobile, rail])
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
 

@@ -106,8 +106,8 @@ export const PetdexImporter: React.FC<Props> = ({ onReady, onUseFile, onCancel }
         const uri = `data:${pet.imageMime};base64,${pet.imageBase64}`
         const { width, height } = await measure(uri)
         onReady(petdexPrefill(pet, width, height))
-      } catch (err: any) {
-        setError(err?.message || i18nT('apps.mochi.petdex.failed'))
+      } catch (err) {
+        setError((err instanceof Error ? err.message : '') || i18nT('apps.mochi.petdex.failed'))
       } finally {
         setBusy(null)
       }

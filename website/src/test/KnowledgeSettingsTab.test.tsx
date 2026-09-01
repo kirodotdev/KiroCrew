@@ -47,11 +47,6 @@ function wrap() {
   )
 }
 
-async function settledInput(label: string): Promise<HTMLInputElement> {
-  const el = await screen.findByLabelText(label, {}, { timeout: 3000 })
-  return el as HTMLInputElement
-}
-
 function rejectOnce(mock: ReturnType<typeof vi.fn>) {
   mock.mockRejectedValueOnce(new Error('fail'))
 }

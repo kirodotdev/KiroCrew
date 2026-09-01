@@ -34,6 +34,12 @@ import type { RepoRef } from './lib/refLinks'
  * "maintainer" grouping. */
 const MEMBER_ASSOCS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR'])
 
+/** Tallies to show before the crews query answers. Module-level so the fallback
+ * is one identity for the app's lifetime: inlined, it is a fresh object on every
+ * render where the roster has not loaded, which rebuilds the context value and
+ * re-renders every consumer for nothing. */
+const NO_CREW_COUNTS: CrewCounts = { on_duty: 0, working: 0, paused: 0 }
+
 /* ── Persisted crews UI state ──────────────────────────────────────────────
  *
  * Kept on its OWN localStorage key rather than folded into `PersistedUiState`
@@ -758,8 +764,7 @@ export function IssueRadarProvider({
     staleTime: refreshPrefs.staleTimeMs,
   })
   const crews = useMemo(() => asArray<Crew>(crewsQuery.data?.crews), [crewsQuery.data])
-  const crewCounts: CrewCounts = crewsQuery.data?.counts
-    ?? { on_duty: 0, working: 0, paused: 0 }
+  const crewCounts: CrewCounts = crewsQuery.data?.counts ?? NO_CREW_COUNTS
 
   // Keep the selected page pointing at a crew that exists in THIS repo, and open
   // the first crew when nothing valid is selected.
@@ -1401,7 +1406,12 @@ export function IssueRadarProvider({
     pullsQuery.isLoading, prPersonFilterActive, pullsSearchQuery.error, pullsQuery.error,
     refreshPullsMutation.error, refreshPulls, pullsSearchQuery.isFetching, refreshPullsMutation.isPending,
     pullsSearchQuery.dataUpdatedAt, pullsQuery.dataUpdatedAt, pullsSearchQuery.data, pullsQuery.data,
-    pullsPartial, pullsFirstPageQuery.data,
+    // `pullsFirstPageQuery.data` is deliberately absent: the context value does
+    // not read it. `pullsPartial` and `pulls` are both recomputed from it in
+    // render scope and both are listed, so listing the query object too would
+    // rebuild the whole context — and re-render every consumer — on each poll
+    // that returns an identical first page under a new object identity.
+    pullsPartial,
     refreshPrefs, setRefreshPrefs, countByPrLabel, prQuery, setPrQuery,
     aiLanguage, setAiLanguage,
     prSelectedLabels, togglePrLabel, prAuthoredByMe, togglePrAuthoredByMe,

@@ -23,21 +23,21 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (k === 'layoutId') { clean['data-layout-id'] = props[k]; continue }
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -73,8 +73,10 @@ vi.mock('../hooks/useSimplifiedToolNames', () => ({
 }))
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
-function mountSidebar(slots: any[], chat: Record<string, unknown>, activeSlotProp: string | null = null) {
+function mountSidebar(slots: ChatSlot[], chat: Record<string, unknown>, activeSlotProp: string | null = null) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots, approvalMode: 'normal',
@@ -82,7 +84,7 @@ function mountSidebar(slots: any[], chat: Record<string, unknown>, activeSlotPro
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
+    } as unknown as RootState['dashboard'],
     chat: {
       activeSlot: chat.activeSlot ?? null,
       slotStatusDetail: {},
@@ -93,7 +95,7 @@ function mountSidebar(slots: any[], chat: Record<string, unknown>, activeSlotPro
       messages: [],
       slotMessages: {},
       ...chat,
-    } as any,
+    } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -132,7 +134,7 @@ describe('ChatSidebar store subscription scope', () => {
     const slots = [
       { key: 'slot-a', title: 'A', running: false, messages: 1 },
       { key: 'slot-b', title: 'B', running: false, messages: 1 },
-    ]
+    ] as unknown as ChatSlot[]
     const { store } = mountSidebar(
       slots,
       {
@@ -158,7 +160,7 @@ describe('ChatSidebar store subscription scope', () => {
   })
 
   it('does not re-render on a subagent chunk for the ACTIVE slot when count unchanged', async () => {
-    const slots = [{ key: 'slot-a', title: 'A', running: false, messages: 1 }]
+    const slots = [{ key: 'slot-a', title: 'A', running: false, messages: 1 }] as unknown as ChatSlot[]
     const { store } = mountSidebar(
       slots,
       {
@@ -180,7 +182,7 @@ describe('ChatSidebar store subscription scope', () => {
   })
 
   it('DOES re-render when a new subagent spawns (count changes)', async () => {
-    const slots = [{ key: 'slot-a', title: 'A', running: false, messages: 1 }]
+    const slots = [{ key: 'slot-a', title: 'A', running: false, messages: 1 }] as unknown as ChatSlot[]
     const { store } = mountSidebar(
       slots,
       {

@@ -64,7 +64,17 @@ const decide = (over = {}, base = 'origin/main') => {
   const rows = resolveRows({ checks: CHECKS, runs, base })
   return { rows, ...verdict({ rows, runs, scripts: SCRIPTS }) }
 }
-const row = (rows: any[], id: string) => rows.find(r => r.id === id)
+/**
+ * One resolved row of the gate table, as `resolveRows` returns it: the check's own
+ * fields plus the verdict it resolved to. Only the three the assertions here read are
+ * named — the table is JS and carries no exported type, so this is the local shape.
+ *
+ * `row` asserts the lookup found one because every id asserted below is an id
+ * `CHECKS` declares, so a miss is a table edit rather than a case to handle.
+ */
+type GateRow = { id: string, state: 'PASS' | 'FAIL' | 'MISSING' | 'NOT RUN', summary: string }
+
+const row = (rows: GateRow[], id: string) => rows.find(r => r.id === id) as GateRow
 
 describe('INVARIANT — a non-zero child always fails the run', () => {
   it('fails when a script crashes before printing anything attributable', () => {

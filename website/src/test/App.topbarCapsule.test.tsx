@@ -61,7 +61,7 @@ Object.defineProperty(window, 'matchMedia', {
     removeEventListener: vi.fn(),
   })),
 })
-globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as any
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import App from '../App'
 
@@ -151,7 +151,7 @@ describe('App top bar — update pill shifts the collapse-ladder budget', () => 
 describe('App shell — macOS fullscreen class', () => {
   it('toggles mac-fullscreen on the root grid from the electron bridge', async () => {
     let fsCallback: ((fs: boolean) => void) | undefined
-    ;(window as any).electronAPI = {
+    ;(window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI = {
       onFullScreenChanged: (cb: (fs: boolean) => void) => { fsCallback = cb; return () => { fsCallback = undefined } },
     }
     const { container } = renderWithProviders(<App />, { route: '/chat' })
@@ -166,6 +166,6 @@ describe('App shell — macOS fullscreen class', () => {
 
     act(() => fsCallback?.(false))
     expect(root.classList.contains('mac-fullscreen')).toBe(false)
-    delete (window as any).electronAPI
+    delete (window as { electronAPI?: { onFullScreenChanged?: (cb: (fs: boolean) => void) => () => void } }).electronAPI
   })
 })

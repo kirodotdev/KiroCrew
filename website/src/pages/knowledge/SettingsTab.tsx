@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId, createContext, useContext } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
@@ -269,18 +269,33 @@ export function SettingsTab() {
 
 // ── Sub-components ──
 
+/**
+ * Id of the enclosing row's visible label text, so the control on the other
+ * side of the row can name itself with `aria-labelledby` instead of repeating
+ * the label as an `aria-label` — one string, and it cannot drift from what the
+ * user reads.
+ *
+ * Carried by context rather than by prop because several rows wrap their
+ * control in a layout `<div>` (the unit suffix, the restart badge), so the row
+ * cannot hand the id to the control directly.
+ */
+const RowLabelIdContext = createContext<string | undefined>(undefined)
+
 function SettingRow({ label, description, children }: {
   label: string
   description: string
   children: React.ReactNode
 }) {
+  const labelId = useId()
   return (
     <div className="flex items-start justify-between py-3 border-b border-border last:border-b-0 gap-4">
       <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-medium text-text">{label}</div>
+        <div id={labelId} className="text-[13px] font-medium text-text">{label}</div>
         <div className="text-[11px] text-muted mt-0.5 leading-relaxed">{description}</div>
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="shrink-0">
+        <RowLabelIdContext.Provider value={labelId}>{children}</RowLabelIdContext.Provider>
+      </div>
     </div>
   )
 }
@@ -294,9 +309,11 @@ function NumberInput({ value, onChange, onBlur, min, max, step, disabled }: {
   step: number
   disabled: boolean
 }) {
+  const labelId = useContext(RowLabelIdContext)
   return (
     <input
       type="number"
+      aria-labelledby={labelId}
       className="w-[80px] px-2 py-1 text-[12px] text-right border border-border rounded-md bg-bg text-text"
       value={value}
       onChange={e => onChange(e.target.value)}
@@ -314,10 +331,12 @@ function Toggle({ checked, onChange, disabled }: {
   onChange: (v: boolean) => void
   disabled: boolean
 }) {
+  const labelId = useContext(RowLabelIdContext)
   return (
     <button
       role="switch"
       aria-checked={checked}
+      aria-labelledby={labelId}
       onClick={() => !disabled && onChange(!checked)}
       disabled={disabled}
       className={`relative w-[36px] h-[20px] rounded-full transition-colors cursor-pointer border-none ${checked ? 'bg-accent' : 'bg-border'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}

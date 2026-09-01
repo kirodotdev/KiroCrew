@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, Fragment } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo, useMemo, useCallback, useId, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
 import { Plus, X, Pin, Monitor, Eye, EyeOff, VenetianMask, Ghost, Droplet, FolderPlus, MessageSquare, MessageSquarePlus, MessagesSquare, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, GripVertical, Zap, Check, Copy, ListFilter, List, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Repeat, Server } from 'lucide-react'
@@ -1232,6 +1232,7 @@ function useDebouncedSessionSearch<T>(
     try {
       const d = await api.instancesSearchSessions(q)
       if (Array.isArray(d?.unreachable) && d.unreachable.length) {
+        // eslint-disable-next-line no-console -- the only record that a CONNECTED peer silently dropped out of the merged results; surfacing it would nag about a transient the local floor already covered
         console.warn('[sidebar] federated session search: unreachable instances', d.unreachable)
       }
       return d
@@ -2928,6 +2929,9 @@ function ChatSidebar({
   const [bulkModel, setBulkModel] = useState('')        // pending pick ('auto' = provider default)
   const [bulkSkipRunning, setBulkSkipRunning] = useState(true)
   const [bulkModelError, setBulkModelError] = useState('')
+  // Per-instance id: ChatPage mounts a mobile-drawer sidebar and a desktop one, so a
+  // literal id would collide and point one panel's checkbox at the other's label.
+  const bulkSkipRunningLabelId = useId()
   const bulkModelOptions = useAvailableModels({ enabled: bulkModelOpen })
   const bulkRunningCount = useMemo(() => slots.filter(s => s.running).length, [slots])
   // Count only slots that would actually change: model differs from the target
@@ -3867,6 +3871,7 @@ function ChatSidebar({
   // stale keys are dropped by both consumers, while backend insertion order
   // would be actively wrong.
   const [shortcutOrderKeys, setShortcutOrderKeys] = useState<string[]>([])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- run-after-every-commit is the point: the order is READ BACK from the DOM, and any dep list would be a re-derivation that can drift from what actually rendered (the drift this effect exists to eliminate). `[]` would freeze the order at mount. The update chain terminates because shortcutOrderKeys only feeds row BADGES — it never adds, removes or inerts a data-session-row node — so the second pass reads an identical order and the setState updater returns `prev`, which React bails out on.
   useEffect(() => {
     const root = sidebarRootRef.current
     if (!root) return
@@ -4160,6 +4165,7 @@ function ChatSidebar({
     if (!slot) {
       // Stale key or a session outside this surface's slot list. Not user-visible
       // (there is nothing to highlight), so leave a trace for bug reports.
+      // eslint-disable-next-line no-console -- a reveal's only success signal is the scroll+flash, so this early return is the one path where the user's click provably did nothing and nothing else records it
       console.debug('reveal-in-sidebar: no session for key', key)
       return
     }
@@ -4218,6 +4224,7 @@ function ChatSidebar({
         if (attempt <= REVEAL_MAX_ATTEMPTS) run.timer = window.setTimeout(tryScroll, REVEAL_RETRY_MS)
         // Row never appeared (e.g. board lane with no matching column). Not
         // user-visible, so leave a trace for bug reports instead of vanishing.
+        // eslint-disable-next-line no-console -- records that the bounded retry loop exhausted REVEAL_MAX_ATTEMPTS; without it an unrendered row is indistinguishable from a reveal that worked
         else console.debug('reveal-in-sidebar: row never rendered for', key)
         return
       }
@@ -5509,8 +5516,12 @@ function ChatSidebar({
           </div>
           {bulkRunningCount > 0 && (
             <label className="flex items-center gap-2 text-[12px] text-muted mb-2 cursor-pointer">
-              <input type="checkbox" checked={bulkSkipRunning} onChange={e => setBulkSkipRunning(e.target.checked)} />
-              {i18nT('pages.chatSidebar.skip')} {i18nT('pages.chatSidebar.running_session', { count: bulkRunningCount })}
+              {/* aria-labelledby, not aria-label: the name is the visible
+                  "Skip N running sessions" text, which is two catalog keys plus a
+                  live count. Binding it by reference keeps the announced name and
+                  the rendered name the same string, so the count cannot drift. */}
+              <input type="checkbox" aria-labelledby={bulkSkipRunningLabelId} checked={bulkSkipRunning} onChange={e => setBulkSkipRunning(e.target.checked)} />
+              <span id={bulkSkipRunningLabelId}>{i18nT('pages.chatSidebar.skip')} {i18nT('pages.chatSidebar.running_session', { count: bulkRunningCount })}</span>
             </label>
           )}
           <div className="flex items-center gap-2 justify-end">
@@ -5609,6 +5620,7 @@ function ChatSidebar({
                       // Non-menu-item controls: stop click/keydown from reaching
                       // Radix so choosing a window doesn't dismiss the menu
                       // (mirrors the folder-rename input pattern).
+                      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- the three handlers only stopPropagation, so this wrapper has no action of its own for a keyboard to reach; the chips and the number input inside are the real controls and each is separately focusable
                       <div
                         onClick={e => e.stopPropagation()}
                         onMouseDown={e => e.stopPropagation()}
@@ -6301,6 +6313,7 @@ function ChatSidebar({
                        focus, but we deliberately omit aria-modal — the popover has no
                        backdrop and is outside-click-dismissible, so claiming the rest of
                        the page is inert would mislead screen readers. */
+                    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape-dismiss and the Tab trap ARE a dialog's documented keyboard operation, and they have to live on the dialog root because the trap reasons about first/last focusable inside it; the onClick only stopPropagation
                     <div ref={columnPopoverRef} role="dialog" aria-label={i18nT('pages.chatSidebar.filter_tags', { name: col.name || 'column' })} tabIndex={-1} data-column-popover={col.id}
                       className="fixed z-[9100] bg-bg-elevated border border-border rounded-lg shadow-lg p-2 min-w-[240px] text-[13px] outline-none"
                       style={{ top: popoverPos.top, left: popoverPos.left }}
@@ -6480,7 +6493,9 @@ function ChatSidebar({
           When collapsed: just a static 1px divider between sessions and the Older Sessions footer. */}
       {historyOpen ? (
         // Separator that doubles as a Pointer-Events resize handle (drag,
-        // mouse/touch/pen) / collapse (double-click); no keyboard analogue.
+        // mouse/touch/pen) / collapse (double-click); neither gesture is driven
+        // from the keyboard on this element.
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the handler the rule sees is onDoubleClick, and the collapse it performs is duplicated on the "Older Sessions" row below (role=button/tabIndex=0, Enter+Space), so the COLLAPSE is keyboard-reachable. The RESIZE is not: usePointerDrag exposes pointer handlers only and this pane has no arrow-key resize anywhere. Giving it one is the ARIA window-splitter keyboard contract — a feature, not a lint fix
         <div
           role="separator"
           aria-orientation="horizontal"

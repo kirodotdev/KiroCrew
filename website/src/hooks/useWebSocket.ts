@@ -866,6 +866,11 @@ export function useWebSocket() {
               if (member !== active && liveKeys.has(member)) dispatch(warmSlotCache(member))
             }
           } catch (err) {
+            // This catch deliberately swallows so a corrupt persisted layout cannot
+            // abort the rest of reconnect setup; the cost is that the skipped
+            // re-hydration's only symptom is a co-rendered pane still showing the
+            // queue it held at the drop.
+            // eslint-disable-next-line no-console -- only trace of a skipped re-hydration
             console.warn('reconnect split-pane warm skipped', err)
           }
         }
@@ -1940,7 +1945,7 @@ export function useWebSocket() {
     }
 
     ws.onerror = () => { /* onclose will fire */ }
-  }, [dispatch, flushChunks, flushBufferedThinking, scheduleChunkFlush, bufferSlotActivity, bufferSubagentChunk, flushSubagentChunks, playNextVoiceChunk, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, seedGoalLoops, recordRetiredId])
+  }, [dispatch, flushChunks, flushBufferedThinking, scheduleChunkFlush, bufferSlotActivity, bufferSubagentChunk, flushSubagentChunks, playNextVoiceChunk, flushVoiceTail, queryClient, stopVoice, syncPendingApprovals, syncPendingQuestions, syncWorkflowRuns, seedGoalLoops, recordRetiredId])
 
   /**
    * Force an immediate reconnect: cancels any pending backoff timer, closes

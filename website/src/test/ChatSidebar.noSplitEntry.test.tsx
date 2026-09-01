@@ -31,20 +31,20 @@ vi.mock('framer-motion', async () => {
     'drag', 'dragConstraints', 'dragElastic', 'onAnimationComplete',
   ])
   const make = (tag: string) =>
-    React.forwardRef((props: any, ref: any) => {
-      const clean: any = {}
+    React.forwardRef((props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      const clean: Record<string, unknown> = {}
       for (const k of Object.keys(props)) {
         if (k === 'children') continue
         if (FRAMER_PROPS.has(k)) continue
         clean[k] = props[k]
       }
-      return React.createElement(tag, { ...clean, ref }, props.children)
+      return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
   const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
   return {
     motion,
-    AnimatePresence: ({ children }: any) => React.createElement(React.Fragment, null, children),
-    LayoutGroup: ({ children }: any) => React.createElement(React.Fragment, null, children),
+    AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
+    LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
 })
 
@@ -71,12 +71,26 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import type { RootState } from '../store'
+import type { ChatSlot } from '../types'
 
 const SLOTS = [
   { key: 'k-a', title: 'Alpha session', messages: 1, running: false, modified: 2000 },
-]
+] as unknown as ChatSlot[]
 
-function renderSidebar(extraProps: Record<string, unknown> = {}) {
+/**
+ * The three props the pinned Split View entry used to take. They are DELIBERATELY
+ * absent from ChatSidebar's prop type — naming them here is what lets this test
+ * pass the exact removed surface and prove it is inert, and a revival would have
+ * to re-add them to the component before this type meant anything again.
+ */
+type RemovedSplitProps = {
+  splitEnabled?: boolean
+  splitActive?: boolean
+  onOpenSplit?: () => void
+}
+
+function renderSidebar(extraProps: RemovedSplitProps = {}) {
   const store = createTestStore({
     dashboard: {
       status: {}, connected: true, slots: SLOTS, approvalMode: 'normal',
@@ -84,8 +98,8 @@ function renderSidebar(extraProps: Record<string, unknown> = {}) {
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
-    } as any,
-    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {} } as any,
+    } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotStatusDetail: {}, subagents: {}, slotActivity: {} } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
@@ -95,9 +109,9 @@ function renderSidebar(extraProps: Record<string, unknown> = {}) {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={SLOTS as any} activeSlot={null} unreadSlots={[]}
+              slots={SLOTS} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
-              {...(extraProps as any)}
+              {...extraProps}
             />
           </MemoryRouter>
         </ThemeProvider>

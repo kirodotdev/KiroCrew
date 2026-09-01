@@ -12,6 +12,7 @@
  * these tests pin that the adapter learns it and serves it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { Mock } from 'vitest'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -21,6 +22,18 @@ vi.mock('../api/client', () => ({
 
 import { api } from '../api/client'
 import { AcpAdapter } from '../providers/adapters/acp'
+
+/** The /api/models rows these fixtures feed the adapter. The adapter's own
+ *  RawModel is module-private, so mirror only the fields set here — both window
+ *  spellings, since the two gateway branches disagree. */
+type ModelRow = {
+  model_name: string
+  context_window?: number
+  context_window_tokens?: number
+}
+
+/** `api.models` as replaced by vi.mock above. */
+type ModelsMock = Mock<() => Promise<ModelRow[]>>
 
 describe('AcpAdapter context-window resolution', () => {
   beforeEach(() => {
@@ -34,7 +47,7 @@ describe('AcpAdapter context-window resolution', () => {
     // no entry for these ids, so both read as the reference default.
     expect(adapter.getContextWindow('claude-opus-5')).toBe(200_000)
     expect(adapter.getContextWindow('gpt-5.6-sol')).toBe(200_000)
-    ;(api.models as any).mockResolvedValue([
+    ;(api.models as ModelsMock).mockResolvedValue([
       { model_name: 'claude-opus-5', context_window_tokens: 1_000_000 },
       { model_name: 'gpt-5.6-sol', context_window_tokens: 272_000 },
     ])
@@ -46,7 +59,7 @@ describe('AcpAdapter context-window resolution', () => {
   })
 
   it('learns windows from the claude_code branch field (context_window)', async () => {
-    ;(api.models as any).mockResolvedValue([
+    ;(api.models as ModelsMock).mockResolvedValue([
       { model_name: 'kimi-k3', context_window: 1_000_000 },
     ])
     const adapter = new AcpAdapter()
@@ -55,7 +68,7 @@ describe('AcpAdapter context-window resolution', () => {
   })
 
   it('keeps the bundled snapshot for a row that reports no window', async () => {
-    ;(api.models as any).mockResolvedValue([
+    ;(api.models as ModelsMock).mockResolvedValue([
       { model_name: 'claude-opus-4.8' }, // gateway predating the enrichment
     ])
     const adapter = new AcpAdapter()
@@ -66,13 +79,13 @@ describe('AcpAdapter context-window resolution', () => {
 
   it('ignores a non-positive window rather than overwriting a learned one', async () => {
     const adapter = new AcpAdapter()
-    ;(api.models as any).mockResolvedValue([
+    ;(api.models as ModelsMock).mockResolvedValue([
       { model_name: 'minimax-m2.5', context_window_tokens: 196_000 },
     ])
     await adapter.fetchAvailableModels()
     expect(adapter.getContextWindow('minimax-m2.5')).toBe(196_000)
     // A later list that cannot resolve the window must not clobber the good one.
-    ;(api.models as any).mockResolvedValue([
+    ;(api.models as ModelsMock).mockResolvedValue([
       { model_name: 'minimax-m2.5', context_window_tokens: 0 },
     ])
     await adapter.fetchAvailableModels()
@@ -80,7 +93,7 @@ describe('AcpAdapter context-window resolution', () => {
   })
 
   it('serves the learned window for a model still unknown to the bundle', async () => {
-    ;(api.models as any).mockResolvedValue([
+    ;(api.models as ModelsMock).mockResolvedValue([
       { model_name: 'grok-4.3', context_window_tokens: 1_000_000 },
     ])
     const adapter = new AcpAdapter()
@@ -93,7 +106,7 @@ describe('AcpAdapter context-window resolution', () => {
   })
 
   it('reports the learned window for the auto sentinel in the degraded list', async () => {
-    ;(api.models as any).mockResolvedValue([
+    ;(api.models as ModelsMock).mockResolvedValue([
       { model_name: 'auto', context_window_tokens: 1_000_000 },
     ])
     const adapter = new AcpAdapter()
@@ -101,7 +114,7 @@ describe('AcpAdapter context-window resolution', () => {
     expect(adapter.getContextWindow('auto')).toBe(1_000_000)
     // The auto-only degraded fallback quotes the same learned figure instead of
     // hardcoding 200K (model_tokens.json has no 'auto' entry at all).
-    ;(api.models as any).mockRejectedValue(new Error('503'))
+    ;(api.models as ModelsMock).mockRejectedValue(new Error('503'))
     localStorage.clear()
     const degraded = await adapter.fetchAvailableModels()
     expect(degraded).toHaveLength(1)

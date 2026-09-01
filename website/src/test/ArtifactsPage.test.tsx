@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
@@ -19,9 +20,13 @@ vi.mock('../api/client')
 // renders zero items in tests. Mock it to a plain map through ItemContent so
 // the card content + handlers are exercised.
 vi.mock('@virtuoso.dev/masonry', () => ({
-  VirtuosoMasonry: ({ data, context, ItemContent }: any) => (
+  VirtuosoMasonry: ({ data, context, ItemContent }: {
+    data: unknown[]
+    context: unknown
+    ItemContent: ComponentType<{ data: unknown; index: number; context: unknown }>
+  }) => (
     <div data-testid="masonry">
-      {data.map((d: any, i: number) => (
+      {data.map((d, i) => (
         <ItemContent key={i} data={d} index={i} context={context} />
       ))}
     </div>

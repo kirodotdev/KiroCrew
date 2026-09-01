@@ -174,12 +174,10 @@ const { dataUrl, problems, report } = await page.evaluate(
     // handed to the page so the browser context can call `drawCrewGhost`.
     // Nothing here is remote or user-supplied.
     //
-    // Deliberately NOT an `eslint-disable-next-line no-eval`: every rule block in
-    // `eslint.config.js` is scoped to `src/**/*.{ts,tsx}`, so no rule — `no-eval`
-    // included — is enabled for a `.mjs` file, and eslint charges the directive
-    // itself against the `--max-warnings` ceiling that CI forbids raising. Re-add
-    // it if a config block ever brings `.mjs` under a preset that turns `no-eval`
-    // on.
+    // `eslint.config.js` turns `no-eval` on for `src/**/*.mjs` precisely so this
+    // exemption is a reviewed one: the directive below is live, and a SECOND
+    // `eval()` in this file would be an error rather than a silent pass.
+    // eslint-disable-next-line no-eval -- `program` is a template literal built in this file; nothing remote or user-supplied reaches it
     eval(program)
     const canvas = document.createElement('canvas')
     canvas.width = geo.CELL_W * outfits.length * geo.SCALE

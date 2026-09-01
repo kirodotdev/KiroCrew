@@ -765,7 +765,10 @@ export default function CommandBarOverlay({
         setSelected(0)
       }
     },
-    [activateIndex, onClose, query, rowCount, scope, selected],
+    // No `onClose`: Escape belongs to the dialog below, so nothing in here
+    // dismisses the bar. A dismissal reached from a row goes through
+    // `activateIndex`, which is listed.
+    [activateIndex, ime, query, rowCount, scope, selected],
   )
 
   if (!open) return null
@@ -951,6 +954,7 @@ export default function CommandBarOverlay({
         if (e.target === e.currentTarget) onClose()
       }}
     >
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- a dialog owns the keyboard dismissal of its own subtree; the handler below is Escape only, and every gesture inside is on a real control */}
       <div
         ref={dialogRef}
         // 680px, up from 576: at the narrower width a settings row's title and its

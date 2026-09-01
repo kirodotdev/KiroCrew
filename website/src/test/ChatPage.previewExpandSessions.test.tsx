@@ -13,6 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import type { ChatSlot } from '../types'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import { sseSlots } from '../store/dashboardSlice'
@@ -82,8 +83,8 @@ Object.defineProperty(window, 'matchMedia', {
     addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
   })),
 })
-globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any
-globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as any
+globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
 import ChatPage from '../pages/ChatPage'
 
@@ -96,7 +97,7 @@ function renderChat({ slots = 1, strict = false }: { slots?: number; strict?: bo
   // The sessions toggle only renders when there is a session to show.
   act(() => {
     store.dispatch(sseSlots(
-      Array.from({ length: slots }, (_, i) => ({ key: `slot-${i}`, title: `Session ${i}` }) as any),
+      Array.from({ length: slots }, (_, i) => ({ key: `slot-${i}`, title: `Session ${i}` }) as unknown as ChatSlot),
     ))
   })
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })

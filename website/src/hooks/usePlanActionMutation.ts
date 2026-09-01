@@ -208,6 +208,10 @@ export function usePlanActionMutation(slot: string | null, followUpSourceKey: st
         const latch = latchFor(vars.action)
         if (latch.get(vars.slot) === vars.source) latch.delete(vars.slot)
       }
+      // No host reads this mutation's error state (both callers hold it in a ref
+      // purely to dispatch through), so a Go/Cancel chip whose POST never landed is
+      // otherwise a click with no effect and no message anywhere.
+      // eslint-disable-next-line no-console -- only trace of an undelivered plan click
       console.error('plan action failed', e)
     },
     // Deliberately NO success/settled release: success holds the latch until

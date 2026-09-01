@@ -365,6 +365,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       {!fullscreen && fa.popovers}
     </DetailPanel>
     {fullscreen && createPortal(
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `dialog` is a structural role, and this onKeyDown is the modal focus trap the house a11y contract requires, not an activation: it only redirects a boundary Tab back inside. The operable controls are the buttons and the artifact body within.
       <div className="fixed inset-0 z-[9999] bg-bg flex flex-col p-safe" role="dialog" aria-modal="true" aria-label={i18nT('components.artifactPanel.full_screen_artifact_preview')}
         ref={el => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; const first = el.querySelector<HTMLElement>('button:not([disabled]),textarea,input,a[href],select,[tabindex]:not([tabindex="-1"])'); first?.focus() } }}
         onKeyDown={e => {

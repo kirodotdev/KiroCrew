@@ -5,6 +5,7 @@ import {
   AlertTriangle, ChevronRight, Sparkles, Plus, RotateCcw, Link2, Pencil,
 } from 'lucide-react'
 import type { ArtifactComment } from '../types'
+import Clickable from './Clickable'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 
@@ -198,50 +199,61 @@ export function CommentRow({
   // so Edit is hidden there. Gated further on onEdit being wired by the parent.
   const canEdit = !isProvider
   const isEditing = !!editing && !!onEditSubmit
+  const bodyClass = `rounded-lg border px-3 py-2.5 shadow-sm transition-colors ${onBodyClick ? 'cursor-pointer' : ''} ${
+    active
+      ? 'border-accent bg-accent-subtle ring-1 ring-accent/50'
+      : 'border-border bg-card hover:border-border-strong'
+  }`
+  const body = (
+    <>
+      {/* anchor preview (roots only) */}
+      {!isReply && quote && (
+        <div
+          className="text-[11px] text-muted font-mono mb-1.5 truncate border-l-2 border-accent/40 pl-1.5"
+          title={quote}
+        >{quote.slice(0, 80)}{quote.length > 80 ? '…' : ''}</div>
+      )}
+      {/* header: avatar + author + time + lightweight source */}
+      <div className="flex items-center gap-1.5 mb-1">
+        <span
+          className="flex items-center justify-center w-5 h-5 rounded-full bg-bg-elevated text-[10px] font-semibold text-muted shrink-0"
+          aria-hidden="true"
+        >{initials(comment)}</span>
+        <span className="text-[12px] font-semibold text-text-strong truncate">{authorName(comment)}</span>
+        <span className="text-[10px] text-muted shrink-0">{fmtTs(comment.created_at)}</span>
+        {comment.is_agent && <Bot size={11} className="text-accent shrink-0" aria-label={i18nT('components.commentsSidebar.ai_agent')} />}
+        {comment.scope === 'shared' && <Link2 size={11} className="text-muted shrink-0" aria-label={i18nT('components.commentsSidebar.shared_comment')} />}
+        {syncWarn && <AlertTriangle size={11} className="text-warn shrink-0" aria-label={syncWarn} />}
+      </div>
+      {/* body (or inline editor when editing) */}
+      {isEditing ? (
+        <EditBox
+          initial={comment.body}
+          onSubmit={onEditSubmit as (text: string) => void}
+          onCancel={onEditCancel || (() => {})}
+        />
+      ) : (
+        <div className="text-[13px] text-text whitespace-pre-wrap break-words">{comment.body}</div>
+      )}
+    </>
+  )
   return (
     <div className={`${isReply ? 'ml-3.5 pl-2 border-l-2 border-border' : ''} group${comment.anchor_orphaned ? ' opacity-60' : ''}`}>
-      <div
-        onClick={onBodyClick ? () => onBodyClick(comment) : undefined}
-        role={onBodyClick ? 'button' : undefined}
-        tabIndex={onBodyClick ? 0 : undefined}
-        onKeyDown={onBodyClick ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onBodyClick(comment) } }) : undefined}
-        title={onBodyClick ? i18nT('components.commentsSidebar.scroll_to_the_highlighted_text') : undefined}
-        className={`rounded-lg border px-3 py-2.5 shadow-sm transition-colors ${onBodyClick ? 'cursor-pointer' : ''} ${
-          active
-            ? 'border-accent bg-accent-subtle ring-1 ring-accent/50'
-            : 'border-border bg-card hover:border-border-strong'
-        }`}
-      >
-        {/* anchor preview (roots only) */}
-        {!isReply && quote && (
-          <div
-            className="text-[11px] text-muted font-mono mb-1.5 truncate border-l-2 border-accent/40 pl-1.5"
-            title={quote}
-          >{quote.slice(0, 80)}{quote.length > 80 ? '…' : ''}</div>
-        )}
-        {/* header: avatar + author + time + lightweight source */}
-        <div className="flex items-center gap-1.5 mb-1">
-          <span
-            className="flex items-center justify-center w-5 h-5 rounded-full bg-bg-elevated text-[10px] font-semibold text-muted shrink-0"
-            aria-hidden="true"
-          >{initials(comment)}</span>
-          <span className="text-[12px] font-semibold text-text-strong truncate">{authorName(comment)}</span>
-          <span className="text-[10px] text-muted shrink-0">{fmtTs(comment.created_at)}</span>
-          {comment.is_agent && <Bot size={11} className="text-accent shrink-0" aria-label={i18nT('components.commentsSidebar.ai_agent')} />}
-          {comment.scope === 'shared' && <Link2 size={11} className="text-muted shrink-0" aria-label={i18nT('components.commentsSidebar.shared_comment')} />}
-          {syncWarn && <AlertTriangle size={11} className="text-warn shrink-0" aria-label={syncWarn} />}
-        </div>
-        {/* body (or inline editor when editing) */}
-        {isEditing ? (
-          <EditBox
-            initial={comment.body}
-            onSubmit={onEditSubmit as (text: string) => void}
-            onCancel={onEditCancel || (() => {})}
-          />
-        ) : (
-          <div className="text-[13px] text-text whitespace-pre-wrap break-words">{comment.body}</div>
-        )}
-      </div>
+      {/* The row body is a control only when the parent wires onBodyClick (scroll
+          the artifact to the anchored text). Two wrappers over one body, rather
+          than conditional role/tabIndex on one div: without a handler the same
+          markup is inert, so it must not be announced as a button nor take
+          focus. Clickable also owns the Enter/Space guard that keeps the inline
+          editor's own keys from activating the row. */}
+      {onBodyClick ? (
+        <Clickable
+          onClick={() => onBodyClick(comment)}
+          title={i18nT('components.commentsSidebar.scroll_to_the_highlighted_text')}
+          className={bodyClass}
+        >{body}</Clickable>
+      ) : (
+        <div className={bodyClass}>{body}</div>
+      )}
       {/* actions — always visible, comfortable touch targets */}
       <div className="flex items-center gap-1 mt-1.5 px-0.5" style={isEditing ? { display: 'none' } : undefined}>
         <button

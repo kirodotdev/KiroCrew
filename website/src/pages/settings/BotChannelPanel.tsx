@@ -481,6 +481,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
       else if (botId.trim()) payload.bot_id = botId.trim()
     }
     saveMut.mutate(payload)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `spec` is excluded on purpose: the owning panel rebuilds it on every render (a module const cannot hold localised copy), and the fields read here are the channel's CAPABILITY flags, which are the same shape on every rebuild for a mounted panel. Listing it would recreate this handler every render while changing nothing it computes, and the spec's contract is that it appears in no dependency array.
   }, [draft, botToken, botClear, botId, botIdClear, saveMut])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.botChannelPanel.loading')} {spec.name} {i18nT('pages.settings.botChannelPanel.config')}</p>

@@ -163,6 +163,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
           data-testid="workflow-completion-body"
           role="region"
           aria-labelledby={headlineId}
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- WCAG 2.1.1: this max-h scroller's only descendant is rendered markdown with no guaranteed focusable node, so removing tabIndex makes an overflowing workflow result impossible to scroll by keyboard; role=region + aria-labelledby keep it announced as a named landmark, not a control
           tabIndex={0}
         >
           <MarkdownRenderer content={body} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />

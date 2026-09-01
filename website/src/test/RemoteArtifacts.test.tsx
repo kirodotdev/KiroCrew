@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
@@ -11,9 +12,13 @@ vi.mock('../api/client')
 // VirtuosoMasonry virtualizes against real layout, which jsdom lacks — mock it
 // to a plain map so card content renders (same shim as ArtifactsPage.test.tsx).
 vi.mock('@virtuoso.dev/masonry', () => ({
-  VirtuosoMasonry: ({ data, context, ItemContent }: any) => (
+  VirtuosoMasonry: ({ data, context, ItemContent }: {
+    data: unknown[]
+    context: unknown
+    ItemContent: ComponentType<{ data: unknown; index: number; context: unknown }>
+  }) => (
     <div data-testid="masonry">
-      {data.map((d: any, i: number) => (
+      {data.map((d, i) => (
         <ItemContent key={i} data={d} index={i} context={context} />
       ))}
     </div>

@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useState, useRef } from 'react'
+import { useId, useState, useRef } from 'react'
 import { ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, ExternalLink, Loader2, X, Share2, FileText, FolderOpen, Folder as FolderIcon } from 'lucide-react'
 import { openPopout } from '../../utils/artifactPopout'
 import { Badge, Btn, Input, IconButton } from '../ui'
@@ -484,6 +484,7 @@ export function SessionDocRow({ d, busy, onMaterialize, edgeRight = false }: { d
       <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted">{ftype}</td>
       <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted truncate max-w-[180px]" title={d.session_title}>{d.session_title}</td>
       <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted">—</td>
+      {/* eslint-disable-next-line jsx-a11y/control-has-associated-label -- the Tags column, empty because a session document carries none. A cell of a plain data <table> has role `cell`: it is named by its contents and an empty one is legitimately unnamed, associated with the column by the header's `th`. The rule reads every `td` as a grid's `gridcell` widget. */}
       <td className="px-2.5 py-2 border-b border-border"></td>
       <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted whitespace-nowrap">{_timeAgo(isoToTs(d.updated_at))}</td>
       {/* This row has no Actions controls, but it shares the pinned column, so
@@ -637,6 +638,11 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
   // See LibraryTable: the pinned Actions seam is gated on measured overflow,
   // and auto layout makes the table (not the scroller's box) the content node.
   const [attachScroller, edges, , attachTable] = useScrollEdges<HTMLDivElement>()
+  // Names the Unfiled drop lane from its own visible "Unfiled N" text rather
+  // than a duplicate translated string. Instance-scoped because two trees can
+  // mount at once (library page + a side panel) and a repeated id would point
+  // both lanes at the first one's label.
+  const unfiledLabelId = useId()
   const folderIds = new Set(folders.map(f => f.id))
   const byFolder = new Map<string, Artifact[]>()
   for (const a of items) {
@@ -698,12 +704,12 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
           {folders.length > 0 && (
             <DndDroppable id="unfiled-lane" data={{ type: 'folder-drop', folderId: '' }}>
               {({ setNodeRef, isOver }) => (
-                <tr ref={setNodeRef} className={`transition-colors ${isOver || unfiledHot ? 'bg-accent/15' : ''}`}>
+                <tr ref={setNodeRef} aria-labelledby={unfiledLabelId} className={`transition-colors ${isOver || unfiledHot ? 'bg-accent/15' : ''}`}>
                   <td colSpan={9} className="px-2.5 border-b border-border" style={{ paddingTop: dragActive ? 10 : 6, paddingBottom: dragActive ? 10 : 6 }}>
                     <div className={`flex items-center gap-2 rounded transition-all ${
                       dragActive ? `border border-dashed px-2 py-1.5 ${isOver || unfiledHot ? 'border-accent text-text' : 'border-border text-muted'}` : ''
                     }`}>
-                      <span className="text-[11px] uppercase tracking-[.04em] text-muted font-medium">
+                      <span id={unfiledLabelId} className="text-[11px] uppercase tracking-[.04em] text-muted font-medium">
                         {i18nT('pages.artifactsPage.unfiled')} {unfiled.length}
                       </span>
                       {dragActive && (

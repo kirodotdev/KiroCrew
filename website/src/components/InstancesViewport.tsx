@@ -578,6 +578,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       style={{ display: activeId === null ? 'none' : 'block', zIndex: 1 }}
     >
       {warmIds.map(id => (
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a document-load lifecycle hook: it posts the model handshake once the pane's document exists. Not a user interaction, and nothing here needs a keyboard path — the pane's own SPA owns focus once loaded.
         <iframe
           // reloadSeq in the key forces a remount (= reload) on Retry even when
           // the re-minted src is byte-identical to the dead frame's.

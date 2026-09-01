@@ -251,7 +251,10 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
                   {i18nT('components.approvalModePicker.cancel')}
                 </button>
                 <label className="flex items-center gap-1 text-[11px] text-muted cursor-pointer ml-auto">
-                  <input type="checkbox" className="rounded" checked={yoloDontAsk} onChange={e => setYoloDontAsk(e.target.checked)} />
+                  {/* Named from the SAME key as the visible text beside it, the
+                      way the JobForm checkboxes are: the wrapping label already
+                      makes the text a click target, this names the control. */}
+                  <input type="checkbox" className="rounded" aria-label={i18nT('components.approvalModePicker.don_t_show_again')} checked={yoloDontAsk} onChange={e => setYoloDontAsk(e.target.checked)} />
                   {i18nT('components.approvalModePicker.don_t_show_again')}
                 </label>
               </div>

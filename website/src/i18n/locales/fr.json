@@ -3217,6 +3217,7 @@
         "copy_markdown": "Copier le markdown",
         "dismiss": "Ignorer",
         "edit_resend": "Modifier et renvoyer",
+        "open_image": "Ouvrir l'image",
         "open_in_file_explorer": "Ouvrir dans l'Explorateur de fichiers",
         "open_in_finder": "Ouvrir dans le Finder",
         "pinned_files": "Fichiers épinglés",
@@ -3441,7 +3442,8 @@
         "starting": "Démarrage d'une nouvelle session…"
       },
       "petWidget": {
-        "dismiss_bubble": "Fermer le message"
+        "dismiss_bubble": "Fermer le message",
+        "open_chat": "Ouvrir la discussion avec {{name}}"
       },
       "petdex": {
         "by_name": "Par nom ou lien",
