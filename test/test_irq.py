@@ -877,15 +877,79 @@ def test_a_fresh_epoch_anomaly_still_gets_a_full_settling_floor():
             # converge (pending > 0).
             Tick(epoch="e1", observations=[_sticky("comment:1")], pending=3),
             # Force-push. The fresh head momentarily looks converged.
-            Tick(epoch="e2", observations=[_wake("ready")], pending=0),
+            Tick(
+                epoch="e2",
+                observations=[_wake("ready", "all checks green")],
+                pending=0,
+            ),
+            Tick(
+                epoch="e2",
+                observations=[_wake("ready", "all checks green")],
+                pending=0,
+            ),
         ]
     )
     assert isinstance(_verdict(probe, coalesce_secs=_COALESCE), Skip)
     _settle()  # the OLD window is now older than the floor
-    assert isinstance(_verdict(probe, coalesce_secs=_COALESCE), Skip)
+    carried = _verdict(probe, coalesce_secs=_COALESCE)
+    assert isinstance(carried, Report)
+    assert "brief" in str(carried)
+    assert "green" not in str(carried)
+    _settle()
+    fresh = _verdict(probe, coalesce_secs=_COALESCE)
+    assert isinstance(fresh, Report)
+    assert "green" in str(fresh)
 
 
-def test_a_carried_sticky_entry_is_delayed_not_lost_by_the_restart():
+def test_a_fresh_epoch_anomaly_does_not_ride_on_a_carried_entrys_hard_cap():
+    """The cap belongs to the old window, not to a fresh-head observation.
+
+    A carried sticky entry can already be older than the cap on the transition
+    tick. The new observation must still serve its own floor before it can ride
+    on any wake, including the cap flush.
+    """
+    path = state_path("test-kind", "sub-1", "job-1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = dedupe_key(_sticky("comment:1", "said"))
+    path.write_text(
+        json.dumps(
+            {
+                "epoch": "e1",
+                "coalescing": {key: {"brief": "said", "opened_at": time.time() - 600}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    probe = ScriptedProbe(
+        [Tick(epoch="e2", observations=[_wake("ready", "all checks green")], pending=0)]
+    )
+    verdict = _verdict(probe, coalesce_secs=300, coalesce_max_secs=30)
+    assert isinstance(verdict, Report)
+    assert "said" in str(verdict)
+    assert "green" not in str(verdict)
+
+
+def test_an_unstamped_carried_sticky_entry_restarts_instead_of_disappearing():
+    """Recoverable persisted rows survive an epoch reset.
+
+    Normalization owns repairing a missing timestamp. Filtering the row before
+    that repair turns a recoverable delay into a permanent lost wake.
+    """
+    path = state_path("test-kind", "sub-1", "job-1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = dedupe_key(_sticky("comment:1", "said"))
+    path.write_text(
+        json.dumps({"epoch": "e1", "coalescing": {key: {"brief": "said"}}}),
+        encoding="utf-8",
+    )
+    probe = ScriptedProbe([Tick(epoch="e2", observations=[], pending=0)])
+    assert isinstance(_verdict(probe, coalesce_secs=300), Skip)
+    state = load_state(path)
+    assert state["coalescing"][key]["brief"] == "said"
+    assert state["coalescing"][key]["opened_at"] > 0
+
+
+def test_a_carried_sticky_entry_keeps_its_served_floor_across_epoch_change():
     """`alerted` stops a DELIVERED signal repeating; an open `coalescing` entry
     holds one that has NOT been delivered. Dropping the window at the epoch reset
     destroys that wake outright, because the probe may legitimately stop
@@ -893,20 +957,16 @@ def test_a_carried_sticky_entry_is_delayed_not_lost_by_the_restart():
     it back -- reachable on shipped defaults by observing a near-horizon comment
     then pushing a fix.
 
-    Carrying the entry while RESTARTING the stamp is what makes that a delay
-    rather than a loss, and this pins the difference: the probe reports nothing
-    on either new-epoch tick, and the carried entry must still fire once its
-    fresh window closes."""
+    Carrying the entry with its own open time preserves the settling floor it
+    already served before the push. The probe reports nothing on the new-epoch
+    tick, but the carried entry must still fire without paying the same floor a
+    second time."""
     probe = ScriptedProbe(
         [
             Tick(epoch="e1", observations=[_sticky("comment:1")], pending=3),
             Tick(epoch="e2", observations=[], pending=0),
-            Tick(epoch="e2", observations=[], pending=0),
         ]
     )
-    assert isinstance(_verdict(probe, coalesce_secs=_COALESCE), Skip)
-    _settle()
-    # First new-epoch tick: the carried entry is present but its window restarted.
     assert isinstance(_verdict(probe, coalesce_secs=_COALESCE), Skip)
     _settle()
     verdict = _verdict(probe, coalesce_secs=_COALESCE)

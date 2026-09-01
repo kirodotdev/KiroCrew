@@ -703,7 +703,8 @@ def run(
         # alerts promptly instead of inheriting up to realert_secs of dedupe.
         state.get("alerted", {}).pop("blind", None)
 
-    if tick.epoch and state.get("epoch") != tick.epoch:
+    epoch_changed = bool(tick.epoch and state.get("epoch") != tick.epoch)
+    if epoch_changed:
         # The subject became a different subject: fresh epoch, fresh memory.
         #
         # Sticky state is the exception, and the reason the sentinel exists: a
@@ -722,31 +723,19 @@ def run(
         # back. Epoch-scoped window entries ARE dropped -- they describe checks
         # on a commit that is no longer under review.
         #
-        # The carried entry's own stamp is deliberately NOT kept, so its clock
-        # restarts on the new epoch. A freshly pushed commit briefly shows an
-        # almost-empty rollup, so ``pending == 0`` can be true while nothing has
-        # run, which is the entire reason DEFAULT_COALESCE_SECS is a floor;
-        # re-installing an aged stamp left that floor already satisfied, so a
-        # ``ready`` observation on the new head fired at once and announced
-        # "all checks green" before its checks existed. Per-entry ages now keep
-        # the two apart on their own -- the fresh ``ready`` gets its own floor
-        # regardless -- so keeping the carried stamp is a one-line change. It is
-        # left out of this change on purpose: it is a shift in WAKE TIMING on a
-        # different trigger (a push cadence faster than the floor re-delaying a
-        # carried comment), and this module's rule is that a timing change ships
-        # as its own attributable step rather than riding along with a
-        # structural one.
-        #
-        # Restarting costs the carried entry one more floor of latency after a
-        # force-push. That is a DELAY, and the invariant that matters is that it
-        # is not a LOSS: the entry itself is carried, so it still fires.
+        # Keep each carried entry's own stamp so a force-push does not make an
+        # already-settled comment pay the floor again. A freshly pushed commit
+        # briefly shows an almost-empty rollup, so ``pending == 0`` can be true
+        # while nothing has run. Per-entry ages keep that case separate: a new
+        # epoch-scoped ``ready`` observation gets a new stamp and therefore its
+        # own full floor, regardless of the carried comment's age.
         carried = {
             key: value
             for key, value in (state.get("alerted") or {}).items()
             if isinstance(key, str) and key.startswith(_STICKY_SENTINEL)
         }
         carried_window = {
-            key: {"brief": row["brief"]}
+            key: {"brief": row["brief"], "opened_at": row.get("opened_at")}
             for key, row in (state.get("coalescing") or {}).items()
             if isinstance(key, str)
             and key.startswith(_STICKY_SENTINEL)
@@ -909,8 +898,14 @@ def run(
     # its own arrival. The shift is therefore always toward a LATER wake, never
     # an earlier one and never a lost one.
     if oldest >= coalesce_max_secs:
-        fire = {key: row["brief"] for key, row in window.items()}
-        triggered = True
+        fire = {
+            key: row["brief"]
+            for key, row in window.items()
+            if not (
+                epoch_changed and not key.startswith(_STICKY_SENTINEL) and ages[key] < coalesce_secs
+            )
+        }
+        triggered = bool(fire)
     else:
         # Two separate questions, and keeping them separate is the whole change.
         #
@@ -943,6 +938,11 @@ def run(
         triggered = False
         for key, row in window.items():
             if not (converged or key.startswith(_STICKY_SENTINEL)):
+                continue
+            # A carried sticky entry may already be old enough to trigger on
+            # the transition tick. Do not let a brand-new head observation ride
+            # on that wake before serving its own floor.
+            if epoch_changed and not key.startswith(_STICKY_SENTINEL) and ages[key] < coalesce_secs:
                 continue
             fire[key] = row["brief"]
             if ages[key] >= coalesce_secs:

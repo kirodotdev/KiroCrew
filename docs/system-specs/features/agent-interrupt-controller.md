@@ -84,15 +84,16 @@ When a nonempty `Tick.epoch` changes, `irq.run` removes epoch-scoped alerts and
 open-window entries, then retains epoch-independent alerts and open-window
 entries. Check-derived observations must not survive a head change, or an old
 head can be reported as current. Conversation-derived observations must survive,
-or a head change replays already-reported discussion. Each carried entry's own
-open time is dropped, so its clock restarts on the new epoch: this preserves the
-pending delivery while ensuring a fresh head receives its full settling floor,
-and because the entry itself is carried, the restart is a delay and never a loss.
+or a head change replays already-reported discussion. Each carried entry keeps
+its own open time, so a force-push does not make a settled discussion wake serve
+the floor again. A fresh head observation is a separate entry with a fresh open
+time, so it still receives the full settling floor; on the transition tick it
+cannot ride on a carried entry that is already ready to fire.
 These invariants are pinned by
 `test_an_open_epoch_scoped_window_is_dropped_by_an_epoch_change`,
 `test_a_sticky_key_survives_an_epoch_change`,
 `test_a_fresh_epoch_anomaly_still_gets_a_full_settling_floor`, and
-`test_a_carried_sticky_entry_is_delayed_not_lost_by_the_restart`.
+`test_a_carried_sticky_entry_keeps_its_served_floor_across_epoch_change`.
 
 Dedupe re-arms after the configured re-alert interval. Future timestamps read
 as stale, and recovery clears the blind marker. The error threshold comparison
