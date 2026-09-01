@@ -27,6 +27,7 @@ Wire shape (per docs/reference/kiro-cli/acp.md):
 from __future__ import annotations
 
 import base64
+import io
 import logging
 import os
 import re
@@ -34,7 +35,7 @@ from pathlib import Path
 
 from kiro_crew.hooks import is_unc_shape, safe_read_file_bytes, unc_probe_allowed
 
-# The budget constants and Pillow machinery live in the LEAF module
+# The budget constants and downscale machinery live in the LEAF module
 # kiro_crew.imaging (shared with the gateway's tool-result rewrite, which must
 # not import the ACP package). The two constants are re-exported because this
 # module is where the prompt path's callers and tests historically found them.
@@ -43,6 +44,13 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
     MAX_IMAGE_EDGE_PX,
     downscale_image_block,
 )
+
+try:
+    from PIL import Image
+
+    _HAS_PIL = True
+except ImportError:  # pragma: no cover - Pillow ships via qrcode[pil]/pdfplumber
+    _HAS_PIL = False
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +71,33 @@ IMAGE_MEDIA_TYPES: dict[str, str] = {
 #: unbounded image becomes an unbounded write. Matches the Slack producer cap so
 #: a file that passed ingestion is not silently dropped here.
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+#: Pillow format name -> wire mime, for the formats this builder inlines. Pillow
+#: reports the format it actually DECODED, which is the authoritative answer to
+#: "what is this file"; the suffix is only ever a claim made by whoever named it.
+_PIL_FORMAT_MEDIA_TYPE: dict[str, str] = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "GIF": "image/gif",
+    "WEBP": "image/webp",
+    "BMP": "image/bmp",
+}
+
+#: Magic-byte signatures for the same set, as ``(offset, prefix)`` pairs plus an
+#: optional second window that must also match. This is the no-Pillow answer:
+#: without it a hand-stripped install falls back to trusting the suffix, which is
+#: exactly the property this sink is supposed to stop having. Signature checks
+#: need no dependency and no decode, so they also give the Pillow path a cheap
+#: cross-check on formats Pillow reports under a different name.
+_IMAGE_SIGNATURES: tuple[tuple[str, int, bytes, int, bytes], ...] = (
+    ("image/png", 0, b"\x89PNG\r\n\x1a\n", 0, b""),
+    ("image/jpeg", 0, b"\xff\xd8\xff", 0, b""),
+    ("image/gif", 0, b"GIF87a", 0, b""),
+    ("image/gif", 0, b"GIF89a", 0, b""),
+    # RIFF container: bytes 0-3 are "RIFF", 8-11 name the form. Only WEBP is ours.
+    ("image/webp", 0, b"RIFF", 8, b"WEBP"),
+    ("image/bmp", 0, b"BM", 0, b""),
+)
 
 # Absolute paths ending in a supported raster suffix.
 #
@@ -127,6 +162,41 @@ _WINDOWS_PATH_RE = re.compile(
 _PATH_RE = _WINDOWS_PATH_RE if os.name == "nt" else _POSIX_PATH_RE
 
 
+def _sniff_media_type(raw_bytes: bytes) -> str | None:
+    """Return the media type *raw_bytes* actually is, or ``None`` if it is not
+    one of the raster formats this builder inlines.
+
+    The DECODED identity, never the filename. A path suffix is a claim made by
+    whoever wrote the name -- an upload handler that kept a client-supplied
+    filename, a channel that renamed an attachment, a screenshot tool with its
+    own convention -- and every producer feeding this sink would otherwise need
+    its own guard to keep that claim honest. Deciding it once, here, is what
+    makes the wire metadata authoritative for all of them.
+
+    Pillow's report wins when Pillow is installed, because it comes from a real
+    decode. The signature table is the fallback for a hand-stripped install, and
+    it matters: a suffix-only fallback is the exact behaviour this function
+    exists to remove, so degrading into it would leave the sink lying whenever
+    Pillow is absent.
+    """
+    if _HAS_PIL:
+        try:
+            with Image.open(io.BytesIO(raw_bytes)) as img:
+                # Header read only -- `format` is populated by ``open`` itself,
+                # so this costs no decompression.
+                return _PIL_FORMAT_MEDIA_TYPE.get((img.format or "").upper())
+        except Exception:
+            # Undecodable: not an image we can inline, whatever it is named.
+            return None
+    for mime, offset, prefix, second_at, second in _IMAGE_SIGNATURES:
+        if not raw_bytes.startswith(prefix, offset):
+            continue
+        if second and not raw_bytes.startswith(second, second_at):
+            continue
+        return mime
+    return None
+
+
 def build_prompt_blocks(
     message: str,
     *,
@@ -173,8 +243,10 @@ def build_prompt_blocks(
                 continue
             path = Path(raw)
             suffix = path.suffix.lower()
-            mime = IMAGE_MEDIA_TYPES.get(suffix)
-            if mime is None or not path.is_file():
+            # The suffix decides only which paths are CANDIDATES -- it is what
+            # `_PATH_RE` matched on, and re-checking it here keeps a `.txt` from
+            # costing a stat. What the file IS gets decided from its bytes below.
+            if suffix not in IMAGE_MEDIA_TYPES or not path.is_file():
                 continue
             try:
                 size = path.stat().st_size
@@ -201,6 +273,29 @@ def build_prompt_blocks(
                 # stays in the text; it is NOT inlined.
                 logger.warning("acp prompt: image read refused for %s", path.name)
                 continue
+            mime = _sniff_media_type(raw_bytes)
+            if mime is None:
+                # Named like an image, not one (or not a format we inline). Leave
+                # the path as text and fail CLOSED rather than shipping bytes under
+                # a mimeType taken from the filename: the backend decodes by the
+                # declared type, and a block it rejects sits at a fixed history
+                # index that kiro-cli replays on every later turn.
+                logger.warning(
+                    "acp prompt: %s is not a supported image by content - "
+                    "sending path, not inline",
+                    path.name,
+                )
+                continue
+            if mime != IMAGE_MEDIA_TYPES[suffix]:
+                # Not an error: the bytes are authoritative and the block is built
+                # from them. Logged because a mismatch usually means a producer
+                # renamed an attachment, which is worth seeing.
+                logger.info(
+                    "acp prompt: %s is %s by content, not %s by suffix - using content",
+                    path.name,
+                    mime,
+                    IMAGE_MEDIA_TYPES[suffix],
+                )
             downscaled = downscale_image_block(
                 raw_bytes, mime, max_edge=max_image_edge, max_b64_bytes=max_image_b64_bytes
             )

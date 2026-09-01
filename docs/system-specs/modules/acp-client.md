@@ -535,14 +535,22 @@ The `audit_source` constructor param (default `None`) tags an `AcpClient` that r
 `_send_prompt()` auto-detects image file paths in messages (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) via regex. When a valid image path is found:
 
 1. Reads the file (paths over `MAX_IMAGE_BYTES` = 10 MB stay as text, not inlined)
-2. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving aspect ratio and re-encoding to the same format (an oversized GIF becomes a PNG still frame)
-3. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES` (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px)
-4. Base64-encodes the (possibly downscaled) bytes
-5. Appends an image content block: `{"type": "image", "data": "<base64>", "mimeType": "image/png"}`
-6. Replaces the path in the text with `[image: filename.png]`
-7. Sends both text and image blocks in the `prompt` array
+2. Identifies the format from the file's CONTENT (`_sniff_media_type`); a file that is not one of the supported rasters stays as text
+3. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving aspect ratio and re-encoding to the same format (an oversized GIF becomes a PNG still frame)
+4. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES` (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px)
+5. Base64-encodes the (possibly downscaled) bytes
+6. Appends an image content block: `{"type": "image", "data": "<base64>", "mimeType": "image/png"}`
+7. Replaces the path in the text with `[image: filename.png]`
+8. Sends both text and image blocks in the `prompt` array
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
+
+**Media type is derived from content, not from the filename** (`_sniff_media_type`, same module). The path suffix decides only which paths are *candidates* — it is what the regex matched on. What a file IS, and therefore the `mimeType` that reaches the wire, is read from its bytes. A suffix is a claim made by whoever named the file (an upload handler that kept a client-supplied name, a channel that renamed an attachment, a screenshot tool with its own convention), and the backend decodes by the declared type, so a wrong label is the same wedge-the-session failure as an oversized image: the rejected block sits at a fixed history index that kiro-cli replays every turn. Deciding it once at this shared sink is what lets every producer feeding it stop carrying its own suffix guard.
+
+- Pillow's reported `format` wins when Pillow is installed, because it comes from a real decode (header-only — `Image.open` populates `format` without decompressing).
+- A signature table (`_IMAGE_SIGNATURES`) is the fallback for a hand-stripped install with no Pillow. It reaches the same verdict from magic bytes rather than degrading to the suffix, which would leave the sink trusting a filename exactly where it has least help. `RIFF` is matched together with its form field so a WAV does not read as a WEBP.
+- A candidate that decodes to nothing supported — a text file named `.png`, an SVG behind a raster name, a truncated image — is left as a path and **not** inlined. Fail closed, the same direction as the size caps.
+- A mismatch between content and suffix is **not** a refusal: the image is real, so it still travels, labelled by its content. Producers rename attachments routinely, and dropping a good image to placate a filename would trade a real capability for nothing. The mismatch is logged.
 
 **Dimension backstop** (`build_prompt_blocks` in `acp/prompt_blocks.py`). This shared builder is the single funnel every channel's images cross before reaching kiro-cli, so the `MAX_IMAGE_EDGE_PX` (2000 px) downscale runs for all of them — dashboard upload/paste/screenshot, Slack, Discord. Anthropic rejects the ENTIRE request when a many-image conversation (>20 images) carries any image over 2000 px on a side; because kiro-cli replays the full message history every turn, one oversized image would otherwise sit at a fixed history index and wedge the session permanently (a follow-up resize cannot evict the original). The browser's client-side resize (1568 px, `website/src/utils/resizeImage.ts`) is a token-cost optimization on top; this server-side cap is the correctness guarantee that still holds when that resize is skipped or bypassed (e.g. the native `/api/screenshot` capture, or non-dashboard channels).
 
