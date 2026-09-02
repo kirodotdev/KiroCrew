@@ -316,7 +316,13 @@ if [ -z "$HEALTH_TIMEOUT" ] || [ "${#HEALTH_TIMEOUT}" -gt 6 ]; then
   HEALTH_TIMEOUT=60
 fi
 HEALTH_DEADLINE=$(( $(date +%s) + 10#$HEALTH_TIMEOUT ))
-while [ "$(date +%s)" -lt "$HEALTH_DEADLINE" ]; do
+# Probe FIRST, test the deadline after -- a do-while, not a while. `date +%s` has
+# whole-second resolution, so a pre-test loop reads a clock that may already have
+# ticked past the deadline computed one fork earlier, and skips its body. The body
+# is the only place HEALTHY is set, so that zero-probe run reports "never became
+# healthy" about a pod nobody ever asked. The window is one fork wide, which is
+# invisible at the 60s default and near-certain to bite at the 1s a test uses.
+while :; do
   CODE=$("$KIROCREW_CLI" pod status "$NAME" --json 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("health",0))' 2>/dev/null \
     || echo 0)
@@ -326,6 +332,8 @@ while [ "$(date +%s)" -lt "$HEALTH_DEADLINE" ]; do
     # the timeout names the conflict instead of blaming the worktree build.
     -2)          FOREIGN=1 ;;
   esac
+  # Deadline reached: stop without burning a final pointless sleep.
+  [ "$(date +%s)" -lt "$HEALTH_DEADLINE" ] || break
   sleep 1
 done
 if [ "$HEALTHY" -eq 0 ]; then
