@@ -114,11 +114,15 @@ def list_results(session_id: str) -> list[dict]:
     results = []
     for p in sorted(d.glob("agent-*.md")):
         agent_id = p.stem.removeprefix("agent-")
+        try:
+            size = p.stat().st_size
+        except FileNotFoundError:
+            continue
         results.append(
             {
                 "agent_id": agent_id,
                 "path": str(p),
-                "size": p.stat().st_size,
+                "size": size,
             }
         )
     return results
