@@ -8163,9 +8163,18 @@ _REDIR_PREFIX_RE = re.compile(r"^\d*(?:>>?|<(?!<))")
 
 
 _SEPARATOR_RUN_RE = re.compile(r"[\\/]{2,}")
-#: What a path token may start after, used to recognise a LEADING separator run
-#: (a UNC prefix) as opposed to an interior one.
-_PATH_TOKEN_BOUNDARY = " \t\"'=:,;(<>|&`"
+#: The PUNCTUATION a path token may start after, used together with
+#: ``str.isspace()`` to recognise a LEADING separator run (a UNC prefix) as
+#: opposed to an interior one. Whitespace is derived rather than enumerated:
+#: the hand-written class here used to spell out only space and tab, so a UNC
+#: path on a CONTINUATION LINE (newline before it, as in a multi-line
+#: PowerShell command) was read as interior, every emitted variant destroyed
+#: the UNC anchor, and the doubled spelling of a fenced file was permitted
+#: while its single-separator spelling was blocked -- the #6350 class surviving
+#: at a newline boundary. ``isspace()`` is exactly the class the patterns
+#: themselves accept before a path operand, so the two cannot drift apart
+#: again (\r, \v and \f were missing for the same reason).
+_PATH_TOKEN_BOUNDARY_PUNCTUATION = "\"'=:,;(<>|&`"
 
 
 def _separator_collapsed_variants(command: str) -> tuple[str, ...]:
@@ -8215,7 +8224,8 @@ def _separator_collapsed_variants(command: str) -> tuple[str, ...]:
                 keep_leading_pair: bool = keep_leading_pair,
             ) -> str:
                 start = match.start()
-                leading = start == 0 or command[start - 1] in _PATH_TOKEN_BOUNDARY
+                prev = command[start - 1] if start else ""
+                leading = start == 0 or prev.isspace() or prev in _PATH_TOKEN_BOUNDARY_PUNCTUATION
                 return sep * 2 if (keep_leading_pair and leading) else sep
 
             variant = _SEPARATOR_RUN_RE.sub(_replace, command)

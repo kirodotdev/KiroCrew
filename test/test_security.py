@@ -6792,6 +6792,43 @@ class TestWindowsSeparatorRuns:
         ):
             assert is_sensitive_bash_command(cmd) is not None, cmd
 
+    @pytest.mark.parametrize("gap", ("\n", "\r", "\r\n", "\v", "\f", " ", "\t"))
+    def test_a_unc_path_after_any_whitespace_boundary_is_still_fenced(self, gap: str) -> None:
+        # The leading-run test above quotes the path, so the character before
+        # the UNC prefix is always ``"``. A multi-line command puts it after a
+        # NEWLINE instead, and the boundary class used to enumerate only space
+        # and tab -- so the prefix read as interior, every variant destroyed the
+        # UNC anchor, and the doubled spelling was permitted while the single
+        # one was blocked. Asserted over the whole whitespace class, both the
+        # read fence and the agents-directory WRITE gate, because enumerating
+        # is what produced the gap: \r, \v and \f were missing for the same reason.
+        for cmd in (
+            f"Get-Content `{gap}\\\\server\\share\\.kiro\\\\crew\\security_policy.json",
+            f"Get-Content `{gap}//server//share//.kiro//crew//security_policy.json",
+            f"Set-Content `{gap}\\\\server\\share\\.kiro\\\\agents\\evil.json -Value x",
+            f"cat `{gap}\\\\srv\\homes\\u\\\\.ssh\\id_rsa",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, repr(cmd)
+        # The control: the single-separator spelling of the same file at the
+        # same boundary was ALWAYS blocked. Pinned so a future change cannot
+        # close the gap by relaxing this side instead.
+        for cmd in (
+            f"Get-Content `{gap}\\\\server\\share\\.kiro\\crew\\security_policy.json",
+            f"Set-Content `{gap}\\\\server\\share\\.kiro\\agents\\evil.json -Value x",
+        ):
+            assert is_sensitive_bash_command(cmd) is not None, repr(cmd)
+
+    @pytest.mark.parametrize("gap", ("\n", "\r", "\v", "\f"))
+    def test_a_benign_unc_path_after_a_whitespace_boundary_stays_allowed(self, gap: str) -> None:
+        # The fence must not widen past the boundary gap: an unfenced UNC path
+        # on a continuation line keeps being allowed in both spellings.
+        for cmd in (
+            f"Get-Content `{gap}\\\\server\\share\\project\\readme.md",
+            f"Get-Content `{gap}\\\\server\\share\\project\\\\readme.md",
+            f"Get-Content `{gap}//server//share//project//readme.md",
+        ):
+            assert is_sensitive_bash_command(cmd) is None, repr(cmd)
+
     def test_the_unchanged_unc_spelling_still_matches(self) -> None:
         # The control: a UNC path with no interior run needs no collapsing and
         # must keep matching on the original command.
