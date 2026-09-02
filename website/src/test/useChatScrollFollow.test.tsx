@@ -116,6 +116,49 @@ describe('useChatScrollFollow', () => {
     expect(state.scrollTop).toBe(BOTTOM)
   })
 
+  it('a turn-collapse SHRINK in the same tick as a viewport shrink keeps following', () => {
+    // The sibling of the virtualizer's queue-band defect, on the plain
+    // scroller: this hook's single observer watches the scroller's own box as
+    // well as the content wrapper, so one tick can carry both a turn-collapse
+    // content shrink (which clamps scrollTop below our last write) and a
+    // viewport shrink (a pane drag, a keyboard, chrome mounting below). Judged
+    // against the just-shrunk box the pair reads as a user scroll-up, and this
+    // hook has no clamp re-baseline to fall back on, so follow released for
+    // good and later growth never pinned again.
+    const { state } = mount()
+    act(() => { FakeResizeObserver.fireAll() })
+    expect(state.scrollTop).toBe(BOTTOM)
+
+    act(() => {
+      state.scrollHeight = SH - 200
+      state.scrollTop = BOTTOM - 200 // the layout engine's clamp, NOT a user scroll
+      state.clientHeight = CH - 29 // the box shrinks in the same tick
+      FakeResizeObserver.fireAll()
+    })
+    expect(state.scrollTop).toBe(SH - 200 - (CH - 29))
+
+    // Follow is still armed, so the next growth pins.
+    act(() => { state.scrollHeight = SH; FakeResizeObserver.fireAll() })
+    expect(state.scrollTop).toBe(SH - (CH - 29))
+  })
+
+  it('a real scroll-up inside a viewport shrink still releases follow', () => {
+    // The boundary: the allowance forgives only the box's own pixels.
+    const { scroller, state } = mount()
+    act(() => { FakeResizeObserver.fireAll() })
+    expect(state.scrollTop).toBe(BOTTOM)
+
+    act(() => {
+      state.clientHeight = CH - 29
+      state.scrollTop = BOTTOM - 200
+      FakeResizeObserver.fireAll()
+    })
+    expect(state.scrollTop).toBe(BOTTOM - 200)
+    act(() => { scroller.dispatchEvent(new Event('scroll')) })
+    act(() => { state.scrollHeight = SH + 500; FakeResizeObserver.fireAll() })
+    expect(state.scrollTop).toBe(BOTTOM - 200)
+  })
+
   it('releases on user scroll up: growth no longer moves the viewport, pill shows', () => {
     const { scroller, state } = mount()
     act(() => { FakeResizeObserver.fireAll() })

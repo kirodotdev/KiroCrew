@@ -123,6 +123,96 @@ describe('useVirtualChat: viewport-box resize re-pin', () => {
     expect(el.scrollTop).toBe(600)
   })
 
+  it('re-pins through the shrink animation when a content clamp preceded it', () => {
+    // The measured cause of the queue-band dip. A send that queues behind a
+    // busy turn regroups the turn and remounts tail rows, so the content
+    // shrinks and the browser clamps scrollTop; the queue band then mounts
+    // below the transcript and spring-animates the scroller's box smaller over
+    // the following frames. The clamp's scroll event used to be stamped as user
+    // input, which armed the SCROLL_SETTLE_MS gate and suppressed EVERY
+    // viewport re-pin of that animation.
+    const { el, state } = mount('viewport-clamp-gate', { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 }, mkItems(10))
+    expect(el.scrollTop).toBe(1600)
+
+    // The remount: content shrinks 125px, the layout engine clamps scrollTop by
+    // the same amount, and the resulting scroll event dispatches. Still exactly
+    // at the bottom (1875 - 1475 - 400 === 0), so this is a clamp, not input.
+    act(() => {
+      state.scrollHeight = 1875
+      state.scrollTop = 1475
+      el.dispatchEvent(new Event('scroll'))
+    })
+
+    // First frame of the band's animation, well inside the settle window.
+    act(() => {
+      state.clientHeight = 371
+      fireViewport(el)
+    })
+    expect(el.scrollTop).toBe(1875 - 371)
+  })
+
+  it('a genuine gesture still holds pins off for the settle window', () => {
+    // The boundary the fix must not move: real input is stamped by the intent
+    // listeners at wheel/touch/key time, and a viewport shrink inside that
+    // window must not write scrollTop out from under the gesture.
+    const { el, state, writes } = mount('viewport-gesture-gate', { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 }, mkItems(10))
+    expect(el.scrollTop).toBe(1600)
+    const before = writes.n
+
+    act(() => { el.dispatchEvent(new Event('wheel')) })
+    act(() => {
+      state.clientHeight = 371
+      fireViewport(el)
+    })
+    expect(writes.n).toBe(before)
+
+    // Once the window expires, follow resumes. (SCROLL_SETTLE_MS is 150ms and
+    // module-private; followDisengage's gate test uses the same literal.)
+    act(() => { vi.advanceTimersByTime(151); fireViewport(el) })
+    expect(el.scrollTop).toBe(2000 - 371)
+  })
+
+  it('re-pins when a tail-row remount clamps scrollTop in the same tick as the shrink', () => {
+    const { el, state } = mount('viewport-clamp-shrink', { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 }, mkItems(10))
+    expect(el.scrollTop).toBe(1600)
+
+    // A send that queues behind a busy turn does two things in one commit
+    // window: the queued row appends, which regroups the turn and REMOUNTS
+    // tail rows (content transiently shrinks — here by 28px, so the browser
+    // clamps scrollTop to the new maximum 1972 - 400 = 1572), and the queue
+    // band mounts below the transcript and spring-animates the scroller's box
+    // smaller (here by 29px). Scroll events dispatch asynchronously, so this
+    // RO callback is the first code to see either change.
+    act(() => {
+      state.scrollHeight = 1972
+      state.scrollTop = 1572 // the layout engine's clamp, NOT a user scroll
+      state.clientHeight = 371
+      fireViewport(el)
+    })
+
+    // The whole gap is ours — a clamp plus our own viewport shrink — so follow
+    // must hold and the pin must land on the new bottom. Judged against the
+    // just-applied box instead, the clamp (scrollTop below our last write) and
+    // the shrink-inflated distance together carried a user-scroll-up
+    // signature: follow released, no re-pin ran, and the content settled a
+    // card-height low for the rest of the animation.
+    expect(el.scrollTop).toBe(1972 - 371)
+  })
+
+  it('still releases follow when the user scrolls up during a viewport shrink', () => {
+    const { el, state } = mount('viewport-shrink-userup', { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 }, mkItems(10))
+    expect(el.scrollTop).toBe(1600)
+
+    // Same tick, but 200px of the gap is a real drag. The allowance covers
+    // only the box's own 29px, so the remainder still reads as user input.
+    act(() => {
+      state.clientHeight = 371
+      state.scrollTop = 1400
+      fireViewport(el)
+    })
+    expect(el.scrollTop).toBe(1400)
+  })
+
   it('defers per-frame writes during the rail collapse and re-pins once at settle', () => {
     const { el, state, writes } = mount('viewport-rail', { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 }, mkItems(10))
     expect(el.scrollTop).toBe(1600)

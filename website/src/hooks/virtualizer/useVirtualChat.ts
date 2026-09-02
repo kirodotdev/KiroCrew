@@ -430,6 +430,13 @@ export function useVirtualChat<T>(
   // beating the RO-vs-scroll-event race.
   const stickRef = useRef<boolean>(followOutput)
   const lastWriteTopRef = useRef<number>(-1)
+  // `lastWriteClientHRef`: the scroller's `clientHeight` at the moment
+  // `lastWriteTopRef` was recorded — i.e. the viewport box that value was a
+  // bottom FOR. Kept in lockstep with it (`-1` alongside `-1`) so the pin
+  // evaluation can tell how much of the current distance-from-bottom is our
+  // own viewport shrink rather than the user's move (see evaluateAutoPin's
+  // `viewportShrink`).
+  const lastWriteClientHRef = useRef<number>(-1)
   // True while a smooth scrollTo animation (from pinAuto) is in flight.
   // During this period, scroll events are NOT treated as user-scrolls — they
   // are intermediate frames of our own programmatic smooth-pin.
@@ -926,6 +933,7 @@ export function useVirtualChat<T>(
         : { start: Math.max(0, itemCount - tailSize), end: itemCount },
     )
     lastWriteTopRef.current = -1
+    lastWriteClientHRef.current = -1
     setIsAtBottom(true)
     // A pending debounced save belongs to the OUTGOING session: flush it NOW,
     // synchronously, instead of dropping it — a scroll-then-switch inside the
@@ -1322,6 +1330,7 @@ export function useVirtualChat<T>(
       if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior })
       else el.scrollTop = top
       lastWriteTopRef.current = accounting === 'pin' ? top : -1
+      lastWriteClientHRef.current = accounting === 'pin' ? el.clientHeight : -1
       // The direction reference must move WITH our own writes, synchronously.
       // A programmatic scroll's event lands asynchronously (and a fake scroller
       // in tests dispatches none), so leaving the reference to the scroll
@@ -1369,6 +1378,7 @@ export function useVirtualChat<T>(
           // they are. lastWriteTop is reset because we are releasing follow.
           if (typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollTop, behavior: 'auto' })
           lastWriteTopRef.current = -1
+          lastWriteClientHRef.current = -1
           detachSmoothAbort()
         }
         // Replace any previous glide's listeners rather than stacking them:
@@ -1404,10 +1414,17 @@ export function useVirtualChat<T>(
     // pinAuto(), which then snaps instantly to the new bottom.
     if (smoothPinActiveRef.current) return
     const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+    const viewportShrink =
+      lastWriteClientHRef.current >= 0 ? lastWriteClientHRef.current - geom.clientHeight : 0
     const result = evaluateAutoPin({
       stick: stickRef.current,
       geom,
       lastWriteTop: lastWriteTopRef.current,
+      // Chrome mounting below the transcript shrinks this box, often
+      // spring-animated across many frames. Measure the scroll-up guard
+      // against the box our reference was a bottom for, never the box the
+      // animation just applied.
+      viewportShrink,
     })
     stickRef.current = result.stick
     if (result.pin) {
@@ -1416,6 +1433,7 @@ export function useVirtualChat<T>(
       // Still following but already at the bottom (no write needed) — keep the
       // self-scroll reference aligned with the current bottom.
       lastWriteTopRef.current = result.target
+      lastWriteClientHRef.current = geom.clientHeight
     }
   }, [scrollerRef, writeScrollTop])
 
@@ -1497,7 +1515,18 @@ export function useVirtualChat<T>(
         }
         prevSmoothTopRef.current = el.scrollTop
       } else if (!isSelfScroll(el.scrollTop, lastWriteTopRef.current)) {
-        lastUserScrollAtRef.current = performance.now()
+        // A scroll we did not write that leaves us EXACTLY at the bottom was the
+        // layout engine's: the browser clamps scrollTop when a shrinking
+        // scrollHeight drops the maximum below it, and a spacer re-estimate does
+        // the same.
+        //
+        // The test is the CLAMP — distance within SELF_SCROLL_EPSILON — and NOT
+        // the 100px `atBottom` UI band. resolveUserScrollStick's bottom-epsilon
+        // branch is what keeps `stick` armed across the clamp; widening this to
+        // the 100px band would erase the only evidence evaluateAutoPin has of a
+        // real 3-100px scroll-up.
+        const clampedAtBottom =
+          geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
         stickRef.current = resolveUserScrollStick({
           stick: stickRef.current,
           followOutput,
@@ -1505,23 +1534,37 @@ export function useVirtualChat<T>(
           prevScrollTop: lastObservedTopRef.current,
           geom,
         })
-        // A scroll we did not write that leaves us EXACTLY at the bottom was the
-        // layout engine's: the browser clamps scrollTop when a shrinking
-        // scrollHeight drops the maximum below it, and a spacer re-estimate does
-        // the same. Re-baseline the self-scroll reference to where we now are —
+        const layoutClamp = stickRef.current && clampedAtBottom
+        // A clamp is OUR layout change, so it must not be stamped as input.
+        // `lastUserScrollAtRef` arms the SCROLL_SETTLE_MS gate that holds
+        // automatic pins off while a gesture is in flight, so stamping it for a
+        // clamp spent the whole window on our own reflow. A send that queues
+        // behind a busy turn does both halves at once: the queued row regroups
+        // the turn and remounts tail rows (content shrinks — the clamp), and the
+        // queue band mounts below the transcript and spring-animates the
+        // scroller's box smaller over the following frames. Every one of those
+        // viewport re-pins was then suppressed, so the transcript sat up to a
+        // card-height below the bottom until the gate expired — measured on the
+        // real build: the box shrank 617 -> 588 across 130ms with scrollTop
+        // frozen, and the first pin landed at 154ms, one frame AFTER the last
+        // shrink step. Whether the animation outlived the gate is what made the
+        // defect intermittent.
+        //
+        // Genuine input keeps its own signal: the persistent intent listeners
+        // below stamp at wheel/touch/key/scrollbar time, which is EARLIER than
+        // the scroll event this branch handles, so nothing is lost by declining
+        // to stamp here. `stick` and `lastWriteTop` already treat the clamp as
+        // ours; the gate now agrees with them.
+        if (!layoutClamp) lastUserScrollAtRef.current = performance.now()
+        // Re-baseline the self-scroll reference to where the clamp left us —
         // otherwise it keeps pointing at our last write, and the next pin
         // evaluation reads that gap as a user scroll-up, releasing follow for the
         // rest of the turn with only a manual scroll back to the bottom able to
         // re-arm it.
-        //
-        // The test is the CLAMP — distance within SELF_SCROLL_EPSILON — and NOT
-        // the 100px `atBottom` UI band. resolveUserScrollStick's bottom-epsilon
-        // branch is what keeps `stick` armed across the clamp; re-baselining
-        // across the wider band would erase the only evidence evaluateAutoPin
-        // has of a real 3-100px scroll-up.
-        const clampedAtBottom =
-          geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
-        if (stickRef.current && clampedAtBottom) lastWriteTopRef.current = el.scrollTop
+        if (layoutClamp) {
+          lastWriteTopRef.current = el.scrollTop
+          lastWriteClientHRef.current = geom.clientHeight
+        }
       }
       // Direction reference for the next event — updated for self-scrolls too,
       // so a user move right after our own pin is measured against where the
@@ -2023,6 +2066,7 @@ export function useVirtualChat<T>(
       // resulting scroll event is classified as ours, not user input (which
       // would trip the settle frames' user-scroll abort below).
       lastWriteTopRef.current = el.scrollTop
+      lastWriteClientHRef.current = el.clientHeight
       // Settle: for a few frames, correct against the anchor row's LIVE DOM
       // position as measurements land (rows above it refine from estimates).
       // Aborts on a genuine user scroll (lastUserScrollAtRef — restore writes

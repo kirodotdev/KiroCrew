@@ -249,6 +249,42 @@ describe('evaluateAutoPin — the race-proof core', () => {
     const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600 })
     expect(r.stick).toBe(true)
   })
+
+  it('OUR OWN viewport shrink does not read as a scroll-up, even on top of a clamp', () => {
+    // Both halves of the queue-band race in one geometry: a tail-row remount
+    // shrank content by 4px (so the browser clamped scrollTop from 600 to 596,
+    // below our last write) AND the band's animation shrank the box by 29px
+    // (400 -> 371). Distance is now 29px, which without the allowance is
+    // "meaningfully away from the bottom" — a full scroll-up signature built
+    // from two of our own layout changes. Forgiving the box's own 29px keeps
+    // follow armed and re-pins to the new bottom (996 - 371 = 625).
+    const geom = { scrollTop: 596, scrollHeight: 996, clientHeight: 371 }
+    expect(distanceFromBottom(geom)).toBe(29)
+    expect(evaluateAutoPin({ stick: true, geom, lastWriteTop: 600 }).stick).toBe(false)
+    const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600, viewportShrink: 29 })
+    expect(r.stick).toBe(true)
+    expect(r.pin).toBe(true)
+    expect(r.target).toBe(625)
+  })
+
+  it('the allowance forgives only its own pixels — a real drag inside it still releases', () => {
+    // Same 29px shrink, but the user also dragged 200px up: distance 229, of
+    // which only 29 is ours. The remaining 200 is still user input.
+    const geom = { scrollTop: 396, scrollHeight: 996, clientHeight: 371 }
+    const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600, viewportShrink: 29 })
+    expect(r.stick).toBe(false)
+    expect(r.pin).toBe(false)
+  })
+
+  it('a viewport GROW never widens the guard (negative shrink is clamped to 0)', () => {
+    // The box grew (chrome unmounted), so the caller passes a negative value.
+    // Treating it as an allowance would be a subtraction the wrong way; a
+    // genuine 100px scroll-up must still release.
+    const geom = { scrollTop: 500, scrollHeight: 1000, clientHeight: 400 }
+    const r = evaluateAutoPin({ stick: true, geom, lastWriteTop: 600, viewportShrink: -60 })
+    expect(r.stick).toBe(false)
+    expect(r.pin).toBe(false)
+  })
 })
 
 // Feature: chat-virtualizer — DPR-aware "at bottom" epsilon.

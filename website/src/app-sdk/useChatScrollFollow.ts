@@ -70,6 +70,14 @@ export function useChatScrollFollow(opts: {
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
   const lastWriteTopRef = useRef(-1)
+  // The scroller's `clientHeight` at the moment `lastWriteTopRef` was recorded
+  // — the viewport box that value was a bottom FOR. Kept in lockstep with it
+  // (`-1` alongside `-1`) so the pin evaluation can tell how much of the
+  // current distance-from-bottom is our own viewport shrink rather than the
+  // user's move (see evaluateAutoPin's `viewportShrink`). This observer watches
+  // the scroller's own box as well as the content wrapper, so a pane drag or a
+  // keyboard opening below the transcript shrinks it with no user input.
+  const lastWriteClientHRef = useRef(-1)
   const prevScrollTopRef = useRef(-1)
   const [isAtBottom, setIsAtBottom] = useState(true)
   // Effect-stable mirror so the callbacks read the live value without
@@ -80,6 +88,7 @@ export function useChatScrollFollow(opts: {
   const writePin = useCallback((el: HTMLElement, target: number) => {
     el.scrollTop = target
     lastWriteTopRef.current = target
+    lastWriteClientHRef.current = el.clientHeight
     prevScrollTopRef.current = target
   }, [])
 
@@ -89,7 +98,19 @@ export function useChatScrollFollow(opts: {
     const el = scrollerRef.current
     if (!el) return
     const geom = readGeom(el)
-    const result = evaluateAutoPin({ stick: stickRef.current, geom, lastWriteTop: lastWriteTopRef.current })
+    const result = evaluateAutoPin({
+      stick: stickRef.current,
+      geom,
+      lastWriteTop: lastWriteTopRef.current,
+      // Measure the scroll-up guard against the box our reference was a bottom
+      // for, never the box that just shrank. A turn-collapse SHRINK clamps
+      // scrollTop below our last write while leaving us at the new bottom; if
+      // the scroller's own box shrinks in the SAME tick, the clamp plus the
+      // shrink-inflated distance together look exactly like a user scrolling
+      // up, and follow releases for good with nothing to re-arm it.
+      viewportShrink:
+        lastWriteClientHRef.current >= 0 ? lastWriteClientHRef.current - geom.clientHeight : 0,
+    })
     stickRef.current = result.stick
     if (result.pin) {
       writePin(el, result.target)
@@ -97,6 +118,7 @@ export function useChatScrollFollow(opts: {
       // Following and already at the bottom — keep the self-scroll reference
       // aligned so the next scroll event is not misread as the user's.
       lastWriteTopRef.current = result.target
+      lastWriteClientHRef.current = geom.clientHeight
     }
     // Content growth while the user is scrolled up must reveal the jump pill
     // even though no scroll event fires.
@@ -120,7 +142,10 @@ export function useChatScrollFollow(opts: {
       })
       // A user scroll invalidates the self-scroll reference: keeping it would
       // let a later user move back to the same offset read as ours.
-      if (!stickRef.current) lastWriteTopRef.current = -1
+      if (!stickRef.current) {
+        lastWriteTopRef.current = -1
+        lastWriteClientHRef.current = -1
+      }
     }
     prevScrollTopRef.current = geom.scrollTop
   }, [])
@@ -140,6 +165,7 @@ export function useChatScrollFollow(opts: {
     if (!enabled) return
     stickRef.current = true
     lastWriteTopRef.current = -1
+    lastWriteClientHRef.current = -1
     prevScrollTopRef.current = -1
     setIsAtBottom(true)
     const el = scrollerRef.current
