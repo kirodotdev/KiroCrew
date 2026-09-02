@@ -270,6 +270,142 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('4a72aec5f04d3f44ba8042931226db051242d48a')).toBe(false)
     expect(isPathCandidate('someIdentifier')).toBe(false)
   })
+
+  it('accepts drive-rooted Windows paths, either separator', () => {
+    // A Windows gateway names its files with `\` and roots them on a drive
+    // letter, so the POSIX-only shape rejected every absolute Windows path
+    // before the stat probe. The chip then degraded to the click-to-copy
+    // fallback, which is what a Windows user reported as "clicking only copies
+    // the address instead of opening the sidebar".
+    expect(isPathCandidate('C:\\Users\\me\\Documents\\notes.md')).toBe(true)
+    expect(isPathCandidate('C:/Users/me/Documents/notes.md')).toBe(true)
+    expect(isPathCandidate('c:\\temp\\a.txt')).toBe(true) // lowercase drive letter
+    expect(isPathCandidate('D:\\repo\\file.ts')).toBe(true)
+  })
+
+  it('accepts a drive-rooted Windows path with no extension — rootedness is the signal', () => {
+    // Exactly the POSIX rule: `/Users` needs no extension because it is rooted,
+    // so `C:\Windows` must not need one either. A bare drive root is a real
+    // directory and the file manager can reveal it.
+    expect(isPathCandidate('C:\\Windows')).toBe(true)
+    expect(isPathCandidate('C:\\')).toBe(true)
+  })
+
+  it('REFUSES UNC in either spelling — a stat on one is an outbound SMB credential probe', () => {
+    // Security boundary, not a gap. This pre-filter classifies markdown that may
+    // be attacker-authored, and a UNC path names a HOST: admitting one would let
+    // that text make the gateway stat `\\\\attacker.example\\share\\x`, which on
+    // Windows opens an SMB connection offering the host's NTLM credentials. The
+    // same line `WINDOWS_ABS_PATH_RE` (utils/urlTransform.ts) holds for image
+    // `src` values. Refused ahead of every other test, because the extension
+    // rule below would otherwise readmit it — `report.txt` has one.
+    expect(isPathCandidate('\\\\server\\share\\report.txt')).toBe(false)
+    expect(isPathCandidate('\\\\server\\share')).toBe(false)
+    expect(isPathCandidate('\\\\attacker.example\\share\\x.txt')).toBe(false)
+    // The Win32 extended-length prefix is the same leading shape, so it is
+    // refused too rather than being special-cased into the drive rule.
+    expect(isPathCandidate('\\\\?\\C:\\Users\\me\\notes.md')).toBe(false)
+    // The forward-slash spelling resolves to the SAME share on Windows, so it is
+    // refused too. `MdAnchor` already holds this line for a decoded `//` link
+    // destination; leaving it open here would be the same vector under a
+    // different coat of paint.
+    expect(isPathCandidate('//server/share/report.txt')).toBe(false)
+    // MIXED pairs, both orders. Windows reads any two leading separators as a
+    // UNC root regardless of kind, so a regex matching two of the SAME kind
+    // admitted these -- and the leading separator is then eaten by the relative
+    // prefix group, leaving `.txt` to satisfy the extension rule and send a real
+    // stat probe to the gateway. Refusing per-character rather than per-spelling
+    // is what closes the shape instead of enumerating it.
+    expect(isPathCandidate('\\/attacker.example\\share\\evil.txt')).toBe(false)
+    expect(isPathCandidate('/\\attacker.example\\share\\evil.txt')).toBe(false)
+    expect(isPathCandidate('\\/server/share/report.txt')).toBe(false)
+    expect(isPathCandidate('/\\server/share/report.txt')).toBe(false)
+    expect(isPathCandidate('//attacker.example/share/x.txt')).toBe(false)
+    // Nothing is lost on POSIX: one slash names the same file and still passes.
+    expect(isPathCandidate('/server/share/report.txt')).toBe(true)
+  })
+
+  it('accepts the decided filename punctuation on Windows', () => {
+    // Two review rounds each found one more legal character (parentheses, then
+    // the apostrophe in `C:\\Users\\O'Neil`), which is an allowlist being
+    // discovered one bug report at a time. These pin the whole decided set so a
+    // third round has nothing left to find.
+    expect(isPathCandidate('C:\\Program Files (x86)\\app.txt')).toBe(true)
+    expect(isPathCandidate('C:\\Program Files (x86)')).toBe(true)
+    expect(isPathCandidate('C:/Program Files (x86)/node/node.exe')).toBe(true)
+    expect(isPathCandidate("C:\\Users\\O'Neil\\notes.md")).toBe(true)
+    expect(isPathCandidate('C:\\data\\report [final].csv')).toBe(true)
+    expect(isPathCandidate('C:\\logs\\run#42.txt')).toBe(true)
+    expect(isPathCandidate('C:\\etc\\x={y}\\conf.ini')).toBe(true)
+  })
+
+  it('accepts the same punctuation on POSIX — one filesystem convention', () => {
+    // Admitted on both shapes deliberately: an asymmetry that fixed Windows and
+    // left the POSIX spelling failing would just be the next bug report.
+    expect(isPathCandidate('/Users/me/App (old).md')).toBe(true)
+    expect(isPathCandidate('/Users/me/Screenshot (1).png')).toBe(true)
+    expect(isPathCandidate("/Users/o'neil/notes.md")).toBe(true)
+    expect(isPathCandidate('/var/tmp/a+b.tar.gz')).toBe(true)
+    expect(isPathCandidate('/opt/app/v1,2/notes.md')).toBe(true)
+    expect(isPathCandidate('/srv/100%/index.html')).toBe(true)
+    expect(isPathCandidate('~/docs/report (final).pdf')).toBe(true)
+    expect(isPathCandidate("src/O'Brien (draft).md")).toBe(true)
+    // A closing bracket may END a path, so these classify as directories.
+    expect(isPathCandidate('/Users/me/App (old)')).toBe(true)
+    expect(isPathCandidate('/Users/me/data [2026]')).toBe(true)
+  })
+
+  it('keeps shell control operators OUT of the repertoire', () => {
+    // The exclusions are what keep the anchored shape from matching a command.
+    // Each of these carries an extension, so only the character class refuses it.
+    expect(isPathCandidate('$HOME/x.txt')).toBe(false)
+    expect(isPathCandidate('a&&b/c.sh')).toBe(false)
+    expect(isPathCandidate('cmd;rm/x.sh')).toBe(false)
+    expect(isPathCandidate('a|b/c.txt')).toBe(false)
+    expect(isPathCandidate('a>b/c.txt')).toBe(false)
+    expect(isPathCandidate('glob*/x.txt')).toBe(false)
+    expect(isPathCandidate('what?/x.txt')).toBe(false)
+  })
+
+  it('still refuses punctuated prose and a punctuated UNC share', () => {
+    // Widening the repertoire never widens the positive-signal rule: prose with
+    // neither a root nor an extension is still not a candidate, and the UNC
+    // refusal runs ahead of the shape tests.
+    expect(isPathCandidate('foo/bar (baz)')).toBe(false)
+    expect(isPathCandidate('and/or (maybe)')).toBe(false)
+    expect(isPathCandidate('\\\\server\\Program Files (x86)\\x.txt')).toBe(false)
+  })
+
+  it('accepts explicitly relative and extension-bearing backslash paths', () => {
+    expect(isPathCandidate('.\\src\\main.py')).toBe(true)
+    expect(isPathCandidate('..\\sibling\\file.json')).toBe(true)
+    expect(isPathCandidate('src\\main.py')).toBe(true)
+  })
+
+  it('accepts Unicode segments in a rooted Windows path', () => {
+    expect(isPathCandidate('C:\\Users\\me\\产品文档-v1.0.md')).toBe(true)
+    expect(isPathCandidate('C:\\Пользователи\\отчёт.txt')).toBe(true)
+  })
+
+  it('rejects backslash-joined text that is not a path — no positive signal', () => {
+    // Admitting `\` as a separator must not turn every backslash-joined token
+    // into a chip. Each of these lacks a root, an explicit-relative prefix and
+    // an extension, so the same rule that rejects `owner/repo` rejects them —
+    // on every platform, since the pre-filter cannot know the gateway's OS.
+    expect(isPathCandidate('\\n')).toBe(false) // escape sequence in inline code
+    expect(isPathCandidate('\\t')).toBe(false)
+    expect(isPathCandidate('HKEY_LOCAL_MACHINE\\Software\\Foo')).toBe(false) // registry key
+    expect(isPathCandidate('CORP\\alice')).toBe(false) // domain-qualified login
+    expect(isPathCandidate('domain\\user')).toBe(false)
+  })
+
+  it('reads the basename across either separator when applying the extension gate', () => {
+    // `lastIndexOf('/')` returns -1 for a backslash path and hands the whole
+    // string to the extension test, so a dotted DIRECTORY name would be read as
+    // an extension on the file. The basename here is `notes`, which has none.
+    expect(isPathCandidate('project\\v1.2\\notes')).toBe(false)
+    expect(isPathCandidate('project\\v1.2\\notes.md')).toBe(true)
+  })
 })
 
 /**
@@ -933,6 +1069,143 @@ describe('MarkdownRenderer path chips — file:line references', () => {
     await Promise.resolve()
     expect(globalThis.fetch).not.toHaveBeenCalled()
     expect(container.querySelector('code[data-path-kind]')).toBeNull()
+  })
+})
+
+
+/**
+ * Windows paths, end to end through the chip: pre-filter -> stat probe -> chip.
+ *
+ * The pre-filter cases above pin the syntax decision in isolation; these pin the
+ * RENDERED consequence, which is what the bug report was actually about. Before
+ * this fix a Windows absolute path failed `isPathCandidate`, so no probe was ever
+ * issued and `InlineCode` fell through to the click-to-copy `CopyableCode`
+ * fallback — a Windows user clicking a path the agent had just written got the
+ * address on their clipboard instead of the file in the sidebar.
+ */
+describe('MarkdownRenderer path chips — Windows paths', () => {
+  const realFetch = globalThis.fetch
+
+  /** Answers `file` only for the paths listed, 404 otherwise, and records every
+   *  path the component actually asked about — the absence of a probe is the
+   *  pre-fix symptom, so the call list is itself an assertion target. */
+  function stubPaths(known: string[]): string[] {
+    const asked: string[] = []
+    globalThis.fetch = vi.fn((url: unknown) => {
+      const p = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
+      asked.push(p)
+      const hit = known.includes(p)
+      return Promise.resolve({
+        ok: hit,
+        status: hit ? 200 : 404,
+        headers: new Headers(hit ? { 'X-Path-Kind': 'file' } : {}),
+      } as Response)
+    }) as unknown as typeof fetch
+    return asked
+  }
+
+  beforeEach(() => { __resetPathKindCache() })
+  afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
+
+  it('renders a drive-qualified path as a chip and opens it, instead of copying', async () => {
+    const win = 'C:\\Users\\me\\Documents\\notes.md'
+    stubPaths([win])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`' + win + '`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
+      expect(c).not.toBeNull()
+      return c!
+    })
+    expect(chip.getAttribute('data-path')).toBe(win)
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith(win)
+  })
+
+  it('probes both drive spellings, and never probes a backslash UNC path', async () => {
+    const back = 'C:\\Users\\me\\notes.md'
+    const fwd = 'D:/repo/main.ts'
+    const unc = '\\\\server\\share\\report.txt'
+    const asked = stubPaths([back, fwd, unc])
+    const { container } = render(
+      <MarkdownRenderer content={'`' + back + '`, `' + fwd + '` and `' + unc + '`'} />,
+    )
+    await waitFor(() => {
+      expect(container.querySelectorAll('code[data-path-kind="file"]')).toHaveLength(2)
+    })
+    expect(asked).toContain(back)
+    expect(asked).toContain(fwd)
+    // The stub would have answered `file` for the UNC path, so a chip for it
+    // would have rendered. It never resolved because it was never asked — that
+    // absent request IS the SMB-probe guard.
+    expect(asked).not.toContain(unc)
+  })
+
+  it("renders `C:\\Users\\O'Neil` as a chip and opens it", async () => {
+    const win = "C:\\Users\\O'Neil\\notes.md"
+    stubPaths([win])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`' + win + '`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
+      expect(c).not.toBeNull()
+      return c!
+    })
+    expect(chip.getAttribute('data-path')).toBe(win)
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith(win)
+  })
+
+  it('renders `C:\\Program Files (x86)` as a chip and opens it', async () => {
+    const win = 'C:\\Program Files (x86)\\app\\config.json'
+    stubPaths([win])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`' + win + '`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
+      expect(c).not.toBeNull()
+      return c!
+    })
+    expect(chip.getAttribute('data-path')).toBe(win)
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith(win)
+  })
+
+  it('carries the line number from a Windows file:line citation', async () => {
+    const win = 'C:\\repo\\src\\main.ts'
+    stubPaths([win])
+    const onFileOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={'`' + win + ':42`'} onFileOpen={onFileOpen} />,
+    )
+    const chip = await waitFor(() => {
+      const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
+      expect(c).not.toBeNull()
+      return c!
+    })
+    fireEvent.click(chip)
+    expect(onFileOpen).toHaveBeenCalledWith(win, { line: 42 })
+  })
+
+  it('issues NO probe for backslash text that is not a path, and leaves it a copy chip', async () => {
+    // The guard on widening the separator: a registry key and an escape sequence
+    // must not become chips, and must not even cost a request. `data-path-kind`
+    // absent is the click-to-copy fallback still being in charge.
+    const asked = stubPaths([])
+    const { container } = render(
+      <MarkdownRenderer content={'`HKEY_LOCAL_MACHINE\\Software\\Foo` and `\\n`'} />,
+    )
+    await waitFor(() => {
+      expect(container.querySelectorAll('code').length).toBeGreaterThan(0)
+    })
+    expect(container.querySelector('code[data-path-kind]')).toBeNull()
+    expect(asked).toEqual([])
   })
 })
 
