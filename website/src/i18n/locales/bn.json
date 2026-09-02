@@ -4671,7 +4671,6 @@
         "configuration_1": "এই মেশিনে ইতিমধ্যে থাকা প্রোফাইল থেকে একটি অ্যাকাউন্ট যোগ করুন, তারপর প্রথম ব্যবহারের আগে প্রতিটি সশুল্ক পরিষেবা অ্যাকাউন্ট অনুযায়ী একবার নিশ্চিত করুন।"
       },
       "console": {
-        "crumb_accounts": "অ্যাকাউন্ট",
         "copy": "কপি",
         "copied": "কপি হয়েছে",
         "close": "বন্ধ",
@@ -4772,16 +4771,9 @@
         "key_healthy": "সুস্থ",
         "key_failed": "ব্যর্থ",
         "parent_folders": "প্যারেন্ট ফোল্ডার",
-        "connection_connected": "সংযুক্ত",
-        "connection_degraded": "অবনমিত",
-        "connection_unknown": "অজানা",
-        "copy_id": "অ্যাকাউন্ট ID কপি করুন",
         "folder_actions": "ফোল্ডারের কাজ",
         "file_actions": "ফাইলের কাজ",
         "root_storage_used": "স্টোরেজ কিসে যাচ্ছে",
-        "root_section_desc_drive": "আপনার কম্পিউটার থেকে আপলোড করা ফাইল।",
-        "root_section_desc_library": "Kiro আপনার জন্য তৈরি করেছে এমন জিনিস, ক্লাউডে কপি করা।",
-        "root_section_desc_backup": "ওয়ার্কস্পেস স্ন্যাপশট এবং সেশন আর্কাইভ।",
         "root_section_objects_one": "{{objects}}টি আইটেম",
         "root_section_objects_other": "{{objects}}টি আইটেম",
         "view_grid": "গ্রিড ভিউ",
@@ -4817,7 +4809,6 @@
         "library_remove_confirm_slug": "এটি ক্লাউড ফোল্ডার <folder>{{folder}}</folder> খালি করে।"
       },
       "page": {
-        "title": "AWS Control",
         "totals_summary": "{{accounts}} অ্যাকাউন্ট · {{keys}} কী · {{healthy}} সুস্থ",
         "refresh": "রিফ্রেশ করুন",
         "health_ok": "সুস্থ",
@@ -4828,7 +4819,6 @@
         "kind_other": "অন্যান্য",
         "default_profile": "ডিফল্ট প্রোফাইল",
         "not_connected_yet": "এখনও সংযুক্ত নয়",
-        "open_console": "এই অ্যাকাউন্টের কনসোল খোলো।",
         "reconnect": "পুনরায় সংযোগ",
         "reconnect_loading": "পুনরায় সংযোগের নির্দেশনা লোড হচ্ছে…",
         "reconnect_error": "পুনরায় সংযোগের নির্দেশনা লোড করা যায়নি।",
@@ -4867,6 +4857,13 @@
         "search_none": "“{{query}}” এর সাথে মেলে এমন কোনো অ্যাকাউন্ট নেই।",
         "paid_services_title": "পেইড পরিষেবা",
         "orphan_consent": "এখানে নিবন্ধিত নয় এমন একটি AWS অ্যাকাউন্টের জন্য নিশ্চিত করা হয়েছে। নিচে নিশ্চিতকরণ প্রত্যাহার করুন, বা সেই অ্যাকাউন্টটি আবার নিবন্ধন করে তার নিজের পেজ থেকে পরিচালনা করুন।"
+      },
+      "rail": {
+        "accounts": "অ্যাকাউন্ট ও ক্রেডেনশিয়াল",
+        "nav": "AWS Control বিভাগ",
+        "switch_account": "অ্যাকাউন্ট পরিবর্তন করুন",
+        "usage": "ব্যবহার ও খরচ",
+        "use_account": "এই অ্যাকাউন্টটি ব্যবহার করুন"
       }
     }
   },

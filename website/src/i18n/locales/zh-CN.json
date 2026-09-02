@@ -4593,7 +4593,6 @@
         "configuration_1": "从这台机器上已有的配置里添加账户，每个付费服务在首次使用前按账户逐一确认。"
       },
       "console": {
-        "crumb_accounts": "账户",
         "copy": "复制",
         "copied": "已复制",
         "close": "关闭",
@@ -4693,16 +4692,9 @@
         "key_healthy": "正常",
         "key_failed": "失败",
         "parent_folders": "上级文件夹",
-        "connection_connected": "已连接",
-        "connection_degraded": "降级",
-        "connection_unknown": "未知",
-        "copy_id": "复制账户 ID",
         "folder_actions": "文件夹操作",
         "file_actions": "文件操作",
         "root_storage_used": "存储占用分布",
-        "root_section_desc_drive": "你从自己电脑上传的文件。",
-        "root_section_desc_library": "Kiro 为你生成、并复制到云端的内容。",
-        "root_section_desc_backup": "工作区快照和会话归档。",
         "root_section_objects_other": "{{objects}} 项",
         "view_grid": "网格视图",
         "view_list": "列表视图",
@@ -4737,7 +4729,6 @@
         "library_remove_confirm_slug": "此操作会清空云端文件夹 <folder>{{folder}}</folder>。"
       },
       "page": {
-        "title": "AWS Control",
         "totals_summary": "{{accounts}} 个账户 · {{keys}} 个密钥 · {{healthy}} 个正常",
         "refresh": "刷新",
         "health_ok": "正常",
@@ -4748,7 +4739,6 @@
         "kind_other": "其他",
         "default_profile": "默认配置",
         "not_connected_yet": "尚未连接",
-        "open_console": "打开此账户的控制台",
         "reconnect": "重新连接",
         "reconnect_loading": "正在加载重新连接指引…",
         "reconnect_error": "无法加载重新连接指引。",
@@ -4782,6 +4772,13 @@
         "search_none": "没有匹配“{{query}}”的账户。",
         "paid_services_title": "付费服务",
         "orphan_consent": "已为一个未在此注册的 AWS 账号确认。可在下方撤回确认，或重新注册该账号以在它自己的页面上管理。"
+      },
+      "rail": {
+        "accounts": "账户与凭证",
+        "nav": "AWS Control 区域",
+        "switch_account": "切换账户",
+        "usage": "用量与费用",
+        "use_account": "使用此账户"
       }
     }
   },

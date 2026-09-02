@@ -4749,7 +4749,6 @@
         "configuration_1": "Añade una cuenta desde los perfiles que ya están en esta máquina y luego confirma cada servicio de pago una vez por cuenta antes de usarlo."
       },
       "console": {
-        "crumb_accounts": "Cuentas",
         "copy": "Copiar",
         "copied": "Copiado",
         "close": "Cerrar",
@@ -4851,16 +4850,9 @@
         "key_healthy": "Correcta",
         "key_failed": "Con errores",
         "parent_folders": "Carpetas superiores",
-        "connection_connected": "Conectada",
-        "connection_degraded": "Degradada",
-        "connection_unknown": "Desconocida",
-        "copy_id": "Copiar ID de cuenta",
         "folder_actions": "Acciones de carpeta",
         "file_actions": "Acciones de archivo",
         "root_storage_used": "Qué ocupa el almacenamiento",
-        "root_section_desc_drive": "Archivos que subes desde tu equipo.",
-        "root_section_desc_library": "Cosas que Kiro creó para ti, copiadas a la nube.",
-        "root_section_desc_backup": "Instantáneas del espacio de trabajo y archivos de sesiones.",
         "root_section_objects_one": "{{objects}} elemento",
         "root_section_objects_other": "{{objects}} elementos",
         "root_section_objects_many": "{{objects}} elementos",
@@ -4897,7 +4889,6 @@
         "library_remove_confirm_slug": "Esto vacía la carpeta en la nube <folder>{{folder}}</folder>."
       },
       "page": {
-        "title": "AWS Control",
         "totals_summary": "{{accounts}} cuentas · {{keys}} claves · {{healthy}} en buen estado",
         "refresh": "Actualizar",
         "health_ok": "Correcto",
@@ -4908,7 +4899,6 @@
         "kind_other": "Otro",
         "default_profile": "Perfil predeterminado",
         "not_connected_yet": "Aún sin conectar",
-        "open_console": "Abrir la consola de esta cuenta",
         "reconnect": "Reconectar",
         "reconnect_loading": "Cargando instrucciones para reconectar…",
         "reconnect_error": "No se pudieron cargar las instrucciones para reconectar.",
@@ -4952,6 +4942,13 @@
         "add_accounts_count_many": "{{count}} de {{max}} registrados",
         "paid_services_title": "Servicios de pago",
         "orphan_consent": "Confirmado para una cuenta de AWS que no está registrada aquí. Retira la confirmación abajo, o vuelve a registrar esa cuenta para gestionarla desde su propia página."
+      },
+      "rail": {
+        "accounts": "Cuentas y credenciales",
+        "nav": "Secciones de AWS Control",
+        "switch_account": "Cambiar de cuenta",
+        "usage": "Uso y costos",
+        "use_account": "Usar esta cuenta"
       }
     }
   },

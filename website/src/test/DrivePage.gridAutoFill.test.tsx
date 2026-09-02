@@ -1,9 +1,9 @@
 /**
- * DrivePage lays out ALL FOUR of its card grids with one mechanism: the CSS
- * `repeat(auto-fill, minmax(258px, 1fr))` template the Drive root's folder
- * cards established. The browser derives the column count natively from the
- * container width, so no grid carries a ResizeObserver subscription, a
- * JavaScript measurement, or a resize re-render for it.
+ * DrivePage lays out ALL of its card grids with one mechanism: the CSS
+ * `repeat(auto-fill, minmax(258px, 1fr))` template. The browser derives the
+ * column count natively from the container width, so no grid carries a
+ * ResizeObserver subscription, a JavaScript measurement, or a resize
+ * re-render for it.
  *
  * `useColumnCount` stays a legitimate hook: `VirtuosoMasonry` in ArtifactsPage
  * takes a column COUNT as a value and cannot lay itself out from CSS. What this
@@ -35,12 +35,13 @@ describe('DrivePage grid layout mechanism', () => {
     expect(text).not.toMatch(/hooks\/useColumnCount/)
   })
 
-  it('lays out every card grid with the root grid\'s auto-fill template', () => {
+  it('lays out every card grid with the shared auto-fill template', () => {
     const text = src()
-    // Library grid, Add-from-Artifacts picker, Files grid, Drive-root folder
-    // cards: four grids today, one template. A floor rather than an exact
-    // count, so adding a fifth grid on the same template is not a failure.
-    expect(text.split(AUTO_FILL).length - 1).toBeGreaterThanOrEqual(4)
+    // Library grid, Add-from-Artifacts picker, Files grid: three grids today,
+    // one template. (The Drive-root folder cards were the fourth until the
+    // flat-rail IA dissolved the root page.) A floor rather than an exact
+    // count, so adding another grid on the same template is not a failure.
+    expect(text.split(AUTO_FILL).length - 1).toBeGreaterThanOrEqual(3)
     // And none is left on (or returned to) the measured column-count form.
     expect(text).not.toMatch(/repeat\(\$\{[^}]+\},\s*minmax\(0,\s*1fr\)\)/)
   })

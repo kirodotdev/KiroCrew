@@ -28,7 +28,7 @@ import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tansta
 import { Link } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import {
-  ChevronDown, RefreshCw, HardDrive, Library, Archive, Share2,
+  ChevronDown, RefreshCw, Library, Archive, Share2,
   Download, Trash2, Upload, FolderClosed, FolderPlus, FileText, X,
   MoreHorizontal, Code, LayoutGrid, List, Search, CloudOff, Plus,
 } from 'lucide-react'
@@ -52,15 +52,10 @@ import { i18nT } from '../../i18n/t'
 import { fmtBytes, fmtNumber, fmtRelative } from '../../i18n/format'
 import { awsControlApi } from './api'
 import type {
-  AwsAccount, DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
-  BackupKind, Share, DriveUsage, DriveSectionUsage,
+  DriveSection, DriveStatus, ArtifactKind, LibraryArtifact,
+  BackupKind, Share, DriveUsage,
 } from './types'
-import { CopyBtn, SectionHeader, CrumbHeader } from './shared'
-
-/** The account's display name, or the not-connected label. */
-function accountNameOf(account: AwsAccount): string {
-  return account.name || i18nT('apps.awsControl.page.not_connected_yet')
-}
+import { CopyBtn, PaneHeader } from './shared'
 
 /* Literal-key maps from enum → full catalog key, so no i18nT() call assembles a
  * key by interpolation (dynamicKeys gate): extractors and unused-key tooling
@@ -272,7 +267,7 @@ function OrphanThumb() {
  * which is what lets a card recover the artifact's name, kind and preview from
  * the local library; an object with no local copy falls back to `OrphanThumb`.
  */
-function LibrarySection({ account, bucket }: { account: string; bucket: string }) {
+export function LibrarySection({ account, bucket }: { account: string; bucket: string }) {
   const [mode, setMode] = useViewMode('library', 'grid')
   const [picking, setPicking] = useState(false)
 
@@ -345,8 +340,8 @@ function LibrarySection({ account, bucket }: { account: string; bucket: string }
 
   return (
     <section data-testid="library-section">
-      <SectionHeader
-        icon={<Library size={15} />}
+      <PaneHeader
+        icon={<Library size={18} />}
         title={i18nT('apps.awsControl.console.section_library')}
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -1170,7 +1165,7 @@ const noSort = () => {}
 
 const KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9 ._()+@=-]*$/
 
-function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
+export function DriveSectionView({ account, bucket }: { account: string; bucket: string }) {
   const qc = useQueryClient()
   const [mode, setMode] = useViewMode('drive', 'list')
   const [path, setPath] = useState('')
@@ -1312,7 +1307,7 @@ function DriveSectionView({ account, bucket }: { account: string; bucket: string
 
   return (
     <section data-testid="drive-section">
-      <SectionHeader icon={<FolderClosed size={15} />} title={i18nT('apps.awsControl.console.section_files')} actions={
+      <PaneHeader icon={<FolderClosed size={18} />} title={i18nT('apps.awsControl.console.section_files')} actions={
         <div className="flex flex-wrap items-center gap-2">
         <ViewModeToggle section="drive" mode={mode} onChange={setMode} />
         {/* The name field appears when the reader ASKS to create a folder.
@@ -1900,7 +1895,7 @@ function ShareDialog({ account, section, fileKey, onClose }: { account: string; 
 
 const BACKUP_KINDS: BackupKind[] = ['snapshot', 'sessions']
 
-function BackupSection({ account }: { account: string }) {
+export function BackupSection({ account }: { account: string }) {
   const qc = useQueryClient()
   const [showRemote, setShowRemote] = useState(false)
   const backupQ = useQuery({
@@ -1924,7 +1919,7 @@ function BackupSection({ account }: { account: string }) {
 
   return (
     <section data-testid="backup-section">
-      <SectionHeader icon={<Archive size={15} />} title={i18nT('apps.awsControl.console.backup_title')} />
+      <PaneHeader icon={<Archive size={18} />} title={i18nT('apps.awsControl.console.backup_title')} />
       {backupQ.isLoading && <ContentSkeleton rows={2} />}
       {data && (
         <div className="rounded-md border border-border bg-card divide-y divide-border">
@@ -2020,7 +2015,7 @@ function BackupSection({ account }: { account: string }) {
 
 /* ── Section 7: Access (shares ledger) ───────────────────────────────────── */
 
-function AccessSection({ account }: { account: string }) {
+export function AccessSection({ account }: { account: string }) {
   const qc = useQueryClient()
   const sharesQ = useQuery({
     queryKey: ['aws-control', 'shares', account],
@@ -2034,7 +2029,7 @@ function AccessSection({ account }: { account: string }) {
 
   return (
     <section data-testid="access-section">
-      <SectionHeader icon={<Share2 size={15} />} title={i18nT('apps.awsControl.console.access_title')} />
+      <PaneHeader icon={<Share2 size={18} />} title={i18nT('apps.awsControl.console.access_title')} />
       {sharesQ.isLoading && <ContentSkeleton rows={1} />}
       {sharesQ.data && shares.length === 0 && (
         <p className="text-[13px] text-muted" data-testid="access-empty">{i18nT('apps.awsControl.console.access_empty')}</p>
@@ -2084,20 +2079,7 @@ const SECTION_LABEL_ON_PAGE: Record<DriveSection, string> = {
   backup: 'apps.awsControl.console.section_backup',
 }
 
-const SECTION_ICON: Record<DriveSection, typeof HardDrive> = {
-  drive: FolderClosed,
-  library: Library,
-  backup: Archive,
-}
 
-/* Literal-key map from section → its one-line "what belongs here" description,
- * so no i18nT() call assembles a key by interpolation (dynamicKeys gate).
- * Mirrors SECTION_LABEL_ON_PAGE above. */
-const SECTION_DESC_KEY: Record<DriveSection, string> = {
-  drive: 'apps.awsControl.console.root_section_desc_drive',
-  library: 'apps.awsControl.console.root_section_desc_library',
-  backup: 'apps.awsControl.console.root_section_desc_backup',
-}
 
 /**
  * Each section's meter colour, as a SEMANTIC token — never a hex.
@@ -2126,7 +2108,7 @@ const SECTION_TONE: Record<DriveSection, string> = {
  * would silently drop it. When the whole drive is empty the bar renders as a
  * single muted track so the card is never a bare outline.
  */
-function StorageMeter({ usage }: { usage: DriveUsage }) {
+export function StorageMeter({ usage }: { usage: DriveUsage }) {
   const total = usage.bytes
   return (
     <div className="mb-4 rounded-lg border border-border bg-card p-4" data-testid="drive-storage-meter">
@@ -2179,54 +2161,6 @@ function StorageMeter({ usage }: { usage: DriveUsage }) {
 }
 
 /**
- * One section as a folder card.
- *
- * The whole card is the control that opens the section — the same navigation
- * the old row carried on `setSection`. It stays a real `<button>`, so it keeps
- * button semantics (focusable, Enter/Space activation) for free rather than
- * re-implementing role/tabIndex/onKeyDown by hand. The `data-testid` the tests
- * resolve (`drive-section-<s>`) stays on that button.
- */
-function SectionCard({ section, usage, onOpen }: {
-  section: DriveSection
-  usage: DriveSectionUsage
-  onOpen: () => void
-}) {
-  const Icon = SECTION_ICON[section]
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4 text-left cursor-pointer hover:bg-bg-hover hover:border-accent/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-      data-testid={`drive-section-${section}`}
-    >
-      <div className="flex items-center gap-2">
-        <Icon size={16} className="shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
-          {i18nT(SECTION_LABEL_ON_PAGE[section])}
-        </span>
-        <span className="shrink-0 font-mono text-[13px] text-text" data-testid={`drive-section-size-${section}`}>
-          {fmtBytes(usage.bytes)}
-        </span>
-      </div>
-      <p className="text-[12px] leading-snug text-muted">
-        {i18nT(SECTION_DESC_KEY[section])}
-      </p>
-      <div className="mt-auto pt-1 text-[12px] text-muted" data-testid={`drive-section-count-${section}`}>
-        {/* `count` selects the plural form; `objects` is what actually renders.
-            Passing the raw count as the visible value printed "1234 items" under
-            the header's "1,234 items" -- the same number two ways, one line
-            apart, which is the defect this card was just cleaned up for. */}
-        {i18nT('apps.awsControl.console.root_section_objects', {
-          count: usage.objects,
-          objects: fmtNumber(usage.objects),
-        })}
-      </div>
-    </button>
-  )
-}
-
-/**
  * A drive that EXISTS.
  *
  * `DriveStatus` is a union whose `exists: false` arm carries no bucket, and this
@@ -2234,112 +2168,3 @@ function SectionCard({ section, usage, onOpen }: {
  * re-checking `exists` on every read of `drive.bucket`.
  */
 export type LiveDrive = Extract<DriveStatus, { exists: true }>
-
-export default function DrivePage({ account, drive: opened, onBack }: {
-  account: AwsAccount
-  /** The drive as it was when the reader opened this page. Initial data only -
-   *  the live figure comes from the query below. */
-  drive: LiveDrive
-  onBack: () => void
-}) {
-  /**
-   * Which section is open, or null at the drive's root.
-   *
-   * The bucket's three prefixes are the drive's top level, so the root is a
-   * three-row folder listing rather than a rail or a set of tabs: one reader
-   * gesture (open a folder) covers both this level and every level below it,
-   * and the breadcrumb that returns is the same breadcrumb the file browser
-   * already builds for its own subfolders.
-   */
-  const [section, setSection] = useState<DriveSection | null>(null)
-  const id = account.account
-
-  /**
-   * Subscribe to the drive rather than render the snapshot we were handed.
-   *
-   * Every mutation on this page invalidates `['aws-control', 'drive', id]`; a
-   * frozen prop would keep showing the size and object count from the moment the
-   * page opened, so an upload or a folder delete would visibly change the
-   * listing while the header kept the old totals. The snapshot is `initialData`,
-   * so the header still paints immediately on arrival.
-   */
-  const driveQ = useQuery({
-    queryKey: ['aws-control', 'drive', id],
-    queryFn: () => awsControlApi.drive(id),
-    initialData: opened,
-  })
-  const drive = driveQ.data.exists ? driveQ.data : opened
-
-  return (
-    <div className="flex h-full flex-col">
-      <CrumbHeader
-        onBack={section ? () => setSection(null) : onBack}
-        crumbTestId="drive-crumb-back"
-        /* The crumb states where the reader IS, so at the drive's root it
-           names the account then the drive, and inside a section it names the
-           drive then that section. Rendering the console's own crumb here
-           (Accounts / <account>) said nothing about having changed page. */
-        crumb={<>
-          {section ? i18nT('apps.awsControl.console.drive_title') : accountNameOf(account)}
-          {' / '}
-          <span className="text-text">
-            {section ? i18nT(SECTION_LABEL_ON_PAGE[section]) : i18nT('apps.awsControl.console.drive_title')}
-          </span>
-        </>}
-        leading={<HardDrive size={18} className="text-accent" />}
-        title={i18nT('apps.awsControl.console.drive_title')}
-        meta={<>
-          <span className="font-mono text-[13px] text-muted" data-testid="drive-bucket">{drive.bucket}</span>
-          <CopyBtn text={drive.bucket} testId="drive-copy-bucket" />
-          <span className="text-[13px] text-muted">{drive.region}</span>
-          <span className="text-[13px] text-muted" data-testid="drive-usage">
-            {/* fmtNumber, not the raw count: the meter one line below already
-                formats its own totals, so an unformatted number here rendered
-                "100000" directly above "100,000" for the same quantity. */}
-            {i18nT('apps.awsControl.console.stat_stored_value', {
-              size: fmtBytes(drive.usage.bytes),
-              objects: fmtNumber(drive.usage.objects),
-            })}
-          </span>
-        </>}
-      />
-
-      <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
-        {section === null && (
-          <>
-            {/* The storage meter: totals, plus one bar split by section. */}
-            <StorageMeter usage={drive.usage} />
-
-            {/* The bucket's three prefixes, as folder cards that state their own
-                size. A responsive auto-fill grid so the cards reflow instead of
-                stretching to a full-bleed row with a dead gap at wide widths. */}
-            <div
-              className="grid gap-3"
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(258px, 1fr))' }}
-              data-testid="drive-sections"
-            >
-              {SECTIONS.map((s) => (
-                <SectionCard
-                  key={s}
-                  section={s}
-                  usage={drive.usage.sections[s]}
-                  onOpen={() => setSection(s)}
-                />
-              ))}
-            </div>
-
-            {/* The share ledger governs links into all three sections, so it
-                belongs at the drive's root rather than inside one of them. */}
-            <div className="mt-8">
-              <AccessSection account={id} />
-            </div>
-          </>
-        )}
-
-        {section === 'drive' && <DriveSectionView account={id} bucket={drive.bucket} />}
-        {section === 'library' && <LibrarySection account={id} bucket={drive.bucket} />}
-        {section === 'backup' && <BackupSection account={id} />}
-      </div>
-    </div>
-  )
-}

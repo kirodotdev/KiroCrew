@@ -3568,7 +3568,6 @@
         "configuration_1": "Add an account from the profiles already on this machine, then confirm each paid service once per account before it is first used."
       },
       "console": {
-        "crumb_accounts": "Accounts",
         "copy": "Copy",
         "copied": "Copied",
         "close": "Close",
@@ -3669,16 +3668,9 @@
         "key_healthy": "Healthy",
         "key_failed": "Failed",
         "parent_folders": "Parent folders",
-        "connection_connected": "Connected",
-        "connection_degraded": "Degraded",
-        "connection_unknown": "Unknown",
-        "copy_id": "Copy account ID",
         "folder_actions": "Folder actions",
         "file_actions": "File actions",
         "root_storage_used": "What's using storage",
-        "root_section_desc_drive": "Files you upload from your computer.",
-        "root_section_desc_library": "Things Kiro made for you, copied to the cloud.",
-        "root_section_desc_backup": "Workspace snapshots and session archives.",
         "root_section_objects_one": "{{objects}} item",
         "root_section_objects_other": "{{objects}} items",
         "view_grid": "Grid view",
@@ -3713,7 +3705,6 @@
         "library_remove_confirm": "Remove “{{name}}” from the cloud library?"
       },
       "page": {
-        "title": "AWS Control",
         "totals_summary": "{{accounts}} accounts · {{keys}} keys · {{healthy}} healthy",
         "refresh": "Refresh",
         "health_ok": "Healthy",
@@ -3724,7 +3715,6 @@
         "kind_other": "Other",
         "default_profile": "Default profile",
         "not_connected_yet": "Not connected yet",
-        "open_console": "Open this account's console",
         "reconnect": "Reconnect",
         "reconnect_loading": "Loading reconnect guidance…",
         "reconnect_error": "Could not load reconnect guidance.",
@@ -3763,6 +3753,13 @@
         "search_none": "No accounts match “{{query}}”.",
         "paid_services_title": "Paid services",
         "orphan_consent": "Confirmed for an AWS account that is not registered here. Withdraw it below, or register that account again to manage it from its own page."
+      },
+      "rail": {
+        "accounts": "Accounts & credentials",
+        "nav": "AWS Control sections",
+        "switch_account": "Switch account",
+        "usage": "Usage & costs",
+        "use_account": "Use this account"
       }
     }
   },

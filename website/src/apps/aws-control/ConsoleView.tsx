@@ -1,46 +1,32 @@
 /**
- * AWS Control — the per-account console.
+ * AWS Control — the Usage & costs pane, plus the account plumbing the other
+ * rail panes share (`ReconnectAction`, `ConnectionsSection`, `SetupCard`).
  *
- * Opened by clicking an account row on the Accounts page; a breadcrumb returns.
- * It is view state inside `AwsControlPage`, not a route of its own, because
- * `BuiltinAppRoute` resolves only single-segment routes.
- *
- * The console is a plain-language surface over the account's S3-backed cloud
- * drive (spec §3): grouped General + Connections header sections, a stats strip,
- * then either a setup card (when the bucket does not exist) or the drive's
- * Library / Drive / Backup / Access sections, plus the still-dashed Tasks and
- * Sites app ghosts. Every mutation here is confirmed before it runs and ends by
- * invalidating its react-query key. All AWS access runs through the gateway's
- * audited CLI chokepoint — this surface never talks to AWS from the browser.
+ * The per-account console this file used to be dissolved into the flat-rail
+ * layout in `AwsControlPage`: the drive's sections are rail items of their own,
+ * connections live on the Accounts & credentials pane, and the money-shaped
+ * facts (bill, storage meter, consent receipts) landed here. Every mutation is
+ * confirmed before it runs and ends by invalidating its react-query key. All
+ * AWS access runs through the gateway's audited CLI chokepoint — this surface
+ * never talks to AWS from the browser.
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ChevronRight, ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, Link2, ShieldCheck, Wallet, } from 'lucide-react'
+  ChevronDown, RefreshCw, Copy, Check, HardDrive, Star, Link2, ShieldCheck, Wallet, } from 'lucide-react'
 import { Btn, Badge, ContentSkeleton } from '../../components/ui'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import { i18nT } from '../../i18n/t'
-import { CopyBtn, SectionHeader, CrumbHeader } from './shared'
-import type { LiveDrive } from './DrivePage'
-import { fmtBytes, fmtCurrency, fmtDate } from '../../i18n/format'
+import { CopyBtn, SectionHeader, PaneHeader } from './shared'
+import { StorageMeter } from './DrivePage'
+import { fmtCurrency, fmtDate } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
 import { api, type AwsConsentStatus } from '../../api/client'
 import type {
   AwsAccount, AwsProfile, ProfileKind, ReconnectPlan, DriveStatus,
 } from './types'
 
-/** The name the console leads with: the backend name, or the "not connected" label. */
-function accountName(account: AwsAccount): string {
-  return account.name || i18nT('apps.awsControl.page.not_connected_yet')
-}
-
 /** Credential-kind badge label, keyed literally (dynamicKeys gate). */
-const HEALTH_DOT: Record<string, string> = { ok: 'bg-ok', degraded: 'bg-warn', unknown: 'bg-muted' }
-const CONNECTION_LABEL_KEY: Record<string, string> = {
-  ok: 'apps.awsControl.console.connection_connected',
-  degraded: 'apps.awsControl.console.connection_degraded',
-  unknown: 'apps.awsControl.console.connection_unknown',
-}
 const PROFILE_KIND_LABEL_KEY: Record<ProfileKind, string> = {
   sso: 'apps.awsControl.page.kind_sso',
   'credential-process': 'apps.awsControl.page.kind_credential_process',
@@ -145,7 +131,7 @@ function ConnectionRow({ profile }: { profile: AwsProfile }) {
 }
 
 /** The Connections card: one thin row per key, with inline Reconnect for failing ones. */
-function ConnectionsSection({ account }: { account: AwsAccount }) {
+export function ConnectionsSection({ account }: { account: AwsAccount }) {
   return (
     <section data-testid="connections-section">
       <SectionHeader icon={<Link2 size={15} />} title={i18nT('apps.awsControl.console.connections')} />
@@ -166,7 +152,7 @@ function ConnectionsSection({ account }: { account: AwsAccount }) {
 
 /* ── Section 3: drive-missing setup card ─────────────────────────────────── */
 
-function SetupCard({ account, region }: { account: string; region: string }) {
+export function SetupCard({ account, region }: { account: string; region: string }) {
   const qc = useQueryClient()
   const [showPolicy, setShowPolicy] = useState(false)
   const previewMut = useMutation({
@@ -258,16 +244,16 @@ function SetupCard({ account, region }: { account: string; region: string }) {
   )
 }
 
-/* ── Console shell ───────────────────────────────────────────────────────── */
+/* ── The Usage & costs pane ──────────────────────────────────────────────── */
 
-export default function ConsoleView({ account, onBack, onOpenDrive }: {
-  account: AwsAccount
-  onBack: () => void
-  /** Open the drive page for this account. Owned by `AwsControlPage`, which
-   *  holds the app's view state, so the console does not nest a second page
-   *  inside itself. */
-  onOpenDrive: (drive: LiveDrive) => void
-}) {
+/**
+ * Usage & costs for the selected account: the month-to-date bill, the storage
+ * meter split by drive section, and the paid-service consent receipts. This is
+ * a rail pane in `AwsControlPage`, not a page of its own — the per-account
+ * console this file used to export dissolved into the flat-rail layout, and
+ * this pane is where its money-shaped facts landed.
+ */
+export default function UsagePane({ account }: { account: AwsAccount }) {
   const id = account.account
   const qcTop = useQueryClient()
 
@@ -285,22 +271,19 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
 
   const drive: DriveStatus | undefined = driveQ.data
   const costs = costsQ.data
-  // The drive read's refusal states, named once so the receipt below and the ask
-  // further down cannot drift apart.
-  const driveErr = driveQ.error instanceof AwsControlError ? driveQ.error : null
-  const drive409 = driveQ.isError && driveErr?.status === 409 ? driveErr : null
-  const driveConsentRefused = drive409?.message === 'aws_consent_required'
-  // A receipt belongs on THIS console only when the grant it shows was recorded
-  // for THIS account. A grant is service-scoped and carries the account it was
-  // confirmed for, so mounting it under every console would claim a scope it
-  // does not have AND put a withdraw control for one account's drive on another
-  // account's page - the withdraw is global, so that misfire is destructive, not
-  // cosmetic.
+
+  // A receipt belongs on THIS pane only when the grant it shows was recorded
+  // for the SELECTED account. A grant is service-scoped and carries the account
+  // it was confirmed for; a withdraw is global, so showing another account's
+  // receipt here would put a destructive control on the wrong account.
   //
   // It is also suppressed while that service's own refusal is still on screen:
   // granting invalidates the consent query but not the drive or costs caches, so
   // for the renders between a grant and the next refetch the ask and the receipt
   // would both be visible, saying opposite things about the same service.
+  const driveErr = driveQ.error instanceof AwsControlError ? driveQ.error : null
+  const driveConsentRefused =
+    driveQ.isError && driveErr?.status === 409 && driveErr.message === 'aws_consent_required'
   const s3ConsentQ = useQuery<AwsConsentStatus>({
     queryKey: ['awsConsent', 's3'],
     queryFn: () => api.awsConsent('s3'),
@@ -314,212 +297,89 @@ export default function ConsoleView({ account, onBack, onOpenDrive }: {
   const s3Receipt = confirmedHere(s3ConsentQ.data) && !driveConsentRefused
   const ceReceipt = confirmedHere(ceConsentQ.data) && !costs?.consentMissing
   // Both surfaces whose content a grant decides. The ask reads a cached refusal
-  // and the drive row reads a cached listing, so a grant change has to reach
-  // them or the page keeps rendering the previous answer.
+  // and the meter reads a cached listing, so a grant change has to reach them
+  // or the pane keeps rendering the previous answer.
   const refetchGated = () => {
     qcTop.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })
     qcTop.invalidateQueries({ queryKey: ['aws-control', 'costs', id] })
   }
-  // Fallback region for the setup preview, sourced the same way GeneralSection
-  // sources the one it displays: the default key's region, else the first key's.
-  // The Payments row bills through this same key, so it reads its region and
-  // credential kind from the one profile.
-  const defaultProfile = account.profiles.find((p) => p.default) ?? account.profiles[0]
-  const setupRegion = defaultProfile?.region ?? ''
 
   return (
-    <div className="flex h-full flex-col">
-      {/* Crumb + header: name + full account id (mono). */}
-      <CrumbHeader
-        onBack={onBack}
-        crumbTestId="console-crumb"
-        crumb={<>{i18nT('apps.awsControl.console.crumb_accounts')} / <span className="text-text">{accountName(account)}</span></>}
-        /* Three-state, not two. The deleted General card carried the full
-           Connected / Degraded / Unknown label, and collapsing it into a
-           binary `health === 'ok'` dot would announce "not connected" for a
-           degraded account whose keys still partly work - a misdiagnosis for
-           whoever is triaging a flaky key. The dot's colour keeps the same
-           three states its title and aria-label now name. */
-        leading={
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${HEALTH_DOT[account.health] ?? 'bg-muted'}`}
-            data-testid="console-health"
-            role="img"
-            title={i18nT(CONNECTION_LABEL_KEY[account.health] ?? 'apps.awsControl.console.connection_unknown')}
-            aria-label={i18nT(CONNECTION_LABEL_KEY[account.health] ?? 'apps.awsControl.console.connection_unknown')}
-          />
-        }
-        title={accountName(account)}
-        meta={id ? (
-          <>
-            <span className="font-mono text-[13px] text-muted" data-testid="console-account-id">{id}</span>
-            {/* The copy button came off the deleted General card; a 12-digit
-                account id is the field most often pasted elsewhere. */}
-            <CopyBtn text={id} testId="console-copy-id" ariaLabel={i18nT('apps.awsControl.console.copy_id')} />
-          </>
-        ) : undefined}
-      />
-      {/* No Payments control. Paid-service consent is SERVICE-scoped -- the
-          endpoint takes a service and derives the connection from that
-          service's own configuration -- so it cannot honestly sit on a
-          per-account page, and it stays where its gate was designed to live.
-          With consent gone, a panel here would have held only facts this same
-          screen already states: the credential kind and region are the
-            connection row's, the account id is the title's, and the
-            month-to-date figure is a tile. Restating them behind a button is
-            the duplication this change exists to remove. */}
+    <section data-testid="usage-pane">
+      <PaneHeader icon={<Wallet size={18} />} title={i18nT('apps.awsControl.rail.usage')} />
 
-      <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
-        {/* Connections only. The General card that used to sit above it carried
-            no field of its own: name (crumb + title), account id (title),
-            region and key count (the connection rows below), and a connection
-            state the title dot already shows — at a different precision, which
-            was its own small lie. */}
-        <ConnectionsSection account={account} />
-
-        {/* Two tiles, both of which have a data source. SITES and TASKS were
-            hardcoded em-dashes with no query behind them, and they said the
-            same "connects later" as the ghost cards that used to close the
-            page — four elements for two features that do not exist yet. */}
-        {/* One stat, because there is one figure this page alone can state: the
-            month-to-date bill. Stored bytes and object count used to sit beside
-            it AND on the Cloud drive row below, which is the same fact twice on
-            one screen - and the row is the better home, since that is the thing
-            the number describes. */}
-        {/* One figure, rendered in the same row language as the capability row
-            below it: a lone half-width tile in a two-column grid read as a
-            layout accident, not an emphasis. Label left, amount right. */}
-        <div className="mt-6 overflow-hidden rounded-lg border border-border bg-card" data-testid="console-stats">
-          <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-            <Wallet size={15} className="shrink-0 text-accent" aria-hidden="true" />
-            <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.stat_this_month')}</span>
-            {costs && !costs.consentMissing && !costsQ.isError && !costs.fresh && (
-              <span className="text-[12px] text-muted">{i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) })}</span>
-            )}
-            <span className="flex-1" />
-            {costs?.consentMissing ? (
-              <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_consent_missing')}>—</span>
-            ) : costsQ.isError ? (
-              // A failed bill read (Cost Explorer not enabled on the account,
-              // network, throttle) must not skeleton forever — say "no number".
-              <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_unavailable')}>—</span>
-            ) : (
-              <span className="text-[15px] font-semibold text-text-strong" data-testid="console-cost-value">
-                {costs ? fmtCurrency(costs.monthToDate, costs.currency) : '…'}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {driveQ.isLoading && <div className="mt-6"><ContentSkeleton rows={3} /></div>}
-
-        {/* A 409 is not one condition: storage-not-confirmed renders the
-            confirmation card (the fix is right here), while a dead
-            connection points back at Reconnect on the Accounts page. */}
-        {drive409 && (
-          driveConsentRefused ? (
-            <div className="mt-6" data-testid="console-storage-consent">
-              <p className="mb-2 text-[13px] text-muted">{i18nT('apps.awsControl.console.storage_consent_needed')}</p>
-              <AwsConsentGate service="s3" onConsentChange={refetchGated} />
-              <div className="mt-2">
-                <Btn onClick={() => qcTop.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })} data-testid="console-consent-recheck">
-                  <RefreshCw size={13} />{i18nT('apps.awsControl.page.refresh')}
-                </Btn>
-              </div>
-            </div>
+      {/* One figure this pane alone can state: the month-to-date bill. Label
+          left, amount right, in the same row language as the meter below. */}
+      <div className="overflow-hidden rounded-lg border border-border bg-card" data-testid="console-stats">
+        <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+          <Wallet size={15} className="shrink-0 text-accent" aria-hidden="true" />
+          <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.stat_this_month')}</span>
+          {costs && !costs.consentMissing && !costsQ.isError && !costs.fresh && (
+            <span className="text-[12px] text-muted">{i18nT('apps.awsControl.console.costs_as_of', { date: fmtDate(costs.fetchedAt) })}</span>
+          )}
+          <span className="flex-1" />
+          {costs?.consentMissing ? (
+            <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_consent_missing')}>—</span>
+          ) : costsQ.isError ? (
+            // A failed bill read (Cost Explorer not enabled on the account,
+            // network, throttle) must not skeleton forever — say "no number".
+            <span className="text-[13px] text-muted" title={i18nT('apps.awsControl.console.costs_unavailable')}>—</span>
           ) : (
-            <p className="mt-6 text-[13px] text-muted" data-testid="console-unavailable">{i18nT('apps.awsControl.console.account_unavailable')}</p>
-          )
-        )}
-
-        {/* The account's capabilities, one row each. Today there is exactly one,
-            and a row appears only when the thing it names exists - the page used
-            to close with two dashed "connects later" cards for features that did
-            not, which is what this app is being cleaned of.
-
-            The row is NAVIGATION, not a disclosure: the drive's contents (the
-            artifact library, the files, the backups and the share ledger) were
-            four sections stacked on this page, and they are a page of their own
-            now. What belongs here is the one line that says the drive exists and
-            how much is in it. */}
-        {drive && (
-          <div className="mt-6 overflow-hidden rounded-lg border border-border bg-card" data-testid="console-capabilities">
-            {drive.exists ? (
-              <button
-                type="button"
-                onClick={() => onOpenDrive(drive)}
-                className="flex w-full items-center gap-3 px-4 py-3 text-left cursor-pointer bg-transparent border-none hover:bg-bg-hover"
-                data-testid="capability-drive"
-              >
-                <HardDrive size={15} className="shrink-0 text-accent" />
-                <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.drive_title')}</span>
-                <span className="min-w-0 truncate font-mono text-[12px] text-muted">{drive.bucket}</span>
-                <span className="flex-1" />
-                <span className="shrink-0 text-[12px] text-muted" data-testid="capability-drive-usage">
-                  {i18nT('apps.awsControl.console.stat_stored_value', { size: fmtBytes(drive.usage.bytes), objects: drive.usage.objects })}
-                </span>
-                <ChevronRight size={14} className="shrink-0 text-muted" />
-              </button>
-            ) : (
-              /* No bucket yet, so the row carries the one action that changes
-                 that. The account's own default-profile region, not "" -- the
-                 preview panel falls back to this when a backend response omits
-                 its region, and a hardcoded empty string made that fallback
-                 dead. */
-              <div className="px-4 py-3" data-testid="capability-drive-setup">
-                <SetupCard account={id} region={setupRegion} />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* No app ghosts. Tasks and Sites were dashed "connects later" cards
-            with no feature behind them, duplicating the two placeholder tiles
-            that used to sit in the stats strip. A capability appears on this
-            page when it exists. */}
-
-        {/* Cost Explorer ask, driven by the CONSENT state rather than by
-            `costs.consentMissing`. That field only arrives when the backend has
-            a cached cost reading to attach it to; with no cache - the state a
-            never-confirmed account is always in - the costs request is a bare
-            409 and the field never exists, so keying the ask on it left Cost
-            Explorer with no confirmation control anywhere in the product. */}
-        {ceConsentQ.data?.granted === false && (
-          <div className="mt-6" data-testid="costs-consent-gate">
-            <AwsConsentGate service="ce" onConsentChange={refetchGated} />
-          </div>
-        )}
-
-        {/* The confirmations recorded for THIS account, once each is granted and
-            its ask has cleared. Each card is mounted on its own condition rather
-            than the section's, because the two services are granted separately
-            and a receipt for one must not be implied by the other. Withdrawing
-            here revokes the one grant this account's drive and cost figure run
-            on - which is why a grant recorded for a DIFFERENT account never
-            renders here, and why this is the only surface that calls revoke for
-            s3 and ce.
-
-            `onConsentChange` is what makes a withdraw recoverable: the ask above
-            is decided by a CACHED drive 409 and a cached `consentMissing`, so
-            without invalidating them the receipt would unmount and no ask would
-            take its place - a mistaken withdraw with nothing on screen offering
-            the confirm back. */}
-        {(s3Receipt || ceReceipt) && (
-          <section className="mt-8" data-testid="paid-services">
-            <h2 className="text-sm font-semibold text-text-strong">
-              {i18nT('apps.awsControl.page.paid_services_title')}
-            </h2>
-            {/* Compact rows in one card: a receipt is a record, not a decision,
-                so it should not out-weigh the capabilities it pays for. The full
-                facts live behind the ask (which keeps its card), and withdraw
-                stays reachable per row. */}
-            <div className="mt-3 overflow-hidden rounded-md border border-border bg-card divide-y divide-border">
-              {s3Receipt && <AwsConsentGate service="s3" compact onConsentChange={refetchGated} />}
-              {ceReceipt && <AwsConsentGate service="ce" compact onConsentChange={refetchGated} />}
-            </div>
-          </section>
-        )}
+            <span className="text-[15px] font-semibold text-text-strong" data-testid="console-cost-value">
+              {costs ? fmtCurrency(costs.monthToDate, costs.currency) : '…'}
+            </span>
+          )}
+        </div>
       </div>
-    </div>
+
+      {/* Cost Explorer ask, driven by the CONSENT state rather than by
+          `costs.consentMissing`. That field only arrives when the backend has
+          a cached cost reading to attach it to; with no cache — the state a
+          never-confirmed account is always in — the costs request is a bare
+          409 and the field never exists, so keying the ask on it would leave
+          Cost Explorer with no confirmation control anywhere in the product. */}
+      {ceConsentQ.data?.granted === false && (
+        <div className="mt-6" data-testid="costs-consent-gate">
+          <AwsConsentGate service="ce" onConsentChange={refetchGated} />
+        </div>
+      )}
+
+      {/* Storage: the meter split by section, headed by the bucket it reports.
+          The sections themselves are the rail's own items, so this pane states
+          sizes only and links nowhere. */}
+      {driveQ.isLoading && <div className="mt-6"><ContentSkeleton rows={3} /></div>}
+      {drive?.exists && (
+        <div className="mt-6" data-testid="usage-storage">
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <HardDrive size={15} className="shrink-0 text-accent" aria-hidden="true" />
+            <span className="text-[13px] font-medium text-text-strong">{i18nT('apps.awsControl.console.drive_title')}</span>
+            <span className="min-w-0 truncate font-mono text-[12px] text-muted" data-testid="drive-bucket">{drive.bucket}</span>
+            <CopyBtn text={drive.bucket} testId="drive-copy-bucket" />
+            <span className="text-[12px] text-muted">{drive.region}</span>
+          </div>
+          <StorageMeter usage={drive.usage} />
+        </div>
+      )}
+
+      {/* The confirmations recorded for THIS account, once each is granted and
+          its ask has cleared. Each card is mounted on its own condition rather
+          than the section's, because the two services are granted separately
+          and a receipt for one must not be implied by the other. Withdrawing
+          here revokes the one grant this account's drive and cost figure run
+          on. `onConsentChange` is what makes a withdraw recoverable: the asks
+          are decided by cached refusals, so without invalidating them the
+          receipt would unmount with no ask taking its place. */}
+      {(s3Receipt || ceReceipt) && (
+        <section className="mt-8" data-testid="paid-services">
+          <h2 className="text-sm font-semibold text-text-strong">
+            {i18nT('apps.awsControl.page.paid_services_title')}
+          </h2>
+          <div className="mt-3 overflow-hidden rounded-md border border-border bg-card divide-y divide-border">
+            {s3Receipt && <AwsConsentGate service="s3" compact onConsentChange={refetchGated} />}
+            {ceReceipt && <AwsConsentGate service="ce" compact onConsentChange={refetchGated} />}
+          </div>
+        </section>
+      )}
+    </section>
   )
 }

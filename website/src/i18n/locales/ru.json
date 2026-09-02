@@ -4827,7 +4827,6 @@
         "configuration_1": "Добавьте аккаунт из профилей, которые уже есть на этой машине, затем подтвердите каждую платную услугу один раз для каждого аккаунта до первого использования."
       },
       "console": {
-        "crumb_accounts": "Аккаунты",
         "copy": "Копировать",
         "copied": "Скопировано",
         "close": "Закрыть",
@@ -4930,16 +4929,9 @@
         "key_healthy": "Исправен",
         "key_failed": "Сбой",
         "parent_folders": "Родительские папки",
-        "connection_connected": "Подключено",
-        "connection_degraded": "Ухудшено",
-        "connection_unknown": "Неизвестно",
-        "copy_id": "Скопировать ID аккаунта",
         "folder_actions": "Действия с папкой",
         "file_actions": "Действия с файлом",
         "root_storage_used": "Что занимает место",
-        "root_section_desc_drive": "Файлы, которые вы загружаете со своего компьютера.",
-        "root_section_desc_library": "То, что Kiro создал для вас, скопировано в облако.",
-        "root_section_desc_backup": "Снимки рабочего пространства и архивы сессий.",
         "root_section_objects_one": "{{objects}} объект",
         "root_section_objects_few": "{{objects}} объекта",
         "root_section_objects_many": "{{objects}} объектов",
@@ -4977,7 +4969,6 @@
         "library_remove_confirm_slug": "Это очистит облачную папку <folder>{{folder}}</folder>."
       },
       "page": {
-        "title": "AWS Control",
         "totals_summary": "Аккаунтов: {{accounts}} · Ключей: {{keys}} · Исправно: {{healthy}}",
         "refresh": "Обновить",
         "health_ok": "Исправно",
@@ -4988,7 +4979,6 @@
         "kind_other": "Другое",
         "default_profile": "Профиль по умолчанию",
         "not_connected_yet": "Ещё не подключено",
-        "open_console": "Открыть консоль этого аккаунта",
         "reconnect": "Переподключить",
         "reconnect_loading": "Загрузка подсказок по переподключению…",
         "reconnect_error": "Не удалось загрузить подсказки по переподключению.",
@@ -5037,6 +5027,13 @@
         "add_accounts_count_many": "{{count}} из {{max}} зарегистрировано",
         "paid_services_title": "Платные сервисы",
         "orphan_consent": "Подтверждено для аккаунта AWS, который здесь не зарегистрирован. Отзовите подтверждение ниже или зарегистрируйте этот аккаунт снова, чтобы управлять им на его собственной странице."
+      },
+      "rail": {
+        "accounts": "Аккаунты и учётные данные",
+        "nav": "Разделы AWS Control",
+        "switch_account": "Сменить аккаунт",
+        "usage": "Использование и расходы",
+        "use_account": "Использовать этот аккаунт"
       }
     }
   },

@@ -44,6 +44,34 @@ export function SectionHeader({ icon, title, actions }: { icon: ReactNode; title
   )
 }
 
+/* ── pane header for the flat-rail layout ────────────────────────────────── */
+
+/**
+ * Title row for one rail pane: an accent icon, the pane's name at the SAME
+ * title metrics as `PageHeader` (`text-2xl font-bold tracking-tight`), and the
+ * pane's own actions on the right. The rail already answers "where am I", so
+ * unlike `CrumbHeader` there is no back-crumb — a pane is a sibling, not a
+ * descent. Actions wrap under the title on narrow viewports rather than
+ * clipping.
+ */
+export function PaneHeader({ icon, title, meta, actions }: {
+  icon?: ReactNode
+  title: string
+  /** Identifying metadata after the title (counts, mono ids). */
+  meta?: ReactNode
+  actions?: ReactNode
+}) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+      {icon && <span className="shrink-0 text-accent">{icon}</span>}
+      <span className="min-w-0 max-w-full truncate text-2xl font-bold tracking-tight text-text-strong" data-testid="page-title">{title}</span>
+      {meta}
+      <span className="flex-1" />
+      {actions}
+    </div>
+  )
+}
+
 /* ── shared page header for the inner surfaces ───────────────────────────── */
 
 /**

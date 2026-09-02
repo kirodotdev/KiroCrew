@@ -4,11 +4,11 @@ import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
 import type {
-  AwsAccount, DriveStatus, CostReport, LibraryResponse, BackupStatus, SharesResponse,
+  DriveStatus, DriveUsage, LibraryResponse, BackupStatus, SharesResponse,
 } from './types'
 
-/* The page reads only through the api client; mocking it keeps every case
- * network-free while leaving `AwsControlError` real for the page's 403/409 paths. */
+/* The sections read only through the api client; mocking it keeps every case
+ * network-free while leaving `AwsControlError` real for the 403/409 paths. */
 vi.mock('./api', async () => {
   const actual = await vi.importActual<typeof import('./api')>('./api')
   return {
@@ -41,9 +41,10 @@ vi.mock('./api', async () => {
   }
 })
 
-/* The Cost Explorer consent nudge fetches through the shared client. */
+/* Library cards lazily fetch the full artifact through the shared client. */
 vi.mock('../../api/client', () => ({
   api: {
+    artifact: vi.fn(),
     awsConsent: vi.fn(),
     grantAwsConsent: vi.fn(),
     revokeAwsConsent: vi.fn(),
@@ -52,20 +53,11 @@ vi.mock('../../api/client', () => ({
 
 import { awsControlApi } from './api'
 import { api } from '../../api/client'
-import DrivePage from './DrivePage'
+import {
+  DriveSectionView, LibrarySection, BackupSection, AccessSection, StorageMeter,
+} from './DrivePage'
 
-const ACCOUNT: AwsAccount = {
-  account: '111122223333',
-  name: 'personal',
-  health: 'ok',
-  profiles: [
-    {
-      name: 'personal', region: 'us-west-2', kind: 'sso', identityOk: true,
-      account: '111122223333', arn: 'arn:aws:iam::111122223333:role/x', detail: '', default: true,
-    },
-  ],
-  summary: { storage: null, sites: null, tasks: null, costMonthToDate: null },
-}
+const ACCOUNT_ID = '111122223333'
 
 const driveExists: Extract<DriveStatus, { exists: true }> = {
   exists: true,
@@ -82,18 +74,11 @@ const driveExists: Extract<DriveStatus, { exists: true }> = {
   },
 }
 
-const costsFresh: CostReport = {
-  fresh: true, monthToDate: 12.5, projected: 30, currency: 'USD',
-  byService: [{ service: 'S3', amount: 12.5 }], fetchedAt: '2026-08-24T05:00:00Z',
-}
-
 const emptyLibrary: LibraryResponse = { artifacts: [] }
 const emptyBackup: BackupStatus = { nightly: false, runs: {}, remote: { snapshot: [], sessions: [] } }
 const noShares: SharesResponse = { shares: [] }
 
 function stubDrivePresent() {
-  vi.mocked(awsControlApi.drive).mockResolvedValue(driveExists)
-  vi.mocked(awsControlApi.costs).mockResolvedValue(costsFresh)
   vi.mocked(awsControlApi.library).mockResolvedValue(emptyLibrary)
   vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: [] })
   vi.mocked(awsControlApi.backup).mockResolvedValue(emptyBackup)
@@ -107,24 +92,33 @@ beforeEach(() => {
   // changes what every LATER test in the file renders -- the table controls
   // vanish and the failure points at the wrong test.
   localStorage.clear()
-  vi.mocked(api.awsConsent).mockReturnValue(new Promise(() => {}) as ReturnType<typeof api.awsConsent>)
+  // Library card previews fetch the full artifact when near the viewport; a
+  // never-resolving fetch keeps every preview a placeholder without touching
+  // the network in either IntersectionObserver regime.
+  vi.mocked(api.artifact).mockReturnValue(new Promise(() => {}) as ReturnType<typeof api.artifact>)
 })
 
 /**
- * Render the drive page and, optionally, open one of its three folder rows.
+ * Mount ONE of the drive's rail panes directly.
  *
- * The four sections that used to stack on the account console now live here:
- * the page root shows the three folder rows plus the shares ledger, and each
- * folder opens the section the console used to render inline. Tests that assert
- * the file browser pass 'drive', library tests 'library', backup tests
- * 'backup', and the shares-ledger tests (which sit at the root) pass nothing.
+ * The drive ROOT page (three section cards plus the ledger, with internal
+ * section state) was removed in the flat-rail IA refactor: the four sections
+ * are now named exports rendered as their own panes. So instead of mounting
+ * the root and clicking into a section, tests mount the section under test
+ * with the props the old flow passed -- the account id, plus the bucket for
+ * the two sections that render a CLI drawer. The shares-ledger tests, which
+ * used to sit at the root, mount AccessSection.
  */
-async function renderDrive(section?: 'drive' | 'library' | 'backup') {
-  renderWithProviders(<DrivePage account={ACCOUNT} drive={driveExists} onBack={() => {}} />)
-  if (section) fireEvent.click(await screen.findByTestId(`drive-section-${section}`))
+async function renderDrive(section: 'drive' | 'library' | 'backup' | 'access') {
+  const el =
+    section === 'drive' ? <DriveSectionView account={ACCOUNT_ID} bucket={driveExists.bucket} />
+    : section === 'library' ? <LibrarySection account={ACCOUNT_ID} bucket={driveExists.bucket} />
+    : section === 'backup' ? <BackupSection account={ACCOUNT_ID} />
+    : <AccessSection account={ACCOUNT_ID} />
+  renderWithProviders(el)
 }
 
-describe('DrivePage', () => {
+describe('DrivePage sections', () => {
   it('mints a share link and shows the URL exactly once in the dialog', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.driveList).mockResolvedValue({
@@ -134,7 +128,7 @@ describe('DrivePage', () => {
     vi.mocked(awsControlApi.driveShare).mockResolvedValue({
       url: 'https://example-presigned/report.pdf?sig=x',
       share: {
-        id: 's1', account: ACCOUNT.account, section: 'drive', key: 'report.pdf',
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
         createdAt: '2026-08-24T05:00:00Z', expiresAt: '2026-08-24T06:00:00Z', note: '',
       },
     })
@@ -179,19 +173,19 @@ describe('DrivePage', () => {
     fireEvent.keyDown(await screen.findByTestId('drive-more'), { key: 'Enter' })
     fireEvent.click(await screen.findByTestId('drive-delete'))
     fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
-    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'report.pdf'))
+    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'report.pdf'))
   })
 
   it('renders the shares ledger with an expires-in countdown', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.shares).mockResolvedValue({
       shares: [{
-        id: 's1', account: ACCOUNT.account, section: 'drive', key: 'report.pdf',
+        id: 's1', account: ACCOUNT_ID, section: 'drive', key: 'report.pdf',
         createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: 'for review',
       }],
     })
 
-    await renderDrive()
+    await renderDrive('access')
 
     const row = await screen.findByTestId('access-row')
     expect(row).toHaveTextContent('report.pdf')
@@ -212,7 +206,7 @@ describe('DrivePage', () => {
     await waitFor(() => expect((screen.getByTestId('backup-run-snapshot') as HTMLButtonElement).disabled).toBe(true))
   })
 
-  /* ── Drive: stored-usage figure, folder navigation, load-more ────────────── */
+  /* ── Drive: folder navigation and load-more ─────────────────────────────── */
 
   it('lists a folder and file with a download and a load-more control', async () => {
     stubDrivePresent()
@@ -223,10 +217,6 @@ describe('DrivePage', () => {
     })
 
     await renderDrive('drive')
-
-    // The page header carries the real stored-usage figure (drive exists).
-    const usage = await screen.findByTestId('drive-usage')
-    expect(usage.textContent ?? '').toContain(fmtBytes(driveExists.usage.bytes))
 
     // A folder row and a file row both render.
     expect(await screen.findByTestId('drive-folder')).toHaveTextContent('invoices')
@@ -263,7 +253,7 @@ describe('DrivePage', () => {
     expect(listing).toContain('alpha.txt')
     expect(listing).toContain('beta.txt')
     // The second page is fetched WITH the first page's continuation token.
-    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT.account, 'drive', '', 'tok-2')
+    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT_ID, 'drive', '', 'tok-2')
   })
 
   it('opening a folder shows that folder alone, not the accumulated parent rows', async () => {
@@ -295,7 +285,7 @@ describe('DrivePage', () => {
     expect(screen.queryByText('alpha.txt')).toBeNull()
     expect(screen.queryByText('beta.txt')).toBeNull()
     // And the navigation fetches the folder from its FIRST page, no stale token.
-    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT.account, 'drive', 'docs', '')
+    expect(awsControlApi.driveList).toHaveBeenLastCalledWith(ACCOUNT_ID, 'drive', 'docs', '')
   })
 
   it('drills into a folder from anywhere on the row, refetching for the new path', async () => {
@@ -312,7 +302,7 @@ describe('DrivePage', () => {
     // the name text, leaving the Kind/Size/Modified cells dead.
     fireEvent.click(await screen.findByTestId('drive-folder'))
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'invoices', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'invoices', ''),
     )
   })
 
@@ -328,7 +318,7 @@ describe('DrivePage', () => {
 
     fireEvent.click(await screen.findByTestId('drive-folder-open'))
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'invoices', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'invoices', ''),
     )
   })
 
@@ -355,31 +345,6 @@ describe('DrivePage', () => {
     expect(confirm).toHaveTextContent('invoices')
     // The strip is the very next row after the folder it targets.
     expect(rows[0].nextElementSibling).toBe(confirm)
-  })
-
-  it('follows the drive query, so the header totals are not the arrival snapshot', async () => {
-    // The page used to render the DriveStatus it was handed at navigation time.
-    // Every mutation here invalidates the drive key, so a frozen prop meant an
-    // upload or delete changed the listing while the header kept the old size
-    // and object count.
-    stubDrivePresent()
-    vi.mocked(awsControlApi.driveList).mockResolvedValue({ files: [], folders: ['invoices'] })
-    vi.mocked(awsControlApi.driveFolderDelete).mockResolvedValue({ deleted: true, path: 'invoices', objects: 4 })
-    // The refetch that follows the invalidation reports the smaller drive.
-    const shrunk = { ...driveExists, usage: { bytes: 1024, objects: 3 } }
-
-    await renderDrive('drive')
-    const usage = await screen.findByTestId('drive-usage')
-    await waitFor(() => expect(usage.textContent ?? '').toContain(fmtBytes(driveExists.usage.bytes)))
-
-    vi.mocked(awsControlApi.drive).mockResolvedValue(shrunk)
-    fireEvent.keyDown(await screen.findByTestId('drive-folder-more'), { key: 'Enter' })
-    fireEvent.click(await screen.findByTestId('drive-folder-delete'))
-    fireEvent.click(await screen.findByTestId('drive-folder-delete-action'))
-
-    // The header moves to the refetched figure rather than staying on the one
-    // captured when the page opened.
-    await waitFor(() => expect(screen.getByTestId('drive-usage').textContent ?? '').toContain(fmtBytes(1024)))
   })
 
   it('reports how many objects the folder delete actually removed', async () => {
@@ -417,7 +382,9 @@ describe('DrivePage', () => {
     // Never reached the endpoint.
     expect(awsControlApi.driveFolderCreate).not.toHaveBeenCalled()
   })
+})
 
+describe('DrivePage sections: folder disclosure and downloads', () => {
   it('folder disclosure swaps Upload out while open, and blurring the empty field collapses it', async () => {
     // Expanded, the row must stay one two-button action group (Create/Cancel):
     // Upload hides rather than becoming a third sibling. An abandoned empty
@@ -535,7 +502,7 @@ describe('DrivePage', () => {
 
     fireEvent.click(await screen.findByTestId('drive-folder-open'))
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'a/b', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'a/b', ''),
     )
 
     // The crumb group holds exactly two controls: Root and the overflow.
@@ -550,7 +517,7 @@ describe('DrivePage', () => {
     expect(menu.querySelectorAll('button')).toHaveLength(1)
     fireEvent.click(menu.querySelectorAll('button')[0])
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'a', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'a', ''),
     )
   })
 
@@ -665,7 +632,7 @@ describe('DrivePage', () => {
 
     // The api is called with the section and the file, and no error strip shows.
     await waitFor(() =>
-      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'ok.txt', good),
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'ok.txt', good),
     )
     expect(screen.queryByTestId('drive-upload-error')).toBeNull()
   })
@@ -693,9 +660,9 @@ describe('DrivePage', () => {
     expect(await screen.findByTestId('drive-delete-error')).toBeTruthy()
     expect(screen.getByTestId('drive-delete-confirm')).toBeTruthy()
   })
+})
 
-  /* ── Library: the cloud prefix, and the picker that fills it ─────────────── */
-
+describe('DrivePage sections: Library', () => {
   /**
    * THE assertion for this section's redesign.
    *
@@ -728,7 +695,7 @@ describe('DrivePage', () => {
     // The never-pushed local artifact does not appear in the folder at all.
     expect(screen.queryByText('Draft')).toBeNull()
     // And the listing came from the library section of the bucket.
-    expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'library', '', '')
+    expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'library', '', '')
   })
 
   it('falls back to a cloud-only card when no local artifact backs the object', async () => {
@@ -791,7 +758,7 @@ describe('DrivePage', () => {
 
     fireEvent.click(screen.getByTestId('library-chip-markdown'))
     fireEvent.click(screen.getByTestId('library-push'))
-    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT.account, 'notes'))
+    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
   })
 
   /**
@@ -868,7 +835,7 @@ describe('DrivePage', () => {
     // Confirming actually removes.
     fireEvent.click(screen.getByTestId('library-remove'))
     fireEvent.click(await screen.findByTestId('library-remove-action'))
-    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT.account, 'notes'))
+    await waitFor(() => expect(awsControlApi.libraryRemove).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
   })
 
   /**
@@ -961,9 +928,9 @@ describe('DrivePage', () => {
     expect(screen.queryByTestId('library-tile')).toBeNull()
     expect(screen.getByTestId('library-add-none')).toBeTruthy()
   })
+})
 
-  /* ── Review fixes: capability parity, honest counts, no self-contradiction ── */
-
+describe('DrivePage sections: capability parity, honest counts, no self-contradiction', () => {
   /**
    * Grid mode is a way of LOOKING at a folder, not a capability tier.
    *
@@ -1011,7 +978,7 @@ describe('DrivePage', () => {
     fireEvent.click(await screen.findByTestId('drive-grid-delete'))
     expect(await screen.findByTestId('drive-grid-confirm')).toBeTruthy()
     fireEvent.click(screen.getByTestId('drive-grid-confirm-action'))
-    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'a.txt'))
+    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'a.txt'))
   })
 
   /**
@@ -1123,9 +1090,6 @@ describe('DrivePage', () => {
     expect(tiles).toHaveLength(BACKEND_KINDS.length)
   })
 
-
-
-
   /**
    * "Nothing left to add" is a FALSE claim for a library that is all images.
    *
@@ -1226,15 +1190,14 @@ describe('DrivePage', () => {
     // ...but it is a label, not a locked door.
     expect((push as HTMLButtonElement).disabled).toBe(false)
     fireEvent.click(push)
-    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT.account, 'notes'))
+    await waitFor(() => expect(awsControlApi.libraryPush).toHaveBeenCalledWith(ACCOUNT_ID, 'notes'))
   })
 
   /**
    * The WHOLE grid folder tile navigates, not just its name.
    *
    * The tile carries a hover affordance, so a click on its icon or its body being
-   * a silent no-op is the same defect the table rows already fix -- and the root
-   * SectionCard in this change makes the whole card the control.
+   * a silent no-op is the same defect the table rows already fix.
    */
   it('opens a grid folder from anywhere on the tile, not just the name', async () => {
     stubDrivePresent()
@@ -1247,7 +1210,7 @@ describe('DrivePage', () => {
     // Click the TILE (not a name button -- there isn't one any more).
     fireEvent.click(tile)
     await waitFor(() =>
-      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'invoices', ''),
+      expect(awsControlApi.driveList).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'invoices', ''),
     )
   })
 
@@ -1294,7 +1257,9 @@ describe('DrivePage', () => {
     fireEvent.keyDown(cancel, { key: ' ' })
     expect(awsControlApi.driveList).not.toHaveBeenCalled()
   })
+})
 
+describe('DrivePage sections: Library integrity and view modes', () => {
   /**
    * A failed add must not be swallowed by a later one.
    *
@@ -1604,16 +1569,16 @@ describe('DrivePage', () => {
     // The api was called with the chosen expiry seconds + note; on failure the
     // dialog keeps its form (no result panel) so the owner can retry.
     await waitFor(() =>
-      expect(awsControlApi.driveShare).toHaveBeenCalledWith(ACCOUNT.account, 'drive', 'report.pdf', 604800, 'quarterly'),
+      expect(awsControlApi.driveShare).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'report.pdf', 604800, 'quarterly'),
     )
     expect(screen.queryByTestId('share-result')).toBeNull()
     // The close button dismisses the dialog entirely.
     fireEvent.click(screen.getByTestId('share-close'))
     await waitFor(() => expect(screen.queryByTestId('share-dialog')).toBeNull())
   })
+})
 
-  /* ── Backup: run success, nightly toggle, stored-archive disclosure, restore ─ */
-
+describe('DrivePage sections: backup, access, CLI drawer', () => {
   it('runs a backup, toggles nightly, and both invalidate through the api', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.backup).mockResolvedValue({
@@ -1631,7 +1596,7 @@ describe('DrivePage', () => {
     // The snapshot row shows its last-run line, then Run now calls the api.
     await screen.findByTestId('backup-row-snapshot')
     fireEvent.click(screen.getByTestId('backup-run-snapshot'))
-    await waitFor(() => expect(awsControlApi.backupRun).toHaveBeenCalledWith(ACCOUNT.account, 'snapshot'))
+    await waitFor(() => expect(awsControlApi.backupRun).toHaveBeenCalledWith(ACCOUNT_ID, 'snapshot'))
 
     // The sessions row carries its extra scope caveat.
     expect(screen.getByTestId('backup-sessions-scope')).toBeTruthy()
@@ -1639,7 +1604,7 @@ describe('DrivePage', () => {
     // Flipping the nightly toggle calls the api with the new value.
     const toggle = within(screen.getByTestId('backup-nightly')).getByRole('switch')
     fireEvent.click(toggle)
-    await waitFor(() => expect(awsControlApi.backupNightly).toHaveBeenCalledWith(ACCOUNT.account, true))
+    await waitFor(() => expect(awsControlApi.backupNightly).toHaveBeenCalledWith(ACCOUNT_ID, true))
   })
 
   it('discloses the stored-backups archive and restores a file, showing the staged path', async () => {
@@ -1667,7 +1632,7 @@ describe('DrivePage', () => {
 
     // Restore stages the archive locally and echoes the landed path.
     fireEvent.click(within(archive).getByTestId('backup-restore'))
-    await waitFor(() => expect(awsControlApi.backupRestore).toHaveBeenCalledWith(ACCOUNT.account, 'backup/snapshot/2026-08-24.tar'))
+    await waitFor(() => expect(awsControlApi.backupRestore).toHaveBeenCalledWith(ACCOUNT_ID, 'backup/snapshot/2026-08-24.tar'))
     expect(await screen.findByTestId('backup-restored')).toHaveTextContent('/home/u/.kiro/restore/2026-08-24')
   })
 
@@ -1690,13 +1655,13 @@ describe('DrivePage', () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.shares).mockResolvedValue({
       shares: [{
-        id: 's1', account: ACCOUNT.account, section: 'library', key: 'w/notes',
+        id: 's1', account: ACCOUNT_ID, section: 'library', key: 'w/notes',
         createdAt: '2026-08-24T05:00:00Z', expiresAt: '2030-01-01T00:00:00Z', note: '',
       }],
     })
     vi.mocked(awsControlApi.shareForget).mockResolvedValue({ forgotten: true } as never)
 
-    await renderDrive()
+    await renderDrive('access')
 
     fireEvent.click(await screen.findByTestId('access-forget'))
     await waitFor(() => expect(awsControlApi.shareForget).toHaveBeenCalledWith('s1'))
@@ -1710,8 +1675,7 @@ describe('DrivePage', () => {
 
     // The drawer is collapsed by default; opening it shows the aws s3 ls line
     // scoped to the artifacts/ prefix of the account's bucket.
-    const drawers = await screen.findAllByTestId('cli-drawer-toggle')
-    fireEvent.click(drawers[0])
+    fireEvent.click(await screen.findByTestId('cli-drawer-toggle'))
     const body = await screen.findByTestId('cli-drawer-body')
     expect(body).toHaveTextContent('aws s3 ls s3://kirocrew-drive-abc123/artifacts/')
   })
@@ -1737,8 +1701,7 @@ describe('download tab: the noopener trap', () => {
     const fakeTab = { location: { href: '' }, close: vi.fn(), opener: {} } as unknown as Window
     const openSpy = vi.spyOn(window, 'open').mockReturnValue(fakeTab)
 
-    renderWithProviders(<DrivePage account={ACCOUNT} drive={driveExists} onBack={() => {}} />)
-    fireEvent.click(await screen.findByTestId('drive-section-drive'))
+    await renderDrive('drive')
     fireEvent.click(await screen.findByTestId('drive-download'))
 
     const firstArgs = openSpy.mock.calls[0]
@@ -1752,5 +1715,57 @@ describe('download tab: the noopener trap', () => {
       ),
     )
     openSpy.mockRestore()
+  })
+})
+
+describe('StorageMeter', () => {
+  /**
+   * The meter is now an exported unit rendered by the usage pane, so its
+   * semantics are pinned here directly: a section that exists gets a legend
+   * row even at zero bytes (a 0-width segment alone would silently drop it),
+   * and only non-zero sections paint a bar segment.
+   */
+  it('renders a legend row for every section, including a zero-byte one', () => {
+    const usage: DriveUsage = {
+      bytes: 3_001_000_000,
+      objects: 40,
+      sections: {
+        library: { objects: 10, bytes: 1_000_000 },
+        drive: { objects: 30, bytes: 3_000_000_000 },
+        backup: { objects: 0, bytes: 0 },
+      },
+    }
+    renderWithProviders(<StorageMeter usage={usage} />)
+
+    // Every section is named in the legend, with its own size...
+    expect(screen.getByTestId('drive-meter-legend-drive').textContent).toContain(fmtBytes(3_000_000_000))
+    expect(screen.getByTestId('drive-meter-legend-library').textContent).toContain(fmtBytes(1_000_000))
+    // ...and the empty section keeps its row rather than vanishing.
+    expect(screen.getByTestId('drive-meter-legend-backup').textContent).toContain(fmtBytes(0))
+    // But only sections WITH bytes paint a segment in the bar.
+    expect(screen.getByTestId('drive-meter-segment-drive')).toBeTruthy()
+    expect(screen.getByTestId('drive-meter-segment-library')).toBeTruthy()
+    expect(screen.queryByTestId('drive-meter-segment-backup')).toBeNull()
+  })
+
+  it('renders a single muted track (no segments) when the drive is empty', () => {
+    const empty: DriveUsage = {
+      bytes: 0,
+      objects: 0,
+      sections: {
+        library: { objects: 0, bytes: 0 },
+        drive: { objects: 0, bytes: 0 },
+        backup: { objects: 0, bytes: 0 },
+      },
+    }
+    renderWithProviders(<StorageMeter usage={empty} />)
+
+    // The bar itself renders (never a bare outline), holding zero segments.
+    const bar = screen.getByTestId('drive-meter-bar')
+    expect(bar.querySelector('[data-testid^="drive-meter-segment-"]')).toBeNull()
+    // The legend still names all three sections.
+    expect(screen.getByTestId('drive-meter-legend-drive')).toBeTruthy()
+    expect(screen.getByTestId('drive-meter-legend-library')).toBeTruthy()
+    expect(screen.getByTestId('drive-meter-legend-backup')).toBeTruthy()
   })
 })

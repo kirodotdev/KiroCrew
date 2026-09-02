@@ -1,31 +1,43 @@
 /**
- * AWS Control — Page 1, Accounts (P0).
+ * AWS Control — the flat-rail shell.
  *
- * A dense, table-like list over the existing profile registry: one thin row per
- * AWS account leading with its name, a single health light and the full 12-digit
- * id, plus one quiet aggregate line ("N accounts · M keys · H healthy") with a
- * client-side search. Storage and cost are NOT measured in P0, so the aggregate
- * line only carries counts we actually have — it never invents a zero.
+ * The drive IS the product, so its four sections (Files, Library, Backup,
+ * Share links) are the app's own first-level navigation, laid out as a rail
+ * beside the content pane. The account is a card at the top of that rail with
+ * a switcher; account management and the money facts sink to the rail's foot
+ * (Accounts & credentials, Usage & costs) the way settings do. Opening the app
+ * lands on Files — the most used surface — with no account picking in the way.
  *
- * The surface is read-only (spec §2.3): every mutation lives in the crew or a
- * dashboard confirmation card, not here. Rows carry no actions — they only
- * navigate to the per-account console, where Reconnect now lives. The only
- * writes on this page are the two paid-service consent gates mounted at the
- * bottom, which are their own durable-state components.
+ * Everything here is view state, not routes: `BuiltinAppRoute` resolves only
+ * single-segment routes, so the active pane and the selected account are this
+ * component's state. The selected account persists across visits so a
+ * single-account operator never sees a chooser.
+ *
+ * The surface stays read-only over accounts (spec §2.3): every mutation lives
+ * in the crew or a dashboard confirmation card. The only writes are the
+ * paid-service consent gates, which are their own durable-state components.
  */
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Cloud, RefreshCw, ChevronRight, ChevronDown, Search } from 'lucide-react'
-import { PageHeader, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
+import {
+  Cloud, RefreshCw, ChevronDown, ChevronsUpDown, Search, Check,
+  FolderClosed, Library, Archive, Share2, Users, Wallet,
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import { Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '../../components/ui/dropdown-menu'
 import AwsConsentGate from '../../components/AwsConsentGate'
+import { usePersistedString } from '../../hooks/usePersistedString'
 import { api, type AwsConsentStatus } from '../../api/client'
 import { i18nT } from '../../i18n/t'
-import { fmtNumber } from '../../i18n/format'
+import { fmtBytes, fmtNumber } from '../../i18n/format'
 import { awsControlApi, AwsControlError } from './api'
-import ConsoleView, { ReconnectAction } from './ConsoleView'
-import DrivePage from './DrivePage'
-import type { AwsAccount, AccountHealth } from './types'
-import type { LiveDrive } from './DrivePage'
+import UsagePane, { ConnectionsSection, ReconnectAction, SetupCard } from './ConsoleView'
+import { DriveSectionView, LibrarySection, BackupSection, AccessSection } from './DrivePage'
+import { PaneHeader } from './shared'
+import type { AwsAccount, AccountHealth, DriveStatus } from './types'
 
 /** Tailwind token for each health light, keyed as an `as const` map (literal-safe). */
 const HEALTH_DOT: Record<AccountHealth, string> = {
@@ -45,25 +57,154 @@ function accountName(account: AwsAccount): string {
   return account.name || i18nT('apps.awsControl.page.not_connected_yet')
 }
 
+/* ── the rail ────────────────────────────────────────────────────────────── */
+
+/** The panes the rail can show. The four drive sections lead; the two
+ *  management panes sink to the rail's foot. */
+type RailPane = 'files' | 'library' | 'backup' | 'shares' | 'accounts' | 'usage'
+
+/* Literal-key maps from pane → catalog key, so no i18nT() call assembles a key
+ * by interpolation (dynamicKeys gate). The four drive panes reuse the section
+ * names their own headers already render, so the rail item and the pane title
+ * cannot drift to different names. */
+const PANE_LABEL_KEY: Record<RailPane, string> = {
+  files: 'apps.awsControl.console.section_files',
+  library: 'apps.awsControl.console.section_library',
+  backup: 'apps.awsControl.console.section_backup',
+  shares: 'apps.awsControl.console.access_title',
+  accounts: 'apps.awsControl.rail.accounts',
+  usage: 'apps.awsControl.rail.usage',
+}
+
+const PANE_ICON: Record<RailPane, LucideIcon> = {
+  files: FolderClosed,
+  library: Library,
+  backup: Archive,
+  shares: Share2,
+  accounts: Users,
+  usage: Wallet,
+}
+
+const DRIVE_PANES: RailPane[] = ['files', 'library', 'backup', 'shares']
+const FOOT_PANES: RailPane[] = ['accounts', 'usage']
+
+/** One rail navigation item: icon, label, and an optional count on the right. */
+function RailItem({ pane, count, active, onClick }: {
+  pane: RailPane
+  count?: number
+  active: boolean
+  onClick: () => void
+}) {
+  const Icon = PANE_ICON[pane]
+  return (
+    <button
+      onClick={onClick}
+      aria-current={active ? 'page' : undefined}
+      data-testid={`rail-${pane}`}
+      className={`flex w-full shrink-0 items-center gap-2.5 rounded-md border-none px-2.5 py-2 text-left text-[13px] cursor-pointer focus-ring md:shrink ${
+        active ? 'bg-accent-subtle text-text-strong' : 'bg-transparent text-text hover:bg-bg-hover'
+      }`}
+    >
+      <Icon size={15} className={`shrink-0 ${active ? 'text-accent' : 'text-muted'}`} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">{i18nT(PANE_LABEL_KEY[pane])}</span>
+      {count !== undefined && (
+        <span className="shrink-0 font-mono text-[11px] text-muted" data-testid={`rail-${pane}-count`}>
+          {fmtNumber(count)}
+        </span>
+      )}
+    </button>
+  )
+}
+
+/**
+ * The account card at the rail's top: health dot, name, id, and a switcher.
+ *
+ * The dropdown lists every RESOLVED account — an unresolved profile has no
+ * account to select and is reached through Accounts & credentials, which is
+ * the menu's last item. With one account the card still renders (it is the
+ * pane's context, not a chooser), the menu just has one entry.
+ */
+function AccountSwitcher({ accounts, selected, onSelect, onManage }: {
+  accounts: AwsAccount[]
+  selected: AwsAccount
+  onSelect: (id: string) => void
+  onManage: () => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className="mb-3 flex w-full items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2.5 text-left cursor-pointer hover:bg-bg-hover focus-ring"
+          data-testid="account-switcher"
+          aria-label={i18nT('apps.awsControl.rail.switch_account')}
+        >
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${HEALTH_DOT[selected.health]}`}
+            data-testid="switcher-health"
+            data-health={selected.health}
+            role="img"
+            aria-label={i18nT(HEALTH_LABEL_KEY[selected.health])}
+          />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-semibold text-text-strong" data-testid="switcher-name">
+              {accountName(selected)}
+            </span>
+            <span className="block truncate font-mono text-[11px] text-muted" data-testid="switcher-id">
+              {selected.account}
+            </span>
+          </span>
+          <ChevronsUpDown size={14} className="shrink-0 text-muted" aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {accounts.map((a) => (
+          <DropdownMenuItem
+            key={a.account}
+            onSelect={() => onSelect(a.account)}
+            data-testid="switcher-option"
+            data-account={a.account}
+          >
+            <span className={`h-2 w-2 shrink-0 rounded-full ${HEALTH_DOT[a.health]}`} aria-hidden="true" />
+            <span className="min-w-0 truncate">{accountName(a)}</span>
+            <span className="font-mono text-[11px] text-muted">{a.account}</span>
+            {a.account === selected.account && <Check size={13} className="text-accent" aria-hidden="true" />}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuItem onSelect={onManage} data-testid="switcher-manage">
+          <Users size={13} aria-hidden="true" />
+          {i18nT('apps.awsControl.rail.accounts')}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+/* ── Accounts & credentials pane ─────────────────────────────────────────── */
+
 /**
  * One thin account row (~40px). Leads with a health dot and the account name,
- * then the full 12-digit id (mono, muted), and on the right a keys summary and a
- * chevron. A resolved row is the button that opens the console and carries no
- * other action. An UNRESOLVED row cannot open a console (there is no account to
- * show), so its click toggles the inline Reconnect guidance instead -- a red row
- * must always offer a way back to green.
+ * then the full 12-digit id (mono, muted), and on the right a keys summary. A
+ * resolved row SELECTS that account for the whole app (rail card, drive panes,
+ * usage). An UNRESOLVED row cannot be selected (there is no account behind it),
+ * so its click toggles the inline Reconnect guidance instead — a red row must
+ * always offer a way back to green.
  */
-function AccountRow({ account, onOpen }: { account: AwsAccount; onOpen: () => void }) {
+function AccountRow({ account, current, onUse }: {
+  account: AwsAccount
+  current: boolean
+  onUse: () => void
+}) {
   const keys = account.profiles.length
   const resolved = Boolean(account.account)
   const [showReconnect, setShowReconnect] = useState(false)
   return (
     <div>
       <button
-        onClick={resolved ? onOpen : () => setShowReconnect((v) => !v)}
+        onClick={resolved ? onUse : () => setShowReconnect((v) => !v)}
         className="flex w-full items-center gap-3 px-3 py-2 text-left cursor-pointer bg-transparent border-none hover:bg-bg-hover focus-ring"
         data-testid="account-card"
-        aria-label={i18nT(resolved ? 'apps.awsControl.page.open_console' : 'apps.awsControl.page.reconnect')}
+        data-current={current || undefined}
+        aria-label={i18nT(resolved ? 'apps.awsControl.rail.use_account' : 'apps.awsControl.page.reconnect')}
         aria-expanded={resolved ? undefined : showReconnect}
       >
         <span
@@ -79,8 +220,8 @@ function AccountRow({ account, onOpen }: { account: AwsAccount; onOpen: () => vo
         {/* A word, not just a colour: the dot alone made a degraded account
             distinguishable only by hue. Healthy rows stay quiet — the word
             appears exactly when something needs attention. min-w-0 + truncate,
-            not shrink-0: a fixed-width label at 320px pushes the keys count and
-            chevron off the clipped row (longest German label measured). */}
+            not shrink-0: a fixed-width label at 320px pushes the keys count
+            off the clipped row (longest German label measured). */}
         {account.health !== 'ok' && (
           <span className="min-w-0 shrink truncate text-[12px] text-warn" data-testid="account-health-word">
             {i18nT(HEALTH_LABEL_KEY[account.health])}
@@ -95,11 +236,14 @@ function AccountRow({ account, onOpen }: { account: AwsAccount; onOpen: () => vo
         <span className="shrink-0 text-[12px] text-muted" data-testid="account-keys">
           {i18nT('apps.awsControl.page.keys_summary', { count: keys })}
         </span>
-        {resolved ? (
-          <ChevronRight size={14} className="shrink-0 text-muted" aria-hidden="true" />
-        ) : (
+        {/* The row's affordance: the check marks the account the app is
+            currently on; other resolved rows show nothing and select on
+            click; unresolved rows disclose Reconnect. */}
+        {current ? (
+          <Check size={14} className="shrink-0 text-accent" aria-hidden="true" data-testid="account-current" />
+        ) : !resolved ? (
           <ChevronDown size={14} className={`shrink-0 text-muted transition-transform ${showReconnect ? 'rotate-180' : ''}`} aria-hidden="true" />
-        )}
+        ) : null}
       </button>
       {!resolved && showReconnect && account.profiles[0] && (
         <div className="px-3 pb-2" data-testid="row-reconnect">
@@ -113,7 +257,7 @@ function AccountRow({ account, onOpen }: { account: AwsAccount; onOpen: () => vo
 /**
  * An "Add accounts" disclosure: lists the LOCAL profiles the CLI knows but the
  * portal has not registered, each with a checkbox, and registers the checked
- * set. It stays collapsed by default so the account list remains the page's
+ * set. It stays collapsed by default so the account list remains the pane's
  * primary content. On success it invalidates the accounts query so a newly
  * registered profile appears without a manual refresh.
  */
@@ -260,21 +404,17 @@ function AddAccounts() {
   )
 }
 
-export default function AwsControlPage() {
-  // The Console is view state INSIDE this page, not a route: BuiltinAppRoute
-  // resolves single-segment routes only. Selecting an account row opens it; the
-  // breadcrumb inside ConsoleView clears the selection to return here.
-  const [selected, setSelected] = useState<AwsAccount | null>(null)
-  const [drive, setDrive] = useState<LiveDrive | null>(null)
+/**
+ * The Accounts & credentials pane: every registered account as a selectable
+ * row with a client-side search, the selected account's connection keys, the
+ * orphaned-consent rescue, and the Add-accounts disclosure.
+ */
+function AccountsPane({ accountsQ, selected, onUse }: {
+  accountsQ: ReturnType<typeof useAccountsQuery>
+  selected: AwsAccount | null
+  onUse: (account: AwsAccount) => void
+}) {
   const [query, setQuery] = useState('')
-
-  const accountsQ = useQuery({
-    queryKey: ['aws-control', 'accounts'],
-    queryFn: () => awsControlApi.accounts(),
-  })
-
-  const refresh = () => accountsQ.refetch()
-
   const data = accountsQ.data
 
   // Client-side filter over name + id; harmless when few accounts.
@@ -288,9 +428,9 @@ export default function AwsControlPage() {
   }, [data, query])
 
   // A grant is keyed on the SERVICE, so it outlives the account it was recorded
-  // for. The console only shows a receipt whose grant matches that console's own
-  // account, which means a grant matching NO registered account has no console
-  // to live on and `revokeAwsConsent` has no caller anywhere - money confirmed
+  // for. The usage pane only shows a receipt whose grant matches the SELECTED
+  // account, which means a grant matching NO registered account has no surface
+  // to live on and `revokeAwsConsent` has no caller anywhere — money confirmed
   // with no way to unconfirm it. Zero registered accounts is only one way to
   // reach that; deregistering the account a grant was recorded for while others
   // remain is another, so the condition is the general one rather than an empty
@@ -309,51 +449,229 @@ export default function AwsControlPage() {
     if (c?.granted !== true || !owner) return false
     // Only once the LIST is known. An in-flight accounts query leaves `data`
     // undefined, and treating that as "no account owns this grant" would flash
-    // a withdraw control onto the ordinary accounts page on every load where the
-    // consent read lands first - a destructive control offered by mistake, and
-    // the exact section this page was cleaned of.
+    // a withdraw control onto the ordinary accounts pane on every load where
+    // the consent read lands first — a destructive control offered by mistake.
     if (!accountsQ.isSuccess) return false
     return !(data?.accounts ?? []).some((a) => a.account === owner)
   }
   const s3Orphan = orphaned(s3ConsentQ.data)
   const ceOrphan = orphaned(ceConsentQ.data)
 
-  /* Three levels of view state, not routes: `BuiltinAppRoute` resolves only a
-     single-segment route, so the accounts list, one account's console and that
-     account's drive are all this component's state. The drive level is held HERE
-     rather than inside the console so the console does not nest a second page
-     within itself - each level renders exactly one surface. */
-  if (selected && drive) {
-    return (
-      <DrivePage
-        account={selected}
-        drive={drive}
-        onBack={() => setDrive(null)}
+  return (
+    <section data-testid="accounts-pane">
+      <PaneHeader
+        icon={<Users size={18} />}
+        title={i18nT('apps.awsControl.rail.accounts')}
+        actions={
+          <Btn onClick={() => accountsQ.refetch()} disabled={accountsQ.isFetching} data-testid="refresh">
+            <RefreshCw size={13} className={accountsQ.isFetching ? 'animate-spin' : ''} />
+            {i18nT('apps.awsControl.page.refresh')}
+          </Btn>
+        }
       />
-    )
-  }
 
-  if (selected) {
-    return (
-      <ConsoleView
-        account={selected}
-        onBack={() => setSelected(null)}
-        onOpenDrive={setDrive}
-      />
-    )
-  }
+      {/* Accounts and a client-side search over them. The strip on the left
+          answers "how much is connected and is it healthy" at a glance —
+          counts the backend already sends — while the list below stays the
+          pane's primary content. */}
+      <div className="flex flex-wrap items-center justify-between gap-2" data-testid="accounts-aggregate">
+        {data?.totals ? (
+          <p className="text-[13px] text-muted" data-testid="accounts-totals">
+            {i18nT('apps.awsControl.page.totals_summary', {
+              accounts: fmtNumber(data.totals.accounts),
+              keys: fmtNumber(data.totals.profiles),
+              healthy: fmtNumber(data.totals.profilesHealthy),
+            })}
+          </p>
+        ) : <span />}
+        <div className="relative">
+          <Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={i18nT('apps.awsControl.page.search_placeholder')}
+            aria-label={i18nT('apps.awsControl.page.search_placeholder')}
+            className="w-48 pl-7"
+            data-testid="accounts-search"
+          />
+        </div>
+      </div>
 
-  const header = (
-    <PageHeader
-      title={i18nT('apps.awsControl.page.title')}
-      actions={
-        <Btn onClick={refresh} disabled={accountsQ.isFetching} data-testid="refresh">
-          <RefreshCw size={13} className={accountsQ.isFetching ? 'animate-spin' : ''} />
-          {i18nT('apps.awsControl.page.refresh')}
-        </Btn>
-      }
-    />
+      {accountsQ.isLoading && (
+        <div className="mt-4" data-testid="accounts-loading">
+          <ContentSkeleton rows={3} />
+        </div>
+      )}
+
+      {data && data.accounts.length === 0 && (
+        <div className="mt-4" data-testid="accounts-empty">
+          <EmptyState
+            testId="aws-control-empty"
+            icon={<Cloud />}
+            title={i18nT('apps.awsControl.page.empty_title')}
+            subtitle={i18nT('apps.awsControl.page.empty_body')}
+          />
+        </div>
+      )}
+
+      {data && data.accounts.length > 0 && filtered.length === 0 && (
+        <p className="mt-4 text-[13px] text-muted" data-testid="accounts-search-empty">
+          {i18nT('apps.awsControl.page.search_none', { query: query.trim() })}
+        </p>
+      )}
+
+      {data && filtered.length > 0 && (
+        <div
+          className="mt-4 overflow-hidden rounded-lg border border-border bg-card divide-y divide-border"
+          data-testid="accounts-list"
+        >
+          {filtered.map((a, i) => (
+            <AccountRow
+              key={a.account || `unresolved-${i}`}
+              account={a}
+              current={Boolean(selected && a.account === selected.account)}
+              onUse={() => onUse(a)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* The selected account's connection keys, with Reconnect on a failing
+          one. Credentials are this pane's subject, so the section lives here
+          rather than on a page of its own. */}
+      {selected && (
+        <div className="mt-8" data-testid="accounts-connections">
+          <ConnectionsSection account={selected} />
+        </div>
+      )}
+
+      {/* Not a section but a rescue: a grant whose recorded account is not
+          registered here has no usage pane to appear on, so without this it
+          could never be withdrawn. It renders only in that state. */}
+      {(s3Orphan || ceOrphan) && (
+        <div className="mt-6 flex flex-col gap-3" data-testid="orphan-consent">
+          {/* This state needs its sentence more than any other surface here:
+              the card names an AWS account that matches nothing in the list
+              above it, and its only control is destructive. */}
+          <p className="text-[13px] text-text" data-testid="orphan-consent-note">
+            {i18nT('apps.awsControl.page.orphan_consent')}
+          </p>
+          {s3Orphan && <AwsConsentGate service="s3" />}
+          {ceOrphan && <AwsConsentGate service="ce" />}
+        </div>
+      )}
+
+      <AddAccounts />
+    </section>
   )
+}
+
+/* ── the shell ───────────────────────────────────────────────────────────── */
+
+/** The accounts query, named so `AccountsPane` can type its prop off it. */
+function useAccountsQuery() {
+  return useQuery({
+    queryKey: ['aws-control', 'accounts'],
+    queryFn: () => awsControlApi.accounts(),
+  })
+}
+
+/**
+ * A drive-backed pane, gated on the drive actually existing.
+ *
+ * Loading skeletons, the storage-consent ask (a 409 whose fix is right here),
+ * the dead-connection notice, and the setup card all render under the pane's
+ * own title, so the rail selection and the pane header always agree about
+ * where the reader is even when the drive is not there yet.
+ */
+function DrivePaneGate({ pane, account, drive, driveQ, children }: {
+  pane: RailPane
+  account: AwsAccount
+  drive: DriveStatus | undefined
+  driveQ: { isLoading: boolean; isError: boolean; error: unknown }
+  children: (bucket: string) => React.ReactNode
+}) {
+  const qc = useQueryClient()
+  const id = account.account
+  const Icon = PANE_ICON[pane]
+  const driveErr = driveQ.error instanceof AwsControlError ? driveQ.error : null
+  const drive409 = driveQ.isError && driveErr?.status === 409 ? driveErr : null
+  const driveConsentRefused = drive409?.message === 'aws_consent_required'
+  // Fallback region for the setup preview: the default key's region, else the
+  // first key's — the same way the connections section sources the one it shows.
+  const defaultProfile = account.profiles.find((p) => p.default) ?? account.profiles[0]
+  const setupRegion = defaultProfile?.region ?? ''
+
+  if (drive?.exists) return <>{children(drive.bucket)}</>
+
+  return (
+    <section data-testid={`gate-${pane}`}>
+      <PaneHeader icon={<Icon size={18} />} title={i18nT(PANE_LABEL_KEY[pane])} />
+      {driveQ.isLoading && <ContentSkeleton rows={3} />}
+      {/* A 409 is not one condition: storage-not-confirmed renders the
+          confirmation card (the fix is right here), while a dead connection
+          points back at Reconnect on the accounts pane. */}
+      {drive409 && (
+        driveConsentRefused ? (
+          <div data-testid="console-storage-consent">
+            <p className="mb-2 text-[13px] text-muted">{i18nT('apps.awsControl.console.storage_consent_needed')}</p>
+            <AwsConsentGate
+              service="s3"
+              onConsentChange={() => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })}
+            />
+            <div className="mt-2">
+              <Btn onClick={() => qc.invalidateQueries({ queryKey: ['aws-control', 'drive', id] })} data-testid="console-consent-recheck">
+                <RefreshCw size={13} />{i18nT('apps.awsControl.page.refresh')}
+              </Btn>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[13px] text-muted" data-testid="console-unavailable">{i18nT('apps.awsControl.console.account_unavailable')}</p>
+        )
+      )}
+      {/* No bucket yet, so the pane carries the one action that changes that. */}
+      {drive && !drive.exists && (
+        <div className="rounded-lg border border-border bg-card px-4 py-3" data-testid="capability-drive-setup">
+          <SetupCard account={id} region={setupRegion} />
+        </div>
+      )}
+    </section>
+  )
+}
+
+export default function AwsControlPage() {
+  const [pane, setPane] = useState<RailPane>('files')
+  // The selected account survives visits, so a single-account operator (and a
+  // returning multi-account one) lands straight in their drive. An id that no
+  // longer resolves falls back to the first resolved account rather than a
+  // chooser.
+  const [storedId, setStoredId] = usePersistedString('awsControl.selectedAccount', '')
+
+  const accountsQ = useAccountsQuery()
+  const data = accountsQ.data
+  const accounts = data?.accounts ?? []
+  const resolved = accounts.filter((a) => Boolean(a.account))
+  const selected = resolved.find((a) => a.account === storedId) ?? resolved[0] ?? null
+  const id = selected?.account ?? ''
+
+  const driveQ = useQuery({
+    queryKey: ['aws-control', 'drive', id],
+    queryFn: () => awsControlApi.drive(id),
+    enabled: Boolean(id),
+  })
+  const drive = driveQ.data
+  // The share ledger's own query key, shared with `AccessSection`, so the rail
+  // count and the pane listing can never disagree.
+  const sharesQ = useQuery({
+    queryKey: ['aws-control', 'shares', id],
+    queryFn: () => awsControlApi.shares(id),
+    enabled: Boolean(id),
+  })
+
+  const useAccount = (a: AwsAccount) => {
+    setStoredId(a.account)
+    setPane('files')
+  }
 
   // A 403 app_disabled means the app was disabled after this bundle loaded (the
   // shell shows its own disabled state on first load). Show the standard
@@ -361,8 +679,7 @@ export default function AwsControlPage() {
   if (accountsQ.isError && accountsQ.error instanceof AwsControlError && accountsQ.error.status === 403) {
     return (
       <div className="flex h-full flex-col">
-        {header}
-        <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6">
           <EmptyState
             testId="aws-control-disabled"
             icon={<Cloud />}
@@ -374,115 +691,126 @@ export default function AwsControlPage() {
     )
   }
 
-  return (
-    <div className="flex h-full flex-col">
-      {header}
-      <div className="flex-1 overflow-y-auto px-4 pb-6 md:px-6">
-        {/* Accounts and a client-side search over them. The strip on the left
-            answers "how much is connected and is it healthy" at a glance —
-            counts the backend already sends — while the list below stays the
-            page's primary content. Paid-service consent gates live on the
-            account they actually bill (see ConsoleView). */}
-        <div className="flex flex-wrap items-center justify-between gap-2" data-testid="accounts-aggregate">
-          {data?.totals ? (
-            <p className="text-[13px] text-muted" data-testid="accounts-totals">
-              {i18nT('apps.awsControl.page.totals_summary', {
-                accounts: fmtNumber(data.totals.accounts),
-                keys: fmtNumber(data.totals.profiles),
-                healthy: fmtNumber(data.totals.profilesHealthy),
-              })}
-            </p>
-          ) : <span />}
-          <div className="relative">
-            <Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={i18nT('apps.awsControl.page.search_placeholder')}
-              aria-label={i18nT('apps.awsControl.page.search_placeholder')}
-              className="w-48 pl-7"
-              data-testid="accounts-search"
-            />
-          </div>
+  if (accountsQ.isError) {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6" data-testid="accounts-error">
+          <EmptyState
+            testId="aws-control-error"
+            icon={<Cloud />}
+            title={i18nT('apps.awsControl.page.error_title')}
+            subtitle={i18nT('apps.awsControl.page.error_body')}
+            action={
+              <Btn onClick={() => accountsQ.refetch()} data-testid="error-retry">
+                <RefreshCw size={13} />
+                {i18nT('apps.awsControl.page.retry')}
+              </Btn>
+            }
+          />
         </div>
+      </div>
+    )
+  }
 
-        {accountsQ.isLoading && (
-          <div className="mt-4" data-testid="accounts-loading">
-            <ContentSkeleton rows={3} />
+  // No resolved account: there is nothing for the drive panes to show, so the
+  // accounts pane IS the app until a key resolves — onboarding (zero accounts)
+  // and all-red (unresolved rows with Reconnect) both land here, full width.
+  if (accountsQ.isLoading || !selected) {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex-1 overflow-y-auto px-4 pt-4 pb-6 md:px-6">
+          <AccountsPane accountsQ={accountsQ} selected={null} onUse={useAccount} />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col md:flex-row">
+      {/* The rail. On desktop a left column; on narrow viewports it flattens
+          to a horizontally scrollable strip above the pane, so 320px keeps
+          every pane reachable without a second navigation pattern. */}
+      <nav
+        className="flex w-full shrink-0 flex-row items-center gap-1 overflow-x-auto border-b border-border px-3 py-2 md:w-56 md:flex-col md:items-stretch md:overflow-x-visible md:border-b-0 md:border-r md:px-3 md:py-3"
+        aria-label={i18nT('apps.awsControl.rail.nav')}
+        data-testid="aws-rail"
+      >
+        <div className="order-first w-56 shrink-0 md:w-auto md:shrink">
+          <AccountSwitcher
+            accounts={resolved}
+            selected={selected}
+            onSelect={(nextId) => setStoredId(nextId)}
+            onManage={() => setPane('accounts')}
+          />
+        </div>
+        {DRIVE_PANES.map((p) => (
+          <RailItem
+            key={p}
+            pane={p}
+            active={pane === p}
+            onClick={() => setPane(p)}
+            count={
+              p === 'shares'
+                ? sharesQ.data?.shares.length
+                : drive?.exists
+                  ? drive.usage.sections[p === 'files' ? 'drive' : p === 'library' ? 'library' : 'backup'].objects
+                  : undefined
+            }
+          />
+        ))}
+        <div className="hidden flex-1 md:block" />
+        {FOOT_PANES.map((p) => (
+          <RailItem key={p} pane={p} active={pane === p} onClick={() => setPane(p)} />
+        ))}
+        {/* The drive's identity, stated once at the rail's foot: bucket, size,
+            and region — the facts every pane above shares. */}
+        {drive?.exists && (
+          <div className="hidden border-t border-border px-2.5 pt-2 text-[11px] leading-relaxed text-muted md:block" data-testid="rail-meta">
+            <span className="block truncate font-mono">{drive.bucket}</span>
+            <span className="block">
+              {i18nT('apps.awsControl.console.stat_stored_value', {
+                size: fmtBytes(drive.usage.bytes),
+                objects: fmtNumber(drive.usage.objects),
+              })}
+              {' · '}
+              {drive.region}
+            </span>
           </div>
         )}
+      </nav>
 
-        {accountsQ.isError && !(accountsQ.error instanceof AwsControlError && accountsQ.error.status === 403) && (
-          <div className="mt-4" data-testid="accounts-error">
-            <EmptyState
-              testId="aws-control-error"
-              icon={<Cloud />}
-              title={i18nT('apps.awsControl.page.error_title')}
-              subtitle={i18nT('apps.awsControl.page.error_body')}
-              action={
-                <Btn onClick={refresh} data-testid="error-retry">
-                  <RefreshCw size={13} />
-                  {i18nT('apps.awsControl.page.retry')}
-                </Btn>
-              }
-            />
-          </div>
+      {/* Keyed by the selected account: every pane holds account-BOUND
+          transient state (an armed delete confirm, an open folder disclosure,
+          a half-typed share note), and React would otherwise reuse the same
+          component instances across a switch — a confirm armed on account A
+          would stay armed and then fire its mutation against account B's
+          same-named object. Remounting on switch is the reset that makes a
+          switch mean "start clean on the other account". */}
+      <div key={id} className="min-w-0 flex-1 overflow-y-auto px-4 pt-4 pb-6 md:px-6">
+        {pane === 'files' && (
+          <DrivePaneGate pane="files" account={selected} drive={drive} driveQ={driveQ}>
+            {(bucket) => <DriveSectionView account={id} bucket={bucket} />}
+          </DrivePaneGate>
         )}
-
-        {data && data.accounts.length === 0 && (
-          <div className="mt-4" data-testid="accounts-empty">
-            <EmptyState
-              testId="aws-control-empty"
-              icon={<Cloud />}
-              title={i18nT('apps.awsControl.page.empty_title')}
-              subtitle={i18nT('apps.awsControl.page.empty_body')}
-            />
-          </div>
+        {pane === 'library' && (
+          <DrivePaneGate pane="library" account={selected} drive={drive} driveQ={driveQ}>
+            {(bucket) => <LibrarySection account={id} bucket={bucket} />}
+          </DrivePaneGate>
         )}
-
-        {data && data.accounts.length > 0 && filtered.length === 0 && (
-          <p className="mt-4 text-[13px] text-muted" data-testid="accounts-search-empty">
-            {i18nT('apps.awsControl.page.search_none', { query: query.trim() })}
-          </p>
+        {pane === 'backup' && (
+          <DrivePaneGate pane="backup" account={selected} drive={drive} driveQ={driveQ}>
+            {() => <BackupSection account={id} />}
+          </DrivePaneGate>
         )}
-
-        {data && filtered.length > 0 && (
-          <div
-            className="mt-4 overflow-hidden rounded-lg border border-border bg-card divide-y divide-border"
-            data-testid="accounts-list"
-          >
-            {filtered.map((a, i) => (
-              <AccountRow key={a.account || `unresolved-${i}`} account={a} onOpen={() => setSelected(a)} />
-            ))}
-          </div>
+        {pane === 'shares' && (
+          <DrivePaneGate pane="shares" account={selected} drive={drive} driveQ={driveQ}>
+            {() => <AccessSection account={id} />}
+          </DrivePaneGate>
         )}
-
-        {/* No paid-service section here. This page is the account list, and a
-            confirmation is not an account: both paid services (s3 behind the
-            drive, ce behind the cost figure) are reached from an account's
-            console, so both the ask and the receipt live there. The earlier
-            claim that this page was the only surface able to show a grant was
-            wrong - the console already mounted both gates on refusal.
-
-            The one exception below is not a section but a rescue: a grant whose
-            recorded account is not registered here has no console to appear on,
-            so without this it could never be withdrawn. It renders only in that
-            state, so whenever an account owns the grant this page is accounts
-            and nothing else. */}
-        {(s3Orphan || ceOrphan) && (
-          <div className="mt-6 flex flex-col gap-3" data-testid="orphan-consent">
-            {/* This state needs its sentence more than any other surface here: the
-                card names an AWS account that matches nothing in the list above
-                it, and its only control is destructive. */}
-            <p className="text-[13px] text-text" data-testid="orphan-consent-note">
-              {i18nT('apps.awsControl.page.orphan_consent')}
-            </p>
-            {s3Orphan && <AwsConsentGate service="s3" />}
-            {ceOrphan && <AwsConsentGate service="ce" />}
-          </div>
+        {pane === 'accounts' && (
+          <AccountsPane accountsQ={accountsQ} selected={selected} onUse={useAccount} />
         )}
-
-        <AddAccounts />
+        {pane === 'usage' && <UsagePane account={selected} />}
       </div>
     </div>
   )

@@ -4671,7 +4671,6 @@
         "configuration_1": "Füge ein Konto aus den Profilen hinzu, die schon auf diesem Rechner liegen, und bestätige dann jeden kostenpflichtigen Dienst einmal pro Konto, bevor er zum ersten Mal genutzt wird."
       },
       "console": {
-        "crumb_accounts": "Konten",
         "copy": "Kopieren",
         "copied": "Kopiert",
         "close": "Schließen",
@@ -4772,16 +4771,9 @@
         "key_healthy": "Fehlerfrei",
         "key_failed": "Fehlgeschlagen",
         "parent_folders": "Übergeordnete Ordner",
-        "connection_connected": "Verbunden",
-        "connection_degraded": "Beeinträchtigt",
-        "connection_unknown": "Unbekannt",
-        "copy_id": "Konto-ID kopieren",
         "folder_actions": "Ordneraktionen",
         "file_actions": "Dateiaktionen",
         "root_storage_used": "Was Speicher belegt",
-        "root_section_desc_drive": "Dateien, die Sie von Ihrem Computer hochladen.",
-        "root_section_desc_library": "Von Kiro für Sie erstellte Inhalte, in die Cloud kopiert.",
-        "root_section_desc_backup": "Workspace-Snapshots und Sitzungsarchive.",
         "root_section_objects_one": "{{objects}} Element",
         "root_section_objects_other": "{{objects}} Elemente",
         "view_grid": "Rasteransicht",
@@ -4817,7 +4809,6 @@
         "library_remove_confirm_slug": "Dies leert den Cloud-Ordner <folder>{{folder}}</folder>."
       },
       "page": {
-        "title": "AWS Control",
         "totals_summary": "{{accounts}} Konten · {{keys}} Schlüssel · {{healthy}} fehlerfrei",
         "refresh": "Aktualisieren",
         "health_ok": "Intakt",
@@ -4828,7 +4819,6 @@
         "kind_other": "Andere",
         "default_profile": "Standardprofil",
         "not_connected_yet": "Noch nicht verbunden",
-        "open_console": "Konsole dieses Kontos öffnen",
         "reconnect": "Neu verbinden",
         "reconnect_loading": "Hinweise zum Neuverbinden werden geladen…",
         "reconnect_error": "Hinweise zum Neuverbinden konnten nicht geladen werden.",
@@ -4867,6 +4857,13 @@
         "search_none": "Keine Konten stimmen mit „{{query}}“ überein.",
         "paid_services_title": "Kostenpflichtige Dienste",
         "orphan_consent": "Bestätigt für ein AWS-Konto, das hier nicht registriert ist. Ziehen Sie die Bestätigung unten zurück, oder registrieren Sie das Konto erneut, um es auf seiner eigenen Seite zu verwalten."
+      },
+      "rail": {
+        "accounts": "Konten & Anmeldedaten",
+        "nav": "AWS Control-Bereiche",
+        "switch_account": "Konto wechseln",
+        "usage": "Nutzung & Kosten",
+        "use_account": "Dieses Konto verwenden"
       }
     }
   },

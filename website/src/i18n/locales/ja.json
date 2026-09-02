@@ -4593,7 +4593,6 @@
         "configuration_1": "このマシンにあるプロファイルからアカウントを追加し、有料サービスは初回利用前にアカウントごとに確認します。"
       },
       "console": {
-        "crumb_accounts": "アカウント",
         "copy": "コピー",
         "copied": "コピーしました",
         "close": "閉じる",
@@ -4693,16 +4692,9 @@
         "key_healthy": "正常",
         "key_failed": "失敗",
         "parent_folders": "上位フォルダー",
-        "connection_connected": "接続済み",
-        "connection_degraded": "劣化",
-        "connection_unknown": "不明",
-        "copy_id": "アカウント ID をコピー",
         "folder_actions": "フォルダーの操作",
         "file_actions": "ファイルの操作",
         "root_storage_used": "ストレージの使用内訳",
-        "root_section_desc_drive": "ご自分のコンピューターからアップロードするファイル。",
-        "root_section_desc_library": "Kiro が作成したものを、クラウドにコピーしたもの。",
-        "root_section_desc_backup": "ワークスペースのスナップショットとセッションのアーカイブ。",
         "root_section_objects_other": "{{objects}} 件",
         "view_grid": "グリッド表示",
         "view_list": "リスト表示",
@@ -4737,7 +4729,6 @@
         "library_remove_confirm_slug": "これによりクラウドフォルダー <folder>{{folder}}</folder> が空になります。"
       },
       "page": {
-        "title": "AWS Control",
         "totals_summary": "アカウント {{accounts}} 件 · キー {{keys}} 個 · 正常 {{healthy}} 個",
         "refresh": "更新",
         "health_ok": "正常",
@@ -4748,7 +4739,6 @@
         "kind_other": "その他",
         "default_profile": "既定のプロファイル",
         "not_connected_yet": "未接続",
-        "open_console": "このアカウントのコンソールを開く",
         "reconnect": "再接続",
         "reconnect_loading": "再接続の案内を読み込んでいます…",
         "reconnect_error": "再接続の案内を読み込めませんでした。",
@@ -4782,6 +4772,13 @@
         "search_none": "「{{query}}」に一致するアカウントはありません。",
         "paid_services_title": "有料サービス",
         "orphan_consent": "ここに登録されていない AWS アカウントに対して確認済みです。下で確認を取り消すか、そのアカウントを再登録して専用ページから管理してください。"
+      },
+      "rail": {
+        "accounts": "アカウントと認証情報",
+        "nav": "AWS Control のセクション",
+        "switch_account": "アカウントを切り替え",
+        "usage": "使用量とコスト",
+        "use_account": "このアカウントを使用"
       }
     }
   },
