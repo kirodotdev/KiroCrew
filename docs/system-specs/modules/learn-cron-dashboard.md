@@ -688,6 +688,12 @@ Each chat tab gets its own kiro-cli session keyed by `dashboard:{slot_key}` with
 4. **Resume**: user clicks history item → JSONL loaded into slot (same key) → new kiro-cli session created with history re-injected (if already active, returns existing — no duplicate)
 5. **Close again**: saved back to SAME JSONL file → same history entry (no duplicates)
 6. **Gateway shutdown**: all active slots saved to JSONL
+
+**Guarded metadata writes:** slot metadata endpoints mutate the live slot before
+their history write. While a write is pinned to an authorized transcript key, the
+periodic unpinned flush skips that slot; this prevents a rebind from making the
+provisional value durable in a different transcript. A refused pinned write rolls
+back its endpoint-owned value before a later flush may resume.
 7. **Idle expiry**: per-tab sessions expire after `session.timeout_secs` (default 60 min) like any other session; on next message a fresh session is created with history re-injected
 
 Cross-tab context: **removed** (budget redistributed to other caps). Previously injected recent messages from other dashboard tabs; this block was eliminated and its 6,000-char budget absorbed into the raised memory/lessons caps above.

@@ -27,6 +27,7 @@ from kiro_crew.dashboard.chat_tags import (
     persist_tags_snapshot_unlocked,
     tags_write_lock,
 )
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,21 @@ async def _auto_tag_inner(state: Any, slot: Any) -> None:
         current_tags.append(tag_id)
         slot.tags = current_tags
         slot._auto_tagged = True
-        await save_slot_off_loop(state, slot, force=True)
+        # Auto-tagging is asynchronous.  Pin the history target at the point
+        # the metadata is applied so a concurrent session rebind cannot make
+        # this background task write its tag onto a different transcript.
+        persisted = await save_slot_off_loop(
+            state,
+            slot,
+            force=True,
+            expected_history_key=slot_history_key(slot),
+        )
+        if persisted is False:
+            # The slot rebound while the guarded write waited.  Leave no
+            # provisional tag on the newly bound live conversation.
+            slot.tags = [value for value in slot.tags if value != tag_id]
+            slot._auto_tagged = False
+            return
 
         # Push update to connected clients
         push = getattr(state, "push_slots_update", None)

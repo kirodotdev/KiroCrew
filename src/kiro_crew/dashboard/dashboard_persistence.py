@@ -90,6 +90,11 @@ class DashboardPersistenceCoordinator:
 
     def flush_slot_now(self, owner: Any, slot: Any) -> None:
         """Write one dirty slot and clear only the generation that was saved."""
+        # Endpoint metadata is applied to the live slot before its guarded
+        # history write.  Do not let this unpinned periodic writer make that
+        # provisional value durable while the guarded writer is still waiting.
+        if getattr(slot, "_metadata_persist_inflight", 0):
+            return
         if not owner.conversation_log or not slot._dirty or not slot.messages:
             return
         save_slot_to_history = self._slot_saver_provider()

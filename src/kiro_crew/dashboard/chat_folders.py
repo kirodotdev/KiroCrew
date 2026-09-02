@@ -1271,7 +1271,14 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )
         prior_pinned = slot.pinned
-        new_pinned = bool(body.get("pinned", False))
+        new_pinned = body.get("pinned", False)
+        # Do not use Python truthiness for API booleans: JSON strings such as
+        # "false" are non-empty and therefore truthy.  The sibling metadata
+        # fields validate their types before mutating; pin must do the same.
+        if not isinstance(new_pinned, bool):
+            return web.json_response(
+                {"error": "pinned must be a boolean", "code": "pinned_not_bool"}, status=400
+            )
         slot.pinned = new_pinned
         if not await save_slot_off_loop(
             state, slot, force=True, expected_history_key=authorized_history_key

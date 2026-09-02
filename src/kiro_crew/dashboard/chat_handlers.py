@@ -2306,7 +2306,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # write, a restart rehydrates the previous title with a refreshable "auto"
     # origin and the background refresh may rewrite the pin.
     if folder_id or title:
-        await save_slot_off_loop(state, slot, force=True)
+        # The create/recreate request has been authorized against this
+        # transcript.  Do not let a rebind while the off-loop write waits on
+        # the history lock redirect its newly supplied metadata to another
+        # session.
+        await save_slot_off_loop(
+            state,
+            slot,
+            force=True,
+            expected_history_key=slot_history_key(slot),
+        )
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
     schedule_eager_spawn(state, slot)

@@ -33,7 +33,7 @@ from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
-from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
@@ -1115,9 +1115,15 @@ class CrewOrchestrator:
                 # decides durability, so a lock timeout here is not fatal.
                 logger.warning("crew: durable transcript append failed", exc_info=True)
         try:
-            await save_slot_off_loop(
-                self._state, slot, force=True, best_effort=False
+            persisted = await save_slot_off_loop(
+                self._state,
+                slot,
+                force=True,
+                best_effort=False,
+                expected_history_key=slot_history_key(slot),
             )
+            if not persisted:
+                return False
         except Exception:
             logger.warning("crew: durable slot save failed", exc_info=True)
             return False

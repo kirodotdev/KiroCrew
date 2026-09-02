@@ -3405,6 +3405,21 @@ async def save_slot_off_loop(
             expected_history_key=expected_history_key,
         )
 
+    def _begin_guarded_metadata_write() -> None:
+        inflight = getattr(slot, "_metadata_persist_inflight", 0)
+        # Production slots initialize this counter, while compatibility callers
+        # may provide a mock that synthesizes missing attributes. Treat a
+        # non-integer value as an absent counter rather than leaking it into the
+        # write's cleanup path.
+        slot._metadata_persist_inflight = inflight + 1 if type(inflight) is int else 1
+
+    def _finish_guarded_metadata_write() -> None:
+        inflight = getattr(slot, "_metadata_persist_inflight", 0)
+        slot._metadata_persist_inflight = (
+            inflight - 1 if type(inflight) is int and inflight > 0 else 0
+        )
+
+    guarded_metadata = expected_history_key is not None
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -3427,6 +3442,8 @@ async def save_slot_off_loop(
                 return True
         return _do()
     if best_effort:
+        if guarded_metadata:
+            _begin_guarded_metadata_write()
         try:
             return await loop.run_in_executor(None, _do)
         except Exception:  # noqa: BLE001 - best-effort durable copy
@@ -3437,9 +3454,18 @@ async def save_slot_off_loop(
                 "save_slot_off_loop: offloaded save failed slot=%s", slot.key, exc_info=True
             )
             return True
+        finally:
+            if guarded_metadata:
+                _finish_guarded_metadata_write()
     # Non-best-effort: propagate so the caller can roll back (do NOT remove the
     # session until the durable write is confirmed).
-    return await loop.run_in_executor(None, _do)
+    if guarded_metadata:
+        _begin_guarded_metadata_write()
+    try:
+        return await loop.run_in_executor(None, _do)
+    finally:
+        if guarded_metadata:
+            _finish_guarded_metadata_write()
 
 
 def _build_history_prefix(slot: _ChatSlot) -> str:

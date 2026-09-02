@@ -12244,6 +12244,22 @@ class TestFolderCRUD:
             assert state._slots["myslot"].pinned is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["false", "true", 0, 1, None, []])
+    async def test_pin_slot_rejects_non_boolean_values(self, tmp_path, monkeypatch, value):
+        """The API must not apply Python truthiness to JSON metadata."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("myslot")
+        app = _make_folder_app(state)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch("/api/chat/slots/myslot/pin", json={"pinned": value})
+            assert resp.status == 400
+            payload = await resp.json()
+            assert payload["error"] == "pinned must be a boolean"
+            assert payload["code"] == "pinned_not_bool"
+        assert slot.pinned is False
+
+    @pytest.mark.asyncio
     async def test_slots_include_pinned(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
