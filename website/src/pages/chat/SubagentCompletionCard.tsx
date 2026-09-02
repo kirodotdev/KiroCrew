@@ -91,12 +91,20 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
   message,
   onFileOpen,
   onFolderOpen,
+  onSessionOpen,
+  sessions,
+  activeSession,
   disclosureKey,
   onOpenPanel,
 }: {
   message: ChatMessage
   onFileOpen?: (path: string, opts?: { line?: number }) => void
   onFolderOpen?: (path: string) => void
+  /** Session switching for a `/chat?sid=` link in the payload, same triple the
+   *  assistant row passes. Omitted by hosts with no slot roster. */
+  onSessionOpen?: (key: string) => void
+  sessions?: ReadonlyMap<string, string>
+  activeSession?: string
   disclosureKey?: string
   /** Opens the Subagents side panel. Omitted by hosts that have no side panel
    *  (the embed SDK), which then render the card without the button. */
@@ -334,6 +342,9 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
             content={parsed.kind === 'batch' ? legibleDigest(parsed.body) : parsed.body}
             onFileOpen={onFileOpen}
             onFolderOpen={onFolderOpen}
+            onSessionOpen={onSessionOpen}
+            sessions={sessions}
+            activeSession={activeSession}
             softBreaks
           />
         </div>
