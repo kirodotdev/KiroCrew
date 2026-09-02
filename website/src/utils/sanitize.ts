@@ -118,11 +118,20 @@ export function sanitizeCredentials(text: string): string {
 // ── Exfiltration URL detection (matches redact_exfiltration_urls in security.py) ──
 const URL_RE = /https?:\/\/([a-zA-Z0-9._-]+\.[a-zA-Z]{2,})(:\d+)?(\/[^\s)"'>]*)?/g
 const EXFIL_QUERY_MIN_LEN = 200
-const EXFIL_PATTERNS = new RegExp(
+
+// PATTERN signals: each names a shape rather than a size, and each runs for
+// EVERY URL — no host and no carve-out escapes them — so this redactor still
+// flags every pattern the undifferentiated check flagged. Non-global so `.test()`
+// carries no sticky `.lastIndex` between calls.
+//
+// Heavy URL-encoding: 20+ CONSECUTIVE percent-encoded octets. Mirrors the
+// backend's _EXFIL_PERCENT_RE.
+const EXFIL_PERCENT_RE = /%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}/i
+
+// Hard credential markers. Mirrors the backend's _HARD_CREDENTIAL_RE.
+const EXFIL_CREDENTIAL_RE = new RegExp(
   '(?:' +
-    '[A-Za-z0-9+/=]{40,}' +                          // base64-like blob
-    '|%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2}){20,}' +    // heavy URL-encoding
-    '|(?:AKIA|ASIA)[A-Z0-9]{16}' +                   // AWS access key ID
+    '(?:AKIA|ASIA)[A-Z0-9]{16}' +                    // AWS access key ID
     '|(?:ssh-rsa|ssh-ed25519)[\\s+%]' +               // SSH public key
     '|BEGIN[\\s+%](?:RSA|DSA|EC|OPENSSH)[\\s+%]PRIVATE[\\s+%]KEY' + // private key header
     '|xox[bpas]-[0-9a-zA-Z-]+' +                     // Slack token
@@ -130,16 +139,113 @@ const EXFIL_PATTERNS = new RegExp(
   'i',
 )
 
+// Base64-like blob, 40+ chars — the shape an encoded payload has. Same spelling
+// as the backend's `_EXFIL_PATTERNS` base64 branch, and it OVER-matches by
+// design: `+` is the form-encoded spelling of a space, so ~7 words of
+// unpunctuated prose in a `+`-encoded `body=` are one run in this class and are
+// redacted. That is accepted rather than fixed, and this signal is deliberately
+// NOT waivable, because both available narrowings — dropping `+` from the class,
+// or splitting the query on `+` before testing — let an attacker `+`-chunk a 40+
+// char secret straight past it. A false positive on prose costs a placeholder; a
+// chunking bypass costs the payload.
+const EXFIL_B64_RE = /[A-Za-z0-9+/=]{40,}/i
+
+// Aggregate query LENGTH is the one signal that names no shape at all: it fires on
+// any richly-parameterised URL, which is why prefilled issue links —
+// `…/issues/new?title=…&body=<a paragraph of prose>&labels=…` — were rendered as a
+// `[REDACTED: suspicious URL]` placeholder. It is the only check the carve-out
+// below waives, and it is waived only for a URL whose every component is
+// accounted for. A query that ALSO trips a pattern signal is still redacted, so a
+// `+`-spelled prose body stays a placeholder even inside the validated shape.
+//
+// The carve-out validates the payload's SHAPE rather than trusting a destination.
+// That is nearer the backend's Slack app-create link check than its
+// companion-owned host-exemption tier, but it is not the same move: the backend
+// narrows the payload to its one caller-controlled span and keeps that span under
+// every heuristic, which is unavailable here because every GitHub prefill
+// parameter value is caller-controlled and there is no constant template to
+// subtract. So one SIGNAL is waived here where one SPAN is there.
+// `github.com` cannot earn destination trust either:
+// it is a public multi-tenant WRITE sink, so a prefilled issue submitted there
+// lands in whichever repository the URL names, including an attacker's own. What
+// is trustworthy is not the host but this exact shape, whose every span is either
+// a fixed literal or a parameter GitHub itself defines.
+const EXFIL_ISSUE_SCHEME = 'https://'
+const EXFIL_ISSUE_HOST = 'github.com'
+// Each of the two segments is dot-SEPARATED rather than dot-permissive, so
+// neither may end with a dot or contain `..`: a traversal spelling names a path
+// GitHub never served (a browser normalises it away before sending), so it is an
+// unaccounted-for component like any other. A single LEADING dot stays legal —
+// `.github` is an ordinary repository name.
+//
+// A RegExp literal spliced by `.source`, not a pattern string: the escaping then
+// reads at one level (`\.`, the character, rather than `\\.`, two characters that
+// happen to compile to it), which is what makes a dot-SEPARATED class auditable
+// against a dot-permissive one at a glance.
+const EXFIL_ISSUE_SEGMENT = /\.?[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/
+const EXFIL_ISSUE_PATH_RE = new RegExp(
+  `^/${EXFIL_ISSUE_SEGMENT.source}/${EXFIL_ISSUE_SEGMENT.source}/issues/new$`,
+)
+// GitHub's documented issue-prefill parameters. A query carrying ANY other key is
+// refused whole rather than having the unknown key judged on its own: an extra
+// parameter is the obvious smuggling shape, and a key that is empty or cased
+// differently is one GitHub would not prefill from either.
+const EXFIL_ISSUE_PARAMS = new Set([
+  'assignee',
+  'assignees',
+  'body',
+  'labels',
+  'milestone',
+  'projects',
+  'template',
+  'title',
+])
+
+/**
+ * True only for a GitHub issue-creation URL whose scheme, host, port, path and
+ * complete parameter-key set are all accounted for. Anything unaccounted-for
+ * fails closed, leaving the length check in force.
+ */
+function isPrefilledIssueUrl(
+  url: string,
+  host: string,
+  port: string,
+  path: string,
+  query: string,
+): boolean {
+  if (url.slice(0, EXFIL_ISSUE_SCHEME.length).toLowerCase() !== EXFIL_ISSUE_SCHEME) return false
+  // Host is compared lowercased (RFC 4343 leaves DNS case insignificant) and
+  // EXACTLY, never by suffix, so `github.com.evil.example` is not the same host.
+  // An explicit port is refused outright: `github.com:8080` is not a destination
+  // GitHub serves, so it is somebody redirecting the name somewhere else.
+  if (host !== EXFIL_ISSUE_HOST || port) return false
+  if (!EXFIL_ISSUE_PATH_RE.test(path)) return false
+  return query.split('&').every((pair) => {
+    const eq = pair.indexOf('=')
+    // `eq > 0` also rejects a pair with no `=` at all and one whose key is empty:
+    // neither presents a key that can be checked, so it counts as unknown.
+    return eq > 0 && EXFIL_ISSUE_PARAMS.has(pair.slice(0, eq))
+  })
+}
+
 export function sanitizeExfiltrationUrls(text: string): string {
   let out = text
   URL_RE.lastIndex = 0
   for (const m of text.matchAll(URL_RE)) {
     const domain = m[1]
+    const host = domain.toLowerCase()
     const pathAndQuery = m[3] || ''
     const qmark = pathAndQuery.indexOf('?')
     if (qmark === -1) continue
     const query = pathAndQuery.slice(qmark + 1)
-    if (query.length >= EXFIL_QUERY_MIN_LEN || EXFIL_PATTERNS.test(query)) {
+    let redact =
+      EXFIL_PERCENT_RE.test(query) ||
+      EXFIL_CREDENTIAL_RE.test(query) ||
+      EXFIL_B64_RE.test(query)
+    if (!redact && query.length >= EXFIL_QUERY_MIN_LEN) {
+      redact = !isPrefilledIssueUrl(m[0], host, m[2] || '', pathAndQuery.slice(0, qmark), query)
+    }
+    if (redact) {
       out = out.replace(m[0], i18nT('utils.sanitize.redacted_suspicious_url', { domain }))
     }
   }
