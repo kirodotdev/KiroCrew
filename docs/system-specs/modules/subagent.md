@@ -8,13 +8,27 @@ Supports `on_tool_approval` callback for interactive tool approval (routed throu
 
 ### Run coordinator seam
 
-`SubagentManager` accepts an optional typed `RunCoordinator` and defaults to the
-deterministic in-memory implementation. This is a pre-authority dependency seam:
-the synchronous spawn path and all terminal effects still use the existing
-manager fields and run-folder persistence. The manager does not schedule an
-async coordinator mutation from `spawn()` because doing so would weaken the
-current durable-before-visible ordering. Coordinator authority moves only in a
-later migration phase.
+`SubagentManager` accepts an optional typed `RunCoordinator` and leaves the seam
+disabled when none is injected. Construction performs no filesystem I/O and
+does not retain raw task payloads. The in-memory, SQLite, and primary-preserving
+shadow adapters remain explicitly injectable
+for parity tests. This is a pre-authority dependency seam: the synchronous spawn
+path and all terminal effects still use the existing manager fields and
+run-folder persistence. The manager does not schedule an async coordinator
+mutation from `spawn()` because doing so would weaken the current
+durable-before-visible ordering. Coordinator authority moves only in a later
+migration phase.
+
+After legacy admission and approval, the async `_run` entry submits the accepted
+run to the coordinator seam before execution. The submission contains a stable
+command/idempotency identity and a canonical execution payload; continuations
+are distinguished from new spawns. Submission awaits the coordinator's own
+bounded operation rather than adding a shorter caller deadline. Failures remain
+diagnostic, so an unhealthy shadow cannot fail an accepted legacy run. Exact
+retries are idempotent. The returned coordinator view is also compared with the
+accepted `SubagentInfo` at bounded field classes, without logging task or payload
+values. Queue, transition, terminal, and delivery authority still belongs
+exclusively to the legacy path in this phase.
 
 The port defines typed desired/observed state, terminal outcomes, idempotent
 commands, execution leases with fencing epochs, optimistic lifecycle versions,
@@ -22,7 +36,11 @@ and delivery claims with an independent fencing epoch. The in-memory adapter is
 the executable contract oracle for later durable implementations; it is not a
 restart store. During this pre-authority phase it accepts executable `spawn` and
 `continue` submissions; control operations fail closed until their target and
-fencing semantics land.
+fencing semantics land. Command records persist both the canonical payload and
+its hash so a claimed command can be reconstructed after restart while
+idempotency conflicts stay cheap to detect.
+The stored task and model fields are credential-redacted, UTF-8-safe, and
+bounded before hashing; the unredacted prompt remains only in the live executor.
 
 ### Execution boundaries
 
@@ -43,12 +61,70 @@ Private manager views for the old counter, queue, report-task, and teardown-gate
 fields remain as compatibility adapters. They delegate to these boundaries and
 must not regain independent state.
 
+### SQLite shadow store
+
+`SQLiteRunCoordinator` implements the shared contract with fresh short-lived
+connections and offloads every filesystem/database operation from the event
+loop onto a dedicated two-worker coordinator pool. Every accepted-run shadow
+submission has a one-second total manager deadline; timeout is diagnostic and
+legacy execution begins while an already-running SQLite worker may finish in
+the coordinator pool. Lock waits therefore queue among coordinator calls and
+cannot starve asyncio's shared executor after the deadline. Mutations run under
+`BEGIN IMMEDIATE`; schema v2
+uses `runs`, `commands`,
+`outbox`, and `metadata`, with WAL, `synchronous=FULL`, foreign keys, a bounded
+busy timeout, and a quick integrity check. Ordered, contiguous migrations are
+applied in that transaction; v2 adds the durable command payload to the v1 base
+schema, and failed upgrades roll back cleanly for idempotent retry. The
+physical shipped columns recover a missing schema-version metadata row instead
+of replaying already-applied `ALTER TABLE` statements. The
+shadow-phase implementation
+hydrates the typed in-memory state machine from those rows and rewrites the
+typed rows in the same transaction. This deliberately favors one behavioral
+oracle during parity checking; targeted SQL updates replace the full-row rewrite
+before coordinator authority moves.
+
+The default path is resolved lazily from
+`data_home()/run-coordinator/coordinator.db`, so a valid post-import
+`KIROCREW_HOME` override is honored. An ordinary directory uses that configured
+path directly. If the data-home path traverses a link, the gateway persists its
+canonical coordinator directory in an owner-only record below
+`~/.kirocrew.run-coordinator/`, keyed by the lexical data-home selection. SQLite
+and every OS-sandbox builder consume the same process-cached result. An existing
+record is checked before the ordinary-directory fast path and must match the
+currently resolved ledger, so replacing a selected link with a directory or
+pre-seeding its deterministic record fails closed on restart. The anchor
+directory is itself on the agent read/write-denied floor and hidden inside every
+Kiro Crew sandbox. The Linux launcher creates and fail-loud owner-tightens it
+before constructing its existence-guarded bind masks, so an agent cannot pre-seed
+a record while the directory is absent. Changing a supported data-home link later —
+including between gateway processes — therefore cannot retarget fresh SQLite connections, split
+durable state, or make a child protect a different ledger. Kiro's internal
+macOS/Windows sandbox delegates for the ordinary default path and fails closed
+for the relocated or linked shape it cannot prove. The directory and database/known sidecars
+are tightened owner-only, links/junctions are rejected, a newer schema is
+refused before mutating PRAGMAs or sidecar creation, and corrupt databases are
+never deleted or recreated. Concurrent initialization serializes the WAL-mode
+transition and tolerates only a SQLite sidecar that vanishes during its ACL
+preflight; a surviving sidecar or primary-database ACL failure remains fatal.
+The final ACL validation runs inside the mutation transaction before commit, so
+a fail-loud permission error rolls back the transition instead of reporting a
+failed operation after its state became durable.
+
+`ShadowRunCoordinator` always returns the primary result. It calls the shadow
+only after primary completion, swallows shadow failures, compares normalized
+stable field classes without logging payload values, and never repairs the
+primary. The manager invokes only accepted-run submission in this phase; later
+state transitions and terminal delivery do not call the coordinator until their
+authority migrations land.
+
 ## Constants
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `_MAX_CONCURRENT` | 3 | Legacy fallback / auto-size floor. `agent.max_subagents` now defaults to `0` = auto-size the cap at startup (floor 3, ceiling `agent.subagent_auto_max`, default 32); a positive value pins a fixed cap. Session-shared subagents are cost-sampled as the runtime's measured RSS/CPU divided by the live shared-session count on that PID (`_live_shared_count`), so the memory term no longer binds and the cap rises to the provider-concurrency ceiling. |
 | `_TIMEOUT_SECS` | 1800 | Hard timeout per subagent (30 minutes) |
+| `_SHADOW_SUBMIT_TIMEOUT_SECS` | 1 | Total manager deadline for best-effort accepted-run shadow submission |
 | `_ON_DONE_TIMEOUT` | 1200 | Outer cap: max total seconds for semaphore wait + injection (20 minutes) |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |

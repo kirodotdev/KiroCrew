@@ -316,6 +316,7 @@ class RunEventCoordinator(ManagerComponent):
         """Execute a subagent task in its own session."""
         session_key = info.conversation_key or f"subagent:{info.id}"
         try:
+            await self._manager._shadow_submit_accepted_run(info)
             await asyncio.wait_for(
                 self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
             )

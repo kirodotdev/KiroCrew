@@ -1,9 +1,8 @@
 """Tests for the bounded maintenance/cron thread pools.
 
-The key invariant: cron execution and the periodic orphan-reaping sweeps use
-*separate* pools, so a burst of long-running concurrent cron jobs can never
-occupy all the maintenance threads and starve the sweeps that reap leaked
-kiro-cli/MCP children (the documented root cause of the loop wedge).
+The key invariant: long-running or lock-waiting work uses concern-specific
+pools, so it cannot occupy all maintenance threads or asyncio's default
+executor and starve unrelated recovery/network work.
 """
 
 from __future__ import annotations
@@ -41,6 +40,25 @@ def test_pools_are_memoized() -> None:
     assert ex.maintenance_executor() is ex.maintenance_executor()
     assert ex.subprocess_executor() is ex.subprocess_executor()
     assert ex.cron_executor() is ex.cron_executor()
+
+
+def test_coordinator_pool_is_isolated_bounded_and_reset() -> None:
+    coordinator = ex.coordinator_executor()
+
+    assert coordinator is ex.coordinator_executor()
+    assert coordinator is not ex.maintenance_executor()
+    assert coordinator is not ex.subprocess_executor()
+    assert coordinator is not ex.cron_executor()
+    assert coordinator._thread_name_prefix == "mc-coordinator"
+    assert coordinator._max_workers == ex._MAX_COORDINATOR_WORKERS
+    assert (
+        coordinator.submit(threading.current_thread)
+        .result(timeout=5)
+        .name.startswith("mc-coordinator")
+    )
+
+    ex.shutdown_maintenance_executor()
+    assert ex.coordinator_executor() is not coordinator
 
 
 def test_thread_name_prefixes_distinguish_pools() -> None:
@@ -341,10 +359,11 @@ async def test_cancelling_the_caller_does_not_kill_a_job_already_running():
     ex.shutdown_maintenance_executor()
     entered = threading.Event()
     finished = threading.Event()
+    release = threading.Event()
 
     def slow() -> str:
         entered.set()
-        threading.Event().wait(0.5)
+        release.wait()
         finished.set()
         return "done"
 
@@ -360,9 +379,11 @@ async def test_cancelling_the_caller_does_not_kill_a_job_already_running():
         with pytest.raises(asyncio.CancelledError):
             await task
 
+        release.set()
         ex.cron_executor().shutdown(wait=True)
         assert finished.is_set(), "cancellation killed a job that was already running"
     finally:
+        release.set()
         ex.shutdown_maintenance_executor()
 
 

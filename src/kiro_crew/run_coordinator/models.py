@@ -112,6 +112,7 @@ class RunCommand:
     created_at: float
     updated_at: float
     rejection_reason: str
+    payload_json: str = ""
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,7 @@ class SubmitRun:
     operation: CommandOperation
     accepted: bool = True
     rejection_reason: str = ""
+    payload_json: str = ""
 
 
 @dataclass(frozen=True)

@@ -14,14 +14,15 @@ superseded-by: []
 ---
 # RFC: Durable Run Coordinator — typed lifecycle, idempotent commands, and recoverable delivery
 
-- Status: in-progress — PRs 1–2 are committed locally and PR 3 is prepared on
-  `codex/run-coordinator-boundaries`: the typed port, memory contract, scheduler
-  policy, and terminal arbitration have narrow boundaries. Legacy run files
-  remain authoritative; PRs 4–7 are unimplemented.
+- Status: in-progress — PRs 1–4 are implemented locally; PR 4 lives on
+  `codex/run-coordinator-shadow`: the typed port and lifecycle boundaries now
+  have a contract-tested SQLite store, security floor, and primary-preserving
+  shadow adapter that records accepted legacy runs. Legacy run files remain
+  authoritative; PRs 5–7 are unimplemented.
 - Author: Kyle Seaman, with Codex
 - Created: 2026-08-22
-- Audited against: PR 1 commit `c8eda3c6f`, PR 2 commit `53f365a17`, and the PR 3
-  working tree
+- Audited against: PR 1 commit `c8eda3c6f`, PR 2 commit `53f365a17`, PR 3 commit
+  `4aa0cba4d`, and the PR 4 working tree
 - Related: `docs/system-specs/modules/subagent.md`,
   `docs/system-specs/modules/session.md`, and
   `docs/request-for-change/rfc-orchestrator-chat-sessions.md`

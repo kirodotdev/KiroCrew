@@ -41,9 +41,7 @@ async def _wait_until_done(info, *, timeout: float = 30.0) -> None:
     deadline = loop.time() + timeout
     while not info.done:
         if loop.time() >= deadline:
-            raise AssertionError(
-                f"subagent {info.id} did not complete within {timeout}s"
-            )
+            raise AssertionError(f"subagent {info.id} did not complete within {timeout}s")
         await asyncio.sleep(0.01)
 
 
@@ -207,7 +205,8 @@ class TestSessionSharingDecision:
 
         # model override forces CC path
         info = SubagentInfo(
-            id="test4", task="hello",
+            id="test4",
+            task="hello",
             parent_session_key="dashboard:slot1",
             model="opus-4",
         )
@@ -246,9 +245,11 @@ class TestSessionSharingSpawn:
             is_yolo=lambda: True,
         )
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             assert info is not None
             # Wait for the subagent to complete
@@ -271,9 +272,11 @@ class TestSessionSharingSpawn:
             is_yolo=lambda: True,
         )
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
@@ -291,9 +294,11 @@ class TestSessionSharingSpawn:
             is_yolo=lambda: True,
         )
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
@@ -319,9 +324,11 @@ class TestSessionSharingSpawn:
             is_yolo=lambda: True,
         )
 
-        with _cfg_patch(session_sharing=False), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=False),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
@@ -339,9 +346,7 @@ class TestSessionSharingFallback:
         """When runtime dies during create_session, falls back to legacy path."""
         sessions = _mock_sessions(sharing_eligible=True)
         # Make get_subagent_runtime raise AcpRuntimeDead
-        sessions.get_subagent_runtime = AsyncMock(
-            side_effect=AcpRuntimeDead("process died")
-        )
+        sessions.get_subagent_runtime = AsyncMock(side_effect=AcpRuntimeDead("process died"))
 
         manager = SubagentManager(
             sessions=sessions,
@@ -349,9 +354,11 @@ class TestSessionSharingFallback:
             is_yolo=lambda: True,
         )
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
@@ -369,9 +376,7 @@ class TestSessionSharingFallback:
         mock_runtime = MagicMock()
         mock_runtime.is_alive.return_value = True
         mock_runtime.pid = 99999
-        mock_runtime.create_session = AsyncMock(
-            side_effect=RuntimeError("session limit reached")
-        )
+        mock_runtime.create_session = AsyncMock(side_effect=RuntimeError("session limit reached"))
         sessions.get_subagent_runtime = AsyncMock(return_value=mock_runtime)
 
         manager = SubagentManager(
@@ -380,9 +385,11 @@ class TestSessionSharingFallback:
             is_yolo=lambda: True,
         )
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
@@ -472,13 +479,14 @@ class TestSessionSharingMultiAgent:
         # Disable stagger so both spawns start immediately
         manager._spawn_stagger_secs = 0.0
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot1")
-            await _wait_until_done(info1)
-            await _wait_until_done(info2)
+            await asyncio.gather(_wait_until_done(info1), _wait_until_done(info2))
 
         # Both should use session sharing
         assert info1._session_sharing is True
@@ -501,13 +509,14 @@ class TestSessionSharingMultiAgent:
         )
         manager._spawn_stagger_secs = 0.0
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info1 = manager.spawn("task A", parent_session_key="dashboard:slot1")
             info2 = manager.spawn("task B", parent_session_key="dashboard:slot2")
-            await _wait_until_done(info1)
-            await _wait_until_done(info2)
+            await asyncio.gather(_wait_until_done(info1), _wait_until_done(info2))
 
         assert info1._session_sharing is True
         assert info2._session_sharing is True
@@ -526,9 +535,11 @@ class TestSessionSharingMultiAgent:
             is_yolo=lambda: True,
         )
 
-        with _cfg_patch(session_sharing=True), \
-             patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+        ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 

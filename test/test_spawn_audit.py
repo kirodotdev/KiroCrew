@@ -801,6 +801,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli.py::_node_ok",
         "cli.py::main",
         "cli_chat.py::_run_chat",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run``
+        # (attr ``run`` on base ``asyncio``). The SQLite adapter invokes the
+        # in-memory coordinator coroutine inside its dedicated worker thread;
+        # no argv, cwd, environment, or child process exists at this site.
+        "run_coordinator/sqlite.py::_invoke",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``), here used only to drive the now-async
         # ``deregister_app_crons_from_service`` coroutine from the loop-less CLI

@@ -23,6 +23,8 @@ from .models import (
     SubmitReceipt,
     SubmitRun,
 )
+from .shadow import ShadowRunCoordinator
+from .sqlite import SQLiteRunCoordinator
 
 __all__ = [
     "CommandClaim",
@@ -46,4 +48,6 @@ __all__ = [
     "RunRecord",
     "SubmitReceipt",
     "SubmitRun",
+    "SQLiteRunCoordinator",
+    "ShadowRunCoordinator",
 ]

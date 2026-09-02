@@ -412,7 +412,7 @@ class TestChannelCredentialIsolation:
 # launcher source rather than a copy, so they cannot drift from what the child
 # actually executes.
 _EXPOSE_BLOCK_START = "expose_data = {}"
-_EXPOSE_BLOCK_END = "# Bind-mount empty dirs over credential paths"
+_EXPOSE_BLOCK_END = "# Pin rename-sensitive ancestors without changing their permissions"
 #: Structural landmarks the slice must contain, so an edit that moves either
 #: marker and shrinks the block fails HERE rather than leaving the assertions
 #: below vacuously green against a fragment that no longer holds the read.

@@ -28,6 +28,10 @@ def clean_state(monkeypatch):
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.setattr(sb, "_inside_kirocrew_sandbox", lambda: False)
     monkeypatch.setattr(sb, "_macos_sandbox_state", lambda: None)
+    # These tests exercise delegation with the default data-home policy. The
+    # root isolation fixture relocates KIROCREW_HOME for every test, which is a
+    # separate fail-closed path covered in test_sandbox_argv.py.
+    monkeypatch.setattr(sb, "_run_coordinator_uses_custom_home", lambda: False)
     monkeypatch.setattr(
         sb, "_KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",

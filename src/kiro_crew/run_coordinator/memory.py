@@ -136,6 +136,7 @@ class MemoryRunCoordinator:
                 created_at=now,
                 updated_at=now,
                 rejection_reason=request.rejection_reason,
+                payload_json=request.payload_json,
             )
             self._runs[run.run_id] = run
             self._commands[command.command_id] = command

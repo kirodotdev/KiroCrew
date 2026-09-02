@@ -90,19 +90,21 @@ Confines the `kiro-cli` subprocess tree with platform-native isolation, hiding
 credential directories by bind-mount (Linux user + mount namespaces) or file-read
 denial (macOS Seatbelt), and scrubbing credential-bearing environment variables
 on the way in. Windows has no Kiro Crew OS wrapper, so positively identified
-official Kiro CLI spawns delegate to the CLI's built-in sandbox; their environment
-is scrubbed by the parent before spawn. The parent gateway process is unaffected.
+official Kiro CLI spawns with the ordinary default data home delegate to Kiro's
+internal sandbox. A relocated or linked data home carries path policy Kiro cannot
+prove, so that exceptional shape fails closed. The parent gateway process is
+unaffected.
 
 **`agent.sandbox` defaults to `"auto"`, engaging OS-level isolation
 (namespace on Linux, sandbox-exec on macOS).** The only alternative value is
 `"off"` (`config/loader.py`, `AgentConfig.sandbox`, `enum=["auto", "off"]`;
 the same two-value enum gates the dashboard config editor in
-`dashboard/handlers/core.py`). `"off"` skips Kiro Crew's own sandbox but still
-delegates to `kiro-cli`'s internal agent sandbox on macOS when it is enabled,
-which cannot nest inside Kiro Crew's
-Seatbelt wrap (the macOS kernel returns EPERM even under an allow-all outer
-profile), so exactly one layer can own isolation per spawn. Setting `"auto"`
-re-enables Kiro Crew's own sandbox.
+`dashboard/handlers/core.py`). `"off"` skips Kiro Crew's own sandbox. It does not
+permit internal-sandbox delegation for a relocated or linked coordinator ledger;
+that combination fails closed. Setting `"auto"` re-enables Kiro Crew's own
+sandbox. The macOS conflict remedy requires that `"auto"` posture before it
+directs the operator to disable Kiro CLI's internal sandbox, so following the
+remedy cannot leave the next spawn without either isolation owner.
 
 `wrap_argv`'s internal tier vocabulary is wider than the config enum: `standard`
 (what `auto` resolves to), `cc`, `strict` and `off`. Those extra tiers are reached
@@ -126,16 +128,30 @@ Two properties are load-bearing at the architecture level:
   the discoverable path is instead a consent step in `kirocrew setup`, which
   prompts (default no) when `detect_backend()` reports `"none"` and writes the
   key only on an explicit yes.
-- **Windows Kiro delegation is not a global fail-open.** `is_kiro_cli=True` from a
-  reviewed official-Kiro spawn site delegates directly to Kiro's built-in sandbox
-  before backend probing. A Kiro-looking filename is insufficient on Windows.
-  Third-party ACP backends, scripts, hooks and other subprocesses still take the
-  normal no-backend refusal and require the explicit opt-in above.
+- **Windows Kiro delegation is limited to the ordinary default data home.**
+  `is_kiro_cli=True` is necessary but not sufficient: the coordinator ledger must
+  also remain at the default path already covered by Kiro's sandbox. Relocated or
+  linked homes fail closed before backend probing. A Kiro-looking filename remains
+  insufficient.
 - **Delegation is audited, never silent.** When `kiro-cli`'s internal sandbox owns
   isolation for a spawn, the decision is config-driven (never a reaction to a wrap
   failure), logged once per process, and SEL-audited on an audit-or-deny basis: if
   the audit cannot be written, the delegation is refused. Kiro Crew's own Seatbelt
   takes the spawn on macOS; Windows returns to its no-backend fail-closed policy.
+- **Durable coordinator identity is shared across restarts.** An ordinary data
+  directory keeps the ledger at its configured path. When that path traverses a
+  link, the gateway records the canonical coordinator directory outside the link
+  and gives the same owner-only anchor to SQLite and every sandbox builder. The
+  Linux launcher creates and owner-tightens the anchor before constructing its
+  existence-guarded bind masks. The macOS Seatbelt profile denies both lexical
+  and canonical ledger and anchor spellings so a symlinked home cannot expose an
+  alias. Existing anchor records are checked before the ordinary-directory fast
+  path and must match the currently resolved ledger, so replacing a selected link
+  with a directory or pre-seeding its deterministic record fails closed. The
+  directory is agent-denied and hidden inside Kiro Crew's OS sandboxes, so
+  retargeting the link cannot make a later process trust a forged ledger or make a
+  child mask a different directory. Internal-sandbox delegation refuses this
+  exceptional linked shape rather than dropping the control.
 
 **Launcher shims are deliberately not bypassed on the delegated path.** On that
 path the shim is part of `kiro-cli`'s own sandbox mechanism, so resolving past it

@@ -61,6 +61,7 @@ LEGACY_CONFIG_DIR_NAME = ".kirocrew"
 RECOVERY_BREADCRUMB_NAME = ".kirocrew.breadcrumb"
 
 OUTBOX_DIR_NAME = "outbox"
+RUN_COORDINATOR_DIR_NAME = "run-coordinator"
 
 # Cross-platform workspace root for LLM working directories.
 # Override: KIROCREW_WORKSPACE env var or <config_dir>/workspace_dir

@@ -9193,3 +9193,66 @@ class TestMaskedSubstitutionKeepsAdjacentLiterals:
             "echo $(date)x",
         ):
             assert is_sensitive_bash_command(cmd) is None, cmd
+
+
+class TestRunCoordinatorProtection:
+    """The durable execution ledger is a read/write keystone directory."""
+
+    def test_leaf_membership(self) -> None:
+        from kiro_crew.security import _CREW_SECRET_LEAVES
+
+        assert "run-coordinator" in _CREW_SECRET_LEAVES
+
+    @pytest.mark.parametrize("prefix", [".kiro/crew", ".kirocrew"])
+    def test_database_and_sidecars_are_sensitive(self, prefix: str) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        for leaf in (
+            "coordinator.db",
+            "coordinator.db-wal",
+            "coordinator.db-shm",
+            "coordinator.db-journal",
+        ):
+            path = f"~/{prefix}/run-coordinator/{leaf}"
+            assert is_sensitive_path(path) is True
+            assert is_sensitive_write_path(path) is True
+
+    def test_override_home_is_sensitive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "crew-home"
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+
+        assert is_sensitive_path(str(home / "run-coordinator/coordinator.db")) is True
+
+    def test_shell_forms_are_blocked(self) -> None:
+        for command in (
+            "cat ~/.kiro/crew/run-coordinator/coordinator.db",
+            "echo x > ~/.kiro/crew/run-coordinator/coordinator.db",
+            "rm ~/.kiro/crew/run-coordinator/coordinator.db-wal",
+            "tar -xf state.tar -C ~/.kiro/crew/run-coordinator",
+        ):
+            assert is_sensitive_bash_command(command) is not None, command
+
+    def test_persistent_anchor_is_sensitive(self) -> None:
+        from kiro_crew.security import is_sensitive_write_path
+
+        anchor = "~/.kirocrew.run-coordinator/default-record"
+
+        assert is_sensitive_path(anchor) is True
+        assert is_sensitive_write_path(anchor) is True
+        assert is_sensitive_bash_command(f"echo forged > {anchor}") is not None
+
+    def test_directory_is_hidden_by_every_os_sandbox_mode(self) -> None:
+        from kiro_crew import sandbox
+
+        for mode_dirs in (
+            sandbox._STRICT_DIRS,
+            sandbox._STANDARD_DIRS,
+            sandbox._CC_DIRS,
+        ):
+            assert ".kiro/crew/run-coordinator" in mode_dirs
+            assert ".kirocrew/run-coordinator" in mode_dirs
+
+    def test_subagent_results_remain_readable(self) -> None:
+        assert is_sensitive_path("~/.kiro/crew/subagents/run-1/result.txt") is False
