@@ -22,6 +22,7 @@ from chat_test_helpers import _make_state
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import chat_delivery as cd
+from kiro_crew.dashboard import create_rate_limit
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard import stop_retry
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -51,6 +52,21 @@ def _fresh_stop_windows():
     stop_retry.reset_for_tests()
     yield
     stop_retry.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_create_budget():
+    """The per-caller create-rate window is process-wide module state.
+
+    Nearly every create test here calls as the same caller (``chat-1``), so the
+    20-per-window budget is consumed by the file itself: left behind, the 21st
+    create in a worker process is refused with ``create_rate_limited`` and the
+    test that happens to be 21st fails for a reason it never asserted. Which
+    test that is depends on xdist distribution, which is what made it flaky.
+    """
+    create_rate_limit.reset_for_tests()
+    yield
+    create_rate_limit.reset_for_tests()
 
 
 def _slot(state, name: str, **kwargs):
