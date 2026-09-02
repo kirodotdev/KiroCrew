@@ -296,18 +296,49 @@ class TestSeededScenarioInHome:
         (home / seed_mod.FIXTURE_MANIFEST).mkdir(parents=True)
         assert rt.seeded_scenario_in_home(cfg, "wt") is None
 
-    @pytest.mark.parametrize("shape", ["invalid-utf8", "directory"])
+    def test_a_manifest_fifo_is_opened_nonblocking_and_reports_no_marker(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        os.mkfifo(home / seed_mod.FIXTURE_MANIFEST)
+        home_fd = os.open(home, rt.pinned_fs.dir_flags())
+        real_open = rt.os.open
+
+        def _open(name, flags, mode=0o777, *, dir_fd=None):
+            if name == seed_mod.FIXTURE_MANIFEST:
+                assert flags & os.O_NONBLOCK
+            return real_open(name, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(rt.os, "open", _open)
+        try:
+            assert rt._seeded_scenario_from_fd(home_fd) is None
+        finally:
+            os.close(home_fd)
+
+    @pytest.mark.parametrize("shape", ["invalid-utf8", "directory", "fifo"])
     def test_malformed_seeded_config_refuses_in_pod_vocabulary(
-        self, tmp_path: Path, shape: str
+        self, tmp_path: Path, monkeypatch, shape: str
     ) -> None:
         home = tmp_path / "home"
         home.mkdir()
         config = home / "config.json"
         if shape == "invalid-utf8":
             config.write_bytes(b'{"agent": "\xff"}')
-        else:
+        elif shape == "directory":
             config.mkdir()
+        else:
+            os.mkfifo(config)
         home_fd = os.open(home, rt.pinned_fs.dir_flags())
+        if shape == "fifo":
+            real_open = rt.os.open
+
+            def _open(name, flags, mode=0o777, *, dir_fd=None):
+                if name == "config.json":
+                    assert flags & os.O_NONBLOCK
+                return real_open(name, flags, mode, dir_fd=dir_fd)
+
+            monkeypatch.setattr(rt.os, "open", _open)
         try:
             with pytest.raises(rt.PodError, match="seeded config.json"):
                 rt._prepare_seeded_home_fd(home_fd)

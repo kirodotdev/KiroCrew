@@ -898,11 +898,10 @@ def atomic_write(
 def atomic_write_at(
     dir_fd: int,
     name: str,
-    content: str | bytes,
+    content: str,
     *,
     fsync: bool = False,
     mode: int | None = None,
-    newline: str | None = None,
 ) -> None:
     """Atomically replace one leaf under an already-pinned directory descriptor.
 
@@ -917,16 +916,13 @@ def atomic_write_at(
         raise NotImplementedError("descriptor-relative atomic writes require POSIX dir_fd support")
     if not name or Path(name).name != name or name in (".", ".."):
         raise ValueError(f"atomic_write_at needs one leaf name, got {name!r}")
-    binary = isinstance(content, bytes)
-    if binary and newline is not None:
-        raise TypeError("newline is a text-mode concept and cannot apply to bytes content")
 
     tmp_name = f".{name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(tmp_name, flags, 0o600, dir_fd=dir_fd)
     try:
         platform_compat.fchmod_safe(fd, mode if mode is not None else _get_default_mode())
-        _write_all(fd, _encode(content, newline=newline), Path(name))
+        _write_all(fd, _encode(content, newline=None), Path(name))
         if fsync:
             os.fsync(fd)
         os.close(fd)

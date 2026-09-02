@@ -176,7 +176,7 @@ def copy_fixture_into_dir_fd(
     fixture_name: str,
     dst_fd: int,
     *,
-    before_manifest: Callable[[int], None] | None = None,
+    before_manifest: Callable[[int], None],
 ) -> None:
     """Copy one shipped fixture into an already-pinned empty directory.
 
@@ -186,6 +186,21 @@ def copy_fixture_into_dir_fd(
     mistaken for a finished seed on the next boot. *before_manifest* lets the
     caller finish descriptor-relative setup under the same held root before that
     completion marker becomes visible.
+
+    This cannot delegate to ``stage_tree_pinned``: that helper accepts a
+    destination PATH and opens/closes its root internally, while this boundary
+    must retain the caller-owned final-home descriptor through copy, setup, and
+    marker publication. A post-copy identity check can detect a raced by-name
+    reopen, but cannot undo bytes already written through the wrong root.
+
+    This also deliberately does not reuse :func:`seed`, the implementation behind
+    ``gateway --seed``. That command is a cross-platform, explicit dev-home replace
+    tool: it copies by path before one foreground gateway start and can be rerun with
+    ``--seed-replace`` after interruption. A systemd pod instead writes an already
+    created final home, must survive automatic restart without accepting a partial
+    tree, and keeps config setup under the same held descriptor. The two surfaces
+    share fixture payloads, while the pod path applies the stricter symlink,
+    non-regular-entry, sanitization, and completion-marker contract.
     """
     src = _resolve_fixture(fixture_name)
     manifest_seen = False
@@ -204,8 +219,7 @@ def copy_fixture_into_dir_fd(
         )
         for name in names:
             if display == src and name == FIXTURE_MANIFEST:
-                if before_manifest is not None:
-                    before_manifest(target_fd)
+                before_manifest(target_fd)
                 manifest_seen = True
             shown = display / name
             st = os.stat(name, dir_fd=src_fd, follow_symlinks=False)
@@ -525,7 +539,9 @@ def seed_cmd(args) -> int:  # noqa: ANN001 — argparse.Namespace at call site
         # ``target_set`` records presence-only (captured pre-``seed()``) —
         # never the raw path, which would leak ``$HOME``-derived info.
         # ``replace`` records whether the rmtree path was taken.
-        resources=(f"fixture={fixture!r} target_set={target_set} replace={replace}"),
+        resources=(
+            f"fixture={fixture!r} target_set={target_set} replace={replace}"
+        ),
     )
     return EXIT_OK
 
@@ -567,4 +583,6 @@ def _safe_audit(*, outcome: str, resources: str) -> None:
             resources=resources,
         )
     except Exception:  # noqa: BLE001 — audit must never fail the tool.
-        logging.getLogger(__name__).warning("seed: SEL audit emit failed", exc_info=True)
+        logging.getLogger(__name__).warning(
+            "seed: SEL audit emit failed", exc_info=True
+        )

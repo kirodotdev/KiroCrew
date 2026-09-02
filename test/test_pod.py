@@ -37,6 +37,11 @@ _REAL_HOME = Path.home()
 # under $HOME). Provisioning resolves ``npm`` to an absolute path there.
 NODE_BIN = "/fake/node/bin"
 
+requires_posix_pod_lifecycle = pytest.mark.skipif(
+    not platform_compat.IS_POSIX,
+    reason="pod lifecycle requires POSIX descriptor traversal",
+)
+
 
 def _npm(*args: str) -> list[str]:
     """The argv provisioning is expected to spawn for an npm step."""
@@ -1046,6 +1051,21 @@ class TestUnitRendering:
         monkeypatch.setenv("KIROCREW_POD_UNIT_PREFIX", "kirocrew-podtest")
         assert unit_mod.unit_path(PodConfig.load()).name == "kirocrew-podtest@.service"
 
+    @requires_posix_pod_lifecycle
+    def test_install_unit_refuses_a_symlinked_template(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        destination = tmp_path / "pod@.service"
+        victim = tmp_path / "victim.service"
+        victim.write_text("keep")
+        destination.symlink_to(victim)
+        monkeypatch.setattr(unit_mod, "unit_path", lambda _cfg: destination)
+
+        with pytest.raises(OSError, match="symbolic link"):
+            unit_mod.install_unit(cfg)
+
+        assert victim.read_text() == "keep"
+
 
 class TestBootGuardrails:
     def test_refuses_no_pinned_checkout(
@@ -1810,6 +1830,7 @@ class TestDrainCgroup:
         assert rt.drain_cgroup(procs, timeout=0.0) == ["7", "8"]
 
 
+@requires_posix_pod_lifecycle
 class TestLinuxTeardownOrdering:
     """Reclamation lives on the ``down`` path, not in an ``ExecStopPost`` hook that
     systemd runs BEFORE the final kill of the unit's cgroup. So ``stop_pod`` owns
@@ -2095,6 +2116,7 @@ class TestLinuxTeardownOrdering:
         assert "NOT zero-residue" in cp.stderr
 
 
+@requires_posix_pod_lifecycle
 class TestTheUnitFileNeverOutlivesAFailedLoad:
     """The invariant behind three separate defects: a unit file present on disk has
     been loaded by systemd. Every writer must uphold it — fixing only the lifecycle
@@ -2133,6 +2155,7 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
         assert "installed pod template unit" in msg
 
 
+@requires_posix_pod_lifecycle
 class TestPodNameMutexOnLinux:
     """Linux teardown moved onto the ``down`` path, so Linux now has the same
     down/up race the launchd backend needed the flock for: the mutex can no longer
@@ -2795,6 +2818,7 @@ class TestDownSamplesStateUnderTheLock:
         assert c.env_file("demo").exists(), "a live pod's checkout pin must survive"
 
 
+@requires_posix_pod_lifecycle
 class TestDownReclaimsResidue:
     """``pod down`` is the reclaim command the orphan report points at, so it has
     to work on a pod that is no longer running."""
@@ -3118,6 +3142,7 @@ class TestRuntimeHelpers:
 
 
 class TestAuditEvents:
+    @requires_posix_pod_lifecycle
     def test_down_emits_audit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         recorded: list[tuple] = []
         monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: recorded.append((a, k)))
@@ -3126,6 +3151,7 @@ class TestAuditEvents:
         pod_cli._down(PodConfig.load(), argparse.Namespace(name="demo"))
         assert any("pod.down" in str(r) for r in recorded)
 
+    @requires_posix_pod_lifecycle
     def test_down_dies_when_stop_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         recorded: list[tuple] = []
         monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: recorded.append((a, k)))
@@ -3189,6 +3215,7 @@ class TestCliVerbs:
         pod_cli._url(cfg, argparse.Namespace(name="alpha"))
         assert "http://127.0.0.1:7811" in capsys.readouterr().out
 
+    @requires_posix_pod_lifecycle
     def test_install_writes_unit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
@@ -3208,6 +3235,7 @@ class TestCliVerbs:
         assert "daemon-reload OK" in capsys.readouterr().out
         assert ("pod.install", "allowed") in recorded
 
+    @requires_posix_pod_lifecycle
     def test_install_dies_on_reload_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3227,6 +3255,7 @@ class TestCliVerbs:
             pod_cli.dispatch(argparse.Namespace(pod_action=None))
 
 
+@requires_posix_pod_lifecycle
 class TestUpVerb:
     """Drive the big _up body end-to-end with the host boundary mocked."""
 
@@ -3297,12 +3326,14 @@ class TestUpVerb:
 
         assert calls == [("demo", "minimal", False)]
 
-    def test_populated_home_seed_mismatch_refuses_before_start(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("landed", ["", "minimal"])
+    def test_populated_home_seed_request_refuses_before_start(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, landed: str
     ) -> None:
         """A failed start cleans up the pod home, so verification after health is
-        too late for state that existed before this command. The mismatch must
-        refuse before `start_pod` gains any path that can call `stop_pod`."""
+        too late for state that existed before this command. Every seed request
+        against a populated home must refuse before `start_pod` can reach
+        `stop_pod`, including one whose marker already matches the request."""
         c = self._prep(tmp_path, monkeypatch)
         home = c.home_dir("demo")
         home.mkdir(parents=True)
@@ -3318,6 +3349,8 @@ class TestUpVerb:
         monkeypatch.setattr(pod_cli, "_wait_healthy", lambda cfg, n, p: 403)
         monkeypatch.setattr(rt, "mint_token", lambda cfg, n, ttl: "tok-9")
         monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        # This wiring test owns the pre-start decision, not POSIX marker I/O.
+        monkeypatch.setattr(rt, "seeded_scenario_in_home", lambda cfg, name: landed)
 
         with pytest.raises(SystemExit) as excinfo:
             pod_cli._up(
@@ -4039,6 +4072,7 @@ class TestUnitExecSelfHeal:
         unit_path.write_text(unit_path.read_text() + f"ExecStopPost={exe} pod _cleanup %i\n")
         assert unit_mod.unit_is_current(cfg) is False
 
+    @requires_posix_pod_lifecycle
     def test_what_this_build_renders_is_current(self, cfg, monkeypatch, tmp_path):
         """Guard against the reverse failure: a check that flagged the CURRENT
         template would re-render and daemon-reload on every single `pod up`."""
@@ -4051,6 +4085,7 @@ class TestUnitExecSelfHeal:
         unit_mod.install_unit(cfg)
         assert unit_mod.unit_is_current(cfg) is True
 
+    @requires_posix_pod_lifecycle
     def test_spaced_executable_is_quoted_and_current(self, cfg, monkeypatch, tmp_path):
         from kiro_crew.pod import unit as unit_mod
 
@@ -4341,6 +4376,7 @@ class TestSessionBus:
         ), "_run no longer passes env=_systemctl_env()"
 
 
+@requires_posix_pod_lifecycle
 class TestBootTimeSettings:
     """``pod up --approval`` / ``--crons`` are persisted per pod and applied at boot.
 

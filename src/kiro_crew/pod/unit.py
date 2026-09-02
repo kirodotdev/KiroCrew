@@ -29,8 +29,8 @@ import stat
 import sys
 from pathlib import Path
 
-from kiro_crew import pinned_fs, platform_compat
-from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew import pinned_fs
+from kiro_crew.atomic_write import atomic_write_at
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod.config import PodConfig, environment_vars
 from kiro_crew.service.common import systemd_quote
@@ -169,17 +169,11 @@ def render_dropin(checkout: Path) -> str:
     return _DROPIN_TEMPLATE.format(kirocrew_bin=systemd_quote(str(prov.venv_bin(checkout))))
 
 
-def _write_dropin_atomic_nofollow(dst: Path, content: str) -> None:
-    """Publish the managed drop-in without following planted links."""
-    if platform_compat.IS_WINDOWS:  # pragma: no cover - pods are unavailable on Windows
-        if dst.is_symlink():
-            raise OSError(f"refusing to write pod boot override {dst}: it is a symbolic link")
-        atomic_write(dst, content, restrict_to_owner=True)
-        return
-
+def _write_unit_file_atomic_nofollow(dst: Path, content: str, *, what: str) -> None:
+    """Publish one managed systemd file without following planted links."""
     dir_fd = pinned_fs.create_and_open_dir_pinned(
         dst.parent,
-        what="pod boot override directory",
+        what=f"{what} directory",
         refusal=OSError,
     )
     try:
@@ -189,11 +183,9 @@ def _write_dropin_atomic_nofollow(dst: Path, content: str) -> None:
             pass
         else:
             if stat.S_ISLNK(existing.st_mode):
-                raise OSError(f"refusing to write pod boot override {dst}: it is a symbolic link")
+                raise OSError(f"refusing to write {what} {dst}: it is a symbolic link")
             if not stat.S_ISREG(existing.st_mode):
-                raise OSError(
-                    f"refusing to write pod boot override {dst}: it is not a regular file"
-                )
+                raise OSError(f"refusing to write {what} {dst}: it is not a regular file")
         atomic_write_at(dir_fd, dst.name, content, fsync=True, mode=0o600)
     finally:
         os.close(dir_fd)
@@ -208,7 +200,11 @@ def install_dropin(cfg: PodConfig, name: str, checkout: Path) -> Path:
     exists to self-heal for the template).
     """
     dst = dropin_path(cfg, name)
-    _write_dropin_atomic_nofollow(dst, render_dropin(checkout))
+    _write_unit_file_atomic_nofollow(
+        dst,
+        render_dropin(checkout),
+        what="pod boot override",
+    )
     return dst
 
 
@@ -221,17 +217,6 @@ def remove_dropin(cfg: PodConfig, name: str) -> bool:
     """
     path = dropin_path(cfg, name)
     directory = dropin_dir(cfg, name)
-    if platform_compat.IS_WINDOWS:  # pragma: no cover - pods are unavailable on Windows
-        if platform_compat.is_link_or_junction(directory):
-            return False
-        try:
-            path.unlink(missing_ok=True)
-            if directory.is_dir() and not any(directory.iterdir()):
-                directory.rmdir()
-        except OSError:
-            return False
-        return not path.exists() and not path.is_symlink()
-
     try:
         dir_fd = pinned_fs.open_dir_pinned(
             directory,
@@ -280,7 +265,11 @@ def install_unit(cfg: PodConfig) -> Path:
     """Write the template unit and return its path. Caller runs daemon-reload."""
     dst = unit_path(cfg)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(render_unit(cfg))
+    _write_unit_file_atomic_nofollow(
+        dst,
+        render_unit(cfg),
+        what="pod template unit",
+    )
     return dst
 
 
@@ -302,7 +291,7 @@ def unit_exec_ok(cfg: PodConfig) -> bool:
     for line in text.splitlines():
         if line.startswith("ExecStart="):
             try:
-                argv = shlex.split(line[len("ExecStart=") :], posix=True)
+                argv = shlex.split(line[len("ExecStart="):], posix=True)
             except ValueError:
                 return False
             if not argv:

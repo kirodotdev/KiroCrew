@@ -112,22 +112,24 @@ def _home_holds_state(cfg: PodConfig, name: str) -> bool:
 def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_populated: bool) -> None:
     """Refuse to report success when a requested scenario did not reach the home."""
     landed = rt.seeded_scenario_in_home(cfg, name)
-    if landed == scenario:
-        return
     if home_was_populated:
         held = f"scenario {landed!r}" if landed else "state from an earlier boot"
         _audit(
             "pod.up",
             "failure",
             f"name={name} seed={scenario}",
-            error="populated home was not re-seeded",
+            error="populated home seed request refused before start",
         )
         _die(
             f"{name!r} already held {held}, so --seed {scenario} was NOT applied — "
-            "a populated home is never re-seeded. The existing pod and its state "
-            "were left intact. To boot it fresh: "
+            "a populated home is never re-seeded. The pod was not started, because "
+            "cleanup after a failed start would otherwise be allowed to delete that "
+            "existing state. To restart it unchanged: "
+            f"kirocrew pod up {name}. To boot it fresh: "
             f"kirocrew pod down {name} && kirocrew pod up {name} --seed {scenario}"
         )
+    if landed == scenario:
+        return
     _audit("pod.up", "failure", f"name={name} seed={scenario}", error="seed did not land")
     found = f"it holds scenario {landed!r} instead" if landed else "its home holds no fixture"
     _die(
@@ -631,9 +633,7 @@ def _prune(cfg: PodConfig, args: argparse.Namespace) -> None:
             threshold = time.time() - _parse_older_than(args.older_than)
         orphans = rt.orphan_homes(cfg)
     except rt.PodError as exc:
-        _audit(
-            "pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120]
-        )
+        _audit("pod.prune", "denied", f"older_than={args.older_than or 'all'}", error=str(exc)[:120])
         raise
     dry_run = bool(getattr(args, "dry_run", False))
     results: list[dict[str, str]] = []

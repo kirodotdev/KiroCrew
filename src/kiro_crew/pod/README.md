@@ -11,6 +11,14 @@ Think **`kubectl` for local worktree test rigs.** This is the *test line*
 (multi-active, burn-on-evict); it is orthogonal to the *live line* (a single
 gateway serving real data on the canonical port) and refuses to bind the live port.
 
+Pod separation is **operational and state isolation**, not an adversarial security
+boundary against arbitrary processes already running as the same Unix UID. Such a
+process can modify user-owned pod storage directly; descriptor pinning prevents
+path/symlink substitution from accidentally redirecting an approved operation, but
+it does not add per-pod UIDs or mount isolation. Controller v1 runs pod operations
+host-side (`main/live Kiro Crew -> target test pod`); a pod does not create or control
+a child pod.
+
 ## Interface
 
 ```bash
@@ -73,9 +81,13 @@ home traversals pinned by directory descriptors. Config sanitization and
 workspace setup run through the same held home descriptor, then the fixture
 manifest is copied last as the completion marker. A failed partial copy or
 setup therefore stays non-bootable even on systemd's automatic retry, and a
-path entry swapped during the operation cannot redirect writes into another
-pod. Seeded config forces tunnel/channel enablement off and restores the agent
-sandbox floor. A populated home is never overwritten or re-seeded; service
+symlink or path-name substitution during the operation cannot redirect writes.
+This does not confine an already-open inode against arbitrary same-UID host
+processes; that limit is part of the operational-isolation boundary above.
+Seeded config forces tunnel/channel enablement off and restores the agent
+sandbox floor. A populated home is never overwritten or re-seeded: a
+`pod up --seed` request against one refuses before start even when its marker
+already matches. Use plain `pod up` to restart that home unchanged. Service
 restarts keep the sessions and logs already present. After health succeeds,
 `pod up` reads the fixture marker back and fails if the requested scenario did
 not land.

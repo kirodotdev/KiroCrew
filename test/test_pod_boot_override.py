@@ -13,6 +13,11 @@ from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import PodConfig
 
+pytestmark = pytest.mark.skipif(
+    not rt.IS_POSIX,
+    reason="pod drop-in lifecycle requires POSIX descriptor traversal",
+)
+
 
 @pytest.fixture
 def pod_plane(tmp_path: Path, monkeypatch) -> PodConfig:
@@ -48,7 +53,8 @@ class TestDropInRendering:
         lines = [ln for ln in rendered.splitlines() if ln.startswith("ExecStart")]
         assert lines[0] == "ExecStart="
         assert len(lines) == 2
-        assert "/checkouts/wt/.venv/bin/kirocrew" in lines[1]
+        expected = unit_mod.systemd_quote(str(rt.prov.venv_bin(Path("/checkouts/wt"))))
+        assert expected in lines[1]
         assert lines[1].endswith("pod _run %i")
 
     def test_names_the_checkouts_own_binary_not_a_global_one(self, pod_plane: PodConfig) -> None:
@@ -97,7 +103,7 @@ class TestDropInRendering:
         outside.mkdir()
         make_dir_link(unit_mod.dropin_dir(pod_plane, "wt"), outside)
 
-        with pytest.raises(OSError, match="symbolic link"):
+        with pytest.raises(OSError, match=r"(?:symbolic link|symlink or junction)"):
             unit_mod.install_dropin(pod_plane, "wt", Path("/checkouts/wt"))
         assert not (outside / "50-kirocrew-pod.conf").exists()
 
@@ -115,8 +121,10 @@ class TestDropInRendering:
         unit_mod.install_dropin(pod_plane, "wt", Path("/checkouts/old"))
         unit_mod.install_dropin(pod_plane, "wt", Path("/checkouts/new"))
         text = unit_mod.dropin_path(pod_plane, "wt").read_text()
-        assert "/checkouts/new/" in text
-        assert "/checkouts/old/" not in text
+        new_binary = unit_mod.systemd_quote(str(rt.prov.venv_bin(Path("/checkouts/new"))))
+        old_binary = unit_mod.systemd_quote(str(rt.prov.venv_bin(Path("/checkouts/old"))))
+        assert new_binary in text
+        assert old_binary not in text
 
     def test_remove_keeps_a_foreign_dropin_in_the_directory(self, pod_plane: PodConfig) -> None:
         # Only the file this code writes is ours to delete; an operator's own
@@ -150,7 +158,8 @@ class TestStartPodPinsTheCheckout:
         cp = rt.start_pod(pod_plane, "wt")
 
         assert cp.returncode == 0
-        assert "/checkouts/wt/" in unit_mod.dropin_path(pod_plane, "wt").read_text()
+        expected = unit_mod.systemd_quote(str(rt.prov.venv_bin(Path("/checkouts/wt"))))
+        assert expected in unit_mod.dropin_path(pod_plane, "wt").read_text()
         # systemd only reads a drop-in at load time, so the reload has to land
         # BETWEEN the write and the start or the pod boots the old definition.
         assert calls[0] == ("daemon-reload",)
@@ -169,6 +178,21 @@ class TestStartPodPinsTheCheckout:
 
         assert cp.returncode != 0
         assert "no pinned checkout" in cp.stderr
+        assert not any(args[0] == "start" for args in calls)
+
+    def test_control_character_checkout_path_refuses_without_traceback(
+        self, pod_plane: PodConfig, monkeypatch
+    ) -> None:
+        rt.pin_checkout(pod_plane, "wt", Path("/checkouts/with\ttab"))
+        monkeypatch.setattr(unit_mod, "unit_is_current", lambda cfg: True)
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(rt, "systemctl", self._systemctl(calls))
+
+        cp = rt.start_pod(pod_plane, "wt")
+
+        assert cp.returncode != 0
+        assert "could not write the boot override" in cp.stderr
+        assert "control character" in cp.stderr
         assert not any(args[0] == "start" for args in calls)
 
     def test_a_failed_reload_refuses_and_leaves_no_override(
@@ -262,8 +286,10 @@ class TestUpVerifiesTheSeedLanded:
     booted by an older global build come up blank and be announced as ready."""
 
     def test_a_fresh_home_without_the_fixture_fails_loudly(
-        self, pod_plane: PodConfig, capsys: pytest.CaptureFixture
+        self, pod_plane: PodConfig, capsys: pytest.CaptureFixture, monkeypatch
     ) -> None:
+        # This test owns the CLI decision, not POSIX descriptor traversal.
+        monkeypatch.setattr(rt, "seeded_scenario_in_home", lambda cfg, name: "")
         pod_plane.home_dir("wt").mkdir(parents=True)
         with pytest.raises(SystemExit) as excinfo:
             pod_cli._verify_seed_landed(pod_plane, "wt", "minimal", home_was_populated=False)
@@ -292,12 +318,14 @@ class TestUpVerifiesTheSeedLanded:
         assert "scenario 'minimal' instead" in capsys.readouterr().err
 
     def test_an_already_populated_home_refuses_the_unapplied_seed(
-        self, pod_plane: PodConfig, capsys: pytest.CaptureFixture
+        self, pod_plane: PodConfig, capsys: pytest.CaptureFixture, monkeypatch
     ) -> None:
         """A populated home is never overwritten, but a requested seed that was
         not applied is still a failed command. Reporting success here makes
         automation continue against the wrong state — the exact condition the
         post-health verification exists to detect. Existing evidence survives."""
+        # The manifest reader's descriptor contract has separate POSIX coverage.
+        monkeypatch.setattr(rt, "seeded_scenario_in_home", lambda cfg, name: "")
         home = pod_plane.home_dir("wt")
         home.mkdir(parents=True)
         (home / "sessions").mkdir()

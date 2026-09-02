@@ -6,7 +6,3 @@ description: |
   observe a genuinely blank instance -- first-boot bootstrap, "what does the
   dashboard show with no content", and as the default the seeded_home helper
   hands a test that names no fixture.
-
-  Use ``onboarding-fresh`` instead when the onboarding flow itself is the
-  subject: that one ships a config pinning ``dashboard.onboarded=false``, which
-  this fixture leaves to the gateway's defaults.

@@ -1168,7 +1168,7 @@ def _install_pod_dropin(cfg: PodConfig, name: str) -> subprocess.CompletedProces
         )
     try:
         unit_mod.install_dropin(cfg, name, Path(checkout).expanduser())
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return subprocess.CompletedProcess(
             args=[],
             returncode=1,
@@ -1788,6 +1788,15 @@ def _force_seed_agent_security(data: dict) -> None:
     agent["sandbox_allow_no_isolation"] = False
 
 
+def _apply_seed_config_floor(data: dict) -> None:
+    """Disable self-activating sections and restore the agent sandbox floor."""
+    for section in SEED_DISABLED_SECTIONS:
+        if not isinstance(data.get(section), dict):
+            data[section] = {}
+        data[section]["enabled"] = False
+    _force_seed_agent_security(data)
+
+
 def sanitized_seed_config(seed_dir: Path) -> dict | None:
     """Read ``<seed_dir>/config.json`` and return it with ``enabled`` forced to
     False on every ``SEED_DISABLED_SECTIONS`` section, or None if it can't be
@@ -1811,14 +1820,7 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
-    # Force OFF every self-activating section (SEED_DISABLED_SECTIONS carries the
-    # roster and the reasoning). Overwrite a non-dict section value too, so the
-    # enabled=False guarantee can't be skipped by a falsy value.
-    for section in SEED_DISABLED_SECTIONS:
-        if not isinstance(data.get(section), dict):
-            data[section] = {}
-        data[section]["enabled"] = False
-    _force_seed_agent_security(data)
+    _apply_seed_config_floor(data)
     return data
 
 
@@ -1844,11 +1846,23 @@ def resolve_seed_scenario(value: str) -> str:
     )
 
 
+def _open_seed_regular_file(home_fd: int, name: str) -> int:
+    """Open seed metadata without letting a FIFO block before type validation."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(name, flags, dir_fd=home_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"seeded home entry {name!r} is not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _prepare_seeded_home_fd(home_fd: int) -> None:
     """Finish pod-owned setup without reopening the seeded home by name."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open("config.json", flags, dir_fd=home_fd)
+        fd = _open_seed_regular_file(home_fd, "config.json")
     except FileNotFoundError:
         data: dict = {}
     except OSError as exc:
@@ -1872,11 +1886,7 @@ def _prepare_seeded_home_fd(home_fd: int) -> None:
         if not isinstance(data, dict):
             raise PodError("seeded config.json must contain a JSON object")
 
-    for section in SEED_DISABLED_SECTIONS:
-        if not isinstance(data.get(section), dict):
-            data[section] = {}
-        data[section]["enabled"] = False
-    _force_seed_agent_security(data)
+    _apply_seed_config_floor(data)
     atomic_write_at(home_fd, "config.json", json.dumps(data, indent=2), fsync=True, mode=0o600)
 
     try:
@@ -1901,10 +1911,9 @@ def _fixture_name_from_manifest_text(text: str) -> str:
 
 def _seeded_scenario_from_fd(home_fd: int) -> str | None:
     """Return the completion marker from a pinned pod-home descriptor."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     fd = -1
     try:
-        fd = os.open(seed_mod.FIXTURE_MANIFEST, flags, dir_fd=home_fd)
+        fd = _open_seed_regular_file(home_fd, seed_mod.FIXTURE_MANIFEST)
         with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as handle:
             fd = -1
             return _fixture_name_from_manifest_text(handle.read(64 * 1024))
