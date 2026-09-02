@@ -741,6 +741,21 @@ def _handle_app(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Second precondition, same reason: the deregistration below is
+        # irreversible, so a backend that cannot be confirmed stopped has to
+        # abort while the app is still whole - not after its crons, agents,
+        # skills and MCP servers are already gone (uninstall_app re-checks,
+        # but by then this cleanup would have run).
+        from kiro_crew.apps.backend import stop_recorded_app_backend
+
+        if not stop_recorded_app_backend(args.name):
+            print(
+                f"❌ not uninstalling {args.name!r}: its backend is still "
+                f"running and could not be confirmed stopped. Nothing has "
+                f"been changed — stop it and retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _cleanup_app_crons_from_scheduler(args.name)
         deregister_app(args.name)
         keep_data = not getattr(args, "purge_data", False)

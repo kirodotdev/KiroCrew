@@ -309,6 +309,198 @@ class TestUninstall:
         # App files removed
         assert not (app_home / "apps" / "test-app" / APP_MANIFEST_FILENAME).exists()
 
+    def test_uninstall_purges_generated_deps_from_preserved_data(self, tmp_path, app_home):
+        """data/ preservation exists for USER data. The gateway-generated
+        dependency trees must not survive an uninstall: a compromised app
+        could plant code there (sitecustomize.py) and a reinstall under the
+        same name would prepend it to PYTHONPATH — revoked code executing in
+        a fresh install."""
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        data_dir = app_home / "apps" / "test-app" / "data"
+        (data_dir / "cache.json").write_text('{"key": "value"}')
+        for gen in (".kirocrew-deps", ".kirocrew-deps-staging", ".kirocrew-deps-prior"):
+            (data_dir / gen).mkdir(parents=True)
+            (data_dir / gen / "sitecustomize.py").write_text("planted = True\n")
+
+        result = uninstall_app("test-app", keep_data=True)
+        assert result.ok
+        preserved = app_home / "apps" / "test-app" / "data"
+        assert (preserved / "cache.json").is_file()  # user data kept
+        for gen in (".kirocrew-deps", ".kirocrew-deps-staging", ".kirocrew-deps-prior"):
+            assert not (preserved / gen).exists(), gen
+
+    def test_uninstall_refuses_a_linked_data_directory(self, tmp_path, app_home):
+        """A linked data dir would make the purge (and the whole preserve
+        dance) operate on the link's TARGET — an app pointing data at
+        another app's tree would have this uninstall move and delete a
+        foreign deps tree. The gateway creates data/ as a real directory, so
+        a link is never legitimate: refuse, leaving the app installed and
+        the target untouched."""
+        import os as _os
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        app_root = app_home / "apps" / "test-app"
+        victim = tmp_path / "victim-data"
+        victim.mkdir()
+        (victim / ".kirocrew-deps").mkdir()
+        (victim / ".kirocrew-deps" / "keepme.py").write_text("x = 1\n")
+        data = app_root / "data"
+        import shutil as _shutil
+
+        _shutil.rmtree(data)
+        try:
+            _os.symlink(victim, data)
+        except OSError:
+            pytest.skip("symlink not permitted")
+
+        result = uninstall_app("test-app", keep_data=True)
+        assert not result.ok
+        # the victim's tree is untouched and the app is still installed
+        assert (victim / ".kirocrew-deps" / "keepme.py").is_file()
+        assert (app_root / APP_MANIFEST_FILENAME).exists()
+
+    def test_suffixed_staging_leftovers_are_purged_at_uninstall(self, tmp_path, app_home):
+        """Staging dirs carry unique per-transaction suffixes; an interrupted
+        install's leftover must not survive uninstall under a name the exact
+        filter never matches."""
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        app_root = app_home / "apps" / "test-app"
+        leftover = app_root / "data" / ".kirocrew-deps-staging-1234-deadbeef"
+        leftover.mkdir()
+        (leftover / "pkg.py").write_text("x = 1\n")
+        result = uninstall_app("test-app", keep_data=True)
+        assert result.ok, result
+        preserved = app_home / "apps" / "test-app" / "data"
+        assert not list(preserved.glob(".kirocrew-deps-staging*"))
+
+    def test_failed_purge_restores_preserved_data_to_its_home(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """A raise after data/ was moved to its temp name must move it BACK:
+        the app is still installed, and its user data must not be orphaned
+        under a hidden dot-name."""
+        import kiro_crew.apps.manager as mgr
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        app_root = app_home / "apps" / "test-app"
+        marker = app_root / "data" / "user-file.txt"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("keep me")
+
+        real_rmtree = mgr.shutil.rmtree
+
+        def failing_rmtree(path, *args, **kwargs):
+            if str(path) == str(app_root):
+                raise OSError("simulated: app dir resists deletion")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(mgr.shutil, "rmtree", failing_rmtree)
+        result = uninstall_app("test-app", keep_data=True)
+        assert not result.ok
+        assert marker.exists(), "preserved data must be restored to data/"
+        assert not (app_home / "apps" / ".test-app-data-tmp").exists()
+
+    def test_app_owned_names_sharing_the_deps_prefix_survive_uninstall(
+        self, tmp_path, app_home
+    ):
+        """The sweep deletes only the gateway's own generated names: an
+        app-owned entry that merely shares the .kirocrew-deps prefix (a
+        user's backup dir) is preserved data, not a purge target."""
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        app_root = app_home / "apps" / "test-app"
+        backup = app_root / "data" / ".kirocrew-deps-backup"
+        backup.mkdir(parents=True, exist_ok=True)
+        (backup / "precious.txt").write_text("keep me")
+        # A staging-prefix-sharing app name must equally survive: the
+        # quarantine's strict matcher only claims the generated
+        # -<pid>-<8hex> shape.
+        assets = app_root / "data" / ".kirocrew-deps-staging-assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        (assets / "art.bin").write_text("app asset")
+        result = uninstall_app("test-app", keep_data=True)
+        assert result.ok, result.error
+        preserved = app_root / "data" / ".kirocrew-deps-backup" / "precious.txt"
+        assert preserved.exists(), "app-owned prefix-sharing data must survive"
+        assert (
+            app_root / "data" / ".kirocrew-deps-staging-assets" / "art.bin"
+        ).exists(), "app-owned staging-prefix data must survive"
+
+    def test_uninstall_aborts_when_the_backend_cannot_be_stopped(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """A CLI uninstall must not proceed past a backend it cannot confirm
+        dead: a running (possibly compromised) backend can recreate stamped
+        deps trees mid-purge and ride revoked code into reinstallable data."""
+        import kiro_crew.apps.backend as bkmod
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        monkeypatch.setattr(bkmod, "_stop_recorded_outer", lambda name: False)
+        result = uninstall_app("test-app", keep_data=True)
+        assert not result.ok
+        assert "still running" in result.error
+        app_root = app_home / "apps" / "test-app"
+        assert (app_root / APP_MANIFEST_FILENAME).exists()  # untouched
+
+    def test_a_file_shaped_deps_artifact_is_purged_and_does_not_poison(
+        self, tmp_path, app_home
+    ):
+        """rmtree refuses non-directories, so a FILE written at a deps-tree
+        name used to survive every uninstall and poison the next quarantine
+        rename. Shape-aware removal purges it — and a second
+        install/uninstall round over the same name stays clean."""
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        app_root = app_home / "apps" / "test-app"
+        (app_root / "data" / ".kirocrew-deps").write_text("not a directory\n")
+        result = uninstall_app("test-app", keep_data=True)
+        assert result.ok, result
+        preserved = app_home / "apps" / "test-app" / "data"
+        assert not (preserved / ".kirocrew-deps").exists()
+        # the poison scenario: same name, directory shape, next round
+        install_app(src)
+        deps = app_home / "apps" / "test-app" / "data" / ".kirocrew-deps"
+        deps.mkdir()
+        (deps / "pkg.py").write_text("x = 1\n")
+        result2 = uninstall_app("test-app", keep_data=True)
+        assert result2.ok, result2
+        assert not (app_home / "apps" / "test-app" / "data" / ".kirocrew-deps").exists()
+
+    def test_uninstall_purge_unlinks_a_planted_deps_symlink(self, tmp_path, app_home):
+        """rmtree refuses a symlink, so a malicious app could plant one at
+        the deps name and its target would ride through the purge; the purge
+        must unlink the LINK (never following it) so the reinstall starts
+        clean while the link's target elsewhere is untouched."""
+        import os as _os
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        data_dir = app_home / "apps" / "test-app" / "data"
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "sitecustomize.py").write_text("planted = True\n")
+        try:
+            _os.symlink(target, data_dir / ".kirocrew-deps")
+        except OSError:
+            pytest.skip("symlink not permitted")
+
+        result = uninstall_app("test-app", keep_data=True)
+        assert result.ok
+        preserved = app_home / "apps" / "test-app" / "data"
+        assert not (preserved / ".kirocrew-deps").exists()
+        assert not (preserved / ".kirocrew-deps").is_symlink()
+        # the purge removed the LINK, not the linked target's content
+        assert (target / "sitecustomize.py").is_file()
+
     def test_install_preserves_existing_data(self, tmp_path, app_home):
         """Reinstall after default uninstall must preserve user data."""
         src = _make_app_source(tmp_path)
@@ -1273,6 +1465,18 @@ class TestCopyAppTree:
         (src / ".git" / "config").write_text("[core]")
         (src / "__pycache__").mkdir()
         (src / "__pycache__" / "x.pyc").write_bytes(b"\x00")
+        # The gateway's own pip --target provisioning output: machine- and
+        # platform-specific, re-provisioned at the destination on first spawn.
+        # Copying it would put a foreign wheel tree FIRST on the child's
+        # PYTHONPATH, shadowing the correctly provisioned copy. The transient
+        # staging/prior swap directories are denylisted for the same reason.
+        (src / ".kirocrew-deps").mkdir()
+        (src / ".kirocrew-deps" / "requests").mkdir()
+        (src / ".kirocrew-deps" / "requests" / "__init__.py").write_text("x = 1")
+        (src / ".kirocrew-deps-staging").mkdir()
+        (src / ".kirocrew-deps-staging" / "partial.py").write_text("x = 1")
+        (src / ".kirocrew-deps-prior").mkdir()
+        (src / ".kirocrew-deps-prior" / "old.py").write_text("x = 1")
         # A real `build/` dir is NOT denylisted: the manifest may reference
         # runtime paths anywhere under the app root, so it must survive.
         # (A `build` *symlink* is neutralized by symlinks=True instead.)
@@ -1288,6 +1492,9 @@ class TestCopyAppTree:
         assert not (dest / "ui" / "node_modules").exists()
         assert not (dest / ".git").exists()
         assert not (dest / "__pycache__").exists()
+        assert not (dest / ".kirocrew-deps").exists()
+        assert not (dest / ".kirocrew-deps-staging").exists()
+        assert not (dest / ".kirocrew-deps-prior").exists()
         assert (dest / "build" / "artifact.txt").is_file()
         assert (dest / "ui" / "dist" / "index.mjs").is_file()
 

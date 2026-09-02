@@ -1233,6 +1233,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # hygiene so a response echoing a credential or exfiltration URL cannot
         # leak into the log ring / /api/logs stream; not an egress boundary.
         "task_planner.py",
+        # Gate-side log hygiene, same shape as update_provider: redacts pip's
+        # stderr tail (an app requirements.txt can name an index URL carrying
+        # credentials) before the provisioning failure is written to the
+        # gateway log and to the app backend's own log file. Defensive
+        # scrubbing at the point of capture, not an output boundary.
+        "apps/backend.py",
         # Capture-side, not egress: the per-session MCP report scrubs a server
         # name and a failing server's startup error as it RECORDS them, so a
         # credential never enters the accumulator at all. Deliberately earlier

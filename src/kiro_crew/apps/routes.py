@@ -37,6 +37,8 @@ from kiro_crew.apps.backend import (
     list_app_processes,
     start_app_backend,
     stop_app_backend,
+    stop_recorded_app_backend,
+    stop_recorded_backend_preflight,
 )
 from kiro_crew.apps.bridges import (
     RegistrationResult,
@@ -1150,6 +1152,41 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                 status=409,
             )
 
+        # Step 0.5: NON-DESTRUCTIVE preflight - would a confirmed backend
+        # stop succeed? The actual stop deliberately runs AFTER the
+        # onUninstall hook (Step 3): a hook that flushes or exports through
+        # its backend needs it alive, especially with PURGE_DATA=1 where a
+        # failed flush precedes permanent deletion. This probe reads the
+        # same evidence the real stop acts on (pidfile shape, identity
+        # verifiability) without signalling anything, so an unconfirmable
+        # stop aborts here while the app is whole and ONLINE.
+        stop_confirmed = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), stop_recorded_backend_preflight, name
+        )
+        if not stop_confirmed:
+            sel().log_api_access(
+                caller="dashboard",
+                operation="app_uninstall",
+                outcome="denied",
+                resources=f"app={name}",
+                error="backend stop unconfirmed, uninstall aborted",
+            )
+            return web.json_response(
+                {
+                    "error": (
+                        f"not uninstalling {name!r}: its backend's pid record "
+                        f"cannot be read or its process identity cannot be "
+                        f"verified, so a stop could not be confirmed. Nothing "
+                        f"has been changed (the backend was not stopped) - "
+                        f"clear the cause and retry."
+                    ),
+                    "code": "backend_stop_unconfirmed",
+                    "retryable": True,
+                    "app": name,
+                },
+                status=409,
+            )
+
         # Step 1: Cron cleanup is the FIRST uninstall precondition, run BEFORE
         # the (possibly destructive, non-idempotent) onUninstall script and
         # BEFORE the backend is stopped. Uninstall is irreversible: below this
@@ -1285,11 +1322,37 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
             if script_output.get("failed"):
                 uninstall_log.append("onUninstall script failed (exit code non-zero)")
 
-        # Step 3: Stop backend + deregister resources (gateway-managed only)
+        # Step 3: Stop backend (CONFIRMED - the preflight at Step 0.5 makes a
+        # refusal here a narrow race, but a live backend surviving into file
+        # deletion is exactly what the confirmation exists to prevent) +
+        # deregister resources (gateway-managed only).
         if resources == "gateway":
-            await asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), stop_app_backend, name
+            _stopped = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), stop_recorded_app_backend, name
             )
+            if not _stopped:
+                sel().log_api_access(
+                    caller="dashboard",
+                    operation="app_uninstall",
+                    outcome="denied",
+                    resources=f"app={name}",
+                    error="backend stop unconfirmed after onUninstall, uninstall aborted",
+                )
+                return web.json_response(
+                    {
+                        "error": (
+                            f"the backend of {name!r} could not be confirmed "
+                            f"stopped; uninstall aborted before file removal. "
+                            f"The onUninstall hook has already run - stop the "
+                            f"backend and retry."
+                        ),
+                        "code": "backend_stop_unconfirmed",
+                        "retryable": True,
+                        "app": name,
+                        "log": uninstall_log,
+                    },
+                    status=409,
+                )
             await _deregister_app_off_loop(name)
 
         # Step 4: Clean dependencies (atomic classify + ledger update)
@@ -2713,11 +2776,7 @@ def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str
         # has no link to refuse. Checked on the DESCRIPTOR, which is what makes
         # it race-free. Inline rather than `pinned_fs.refuse_hardlink_alias`
         # for the same double-close reason `_read_declared_art` documents.
-        if (
-            not stat.S_ISREG(st.st_mode)
-            or st.st_nlink != 1
-            or st.st_size > _UI_MAX_BYTES
-        ):
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > _UI_MAX_BYTES:
             os.close(fd)
             return "not_found"
     except OSError:

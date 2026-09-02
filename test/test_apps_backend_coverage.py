@@ -5,7 +5,7 @@ and ``test_app_backend_stale_reap.py`` (pidfile reap safety) by exercising the
 branches those files leave untouched:
 
 * the adopt-an-already-healthy-instance path and its refusals,
-* the per-app venv / pip and npm dependency-install branches,
+* the per-app pip --target / npm dependency-install branches,
 * the Node and ASGI dispatch branches,
 * ``stop_app_backend``'s adopted-PID revalidation and SIGKILL escalation,
 * the pidfile helpers' error paths and ``_proc_start_time``'s two platforms,
@@ -18,10 +18,13 @@ asserted. ``subprocess.Popen`` / ``subprocess.run``, the ``socket`` module,
 and ``loopback_urlopen`` are stubbed, and the spawn body is frozen at the
 ``Popen`` seam with a sentinel exception.
 """
+
 from __future__ import annotations
 
+import importlib
 import json
 import logging
+import os
 import subprocess
 import sys
 import urllib.error
@@ -610,9 +613,7 @@ class TestSpawnPortResolution:
     ) -> None:
         (spawn_root / "server.py").write_text("x = 1\n")
         with caplog.at_level(logging.ERROR):
-            assert (
-                bmod._start_app_backend_body("ranged", _manifest("server.py", port="1")) is None
-            )
+            assert bmod._start_app_backend_body("ranged", _manifest("server.py", port="1")) is None
         assert any("outside allowed range" in r.message for r in caplog.records)
 
     def test_fixed_port_held_by_another_app_is_refused(
@@ -802,9 +803,7 @@ class TestAdoptExistingInstance:
             [bmod.platform_compat.PortListener(111, "127.0.0.1", "4")],
             [bmod.platform_compat.PortListener(999, "*", "6")],
         ]
-        monkeypatch.setattr(
-            bmod.platform_compat, "find_port_listeners", lambda _port: seqs.pop(0)
-        )
+        monkeypatch.setattr(bmod.platform_compat, "find_port_listeners", lambda _port: seqs.pop(0))
         with caplog.at_level(logging.WARNING):
             assert self._run(bmod._MIN_PORT + 18) is None
         assert any("owners changed" in r.message for r in caplog.records)
@@ -858,64 +857,1132 @@ class TestAdoptExistingInstance:
 
 
 class TestDependencyInstall:
-    def test_requirements_txt_provisions_a_per_app_venv_then_pip_installs(
+    def test_requirements_txt_provisions_the_deps_dir_without_a_venv(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Provisioning is a single `pip install --target` into a staging dir
+        that is swapped live on success (with the requirements hash stamped).
+
+        Never `-m venv`: a packaged install's bundled interpreter ships pip
+        but no ensurepip, so venv creation dies after building the directory
+        skeleton — which the venv-first interpreter policy then prefers while
+        it holds none of the app's dependencies."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
         (spawn_root / "server.py").write_text("x = 1\n")
-        (spawn_root / "requirements.txt").write_text("requests\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
         runs = _record_runs(monkeypatch)
         _capture_popen(monkeypatch)
         with pytest.raises(_StopSpawn):
             bmod._start_app_backend_body("deps", _manifest("server.py"))
-        assert any("venv" in argv for argv in runs), runs
+        assert not any("venv" in argv for argv in runs), runs
+        pip_argv = next(argv for argv in runs if "install" in argv)
+        target_idx = pip_argv.index("--target")
+        # staging names are UNIQUE per transaction (pid+nonce suffix), so a
+        # data/ swap can never redirect a fixed name's cleanup or fill
+        _target = pip_argv[target_idx + 1]
+        assert _target.startswith(str(spawn_root / "data" / bmod._DEPS_STAGING_NAME)), pip_argv
+        # Success swapped the staging dir live and stamped the requirements
+        # hash, so the next start with an unchanged file can skip pip.
+        deps_dir = app_deps_dir(spawn_root)
+        assert deps_dir.is_dir()
+        assert not list((spawn_root / "data").glob(f"{bmod._DEPS_STAGING_NAME}*"))
+        assert (deps_dir / bmod._DEPS_STAMP_NAME).read_text() == bmod._deps_digest(b"requests\n")
+
+    def test_an_out_of_root_requirements_symlink_is_refused_without_reading_it(
+        self, spawn_root: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The app dir is app-writable, so requirements.txt can be a planted
+        symlink to a file outside the app root. Provisioning must refuse it:
+        hashing the target's bytes would turn the on-disk stamp into a
+        sha256 content oracle for that file, and pip would install from a
+        path the app cannot otherwise reach. The refusal is surfaced as a
+        provisioning error, not swallowed."""
+        import os as _os
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_bytes(b"host-secret==1.0\n")
+        (spawn_root / "server.py").write_text("x = 1\n")
+        try:
+            _os.symlink(outside, spawn_root / "requirements.txt")
+        except OSError:
+            pytest.skip("symlink not permitted")
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps", _manifest("server.py"))
+        # No pip ran, no deps dir was created, and no stamp exists anywhere
+        # that could disclose a digest of the outside file's bytes.
+        assert not any("install" in argv for argv in runs), runs
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        assert not app_deps_dir(spawn_root).exists()
+        assert not list((spawn_root / "data").glob(f"{bmod._DEPS_STAGING_NAME}*"))
+
+    def test_an_in_tree_requirements_symlink_provisions_normally(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """requirements.txt -> requirements/prod.txt is legitimate app
+        layout: a link whose strict resolution stays inside the app root is
+        accepted, read via its resolved target (itself no-follow-bound), and
+        provisions normally."""
+        import os as _os
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        (spawn_root / "server.py").write_text("x = 1\n")
+        reqs = spawn_root / "requirements"
+        reqs.mkdir()
+        (reqs / "prod.txt").write_bytes(b"requests\n")
+        try:
+            _os.symlink(
+                _os.path.join("requirements", "prod.txt"),
+                spawn_root / "requirements.txt",
+            )
+        except OSError:
+            pytest.skip("symlink not permitted")
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-inlink", _manifest("server.py"))
         assert any("install" in argv for argv in runs), runs
+
+    def test_pip_runs_from_the_app_root_on_the_apps_own_requirements(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pip runs with cwd=app root, so a relative reference (`-e ./lib`)
+        resolves inside the app dir rather than the gateway's working
+        directory — and for VOLATILE requirements (the only kind that can
+        carry file references) -r points at the app's OWN requirements.txt,
+        so a nested include resolves beside it (a relocated copy would
+        break includes)."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "base.txt").write_bytes(b"requests\n")
+        (spawn_root / "requirements.txt").write_bytes(b"-r base.txt\n")
+        _record_runs(monkeypatch)
+        seen: dict[str, Any] = {}
+
+        def _spy_run(argv: Any, **kwargs: Any) -> Any:
+            if "install" in argv:
+                seen["cwd"] = kwargs.get("cwd")
+                seen["r_path"] = argv[list(argv).index("-r") + 1]
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _spy_run)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps", _manifest("server.py"))
+        assert seen["cwd"] == str(spawn_root), seen
+        assert seen["r_path"] == str(spawn_root / "requirements.txt"), seen
+
+    def test_an_editable_install_is_retained_and_swapped_live(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Editable installs materialise as __editable__*.pth hooks, which
+        the deps_boot shim processes via site.addsitedir — so provisioning
+        RETAINS them and swaps the tree live (the refusal that predated the
+        shim is gone)."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"-e ./lib\n")
+        _record_runs(monkeypatch)
+
+        def _fake_pip(argv: Any, **kwargs: Any) -> Any:
+            if "install" in argv:
+                argv = list(argv)
+                staging = argv[argv.index("--target") + 1]
+                (__import__("pathlib").Path(staging) / "__editable__.lib-1.0.pth").write_text(
+                    "hook\n"
+                )
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _fake_pip)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-editable", _manifest("server.py"))
+        deps_dir = app_deps_dir(spawn_root)
+        assert (deps_dir / "__editable__.lib-1.0.pth").is_file()
+        log_path = spawn_root / "data" / "logs" / "backend.log"
+        if log_path.exists():
+            assert "editable requirements" not in log_path.read_text()
+
+    def test_volatile_requirement_forms_disable_the_stamp(self) -> None:
+        """Any line whose resolution can change while the line does not
+        (file refs attached or spaced, editables, local paths, VCS/URL,
+        direct references) must disable stamp reuse — the digest cannot
+        prove the resolved set unchanged for them."""
+        vol = bmod._requirements_volatile
+        assert vol(b"-rbase.txt\n")
+        assert vol(b"-r base.txt\n")
+        assert vol(b"-c pins.txt\n")
+        assert vol(b"--requirement=base.txt\n")
+        assert vol(b"-e ./lib\n")
+        assert vol(b"./lib\n")
+        assert vol(b"~/wheels/pkg.whl\n")
+        assert vol(b"pkg @ https://host/pkg.whl\n")
+        assert vol(b"git+https://host/repo.git#egg=pkg\n")
+        assert vol(b"wheels/pkg.whl\n")  # bare relative path, no ./ prefix
+        assert vol(b"vendor.whl\n")  # bare archive FILENAME, no separator
+        assert vol(b"-f wheelhouse\n")  # find-links: local wheel content can change
+        assert vol(b"--find-links wheelhouse\n")
+        assert vol(b"--no-index\n")  # resolution-location options
+        assert vol(b"Vendor-1.0.TAR.GZ\n")  # case-insensitive suffix
+        assert not vol(b"requests==2.31.0\n")  # index spec stays stampable
+        assert vol(b"wheels\\pkg.whl\n")
+        assert not vol(b"requests==2.32.0\n# -r not-a-directive in a comment\n")
+        assert not vol(b"")
+
+    def test_deps_boot_main_runs_a_script_and_a_module_in_process(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In-process coverage of the shim's three arms: script dispatch
+        (with the script dir at sys.path[0]), -m module dispatch (module
+        resolved through the addsitedir'd deps dir, moved to the front),
+        and the usage error."""
+        from kiro_crew.apps import deps_boot
+
+        _clean_path = list(sys.path)  # arms mutate the patched list; reset from this
+        deps = tmp_path / "deps"
+        deps.mkdir()
+        (deps / "dep_mod.py").write_text("MARKER = 'dep'\n")
+        proof = tmp_path / "proof.txt"
+        script = tmp_path / "sub" / "entry.py"
+        script.parent.mkdir()
+        (script.parent / "sib.py").write_text("S = 'sib'\n")
+        script.write_text(
+            "import pathlib, sys\n"
+            "import dep_mod, sib\n"
+            f"pathlib.Path({str(proof)!r}).write_text("
+            "dep_mod.MARKER + sib.S + sys.argv[1])\n"
+        )
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        monkeypatch.setattr(sys, "argv", list(sys.argv))
+        deps_boot.main([str(deps), str(script), "argved"])
+        assert proof.read_text() == "depsibargved"
+        assert sys.path[0] == str(script.parent)
+
+        mod_proof = tmp_path / "mod_proof.txt"
+        (deps / "runnable_mod.py").write_text(
+            "import pathlib, sys\n"
+            f"pathlib.Path({str(mod_proof)!r}).write_text('ran' + sys.argv[1])\n"
+        )
+        # The first arm's import built a FileFinder for the deps dir whose
+        # listing cache has mtime granularity — a module written within the
+        # same granule is invisible to the second arm without this.
+        importlib.invalidate_caches()
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        monkeypatch.setattr(sys, "argv", list(sys.argv))
+        deps_boot.main([str(deps), "-m", "runnable_mod", "x"])
+        assert mod_proof.read_text() == "ranx"
+
+        # -c arm: python -c parity (argv[0] is "-c", cwd at sys.path[0]),
+        # module resolved through the addsitedir'd deps dir. The arm
+        # installs a fresh __main__ module (production runs in a dedicated
+        # process); restore the test runner's afterwards.
+        c_proof = tmp_path / "c_proof.txt"
+        monkeypatch.setitem(sys.modules, "__main__", sys.modules["__main__"])
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        monkeypatch.setattr(sys, "argv", list(sys.argv))
+        deps_boot.main(
+            [
+                str(deps),
+                "-c",
+                "import pathlib, sys\n"
+                "import dep_mod\n"
+                f"pathlib.Path({str(c_proof)!r}).write_text(dep_mod.MARKER + sys.argv[1])",
+                "cargv",
+            ]
+        )
+        assert c_proof.read_text() == "depcargv"
+
+        # PLACEMENT parity: the launch entry precedes the deps entries, so
+        # an app-local module colliding with a dependency name resolves to
+        # the app's own file exactly like a plain launch
+        (deps / "sib.py").write_text("S = 'DEPSIB'\n")  # collides with app sib.py
+        order_proof = tmp_path / "order_proof.txt"
+        script2 = tmp_path / "sub" / "entry2.py"
+        script2.write_text(
+            "import pathlib\n"
+            "import sib\n"
+            f"pathlib.Path({str(order_proof)!r}).write_text(sib.S)\n"
+        )
+        monkeypatch.setattr(sys, "path", list(_clean_path))
+        monkeypatch.setattr(sys, "argv", list(sys.argv))
+        importlib.invalidate_caches()
+        deps_boot.main([str(deps), str(script2)])
+        assert order_proof.read_text() == "sib", order_proof.read_text()
+
+        # safe_path (-P/-I): the shim must not restore the launch entry.
+        # A proxy, not a bare object: sys.flags is process-global and other
+        # code (runpy) reads .verbose etc. during the run.
+        _real_flags = sys.flags
+
+        class _Flags:
+            safe_path = True
+
+            def __getattr__(self, attr):
+                return getattr(_real_flags, attr)
+
+        monkeypatch.setattr(sys, "path", list(_clean_path))
+        monkeypatch.setattr(sys, "argv", list(sys.argv))
+        monkeypatch.setattr(deps_boot.sys, "flags", _Flags())
+        monkeypatch.setitem(sys.modules, "__main__", sys.modules["__main__"])
+        sp_proof = tmp_path / "sp_proof.txt"
+        deps_boot.main(
+            [
+                str(deps),
+                "-c",
+                "import pathlib, sys\n"
+                f"pathlib.Path({str(sp_proof)!r}).write_text("
+                "'|'.join(sys.path[:2]))",
+            ]
+        )
+        parts = sp_proof.read_text().split("|")
+        assert parts[0] == str(deps), parts  # deps first, NO '' cwd entry
+        monkeypatch.setattr(deps_boot.sys, "flags", _real_flags)
+
+        # embedded-exe arm: pip's Windows launcher carries the console
+        # script as an appended ZIP; the shim extracts __main__.py and
+        # dispatches it after addsitedir
+        import zipfile as _zipfile
+
+        exe_proof = tmp_path / "exe_proof.txt"
+        fake_exe = tmp_path / "embtool.exe"
+        with open(fake_exe, "wb") as fh:
+            fh.write(b"MZ fake native prefix\n")
+            with _zipfile.ZipFile(fh, "a") as zf:
+                zf.writestr(
+                    "__main__.py",
+                    "import pathlib, sys\n"
+                    "import dep_mod\n"
+                    f"pathlib.Path({str(exe_proof)!r}).write_text(dep_mod.MARKER + sys.argv[1])\n",
+                )
+        monkeypatch.setitem(sys.modules, "__main__", sys.modules["__main__"])
+        monkeypatch.setattr(sys, "path", list(_clean_path))
+        monkeypatch.setattr(sys, "argv", list(sys.argv))
+        importlib.invalidate_caches()
+        deps_boot.main([str(deps), str(fake_exe), "exearg"])
+        assert exe_proof.read_text() == "depexearg"
+
+        with pytest.raises(SystemExit) as exc1:
+            deps_boot.main([])
+        assert exc1.value.code == 2
+        with pytest.raises(SystemExit) as exc2:
+            deps_boot.main([str(deps), "-m"])
+        assert exc2.value.code == 2
+
+    def test_the_deps_boot_shim_processes_pth_files_with_deps_first(self, tmp_path: Any) -> None:
+        """The whole reason the shim exists: PYTHONPATH never processes .pth
+        files, site.addsitedir does. A deps tree whose package arrives ONLY
+        via a .pth redirect must import under the shim — and the deps
+        entries must sit ahead of the gateway env on sys.path (the
+        precedence the PYTHONPATH transport had)."""
+        deps = tmp_path / "deps"
+        hidden = deps / "hidden"
+        hidden.mkdir(parents=True)
+        (hidden / "pth_only_pkg.py").write_text("VIA_PTH = True\n")
+        (deps / "redirect.pth").write_text("hidden\n")
+        subdir = tmp_path / "app"
+        subdir.mkdir()
+        (subdir / "sibling.py").write_text("S = 1\n")
+        script = subdir / "entry.py"
+        script.write_text(
+            "import json, sys\n"
+            "import pth_only_pkg\n"
+            "import sibling  # direct-script parity: script dir on sys.path[0]\n"
+            "print(json.dumps({'via_pth': pth_only_pkg.VIA_PTH,"
+            " 'sibling': sibling.S}))\n"
+        )
+        proc = subprocess.run(
+            [
+                sys.executable,
+                # Absolute SCRIPT path, not -m: the -m spelling imports the
+                # kiro_crew package and Python writes __pycache__ into the
+                # CHECKOUT - a test must not leave artifacts outside
+                # tmp_path. (Production spells it by path for its own
+                # reason: session-cwd shadowing.)
+                os.path.abspath(bmod._deps_boot_module.__file__),
+                str(deps),
+                str(script),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            cwd=str(tmp_path),
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert '"via_pth": true' in proc.stdout, proc.stdout
+        assert '"sibling": 1' in proc.stdout, proc.stdout
+
+    def test_a_python_backend_with_deps_launches_through_the_shim(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provisioned backend spawns via deps_boot (which addsitedir()s
+        the deps dir, processing .pth) rather than a raw interpreter+entry
+        argv — and only for the gateway interpreter."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        deps_dir = app_deps_dir(spawn_root)
+        deps_dir.mkdir(parents=True)
+        (deps_dir / bmod._DEPS_STAMP_NAME).write_text(bmod._deps_digest(b"requests\n"))
+        _record_runs(monkeypatch)
+        seen = _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-shim", _manifest("server.py"))
+        argv = seen["argv"]
+        assert argv[0] == sys.executable, argv
+        # absolute-path spelling: an app-root kiro_crew.py must not be able
+        # to shadow the shim for -m resolution under cwd=app root
+        assert argv[1].endswith("deps_boot.py"), argv
+        assert argv[2] == str(deps_dir), argv
+        assert argv[3].endswith("server.py"), argv
+
+    def test_non_volatile_requirements_install_from_a_snapshot(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pip re-opens the requirements path; a concurrent rewrite after
+        hashing would install replacement contents under the ORIGINAL
+        digest's stamp. When the stamp will be trusted, pip installs from an
+        immutable snapshot of the very bytes the digest covers."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        req = b"requests==2.31.0\n"
+        (spawn_root / "requirements.txt").write_bytes(req)
+        _record_runs(monkeypatch)
+        seen: dict[str, Any] = {}
+
+        def _spy_run(argv: Any, **kwargs: Any) -> Any:
+            if "install" in argv:
+                argv = list(argv)
+                r_path = argv[argv.index("-r") + 1]
+                seen["r_path"] = r_path
+                seen["r_bytes"] = __import__("pathlib").Path(r_path).read_bytes()
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _spy_run)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-snap", _manifest("server.py"))
+        assert "snapshot" in seen["r_path"], seen
+        assert str(spawn_root / "data") in seen["r_path"], seen
+        assert seen["r_bytes"] == req, seen
+
+    def test_pip_reads_the_resolved_target_of_an_in_tree_symlink(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pip resolves a nested include (`-r base.txt`) relative to the
+        requirements FILE — handing it the symlink path would resolve
+        includes beside the LINK instead of its target. The -r argument must
+        be the validated resolved path."""
+        import os as _os
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        (spawn_root / "server.py").write_text("x = 1\n")
+        real = spawn_root / "config"
+        real.mkdir()
+        (real / "base.txt").write_bytes(b"requests\n")
+        # an include makes the requirements VOLATILE, so pip reads the live
+        # validated path (where the include resolves) instead of a snapshot
+        (real / "requirements.txt").write_bytes(b"-r base.txt\n")
+        try:
+            _os.symlink(real / "requirements.txt", spawn_root / "requirements.txt")
+        except OSError:
+            pytest.skip("symlink not permitted")
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-reqlink", _manifest("server.py"))
+        pip_argv = next(argv for argv in runs if "install" in argv)
+        r_val = pip_argv[pip_argv.index("-r") + 1]
+        assert r_val == str(real / "requirements.txt"), pip_argv
+
+    def test_concurrent_provisioning_is_serialized_by_the_deps_lock(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The backend spawn and a backend-less registration (or two
+        registrations) can provision the same app concurrently; unserialized
+        they delete each other's staging tree and both fail. The per-app
+        file lock admits one transaction at a time — and the stamp check
+        runs inside it, so the waiter skips pip on the winner's stamp."""
+        import threading
+        import time as _time
+
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        inside = []
+        overlap = []
+
+        def _fake_pip(argv: Any, **kwargs: Any) -> Any:
+            if "install" in argv:
+                if inside:
+                    overlap.append(True)
+                inside.append(True)
+                _time.sleep(0.15)
+                argv = list(argv)
+                staging = argv[argv.index("--target") + 1]
+                (__import__("pathlib").Path(staging) / "pkg.py").write_text("x = 1\n")
+                inside.pop()
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _fake_pip)
+        errs: list[str] = []
+
+        def _call() -> None:
+            errs.append(bmod.provision_app_deps("deps-race", spawn_root))
+
+        threads = [threading.Thread(target=_call) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errs == ["", ""], errs
+        assert not overlap, "two pip transactions ran concurrently"
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        assert (app_deps_dir(spawn_root) / "pkg.py").is_file()
+
+    def test_the_pinned_dir_detects_a_mid_transaction_swap(self, tmp_path: Any) -> None:
+        """The link pre-check is a TOCTOU window: a running app can swap
+        data/ AFTER validation. The pin holds the directory open and verify()
+        refuses once the path names a different inode — the renames go
+        through the held fd and cannot be redirected at all."""
+        if bmod.platform_compat.IS_WINDOWS:
+            pytest.skip("dir pinning is POSIX-only (symlink creation is privileged on Windows)")
+        real = tmp_path / "data"
+        real.mkdir()
+        pin = bmod._PinnedDir(real)
+        try:
+            pin.verify()  # untouched: passes
+            real.rename(tmp_path / "moved-away")
+            (tmp_path / "other").mkdir()
+            (tmp_path / "other").rename(real)
+            with pytest.raises(OSError, match="replaced mid-provisioning"):
+                pin.verify()
+        finally:
+            pin.close()
+
+    def test_provisioning_refuses_a_linked_data_directory(
+        self, spawn_root: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every provisioning operation under data/ would FOLLOW a planted
+        link — an app pointing data/ at another app's tree would have the
+        swap install attacker-chosen dependencies into the victim's dir.
+        Refused before anything is touched through it, same shape as the
+        uninstall purge's guard."""
+        import os as _os
+        import shutil as _shutil
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        victim = tmp_path / "victim-data"
+        victim.mkdir()
+        data = spawn_root / "data"
+        if data.exists():
+            _shutil.rmtree(data)
+        try:
+            _os.symlink(victim, data)
+        except OSError:
+            pytest.skip("symlink not permitted")
+        runs = _record_runs(monkeypatch)
+        err = bmod.provision_app_deps("deps-datalink", spawn_root)
+        assert "symlink/junction" in err, err
+        assert not any("install" in argv for argv in runs), runs
+        assert not any(victim.iterdir()), list(victim.iterdir())
+
+    def test_an_oversized_requirements_file_is_refused_bounded(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gateway buffers app-controlled inputs in its own memory: an
+        oversized requirements.txt reads at most cap+1 bytes and refuses —
+        it must never be slurped whole or handed to pip."""
+        (spawn_root / "requirements.txt").write_bytes(b"#" + b"x" * (bmod._DEPS_REQ_MAX_BYTES + 10))
+        runs = _record_runs(monkeypatch)
+        err = bmod.provision_app_deps("deps-huge", spawn_root)
+        assert "Refusing requirements.txt" in err, err
+        assert not any("install" in argv for argv in runs), runs
+
+    def test_every_provisioning_failure_arm_emits_the_sel_event(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """deps_provision_failed is the audit contract for provisioning
+        failures; the requirements-read refusal (out-of-root symlink) and
+        lock failures go through the same wrapper emit as pip failures."""
+        import os as _os
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        outside = spawn_root.parent / "outside-req.txt"
+        outside.write_bytes(b"requests\n")
+        try:
+            _os.symlink(outside, spawn_root / "requirements.txt")
+        except OSError:
+            pytest.skip("symlink not permitted")
+        events: list = []
+        monkeypatch.setattr(
+            bmod,
+            "sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
+        )
+        _record_runs(monkeypatch)
+        err = bmod.provision_app_deps("deps-selpin", spawn_root)
+        assert "Refusing requirements.txt" in err, err
+        assert [e.get("outcome") for e in events] == ["deps_provision_failed"], events
+
+    def test_a_planted_stamp_symlink_reads_as_unprovisioned(
+        self, spawn_root: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stamp lives in the app-writable tree, so its read is
+        no-follow-bound like the requirements read: a planted symlink at the
+        stamp name must never make the gateway read an arbitrary path — it
+        reads as "unprovisioned" and pip simply runs (safe direction)."""
+        import os as _os
+
+        if not hasattr(_os, "symlink"):
+            pytest.skip("no symlink support")
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        req = b"requests\n"
+        (spawn_root / "requirements.txt").write_bytes(req)
+        deps_dir = app_deps_dir(spawn_root)
+        deps_dir.mkdir(parents=True)
+        target = tmp_path / "protected.txt"
+        target.write_text(bmod._deps_digest(req))  # even a matching target
+        try:
+            _os.symlink(target, deps_dir / bmod._DEPS_STAMP_NAME)
+        except OSError:
+            pytest.skip("symlink not permitted")
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-stamplink", _manifest("server.py"))
+        assert any("install" in argv for argv in runs), runs
+
+    def test_include_bearing_requirements_never_skip_pip(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stamp digest covers the top-level file's bytes only, so a
+        change confined to an included file (-r base.txt) would preserve the
+        stamp and serve stale dependencies. Include-bearing requirements
+        therefore disable the skip: pip runs even when the stamp matches."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        req = b"-r base.txt\n"
+        (spawn_root / "requirements.txt").write_bytes(req)
+        (spawn_root / "base.txt").write_bytes(b"requests\n")
+        deps_dir = app_deps_dir(spawn_root)
+        deps_dir.mkdir(parents=True)
+        (deps_dir / bmod._DEPS_STAMP_NAME).write_text(bmod._deps_digest(req))
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-inc", _manifest("server.py"))
+        assert any("install" in argv for argv in runs), runs
+
+    def test_an_unchanged_requirements_file_skips_the_pip_call(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pip --target cannot answer "already satisfied" the way a venv
+        install could, so the stamp is what keeps a restart with unchanged
+        requirements off the network — and keeps an OFFLINE restart of a
+        healthy backend from raising a false provisioning alarm."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        deps_dir = app_deps_dir(spawn_root)
+        deps_dir.mkdir(parents=True)
+        (deps_dir / bmod._DEPS_STAMP_NAME).write_text(bmod._deps_digest(b"requests\n"))
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-skip", _manifest("server.py"))
+        assert not any("install" in argv for argv in runs), runs
+
+    def test_a_changed_requirements_file_reinstalls(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests==2.32.0\n")
+        deps_dir = app_deps_dir(spawn_root)
+        deps_dir.mkdir(parents=True)
+        (deps_dir / bmod._DEPS_STAMP_NAME).write_text(
+            bmod._deps_digest(b"requests\n")  # stamp of the OLD file
+        )
+        runs = _record_runs(monkeypatch)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-changed", _manifest("server.py"))
+        assert any("install" in argv for argv in runs), runs
+
+    def test_the_stamp_digest_changes_with_the_interpreter_abi(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wheels installed by pip --target are ABI-specific, so a gateway
+        Python upgrade must reprovision even when requirements.txt is
+        byte-identical — a requirements-only stamp would skip pip and leave
+        old-ABI wheels live. A PATCH upgrade must reprovision too:
+        requirements can carry python_full_version markers that flip on it."""
+        before = bmod._deps_digest(b"requests\n")
+        monkeypatch.setattr(
+            bmod.sys,
+            "implementation",
+            SimpleNamespace(
+                cache_tag="cpython-399",
+                name=sys.implementation.name,
+                version=sys.implementation.version,
+            ),
+        )
+        assert bmod._deps_digest(b"requests\n") != before
+        monkeypatch.undo()
+        monkeypatch.setattr(bmod.platform, "python_version", lambda: "3.99.99")
+        assert bmod._deps_digest(b"requests\n") != before
+
+    def test_an_interrupted_swap_is_recovered_on_the_next_start(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash between the two swap renames leaves the good tree under the
+        prior name only. The next start must put it back — and, with a
+        matching stamp inside, skip pip — so an offline restart keeps its
+        dependencies instead of spawning bare."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        prior = spawn_root / "data" / bmod._DEPS_PRIOR_NAME
+        prior.mkdir(parents=True)
+        (prior / bmod._DEPS_STAMP_NAME).write_text(bmod._deps_digest(b"requests\n"))
+        (prior / "marker.py").write_text("recovered = True\n")
+        runs = _record_runs(monkeypatch)
+        seen = _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-recover", _manifest("server.py"))
+        deps_dir = app_deps_dir(spawn_root)
+        assert (deps_dir / "marker.py").is_file()
+        assert not prior.exists()
+        assert not any("install" in argv for argv in runs), runs
+        assert any(str(a).endswith("deps_boot.py") for a in seen["argv"]), seen["argv"]
+
+    def test_a_failed_reinstall_leaves_the_prior_deps_dir_intact(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pip fills a staging dir that is swapped in only on success, so a
+        failed or interrupted (re)install can never corrupt the live deps dir
+        in place — the prior good install keeps serving the spawn."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests==2.32.0\n")
+        deps_dir = app_deps_dir(spawn_root)
+        (deps_dir / "requests").mkdir(parents=True)
+        (deps_dir / "requests" / "__init__.py").write_text("prior = True\n")
+        # A REAL prior good install carries its stamp (written at swap time);
+        # activation requires it to name the current interpreter's digest,
+        # so the fixture plants it too. A stampless (or stale-ABI) tree is
+        # deliberately NOT activated - see _deps_tree_stamp_current.
+        (deps_dir / bmod._DEPS_STAMP_NAME).write_text(bmod._deps_digest(b"requests==2.32.0\n"))
+        _record_runs(monkeypatch, exc=RuntimeError("no network"))
+        seen = _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-keep", _manifest("server.py"))
+        assert (deps_dir / "requests" / "__init__.py").read_text() == "prior = True\n"
+        assert not list((spawn_root / "data").glob(f"{bmod._DEPS_STAGING_NAME}*"))
+        # And the surviving install still reaches the child.
+        assert any(str(a).endswith("deps_boot.py") for a in seen["argv"]), seen["argv"]
 
     def test_the_installer_never_shells_out_to_a_bare_interpreter(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Venv creation must use sys.executable and pip must run as
-        `<venv python> -m pip` — `.venv/bin/pip` is POSIX-only and a bare
-        `python3` relies on PATH. Anything else leaves a Windows venv created
-        but never provisioned, which the venv-first interpreter policy would
-        then prefer while it holds none of the app's dependencies."""
-        import sys
-
-        from kiro_crew.apps.interpreter import venv_python_path
-
+        """pip must run as `sys.executable -m pip` — a bare `python3` relies
+        on PATH (absent on some hosts, a Store stub on Windows), and any
+        venv-relative pip path is POSIX-only."""
         (spawn_root / "server.py").write_text("x = 1\n")
-        (spawn_root / "requirements.txt").write_text("requests\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
         runs = _record_runs(monkeypatch)
         _capture_popen(monkeypatch)
         with pytest.raises(_StopSpawn):
             bmod._start_app_backend_body("deps-argv", _manifest("server.py"))
-        venv_argv = next(argv for argv in runs if "venv" in argv)
+        pip_argv = next(argv for argv in runs if "install" in argv)
         # Assert on the argv TOKEN, never on a substring of the joined command.
         # sys.executable's own basename is frequently `python3` (any mise- or
         # pyenv-managed interpreter, and /usr/bin/python3 itself), so a
-        # substring check for "python3 -m venv" matches the correct absolute
-        # form and fails on exactly the hosts it is meant to pass on.
-        assert venv_argv[0] == sys.executable, venv_argv
-        assert venv_argv[0] != "python3", venv_argv
-        assert venv_argv[1:3] == ["-m", "venv"], venv_argv
-        pip_argv = next(argv for argv in runs if "install" in argv)
-        assert pip_argv[0] == str(venv_python_path(spawn_root)), pip_argv
+        # substring check matches the correct absolute form and fails on
+        # exactly the hosts it is meant to pass on.
+        assert pip_argv[0] == sys.executable, pip_argv
+        assert pip_argv[0] != "python3", pip_argv
         assert pip_argv[1:3] == ["-m", "pip"], pip_argv
         # `.venv/bin/pip` is POSIX-only; the interpreter must run pip as a module.
         assert not pip_argv[0].replace("\\", "/").endswith("/bin/pip"), pip_argv
 
+    def test_a_nonzero_pip_exit_is_checked_not_discarded(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pip call passes check=True: a non-zero exit must raise into the
+        failure path rather than being silently discarded (the original defect
+        left the backend to die on an import error pointing away from
+        provisioning)."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        kwargs_seen: list[dict[str, Any]] = []
+
+        def _run(argv: Any, **kwargs: Any) -> Any:
+            kwargs_seen.append(kwargs)
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-check", _manifest("server.py"))
+        assert kwargs_seen and kwargs_seen[0].get("check") is True, kwargs_seen
+
     def test_a_failed_dependency_install_does_not_block_the_spawn(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Deps are best-effort: an offline host must still get its backend tried."""
+        """The spawn is still attempted (the deps dir may hold a previous
+        successful install, and an offline host must not lose a working
+        backend to a failed refresh) — but the failure now surfaces as an
+        ERROR naming provisioning, not a swallowed warning."""
 
         (spawn_root / "server.py").write_text("x = 1\n")
-        (spawn_root / "requirements.txt").write_text("requests\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
         _record_runs(monkeypatch, exc=RuntimeError("no network"))
         _capture_popen(monkeypatch)
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.ERROR):
             with pytest.raises(_StopSpawn):
                 bmod._start_app_backend_body("deps-fail", _manifest("server.py"))
-        assert any("Failed to install deps" in r.message for r in caplog.records)
+        assert any(
+            "Failed to install requirements.txt dependencies" in r.message
+            and r.levelno == logging.ERROR
+            for r in caplog.records
+        )
+
+    def test_a_provisioning_failure_is_written_into_the_backend_log(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The user-visible surface: the backend's own log opens with the
+        provisioning failure, so the import error the missing deps produce
+        points back at the real cause instead of reading as an app bug."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        err = subprocess.CalledProcessError(
+            1, ["pip"], stderr=b"No matching distribution found for requests"
+        )
+        _record_runs(monkeypatch, exc=err)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-log", _manifest("server.py"))
+        log_text = (spawn_root / "data" / "logs" / "backend.log").read_text()
+        assert "Failed to install requirements.txt dependencies" in log_text
+        assert "No matching distribution found" in log_text
+
+    def test_tokenized_url_query_strings_are_stripped_from_pip_stderr(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """redact_credentials catches user:pass@ forms; a signed or
+        tokenized URL carries its secret in the query string, which pip
+        echoes verbatim. The strip runs on the FULL stderr before the tail
+        cut, so a truncation can never split the URL from its query and let
+        the token's tail through."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        token = "X-Amz-Signature=" + "s" * 32
+        stderr = (
+            "x" * 380 + f"ERROR: fetch https://bucket.example/pkg.whl?{token} failed"
+        ).encode()
+        err = subprocess.CalledProcessError(1, ["pip"], stderr=stderr)
+        _record_runs(monkeypatch, exc=err)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-qs", _manifest("server.py"))
+        log_text = (spawn_root / "data" / "logs" / "backend.log").read_text()
+        assert token not in log_text
+        assert "s" * 32 not in log_text
+        # WHICH layer catches it is not the contract (the exfiltration-URL
+        # pass now runs first and can swallow the whole URL); the property
+        # is that some redaction fired and the secret is gone.
+        assert "<redacted-query>" in log_text or "[REDACTED" in log_text
+
+    def test_pip_stderr_is_redacted_before_the_tail_truncation(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Redaction runs on the FULL stderr, then the tail is taken: a
+        suffix cut applied first can split a credential from the marker the
+        redactor matches on, letting the secret's tail reach the logs."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        secret = "AKIA" + "X" * 16
+        # Position the credential so a truncate-first implementation would
+        # cut through it: padding pushes all but the secret's tail out of the
+        # final 400 characters.
+        stderr = (
+            "x" * 380 + f"ERROR: fetch https://user:{secret}@pypi.example/simple failed"
+        ).encode()
+        err = subprocess.CalledProcessError(1, ["pip"], stderr=stderr)
+        _record_runs(monkeypatch, exc=err)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-redact", _manifest("server.py"))
+        log_text = (spawn_root / "data" / "logs" / "backend.log").read_text()
+        assert secret not in log_text
+        assert "Failed to install requirements.txt dependencies" in log_text
+
+    def test_a_shimmed_child_gets_no_deps_pythonpath(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shim XOR PYTHONPATH: `python -m kiro_crew.apps.deps_boot` resolves
+        kiro_crew through sys.path, so a deps-provided kiro_crew copy on
+        PYTHONPATH would SHADOW the gateway's shim — app code running as the
+        "shim". A shimmed child therefore launches WITHOUT the deps dir on
+        PYTHONPATH; addsitedir supplies the deps only after the trusted shim
+        has imported. The operator's own PYTHONPATH still passes through."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        deps_dir = app_deps_dir(spawn_root)
+        deps_dir.mkdir(parents=True)
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        (spawn_root / "server.py").write_text("x = 1\n")
+        monkeypatch.setenv("PYTHONPATH", "/operator/own")
+        _record_runs(monkeypatch)
+        seen = _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-env", _manifest("server.py"))
+        assert any(str(a).endswith("deps_boot.py") for a in seen["argv"]), seen["argv"]
+        child_pp = seen["kwargs"]["env"].get("PYTHONPATH", "")
+        assert str(deps_dir) not in child_pp.split(os.pathsep), child_pp
+        assert "/operator/own" in child_pp.split(os.pathsep), child_pp
+
+    def test_no_deps_dir_means_no_pythonpath_injection(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (spawn_root / "server.py").write_text("x = 1\n")
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        _record_runs(monkeypatch)
+        seen = _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-none", _manifest("server.py"))
+        assert "PYTHONPATH" not in seen["kwargs"]["env"]
+
+
+# ---------------------------------------------------------------------------
+# Shared interpreter resolution (apps/interpreter.py)
+# ---------------------------------------------------------------------------
+
+
+def _write_runnable(path: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+
+
+@pytest.fixture()
+def probe_sandbox_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the interpreter usability probe without OS confinement.
+
+    The probe's sandbox wrapping is a host capability (absent on Windows CI
+    and fail-closed there by design); these tests pin the probe's LOGIC —
+    sys.prefix ownership and ABI match against a real venv interpreter — so
+    the seams are passed through and the child runs directly.
+    """
+    from kiro_crew.apps import interpreter as imod
+
+    monkeypatch.setattr(imod.sandbox, "wrap_argv", lambda argv, **_k: (list(argv), None))
+    monkeypatch.setattr(imod.sandbox, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(imod.sandbox, "run_limited", lambda argv, **kw: subprocess.run(argv, **kw))
+
+
+class TestInterpreterResolution:
+    def _venv_python(self, root: Any) -> Any:
+        from kiro_crew.apps.interpreter import venv_python_path
+
+        return venv_python_path(root)
+
+    def _real_venv(self, root: Any) -> Any:
+        """Build a REAL .venv under root (the resolver now probes the
+        interpreter, so a stub file no longer passes _venv_is_usable)."""
+        import venv as _venv
+
+        _venv.create(root / ".venv", with_pip=False)
+        return self._venv_python(root)
+
+    def test_a_real_venv_is_preferred(self, tmp_path: Any, probe_sandbox_passthrough: Any) -> None:
+        from kiro_crew.apps.interpreter import resolve_app_python
+
+        py = self._real_venv(tmp_path)
+        assert resolve_app_python(tmp_path) == str(py)
+
+    def test_a_bootstrap_skeleton_is_not_preferred(
+        self, tmp_path: Any, probe_sandbox_passthrough: Any
+    ) -> None:
+        """The defect the probe fixes: a failed `python -m venv` leaves a
+        skeleton whose bin/python3 is the fully-runnable system interpreter
+        and whose pyvenv.cfg names the current minor version — a version
+        check ACCEPTS it, but its sys.prefix is not this venv (no working
+        environment), so the probe rejects it."""
+        from kiro_crew.apps.interpreter import resolve_app_python
+
+        # A stub interpreter that starts but is NOT the venv's own python
+        # (its sys.prefix will not point inside <root>/.venv).
+        py = self._venv_python(tmp_path)
+        py.parent.mkdir(parents=True)
+        py.write_text("#!/bin/sh\nexit 0\n")
+        py.chmod(0o755)
+        (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+            f"version = {sys.version_info[0]}.{sys.version_info[1]}.0\n"
+        )
+        assert resolve_app_python(tmp_path) == sys.executable
+
+    def test_a_venv_without_an_interpreter_is_not_preferred(self, tmp_path: Any) -> None:
+        from kiro_crew.apps.interpreter import resolve_app_python
+
+        (tmp_path / ".venv").mkdir()
+        assert resolve_app_python(tmp_path) == sys.executable
+
+    def test_the_probe_runs_with_the_sanitized_app_env(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, probe_sandbox_passthrough: Any
+    ) -> None:
+        """The probe executable is app-controlled, so it must receive the
+        same sanitized environment every app subprocess gets — never the
+        gateway's own, which can carry credentials."""
+        import venv as _venv
+
+        from kiro_crew.apps import interpreter as imod
+
+        _venv.create(tmp_path / ".venv", with_pip=False)
+        monkeypatch.setenv("GATEWAY_SECRET_CANARY", "leak-me")
+        seen: dict[str, Any] = {}
+        real_run = imod.sandbox.run_limited
+
+        def _spy(argv: Any, **kwargs: Any) -> Any:
+            seen["env"] = kwargs.get("env")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(imod.sandbox, "run_limited", _spy)
+        imod._venv_is_usable(tmp_path)
+        assert seen["env"] is not None, "probe ran with the inherited gateway env"
+        assert "GATEWAY_SECRET_CANARY" not in seen["env"]
+
+    def test_the_probe_fails_closed_when_no_sandbox_is_available(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe executes app-controlled code, so it runs ONLY under the
+        OS sandbox; a host where wrap_argv fail-closes (no backend) gets no
+        positive evidence and falls back to sys.executable — the exception
+        must never propagate into spawn or registration."""
+        import venv as _venv
+
+        from kiro_crew.apps import interpreter as imod
+
+        _venv.create(tmp_path / ".venv", with_pip=False)
+
+        def _raise(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("no sandbox backend")
+
+        monkeypatch.setattr(imod.sandbox, "wrap_argv", _raise)
+        assert imod.resolve_app_python(tmp_path) == sys.executable
+
+    def test_hostile_probe_output_reads_as_not_usable(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, probe_sandbox_passthrough: Any
+    ) -> None:
+        """The probe output is app-controlled: a venv whose interpreter prints
+        a null prefix (valid JSON, wrong shape) must read as "not usable" —
+        Path(None) raising TypeError out of the probe would break spawn and
+        registration."""
+        py = self._venv_python(tmp_path)
+        py.parent.mkdir(parents=True)
+        py.write_text("#!/bin/sh\necho '[null, %d, %d]'\n" % sys.version_info[:2])
+        py.chmod(0o755)
+        from kiro_crew.apps import interpreter as imod
+
+        assert imod._venv_is_usable(tmp_path) is False
+        assert imod.resolve_app_python(tmp_path) == sys.executable
+
+    def test_declared_requirements_pin_the_gateway_interpreter(self, tmp_path: Any) -> None:
+        """With requirements.txt declared, the deps mechanism owns the
+        interpreter: even a probe-passing venv must not be preferred — a
+        failed `-m venv` leaves a prefix-valid EMPTY skeleton that passes
+        the probe but holds none of the declared dependencies."""
+        import sys as _sys
+        from unittest import mock
+
+        from kiro_crew.apps import interpreter as imod
+
+        (tmp_path / "requirements.txt").write_bytes(b"uvicorn\n")
+        with mock.patch.object(imod, "_venv_is_usable", return_value=True):
+            assert imod.resolve_app_python(tmp_path) == _sys.executable
+        # without requirements, a usable venv IS preferred
+        (tmp_path / "requirements.txt").unlink()
+        (tmp_path / ".venv").mkdir()
+        with mock.patch.object(imod, "_venv_is_usable", return_value=True):
+            assert imod.resolve_app_python(tmp_path) != _sys.executable
+
+    def test_a_deps_dir_console_script_is_resolvable(self, tmp_path: Any) -> None:
+        """pip --target puts console scripts in <target>/bin (Scripts on
+        Windows); the resolver must find them there now that the gateway never
+        creates the venv layout that used to carry them."""
+        from kiro_crew import platform_compat as _pc
+        from kiro_crew.apps.interpreter import app_deps_dir, venv_provided_command
+
+        scripts = "Scripts" if _pc.IS_WINDOWS else "bin"
+        name = "my-tool.exe" if _pc.IS_WINDOWS else "my-tool"
+        (tmp_path / "requirements.txt").write_bytes(b"requests\n")
+        script = app_deps_dir(tmp_path) / scripts / name
+        _write_runnable(script)
+        assert venv_provided_command(tmp_path, "my-tool") == str(script)
+
+    def test_provisioned_deps_pin_the_gateway_interpreter(self, tmp_path: Any) -> None:
+        """Once the gateway provisioned .kirocrew-deps, those wheels were
+        built by sys.executable, so the venv is not consulted at all."""
+        from kiro_crew.apps.interpreter import app_deps_dir, resolve_app_python
+
+        self._real_venv(tmp_path)
+        app_deps_dir(tmp_path).mkdir(parents=True)
+        (tmp_path / "requirements.txt").write_bytes(b"requests\n")
+        assert resolve_app_python(tmp_path) == sys.executable
+
+    def test_a_venv_console_script_wins_only_without_provisioned_deps(
+        self, tmp_path: Any, probe_sandbox_passthrough: Any
+    ) -> None:
+        from kiro_crew import platform_compat as _pc
+        from kiro_crew.apps.interpreter import app_deps_dir, venv_provided_command
+
+        scripts = "Scripts" if _pc.IS_WINDOWS else "bin"
+        name = "my-tool.exe" if _pc.IS_WINDOWS else "my-tool"
+        self._real_venv(tmp_path)
+        venv_script = tmp_path / ".venv" / scripts / name
+        _write_runnable(venv_script)
+        # No deps dir: the usable venv's script is the answer.
+        assert venv_provided_command(tmp_path, "my-tool") == str(venv_script)
+        # Provisioned deps present: the deps-dir script (shebang:
+        # sys.executable, ABI-consistent with the provisioned wheels) wins.
+        (tmp_path / "requirements.txt").write_bytes(b"requests\n")
+        deps_script = app_deps_dir(tmp_path) / scripts / name
+        _write_runnable(deps_script)
+        assert venv_provided_command(tmp_path, "my-tool") == str(deps_script)
+
+    def test_a_skeleton_venv_console_script_is_bypassed(self, tmp_path: Any) -> None:
+        """A console script under a NON-usable venv (skeleton / no working
+        interpreter) is skipped: its shebang interpreter would not carry the
+        app's environment. The deps-dir script is used instead."""
+        from kiro_crew import platform_compat as _pc
+        from kiro_crew.apps.interpreter import app_deps_dir, venv_provided_command
+
+        scripts = "Scripts" if _pc.IS_WINDOWS else "bin"
+        name = "my-tool.exe" if _pc.IS_WINDOWS else "my-tool"
+        # venv dir exists but has no runnable interpreter -> not usable.
+        _write_runnable(tmp_path / ".venv" / scripts / name)
+        (tmp_path / "requirements.txt").write_bytes(b"requests\n")
+        deps_script = app_deps_dir(tmp_path) / scripts / name
+        _write_runnable(deps_script)
+        assert venv_provided_command(tmp_path, "my-tool") == str(deps_script)
 
 
 # ---------------------------------------------------------------------------
@@ -1028,26 +2095,47 @@ class TestAsgiDispatch:
         assert seen["kwargs"]["cwd"] == str(spawn_root / "src")
 
     def test_the_app_venv_interpreter_is_preferred_when_present(
-        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, probe_sandbox_passthrough: Any
     ) -> None:
-        # Real venv layout per platform: POSIX ships bin/python3, native Windows
-        # ships Scripts\python.exe (and no python3). The shared resolver honours
-        # both and requires the file to be runnable, so a permission-stripped
-        # interpreter cannot become a guaranteed-EACCES spawn target.
-        from kiro_crew import platform_compat as _pc
+        # A REAL venv: resolve_app_python now probes the interpreter (runs it
+        # and checks sys.prefix + ABI), so a stub file no longer passes. A
+        # bootstrap skeleton or wrong-ABI copy is rejected by that probe;
+        # provisioned deps (absent here) would pin sys.executable instead.
+        import venv as _venv
 
-        if _pc.IS_WINDOWS:
-            venv_py = spawn_root / ".venv" / "Scripts" / "python.exe"
-        else:
-            venv_py = spawn_root / ".venv" / "bin" / "python3"
-        venv_py.parent.mkdir(parents=True)
-        venv_py.write_text("#!/bin/sh\n")
-        venv_py.chmod(0o755)
+        from kiro_crew.apps.interpreter import venv_python_path
+
+        _venv.create(spawn_root / ".venv", with_pip=False)
+        venv_py = venv_python_path(spawn_root)
         (spawn_root / "app.py").write_text(self._ASGI_SRC)
         seen = _capture_popen(monkeypatch)
         with pytest.raises(_StopSpawn):
             bmod._start_app_backend_body("asgi-venv", _manifest("app.py"))
         assert seen["argv"][0] == str(venv_py)
+
+    def test_a_module_builtin_never_provisions_or_injects_app_deps(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A module-style builtin (entry is None) runs TRUSTED package code.
+        A requirements.txt or .kirocrew-deps sitting in its writable app dir
+        must NOT be provisioned or prepended to its PYTHONPATH — that would
+        let agent-authored wheels load ahead of the trusted module."""
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        # Both attack surfaces present in the writable app dir:
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        app_deps_dir(spawn_root).mkdir(parents=True)
+        (app_deps_dir(spawn_root) / "evil.py").write_text("x = 1\n")
+        runs = _record_runs(monkeypatch)
+        seen = _capture_popen(monkeypatch)
+        # A module-style entry point: dotted, no separator, no extension, and
+        # no such file under the app root.
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("mod-builtin", _manifest("kiro_crew.apps.builtins.demo"))
+        # No pip install ran, and the deps dir is NOT on the child PYTHONPATH.
+        assert not any("install" in argv for argv in runs), runs
+        child_pp = seen["kwargs"]["env"].get("PYTHONPATH", "")
+        assert str(app_deps_dir(spawn_root)) not in child_pp, child_pp
 
 
 # ---------------------------------------------------------------------------
@@ -1112,7 +2200,7 @@ class TestSpawnOutcome:
         monkeypatch.setattr(
             bmod,
             "_record_app_pid",
-            lambda name, pid, port: recorded.append((name, pid, port)),
+            lambda name, pid, port: (recorded.append((name, pid, port)), True)[1],
         )
         monkeypatch.setattr(bmod, "popen_limited", lambda *_a, **_k: _FakeProc(pid=777))
         ap = bmod._start_app_backend_body("okapp", _manifest("server.py"))
@@ -1122,6 +2210,22 @@ class TestSpawnOutcome:
         assert ap.healthy is False
         assert bmod._processes["okapp"] is ap
         assert recorded == [("okapp", 777, ap.port)]
+
+    def test_a_child_whose_pid_record_fails_is_torn_down(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unrecorded backend is unstoppable from outside the gateway and
+        would survive uninstall — a failed pid-record persist must stop the
+        just-spawned backend, not leave it running untracked-on-disk."""
+        (spawn_root / "server.py").write_text("x = 1\n")
+        monkeypatch.setattr(bmod, "_survived_spawn", lambda _proc, _port=None: True)
+        monkeypatch.setattr(bmod, "_record_app_pid", lambda name, pid, port: False)
+        stopped: list[str] = []
+        monkeypatch.setattr(bmod, "stop_app_backend", lambda name: (stopped.append(name), True)[1])
+        monkeypatch.setattr(bmod, "popen_limited", lambda *_a, **_k: _FakeProc(pid=778))
+        ap = bmod._start_app_backend_body("recfail", _manifest("server.py"))
+        assert ap is None
+        assert stopped == ["recfail"]
 
     def test_a_child_that_dies_on_its_bind_is_not_reported_as_started(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -1196,9 +2300,7 @@ class TestStopSpawnedBackend:
             )
         assert bmod.stop_app_backend("gone") is True
 
-    def test_a_failing_log_handle_close_is_swallowed(
-        self, kills: list[tuple[int, int]]
-    ) -> None:
+    def test_a_failing_log_handle_close_is_swallowed(self, kills: list[tuple[int, int]]) -> None:
         handle = MagicMock()
         handle.close.side_effect = OSError("already closed")
         with bmod._lock:
@@ -1268,7 +2370,10 @@ class TestStopAdoptedBackend:
         assert kills == [(111, bmod.platform_compat.SIGTERM)]
 
     def test_a_recycled_pid_is_not_signalled_even_when_it_listens(
-        self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+        self,
+        kills: list[tuple[int, int]],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """The exact residual the identity guard closes: the adopted backend
         exits, the OS recycles its PID onto ANOTHER listener of the same port
@@ -1327,25 +2432,26 @@ class TestStopAdoptedBackend:
 
         self._track(adopted_pids=[111], adopted_start_times={111: "st"}, healthy=True)
         monkeypatch.setattr(bmod, "_proc_start_time", lambda _pid: "st")
-        monkeypatch.setattr(
-            bmod.platform_compat, "kill_pid_pinned", lambda _pid, _st, _sig: False
-        )
+        monkeypatch.setattr(bmod.platform_compat, "kill_pid_pinned", lambda _pid, _st, _sig: False)
         monkeypatch.setattr(bmod.platform_compat, "pid_exists", lambda _pid: True)
         with caplog.at_level(logging.INFO):
             assert bmod.stop_app_backend("ext") is True
         assert any("pinned SIGTERM" in r.message for r in caplog.records)
 
-    def test_an_unreadable_identity_is_never_signalled(
+    def test_an_unreadable_identity_is_never_signalled_and_not_confirmed(
         self, kills: list[tuple[int, int]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No token was recorded at adoption (identity unreadable): the PID can
         no longer be positively named, so it is skipped — fail toward not
-        killing, per the process_start_time contract."""
+        killing, per the process_start_time contract. And because that live
+        process might BE the backend, the stop reports UNCONFIRMED (False):
+        treating it as success would let an uninstall proceed past a possibly
+        live backend on the strength of a stop that touched nothing."""
 
         self._track(adopted_pids=[111], adopted_start_times={}, healthy=True)
         monkeypatch.setattr(bmod, "_proc_start_time", lambda _pid: "st-live")
         monkeypatch.setattr(bmod.platform_compat, "pid_exists", lambda _pid: True)
-        assert bmod.stop_app_backend("ext") is True
+        assert bmod.stop_app_backend("ext") is False
         assert kills == []
 
     def test_nonpositive_recorded_pids_are_never_signalled(
@@ -1360,9 +2466,7 @@ class TestStopAdoptedBackend:
         assert bmod.stop_app_backend("ext") is True
         assert kills == []
 
-    def test_a_survivor_is_escalated_to_sigkill(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_a_survivor_is_escalated_to_sigkill(self, monkeypatch: pytest.MonkeyPatch) -> None:
         recorded: list[tuple[int, int]] = []
 
         def _pinned_kill(pid: int, _start_time: str, sig: int) -> bool:
@@ -1423,9 +2527,7 @@ class TestWaitForPids:
         bmod._wait_for_pids([111], timeout=5.0)
         assert states == []
 
-    def test_an_unsignalable_pid_counts_as_done(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_an_unsignalable_pid_counts_as_done(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """EPERM means 'not ours' — waiting the full deadline on it is pure latency."""
 
         monkeypatch.setattr(
@@ -1484,18 +2586,14 @@ class TestPidfileHelpers:
         bmod._pidfile_path().write_text("[1, 2, 3]")
         assert bmod._read_pidfile() == {}
 
-    def test_an_unwritable_pidfile_never_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_an_unwritable_pidfile_never_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(*_a: Any, **_k: Any) -> None:
             raise OSError("read-only filesystem")
 
         monkeypatch.setattr(bmod, "atomic_write", _boom)
         bmod._write_pidfile({"app": {"pid": 1}})  # must not raise
 
-    def test_recording_a_pid_never_breaks_a_spawn(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_recording_a_pid_never_breaks_a_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(_pid: int) -> str:
             raise RuntimeError("ps exploded")
 
@@ -1503,9 +2601,7 @@ class TestPidfileHelpers:
         bmod._record_app_pid("app", 4321, 9100)  # must not raise
         assert bmod._read_pidfile() == {}
 
-    def test_forgetting_a_pid_never_breaks_a_stop(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_forgetting_a_pid_never_breaks_a_stop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom() -> dict[str, dict[str, Any]]:
             raise RuntimeError("disk gone")
 
@@ -1594,7 +2690,9 @@ class TestHealthCheckLoop:
         monkeypatch.setattr(bmod, "loopback_urlopen", _urlopen)
         with bmod._lock:
             bmod._processes["sick"] = AppProcess(app_name="sick", port=9134)
-        bmod._health_check_loop(bmod._processes.get("sick") or bmod.AppProcess(app_name="sick", port=9134), "/health")
+        bmod._health_check_loop(
+            bmod._processes.get("sick") or bmod.AppProcess(app_name="sick", port=9134), "/health"
+        )
         assert attempts["n"] == 2
         assert gate == [("sick", 9134, False)]
 
@@ -1619,7 +2717,9 @@ class TestHealthCheckLoop:
         monkeypatch.setattr(bmod, "loopback_urlopen", _urlopen)
         with bmod._lock:
             bmod._processes["racy"] = AppProcess(app_name="racy", port=9135)
-        bmod._health_check_loop(bmod._processes.get("racy") or bmod.AppProcess(app_name="racy", port=9135), "/health")
+        bmod._health_check_loop(
+            bmod._processes.get("racy") or bmod.AppProcess(app_name="racy", port=9135), "/health"
+        )
         assert gate == []
 
 
@@ -1656,9 +2756,7 @@ class TestBootMcpReconcile:
     def test_a_disabled_app_without_mcp_servers_is_left_alone(
         self, boot_env: dict[str, list[Any]], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            bmod, "list_apps", lambda: [_app("off", enabled=False, manifest={})]
-        )
+        monkeypatch.setattr(bmod, "list_apps", lambda: [_app("off", enabled=False, manifest={})])
         bmod.start_enabled_app_backends()
         assert boot_env["dereg_mcp"] == []
 
@@ -1750,9 +2848,7 @@ class TestBootResourceReconcile:
             raise RuntimeError("agents dir read-only")
 
         monkeypatch.setattr("kiro_crew.apps.bridges._deregister_agents", _boom)
-        monkeypatch.setattr(
-            "kiro_crew.apps.manager._app_activation_denied", lambda _n: "banned"
-        )
+        monkeypatch.setattr("kiro_crew.apps.manager._app_activation_denied", lambda _n: "banned")
         monkeypatch.setattr(bmod, "list_apps", lambda: [_app("banned")])
         with caplog.at_level(logging.ERROR):
             bmod.start_enabled_app_backends()
@@ -1868,9 +2964,7 @@ class TestPreclaimFixedPorts:
 
 
 class TestDefensiveBranches:
-    def test_an_unreadable_extensionless_entry_is_not_a_shell_launcher(
-        self, tmp_path: Any
-    ) -> None:
+    def test_an_unreadable_extensionless_entry_is_not_a_shell_launcher(self, tmp_path: Any) -> None:
         """A directory passes the executable check but cannot be sniffed."""
 
         candidate = tmp_path / "launcher"
@@ -1950,9 +3044,7 @@ class TestDefensiveBranches:
         proc = _fake_proc(pid=600)
         proc.wait_raises = True
         with bmod._lock:
-            bmod._processes["audit"] = AppProcess(
-                app_name="audit", port=9100, pid=600, proc=proc
-            )
+            bmod._processes["audit"] = AppProcess(app_name="audit", port=9100, pid=600, proc=proc)
         assert bmod.stop_app_backend("audit") is True
         assert signals == [
             bmod.platform_compat.SIGTERM,
@@ -1992,8 +3084,13 @@ class TestDefensiveBranches:
         monkeypatch.setattr(bmod, "_proc_start_time", lambda _pid: "st")
         with bmod._lock:
             bmod._processes["ext"] = AppProcess(
-                app_name="ext", port=9100, pid=0, proc=None, adopted_pids=[111],
-                adopted_start_times={111: "st"}, healthy=True
+                app_name="ext",
+                port=9100,
+                pid=0,
+                proc=None,
+                adopted_pids=[111],
+                adopted_start_times={111: "st"},
+                healthy=True,
             )
         assert bmod.stop_app_backend("ext") is True
         assert killed == [

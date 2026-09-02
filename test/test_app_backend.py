@@ -3665,3 +3665,305 @@ class TestEnabledStateDistinguishesUnreadableFromDisabled:
         meta.write_text("{ not json", encoding="utf-8")
 
         assert bmod._app_enabled_state("probe") is None
+
+
+class TestStopRecordedAppBackend:
+    def test_kills_a_pidfile_recorded_backend_from_an_untracked_process(
+        self, tmp_path, monkeypatch
+    ):
+        """The CLI path: nothing in this process's tracking, only the
+        persisted pidfile record.  The record must be read BEFORE the
+        in-process stop (which forgets it) and the recorded process must be
+        confirmed dead."""
+        import subprocess
+        import sys
+        import threading
+
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"]
+        )
+        # Reap concurrently: in production the backend's parent (gateway or
+        # init) reaps it, so death is observable; here WE are the parent and
+        # an unreaped zombie would read as alive forever.
+        reaper = threading.Thread(target=proc.wait, daemon=True)
+        reaper.start()
+        try:
+            bk._record_app_pid("stoprec-app", proc.pid, 0)
+            assert bk.stop_recorded_app_backend("stoprec-app") is True
+            reaper.join(timeout=10)
+            assert proc.poll() is not None
+            assert "stoprec-app" not in bk._read_pidfile()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+
+    def test_a_failed_pidfile_write_reads_as_record_failure(
+        self, tmp_path, monkeypatch
+    ):
+        """_write_pidfile swallowing OSError must not report the record
+        persisted: the spawn site tears the backend down on False, and a
+        silently-missing record would let the backend survive uninstall."""
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+
+        def failing_atomic_write(*args, **kwargs):
+            raise OSError("simulated: disk full")
+
+        monkeypatch.setattr(bk, "atomic_write", failing_atomic_write)
+        assert bk._record_app_pid("wrfail-app", 12345, 0) is False
+
+    def test_an_adopted_record_is_stopped_pid_scoped_with_identity_guard(
+        self, tmp_path, monkeypatch
+    ):
+        """A CLI process must be able to stop an ADOPTED backend from its
+        persisted record: pid-scoped pinned kills, never a group signal."""
+        import subprocess
+        import sys
+        import threading
+
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        reaper = threading.Thread(target=proc.wait, daemon=True)
+        reaper.start()
+        try:
+            st = bk._proc_start_time(proc.pid)
+            assert st, "test needs a readable start time"
+            assert (
+                bk._record_adopted_pids("adopt-app", 4321, [proc.pid], {proc.pid: st})
+                is True
+            )
+            assert bk.stop_recorded_app_backend("adopt-app") is True
+            reaper.join(timeout=10)
+            assert proc.poll() is not None
+            assert "adopt-app" not in bk._read_pidfile()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+
+    def test_a_dead_adopted_record_reads_as_stopped_and_is_forgotten(
+        self, tmp_path, monkeypatch
+    ):
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        assert (
+            bk._record_adopted_pids("adopt-dead", 4321, [999999999], {999999999: "x"})
+            is True
+        )
+        assert bk.stop_recorded_app_backend("adopt-dead") is True
+        assert "adopt-dead" not in bk._read_pidfile()
+
+    def test_an_unconfirmed_stop_preserves_the_record_for_retry(
+        self, tmp_path, monkeypatch
+    ):
+        """stop_app_backend forgets the pidfile entry unconditionally; a
+        stop that returns unconfirmed must put the record BACK, or the
+        retry would find nothing and report success while the backend
+        still runs."""
+        import subprocess
+        import sys
+        import threading
+
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        reaper = threading.Thread(target=proc.wait, daemon=True)
+        reaper.start()
+        try:
+            st = bk._proc_start_time(proc.pid)
+            assert st
+            assert bk._record_app_pid("keeprec-app", proc.pid, 0) is True
+            # Force the unconfirmed path: identity probe answers nothing.
+            monkeypatch.setattr(bk, "_proc_start_time", lambda pid: None)
+            assert bk.stop_recorded_app_backend("keeprec-app") is False
+            rec = bk._read_pidfile().get("keeprec-app")
+            assert rec is not None and rec.get("pid") == proc.pid
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            reaper.join(timeout=10)
+
+    def test_a_corrupt_pidfile_reads_as_unconfirmed(self, tmp_path, monkeypatch):
+        """A pidfile that cannot be parsed cannot PROVE there is no running
+        backend - uninstall must abort, not proceed."""
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        bk._pidfile_path().write_text("{ not json", encoding="utf-8")
+        assert bk.stop_recorded_app_backend("any-app") is False
+
+    def test_a_list_shaped_pidfile_reads_as_unconfirmed(self, tmp_path, monkeypatch):
+        """json.load succeeding is not enough: a non-object top level (an app
+        or older build wrote a list) proves nothing about running backends."""
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        bk._pidfile_path().write_text("[]", encoding="utf-8")
+        assert bk.stop_recorded_app_backend("any-app") is False
+
+    def test_a_non_dict_record_reads_as_unconfirmed(self, tmp_path, monkeypatch):
+        import json
+
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        bk._pidfile_path().write_text(json.dumps({"weird-app": "oops"}), encoding="utf-8")
+        assert bk.stop_recorded_app_backend("weird-app") is False
+
+    def test_conditional_forget_never_erases_a_replacement_record(
+        self, tmp_path, monkeypatch
+    ):
+        """A stale stop must remove only the exact record it validated: a
+        concurrent start that re-recorded the app with a replacement backend
+        must keep its record."""
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        old_rec = {"pid": 111, "start_time": "st-old", "port": 1}
+        new_rec = {"pid": 222, "start_time": "st-new", "port": 2}
+        bk._write_pidfile({"race-app": new_rec})
+        bk._forget_app_pid_if("race-app", old_rec)
+        assert bk._read_pidfile().get("race-app") == new_rec
+        bk._forget_app_pid_if("race-app", new_rec)
+        assert "race-app" not in bk._read_pidfile()
+
+    def test_pidfile_rmw_holds_the_cross_process_flock(self, tmp_path, monkeypatch):
+        """Every pidfile read-modify-write must hold the file lock: two
+        processes' unserialized whole-map writes lose one side's record."""
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        flock_held: list[str] = []
+        real_flock = bk._pidfile_flock
+
+        def tracking_flock():
+            flock_held.append("held")
+            return real_flock()
+
+        monkeypatch.setattr(bk, "_pidfile_flock", tracking_flock)
+        assert bk._record_app_pid("flock-app", 12345, 0) is True
+        bk._forget_app_pid("flock-app")
+        assert len(flock_held) >= 2, "record and forget must both take the flock"
+
+    def test_stop_recorded_waits_out_an_in_flight_spawn(self, tmp_path, monkeypatch):
+        """The per-app lifecycle flock closes the post-spawn/pre-record
+        window: a stop probe blocks until the spawner persists the record,
+        then sees and stops the backend instead of misreading the empty
+        pidfile as no-backend."""
+        import subprocess
+        import sys
+        import threading
+        import time as _time
+
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        reaper = threading.Thread(target=proc.wait, daemon=True)
+        reaper.start()
+        results: list[bool] = []
+        try:
+            st = bk._proc_start_time(proc.pid)
+            assert st
+
+            def spawner():
+                # Simulates _start_app_backend_body: process exists first,
+                # record lands before the lock is released.
+                with bk.app_backend_lifecycle_flock("window-app"):
+                    _time.sleep(0.5)
+                    bk._record_app_pid("window-app", proc.pid, 0)
+
+            t = threading.Thread(target=spawner)
+            t.start()
+            _time.sleep(0.1)  # let the spawner take the lock
+
+            def stopper():
+                results.append(bk.stop_recorded_app_backend("window-app"))
+
+            t2 = threading.Thread(target=stopper)
+            t2.start()
+            t.join(timeout=10)
+            t2.join(timeout=20)
+            assert results == [True]
+            reaper.join(timeout=10)
+            assert proc.poll() is not None, "the stop must have seen the record"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            reaper.join(timeout=10)
+
+    def test_stale_requirements_on_matching_abi_still_activates(
+        self, tmp_path, monkeypatch
+    ):
+        """A stamp mismatch caused only by a REQUIREMENTS change (failed
+        refresh, offline pip) keeps the last good tree serving: its ABI tag
+        matches the current interpreter."""
+        import kiro_crew.apps.backend as bk
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        root = tmp_path / "app"
+        root.mkdir()
+        req = root / "requirements.txt"
+        req.write_bytes(b"requests==2.99.0\n")  # NEW requirements
+        d = app_deps_dir(root)
+        d.mkdir(parents=True)
+        # Tree provisioned for OLD requirements, same interpreter:
+        (d / bk._DEPS_STAMP_NAME).write_text(bk._deps_digest(b"requests==2.32.0\n"))
+        (d / bk._DEPS_ABI_NAME).write_text(bk._deps_abi_tag())
+        assert bk._deps_tree_stamp_current(root, req) is True
+
+    def test_a_foreign_abi_tree_never_activates(self, tmp_path):
+        import kiro_crew.apps.backend as bk
+        from kiro_crew.apps.interpreter import app_deps_dir
+
+        root = tmp_path / "app"
+        root.mkdir()
+        req = root / "requirements.txt"
+        req.write_bytes(b"requests\n")
+        d = app_deps_dir(root)
+        d.mkdir(parents=True)
+        (d / bk._DEPS_STAMP_NAME).write_text("not-the-current-digest")
+        (d / bk._DEPS_ABI_NAME).write_text("abi-of-some-other-python")
+        assert bk._deps_tree_stamp_current(root, req) is False
+
+    def test_pip_stderr_tail_drops_the_leading_partial_line(self, tmp_path):
+        """A nonzero seek can sever a URL scheme; the anchored redaction
+        would then miss its query credential - the partial first line must
+        never reach the exception."""
+        import io
+
+        import kiro_crew.apps.backend as bk
+
+        # Simulate the tail logic on a buffer larger than the cap whose
+        # boundary splits a credential URL.
+        secret_url = b"https://host/path?X-Amz-Signature=SECRETTOKEN"
+        filler = b"x" * (bk._DEPS_PIP_STDERR_TAIL - 20)
+        payload = filler + secret_url + b"\nfinal error line\n"
+        buf = io.BytesIO(payload)
+        buf.seek(0, 2)
+        sz = buf.tell()
+        start = max(0, sz - bk._DEPS_PIP_STDERR_TAIL)
+        assert start > 0
+        buf.seek(start)
+        tail = buf.read()
+        # the raw tail contains the severed (scheme-less) secret
+        assert b"SECRETTOKEN" in tail
+        nl = tail.find(b"\n")
+        cleaned = tail[nl + 1 :] if nl != -1 else b"[elided]\n"
+        assert b"SECRETTOKEN" not in cleaned
+        assert b"final error line" in cleaned
+
+    def test_no_record_reads_as_stopped(self, tmp_path, monkeypatch):
+        import kiro_crew.apps.backend as bk
+
+        monkeypatch.setattr(bk, "config_dir", lambda: tmp_path)
+        assert bk.stop_recorded_app_backend("never-ran-app") is True

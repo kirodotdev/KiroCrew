@@ -42,15 +42,29 @@ resolves it so the server starts under the interpreter its dependencies were
 installed against:
 
 - **A bare Python launcher** (`python`, `python3`, `py`, or the same with `.exe`)
-  resolves to the app's own venv interpreter (`.venv/bin/python3`, or
-  `.venv\Scripts\python.exe` on Windows) when it exists as a runnable file, else
-  to the gateway's own interpreter — never a PATH lookup. Exception: a server
-  whose `args` launch a `kiro_crew` module (`-m kiro_crew...`) always gets the
-  gateway's interpreter, since app venvs cannot import `kiro_crew`.
+  resolves to the gateway's own interpreter whenever the gateway has
+  provisioned the app's `requirements.txt` (a `pip install --target` into
+  `data/.kirocrew-deps/`; python launchers run through a `site.addsitedir`
+  shim so `.pth` files are processed, other commands see the dir on
+  `PYTHONPATH`; under `data/` so app updates keep the last good install) — those
+  wheels are built by that interpreter, so it is the only ABI-consistent
+  choice. An app that declares a `requirements.txt` pins the gateway
+  interpreter even while provisioning has not yet succeeded (the deps will
+  be provisioned for that interpreter's ABI, and a shipped venv must not
+  flip the ABI in the interim). Only without declared requirements does it
+  resolve to the app's own venv
+  interpreter (`.venv/bin/python3`, or `.venv\Scripts\python.exe` on Windows)
+  when it exists as a runnable file created by the same Python minor version
+  as the gateway, else again to the gateway's own interpreter — never a PATH
+  lookup. Exception: a server whose `args` launch a `kiro_crew` module
+  (`-m kiro_crew...`) always gets the gateway's interpreter and never the
+  app deps on `PYTHONPATH`, so an app cannot shadow the gateway's own code.
 - **Any other bare name** (no path separator, no drive qualifier) is rewritten
-  only when the app's venv provides that exact binary as a runnable file (a pip
-  console script — invisible to PATH because the venv is never activated). Note
-  this means a venv-provided binary shadows a same-named PATH dependency.
+  only when the app's provisioned deps dir or its venv provides that exact
+  binary as a runnable file (a pip console script — invisible to PATH because
+  neither layout is ever activated; the venv is consulted only when no deps
+  dir was provisioned). Note this means an app-provided binary shadows a
+  same-named PATH dependency.
   `node`, `npx`, `docker` and friends are otherwise left for PATH, as declared.
 - **A command carrying a path** (absolute or relative) is never rewritten. If it
   does not point at a runnable file at registration time, a warning naming the
