@@ -1,0 +1,64 @@
+{
+  "name": "memory_recall_basic",
+  "description": "Teach the agent facts in session 1, then verify recall in session 2. Tests cross-session memory persistence.\n",
+  "dimensions": [
+    "memory_recall"
+  ],
+  "judge_criteria": "Agent should recall facts taught in a prior session.",
+  "sessions": [
+    {
+      "name": "teach",
+      "turns": [
+        {
+          "user": "Remember that my favorite programming language is Rust.",
+          "assertions": [
+            {
+              "type": "contains",
+              "value": "rust"
+            }
+          ]
+        },
+        {
+          "user": "Also remember I work on the KiroCrew project.",
+          "assertions": [
+            {
+              "type": "contains",
+              "value": "kirocrew"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "recall",
+      "turns": [
+        {
+          "user": "What is my favorite programming language?",
+          "assertions": [
+            {
+              "type": "contains",
+              "value": "rust"
+            },
+            {
+              "type": "judge",
+              "value": "Agent should recall that the user's favorite programming language is Rust."
+            }
+          ]
+        },
+        {
+          "user": "What project do I work on?",
+          "assertions": [
+            {
+              "type": "contains",
+              "value": "kirocrew"
+            },
+            {
+              "type": "judge",
+              "value": "Agent should recall that the user works on the KiroCrew project."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

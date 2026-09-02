@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 288" width="1200" height="288" role="img" aria-label="Papyrus">
+  <defs>
+    <linearGradient id="pd-bg-l" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fdf7ee"/>
+      <stop offset="100%" stop-color="#f0dfc0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="288" fill="url(#pd-bg-l)"/>
+  <circle cx="90" cy="40" r="46" fill="#e7d0a6" opacity="0.4"/>
+  <circle cx="1120" cy="252" r="60" fill="#dbc192" opacity="0.32"/>
+
+  <!-- File rail -->
+  <rect x="56" y="42" width="108" height="204" rx="8" fill="#fffdf8" stroke="#d9c39a" stroke-width="1.5"/>
+  <rect x="56" y="42" width="108" height="22" rx="8" fill="#efe0c4"/>
+  <rect x="56" y="56" width="108" height="8" fill="#efe0c4"/>
+  <text x="70" y="58" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#8a6d3b">Files</text>
+  <g>
+    <rect x="66" y="74" width="88" height="16" rx="4" fill="#f2e5cc"/>
+    <rect x="76" y="80" width="52" height="5" rx="2.5" fill="#a8875a"/>
+    <rect x="76" y="100" width="42" height="5" rx="2.5" fill="#c0ab86"/>
+    <rect x="76" y="118" width="58" height="5" rx="2.5" fill="#c0ab86"/>
+    <rect x="82" y="136" width="46" height="5" rx="2.5" fill="#cdbb9c"/>
+    <rect x="82" y="154" width="52" height="5" rx="2.5" fill="#cdbb9c"/>
+    <rect x="76" y="172" width="38" height="5" rx="2.5" fill="#c0ab86"/>
+  </g>
+
+  <!-- Editor -->
+  <rect x="176" y="42" width="384" height="204" rx="8" fill="#fffdf8" stroke="#d9c39a" stroke-width="1.5"/>
+  <rect x="176" y="42" width="384" height="22" rx="8" fill="#efe0c4"/>
+  <rect x="176" y="56" width="384" height="8" fill="#efe0c4"/>
+  <text x="190" y="58" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10" fill="#8a6d3b">main.tex</text>
+  <rect x="176" y="64" width="26" height="182" fill="#faf2e2"/>
+  <g fill="#c2a878" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8">
+    <text x="184" y="82">1</text><text x="184" y="100">2</text><text x="184" y="118">3</text>
+    <text x="184" y="136">4</text><text x="184" y="154">5</text><text x="184" y="172">6</text>
+    <text x="184" y="190">7</text><text x="184" y="208">8</text><text x="184" y="226">9</text>
+  </g>
+  <g>
+    <rect x="212" y="76" width="96" height="7" rx="2.5" fill="#b4762a"/>
+    <rect x="314" y="76" width="62" height="7" rx="2.5" fill="#9a8a6b" opacity="0.5"/>
+    <rect x="212" y="94" width="74" height="7" rx="2.5" fill="#b4762a"/>
+    <rect x="212" y="112" width="168" height="7" rx="2.5" fill="#6f6350" opacity="0.62"/>
+    <rect x="212" y="130" width="248" height="7" rx="2.5" fill="#6f6350" opacity="0.62"/>
+    <rect x="212" y="148" width="132" height="7" rx="2.5" fill="#6f6350" opacity="0.62"/>
+    <rect x="212" y="166" width="84" height="7" rx="2.5" fill="#b4762a"/>
+    <rect x="302" y="166" width="104" height="7" rx="2.5" fill="#2f7d5c" opacity="0.68"/>
+    <rect x="212" y="184" width="214" height="7" rx="2.5" fill="#6f6350" opacity="0.62"/>
+    <rect x="212" y="202" width="152" height="7" rx="2.5" fill="#6f6350" opacity="0.62"/>
+    <rect x="212" y="220" width="96" height="7" rx="2.5" fill="#b4762a"/>
+  </g>
+  <rect x="312" y="218" width="2" height="11" fill="#b4762a"/>
+
+  <!-- Error strip under the editor -->
+  <rect x="176" y="252" width="384" height="22" rx="6" fill="#fbeaea" stroke="#e6b7b7" stroke-width="1"/>
+  <circle cx="192" cy="263" r="5" fill="#c94a4a"/>
+  <rect x="204" y="260" width="46" height="5" rx="2.5" fill="#a63b3b"/>
+  <rect x="258" y="260" width="130" height="5" rx="2.5" fill="#c98a8a"/>
+
+  <!-- PDF preview -->
+  <rect x="576" y="20" width="248" height="248" rx="4" fill="#ffffff" stroke="#d9c39a" stroke-width="1.5"/>
+  <rect x="586" y="30" width="228" height="228" rx="2" fill="#ffffff"/>
+  <rect x="638" y="46" width="124" height="9" rx="3" fill="#4a4336"/>
+  <rect x="664" y="62" width="72" height="5" rx="2.5" fill="#8a8172"/>
+  <g fill="#b6ac99">
+    <rect x="600" y="86" width="98" height="4" rx="2"/>
+    <rect x="600" y="96" width="98" height="4" rx="2"/>
+    <rect x="600" y="106" width="76" height="4" rx="2"/>
+    <rect x="600" y="120" width="98" height="4" rx="2"/>
+    <rect x="600" y="130" width="88" height="4" rx="2"/>
+    <rect x="702" y="86" width="98" height="4" rx="2"/>
+    <rect x="702" y="96" width="98" height="4" rx="2"/>
+    <rect x="702" y="106" width="84" height="4" rx="2"/>
+    <rect x="702" y="120" width="98" height="4" rx="2"/>
+  </g>
+  <rect x="626" y="148" width="148" height="24" rx="3" fill="#f7f2e6"/>
+  <rect x="642" y="157" width="20" height="5" rx="2.5" fill="#7a705d"/>
+  <rect x="668" y="157" width="8" height="5" rx="2.5" fill="#b4762a"/>
+  <rect x="682" y="157" width="70" height="5" rx="2.5" fill="#7a705d"/>
+  <rect x="600" y="186" width="200" height="54" rx="3" fill="#f2ede1" stroke="#e0d6bf" stroke-width="1"/>
+  <path d="M612 230 L642 208 L664 220 L690 190 L718 214 L748 196 L790 224" fill="none" stroke="#2f7d5c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Co-author chat -->
+  <rect x="840" y="42" width="304" height="204" rx="8" fill="#fffdf8" stroke="#d9c39a" stroke-width="1.5"/>
+  <rect x="840" y="42" width="304" height="22" rx="8" fill="#efe0c4"/>
+  <rect x="840" y="56" width="304" height="8" fill="#efe0c4"/>
+  <text x="854" y="58" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#8a6d3b">Co-author</text>
+  <!-- user turn (right aligned) -->
+  <rect x="948" y="78" width="182" height="34" rx="8" fill="#f4e6cb"/>
+  <rect x="960" y="88" width="152" height="5" rx="2.5" fill="#b79a68"/>
+  <rect x="960" y="99" width="102" height="5" rx="2.5" fill="#c9b28a"/>
+  <!-- assistant turn -->
+  <circle cx="864" cy="132" r="9" fill="#b4762a"/>
+  <path d="M860 132 L868 132 M864 128 L864 136" stroke="#fffdf8" stroke-width="1.7" stroke-linecap="round"/>
+  <g fill="#c9bda3">
+    <rect x="882" y="124" width="230" height="5" rx="2.5"/>
+    <rect x="882" y="135" width="196" height="5" rx="2.5"/>
+    <rect x="882" y="146" width="146" height="5" rx="2.5"/>
+  </g>
+  <!-- diff block the co-author proposes -->
+  <rect x="882" y="162" width="230" height="42" rx="4" fill="#f6f1e4" stroke="#e0d6bf" stroke-width="1"/>
+  <rect x="890" y="170" width="8" height="5" rx="2.5" fill="#c94a4a"/>
+  <rect x="904" y="170" width="140" height="5" rx="2.5" fill="#d3a3a3"/>
+  <rect x="890" y="182" width="8" height="5" rx="2.5" fill="#2f7d5c"/>
+  <rect x="904" y="182" width="176" height="5" rx="2.5" fill="#8dbfa9"/>
+  <rect x="890" y="192" width="8" height="5" rx="2.5" fill="#2f7d5c"/>
+  <rect x="904" y="192" width="118" height="5" rx="2.5" fill="#8dbfa9"/>
+  <!-- composer -->
+  <rect x="854" y="214" width="276" height="22" rx="6" fill="#faf2e2" stroke="#e2d2b2" stroke-width="1"/>
+  <rect x="866" y="222" width="118" height="5" rx="2.5" fill="#cdbb9c"/>
+  <circle cx="1116" cy="225" r="8" fill="#b4762a"/>
+  <path d="M1112 226 L1116 221 L1120 226" stroke="#fffdf8" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,417 @@
+// Typed fetch wrapper for the Meetings backend.
+//
+// The base path is `/api/apps/meetings` — the routes are registered directly on
+// the gateway's aiohttp Application (see the app's
+// `backend/routes/__init__.py:register_routes`), matching issue-radar's
+// convention, NOT the `/apps/{name}/api` reverse-proxy prefix used by apps that
+// run as a separate child process.
+
+const API = '/api/apps/meetings'
+
+// ── wire types ──────────────────────────────────────────────────────────────
+
+export type MeetingStatus = 'idle' | 'active' | 'paused' | 'reviewing' | 'ended'
+export type WidgetType = 'markdown' | 'html' | 'chat'
+export type TaskPriority = 'high' | 'medium' | 'low'
+export type TranscriptSource = 'speech' | 'typed' | 'system'
+
+/**
+ * Full literal catalog keys per enum value, not a suffix interpolated at the call
+ * site: an assembled key exists nowhere in the source, so the extractor and the
+ * unused-key tooling cannot see it (`dynamicKeys.test.ts`).
+ */
+export const PRIORITY_LABEL_KEY: Record<TaskPriority, string> = {
+  high: 'apps.meetings.priority.high',
+  medium: 'apps.meetings.priority.medium',
+  low: 'apps.meetings.priority.low',
+}
+
+/** Full literal catalog keys per widget type — same reason as above. */
+export const WIDGET_TYPE_LABEL_KEY: Record<WidgetType, string> = {
+  markdown: 'apps.meetings.widgetType.markdown',
+  html: 'apps.meetings.widgetType.html',
+  chat: 'apps.meetings.widgetType.chat',
+}
+export type ReviewStatus = 'pending' | 'archived' | 'pushed'
+
+export interface AgentDef {
+  id: string
+  name: string
+  agent?: string
+  widget_type: WidgetType
+  prompt?: string
+  enabled_by_default?: boolean
+  listening_by_default?: boolean
+  builtin?: boolean
+}
+
+export interface Preset {
+  enabled_agents: string[]
+}
+
+export interface CalendarConfig {
+  provider: string
+  source: string
+}
+
+export interface MeetingsConfig {
+  meeting_agents: AgentDef[]
+  stt_provider: string
+  task_provider: string
+  calendar: CalendarConfig
+  presets: Record<string, Preset>
+  default_preset: string
+  poll_interval_active: number
+  poll_interval_idle: number
+  /** Target language for live transcript translation; `''` means off (the default). */
+  translation_language: string
+}
+
+/** One translated transcript line. `text` is `''` when the translation failed. */
+export interface TranslationLine {
+  n: number
+  source: string
+  text: string
+  at?: string
+}
+
+export interface TranslationsResponse {
+  language: string
+  /** The language's endonym, resolved server-side. `''` when translation is off. */
+  language_label: string
+  lines: TranslationLine[]
+  /** Cursor to send back as `since` on the next poll. */
+  next_n: number
+  /** Lines waiting on the model, and lines dropped because the backlog was full. */
+  pending: number
+  dropped: number
+}
+
+/**
+ * Metadata about one agent output the user has EDITED — the editable minutes.
+ *
+ * The edited text itself is not here: it is already in `outputs[agentId]`, because
+ * an edit takes precedence server-side. Sending it twice would double the poll for
+ * this app's largest field.
+ */
+export interface OutputEdit {
+  /**
+   * The agent has rewritten its own output since this edit was saved, so there is
+   * newer generated text sitting behind what is on screen.
+   *
+   * The edit still wins — that is the point of the feature — so this is how the user
+   * is TOLD rather than left with a panel that silently stopped updating.
+   */
+  stale: boolean
+}
+
+export interface ProviderRow {
+  id: string
+  label: string
+  requires_source?: boolean
+}
+
+export interface ConfigResponse {
+  config: MeetingsConfig
+  task_providers: ProviderRow[]
+  calendar_providers: ProviderRow[]
+  stt_providers: ProviderRow[]
+  /** Accepted live-translation targets. Labels are endonyms, not translated. */
+  translation_languages: ProviderRow[]
+}
+
+export interface Attachment {
+  type: 'file' | 'url'
+  label: string
+  path?: string
+  url?: string
+}
+
+export interface MeetingMeta {
+  event_id: string
+  title: string
+  status: MeetingStatus
+  attachments: Attachment[]
+  outputs: Record<string, string>
+  muted_agents: string[]
+  agents_enabled?: string[]
+  attendees?: string[]
+  description?: string
+  preset?: string
+  created_at?: string
+  started_at?: string
+  ended_at?: string
+}
+
+export interface MeetingSummary {
+  event_id: string
+  title: string
+  status: MeetingStatus
+  started_at: string
+  ended_at: string
+}
+
+export interface AgentQueueStatus {
+  busy: boolean
+  queued: number
+  fail_count: number
+  paused: boolean
+}
+
+export interface LiveStatus {
+  active_meeting: string | null
+  muted_agents: string[]
+  agents: Record<string, AgentQueueStatus>
+  agents_paused: boolean
+  expired: boolean
+  /** Whether a dispatch sent now would be fanned out to the agents directly.
+   *  Present on the meeting poll (`GET /meetings/{id}`), whose consumer gates
+   *  the microphone on it; absent from the bare `/status` endpoint. */
+  accepting_dispatches?: boolean
+  /** Whether a dispatch sent now would be HELD until the agents finish
+   *  initializing, rather than refused with a 409. Speech lands either way, so
+   *  the microphone gate is this OR `accepting_dispatches` — see
+   *  `canOpenTranscription`. */
+  buffering_dispatches?: boolean
+}
+
+export interface Task {
+  id: string
+  description: string
+  assignee: string
+  priority: TaskPriority
+  status: 'open' | 'done'
+  context: string
+  labels: string[]
+  review_status: ReviewStatus
+  filed_ref: { provider: string; id: string; url?: string } | null
+}
+
+export interface CalendarEvent {
+  event_id: string
+  title: string
+  start: string
+  end: string
+  /** Whole-day event: `start` is a DATE ANCHOR (the date's midnight UTC), not
+   *  an instant. The UI shows the calendar date with the fields read back in
+   *  UTC and no time — converting the anchor to the browser's zone renders the
+   *  previous day for everyone west of UTC. */
+  all_day: boolean
+  location: string
+  organizer: string
+  attendees: string[]
+  description: string
+}
+
+export interface DictionaryTerm {
+  correct: string
+  aliases: string[]
+}
+
+export interface TranscriptSegment {
+  id: string
+  timestamp: string
+  source: TranscriptSource
+  text: string
+}
+
+export interface TranscriptResponse {
+  segments: TranscriptSegment[]
+  next_cursor: number
+}
+
+export interface DispatchResponse {
+  dispatched: number
+  text: string
+  segment: TranscriptSegment
+}
+
+// ── transport ───────────────────────────────────────────────────────────────
+
+/** An error carrying the backend's status so callers can branch on 409/410/502. */
+export class MeetingsApiError extends Error {
+  readonly status: number
+  readonly code: string
+
+  constructor(message: string, status: number, code = '') {
+    super(message)
+    this.name = 'MeetingsApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    ...init,
+    headers: init?.body ? { 'Content-Type': 'application/json', ...init?.headers } : init?.headers,
+  })
+  if (!res.ok) {
+    // The backend answers every error as `{"error": "..."}`; fall back to the
+    // status text when the body is not JSON (a proxy error page, say).
+    let detail = res.statusText
+    let code = ''
+    try {
+      const body = await res.json()
+      if (body?.error) detail = String(body.error)
+      if (body?.code) code = String(body.code)
+    } catch {
+      /* non-JSON body */
+    }
+    throw new MeetingsApiError(detail, res.status, code)
+  }
+  if (res.status === 204) return undefined as T
+  const text = await res.text()
+  return (text.trim() === '' ? undefined : JSON.parse(text)) as T
+}
+
+const post = <T,>(path: string, body?: unknown) =>
+  request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) })
+
+export const meetingsApi = {
+  // config + dictionary
+  config: () => request<ConfigResponse>('/config'),
+  saveConfig: (config: Partial<MeetingsConfig>) =>
+    request<{ config: MeetingsConfig }>('/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config }),
+    }),
+  dictionary: () => request<{ terms: DictionaryTerm[] }>('/dictionary'),
+  addTerm: (correct: string, aliases: string[]) =>
+    post<{ terms: DictionaryTerm[] }>('/dictionary', { correct, aliases }),
+  removeTerm: (correct: string) =>
+    post<{ terms: DictionaryTerm[] }>('/dictionary/remove', { correct }),
+
+  // calendar
+  calendar: () =>
+    request<{ events: CalendarEvent[]; provider: string; configured: boolean }>('/calendar'),
+  syncCalendar: () =>
+    post<{ ok: boolean; count: number; events: CalendarEvent[] }>('/calendar/sync'),
+
+  // agents
+  agents: () => request<{ agents: AgentDef[]; task_extractor_id: string }>('/agents'),
+  status: () => request<LiveStatus>('/status'),
+
+  // meetings
+  meetings: () => request<{ meetings: MeetingSummary[] }>('/meetings'),
+  meeting: (id: string) =>
+    request<{ meta: MeetingMeta; live: LiveStatus | null }>(`/meetings/${encodeURIComponent(id)}`),
+  deleteMeeting: (id: string) =>
+    request<void>(`/meetings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  init: (id: string, title: string) =>
+    post<{ meeting_id: string; meta: MeetingMeta }>(
+      `/meetings/${encodeURIComponent(id)}/init`,
+      { title },
+    ),
+  start: (
+    id: string,
+    body: { title?: string; preset?: string; agents_enabled?: string[]; muted_agents?: string[]; restart?: boolean },
+  ) =>
+    post<{ status: MeetingStatus; agents: string[]; meta: MeetingMeta }>(
+      `/meetings/${encodeURIComponent(id)}/start`,
+      body,
+    ),
+  setStatus: (id: string, status: MeetingStatus) =>
+    post<{ status: MeetingStatus }>(`/meetings/${encodeURIComponent(id)}/status`, { status }),
+  stop: (id: string) =>
+    post<{ status: MeetingStatus; meta: MeetingMeta }>(`/meetings/${encodeURIComponent(id)}/stop`),
+  outputs: (id: string) =>
+    request<{
+      /** Each agent's EFFECTIVE output: the user's edit when there is one, else the agent's. */
+      outputs: Record<string, string>
+      /** Present only for agents the user has edited. */
+      edits: Record<string, OutputEdit>
+      tasks: Task[]
+    }>(`/meetings/${encodeURIComponent(id)}/outputs`),
+  /**
+   * Save the user's edit of one agent's output.
+   *
+   * Stored as a sidecar, so the agent keeps writing its own file and `revertOutput`
+   * restores the generated text by deleting one file.
+   */
+  saveOutput: (id: string, agentId: string, content: string) =>
+    request<{ ok: boolean; agent_id: string }>(
+      `/meetings/${encodeURIComponent(id)}/outputs`,
+      { method: 'PUT', body: JSON.stringify({ agent_id: agentId, content }) },
+    ),
+  /** Discard the user's edit, so the agent's own output is shown again. */
+  revertOutput: (id: string, agentId: string) =>
+    request<{ ok: boolean; agent_id: string; reverted: boolean }>(
+      `/meetings/${encodeURIComponent(id)}/outputs`,
+      { method: 'DELETE', body: JSON.stringify({ agent_id: agentId }) },
+    ),
+  transcript: (id: string, cursor = 0) =>
+    request<TranscriptResponse>(
+      `/meetings/${encodeURIComponent(id)}/transcript${cursor ? `?cursor=${cursor}` : ''}`,
+    ),
+  /**
+   * Translated lines newer than `since`. Cursor-based rather than full-document:
+   * the panel polls while it is open and a long meeting accumulates hundreds of
+   * lines, so resending all of them each time would grow linearly for no gain.
+   */
+  translations: (id: string, since = 0) =>
+    request<TranslationsResponse>(
+      `/meetings/${encodeURIComponent(id)}/translations?since=${encodeURIComponent(String(since))}`,
+    ),
+  attachments: (id: string, body: { action: 'add' | 'remove'; attachments?: Attachment[]; index?: number }) =>
+    post<{ attachments: Attachment[] }>(`/meetings/${encodeURIComponent(id)}/attachments`, body),
+
+  // per-meeting agent control
+  toggleAgent: (id: string, agentId: string, enable: boolean) =>
+    post<{ agents_enabled: string[] }>(`/meetings/${encodeURIComponent(id)}/agents`, {
+      agent_id: agentId,
+      enable,
+    }),
+  mute: (id: string, agentId: string, muted: boolean) =>
+    post<{ muted_agents: string[] }>(`/meetings/${encodeURIComponent(id)}/mute`, {
+      agent_id: agentId,
+      muted,
+    }),
+  dispatch: (id: string, text: string, chat = false) =>
+    post<DispatchResponse>(`/meetings/${encodeURIComponent(id)}/dispatch`, {
+      text,
+      chat,
+    }),
+  message: (id: string, agentId: string, text: string) =>
+    post<{ agent_id: string }>(`/meetings/${encodeURIComponent(id)}/message`, {
+      agent_id: agentId,
+      text,
+    }),
+  resetAgents: (id: string) =>
+    post<{ resumed: string[] }>(`/meetings/${encodeURIComponent(id)}/reset`),
+
+  // tasks
+  tasks: (id: string) => request<{ tasks: Task[] }>(`/meetings/${encodeURIComponent(id)}/tasks`),
+  addTask: (id: string, description: string) =>
+    post<{ task: Task; tasks: Task[] }>(`/meetings/${encodeURIComponent(id)}/tasks`, {
+      description,
+    }),
+  updateTask: (id: string, taskId: string, fields: Partial<Task>) =>
+    request<{ task: Task; tasks: Task[] }>(`/meetings/${encodeURIComponent(id)}/tasks`, {
+      method: 'PATCH',
+      body: JSON.stringify({ id: taskId, fields }),
+    }),
+  deleteTask: (id: string, taskId: string) =>
+    request<{ tasks: Task[] }>(`/meetings/${encodeURIComponent(id)}/tasks`, {
+      method: 'DELETE',
+      body: JSON.stringify({ id: taskId }),
+    }),
+  fileTask: (id: string, taskId: string) =>
+    post<{ ref: { provider: string; id: string; url?: string }; tasks: Task[] }>(
+      `/meetings/${encodeURIComponent(id)}/tasks/file`,
+      { id: taskId },
+    ),
+  reviewTask: (id: string, taskId: string, reviewStatus: ReviewStatus) =>
+    post<{ tasks: Task[] }>(`/meetings/${encodeURIComponent(id)}/tasks/review`, {
+      id: taskId,
+      review_status: reviewStatus,
+    }),
+  taskProviders: () => request<{ providers: ProviderRow[]; active: string }>('/task-providers'),
+}
+
+/** A calendar event id becomes a path segment, so it is normalized the same way
+ *  the backend's `safe_meeting_id` does. Kept here (not inlined) so the client
+ *  and the server agree on one rule. */
+export function safeMeetingId(eventId: string): string {
+  return eventId.replace(/:/g, '_')
+}

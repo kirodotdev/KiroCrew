@@ -1,0 +1,25 @@
+/* Gallery and editor chrome.
+ *
+ * These live here rather than in a TypeScript style object because a shadow held in a
+ * string is indistinguishable from a sentence to the translation checker — and it is
+ * styling, so a stylesheet is where it belongs.
+ */
+:root {
+  --cc-card-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  --cc-modal-shadow: 0 12px 34px rgba(0, 0, 0, 0.45);
+
+  /*
+   * Two variables the desktop app relied on that this dashboard's theme does not
+   * define. Left undefined, the accent foreground fell back to the inherited colour —
+   * dark text on the purple accent fill, which is what looked wrong on the light
+   * theme — and the input background resolved to nothing, so the secondary button
+   * lost its fill entirely.
+   *
+   * The input fill points at an existing theme variable rather than a literal, so it
+   * follows a theme change. The accent foreground is a literal because the accent
+   * fill is the same purple in light and dark, so white reads correctly on both —
+   * which is also what the desktop app drew.
+   */
+  --cc-accent-text: #ffffff;
+  --cc-input-bg: var(--bg-elevated);
+}

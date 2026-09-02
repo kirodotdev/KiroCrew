@@ -1,0 +1,76 @@
+# Weekly audit of deferred review findings (RFC: closing the fix loop).
+#
+# Issues labeled `deferred-finding` are promises made in a PR review — a
+# finding acknowledged as real and postponed. This audit makes an overdue
+# promise visible instead of letting it become an unbounded write-off: every
+# Monday it lists open deferred-finding issues past their due date (a
+# `Due: YYYY-MM-DD` line in the body, or the milestone's due date), bumps each
+# with a comment, and writes the roll-up to the run summary.
+#
+# Deliberately NOT wired into ship-report.yml: that workflow's counts are
+# channel-locked and deterministic-by-contract; this audit posts to the issues
+# themselves, where the assignee is already subscribed.
+name: Deferred Findings Audit
+
+on:
+  schedule:
+    - cron: "0 16 * * 1" # Mondays 16:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  audit:
+    name: Surface overdue deferred findings
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: List, evaluate, and bump overdue deferrals
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          today="$(date -u +%Y-%m-%d)"
+          issues_json="$(gh api "repos/$REPO/issues?state=open&labels=deferred-finding&per_page=100" --paginate | jq -s 'add // []')"
+          total="$(printf '%s' "$issues_json" | jq 'length')"
+          overdue=0
+          undated=0
+          {
+            echo "## Deferred findings audit ($today)"
+            echo ""
+            echo "Open \`deferred-finding\` issues: $total"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for n in $(printf '%s' "$issues_json" | jq -r '.[].number'); do
+            item="$(printf '%s' "$issues_json" | jq --argjson n "$n" '.[] | select(.number == $n)')"
+            title="$(printf '%s' "$item" | jq -r '.title')"
+            assignee="$(printf '%s' "$item" | jq -r '[.assignees[].login] | join(", ")')"
+            due="$(printf '%s' "$item" | jq -r '.body // ""' | grep -oE '^ *Due: *[0-9]{4}-[0-9]{2}-[0-9]{2}' | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 || true)"
+            if [ -z "$due" ]; then
+              due="$(printf '%s' "$item" | jq -r '.milestone.due_on // "" | .[0:10]')"
+            fi
+            if [ -z "$due" ]; then
+              undated=$((undated + 1))
+              echo "- #$n $title — **no due date** (assignee: ${assignee:-none})" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if [ "$due" \< "$today" ]; then
+              overdue=$((overdue + 1))
+              echo "- #$n $title — **overdue since $due** (assignee: ${assignee:-none})" >> "$GITHUB_STEP_SUMMARY"
+              {
+                echo "<!-- deferred-finding-overdue -->"
+                echo "**This deferred finding is overdue** (due $due). It was accepted as real in a PR review and postponed; an overdue deferral is a flagged bug waiting to ship. Fix it, re-date it with a new \`Due:\` line, or close it with a rationale."
+              } > /tmp/bump.md
+              gh api "repos/$REPO/issues/$n/comments" -f body="$(cat /tmp/bump.md)" >/dev/null
+            fi
+          done
+
+          {
+            echo ""
+            echo "Overdue: $overdue · Missing due date: $undated"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Audit complete: $total open, $overdue overdue, $undated undated."

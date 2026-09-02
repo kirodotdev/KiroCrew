@@ -1,0 +1,55 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "example-package": {
+      "name": "example-package",
+      "severity": "high",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1234567,
+          "name": "example-package",
+          "dependency": "example-package",
+          "title": "Example transitive production vulnerability",
+          "url": "https://github.com/advisories/GHSA-2345-6789-cfgh",
+          "severity": "high",
+          "cwe": ["CWE-1333"],
+          "cvss": { "score": 7.5, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H" },
+          "range": "<2.0.0"
+        }
+      ],
+      "effects": ["example-wrapper"],
+      "range": "<2.0.0",
+      "nodes": ["node_modules/example-package"],
+      "fixAvailable": true
+    },
+    "example-wrapper": {
+      "name": "example-wrapper",
+      "severity": "high",
+      "isDirect": true,
+      "via": ["example-package"],
+      "effects": [],
+      "range": "<=3.1.4",
+      "nodes": ["node_modules/example-wrapper"],
+      "fixAvailable": true
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 2,
+      "critical": 0,
+      "total": 2
+    },
+    "dependencies": {
+      "prod": 412,
+      "dev": 0,
+      "optional": 7,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 418
+    }
+  }
+}

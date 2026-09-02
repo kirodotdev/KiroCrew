@@ -1,0 +1,54 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "imsg status/initialize readiness snapshot, quoted in https://github.com/steipete/imsg/blob/main/docs/rpc.md ('status'), with bridge.ready false as on a default install.",
+    "captured_at": "2026-08-21",
+    "note": "Transcribed from published docs, NOT captured from a live Mac. The claim under test is that 'typing' and 'read' appear in methods even with bridge.ready false -- the documented exception to the injected-helper requirement, which is what lets a default install (SIP untouched) show a typing indicator. Their PARAMETER lists are undocumented, so the client disables each permanently on first rejection rather than trusting this."
+  },
+  "version": "0.9.1",
+  "protocol_version": 1,
+  "database": {
+    "path": "/Users/me/Library/Messages/chat.db",
+    "ready": true,
+    "features": {
+      "unread_state": true,
+      "scheduled_messages": true,
+      "reactions": true,
+      "reply_context": true,
+      "routing_metadata": true,
+      "balloon_payloads": true
+    }
+  },
+  "bridge": {
+    "ready": false,
+    "error": "The bridge is not started. Run imsg launch explicitly before using bridge methods."
+  },
+  "contacts": {
+    "available": true
+  },
+  "methods": [
+    "initialize",
+    "status",
+    "chats.list",
+    "messages.history",
+    "messages.after",
+    "watch.subscribe",
+    "watch.unsubscribe",
+    "send",
+    "typing",
+    "read"
+  ],
+  "supported_methods": [
+    "initialize",
+    "status",
+    "chats.list",
+    "messages.history",
+    "messages.after",
+    "watch.subscribe",
+    "watch.unsubscribe",
+    "send",
+    "send.tracked",
+    "typing",
+    "read"
+  ]
+}
