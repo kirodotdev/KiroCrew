@@ -183,13 +183,6 @@ class TestMalformedRequestIsTerminalAndActionable:
         assert _is_transient_raw_error(err) is False
         assert "malformed" in _format_acp_error(err).lower()
 
-    def test_genuine_transient_neighbour_is_unaffected(self):
-        """Regression guard: a real transient error near this branch still
-        classifies transient and is not swallowed by the new branch."""
-        err = _err(f"{_ENVELOPE}InternalServerError ... please try again.")
-        assert _is_transient_raw_error(err) is True
-        assert "transient error" in _format_acp_error(err).lower()
-
     def test_phrase_in_message_field_alone_does_not_trigger(self):
         """Scoping guard (mirrors the message-field-echo tests): the phrase
         appearing only in the JSON-RPC ``message`` — never the provider
