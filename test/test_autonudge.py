@@ -2596,10 +2596,9 @@ class TestATimerOutlivesItsEventLoop:
 
         `cancel()` only SCHEDULES the cancellation, so the flag is not set on the
         calling tick. Polled rather than read after a single `sleep(0)` because the
-        number of ticks it takes is an implementation detail — and `Task.cancelling()`,
-        which would read the request directly, is Python 3.11+ while this repo supports
-        >= 3.10 (CI runs a 3.10 shard). Keeps the assertion; only the waiting is
-        generous.
+        number of ticks it takes is an implementation detail. Deliberately asserts
+        the terminal `cancelled()` flag rather than `Task.cancelling()`, which
+        counts outstanding requests instead. Only the waiting is generous.
         """
         for _ in range(ticks):
             if task.cancelled():

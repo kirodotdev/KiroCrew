@@ -21,7 +21,6 @@ import binascii
 import random
 import re
 import string
-import sys
 
 import pytest
 
@@ -1079,13 +1078,9 @@ def test_a_length_short_circuit_would_leak_an_encoded_credential() -> None:
         if real:
             leaked += 1
 
-    if sys.version_info < (3, 12):
-        assert leaked >= 1, (
-            "expected the lenient pre-3.12 decoder to make the length guard a "
-            "redaction bypass on at least one misaligned shape"
-        )
-    else:
-        assert leaked == 0, (
-            "3.12 rejects these shapes outright, which is exactly why the bypass "
-            "was invisible when the change was tested on 3.12 alone"
-        )
+    # The base64 decoder rejects these shapes outright, so nothing leaks through
+    # them here. That is precisely why the length guard read as safe when it was
+    # only ever exercised on this interpreter: the bypass it would have opened is
+    # invisible from 3.12, and the in-loop invariant above -- a guard can never
+    # detect more than no guard -- is what actually rules the guard out.
+    assert leaked == 0

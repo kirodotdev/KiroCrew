@@ -1,7 +1,5 @@
 """Tests for knowledge search upgrade: embedding endpoints + search-for-context."""
 
-import pytest
-
 from kiro_crew.embeddings import PRIORITY_BULK, PRIORITY_NORMAL
 from kiro_crew.knowledge.embedder import (
     InProcessEmbedder,
@@ -232,29 +230,23 @@ class TestSearchForContext:
     """search_for_context endpoint logic."""
 
     def test_estimate_tokens(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _estimate_tokens
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _estimate_tokens
+
         assert _estimate_tokens("hello world") == 2  # 11 chars // 4
         assert _estimate_tokens("") == 0
 
     def test_knowledge_fetch_defaults(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import (
-                KNOWLEDGE_FETCH_MAX_TOKENS,
-                KNOWLEDGE_FETCH_TOP_N,
-            )
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import (
+            KNOWLEDGE_FETCH_MAX_TOKENS,
+            KNOWLEDGE_FETCH_TOP_N,
+        )
+
         assert KNOWLEDGE_FETCH_TOP_N == 3
         assert KNOWLEDGE_FETCH_MAX_TOKENS == 4096
 
     def test_context_card_carries_citation_fields(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _build_context_card
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _build_context_card
+
         result = {
             "id": "i1",
             "title": "Auth Design",
@@ -276,10 +268,8 @@ class TestSearchForContext:
         assert card["chunk_range"] == "10-25"
 
     def test_context_card_artifact_slug(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _build_context_card
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _build_context_card
+
         result = {
             "id": "i3",
             "title": "OP Vision",
@@ -295,10 +285,8 @@ class TestSearchForContext:
         assert card["artifact_name"] == "OP Vision Plan"
 
     def test_context_card_without_location_degrades(self):
-        try:
-            from kiro_crew.dashboard.handlers.knowledge import _build_context_card
-        except TypeError:
-            pytest.skip("requires Python 3.10+ (type union syntax)")
+        from kiro_crew.dashboard.handlers.knowledge import _build_context_card
+
         result = {"id": "i2", "title": "DB Schema", "source": "src-2"}
         card = _build_context_card(result, content="body", tokens=1)
         # No location / no source meta -> citation fields are None, not errors.
@@ -314,29 +302,23 @@ class TestRedactMeta:
     """_redact_meta security helper."""
 
     def test_redacts_strings(self):
-        try:
-            from kiro_crew.dashboard.chat_utils import _redact_meta
-        except TypeError:
-            pytest.skip("requires Python 3.10+")
+        from kiro_crew.dashboard.chat_utils import _redact_meta
+
         meta = {"title": "safe text", "content": "key is AKIAIOSFODNN7EXAMPLE here"}
         result = _redact_meta(meta)
         assert "AKIAIOSFODNN7EXAMPLE" not in result["content"]
         assert result["title"] == "safe text"
 
     def test_redacts_nested_dicts(self):
-        try:
-            from kiro_crew.dashboard.chat_utils import _redact_meta
-        except TypeError:
-            pytest.skip("requires Python 3.10+")
+        from kiro_crew.dashboard.chat_utils import _redact_meta
+
         meta = {"knowledge": {"content": [{"title": "ok", "text": "AKIAIOSFODNN7EXAMPLE"}]}}
         result = _redact_meta(meta)
         assert "AKIAIOSFODNN7EXAMPLE" not in str(result)
 
     def test_preserves_non_strings(self):
-        try:
-            from kiro_crew.dashboard.chat_utils import _redact_meta
-        except TypeError:
-            pytest.skip("requires Python 3.10+")
+        from kiro_crew.dashboard.chat_utils import _redact_meta
+
         meta = {"items": 3, "tokens": 1054, "titles": ["safe"]}
         result = _redact_meta(meta)
         assert result == {"items": 3, "tokens": 1054, "titles": ["safe"]}
