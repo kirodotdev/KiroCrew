@@ -257,7 +257,7 @@ class TestOwnerOnly:
     async def test_a_non_owner_is_refused_and_audited(self, monkeypatch) -> None:
         events: list[dict] = []
         monkeypatch.setattr(
-            "kiro_crew.teams.session_resume.sel",
+            "kiro_crew.messaging.session_resume.sel",
             lambda: SimpleNamespace(log_api_access=lambda **kw: events.append(kw)),
         )
         client = _Client()
@@ -822,14 +822,53 @@ class TestSharedWithDiscord:
 
         assert store_filename("teams") != store_filename("discord")
 
-    def test_teams_and_discord_share_one_routing_machine(self) -> None:
-        """The subtle part is not duplicated; a second copy is how the two drift."""
-        from kiro_crew.discord import session_resume as discord_resume
-        from kiro_crew.teams import session_resume as teams_resume
+    def test_teams_and_discord_use_one_picker_bind_controller(self) -> None:
+        from kiro_crew.discord.session_resume import DiscordSessionResume
+        from kiro_crew.teams.session_resume import TeamsSessionResume
 
-        assert teams_resume.SessionBinder is discord_resume.SessionBinder
-        assert teams_resume.resolve_session_choices is discord_resume.resolve_session_choices
-        assert teams_resume.PickerRegistry is discord_resume.PickerRegistry
+        sessions = _Sessions()
+        log = _ConversationLog(_rows("Launch plan"))
+        discord = DiscordSessionResume(sessions, log, {"u1"})
+        teams = TeamsSessionResume(sessions, log, {_OWNER})
+
+        assert type(discord._controller) is core.SessionResumeController
+        assert type(teams._controller) is core.SessionResumeController
+        assert type(discord._binder) is core.SessionBinder
+        assert type(teams._binder) is core.SessionBinder
+
+    @pytest.mark.asyncio
+    async def test_controller_uses_the_surface_expectation_identity(self) -> None:
+        """A channel may have several conversations under one channel id.
+
+        Telegram forum Topics are the motivating shape: recording only chat_id
+        would let every Topic in one supergroup overwrite the same expectation.
+        """
+        from kiro_crew.teams.session_resume import TeamsSessionResume, _TeamsResumeSurface
+
+        client = _Client()
+        sessions = _Sessions()
+        resume = TeamsSessionResume(sessions, TestPressing._log(), {_OWNER})
+        surface = _TeamsResumeSurface(client, "CONV", _SVC)
+        surface.expectation_id = "CONV:TOPIC"
+        choice = core.SessionChoice(key="dashboard:chat-1", title="Launch plan")
+        nonce = resume.pickers.mint()
+        resume.pickers.register(nonce, _OWNER, _CARD_ID, (choice,))
+
+        selected = await resume._controller.choose(
+            surface,
+            caller=_OWNER,
+            picker_owner=_OWNER,
+            is_owner=True,
+            message_id=_CARD_ID,
+            nonce=nonce,
+            index=0,
+            link=ChannelLink("teams", "CONV", "TOPIC"),
+        )
+
+        assert selected == choice
+        record = await resume._expectations.get("CONV:TOPIC")
+        assert record is not None and record.key == choice.key
+        assert await resume._expectations.get("CONV") is None
 
     def test_the_teams_card_kind_is_distinct_from_the_other_two(self) -> None:
         """So an approval press and a session press can never be confused."""
@@ -909,7 +948,7 @@ class TestWhenListingCannotHappen:
         client = _Client()
         d = _dispatcher(_Sessions(), client, _Log(_rows("Launch plan")))
         monkeypatch.setattr(
-            "kiro_crew.teams.session_resume.sel",
+            "kiro_crew.messaging.session_resume.sel",
             lambda: SimpleNamespace(
                 log_api_access=lambda **kw: rows.append((kw["operation"], kw["outcome"]))
             ),
@@ -981,6 +1020,22 @@ class TestWhenAPressCannotTakeEffect:
 
         async def _boom(*_a, **_kw):
             raise ExpectationStoreError("disk full")
+
+        d._session_resume._binder.expectations.record = _boom  # type: ignore[assignment]
+
+        await self._pressed(d, client)
+
+        assert "was NOT resumed" in str(client.updated[-1][1])
+        assert sessions.mirror_links == {}
+
+    @pytest.mark.asyncio
+    async def test_an_untyped_expectation_failure_still_binds_nothing(self) -> None:
+        """Store path resolution can fail before errors become domain exceptions."""
+        client, sessions = _Client(), _Sessions()
+        d = _dispatcher(sessions, client, TestPressing._log())
+
+        async def _boom(*_a, **_kw):
+            raise RuntimeError("path resolution failed")
 
         d._session_resume._binder.expectations.record = _boom  # type: ignore[assignment]
 

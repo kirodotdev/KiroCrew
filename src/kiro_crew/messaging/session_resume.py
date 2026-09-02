@@ -41,6 +41,8 @@ from kiro_crew.messaging.resume_expectation import (
     ResumeExpectation,
     ResumeExpectations,
 )
+from kiro_crew.sel import sel
+from kiro_crew.session_map import ConversationOwnershipConflict
 
 logger = logging.getLogger(__name__)
 
@@ -133,16 +135,31 @@ class ResumeSurface(Protocol):
 
     The address is bound at CONSTRUCTION, which is what keeps every channel id, chat
     id and conversation id out of this module -- the same reason ``ReceiptSurface``
-    exists. A channel implements four things and nothing else.
+    exists. A channel implements its own rendering and exact wording.
     """
 
-    #: Channel name for the session map, the store file and log lines.
-    channel_type: str
-    #: Per-channel wording for the shared refusals.
-    copy: ResumeCopy
+    #: Durable conversation identity for the expectation store. This can be
+    #: narrower than ``ChannelLink.channel_id`` (for example a forum Topic).
+    expectation_id: str
+    owner_refusal: str
+    choice_owner_refusal: str
+    choice_expired: str
+    choice_missing: str
+    choice_expectation_failed: str
+    choice_claim_lost: str
+    choice_binding_failed: str
 
     def display_safe(self, text: str, max_chars: int) -> str:
         """Redact + neutralize + budget *text* for THIS channel's rendering."""
+
+    def no_choices(self, query: str) -> str:
+        """The exact empty-result message for a listing or search."""
+
+    def picker_heading(self, query: str, total: int) -> str:
+        """The exact text accompanying a picker with *total* eligible sessions."""
+
+    def choice_success(self, choice: SessionChoice) -> str:
+        """The exact successful-resume settlement for *choice*."""
 
     async def post_picker(
         self, heading: str, nonce: str, choices: tuple[SessionChoice, ...]
@@ -651,3 +668,196 @@ class SessionBinder:
                     exc_info=True,
                 )
         return seen.key or (cleared[0] if cleared else None)
+
+
+class SessionResumeController:
+    """Own the session picker and bind transaction for every resume surface."""
+
+    def __init__(
+        self,
+        sessions: Any,
+        conv_log: Any | None,
+        *,
+        channel_type: str,
+        copy: ResumeCopy,
+        title_display: Any,
+    ) -> None:
+        self.sessions = sessions
+        self.conv_log = conv_log
+        self.channel_type = channel_type
+        self.pickers = PickerRegistry()
+        self.binder = SessionBinder(sessions, channel_type=channel_type, copy=copy)
+        self.binder.title_display = title_display
+        self.dashboard_state: object | None = None
+
+    def push_slots(self) -> None:
+        state = self.dashboard_state
+        if state is None:
+            return
+        try:
+            push = getattr(state, "push_slots_update", None)
+            if callable(push):
+                push()
+        except Exception:
+            logger.debug(
+                "%s: slots push after binding change failed",
+                self.channel_type,
+                exc_info=True,
+            )
+
+    async def show_picker(
+        self,
+        surface: ResumeSurface,
+        *,
+        caller: str,
+        picker_owner: str,
+        is_owner: bool,
+        query: str = "",
+    ) -> None:
+        """List eligible sessions and register only a picker that reached the surface."""
+        operation = f"{self.channel_type}.sessions_data_access"
+        if not is_owner:
+            sel().log_api_access(
+                caller=caller,
+                operation=operation,
+                outcome="denied",
+                source=self.channel_type,
+            )
+            await surface.say(surface.owner_refusal)
+            return
+        if self.conv_log is None:
+            await surface.say("⚠️ Recent sessions are unavailable.")
+            return
+
+        try:
+            choices, total = await resolve_session_choices(
+                self.conv_log,
+                query,
+                surface.display_safe,
+            )
+        except Exception as exc:
+            sel().log_api_access(
+                caller=caller,
+                operation=operation,
+                outcome="error",
+                source=self.channel_type,
+                resources="0 sessions read",
+                error=surface.display_safe(str(exc), 200),
+            )
+            logger.exception("%s sessions: history listing failed", self.channel_type)
+            await surface.say("⚠️ Recent sessions are unavailable.")
+            return
+
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="allowed",
+            source=self.channel_type,
+            resources=f"{len(choices)} sessions read",
+        )
+        if not choices:
+            await surface.say(surface.no_choices(query))
+            return
+
+        self.pickers.purge()
+        self.pickers.drop_for(picker_owner)
+        nonce = self.pickers.mint()
+        frozen = tuple(choices)
+        message_id = await surface.post_picker(
+            surface.picker_heading(query, total),
+            nonce,
+            frozen,
+        )
+        if message_id:
+            self.pickers.register(nonce, picker_owner, message_id, frozen)
+
+    async def choose(
+        self,
+        surface: ResumeSurface,
+        *,
+        caller: str,
+        picker_owner: str,
+        is_owner: bool,
+        message_id: str,
+        nonce: str,
+        index: int,
+        link: ChannelLink,
+    ) -> SessionChoice | None:
+        """Consume one picker press and atomically claim its inbound binding."""
+        if not is_owner:
+            sel().log_api_access(
+                caller=caller,
+                operation=f"{self.channel_type}.session_resume_choice",
+                outcome="denied",
+                source=self.channel_type,
+            )
+            await surface.settle_picker(message_id, surface.choice_owner_refusal)
+            return None
+
+        choice = self.pickers.take(nonce, index, picker_owner, message_id)
+        if choice is None:
+            await surface.settle_picker(message_id, surface.choice_expired)
+            return None
+        if self.conv_log is None or not await asyncio.to_thread(
+            self.conv_log.has_log,
+            choice.key,
+        ):
+            await surface.settle_picker(message_id, surface.choice_missing)
+            return None
+
+        async with self.binder.lock:
+            conflict = self.binder.binding_conflict(choice.key, choice.title, link)
+            if conflict is not None:
+                await surface.settle_picker(message_id, conflict)
+                return None
+
+            try:
+                await self.binder.expectations.record(
+                    surface.expectation_id,
+                    choice.key,
+                    choice.title,
+                )
+            except Exception:
+                # Path resolution can fail before the store normalizes an OSError.
+                # Every persistence failure must settle fail-closed rather than leave
+                # a live-looking picker whose binding never took effect.
+                logger.warning(
+                    "%s resume: the pick of %s did not take effect",
+                    self.channel_type,
+                    choice.key,
+                    exc_info=True,
+                )
+                await surface.settle_picker(message_id, surface.choice_expectation_failed)
+                return None
+
+            if not await surface.settle_picker(message_id, surface.choice_success(choice)):
+                return None
+
+            conflict = self.binder.binding_conflict(choice.key, choice.title, link)
+            if conflict is not None:
+                await surface.settle_picker(message_id, conflict)
+                return None
+
+            try:
+                self.sessions.set_mirror_link(choice.key, link, accepts_inbound=True)
+            except ConversationOwnershipConflict:
+                logger.debug(
+                    "%s resume: lost the claim race for this conversation",
+                    self.channel_type,
+                )
+                await surface.settle_picker(message_id, surface.choice_claim_lost)
+                return None
+            except Exception:
+                logger.exception("%s resume: failed to persist binding", self.channel_type)
+                await surface.settle_picker(message_id, surface.choice_binding_failed)
+                return None
+            self.push_slots()
+
+        sel().log_api_access(
+            caller=caller,
+            operation=f"{self.channel_type}.session_resume",
+            outcome="allowed",
+            source=self.channel_type,
+            resources=choice.key,
+        )
+        return choice
