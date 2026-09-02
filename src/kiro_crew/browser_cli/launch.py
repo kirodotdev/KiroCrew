@@ -96,12 +96,21 @@ _SESSION_PREFIX = "kc-"
 _CONFIG_FILE = "playwright-cli-config.json"
 
 
+#: Leaf names :func:`socket_dir` and :func:`daemon_dir` build under a session dir.
+_LIFECYCLE_LEAVES = frozenset({"s", "d"})
+
+
+def _is_generated_leaf(leaf: str) -> bool:
+    """Whether *leaf* is the 8-hex filesystem leaf of a generated session."""
+    return len(leaf) == 8 and all(c in "0123456789abcdef" for c in leaf)
+
+
 def _session_leaf(session_name: str) -> str:
     """Filesystem leaf for one generated ``kc-<8hex>`` session."""
     if not session_name.startswith(_SESSION_PREFIX):
         return ""
     leaf = session_name.removeprefix(_SESSION_PREFIX)
-    return leaf if len(leaf) == 8 and all(c in "0123456789abcdef" for c in leaf) else ""
+    return leaf if _is_generated_leaf(leaf) else ""
 
 
 def socket_dir(session_name: str, base: Path | None = None) -> Path:
@@ -116,6 +125,43 @@ def daemon_dir(session_name: str, base: Path | None = None) -> Path:
     return root / _session_leaf(session_name) / "d"
 
 
+def _operator_base(configured: str) -> Path | None:
+    """An operator-chosen lifecycle root, or ``None`` to use the default.
+
+    ``None`` for an unset value AND for one of our own roots arriving by
+    INHERITANCE, which is the same distinction :func:`browser_session_env`
+    draws on the session name -- ours-by-inheritance is regenerated, only a
+    foreign value is honoured.
+
+    Both spawn sites build the child environment from ``{**os.environ, ...}``,
+    so a gateway started from inside an agent process hands its own
+    ``SOCKETS_ENV`` down. Treating that as an operator base namespaced EVERY
+    session it hosts one level deeper inside the parent's root, recursively:
+    measured 133 children under a single root and a depth of four, with real
+    socket paths at 79 of the ``_UNIX_SOCKET_PATH_MAX_BYTES`` budget. Nesting
+    spends ~12 bytes a level, so it walks into the AF_UNIX ceiling this module
+    already guards -- and that guard returns ``{}``, which drops the daemon back
+    under reclaimable scratch and reinstates the unreachability the roots exist
+    to prevent.
+
+    Recognition is by SHAPE -- a ``<root>/<8hex>/{s,d}`` tail, which is what
+    :func:`socket_dir` and :func:`daemon_dir` build -- not by location under the
+    current ``config_dir()``. Every trigger flow changes the data home
+    (``dev-backend.sh`` exports ``KIROCREW_HOME``, and a pod runs an isolated
+    one), so an inherited root sits under the PARENT's home and a location test
+    would read it as foreign and keep nesting. Shape is also why the sibling
+    ``kc-`` prefix guard survives crossing installations. The residual cost is
+    an operator root that happens to end in ``<8hex>/s``, which is treated as
+    ours; that is the same collision the reserved prefix already accepts.
+    """
+    if not configured:
+        return None
+    path = Path(configured)
+    if path.name in _LIFECYCLE_LEAVES and _is_generated_leaf(path.parent.name):
+        return None
+    return path
+
+
 def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     """Environment additions keeping daemon sockets reachable and discoverable.
 
@@ -127,8 +173,11 @@ def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     executing the user-writable CLI wrapper.
 
     This helper is called only when Kiro Crew generated ``SESSION_ENV``.
-    Existing location variables are treated as operator-selected BASE roots,
-    then namespaced by the generated session; non-generated operator sessions
+    A location variable holding a FOREIGN value is treated as an
+    operator-selected BASE root and namespaced by the generated session; one
+    holding a value already under our own lifecycle root arrived by inheritance
+    and is ignored in favour of that root, so namespaces stay siblings instead
+    of nesting (see :func:`_operator_base`). Non-generated operator sessions
     never call this helper. Both final directories are owner-restricted. If
     validation or preparation fails, no partial additions are returned and the
     current TMPDIR/default-registry behavior remains. This helper performs
@@ -153,12 +202,8 @@ def browser_socket_env(env: Mapping[str, str]) -> dict[str, str]:
     ):
         logger.warning("Playwright lifecycle root overrides must be absolute paths")
         return {}
-    sockets_path = socket_dir(
-        session_name, Path(configured_sockets) if configured_sockets else None
-    )
-    daemons_path = daemon_dir(
-        session_name, Path(configured_daemons) if configured_daemons else None
-    )
+    sockets_path = socket_dir(session_name, _operator_base(configured_sockets))
+    daemons_path = daemon_dir(session_name, _operator_base(configured_daemons))
     additions: dict[str, str] = {}
     # Upstream builds `<root>/cli/<16-char-workspace>-<11-char-session>.sock`.
     # Check the complete shortest non-trimmed form; if even that cannot fit,

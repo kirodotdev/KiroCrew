@@ -431,6 +431,117 @@ def test_browser_socket_env_namespaces_configured_bases(
     ]
 
 
+def test_browser_socket_env_ignores_an_inherited_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root already under ours arrived by inheritance, not by intent.
+
+    Both spawn sites build the child env from ``{**os.environ, ...}``, so a
+    gateway started from inside an agent process passes its own lifecycle roots
+    down. Namespacing under them nested every session one level deeper inside
+    the parent's root instead of beside it.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setattr(mod, "config_dir", lambda: home)
+    monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
+    monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
+    monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
+    monkeypatch.setattr(mod, "cli_lifecycle_env_supported", lambda: True)
+    root = home / mod._LIFECYCLE_DIR
+
+    env = {
+        mod.SESSION_ENV: "kc-a1b2c3d4",
+        # what a parent agent process exports
+        mod.SOCKETS_ENV: str(root / "deadbeef" / "s"),
+        mod.DAEMON_DIR_ENV: str(root / "deadbeef" / "d"),
+    }
+    assert mod.browser_socket_env(env) == {
+        mod.SOCKETS_ENV: str(root / "a1b2c3d4" / "s"),
+        mod.DAEMON_DIR_ENV: str(root / "a1b2c3d4" / "d"),
+    }
+
+
+def test_nesting_cannot_deepen_however_long_the_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The end-to-end property: depth stays 1, so the AF_UNIX budget is fixed.
+
+    Feeding each generation's output back in as the next generation's
+    environment is what a gateway-inside-an-agent-inside-a-gateway does.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setattr(mod, "config_dir", lambda: home)
+    monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
+    monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
+    monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
+    monkeypatch.setattr(mod, "cli_lifecycle_env_supported", lambda: True)
+    root = home / mod._LIFECYCLE_DIR
+
+    env = {mod.SESSION_ENV: "kc-00000000"}
+    for generation in range(6):
+        env = {mod.SESSION_ENV: f"kc-0000000{generation}", **mod.browser_socket_env(env)}
+        socket_root = Path(env[mod.SOCKETS_ENV])
+        assert socket_root.parent.parent == root, f"generation {generation} nested"
+        assert len(socket_root.relative_to(root).parts) == 2
+
+
+def test_a_foreign_configured_root_is_still_honoured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must not cost an operator their deliberate override."""
+    home = tmp_path / "home"
+    elsewhere = tmp_path / "operator-chosen"
+    monkeypatch.setattr(mod, "config_dir", lambda: home)
+    monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
+    monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
+    monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
+    monkeypatch.setattr(mod, "cli_lifecycle_env_supported", lambda: True)
+
+    env = {mod.SESSION_ENV: "kc-a1b2c3d4", mod.SOCKETS_ENV: str(elsewhere)}
+    additions = mod.browser_socket_env(env)
+    assert additions[mod.SOCKETS_ENV] == str(elsewhere / "a1b2c3d4" / "s")
+    # the unset sibling still falls to the default root
+    assert additions[mod.DAEMON_DIR_ENV] == str(
+        home / mod._LIFECYCLE_DIR / "a1b2c3d4" / "d"
+    )
+
+
+def test_browser_socket_env_ignores_an_inherited_root_from_another_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trigger flows change ``KIROCREW_HOME``, so identity would miss them.
+
+    ``dev-backend.sh`` exports its own ``KIROCREW_HOME`` and a pod runs an
+    isolated one, so the inherited root sits under the PARENT's home. Testing
+    location against the child's own ``config_dir()`` would read that as a
+    foreign operator base and keep nesting -- and it would also let a pod write
+    its sockets outside its isolated home. Recognition is by shape instead.
+    """
+    parent_home = tmp_path / "parent-home"
+    child_home = tmp_path / "pod-home"
+    monkeypatch.setattr(mod, "config_dir", lambda: child_home)
+    monkeypatch.setattr(mod.platform_compat, "make_owner_only_dir", lambda _path: None)
+    monkeypatch.setattr(mod.platform_compat, "restrict_dir_to_owner", lambda _path: None)
+    monkeypatch.setattr(mod, "_UNIX_SOCKET_PATH_MAX_BYTES", 10_000)
+    monkeypatch.setattr(mod, "cli_lifecycle_env_supported", lambda: True)
+    parent_root = parent_home / mod._LIFECYCLE_DIR
+
+    env = {
+        mod.SESSION_ENV: "kc-a1b2c3d4",
+        mod.SOCKETS_ENV: str(parent_root / "deadbeef" / "s"),
+        mod.DAEMON_DIR_ENV: str(parent_root / "deadbeef" / "d"),
+    }
+    additions = mod.browser_socket_env(env)
+
+    child_root = child_home / mod._LIFECYCLE_DIR
+    assert additions == {
+        mod.SOCKETS_ENV: str(child_root / "a1b2c3d4" / "s"),
+        mod.DAEMON_DIR_ENV: str(child_root / "a1b2c3d4" / "d"),
+    }
+    # and nothing was written into the parent's home
+    assert parent_home not in Path(additions[mod.SOCKETS_ENV]).parents
+
+
 def test_browser_socket_env_fails_without_partial_additions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
