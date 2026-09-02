@@ -317,6 +317,79 @@ class TestBuildSeatbeltProfile:
 
         sandbox_mod.assert_voice_runtime_outside_agent_workspace(sibling)
 
+    def test_voice_runtime_workspace_conflict_preflight(self, monkeypatch, tmp_path):
+        """#7392: the non-raising pre-flight mirrors the lexical guard and
+        names both paths, the data home, and the remedy."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        sibling = tmp_path / "workspace"
+        runtime.mkdir(parents=True)
+        sibling.mkdir()
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+
+        contains = sandbox_mod.voice_runtime_workspace_conflict(tmp_path)
+        assert contains is not None and "contains" in contains
+        assert "protected voice runtime" in contains
+        assert str(tmp_path) in contains
+        assert str(runtime) in contains
+        # Same remedy sentence as the spawn-time refusal (#7407's shared formatter).
+        assert "Pick a project subdirectory" in contains
+
+        inside = sandbox_mod.voice_runtime_workspace_conflict(runtime / "nested")
+        assert inside is not None and "inside it" in inside
+
+        assert sandbox_mod.voice_runtime_workspace_conflict(sibling) is None
+
+    def test_voice_runtime_workspace_conflict_passes_off_darwin(self, monkeypatch, tmp_path):
+        """The pre-flight matches the guards it mirrors: every spawn-time
+        guard early-returns off macOS, so an overlapping workspace spawns
+        fine on Linux/Windows today — the pre-flight must not 400 a working
+        configuration there (Design/FP review round 1)."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "linux")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        assert sandbox_mod.voice_runtime_workspace_conflict(tmp_path) is None
+
+    def test_preflight_and_spawn_guard_refuse_with_the_same_message(self, monkeypatch, tmp_path):
+        """Drift pin (Design/FP review round 2): the pre-flight and the
+        spawn-time guard share ONE containment scan and ONE formatter, so the
+        same overlapping workspace must produce byte-identical refusal text on
+        both surfaces. If either ever grows its own copy again, this fails."""
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+        runtime = tmp_path / "data" / "run" / "voice-runtime"
+        runtime.mkdir(parents=True)
+        monkeypatch.setattr(
+            sandbox_mod,
+            "_voice_runtime_sandbox_paths",
+            lambda: (str(runtime),),
+        )
+        preflight = sandbox_mod.voice_runtime_workspace_conflict(tmp_path)
+        assert preflight is not None
+        with pytest.raises(RuntimeError) as exc:
+            sandbox_mod.assert_voice_runtime_outside_agent_workspace(tmp_path)
+        assert str(exc.value) == preflight
+
+    def test_voice_runtime_workspace_conflict_fails_open_on_prime_error(
+        self, monkeypatch, tmp_path
+    ):
+        """Pre-flight passes when runtime paths cannot resolve; the spawn-time
+        guard (fail-closed) stays authoritative."""
+
+        def _boom() -> tuple[str, ...]:
+            raise OSError("no data home")
+
+        monkeypatch.setattr(sandbox_mod, "_voice_runtime_sandbox_paths", _boom)
+        assert sandbox_mod.voice_runtime_workspace_conflict(tmp_path) is None
+
     def test_delegated_macos_agent_workspace_checks_canonical_alias(self, monkeypatch, tmp_path):
         runtime = tmp_path / "real-data" / "run" / "voice-runtime"
         alias = tmp_path / "linked-runtime"

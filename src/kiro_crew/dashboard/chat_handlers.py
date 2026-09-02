@@ -108,6 +108,7 @@ from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import safety_override
+from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -2269,10 +2270,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             cfg_proj = cfg.dashboard.default_project if cfg else ""
             if isinstance(cfg_proj, str) and cfg_proj:
                 resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-                if os.path.isdir(resolved) and not is_sensitive_path(resolved):
-                    cfg_proj = resolved
-                else:
-                    cfg_proj = ""
+                eligible = os.path.isdir(resolved) and not is_sensitive_path(resolved)
+                if eligible:
+                    # #7392 round 3: a configured default that overlaps the
+                    # data home would be refused at spawn anyway — skip it
+                    # here like a sensitive path, falling back to the
+                    # workspace default instead of wedging every new slot.
+                    # Off-loop (round 4): the shared scan primes runtime
+                    # paths (realpath/mkdir) on first use.
+                    eligible = (
+                        await asyncio.to_thread(voice_runtime_workspace_conflict, resolved)
+                    ) is None
+                cfg_proj = resolved if eligible else ""
             else:
                 cfg_proj = ""
             slot.project = cfg_proj or default_project_dir(workspace)
@@ -5343,6 +5352,25 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 error="sensitive path",
             )
             return web.json_response({"error": "Access denied"}, status=403)
+        # Pre-flight the voice-runtime workspace guard (issue #7392): a
+        # workspace that contains (or sits inside) the Kiro Crew data home is
+        # refused at agent spawn anyway, but only after the session exists and
+        # with a spawn-time stack trace. Reject it here, at the moment of
+        # choice, with the same actionable message. Off-loop: the check primes
+        # the runtime path cache (mkdir/realpath) on first use.
+        conflict = await asyncio.to_thread(voice_runtime_workspace_conflict, project)
+        if conflict is not None:
+            sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="chat_slot_project",
+                outcome="denied",
+                resources=f"slot={name} project={project}",
+                error="voice runtime overlap",
+            )
+            return web.json_response(
+                {"error": conflict, "code": "workspace_overlaps_data_home"},
+                status=400,
+            )
     old_project = slot.project
     slot.project = project
     logger.info("Slot %s project set to %r", name, project)

@@ -1767,13 +1767,13 @@ class TestFindPythonInterpreter:
         self._resolve(
             monkeypatch,
             {
-                "python3.12": "/brazil-path/python3.12",
-                "python3.11": "/x/build/private/python3.11",
-                "python3.10": "/usr/bin/python3.10",
+                "python3.12": "/x/build/private/python3.12",
+                "python3": "/brazil-path/python3",
+                "python3.13": "/usr/bin/python3.13",
             },
         )
-        monkeypatch.setattr(pc.subprocess, "check_output", lambda *_a, **_k: "3.10\n")
-        assert pc.find_python_interpreter() == "/usr/bin/python3.10"
+        monkeypatch.setattr(pc.subprocess, "check_output", lambda *_a, **_k: "3.13\n")
+        assert pc.find_python_interpreter() == "/usr/bin/python3.13"
 
     def test_skips_the_microsoft_store_stub(self, monkeypatch):
         stub = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python.exe"
@@ -1797,16 +1797,16 @@ class TestFindPythonInterpreter:
 
     def test_the_reject_predicate_falls_through_rather_than_aborting(self, monkeypatch):
         # A single unusable interpreter must not short-circuit the whole search.
-        # POSIX order is 3.12, 3.11, 3.10, python3, 3.13 — vetoing 3.12 must
-        # land on 3.11, not give up.
+        # POSIX order is 3.12, python3, 3.13 — vetoing 3.12 must land on
+        # python3, not give up.
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
         self._resolve(
             monkeypatch,
-            {"python3.12": "/usr/bin/python3.12", "python3.11": "/usr/bin/python3.11"},
+            {"python3.12": "/usr/bin/python3.12", "python3": "/usr/bin/python3"},
         )
         monkeypatch.setattr(pc.subprocess, "check_output", lambda *_a, **_k: "3.12\n")
         picked = pc.find_python_interpreter(reject=lambda p: p.endswith("3.12"))
-        assert picked == "/usr/bin/python3.11"
+        assert picked == "/usr/bin/python3"
 
     def test_nothing_resolvable_is_none(self, monkeypatch):
         self._resolve(monkeypatch, {})

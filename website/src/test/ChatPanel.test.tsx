@@ -16,8 +16,17 @@ vi.mock('../store/chatSlice', () => ({
 }))
 
 vi.mock('../pages/ChatPage', () => ({
-  default: (props: { embedded?: boolean }) => (
-    <div data-testid="chat-page" data-embedded={props.embedded ? 'true' : 'false'}>
+  default: (props: {
+    embedded?: boolean
+    embedMode?: 'chat' | 'sessions'
+    noUrlSync?: boolean
+  }) => (
+    <div
+      data-testid="chat-page"
+      data-embedded={props.embedded ? 'true' : 'false'}
+      data-embed-mode={props.embedMode ?? 'unset'}
+      data-no-url-sync={props.noUrlSync === undefined ? 'unset' : String(props.noUrlSync)}
+    >
       ChatPage
     </div>
   ),
@@ -42,11 +51,21 @@ describe('ChatPanel', () => {
     expect(mockDispatch).toHaveBeenCalled()
   })
 
-  it('renders ChatPage with embedded prop', () => {
+  it('renders ChatPage with embedded prop and preserves the default mode', () => {
     render(<ChatPanel slotKey="my-slot-123" />)
     const chatPage = screen.getByTestId('chat-page')
     expect(chatPage).toBeInTheDocument()
     expect(chatPage.getAttribute('data-embedded')).toBe('true')
+    expect(chatPage.getAttribute('data-embed-mode')).toBe('unset')
+    expect(chatPage.getAttribute('data-no-url-sync')).toBe('unset')
+  })
+
+  it('maps conversationOnly to the native chat embed without URL sync', () => {
+    render(<ChatPanel slotKey="my-slot-123" conversationOnly />)
+    const chatPage = screen.getByTestId('chat-page')
+    expect(chatPage.getAttribute('data-embedded')).toBe('true')
+    expect(chatPage.getAttribute('data-embed-mode')).toBe('chat')
+    expect(chatPage.getAttribute('data-no-url-sync')).toBe('true')
   })
 
   it('does not re-dispatch when slotKey stays the same on rerender', () => {

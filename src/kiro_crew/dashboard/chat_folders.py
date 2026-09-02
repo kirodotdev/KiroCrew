@@ -22,6 +22,7 @@ from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot, derive_c
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -329,6 +330,34 @@ def _validate_project_dir(raw: str) -> tuple[str, str | None]:
     return resolved, None
 
 
+def _folder_project_overlap_denied(resolved: str) -> str | None:
+    """Pre-flight the voice-runtime workspace guard for a folder's project_dir.
+
+    #7392 review round 3: a folder's linked project lands on slots verbatim, so
+    without this check "link a folder to ~" is refused only at agent spawn.
+    Same shared scan and message as the project endpoint and set_project — the
+    user-driven moments of choice agree. Returns the refusal message or None.
+
+    Synchronous on purpose (realpath/mkdir priming on first use — round 4):
+    callers on the event loop MUST run it via ``asyncio.to_thread``, exactly
+    like the project endpoint does. It is deliberately NOT part of
+    ``_validate_project_dir``: that validator also re-checks STORED values on
+    the slot-create read path, where re-priming per read would be loop-blocking
+    and where the spawn guard remains the authority.
+    """
+    conflict = voice_runtime_workspace_conflict(resolved)
+    if conflict is None:
+        return None
+    sel().log_api_access(
+        caller="dashboard",
+        operation="chat.folder_project_dir",
+        outcome="denied",
+        resources=resolved,
+        error="voice runtime overlap",
+    )
+    return conflict
+
+
 def _resolve_folder_project_dir(
     folders: list[dict[str, Any]], folder_id: str
 ) -> tuple[str, str | None]:
@@ -506,6 +535,13 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     project_dir, err = _validate_project_dir(project_dir)
     if err:
         return web.json_response({"error": err}, status=400)
+    if project_dir:
+        # Off-loop: the shared scan primes runtime paths on first use (round 4).
+        conflict = await asyncio.to_thread(_folder_project_overlap_denied, project_dir)
+        if conflict is not None:
+            return web.json_response(
+                {"error": conflict, "code": "workspace_overlaps_data_home"}, status=400
+            )
     default_agent = str(body.get("default_agent") or "").strip()
     color = str(body.get("color") or "").strip().lower()
     if color and not _is_valid_folder_color(color):
@@ -710,6 +746,13 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
         if err:
             return web.json_response({"error": err}, status=400)
+        if pd:
+            # Off-loop: the shared scan primes runtime paths on first use (round 4).
+            conflict = await asyncio.to_thread(_folder_project_overlap_denied, pd)
+            if conflict is not None:
+                return web.json_response(
+                    {"error": conflict, "code": "workspace_overlaps_data_home"}, status=400
+                )
         changes["project_dir"] = pd
     if "color" in body:
         # Palette color for the folder glyph. None or empty string clears back

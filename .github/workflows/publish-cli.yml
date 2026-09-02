@@ -181,7 +181,7 @@ jobs:
           MANIFEST="$(dirname "$WHEEL_PATH")/cli-manifest.json"
           PYREQ=$(unzip -p "$WHEEL_PATH" '*.dist-info/METADATA' 2>/dev/null \
             | awk -F': ' 'tolower($1)=="requires-python"{print $2; exit}' | tr -d '\r')
-          PYREQ="${PYREQ:->=3.10}"
+          PYREQ="${PYREQ:->=3.12}"
           # The immutable manifest must be byte-identical when a failed job is
           # retried. Wall-clock time would change the signed payload and make
           # put_immutable reject a safe retry, so bind publication time to the

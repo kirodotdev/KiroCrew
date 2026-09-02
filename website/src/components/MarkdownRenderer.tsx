@@ -8,6 +8,7 @@ import { canonicalChatHref, sessionKeyFrom, sessionKeyFromChatHref } from '../ut
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkAutolinkRules from '../utils/remarkAutolinkRules'
 import remarkCjkFriendly from 'remark-cjk-friendly'
 import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import remarkMath from 'remark-math'
@@ -1911,6 +1912,9 @@ const REMARK_PLUGINS: PluggableList = [
   remarkGfm,
   remarkCjkFriendlyGfmStrikethrough,
   [remarkMath, { singleDollarTextMath: false }],
+  // After gfm so an autolink literal is already a `link` node, but BEFORE the
+  // verbatim pass, which retypes an unknown tag to text and hides it.
+  remarkAutolinkRules,
   remarkVerbatimUnknownTags,
 ]
 

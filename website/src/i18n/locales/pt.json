@@ -7111,7 +7111,8 @@
       "title": "Pastas de projeto confiáveis"
     },
     "skillPickerMenu": {
-      "loading_skills": "Carregando habilidades…",
+      "loading_skills_ctrl_enter_held": "Carregando habilidades… — Ctrl+Enter ainda não envia; use o botão Enviar",
+      "loading_skills_enter_held": "Carregando habilidades… — Enter ainda não envia; use o botão Enviar",
       "no_matching_skills": "Nenhuma habilidade correspondente",
       "no_matching_skills_ctrl_enter_sends": "Nenhuma habilidade correspondente — Ctrl+Enter envia a mensagem",
       "no_matching_skills_enter_sends": "Nenhuma habilidade correspondente — Enter envia a mensagem",

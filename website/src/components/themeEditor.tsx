@@ -95,6 +95,7 @@ export function getCurrentThemeVars(): Record<string, string> {
     '--diff-add', '--diff-add-text', '--diff-del', '--diff-del-text',
     '--diff-hunk', '--diff-hunk-text', '--diff-meta-text',
     '--shadow-sm', '--shadow-md', '--shadow-lg',
+    '--term-magenta', '--term-cyan',
   ]
   for (const k of extras) result[k] = computed.getPropertyValue(k).trim()
   return result

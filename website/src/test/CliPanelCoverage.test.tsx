@@ -116,6 +116,7 @@ import CliPanel, {
   useDeleteTerminalSession,
 } from '../components/CliPanel'
 import { setTerminalFontSize, __resetTerminalFontStore } from '../hooks/useTerminalFont'
+import { ansiPaletteFromVars } from '../utils/terminalPalette'
 
 /* ── MutationObserver delivery pin ─────────────────────────────────────────
  * CliPanel's theme observer is MODULE-level: the first mount in this file
@@ -296,13 +297,26 @@ describe('CliPanel mount', () => {
     const { term } = mount()
     expect(term.addons).toHaveLength(2)
     // No custom properties are set in the test document, so every slot falls
-    // back to its hard-coded default rather than an empty string.
+    // back to its hard-coded default rather than an empty string. The 16 ANSI
+    // entries are asserted here only as wiring — that the palette reaches
+    // xterm at all; their values are covered by terminalPalette.test.ts.
     expect(term.options.theme).toEqual({
       background: '#1e1e2e',
       foreground: '#cdd6f4',
       cursor: '#89b4fa',
       selectionBackground: '#313244',
+      ...ansiPaletteFromVars(() => ''),
     })
+  })
+
+  it('routes a theme variable into its ANSI slot', () => {
+    document.documentElement.style.setProperty('--danger', '#bf616a')
+    try {
+      const { term } = mount()
+      expect(term.options.theme?.red).toBe('#bf616a')
+    } finally {
+      document.documentElement.style.removeProperty('--danger')
+    }
   })
 
   it('reads the theme from --bg/--text/--accent when the document defines them', () => {

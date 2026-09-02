@@ -199,7 +199,7 @@ the container security model.
 
 ### Build from source
 
-macOS and Linux require Python 3.10+, Node.js 22+ (24 LTS recommended), npm, and
+macOS and Linux require Python 3.12+, Node.js 22+ (24 LTS recommended), npm, and
 [`kiro-cli`](https://kiro.dev/docs/cli/). The first desktop or dashboard launch
 can install Kiro CLI on the Gateway host and guide device-code sign-in before
 chat opens. Windows is supported through a native source install; follow the
@@ -395,7 +395,7 @@ the published manifest, installs through `pipx` when available or a managed
 virtual environment at `~/.kiro/crew-venv` (beside the data home; override with
 `KIROCREW_VENV`), and records the channel in `~/.kiro/crew/channel`. The channels
 are `stable`, `insider`, and `nightly`, and `KIROCREW_CHANNEL` sets the default.
-On Linux and macOS, when the system lacks a Python 3.10+ interpreter the
+On Linux and macOS, when the system lacks a Python 3.12+ interpreter the
 installer provisions one itself — no package manager, no sudo: it downloads a
 SHA-256-pinned [uv](https://docs.astral.sh/uv/) binary (or uses your installed
 `uv`) and installs a python-build-standalone CPython 3.12 into

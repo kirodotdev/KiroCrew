@@ -573,6 +573,87 @@ def _voice_runtime_guard_message(
     )
 
 
+def _lexical_runtime_overlap(
+    workspace_paths: tuple[str, ...], runtime_paths: tuple[str, ...]
+) -> tuple[str, str, _VoiceGuardRelationship] | None:
+    """First lexical containment hit between workspace and runtime spellings.
+
+    THE shared containment scan: :func:`voice_runtime_workspace_conflict` (the
+    non-raising pre-flight) and :func:`assert_voice_runtime_outside_agent_workspace`
+    (the fail-closed spawn guard) both call this, so the pre-flight cannot
+    silently drift from the guard it mirrors (Design/FP review round 2 — the
+    two previously carried independent copies of this loop).
+
+    Returns ``(workspace_path_to_name, runtime_path, relationship)`` for the
+    first hit, or ``None``. Naming convention is the guard's: refusals always
+    name the workspace as the caller spelled it (``workspace_paths[0]``); a
+    hit found only on a non-original spelling (the realpath of a symlinked
+    workspace) is an ``"alias"`` relationship — formatting the resolved path
+    instead would print the runtime path twice and omit the path the user
+    actually configured.
+    """
+    original = workspace_paths[0]
+    for workspace_path in workspace_paths:
+        for runtime_path in runtime_paths:
+            try:
+                common = os.path.commonpath((workspace_path, runtime_path))
+            except ValueError:
+                continue
+            if common not in (workspace_path, runtime_path):
+                continue
+            if workspace_path != original:
+                return (original, runtime_path, "alias")
+            return (
+                original,
+                runtime_path,
+                "inside" if common == runtime_path else "contains",
+            )
+    return None
+
+
+def voice_runtime_workspace_conflict(workspace: str | os.PathLike[str]) -> str | None:
+    """Pre-flight: describe why *workspace* would be rejected, or ``None``.
+
+    A non-raising lexical version of
+    :func:`assert_voice_runtime_outside_agent_workspace` for validation
+    surfaces (the project endpoint, pickers) that want to warn BEFORE a
+    session exists. Lexical containment only — the descriptor/identity walks
+    stay in the spawn-time guards, which remain authoritative; a ``None`` here
+    is a pre-flight pass, not a security verdict. Darwin-gated to MATCH the
+    guards it pre-flights: every spawn-time guard early-returns off macOS, so
+    a workspace that overlaps the data home spawns fine on Linux/Windows
+    today — refusing it here would remove a working configuration to prevent
+    a macOS-only harm (and with macOS-worded copy).
+
+    Messages come from :func:`_voice_runtime_guard_message` (#7407) and the
+    containment scan is shared with the spawn-time guard
+    (:func:`_lexical_runtime_overlap`), so the pre-flight warning and the
+    spawn-time refusal read identically and cannot drift apart.
+    """
+    if sys.platform != "darwin":
+        return None
+    workspace_paths = tuple(
+        dict.fromkeys(
+            (
+                os.path.abspath(os.fspath(workspace)),
+                os.path.realpath(os.fspath(workspace)),
+            )
+        )
+    )
+    try:
+        runtime_paths = tuple(
+            dict.fromkeys(os.path.abspath(path) for path in _voice_runtime_sandbox_paths())
+        )
+    except OSError:
+        # Pre-flight only: if the runtime paths cannot be resolved here, let
+        # the spawn-time guard (which fails closed) produce the verdict.
+        return None
+    hit = _lexical_runtime_overlap(workspace_paths, runtime_paths)
+    if hit is not None:
+        return _voice_runtime_guard_message(*hit)
+    return None
+
+
 def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[str]) -> None:
     """Fail closed when a macOS agent workspace can reach decoder snapshots.
 
@@ -612,26 +693,13 @@ def assert_voice_runtime_outside_agent_workspace(workspace: str | os.PathLike[st
     # only on the canonical (realpath) spelling of a symlinked workspace is an
     # alias relationship from the caller's own spelling -- formatting the
     # resolved path instead would print the runtime path twice and omit the
-    # path the user actually configured.
+    # path the user actually configured. The scan itself is shared with the
+    # non-raising pre-flight (_lexical_runtime_overlap), so the two surfaces
+    # cannot drift apart.
     original_workspace_path = raw_workspace_paths[0]
-    for workspace_path in raw_workspace_paths:
-        for runtime_path in raw_runtime_paths:
-            try:
-                common = os.path.commonpath((workspace_path, runtime_path))
-            except ValueError:
-                continue
-            if common in (workspace_path, runtime_path):
-                if workspace_path != original_workspace_path:
-                    raise RuntimeError(
-                        _voice_runtime_guard_message(original_workspace_path, runtime_path, "alias")
-                    )
-                raise RuntimeError(
-                    _voice_runtime_guard_message(
-                        workspace_path,
-                        runtime_path,
-                        "inside" if common == runtime_path else "contains",
-                    )
-                )
+    lexical_hit = _lexical_runtime_overlap(raw_workspace_paths, raw_runtime_paths)
+    if lexical_hit is not None:
+        raise RuntimeError(_voice_runtime_guard_message(*lexical_hit))
 
     # Path spelling is only a fast reject. Compare filesystem identities too,
     # walking both ancestor directions so case, normalization, symlink, and

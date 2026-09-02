@@ -7111,7 +7111,8 @@
       "title": "Cartelle di progetto attendibili"
     },
     "skillPickerMenu": {
-      "loading_skills": "Caricamento delle skill…",
+      "loading_skills_ctrl_enter_held": "Caricamento delle skill… — Ctrl+Invio non invia ancora; usa il pulsante Invia",
+      "loading_skills_enter_held": "Caricamento delle skill… — Invio non invia ancora; usa il pulsante Invia",
       "no_matching_skills": "Nessuna skill corrispondente",
       "no_matching_skills_ctrl_enter_sends": "Nessuna skill corrispondente — Ctrl+Invio invia il messaggio",
       "no_matching_skills_enter_sends": "Nessuna skill corrispondente — Invio invia il messaggio",

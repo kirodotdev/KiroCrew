@@ -4150,17 +4150,17 @@ def _is_windows_store_python_stub(path: str) -> bool:
 
 
 def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> str | None:
-    """Resolve a real CPython >= 3.10 interpreter, or None.
+    """Resolve a real CPython >= 3.12 interpreter, or None.
 
     Single source of truth for "where is a usable system python" on every
-    platform. Prefers versioned names (3.12/3.11), then bare ``python``/
-    ``python3``, with free-threaded-prone ``python3.13`` LAST so a usable
-    3.12/3.11/3.10 wins first. Rejects
+    platform. Prefers the exact tested version (``python3.12``), then bare
+    ``python``/``python3``, with free-threaded-prone ``python3.13`` LAST so a
+    usable 3.12 wins first. Rejects
     Brazil-path/build interpreters and — critically on Windows — the Microsoft
     Store alias stub (see :func:`_is_windows_store_python_stub`): running that
     stub is what emits the "Python was not found" nag, so we must never spawn it.
 
-    ``reject`` is an optional predicate run against each >= 3.10 candidate path;
+    ``reject`` is an optional predicate run against each >= 3.12 candidate path;
     return True to skip it and FALL THROUGH to the next candidate (not abort).
     Callers with extra constraints the shared resolver can't express — e.g. the
     STT prereq probe needs pip and a non-free-threaded build — pass it here so a
@@ -4172,9 +4172,9 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
     whisper installs that must not land in the gateway's venv).
     """
     names = (
-        ("python3.12", "python3.11", "python3.10", "python", "python3")
+        ("python3.12", "python", "python3")
         if IS_WINDOWS
-        else ("python3.12", "python3.11", "python3.10", "python3", "python3.13")
+        else ("python3.12", "python3", "python3.13")
     )
     for name in names:
         p = shutil.which(name)
@@ -4197,11 +4197,11 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
                 **UTF8_TEXT,
             ).strip()
             major, _, minor = out.partition(".")
-            if not (int(major) == 3 and int(minor) >= 10):
+            if not (int(major) == 3 and int(minor) >= 12):
                 continue
         except (OSError, ValueError, subprocess.SubprocessError):
             continue
-        # >= 3.10 and resolvable. Let the caller veto it (e.g. free-threaded /
+        # >= 3.12 and resolvable. Let the caller veto it (e.g. free-threaded /
         # no pip) and keep searching the remaining candidates.
         if reject is not None and reject(p):
             continue

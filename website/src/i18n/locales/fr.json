@@ -7111,7 +7111,8 @@
       "title": "Dossiers de projet approuvés"
     },
     "skillPickerMenu": {
-      "loading_skills": "Chargement des compétences…",
+      "loading_skills_ctrl_enter_held": "Chargement des compétences… — Ctrl+Enter n’envoie pas encore ; utilisez le bouton Envoyer",
+      "loading_skills_enter_held": "Chargement des compétences… — Enter n’envoie pas encore ; utilisez le bouton Envoyer",
       "no_matching_skills": "Aucune compétence correspondante",
       "no_matching_skills_ctrl_enter_sends": "Aucune compétence correspondante — Ctrl+Enter envoie le message",
       "no_matching_skills_enter_sends": "Aucune compétence correspondante — Enter envoie le message",

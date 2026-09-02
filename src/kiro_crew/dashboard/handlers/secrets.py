@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from aiohttp import web
 
@@ -12,6 +13,14 @@ from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_req
 from kiro_crew.secrets import SecretVault
 
 logger = logging.getLogger(__name__)
+
+# C0 controls (\x00-\x1f), DEL + C1 controls (\x7f-\x9f), and the Unicode line
+# (U+2028) / paragraph (U+2029) separators — EXCLUDING tab/LF/CR, which are given
+# their familiar \n/\r/\t spellings before this pattern runs (listing them here
+# would double-escape them). C1 bytes (e.g. CSI \x9b) drive a terminal and
+# U+2028/U+2029 break a line in a Unicode-aware log viewer, so both are
+# log-injection vectors that must be neutralized alongside C0/DEL.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def _sel():
@@ -62,18 +71,30 @@ async def _owner_only(request: web.Request, operation: str) -> web.Response | No
 
 
 def _sanitize_for_log(value: str) -> str:
-    """Neutralize control characters before a user-controlled value is logged.
+    r"""Neutralize control characters before a user-controlled value is logged.
 
     The secret ``name`` is free-form user input (request body or URL path
     segment) and only has leading/trailing whitespace trimmed, so interior
-    ``\\n`` / ``\\r`` / ``\\t`` survive into the log sink and let a caller forge
-    additional log lines / fake audit entries (CWE-117 log injection). Escape
-    the control characters into their literal two-character forms so the value
-    is still readable in the log but can no longer break onto a new line.
+    control characters survive into the log sink and let a caller forge
+    additional log lines / fake audit entries (CWE-117 log injection), or
+    smuggle ANSI escape sequences (``\x1b[...``) into a terminal-backed viewer.
+
+    Every C0 control character (``\x00``-``\x1f``), DEL and the C1 controls
+    (``\x7f``-``\x9f``), and the Unicode line/paragraph separators
+    (``\u2028`` / ``\u2029``) are escaped to a readable ``\xNN`` / ``\uNNNN``
+    form so the value stays legible in the log but can no longer break onto a
+    new line or drive a terminal. The common
+    ``\n`` / ``\r`` / ``\t`` are given their familiar two-character spellings.
+    The backslash is escaped first so the escapes themselves are unambiguous.
     """
-    return (
-        value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-    )
+    value = value.replace("\\", "\\\\")
+    value = value.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+    def _escape(m: "re.Match[str]") -> str:
+        cp = ord(m.group())
+        return f"\\x{cp:02x}" if cp <= 0xFF else f"\\u{cp:04x}"
+
+    return _CONTROL_CHAR_RE.sub(_escape, value)
 
 
 async def api_secrets_list(request: web.Request) -> web.Response:

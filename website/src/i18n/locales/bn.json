@@ -7006,7 +7006,8 @@
       "title": "বিশ্বস্ত প্রজেক্ট ফোল্ডার"
     },
     "skillPickerMenu": {
-      "loading_skills": "স্কিল লোড হচ্ছে…",
+      "loading_skills_ctrl_enter_held": "স্কিল লোড হচ্ছে… — Ctrl+Enter এখনই বার্তা পাঠাবে না; পাঠান বোতাম ব্যবহার করুন",
+      "loading_skills_enter_held": "স্কিল লোড হচ্ছে… — Enter এখনই বার্তা পাঠাবে না; পাঠান বোতাম ব্যবহার করুন",
       "no_matching_skills": "মিলে যাওয়া কোনো স্কিল নেই",
       "no_matching_skills_ctrl_enter_sends": "মিলে যাওয়া কোনো স্কিল নেই — Ctrl+Enter বার্তা পাঠাবে",
       "no_matching_skills_enter_sends": "মিলে যাওয়া কোনো স্কিল নেই — Enter বার্তা পাঠাবে",

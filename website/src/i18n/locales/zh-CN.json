@@ -6901,7 +6901,8 @@
       "title": "受信任的项目文件夹"
     },
     "skillPickerMenu": {
-      "loading_skills": "正在加载技能…",
+      "loading_skills_ctrl_enter_held": "正在加载技能… —— 按 Ctrl+Enter 暂时不会发送，请使用发送按钮",
+      "loading_skills_enter_held": "正在加载技能… —— 按 Enter 暂时不会发送，请使用发送按钮",
       "no_matching_skills": "无匹配的技能",
       "no_matching_skills_ctrl_enter_sends": "无匹配的技能 —— 按 Ctrl+Enter 直接发送消息",
       "no_matching_skills_enter_sends": "无匹配的技能 —— 按 Enter 直接发送消息",

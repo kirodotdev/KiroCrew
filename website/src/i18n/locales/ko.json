@@ -6901,7 +6901,8 @@
       "title": "신뢰하는 프로젝트 폴더"
     },
     "skillPickerMenu": {
-      "loading_skills": "스킬을 불러오는 중…",
+      "loading_skills_ctrl_enter_held": "스킬을 불러오는 중… — Ctrl+Enter 키로는 아직 전송되지 않습니다. 전송 버튼을 사용하세요",
+      "loading_skills_enter_held": "스킬을 불러오는 중… — Enter 키로는 아직 전송되지 않습니다. 전송 버튼을 사용하세요",
       "no_matching_skills": "일치하는 스킬 없음",
       "no_matching_skills_ctrl_enter_sends": "일치하는 스킬 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_skills_enter_sends": "일치하는 스킬 없음 — Enter 키를 누르면 메시지가 전송됩니다",

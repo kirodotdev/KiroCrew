@@ -2798,7 +2798,11 @@ _GIT_PUBLISH_RE = re.compile(
     # matched either by the preceding ``\s+`` or by this group's leading char —
     # an ambiguity that backtracks exponentially (ReDoS) on whitespace-laden
     # flag runs when the trailing ``push`` is absent.
-    r"(?:^|[;&|`\n]|\$\()\s*git\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*push(?=\s|[)`;&|]|$)"
+    # ``(`` is in the leading class because bash treats it as an operator, so
+    # ``(git push`` runs git exactly as ``; git push`` does -- without it the
+    # glued subshell form ``(git push origin main)`` matched no branch and the
+    # only enforcement for git-publish (this floor) never fired.
+    r"(?:^|[;&|`\n(]|\$\()\s*git\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*push(?=\s|[)`;&|]|$)"
 )
 
 # Glue-evasion guard: bash command-substitution / quoting tricks that evaluate
@@ -3283,6 +3287,15 @@ _EMPTY_SUBST_RE = re.compile(r"\$\(\s*\)|`\s*`|\$\{\s*\}")
 # No ``\A`` anchor: ``.match(raw, pos)`` anchors at *pos*, which is how a word holding a
 # chain of glued redirects is walked in one pass instead of being re-sliced per operator.
 _OUTPUT_REDIRECT_RE = re.compile(r"(?:\d+|&|\*|\{[A-Za-z_][A-Za-z0-9_]*\})?>{1,2}[&|!]?")
+# The same descriptor vocabulary, widened to INPUT redirects and process
+# substitution, for use where a redirect ENDS an argument list rather than hiding
+# a program. Testing only the first character missed every descriptor-prefixed
+# spelling (``2>``, ``&>``, ``{fd}>``, ``1>``), which is exactly where a
+# redirection is most often written -- so the descriptor read as an ordinary
+# refspec and the command after the redirect was absorbed as arguments.
+_REDIRECT_START_RE = re.compile(
+    r"(?:\d+|&|\*|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>{1,2}[&|!]?|<{1,3})"
+)
 # ``X=kirocrew; $X token`` assigns the program name to a variable and invokes it
 # through the expansion, so neither the literal name nor the expansion alone looks
 # dangerous.  The assignment and the use are in the SAME command text, so the
@@ -3690,7 +3703,12 @@ def _next_stop_indexes(tokens: "list[str]", is_stop: "Callable[[str], bool]") ->
     return table
 
 
-def _nested_shell_payloads(tokens: "list[str]") -> "list[str]":
+def _nested_shell_payloads(
+    tokens: "list[str]",
+    *,
+    allow_join: bool = True,
+    joined_out: "set[str] | None" = None,
+) -> "list[str]":
     """Literal shell-script payloads carried as an argument inside *tokens*.
 
     Covers ``sh -c '<script>'`` / ``bash -c '<script>'`` (the payload is the
@@ -3698,6 +3716,20 @@ def _nested_shell_payloads(tokens: "list[str]") -> "list[str]":
     payloads are returned -- ``eval "$CMD"`` carries no visible script, and that
     case is covered by the regex tier running alongside this floor rather than by
     this function.
+
+    *allow_join* suppresses the ``eval`` argument join, and *joined_out* collects
+    the joined payloads this call produced. Both exist for
+    :func:`_shell_payload_walk`, which must not let a JOINED frame join again: the
+    joined text is strictly shorter than its parent, so it becomes a frame of its
+    own, and if that frame joins too the walk builds a chain of shrinking suffixes
+    -- N frames each costing an O(N) tokenize and an O(N) join. Measured on
+    ``"eval " * 1280``: 65 s and growing ~5x per doubling, against 0.13 s before
+    the join existed, which stalls the synchronous permission gate long enough for
+    the watchdog to fire. Declining the second join costs no detection, because
+    the join FUSES already-dequoted words in one step -- ``eval eval 'git' 'push
+    origin main'`` is fused to ``git push origin main`` by the first join, so the
+    publish is visible at the first joined frame and the chain only re-derived
+    suffixes of an answer already in hand.
     """
     payloads: list[str] = []
     # Both scans below look for the FIRST token after a program that satisfies a stop
@@ -3715,6 +3747,8 @@ def _nested_shell_payloads(tokens: "list[str]") -> "list[str]":
     # command flag is walked once per program token otherwise, which is quadratic even
     # though the two scans above are not.
     past_dashes = _next_stop_indexes(tokens, _is_not_double_dash)
+    # ``eval``'s argument join is bounded to one per walk; see the verb branch.
+    joined_eval = False
     limit = len(tokens)
     for i, token in enumerate(tokens):
         base = _program_basename(token)
@@ -3754,8 +3788,39 @@ def _nested_shell_payloads(tokens: "list[str]") -> "list[str]":
                 elif flag.startswith("--split-string="):
                     payloads.append(tokens[j].split("=", 1)[1])
         elif base in _NESTED_SHELL_VERBS or token in _NESTED_SHELL_VERBS:
-            if i + 1 < limit:
-                payloads.append(tokens[i + 1])
+            # ``--`` ends option parsing, so ``eval -- '<script>'`` runs the token
+            # AFTER it. Taking ``tokens[i + 1]`` blindly yielded the literal ``--``
+            # as the payload and the real script was never walked. Reuse the same
+            # precomputed run-skip the ``-c`` branch above uses, so this stays O(1)
+            # rather than becoming the third forward walk this function was made
+            # linear to remove.
+            j = past_dashes[i + 1]
+            if j < limit:
+                payloads.append(tokens[j])
+                # ``eval`` CONCATENATES all of its arguments with a space and
+                # evaluates the RESULT, so a command split across several words is
+                # one command line at run time while no single word looks like one.
+                # Taking only the first argument let
+                # ``eval '<program>' '<verb and args>'`` through: the hooks saw the
+                # bare program name and the publish never appeared. The joined form
+                # is added ALONGSIDE the first argument, so the single-argument
+                # reading is unchanged.
+                #
+                # ``eval`` only. ``source``/``.`` take a FILE as their first
+                # argument and pass the rest as positional parameters, so joining
+                # them would invent a command line bash never runs.
+                #
+                # Joined at most ONCE per walk: a join is O(N), so one per verb
+                # token would be quadratic. One is enough, because it runs to the
+                # END of the token list and therefore already spans every later
+                # verb's own suffix.
+                verb = base if base in _NESTED_SHELL_VERBS else token
+                if verb == "eval" and j + 1 < limit and not joined_eval and allow_join:
+                    joined_eval = True
+                    joined = " ".join(tokens[j:])
+                    payloads.append(joined)
+                    if joined_out is not None:
+                        joined_out.add(joined)
     # ``bash<<<'<payload>'`` glues the program, the operator and the payload into ONE
     # token, so the program never appears as a token of its own for the walk above to
     # recognise.  Split on the operator and check the left half.
@@ -4013,13 +4078,22 @@ def _decode_printf_escapes(text: str) -> str:
     return _NUMERIC_ESCAPE_RE.sub(_numeric_escape_char, text)
 
 
-def _self_token_frames(text_lower: str) -> "list[list[str]]":
-    """The command's own argv plus the argv of every nested shell payload.
+def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
+    """``(source, argv)`` for *text_lower* and every nested shell payload in it.
 
     ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``
-    -- the dangerous command is a single opaque token, so the direct scan cannot
-    see it.  Re-tokenizing the payload and checking that argv too closes the
+    -- the dangerous command is a single opaque token, so a direct scan cannot
+    see it.  Re-tokenizing the payload and checking that view too closes the
     class rather than one spelling of it.
+
+    Both the SOURCE text and its argv are returned because the two floors that
+    consume this need different views of the same frame: the self-protection
+    predicates match argv structurally, while the git-publish gate is a
+    verb-anchored scan over command text.  Walking once and handing out both is
+    what keeps the two floors from drifting -- the publish gate previously did
+    its own top-level-only text match, so every wrapper form
+    (``bash -c '<push>'``, ``eval '<push>'``) bypassed the ONLY enforcement
+    pushes have.
 
     Descends to ANY depth.  A numeric depth cap is itself a bypass -- whatever the
     number, one more wrapper defeats it -- so the walk is bounded structurally: a
@@ -4027,20 +4101,25 @@ def _self_token_frames(text_lower: str) -> "list[list[str]]":
     than the parent's source text, and a chain of strictly shorter strings is
     finite.
     """
-    frames: list[list[str]] = []
+    out: list[tuple[str, list[str]]] = []
     seen: set[str] = set()
-    pending: list[tuple[str, int]] = [(text_lower, len(text_lower) + 1)]
+    # The third field is whether this frame may perform the ``eval`` argument join.
+    # A frame PRODUCED by a join may not, which is what bounds the walk: see
+    # ``_nested_shell_payloads``.
+    pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
     while pending:
-        source, parent_len = pending.pop()
+        source, parent_len, allow_join = pending.pop()
         tokens = _self_tokens(source)
         if not tokens:
             continue
-        frames.append(tokens)
+        out.append((source, tokens))
         # Every substitution body is itself a command line -- command substitution
         # (``$( )``, backticks) and PROCESS substitution (``<( )``, ``>( )``) alike, since
         # bash runs the inner command in all of them.  Walking them here means the
         # ordinary argv checks see ``cat <(kirocrew token)`` as the inner invocation.
-        for payload in list(_nested_shell_payloads(tokens)) + _substitution_bodies(source):
+        joined_here: set[str] = set()
+        nested = _nested_shell_payloads(tokens, allow_join=allow_join, joined_out=joined_here)
+        for payload in list(nested) + _substitution_bodies(source):
             # Descend through EVERY literal payload, to any depth.  Termination is
             # structural, not a cap: a payload is carried inside one token of its
             # parent, so it is strictly shorter than the parent's source text.
@@ -4048,8 +4127,18 @@ def _self_token_frames(text_lower: str) -> "list[list[str]]":
             if len(payload) >= parent_len or payload in seen:
                 continue
             seen.add(payload)
-            pending.append((payload, len(source)))
-    return frames
+            pending.append((payload, len(source), payload not in joined_here))
+    return out
+
+
+def _self_token_frames(text_lower: str) -> "list[list[str]]":
+    """The command's own argv plus the argv of every nested shell payload."""
+    return [tokens for _source, tokens in _shell_payload_walk(text_lower)]
+
+
+def _shell_payload_sources(text_lower: str) -> "list[str]":
+    """*text_lower* plus the source text of every nested shell payload in it."""
+    return [source for source, _tokens in _shell_payload_walk(text_lower)]
 
 
 def _substitution_depth_delta(token: str) -> int:
@@ -5374,11 +5463,31 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
     if not tokens:
         return False
 
+    # Glued operators are not part of the word: ``(git`` is the git program and
+    # ``push)`` is the push subcommand. But these tokens come from
+    # ``normalize_shell_command``, which has ALREADY tokenized and dequoted, so
+    # punctuation surviving inside a token is part of the WORD -- and cutting
+    # there truncated a legal executable path (``/opt/my(dir)/git`` ->
+    # ``/opt/my``, whose basename is not ``git``), which NARROWED detection and
+    # let a protected push through. Replacing the token was therefore not the
+    # widen-only step its previous comment claimed.
+    #
+    # Both spellings are consulted instead, so the claim actually holds: a token
+    # counts when EITHER its raw form or its operator-cut form resolves to the
+    # word. That is a superset of both readings, and detection can only ever
+    # grow -- the allow/deny decision still rests with
+    # ``_is_push_to_protected_branch``.
+    def _resolves_to(token: str, word: str) -> bool:
+        for candidate in (token, _cut_at_operator(token)):
+            if candidate == word or os.path.basename(candidate) == word:
+                return True
+        return False
+
     i = 0
     while i < len(tokens):
         token = tokens[i]
         # Check if this token resolves to "git"
-        if os.path.basename(token) == "git" or token == "git":
+        if _resolves_to(token, "git"):
             # Skip global flags and their arguments to find the subcommand
             j = i + 1
             while j < len(tokens):
@@ -5388,7 +5497,7 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
                     j += 1  # skip simple flag
                 else:
                     break
-            if j < len(tokens) and tokens[j] == "push":
+            if j < len(tokens) and _resolves_to(tokens[j], "push"):
                 return True
         i += 1
     return False
@@ -5407,6 +5516,69 @@ def _is_git_push_via_normalizer(text_lower: str) -> bool:
 # to any of these (or a bare push, which may resolve to one) is blocked so the
 # change goes through the normal PR/code-review flow.  KiroCrew (OSS) uses
 # ``main``; ``mainline``/``master`` are covered for internal/mirror clones.
+#: Shell metacharacters that can be GLUED to a word without whitespace, so they
+#: appear inside a naive ``split()`` token while bash treats them as operators.
+#: ``(git push origin main)&`` hands the ref token ``main)&``, and stripping only
+#: the parens left ``main)&``, which never equalled ``main`` -- so a
+#: protected-branch push was allowed AND audited as a feature-branch push. A git
+#: ref cannot legally contain any of these, so stripping them cannot swallow a
+#: real branch name; a QUOTED paren is still preserved because both call sites
+#: strip before removing quotes.
+_SHELL_OPERATOR_CHARS = "()&;|<>"
+
+
+def _cut_at_operator(token: str) -> str:
+    """*token* up to the first GLUED shell operator, with leading ones removed.
+
+    ``strip`` is not enough: an operator can sit in the MIDDLE of a naive
+    ``split()`` token, so ``(git push origin mainline)>log`` hands the ref token
+    ``mainline)>log`` -- which ends in ``g``, so stripping removed nothing and the
+    ref never equalled ``mainline``. bash parses that as the ref ``mainline``
+    followed by the operator ``)`` and the redirection ``>log``, so cutting at the
+    first operator is what reproduces its reading.
+
+    Quote state is TRACKED rather than bailed on. Inside quotes these characters
+    are literal and a ref may legitimately contain them -- ``git push origin
+    '(main)'`` targets a branch actually named ``(main)``, which is not protected
+    and must stay pushable. But a quoted ref can still carry an operator OUTSIDE
+    its quotes: ``(git push origin 'main')`` hands the ref token ``'main')``,
+    whose trailing ``)`` is unquoted. Returning early on the mere PRESENCE of a
+    quote left that ``)`` in place, so the ref resolved to ``main)``, never
+    equalled ``main``, and the protected push was allowed AND audited as a
+    feature-branch push -- reopening the exact class this cut exists to close.
+    Cutting only at operators outside quotes satisfies both readings at once.
+
+    An UNBALANCED quote leaves the remainder read as quoted, so nothing is cut.
+    That is safe because such a token is not executable as written: bash has an
+    unterminated quote and never runs the push. If a later quote in the command
+    balances it, the shell folds the span into one word whose ref likewise no
+    longer equals a protected name.
+
+    Quotes are PRESERVED in the result; both call sites remove them afterwards
+    (see ``_dequote_token``), which is what keeps ``'(main)'`` a literal ref.
+    """
+    out: list[str] = []
+    in_single = False
+    in_double = False
+    for char in token:
+        if char == "'" and not in_double:
+            in_single = not in_single
+            out.append(char)
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            out.append(char)
+            continue
+        if char in _SHELL_OPERATOR_CHARS and not in_single and not in_double:
+            if not out:
+                # Leading operator, e.g. the ``(`` of ``(git push ...``: bash
+                # treats it as punctuation before the word, so drop and continue.
+                continue
+            break
+        out.append(char)
+    return "".join(out)
+
+
 _PROTECTED_BRANCHES = {"main", "mainline", "master"}
 
 # Push flags that push EVERY local branch (protected ones included) regardless
@@ -5490,7 +5662,18 @@ def _dequote_token(token: str) -> str:
     protected name — an evasion of this gate. Remove ALL single/double quotes
     and backslash escapes so the comparison sees the shell-resolved word.
     """
-    return token.replace("'", "").replace('"', "").replace("\\", "")
+    # ``(``/``)`` are shell OPERATORS, never part of the word: in
+    # ``(cd /tmp; git push origin main)`` git receives the ref ``main``, not
+    # ``main)``. Leaving them in made the protected-name compare unequal, so a
+    # protected-branch push inside a subshell was allowed AND audited as a
+    # feature-branch push.
+    #
+    # Stripped BEFORE the quotes come off, matching ``_git_push_args``: an
+    # operator sits OUTSIDE any quoting, so stripping first sees only those.
+    # Doing it last would also eat a paren the user QUOTED as part of the ref
+    # name -- ``git push origin '(main)'`` targets a branch literally named
+    # ``(main)``, which is not a protected branch, and must stay allowed.
+    return _cut_at_operator(token).replace("'", "").replace('"', "").replace("\\", "")
 
 
 def _git_push_args(segment: str) -> list[str] | None:
@@ -5503,18 +5686,100 @@ def _git_push_args(segment: str) -> list[str] | None:
     returns None. Skips leading flags, and a single non-flag value that a flag
     may take (e.g. ``-C <path>``) — but never swallows ``push`` itself.
     """
-    tokens = segment.split()
-    if "git" not in tokens:
+    # Strip glued shell operators for the same reason as ``_dequote_token``:
+    # ``(git`` IS the git program to bash, and ``main)&`` IS the ref ``main``.
+    raw_tokens = segment.split()
+    tokens = [_cut_at_operator(t) for t in raw_tokens]
+    # Anchoring compares against a DEQUOTED view, because a quoted ``"git"`` is
+    # still the git program to bash. Matching the raw token missed it and
+    # anchored on a LATER unquoted ``git push`` instead, returning only that
+    # push's arguments -- so appending a benign second push hid the first one's
+    # protected ref entirely and turned a fail-closed segment into an allow.
+    #
+    # The view is separate on purpose: the RETURNED tokens keep their quoting,
+    # because callers dequote them once more, and dequoting twice would read a
+    # literal ``'(main)'`` ref as the operators ``(``/``)`` around ``main`` and
+    # deny a branch that is legitimately pushable.
+    anchors = [_dequote_token(t) for t in tokens]
+
+    # Resolution mirrors the publish floor's ``_resolves_to``: a token IS git
+    # when either its raw or its operator-cut spelling equals the word or has it
+    # as a basename. An exact ``== "git"`` test skipped a path-qualified
+    # ``/usr/bin/git`` and anchored on a NESTED ``>(git push origin
+    # my-feature)`` instead, so the feature branch that process substitution
+    # pushes vouched for the protected push in front of it. Selecting the FIRST
+    # resolving anchor can only move the anchor earlier than the exact test did,
+    # which is the fail-closed direction: the push that must be judged is the
+    # leading one.
+    def _anchor_is_git(index: int) -> bool:
+        # The untouched spelling is consulted as well: both ``_cut_at_operator``
+        # and ``_dequote_token`` truncate at an operator that lives INSIDE a path
+        # component (``/opt/my(dir)/git`` -> ``/opt/my``), which is exactly the
+        # narrowing already fixed in the publish floor. Quotes are stripped
+        # without cutting so a quoted absolute path still resolves.
+        raw = raw_tokens[index]
+        for candidate in (anchors[index], raw, raw.strip("'\"")):
+            if candidate == "git" or os.path.basename(candidate) == "git":
+                return True
+        return False
+
+    start = next((k for k in range(len(anchors)) if _anchor_is_git(k)), None)
+    if start is None:
         return None
-    i = tokens.index("git") + 1
-    while i < len(tokens) and tokens[i].startswith("-"):
+    i = start + 1
+    while i < len(anchors) and anchors[i].startswith("-"):
         i += 1  # skip the flag
         # A flag may take one separate non-flag value (e.g. ``-C <path>``);
         # never consume the ``push`` subcommand as a flag value.
-        if i < len(tokens) and not tokens[i].startswith("-") and tokens[i] != "push":
+        if i < len(anchors) and not anchors[i].startswith("-") and anchors[i] != "push":
             i += 1
-    if i < len(tokens) and tokens[i] == "push":
-        return tokens[i + 1 :]
+    if i < len(anchors) and anchors[i] == "push":
+        # A redirection is SKIPPED, not treated as the end of the argument list.
+        #
+        # Its words are not refspecs -- stripping glued operators made
+        # ``>(git push origin my-feature)`` read as ordinary refspecs, so a bare
+        # ``git push``, which must fail closed, inherited a branch it never named
+        # -- but the words AFTER it are. Truncating there dropped them, and bash
+        # keeps them: ``git push origin feature 2>/dev/null main`` really runs
+        # ``git push origin feature main``, so a trailing protected ref left the
+        # gate while still reaching the server.
+        #
+        # Boundaries are read off the RAW spelling, because that is where the
+        # redirection character still exists. A file target is one word, glued
+        # (``2>/dev/null``) or spaced (``> out``); a PROCESS SUBSTITUTION target
+        # is a whole command line, so it is skipped to its matching ``)`` rather
+        # than by one word.
+        args: list[str] = []
+        raw_args = raw_tokens[i + 1 :]
+        cut_args = tokens[i + 1 :]
+        k = 0
+        while k < len(raw_args):
+            match = _REDIRECT_START_RE.match(raw_args[k])
+            if match is None:
+                args.append(cut_args[k])
+                k += 1
+                continue
+            target = raw_args[k][match.end() :]
+            if not target:
+                # Bare operator: its target is the NEXT word, which may itself be
+                # a redirect-prefixed process substitution (``> >(cmd)``).
+                k += 1
+                if k >= len(raw_args):
+                    break
+                following = _REDIRECT_START_RE.match(raw_args[k])
+                target = (
+                    raw_args[k][following.end() :] if following else raw_args[k]
+                ) or raw_args[k]
+            if not target.startswith("("):
+                k += 1  # ordinary file target -- one word
+                continue
+            depth = 0
+            while k < len(raw_args):
+                depth += raw_args[k].count("(") - raw_args[k].count(")")
+                k += 1
+                if depth <= 0:
+                    break
+        return args
     return None
 
 
@@ -5681,8 +5946,45 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
             continue
         args = _git_push_args(command)
         if args is None:
-            # Detected as a push but not cleanly parseable (obfuscated).
-            tags.add(_GIT_PUBLISH_UNGATED)
+            # Detected as a push but not cleanly parseable. That normally means
+            # OBFUSCATION (``git$(echo ' ')push``) -> ungated deny.
+            #
+            # One exception: a shell WRAPPER carrying the push inside a quoted
+            # argument. Admitting ``(`` as a leading separator makes the outer
+            # line match the detector, because the ``(`` sits right after the
+            # wrapper's quote -- but the outer line is not itself a push, so
+            # there is no ``git`` token here to parse and this is not evasion.
+            # Denying it blocked ordinary work: a FEATURE-branch push inside a
+            # subshell inside ``bash -c`` was refused along with a protected one.
+            #
+            # The caller evaluates every nested payload source on its own, so
+            # defer to that reading rather than guessing from a line that cannot
+            # carry the answer.
+            #
+            # Defer only when a payload is ITSELF a publish, because that is the
+            # source the caller will actually judge. Asking merely whether a
+            # payload EXISTS was a bypass: an ARGUMENT that happens to share a
+            # name with a shell verb (a remote or refspec called ``eval``) makes
+            # the walk report a payload, and quoting the program defeats the
+            # ``git`` anchor so the args come back None -- together those allowed
+            # a protected-branch publish that nothing downstream ever judged. A
+            # payload that is not a publish answers nothing, so it no longer buys
+            # a pass, and with no payload at all there is nothing to wait for.
+            #
+            # Guarded because this runs inside the PreToolUse gate, which must
+            # return a security DECISION and never raise. Failing CLOSED is the
+            # only sound answer here: an exception means we cannot tell whether a
+            # payload reading exists to defer to.
+            try:
+                defer_to_payload = any(
+                    _is_git_publish(payload)
+                    for payload in _nested_shell_payloads(normalize_shell_command(command))
+                )
+            except Exception:
+                tags.add(_GIT_PUBLISH_UNGATED)
+                continue
+            if not defer_to_payload:
+                tags.add(_GIT_PUBLISH_UNGATED)
             continue
         tags |= _push_segment_targets_protected(args)
     if not saw_push:
@@ -8203,9 +8505,20 @@ _SHELL_SUBST_RE = re.compile(r"\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`")
 # Stand-in for a masked command substitution. Deliberately shaped like a variable
 # reference: the substitution is unresolvable for the same reason an unassigned
 # variable is, so the existing unresolved-value machinery then handles it.
-_SUBST_PLACEHOLDER = "$__kc_subst"
+#: BRACE-DELIMITED on purpose. A bare ``$__kc_subst`` lets bash-identifier
+#: characters that FOLLOW the substitution be absorbed into the placeholder's own
+#: name, which silently deletes them from the path:
+#:
+#:     cat ~/.a$(echo '')ws/credentials
+#:
+#: masked to ``~/.a$__kc_subst1ws/credentials``, whose variable reference reads as
+#: the single name ``__kc_subst1ws`` -- so the ``ws`` vanished and the unresolved
+#: reading became the benign ``~/.a/credentials``. The brace form keeps the
+#: adjacent literal separate, which is exactly why the equivalent
+#: ``~/.a${UNSET}ws/credentials`` was already denied.
+_SUBST_PLACEHOLDER = "${__kc_subst}"
 #: The bare NAME of the placeholder, for refusing to record an assignment to it.
-_SUBST_PLACEHOLDER_NAME = _SUBST_PLACEHOLDER.lstrip("$")
+_SUBST_PLACEHOLDER_NAME = _SUBST_PLACEHOLDER.lstrip("$").strip("{}")
 #: Every spelling of that reserved name, including the numbered ones
 #: `_mask_substitutions_valued` produces. The refusal has to cover all of them:
 #: a command that assigns one would otherwise choose what the masked pass resolves
@@ -8319,6 +8632,22 @@ def _mask_substitutions_valued(text: str) -> tuple[str, dict[str, str]]:
         guess = _substitution_path_guess(match.group(0))
         if guess is not None:
             values[name] = guess
+        # BARE on purpose -- the opposite of the unvalued placeholder, because the
+        # two passes fail closed by different routes.
+        #
+        # This pass records a GUESSED value for the name, so a resolvable
+        # reference substitutes that guess. Left bare, a trailing literal is
+        # absorbed into the name (``$__kc_subst1`` + ``alice``), which is then
+        # absent from ``values`` and so reads as UNRESOLVED -- the absorption is
+        # exactly what makes this pass fail closed.
+        #
+        # Bracing it separated the name from the literal, the guess resolved, and
+        # the fail-closed reading disappeared: for
+        # ``cd $(printf /home/ </dev/null)alice`` the guess is ``</dev/null`` -- a
+        # redirection, not a path -- and a following credential read went from
+        # denied to allowed. ``_substitution_path_guess`` vouching for the last
+        # path-like word is the deeper defect; until it is genuinely additive,
+        # this pass must not resolve on it.
         return f"${name}"
 
     return _SHELL_SUBST_RE.sub(repl, text), values
@@ -11058,14 +11387,75 @@ _VOWELS: frozenset[str] = frozenset("aeiouAEIOU")
 # an AWS secret key (which uses the full base64 alphabet). Reject them outright.
 _HEX_ONLY_RE = re.compile(r"\A[0-9a-fA-F]+\Z")
 
+# The Shannon term ``(c / _SECRET_KEY_LEN) * log2(c / _SECRET_KEY_LEN)``, indexed by
+# the character count ``c``. Element 0 is a ``0.0`` placeholder that keeps ``c``
+# usable as a direct index; it is never read, because a count of zero cannot appear
+# in a :class:`~collections.Counter` built from an iterable, and ``log2(0)`` would
+# raise.
+#
+# Built for ONE length rather than parameterised over lengths, because
+# :func:`_looks_like_secret_key` reaches the entropy gate only through its
+# exactly-``_SECRET_KEY_LEN`` check, so that is the only length any production call
+# can ask about. A per-length table would need a size cap and an eviction policy to
+# bound what an arbitrary caller could materialise -- machinery guarding a caller
+# that does not exist. Any other length falls through to the inline formula, which
+# is what this table was derived from, so the general path is exactly as it was
+# before the table existed.
+#
+# The terms are computed with the same operations the inline expression used, which
+# is what makes this a pure precomputation rather than a re-derivation.
+_ENTROPY_TERMS_KEY_LEN: tuple[float, ...] = (0.0,) + tuple(
+    (c / _SECRET_KEY_LEN) * math.log2(c / _SECRET_KEY_LEN) for c in range(1, _SECRET_KEY_LEN + 1)
+)
+
 
 def _shannon_entropy(token: str) -> float:
-    """Return the Shannon entropy of *token* in bits per character."""
+    """Return the Shannon entropy of *token* in bits per character.
+
+    The result is compared against :data:`_SECRET_ENTROPY_MIN` by
+    :func:`_looks_like_secret_key`, so this is a gate on a redaction verdict and
+    NOT a statistic anybody displays. A one-ULP drift at the boundary flips that
+    verdict, and a flip in the permissive direction leaks a credential. The
+    optimisation below is therefore built to be BIT-IDENTICAL, not merely close,
+    and is pinned that way by ``TestShannonEntropyIsBitIdentical``.
+
+    Each addend is ``(c / length) * log2(c / length)``. The sole production caller
+    reaches this only through the exactly-``_SECRET_KEY_LEN`` check in
+    :func:`_looks_like_secret_key`, and reaches it over and over --
+    :func:`_contains_bare_secret` slides a 40-char window byte by byte across each
+    base64-alphabet run that clears its prefilters -- so at that one length every
+    addend is drawn from the fixed set :data:`_ENTROPY_TERMS_KEY_LEN` holds. That
+    retires TWO true divisions and one ``math.log2`` call per DISTINCT CHARACTER per
+    call -- ``c / length`` appears twice in the expression and CPython evaluates it
+    twice, and a 40-char base64 window holds ~30 distinct characters -- plus the
+    generator frames, in favour of a C-level ``map`` over a tuple index.
+
+    Any other length takes the inline formula, unchanged from before the table
+    existed. That keeps the fast path to the single length that is actually asked
+    for, so no size cap or cache-eviction policy is needed to bound what an
+    arbitrary caller could make this allocate.
+
+    Why this is bit-identical rather than approximately equal:
+
+    * Each addend is produced by the same three IEEE-754 operations on the same
+      operands as before -- divide, ``log2``, multiply -- so each addend carries
+      the same bit pattern. Precomputation changes WHEN a term is computed, never
+      HOW.
+    * ``Counter(token).values()`` still supplies the addends, in the same
+      first-occurrence order, and ``map`` is consumed in order, so ``sum``
+      accumulates identical addends in an identical sequence. The equality
+      therefore does not rest on float addition being associative, which it is
+      not. An algebraic rearrangement such as
+      ``log2(length) - sum(c * log2(c)) / length`` IS mathematically equal and is
+      measurably NOT bit-equal, which is why it is not used here.
+    """
     if not token:
         return 0.0
     counts = Counter(token)
     length = len(token)
-    return -sum((c / length) * math.log2(c / length) for c in counts.values())
+    if length != _SECRET_KEY_LEN:
+        return -sum((c / length) * math.log2(c / length) for c in counts.values())
+    return -sum(map(_ENTROPY_TERMS_KEY_LEN.__getitem__, counts.values()))
 
 
 def _has_all_three_char_classes(text: str) -> bool:
@@ -11073,12 +11463,12 @@ def _has_all_three_char_classes(text: str) -> bool:
 
     One pass with early exit, rather than three ``any()`` scans. Semantically
     identical, but this is the hottest predicate in the redaction path:
-    :func:`_contains_bare_secret` slides a 40-char window BYTE BY BYTE across
-    every base64-alphabet run, so a single 512-char run asks this question 473
-    times. Three ``any()`` scans build three generators per call and cost the
-    SUM of their three first-match offsets; one loop breaks on completion and
-    costs the MAX. Both forms short-circuit, so the saving is generator frames
-    plus that sum-vs-max difference.
+    :func:`_contains_bare_secret` slides a 40-char window BYTE BY BYTE across a
+    base64-alphabet run that clears its prefilters, so a 512-char run reaching that
+    loop asks this question 473 times. Three ``any()`` scans build three generators
+    per call and cost the SUM of their three first-match offsets; one loop breaks on
+    completion and costs the MAX. Both forms short-circuit, so the saving is
+    generator frames plus that sum-vs-max difference.
 
     Absence of a class is closed under substring, which is what lets
     :func:`_contains_bare_secret` ask this about a whole run and retire every
@@ -12019,13 +12409,18 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
         logger.debug("deny-view quote decode failed; raw view only", exc_info=True)
         start = segment.lower()
     seen_sources: set[str] = {start}
-    # (source, parent_len, is_root): a payload lives inside one token of its parent,
-    # so it is strictly shorter than the parent's source text — which is what bounds
-    # this walk without a numeric cap.  ``is_root`` marks the source the caller
-    # handed in, whose own re-join ``emit_self=False`` suppresses.
-    pending: list[tuple[str, int, bool]] = [(start, len(start) + 1, True)]
+    # (source, parent_len, is_root, allow_join): a payload lives inside one token of
+    # its parent, so it is strictly shorter than the parent's source text — which is
+    # what bounds this walk without a numeric cap.  ``is_root`` marks the source the
+    # caller handed in, whose own re-join ``emit_self=False`` suppresses.
+    # ``allow_join`` carries the same discipline ``_shell_payload_walk`` applies: a
+    # frame produced BY the ``eval`` argument join must not join again, or the two
+    # walks each build a chain of shrinking suffixes and this one — which re-lexes
+    # and re-splits every frame — dominates the cost (measured on ``"eval " * 640``:
+    # 12.0 s of a 14.2 s total here, against 0.04 s before the join existed).
+    pending: list[tuple[str, int, bool, bool]] = [(start, len(start) + 1, True, True)]
     while pending:
-        source, parent_len, is_root = pending.pop()
+        source, parent_len, is_root, allow_join = pending.pop()
         try:
             tokens = _shell_tokens(source)
             if not tokens:
@@ -12036,7 +12431,10 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             if not (is_root and not emit_self) and view not in seen_views:
                 seen_views.add(view)
                 views.append(view)
-            payloads = _nested_shell_payloads(tokens)
+            joined_here: set[str] = set()
+            payloads = _nested_shell_payloads(
+                tokens, allow_join=allow_join, joined_out=joined_here
+            )
             programs = _argv_programs(tokens) if payloads else []
             for payload in payloads:
                 if len(payload) >= parent_len:
@@ -12087,11 +12485,12 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
                 # of the payload's own separators.  Only the PIECES are recorded as
                 # walked — recording the payload itself would filter out the single
                 # piece that equals it.
+                child_may_join = payload not in joined_here
                 for piece in _split_segments(_fold_line_continuations(payload)):
                     piece = piece.strip()
                     if piece and piece not in seen_sources:
                         seen_sources.add(piece)
-                        pending.append((piece, len(source), False))
+                        pending.append((piece, len(source), False, child_may_join))
         except Exception:
             # This runs INSIDE the permission gate, where an exception is a crash
             # rather than a security decision — the hazard ``_normalize_search_path``
@@ -12346,9 +12745,35 @@ def is_denied(
     # applies), and we record the allow INTENT now — the ``push_allowed`` audit
     # is emitted only at a SUCCESS return path below, so the SEL trail reflects
     # the FINAL outcome (never an allow for a command ultimately denied).
+    #
+    # Evaluated over the whole string AND the source of every nested shell payload
+    # (``_shell_payload_sources``), because this floor is the SOLE enforcement for
+    # pushes -- every git-publish rule is stripped from the regex tier just above.
+    # A top-level-only text match therefore meant one wrapper was a complete
+    # bypass: ``bash -c 'git push origin main'`` and ``eval '<push>'`` reached no
+    # check at all, while the self-protection floor beside it was already immune
+    # because it re-tokenizes payloads. Same walk, same depth guarantee, so a
+    # wrapper cannot buy anything here either.
     push_allow_pending = False
-    if _is_git_publish(lower):
-        floor_tags = _git_publish_floor_tags(lower)
+    try:
+        payload_sources = _shell_payload_sources(lower)
+    except Exception:
+        # This runs inside the PreToolUse gate, which must return a DECISION and
+        # never raise. Degrade to the top-level reading -- precisely what this
+        # floor checked before it learned to descend -- so a broken walk costs
+        # the nested coverage and nothing else. Failing closed here instead
+        # would refuse ordinary commands on any walk hiccup.
+        payload_sources = [lower]
+    # Tags are collected across EVERY publish source, not just the top-level
+    # string, and gated once afterwards. Reading only ``lower`` made one wrapper a
+    # complete bypass of the sole enforcement pushes have; gating once at the end
+    # keeps the per-rule opt-out semantics exactly as written -- a rule an operator
+    # disabled stays disabled at whatever depth it fires.
+    publish_sources = [source for source in payload_sources if _is_git_publish(source)]
+    if publish_sources:
+        floor_tags: frozenset[str] = frozenset()
+        for publish_source in publish_sources:
+            floor_tags |= _git_publish_floor_tags(publish_source)
         # The ungated tag denies regardless of opt-out: it marks a command whose
         # target could not be verified at all, which is what keeps the gated
         # rules below non-bypassable. Report it under the brace-expansion rule,
@@ -13520,21 +13945,39 @@ def canonicalize_ip(s: str) -> str:
 
 # Regex to extract potential IP addresses from a command string.
 # Captures dotted-quad, hex/octal per-octet, bare integers, IPv6-mapped forms.
+# One component of a dotted literal, in EVERY base the C resolver accepts: hex
+# (``0x..``), C-style octal (a leading ``0``) or decimal. A digit run covers
+# octal and decimal alike, so leading zeros are admitted in EVERY position.
+# Spelling the bases per-position (the previous form) meant a MIXED encoding
+# such as ``169.254.0251.0376`` matched no branch whole, so the token reached
+# ``canonicalize_ip`` TRUNCATED and folded to a harmless address while the OS
+# resolver still routed the full token to IMDS.
+#
+# UNBOUNDED on purpose. A length cap here is not a safety measure, it is the
+# very defect being fixed: any cap truncates a padded spelling of the same
+# address into a DIFFERENT, harmless one, so the gate fails open on
+# ``0x0a9fea9fe`` and ``169.254.0x00000000a9.0376`` (glibc ``inet_aton``
+# accepts both and routes them to IMDS). These are plain character classes
+# with no nested quantifier, so an unbounded run is linear -- bounding buys no
+# ReDoS protection and costs the match. The canonicalizer stays the strict
+# half (it returns the input unchanged for anything that is not a real
+# address), so admitting more candidates can only ever ADD a denial.
+_IP_COMPONENT = r"(?:0[xX][0-9a-fA-F]+|\d+)"
 _IP_CANDIDATE_RE = re.compile(
     r"(?:"
     r"::ffff:[0-9a-fA-Fx.:]+|"  # IPv6-mapped
     r"[0-9a-fA-F]{1,4}:[0-9a-fA-F:]{2,}|"  # native IPv6 literal (colon run, e.g. fd00:ec2::254)
-    r"0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-Fx]+)*|"  # Hex (with possible dotted)
-    # inet_aton "short" forms the OS resolver / curl accept (a.b.c and a.b),
-    # where the trailing component packs the remaining low-order bytes. These
-    # must be captured WHOLE (not just the tail) so canonicalize_ip can resolve
-    # them and catch an IMDS SSRF hidden in a 2-/3-part encoding. Listed before
-    # the bare-integer / dotted-quad alternatives so the full token wins.
-    r"\d{1,3}\.\d{1,3}\.(?:0[xX][0-9a-fA-F]+|\d{4,10})|"  # 3-part: a.b.c
-    r"\d{1,3}\.(?:0[xX][0-9a-fA-F]+|\d{5,10})|"  # 2-part: a.b
-    r"\d{7,10}|"  # Large decimal (single integer IP)
-    r"(?:0[0-7]+\.){3}0[0-7]+|"  # Octal dotted
-    r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"  # Standard dotted-quad
+    # 2-, 3- and 4-part dotted forms, any base per component. The trailing
+    # component of a 2-/3-part inet_aton "short" form packs the remaining
+    # low-order bytes, so it must be captured WHOLE (not just the tail) for
+    # canonicalize_ip to resolve it; the greedy repeat takes every component
+    # present, so the full token always wins over a shorter prefix.
+    rf"{_IP_COMPONENT}(?:\.{_IP_COMPONENT}){{1,3}}|"
+    r"0[xX][0-9a-fA-F]+|"  # bare hex integer, unbounded (see _IP_COMPONENT)
+    # Bare single-integer form. NOT capped: a zero-padded/octal spelling of the
+    # same address is longer (``025177524776`` is IMDS), and a cap truncates it
+    # into a different, harmless address.
+    r"\d{7,}"
     r")"
 )
 

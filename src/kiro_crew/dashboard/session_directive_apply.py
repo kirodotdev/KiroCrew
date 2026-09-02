@@ -426,6 +426,7 @@ async def _autonudge_stop(slot: Any, session_key: str, args: dict[str, Any]) -> 
 
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.sandbox import voice_runtime_workspace_conflict
     from kiro_crew.security import is_sensitive_path
 
     clear = bool(args.get("clear"))
@@ -463,6 +464,15 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         raise _DirectiveDenied("Error: access denied (sensitive path).")
     if not is_dir:
         return f"Error: not a directory: {rp}"
+    # #7392 pre-flight, mirrored from the HTTP project endpoint: this directive
+    # is the OTHER user/agent-driven moment of choice that sets slot.project
+    # (set_project MCP routes here in-process, never through the endpoint), so
+    # without this check the overlap refusal would still land at spawn time,
+    # after the bad folder was committed. Same helper, same message; off the
+    # loop because it stats the runtime paths.
+    overlap = await asyncio.to_thread(voice_runtime_workspace_conflict, rp)
+    if overlap is not None:
+        return f"Error: {overlap}"
     slot.project = rp
     if rp != old_project:
         slot._pending_reset_history_key = effective_session_key(slot)

@@ -351,6 +351,14 @@ html:lang(ko) {
   --ctx-src-skillidx:color-mix(in srgb, #8f7bff 74%, var(--card));
   --ctx-src-tool:color-mix(in srgb, #b98cff 74%, var(--card));
   --ctx-src-mute:color-mix(in srgb, var(--text) 30%, var(--card));
+  /* Terminal ANSI hues with no semantic equivalent. The other fourteen entries
+     are derived from --bg / --text / --danger / --ok / --warn / --info, which
+     every theme already defines; only magenta and cyan need a value of their
+     own. A theme may override these two through the normal cascade. Plain hex on
+     purpose: the value is handed straight to xterm, which cannot parse a CSS
+     colour function. */
+  --term-magenta:#c678dd;
+  --term-cyan:#56b6c2;
 }
 /* Stronger shadows for some dark themes */
 [data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{

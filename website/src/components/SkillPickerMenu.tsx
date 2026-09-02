@@ -233,8 +233,14 @@ export default function SkillPickerMenu({
           ? 'components.skillPickerMenu.no_matching_skills_ctrl_enter_sends'
           : 'components.skillPickerMenu.no_matching_skills_enter_sends')
 
+  // `loading` implies isFetching, so the gate above swallows the send key here.
+  // Say what that means for the reader — it won't send yet — not how it works.
+  const loadingKey = sendOnEnter === 'ctrl-enter'
+    ? 'components.skillPickerMenu.loading_skills_ctrl_enter_held'
+    : 'components.skillPickerMenu.loading_skills_enter_held'
+
   const empty = loading
-    ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.skillPickerMenu.loading_skills')}</div>
+    ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(loadingKey)}</div>
     // Enter's meaning flips with the release gate (pick → send), so the copy
     // must announce it at the point of action rather than silently sending.
     // Named per the composer's send binding: in 'ctrl-enter' mode a bare

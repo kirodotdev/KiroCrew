@@ -14,6 +14,7 @@ New here? Start with [guides/install.md](guides/install.md), then
 |---|---|
 | [guides/](guides/README.md) | Install, run, and operate Kiro Crew. Task-oriented. |
 | [architecture/](architecture/README.md) | How the system fits together, one doc per cross-cutting concern. |
+| [feature-map/](feature-map/README.md) | Every dashboard feature, mapped to the nav path, page, and handler that own it. A lookup index. |
 | [build/](build/README.md) | Packaging, signing, and releasing. |
 | [ci/](ci/README.md) | Everything that gates a pull request. |
 | [app-kit/](app-kit/README.md) | Building apps that run inside Kiro Crew (third-party developer docs). |

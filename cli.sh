@@ -12,7 +12,7 @@
 # venv). No unsigned/checksum-only fallback exists. Unlike install.sh (which
 # builds from a git clone), this pulls the published wheel.
 #
-# Python: uses the system interpreter (>=3.10) when one exists; otherwise — or
+# Python: uses the system interpreter (>=3.12) when one exists; otherwise — or
 # always, with --managed-python — provisions a python-build-standalone CPython
 # via a SHA-256-pinned uv into a user-owned directory. No package manager, no
 # sudo, works on old-glibc distros (CentOS 7).
@@ -171,11 +171,12 @@ else err "need sha256sum or shasum to verify the download"; fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-# KiroCrew needs Python >=3.10 at runtime (contextlib.aclosing, etc.) even
-# though older published wheels' METADATA claimed >=3.9 -- pip would install
-# fine on 3.9 and then crash on first run. Prefer the newest interpreter the
-# project builds and tests on (3.12 is the CI target); 3.13 is untested and
-# only a last resort before bare python3, which itself only counts if >=3.10.
+# Kiro Crew needs Python >=3.12 at runtime -- that is what every release
+# artifact bundles and the only version CI tests, and older published wheels'
+# METADATA claimed a lower floor, so pip would install fine and then crash on
+# first run. Prefer the exact interpreter the project builds and tests on
+# (3.12); 3.13 is untested and only a last resort before bare python3, which
+# itself only counts if >=3.12.
 # A version-manager shim (mise, pyenv, asdf) can wedge instead of answering --
 # notably when HOME does not hold the config the shim expects -- and an
 # unbounded probe then hangs the whole install on its FIRST candidate,
@@ -194,13 +195,13 @@ _py_usable() {
   if [ -n "$_PY_PROBE_TIMEOUT" ]; then
     # Unquoted on purpose: expands to two words, or to nothing when unavailable.
     # shellcheck disable=SC2086
-    $_PY_PROBE_TIMEOUT "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null
+    $_PY_PROBE_TIMEOUT "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,12) else 1)' 2>/dev/null
     return $?
   fi
   # No `timeout` binary (stock macOS): emulate the same 5s bound with a POSIX
   # watchdog, so a wedged version-manager shim still fails over to the next
   # candidate instead of hanging the install on its first probe.
-  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)' >/dev/null 2>&1 &
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,12) else 1)' >/dev/null 2>&1 &
   _py_pid=$!
   (
     # On TERM from the fast-exit path below, kill our own in-flight `sleep`
@@ -230,7 +231,7 @@ _py_usable() {
 
 # Resolve the newest supported interpreter into PY (left empty if none found).
 _resolve_python() {
-  for _c in python3.12 python3.11 python3.10 python3.13 python3; do
+  for _c in python3.12 python3.13 python3; do
     if _py_usable "$_c"; then PY="$_c"; return 0; fi
   done
   return 1
@@ -324,15 +325,15 @@ fi
 if [ "$MANAGED_PYTHON" = "1" ]; then
   echo "managed-python: skipping system interpreters."
   _provision_python_via_uv \
-    || err "could not provision a managed Python via uv. Check the network connection, or install Python >=3.10 yourself and re-run without --managed-python."
+    || err "could not provision a managed Python via uv. Check the network connection, or install Python >=3.12 yourself and re-run without --managed-python."
 else
   _resolve_python || true
   if [ -z "$PY" ]; then
-    echo "No system Python >=3.10 found; provisioning one via uv ..."
+    echo "No system Python >=3.12 found; provisioning one via uv ..."
     _provision_python_via_uv || true
   fi
 fi
-[ -n "$PY" ] || err "Python >=3.10 is required and could not be found or provisioned. Install Python 3.10+ yourself (your distro's packages, or https://www.python.org/downloads/), then re-run."
+[ -n "$PY" ] || err "Python >=3.12 is required and could not be found or provisioned. Install Python 3.12+ yourself (your distro's packages, or https://www.python.org/downloads/), then re-run."
 
 # Materialize and self-check the embedded trust root. The key id is the SHA-256
 # fingerprint of SubjectPublicKeyInfo DER, so an accidental edit to either
