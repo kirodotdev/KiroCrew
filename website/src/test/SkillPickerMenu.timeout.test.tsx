@@ -46,7 +46,7 @@ describe('SkillPickerMenu — a timed-out skills fetch', () => {
       defaultOptions: { queries: { retry: retryPolicy, retryDelay: 0 } },
     })
     render(<Harness client={qc} query="grill" />)
-    await waitFor(() => expect(screen.queryByText('Loading skills…')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText(/Loading skills…/)).not.toBeInTheDocument())
     expect(mockApi.skills).toHaveBeenCalledTimes(1)
   })
 
@@ -62,8 +62,8 @@ describe('SkillPickerMenu — a timed-out skills fetch', () => {
     // settle, so an unbounded fetch held the spinner up like a hang.
     mockApi.skills.mockImplementation(timesOut())
     render(<Harness query="grill" />)
-    expect(await screen.findByText('Loading skills…')).toBeInTheDocument()
-    await waitFor(() => expect(screen.queryByText('Loading skills…')).not.toBeInTheDocument())
+    expect(await screen.findByText(/Loading skills…/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText(/Loading skills…/)).not.toBeInTheDocument())
   })
 
   it('names the failure and releases Enter, so the composer is not deadlocked', async () => {

@@ -944,6 +944,25 @@ def sync_or_reinstall(
         )
         return sync(repo, target_py, emit, timeout=timeout)
 
+    # The same requires-python gate the dependency-only substitute applies, and
+    # for the same reason -- except here pip WOULD enforce it, by refusing the
+    # build with "Requires-Python". Refusing first turns an opaque pip failure on
+    # an already-merged revision into a named reason plus the recovery hint
+    # `_refuse` prints.
+    floor_spec = requires_python(repo)
+    floor_version = interpreter_version(target_py) if floor_spec else None
+    if floor_spec and floor_version:
+        breach = python_floor_breach(floor_spec, floor_version)
+        if breach:
+            return _refuse(
+                emit,
+                f"the merged revision requires Python {floor_spec} but the target "
+                f"venv runs {floor_version[0]}.{floor_version[1]}.{floor_version[2]}, "
+                "so pip will refuse to install it.",
+                target_py,
+                repo,
+            )
+
     # `-e <repo>` rather than `-e .` with a cwd: the target is explicit in the argv
     # instead of implied by the working directory this happens to run in.
     argv = [str(target_py), "-m", "pip", "install", "-e", str(repo), "--quiet"]

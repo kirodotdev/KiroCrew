@@ -345,9 +345,12 @@ Resources:
       #   suppression) -- just cheap insurance so first boot degrades to swap
       #   instead of a kill under a transient spike. Unused headroom on every
       #   tier is harmless. Best-effort: never fails on swap.
-      # "System packages": install.sh needs Python >= 3.10; AL2023's default
-      #   python3 is 3.9, so python3.11 is installed explicitly (install.sh's
-      #   _find_python prefers python3.12/3.11/3.10 over the bare python3).
+      # "System packages": install.sh needs Python >= 3.12; AL2023's default
+      #   python3 is 3.9, so python3.12 is installed explicitly (install.sh's
+      #   _find_python prefers python3.12 over the bare python3). That install
+      #   is best-effort and kept OUT of the essential set: where the AL2023
+      #   repos carry no python3.12, install.sh provisions its own pinned
+      #   interpreter instead, so a missing package must not fail the boot.
       #   ripgrep is optional and must never fail the bootstrap.
       # "Node.js": the frontend build (vite 8 + rolldown) REQUIRES Node >= 22;
       #   AL2023's default AppStream nodejs is 18, on which the build dies
@@ -510,11 +513,15 @@ Resources:
           fi
 
           echo "--- installing system packages ---"
-          # python3.11 explicitly: install.sh needs >= 3.10, AL2023's default
-          # python3 is 3.9 (see "System packages" above).
-          dnf install -y git tmux python3.11 python3.11-pip python3 python3-pip \
+          dnf install -y git tmux python3 python3-pip \
             unzip tar gzip which \
-            || fail "essential package install failed (git/python3.11/unzip)"
+            || fail "essential package install failed (git/python3/unzip)"
+          # python3.12 explicitly: install.sh needs >= 3.12, AL2023's default
+          # python3 is 3.9 (see "System packages" above). Best-effort -- if the
+          # repos carry no python3.12, install.sh's _bootstrap_python provisions
+          # one via mise rather than failing the boot.
+          dnf install -y python3.12 python3.12-pip \
+            || echo "python3.12 unavailable from dnf; install.sh will provision one"
           dnf install -y ripgrep || echo "ripgrep unavailable (optional), continuing"
 
           echo "--- installing Node.js ---"

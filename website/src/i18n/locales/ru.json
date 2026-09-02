@@ -7216,7 +7216,8 @@
       "title": "Доверенные папки проектов"
     },
     "skillPickerMenu": {
-      "loading_skills": "Загрузка навыков…",
+      "loading_skills_ctrl_enter_held": "Загрузка навыков… — Ctrl+Enter пока не отправляет; используйте кнопку «Отправить»",
+      "loading_skills_enter_held": "Загрузка навыков… — Enter пока не отправляет; используйте кнопку «Отправить»",
       "no_matching_skills": "Нет подходящих навыков",
       "no_matching_skills_ctrl_enter_sends": "Нет подходящих навыков — Ctrl+Enter отправит сообщение",
       "no_matching_skills_enter_sends": "Нет подходящих навыков — Enter отправит сообщение",

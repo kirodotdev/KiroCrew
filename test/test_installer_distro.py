@@ -1,7 +1,7 @@
 """Managed-Python (uv) bootstrap coverage for the shell installers.
 
 The published one-liner ``curl … cli.sh | sh`` must bring up a runnable gateway
-even when the host has no usable Python 3.10+. cli.sh does this WITHOUT the
+even when the host has no usable Python 3.12+. cli.sh does this WITHOUT the
 system package manager: it fetches a SHA-256-pinned uv tarball (or uses an
 already-installed ``uv``) and provisions a python-build-standalone CPython into
 a user-owned directory. These tests run the real ``cli.sh`` under a fabricated
@@ -108,12 +108,11 @@ def _run_cli_with_fake_env(
         uv.chmod(0o755)
 
     # Every interpreter cli.sh probes for is an executable stub reporting an
-    # OLD (<3.10) version, so the isolated PATH guarantees the "no usable
+    # OLD (<3.12) version, so the isolated PATH guarantees the "no usable
     # python" branch. The stub answers cli.sh's version check (exit 1) and
     # `--version`. Extra names in ``interpreters`` (e.g. the fake interpreter a
     # uv stub claims to have installed) are created too.
-    default_names = ("python3.13", "python3.12", "python3.11",
-                     "python3.10", "python3", "python")
+    default_names = ("python3.13", "python3.12", "python3", "python")
     for name in {*default_names, *(interpreters or {})}:
         stub = tools / name
         stub.write_text(
@@ -122,7 +121,7 @@ def _run_cli_with_fake_env(
             else (
                 "#!/bin/sh\n"
                 'case "$*" in\n'
-                "  *version_info*) exit 1 ;;\n"  # cli.sh's >=3.10 gate -> too old
+                "  *version_info*) exit 1 ;;\n"  # cli.sh's >=3.12 gate -> too old
                 "  *--version*) echo 'Python 3.6.8' ;;\n"
                 "  *) exit 1 ;;\n"
                 "esac\n"
@@ -172,7 +171,7 @@ def test_cli_fails_over_from_a_wedged_interpreter_candidate(tmp_path: Path) -> N
     )
 
     combined = result.stdout + result.stderr
-    assert "Python >=3.10 is required" not in combined, combined
+    assert "Python >=3.12 is required" not in combined, combined
 
 
 def test_cli_bounds_wedged_interpreter_without_timeout_binary(tmp_path: Path) -> None:
@@ -200,7 +199,7 @@ def test_cli_bounds_wedged_interpreter_without_timeout_binary(tmp_path: Path) ->
     )
 
     combined = result.stdout + result.stderr
-    assert "Python >=3.10 is required" not in combined, combined
+    assert "Python >=3.12 is required" not in combined, combined
 
 
 def test_cli_watchdog_path_still_rejects_too_old_interpreters(tmp_path: Path) -> None:
@@ -231,7 +230,7 @@ def test_cli_falls_back_to_pinned_uv_when_no_python(tmp_path: Path) -> None:
     # The failure guidance must tell the user what to do next, without
     # hardcoding one distro's package manager as the answer.
     combined = result.stdout + result.stderr
-    assert "Python >=3.10 is required and could not be found or provisioned" in combined
+    assert "Python >=3.12 is required and could not be found or provisioned" in combined
 
 
 def test_cli_uses_installed_uv_before_downloading_one(tmp_path: Path) -> None:
@@ -251,7 +250,7 @@ def test_cli_uses_installed_uv_before_downloading_one(tmp_path: Path) -> None:
     result, markers = _run_cli_with_fake_env(
         tmp_path,
         with_uv=uv_stub,
-        # The provisioned interpreter must satisfy the same >=3.10 usability
+        # The provisioned interpreter must satisfy the same >=3.12 usability
         # probe as a system one; this stub models the PBS python uv installed.
         interpreters={
             "uv-python": (
@@ -277,7 +276,7 @@ def test_cli_uses_installed_uv_before_downloading_one(tmp_path: Path) -> None:
     # hermetic env cannot satisfy the trust-root/manifest steps), it must not
     # be the interpreter requirement.
     combined = result.stdout + result.stderr
-    assert "Python >=3.10 is required" not in combined, combined
+    assert "Python >=3.12 is required" not in combined, combined
     assert "could not provision a managed Python" not in combined, combined
 
 
@@ -515,7 +514,7 @@ def test_cli_system_python_flag_overrides_the_recorded_choice(tmp_path: Path) ->
 
     combined = result.stdout + result.stderr
     assert "Reusing the recorded managed-python choice" not in combined
-    assert "Python >=3.10 is required" not in combined, combined
+    assert "Python >=3.12 is required" not in combined, combined
     curl_marker = markers / "curl"
     if curl_marker.exists():
         assert "astral-sh/uv" not in curl_marker.read_text()

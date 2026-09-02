@@ -11,7 +11,7 @@
  * caught before release, while the core (or first) registration is preserved.
  * In production the same collision degrades to warn-and-ignore.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { lazy } from 'react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -23,6 +23,11 @@ import {
   hasBuiltinComponent,
 } from '../apps/builtinRegistry'
 import { registerBuiltinIcons, getBuiltinIcon } from '../apps/builtinIcons'
+import {
+  registerAutolinkRules,
+  getAutolinkRules,
+  resetAutolinkRulesForTest,
+} from '../utils/autolinkRules'
 import { registerThemeBranding, getThemeBranding } from '../themeBranding'
 import { registerTopBarWidgets, getTopBarWidgets } from '../apps/topBarWidgets'
 import {
@@ -423,6 +428,38 @@ describe('mobileConnectRenderers — phone-connection method renderer seam', () 
       registerMobileConnectRenderer({ kind: 'seam_test_dup', component: second }),
     ).toThrow(/already has a renderer/)
     expect(getMobileConnectRenderers().find(r => r.kind === 'seam_test_dup')?.component).toBe(first)
+  })
+})
+
+describe('autolinkRules — bare-token autolink seam', () => {
+  afterEach(() => resetAutolinkRulesForTest())
+
+  it('ships empty in the core, so stock rendering is unchanged', () => {
+    expect(getAutolinkRules()).toHaveLength(0)
+  })
+
+  it('a registered rule is retrievable and normalised to a global pattern', () => {
+    registerAutolinkRules([
+      { id: 'seam-token', pattern: /\bZZ-\d+\b/, href: 'https://example.invalid/{match}' },
+    ])
+    const rules = getAutolinkRules()
+    expect(rules).toHaveLength(1)
+    expect(rules[0].id).toBe('seam-token')
+    expect(rules[0].pattern.global).toBe(true)
+  })
+
+  it('a duplicate id is fail-loud in dev/test and preserves the first registration', () => {
+    const rule = {
+      id: 'seam-token-dup',
+      pattern: /\bZZ-\d+\b/g,
+      href: 'https://first.invalid/{match}',
+    }
+    registerAutolinkRules([rule])
+    expect(() =>
+      registerAutolinkRules([{ ...rule, href: 'https://second.invalid/{match}' }]),
+    ).toThrow(/already registered/)
+    expect(getAutolinkRules().filter(r => r.id === 'seam-token-dup')).toHaveLength(1)
+    expect(getAutolinkRules()[0].href).toBe('https://first.invalid/{match}')
   })
 })
 

@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.secrets import setup_secrets_routes
+from kiro_crew.dashboard.handlers.secrets import _sanitize_for_log, setup_secrets_routes
 from kiro_crew.secrets import SecretVault
 
 
@@ -514,3 +514,74 @@ class TestApiSecretsSetWhitespaceValue:
                 assert resp.status == 200
                 # The vault must hold the ORIGINAL padded value, byte-for-byte.
                 assert SecretVault(empty_vault_dir).get("K").reveal() == padded
+
+
+class TestSanitizeForLog:
+    """Unit tests for the module-private _sanitize_for_log helper.
+
+    The asserts for ESC (\\x1b), NUL (\\x00), and DEL (\\x7f) are designed to
+    FAIL on origin/main (which only escaped \\n/\\r/\\t) and PASS after the
+    full C0+DEL fix that adds the _CONTROL_CHAR_RE substitution.
+    """
+
+    def test_newline_carriage_return_tab_escaped_as_two_char(self) -> None:
+        r"""\\n, \\r, \\t map to their familiar two-character spellings."""
+        assert _sanitize_for_log("\n") == "\\n"
+        assert _sanitize_for_log("\r") == "\\r"
+        assert _sanitize_for_log("\t") == "\\t"
+        assert _sanitize_for_log("a\nb\rc\td") == "a\\nb\\rc\\td"
+
+    def test_ansi_escape_sequence_escaped(self) -> None:
+        r"""ESC (\\x1b) in an ANSI colour code becomes \\x1b; printable chars kept."""
+        # ESC [ 3 1 m X -- the ANSI red-colour prefix followed by 'X'
+        result = _sanitize_for_log("\x1b[31mX")
+        # ESC must be escaped; the printable '[31mX' must be preserved verbatim
+        assert result == "\\x1b[31mX", repr(result)
+
+    def test_nul_byte_escaped(self) -> None:
+        r"""NUL (\\x00) becomes \\x00."""
+        result = _sanitize_for_log("\x00")
+        assert result == "\\x00", repr(result)
+
+    def test_del_escaped(self) -> None:
+        r"""DEL (\\x7f) becomes \\x7f."""
+        result = _sanitize_for_log("\x7f")
+        assert result == "\\x7f", repr(result)
+
+    def test_backslash_escaped_first_no_double_transform(self) -> None:
+        r"""A literal backslash becomes \\\\ and is not re-processed."""
+        # A single backslash in the input must yield exactly two backslashes out.
+        result = _sanitize_for_log("\\")
+        assert result == "\\\\", repr(result)
+        # Backslash before n must become \\\\n (escaped backslash + literal n),
+        # not \\n (which would look like an escaped newline).
+        result2 = _sanitize_for_log("\\n")
+        assert result2 == "\\\\n", repr(result2)
+
+    def test_printable_ascii_unchanged(self) -> None:
+        """Ordinary printable text passes through unmodified."""
+        plain = "hello-WORLD_123 /path/to/key"
+        assert _sanitize_for_log(plain) == plain
+
+    def test_mixed_controls_and_printable(self) -> None:
+        r"""A string mixing printable, \\n, and an ANSI escape is fully sanitized."""
+        inp = "key\x1b[0m\nname"
+        result = _sanitize_for_log(inp)
+        assert result == "key\\x1b[0m\\nname", repr(result)
+
+    def test_c1_control_escaped(self) -> None:
+        r"""A C1 control (e.g. CSI \\x9b) is escaped, not passed to the terminal."""
+        result = _sanitize_for_log("\x9b")
+        assert result == "\\x9b", repr(result)
+
+    def test_unicode_line_separators_escaped(self) -> None:
+        r"""U+2028 / U+2029 (Unicode line/paragraph separators) are escaped.
+
+        A Unicode-aware log viewer treats these as line breaks, so they are a
+        log-injection vector just like \\n; they must not survive verbatim.
+        """
+        assert _sanitize_for_log("\u2028") == "\\u2028", repr(_sanitize_for_log("\u2028"))
+        assert _sanitize_for_log("\u2029") == "\\u2029", repr(_sanitize_for_log("\u2029"))
+        # A forged-line payload via U+2028 is neutralized.
+        result = _sanitize_for_log("ok\u2028WARNING forged")
+        assert "\u2028" not in result and "\\u2028" in result, repr(result)

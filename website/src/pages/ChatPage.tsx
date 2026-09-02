@@ -5584,6 +5584,38 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const projectBranch = projectGitError
     ? ''
     : projectGit?.branch || (projectGit?.detached ? projectGit.head || '' : '')
+  // Working-tree summary for the composer footer badge. Shares the Git panel's
+  // ['git-status', dir] key so panel and footer dedupe into one fetch — while
+  // the panel is open its 5s interval drives the shared cache and this observer
+  // just reads it. Gated on repo=true so a non-repo project never runs a git
+  // subprocess on an interval; the cheap HEAD-file probe above answers that.
+  const { data: projectGitStatus, isError: projectGitStatusError } = useQuery({
+    queryKey: ['git-status', _slotProject],
+    queryFn: () => api.projectGitStatus(_slotProject),
+    enabled: !!_slotProject && !projectGitError && !!projectGit?.repo,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  })
+  const gitBadge = !projectGitStatusError && projectGitStatus?.repo
+    ? {
+        dirty: projectGitStatus.files.length,
+        ahead: projectGitStatus.ahead ?? 0,
+        behind: projectGitStatus.behind ?? 0,
+      }
+    : undefined
+  // The badge asserts "clean" by ABSENCE, so a stale reading right after the
+  // agent finishes editing files is misleading at exactly the decision moment
+  // the badge exists for. Invalidate the shared key on the running→idle
+  // transition; the 60s interval covers everything else.
+  const prevGitRunningRef = useRef(false)
+  useEffect(() => {
+    if (prevGitRunningRef.current && !slotRunning && _slotProject) {
+      queryClient.invalidateQueries({ queryKey: ['git-status', _slotProject] })
+    }
+    prevGitRunningRef.current = slotRunning
+  }, [slotRunning, _slotProject, queryClient])
 
   // Auto-open the Git panel when the slot has a project dir that is a git repo.
   // OPT-IN (dashboard.auto_open_git_panel, default off) because the marker below
@@ -8500,6 +8532,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               project={currentSlot?.project || ''}
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}
+              projectGitDirty={gitBadge?.dirty ?? 0}
+              projectGitAhead={gitBadge?.ahead ?? 0}
+              projectGitBehind={gitBadge?.behind ?? 0}
               isMac={isMac}
               onDrop={dropTargetProps.onDrop}
               onDragOver={dropTargetProps.onDragOver}

@@ -4917,7 +4917,6 @@
       "title": "Trusted project folders"
     },
     "skillPickerMenu": {
-      "loading_skills": "Loading skills…",
       "no_matching_skills": "No matching skills",
       "trust_needed_badge": "Needs trust",
       "trust_needed_hint": "From this project. Choose it to review and trust the folder."

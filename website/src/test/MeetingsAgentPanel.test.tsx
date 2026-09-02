@@ -474,3 +474,44 @@ describe('editable minutes — wiring', () => {
   })
 
 })
+
+describe('AgentPanel — markdown output pane scrolling (#7664)', () => {
+  it('scrolls the notes on an element that does not carry the card-glow clip', () => {
+    const { container } = mount(MARKDOWN, {
+      output: '# Notes\n\n' + 'A line of meeting notes.\n\n'.repeat(120),
+    })
+    const scrollers = Array.from(container.querySelectorAll('.overflow-y-auto'))
+    expect(scrollers.length).toBeGreaterThan(0)
+    for (const el of scrollers) {
+      // index.css declares `.card-glow { overflow: hidden }` AFTER
+      // @tailwind utilities, and Card unconditionally prepends card-glow. On the
+      // SAME element the clip beats `overflow-y-auto` (equal specificity, later
+      // source order; twMerge cannot resolve a conflict with a hand-written
+      // class), so the pane clipped at its max height with no scroller — the
+      // app-wide bug in #7664. The scroll container must never be the card-glow
+      // element itself.
+      expect(el.classList.contains('card-glow')).toBe(false)
+    }
+    // The scroller caps its height (so overflow actually engages) and contains
+    // the rendered notes (so it is the output pane that scrolls, not some
+    // unrelated element).
+    const pane = scrollers.find(el => /max-h-\[/.test(el.className))
+    expect(pane).toBeTruthy()
+    expect(pane!.textContent).toContain('Notes')
+    expect(pane!.getAttribute('data-testid')).toBe('agent-output-pane')
+    // The pane must still live INSIDE a card-glow Card — the fix moves the
+    // scroller inward, it does not detach the pane from the Card. If this
+    // relationship breaks, the class-separation assertions above go vacuous.
+    const card = pane!.closest('.card-glow')
+    expect(card).not.toBeNull()
+    // And no ancestor BETWEEN the pane and the Card may re-impose a clip: a
+    // wrapper gaining overflow-hidden would clip the scroller exactly the way
+    // card-glow clipped the Card, and the per-element checks above would not
+    // see it. (The Card itself keeps card-glow's overflow:hidden by design —
+    // that is the glow treatment this fix deliberately leaves intact.)
+    for (let el = pane!.parentElement; el && el !== card; el = el.parentElement) {
+      expect(el.classList.contains('overflow-hidden')).toBe(false)
+      expect(el.classList.contains('card-glow')).toBe(false)
+    }
+  })
+})

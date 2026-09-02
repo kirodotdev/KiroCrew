@@ -48,7 +48,7 @@ Other style rules:
 | Rule | Requirement |
 |---|---|
 | Line length | 100 chars (black and isort are both configured to it) |
-| Python version | >= 3.10; `from __future__ import annotations` for type hints |
+| Python version | >= 3.12; `from __future__ import annotations` for type hints |
 | Imports | `import logging` plus `logger = logging.getLogger(__name__)` |
 | Async | `asyncio` throughout; `async def` for all I/O |
 | Module-global asyncio primitives | Never a bare `asyncio.Lock()`/`Event()`/`Queue()` at module scope — it binds to the import-time (or first-use) loop and raises `RuntimeError` from any other loop (Python 3.10+). Use `kiro_crew.loop_lock.LoopBoundLock` for locks, or create the primitive inside the coroutine. CI enforces this (`loop-bound-locks` gate). |

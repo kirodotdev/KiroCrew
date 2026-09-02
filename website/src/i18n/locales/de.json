@@ -7006,7 +7006,8 @@
       "title": "Vertraute Projektordner"
     },
     "skillPickerMenu": {
-      "loading_skills": "Skills werden geladen…",
+      "loading_skills_ctrl_enter_held": "Skills werden geladen… — Ctrl+Enter sendet noch nicht; nutze die Schaltfläche Senden",
+      "loading_skills_enter_held": "Skills werden geladen… — Enter sendet noch nicht; nutze die Schaltfläche Senden",
       "no_matching_skills": "Keine passenden Skills",
       "no_matching_skills_ctrl_enter_sends": "Keine passenden Skills — Ctrl+Enter sendet die Nachricht",
       "no_matching_skills_enter_sends": "Keine passenden Skills — Enter sendet die Nachricht",

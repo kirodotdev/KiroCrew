@@ -2192,6 +2192,8 @@
       "root": "(root)"
     },
     "skillPickerMenu": {
+      "loading_skills_ctrl_enter_held": "Loading skills… — Ctrl+Enter won’t send yet; use the Send button",
+      "loading_skills_enter_held": "Loading skills… — Enter won’t send yet; use the Send button",
       "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
       "no_matching_skills_enter_sends": "No matching skills — Enter sends the message",
       "no_skills_mapped_to_agent": "No skills mapped to {{agent}}",
@@ -2311,8 +2313,7 @@
       "back_to_dashboard": "Back to dashboard",
       "restarting": "Restarting..."
     },
-    "voiceDisabledModal": {
-    },
+    "voiceDisabledModal": {},
     "voiceStatusBar": {
       "default_microphone": "Default microphone"
     },

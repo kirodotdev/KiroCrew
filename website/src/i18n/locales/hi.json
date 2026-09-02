@@ -7006,7 +7006,8 @@
       "title": "भरोसेमंद प्रोजेक्ट फ़ोल्डर"
     },
     "skillPickerMenu": {
-      "loading_skills": "स्किल लोड हो रही हैं…",
+      "loading_skills_ctrl_enter_held": "स्किल लोड हो रही हैं… — Ctrl+Enter अभी संदेश नहीं भेजेगा; भेजें बटन का उपयोग करें",
+      "loading_skills_enter_held": "स्किल लोड हो रही हैं… — Enter अभी संदेश नहीं भेजेगा; भेजें बटन का उपयोग करें",
       "no_matching_skills": "कोई मेल खाती स्किल नहीं",
       "no_matching_skills_ctrl_enter_sends": "कोई मेल खाती स्किल नहीं — Ctrl+Enter संदेश भेज देगा",
       "no_matching_skills_enter_sends": "कोई मेल खाती स्किल नहीं — Enter संदेश भेज देगा",

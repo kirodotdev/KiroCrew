@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, FileDiff } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import RejectDropdown from './RejectDropdown'
 import { usePointerDrag } from '../hooks/usePointerDrag'
@@ -451,6 +451,11 @@ interface ChatInputProps {
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
   projectDetached?: boolean
+  /** Uncommitted file count in the project's working tree (0 = clean). */
+  projectGitDirty?: number
+  /** Commits ahead of / behind the branch's upstream, when it tracks one. */
+  projectGitAhead?: number
+  projectGitBehind?: number
   memoryMode?: string
   cleanMode?: boolean
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
@@ -783,6 +788,9 @@ function ChatInput({
   project,
   projectBranch,
   projectDetached,
+  projectGitDirty,
+  projectGitAhead,
+  projectGitBehind,
   memoryMode,
   cleanMode,
   sentMessages,
@@ -1138,6 +1146,18 @@ function ChatInput({
       ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [project, projectBranch, projectDetached])
+  // Tooltip for the working-tree badge. Reuses the Git panel's catalog entry
+  // so the badge adds no i18n keys; the arrow segments are glyph+number only
+  // (script-neutral, plain concatenation — a template literal here reads as an
+  // untranslated string to the i18n gate). Empty when the tree is clean and in
+  // sync, which is also what hides the badge.
+  const gitBadgeTitle = useMemo(() => {
+    const parts: string[] = []
+    if (projectGitDirty) parts.push(i18nT('components.gitPanel.uncommitted', { count: projectGitDirty }))
+    if (projectGitAhead) parts.push('\u2191' + String(projectGitAhead))
+    if (projectGitBehind) parts.push('\u2193' + String(projectGitBehind))
+    return parts.join(' \u00b7 ')
+  }, [projectGitDirty, projectGitAhead, projectGitBehind])
   // Focus the composer when the dictation panel is up (as before) OR while a
   // batch transcript is landing (voiceTranscribing), so Enter sends and typing
   // edits the result. Deliberately NOT keyed on bare voiceRecording: focusing
@@ -3768,6 +3788,41 @@ function ChatInput({
             </>
           )}
           </div>
+          )}
+          {!!projectBranch && !!gitBadgeTitle && (
+            /* Working-tree badge: dirty count (warn pill) plus ahead/behind
+               arrows, the Git panel's own vocabulary. Renders only when there
+               is signal, so a clean in-sync tree keeps the footer as it was.
+               A passive READOUT, not a button: the shelf row already carried
+               three actions on base (agent, picker, copy) and
+               max-two-buttons-per-row forbids growing a 3+ row, exactly like
+               the context readout on the right. The Git panel stays one click
+               away in the sidebar. NOT gated on shelfCompact: icon+digits
+               have no text label to shed, and hiding the badge at narrow
+               widths would remove the only tree-state signal
+               (narrow-viewport-required). */
+            <span
+              className="inline-flex items-center gap-1 h-7 shrink-0 text-[11px] font-mono px-1.5 text-muted"
+              role="status"
+              title={gitBadgeTitle}
+              aria-label={gitBadgeTitle}
+            >
+              {!!projectGitDirty && (
+                /* The icon makes the count read as "changed files" on a cold
+                   look — a bare warn number beside a branch name could be
+                   anything (UX review finding). */
+                <span className="inline-flex items-center gap-0.5 px-1 py-px rounded bg-warn/15 text-warn">
+                  <FileDiff size={11} className="shrink-0" />
+                  {projectGitDirty}
+                </span>
+              )}
+              {(!!projectGitAhead || !!projectGitBehind) && (
+                <span>
+                  {!!projectGitAhead && <>&#x2191;{projectGitAhead}</>}
+                  {!!projectGitBehind && <>{projectGitAhead ? ' ' : ''}&#x2193;{projectGitBehind}</>}
+                </span>
+              )}
+            </span>
           )}
           </div>
           <div className="flex items-center shrink-0">

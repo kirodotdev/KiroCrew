@@ -10,7 +10,7 @@ like Slack, Discord, and Telegram.
 
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
-| **Python** + pip | Backend | `>= 3.10` |
+| **Python** + pip | Backend | `>= 3.12` |
 | **Node.js** + npm | Building the dashboard from source | `>= 22` (24 LTS recommended) |
 | **`kiro-cli`** | Driving the LLM | Required, on your `PATH` |
 

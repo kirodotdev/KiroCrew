@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { render } from '@testing-library/react'
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import MarkdownRenderer, { remarkVerbatimUnknownTags } from '../components/MarkdownRenderer'
+import { registerAutolinkRules, resetAutolinkRulesForTest } from '../utils/autolinkRules'
 
 /** No live sink: a diverted tag is a React text node, so a protocol string in it
  * is displayed, never parsed. Asserts that rather than the string's absence. */
@@ -33,6 +34,27 @@ function expectInert(container: HTMLElement) {
  * The displayed bubble was therefore not a faithful copy of what the user
  * typed, which made copy-paste out of chat lossy.
  */
+describe('a token inside a verbatim placeholder is not autolinked', () => {
+  afterEach(() => resetAutolinkRulesForTest())
+
+  it('leaves a registered token inside an unknown tag literal', () => {
+    registerAutolinkRules([
+      { id: 'vb', pattern: /\bTICKET-\d+\b/g, href: 'https://example.invalid/{match}' },
+    ])
+    const { container } = render(<MarkdownRenderer content={'<custom>TICKET-1</custom>'} />)
+    expect(container.querySelectorAll('a')).toHaveLength(0)
+    expect(container.textContent).toContain('<custom>TICKET-1</custom>')
+  })
+
+  it('still autolinks the same token outside a placeholder', () => {
+    registerAutolinkRules([
+      { id: 'vb2', pattern: /\bTICKET-\d+\b/g, href: 'https://example.invalid/{match}' },
+    ])
+    const { container } = render(<MarkdownRenderer content={'see TICKET-1 please'} />)
+    expect(container.querySelectorAll('a')).toHaveLength(1)
+  })
+})
+
 describe('verbatim rendering of unknown tags used as prose placeholders', () => {
   it('preserves original case and injects no closing tag', () => {
     const { container } = render(<MarkdownRenderer content={'config has <Widget-id>.json so it loads default'} />)

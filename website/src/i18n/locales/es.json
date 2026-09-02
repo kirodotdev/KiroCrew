@@ -7111,7 +7111,8 @@
       "title": "Carpetas de proyecto de confianza"
     },
     "skillPickerMenu": {
-      "loading_skills": "Cargando skills…",
+      "loading_skills_ctrl_enter_held": "Cargando skills…: Ctrl+Enter aún no envía; usa el botón Enviar",
+      "loading_skills_enter_held": "Cargando skills…: Enter aún no envía; usa el botón Enviar",
       "no_matching_skills": "No hay skills coincidentes",
       "no_matching_skills_ctrl_enter_sends": "No hay skills coincidentes: Ctrl+Enter envía el mensaje",
       "no_matching_skills_enter_sends": "No hay skills coincidentes: Enter envía el mensaje",

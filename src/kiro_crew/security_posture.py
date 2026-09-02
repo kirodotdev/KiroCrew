@@ -1791,7 +1791,11 @@ def _write_protected_items() -> list[PostureItem]:
     return [
         PostureItem(
             label=f"~/{entry}",
-            detail="Reads allowed; the agent's file-edit tools cannot modify it",
+            detail=(
+                "Reads allowed; the agent's file-edit tool cannot modify it when the "
+                "call declares the ACP edit kind. Shell writes are not covered by "
+                "this control"
+            ),
         )
         for entry in security.write_protected_home_paths()
     ]
@@ -2020,7 +2024,9 @@ _CONTROLS: tuple[PostureControl, ...] = (
         unit="built-in rules",
         summary=(
             "Destructive and credential-exfiltrating shell operations blocked at the "
-            "PreToolUse gate. Configurable below; policy-pinned rules cannot be turned off."
+            "PreToolUse gate. Configurable below; policy-pinned rules cannot be turned "
+            "off. The count is the SHIPPED catalogue -- the set actually enforced is "
+            "this minus any rule disabled below, so it can be smaller."
         ),
         source="src/kiro_crew/security.py",
         items_fn=_denied_command_items,
@@ -2043,8 +2049,12 @@ _CONTROLS: tuple[PostureControl, ...] = (
         label="MCP input validation",
         unit="tool schemas",
         summary=(
-            "Every MCP tool call is checked against a typed schema: unicode "
-            "normalization, length limits, enum allow-lists, and unknown-field rejection."
+            "MCP tool calls with a registered schema are checked for unicode "
+            "normalization, length limits, enum allow-lists, and unknown-field "
+            "rejection. Coverage is per tool, not universal: computer-use refuses an "
+            "unregistered tool outright, while the core, cron and dashboard "
+            "dispatchers pass one through unvalidated unless its own handler "
+            "validates."
         ),
         source="src/kiro_crew/validation.py",
         items_fn=_tool_schema_items,

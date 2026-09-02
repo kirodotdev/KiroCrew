@@ -36,7 +36,7 @@ Builds use plain `pip` + `npm`/Vite + `pytest`, driven by the repo-root
 
 | Requirement | Needed for | Floor |
 |-------------|------------|-------|
-| **Python** | Backend | `>= 3.10` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
+| **Python** | Backend | `>= 3.12` (`requires-python` in `pyproject.toml`; `make build` provisions a 3.12 `.venv` by default) |
 | **Node.js + npm** | Building the dashboard | `20 \|\| >= 22` (`website/package.json` `engines`); `ensure-node.sh` targets 20, and drops to 16 on Amazon Linux 2 where newer official builds need a glibc that host does not have |
 | **`kiro-cli`** | Driving the LLM | Required; see below |
 
@@ -148,7 +148,7 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
-If the host has no Python 3.10+, the installer provisions one itself instead of
+If the host has no Python 3.12+, the installer provisions one itself instead of
 touching the system: it downloads a SHA-256-pinned [uv](https://docs.astral.sh/uv/)
 binary (or uses an already-installed `uv` on `PATH`), then installs a
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)

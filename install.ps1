@@ -62,18 +62,40 @@ $pm = Ensure-WingetOrChoco
 
 # --- 1. Python -------------------------------------------------------------
 Write-Step 1 4 "Python"
-if (Have "python") {
-    Write-Ok ("python found ({0})" -f (python --version 2>&1))
-} elseif ($pm -eq "winget") {
-    Write-Info "Installing Python via winget..."
-    winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
-    Write-Ok "Python installed (restart the shell if 'python' isn't found yet)"
-} elseif ($pm -eq "choco") {
-    choco install -y python
-    Write-Ok "Python installed"
+# Version-gated, not a bare existence check: the package declares
+# requires-python >= 3.12, so a 3.10/3.11 already on PATH would pass an
+# existence test here and then be refused by pip at step 4 -- after the AWS CLI
+# and the SSM plugin had already been installed. Resolve the interpreter ONCE
+# and use that same command for every later python call.
+function Resolve-Python312 {
+    foreach ($candidate in @("python3.12", "python", "python3")) {
+        if (-not (Have $candidate)) { continue }
+        & $candidate -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" *> $null
+        if ($LASTEXITCODE -eq 0) { return $candidate }
+    }
+    return $null
+}
+
+$PyExe = Resolve-Python312
+if ($PyExe) {
+    Write-Ok ("python found ({0})" -f (& $PyExe --version 2>&1))
 } else {
-    Write-Warn "No package manager found. Install Python 3.10+ from https://python.org and re-run."
-    exit 1
+    if ($pm -eq "winget") {
+        Write-Info "Installing Python 3.12 via winget..."
+        winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+    } elseif ($pm -eq "choco") {
+        Write-Info "Installing Python 3.12 via choco..."
+        choco install -y python312
+    } else {
+        Write-Warn "No package manager found. Install Python 3.12+ from https://python.org and re-run."
+        exit 1
+    }
+    $PyExe = Resolve-Python312
+    if (-not $PyExe) {
+        Write-Warn "Python 3.12+ still not on PATH - restart the shell and re-run this installer."
+        exit 1
+    }
+    Write-Ok ("Python installed ({0})" -f (& $PyExe --version 2>&1))
 }
 
 # --- 2. AWS CLI ------------------------------------------------------------
@@ -107,10 +129,10 @@ Write-Step 4 4 "KiroCrew client"
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $repoRoot
 try {
-    Write-Info "Installing the KiroCrew client (pip)..."
-    python -m pip install --upgrade pip *> $null
+    Write-Info "Installing the Kiro Crew client (pip)..."
+    & $PyExe -m pip install --upgrade pip *> $null
     $env:KIROCREW_SKIP_FRONTEND = "1"
-    python -m pip install -e . 2>&1 | Select-Object -Last 5
+    & $PyExe -m pip install -e . 2>&1 | Select-Object -Last 5
     # PowerShell has no `set -e`: a failed pip install would otherwise fall
     # through to a misleading "installed" + a launch that dies opaquely. Check
     # the exit code and fail closed, matching cloud-install.sh's behavior.
@@ -156,7 +178,7 @@ if ($NonInteractive) {
 Write-Host ""
 Write-Host "  Launching KiroCrew on AWS..." -ForegroundColor Cyan
 if ($Size -ne "") {
-    python -m kiro_crew cloud launch --size $Size
+    & $PyExe -m kiro_crew cloud launch --size $Size
 } else {
-    python -m kiro_crew cloud launch
+    & $PyExe -m kiro_crew cloud launch
 }
