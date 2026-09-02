@@ -802,6 +802,84 @@ def _nat_route_table(subnet_ids):
     }
 
 
+class TestDnsPreflight:
+    """A private hosted zone on the target VPC can hide a bootstrap download host.
+
+    The zone is authoritative for its whole subtree, so the lookup returns
+    NXDOMAIN instead of falling through to public DNS and the bootstrap fails
+    minutes later blaming the wrong layer. These cover the detection only.
+    """
+
+    def test_zone_shadows_subdomain_and_apex(self):
+        assert ec2._zone_shadows_host(
+            "q.us-east-1.amazonaws.com.", "desktop-release.q.us-east-1.amazonaws.com"
+        )
+        assert ec2._zone_shadows_host("nodejs.org", "nodejs.org")
+
+    def test_match_is_on_label_boundaries(self):
+        # A plain endswith would wrongly match these.
+        assert not ec2._zone_shadows_host(
+            "xq.us-east-1.amazonaws.com", "desktop-release.q.us-east-1.amazonaws.com"
+        )
+        assert not ec2._zone_shadows_host("notnodejs.org", "nodejs.org")
+        # A narrower zone does not shadow a shorter name.
+        assert not ec2._zone_shadows_host("a.b.nodejs.org", "nodejs.org")
+
+    def test_empty_zone_never_shadows(self):
+        assert not ec2._zone_shadows_host("", "nodejs.org")
+        assert not ec2._zone_shadows_host(".", "nodejs.org")
+
+    def test_detects_q_endpoint_zone(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "list-hosted-zones-by-vpc" in args:
+                return {
+                    "HostedZoneSummaries": [
+                        {"Name": "q.us-east-1.amazonaws.com.", "HostedZoneId": "Z1"},
+                        {"Name": "efs.us-east-1.amazonaws.com.", "HostedZoneId": "Z2"},
+                    ]
+                }
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        hits = ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1")
+        assert hits == [
+            ("desktop-release.q.us-east-1.amazonaws.com", "q.us-east-1.amazonaws.com")
+        ]
+
+    def test_clean_vpc_has_no_hits(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "list-hosted-zones-by-vpc" in args:
+                return {"HostedZoneSummaries": [{"Name": "internal.example.com."}]}
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        assert ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1") == []
+
+    def test_missing_permission_is_not_fatal(self, monkeypatch):
+        # An older launch policy has no route53:ListHostedZonesByVPC. Losing the
+        # early warning is acceptable; blocking an otherwise-fine launch is not.
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            raise aws.AWSError("AccessDenied", action="route53:ListHostedZonesByVPC")
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        assert ec2.shadowed_download_hosts("vpc-1", "dev", "us-east-1") == []
+        # ...and the assert wrapper stays quiet too.
+        ec2.assert_download_hosts_resolvable("vpc-1", "dev", "us-east-1")
+
+    def test_assert_raises_with_actionable_text(self, monkeypatch):
+        def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):
+            if "list-hosted-zones-by-vpc" in args:
+                return {"HostedZoneSummaries": [{"Name": "q.us-east-1.amazonaws.com."}]}
+            return {}
+
+        monkeypatch.setattr(aws, "checked_json", fake_json)
+        with pytest.raises(aws.AWSError) as err:
+            ec2.assert_download_hosts_resolvable("vpc-1", "dev", "us-east-1")
+        msg = str(err.value)
+        assert "q.us-east-1.amazonaws.com" in msg
+        assert "--subnet" in msg  # the user needs a way forward, not just a diagnosis
+
+
 class TestDiscoverNetwork:
     def test_prefers_default_vpc_and_public_subnet(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):

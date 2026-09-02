@@ -30,6 +30,9 @@ class TestPolicyDocument:
             "ec2:DescribeInstanceTypeOfferings",
             # discover_network verifies subnet egress via route tables
             "ec2:DescribeRouteTables",
+            # DNS preflight: detect a private hosted zone that shadows a host the
+            # bootstrap downloads from (NXDOMAIN with no public fallthrough).
+            "route53:ListHostedZonesByVPC",
             "s3:CreateBucket",
             "s3:PutObject",
             # `aws cloudformation deploy` always goes through a change set.
