@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { MessageSquareQuote, MessageCircleQuestionMark, Copy, Check } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { containedSelectionRange } from '../utils/selectionContainment'
 import { i18nT } from '../i18n/t'
 
 export interface SelectionAction {
@@ -288,56 +289,19 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
     const container = containerRef.current
     if (!container) { setVisible(false); return }
 
-    // Ensure selection is within our container.
+    // Ensure selection is within our container. Containment cannot be judged by
+    // `commonAncestorContainer` alone — see `containedSelectionRange`, which
+    // carries the boundary-normalization mechanism and both rejection tiers.
     //
-    // Containment cannot be judged by `commonAncestorContainer` alone: browsers
-    // normalize a multi-click (double/triple-click) selection of the container's
-    // FIRST or LAST block to a boundary point just outside it — e.g. a
-    // triple-click on the last paragraph ends "at the start of the next block",
-    // which for the last block is a position past the container, hoisting the
-    // common ancestor above `container` even though every selected character is
-    // inside it. That early return is what made the toolbar appear for
-    // click-drag but not for double/triple-click on the last line (#7847).
-    //
-    // So when the ancestor check fails, accept the selection iff the part of
-    // the range OUTSIDE the container holds no text. `measureRange` is what the
-    // toolbar is positioned from: for an accepted overhanging selection it is
-    // clamped to the container, because the overhang's boundary point pulls the
-    // next block's line box into the rect and would park the toolbar one line
-    // below the selection on the touch/keyboard paths.
+    // `measureRange` is what the toolbar is positioned from, and the helper
+    // returns it clamped to the container: an accepted overhang's boundary point
+    // would otherwise pull the next block's line box into the rect and park the
+    // toolbar one line below the selection on the touch/keyboard paths.
     const range = sel.getRangeAt(0)
-    let measureRange = range
-    if (!container.contains(range.commonAncestorContainer)) {
-      // Cheap reject first: one toolbar is mounted per message, each listening
-      // on `document`, so for the N−1 instances that do not own the selection
-      // this branch must stay O(1) — falling through to the overhang
-      // stringification would serialize text growing with transcript distance
-      // on EVERY mouseup/keyup (select-all being the worst case). A boundary-
-      // normalized multi-click always keeps at least one endpoint inside its
-      // own container, so this never rejects the case the fix exists for.
-      const startInside = container.contains(range.startContainer)
-      const endInside = container.contains(range.endContainer)
-      if (!startInside && !endInside) {
-        setVisible(false)
-        return
-      }
-      // Clamp a clone to each side of the container and require both overhangs
-      // to be whitespace-only. `setEnd` before the start (or `setStart` after
-      // the end) collapses the clone per the DOM spec, so the overhang on the
-      // contained side reads as empty. A selection genuinely spanning into a
-      // sibling message keeps being rejected — its overhang contains that
-      // sibling's text.
-      const before = range.cloneRange()
-      before.setEnd(container, 0)
-      const after = range.cloneRange()
-      after.setStart(container, container.childNodes.length)
-      if ((before.toString() + after.toString()).trim()) {
-        setVisible(false)
-        return
-      }
-      measureRange = range.cloneRange()
-      if (!startInside) measureRange.setStart(container, 0)
-      if (!endInside) measureRange.setEnd(container, container.childNodes.length)
+    const measureRange = containedSelectionRange(range, container)
+    if (!measureRange) {
+      setVisible(false)
+      return
     }
 
     const text = selectionTextFrom(sel)

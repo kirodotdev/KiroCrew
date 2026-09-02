@@ -68,3 +68,67 @@ describe('DocView selection-to-comment attribution', () => {  beforeEach(() => {
     })
   })
 })
+
+/**
+ * Triple-clicking the document's LAST paragraph must raise the Comment pill
+ * (#7891).
+ *
+ * A multi-click selection of the last block normalizes to a boundary point just
+ * PAST the scroll pane, so `range.commonAncestorContainer` is hoisted above it
+ * and the pane's ancestor-containment early-return cleared the selection: the
+ * review affordance never appeared for the last paragraph, while every other
+ * paragraph worked. happy-dom performs no native multi-click selection, so these
+ * tests build the normalized geometry from real ranges (rather than the faked
+ * range the attribution suite above uses) and assert both sides of the
+ * invariant.
+ */
+function selectNormalizedPastPane(passage: HTMLElement, opts: { endAfter?: HTMLElement } = {}) {
+  const pane = passage.closest('.overflow-y-auto') as HTMLElement
+  const parent = pane.parentElement!
+  const childIndex = (node: Node) => Array.from(parent.childNodes).indexOf(node as ChildNode)
+  const range = document.createRange()
+  // The near boundary stays inside the pane; only the far one is normalized out.
+  range.setStart(passage.firstChild!, 0)
+  range.setEnd(parent, childIndex(opts.endAfter ?? pane) + 1)
+
+  const sel = window.getSelection()!
+  sel.removeAllRanges()
+  sel.addRange(range)
+  act(() => { fireEvent.mouseUp(passage) })
+  return pane
+}
+
+describe('DocView multi-click selection of the last paragraph', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    if (!Range.prototype.getBoundingClientRect) {
+      Range.prototype.getBoundingClientRect = () => new DOMRect(10, 10, 100, 20)
+    }
+  })
+
+  it('raises the Comment pill when the selection end is normalized past the pane', async () => {
+    render(<DocView detail={detail} tab="requirements" addComment={vi.fn()} />)
+
+    selectNormalizedPastPane(screen.getByText(/requirements thing/i))
+
+    expect(await screen.findByRole('button', { name: /comment/i })).toBeInTheDocument()
+  })
+
+  it('keeps dismissing a selection that genuinely runs past the pane', () => {
+    render(<DocView detail={detail} tab="requirements" addComment={vi.fn()} />)
+
+    const passage = screen.getByText(/requirements thing/i)
+    // A text-bearing neighbour after the pane, so the overhang is not merely the
+    // pane's closing boundary. Accepting it would quote text from outside the
+    // document the comment is attributed to.
+    const pane = passage.closest('.overflow-y-auto') as HTMLElement
+    const neighbour = document.createElement('div')
+    neighbour.textContent = 'text from outside the document'
+    pane.parentElement!.appendChild(neighbour)
+
+    selectNormalizedPastPane(passage, { endAfter: neighbour })
+
+    expect(screen.queryByRole('button', { name: /comment/i })).not.toBeInTheDocument()
+    neighbour.remove()
+  })
+})
