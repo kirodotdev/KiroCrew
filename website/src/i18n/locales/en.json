@@ -3626,6 +3626,8 @@
         "drive_upload": "Upload",
         "drive_uploading": "Uploading…",
         "drive_bad_name": "That file name has characters the drive can't store. Rename it and try again.",
+        "drive_bad_name_named": "“{{name}}” can’t be uploaded — the name has characters the drive can’t store. Rename it and try again.",
+        "drive_upload_failed": "“{{name}}” could not be uploaded. Try again.",
         "section_files": "Files",
         "section_library": "Library",
         "section_backup": "Backup",
@@ -3712,7 +3714,10 @@
         "library_actions": "Library item actions",
         "library_remove_action": "Remove copy",
         "library_removing": "Removing…",
-        "library_remove_failed": "Remove failed — the cloud copy is unchanged. Try again."
+        "library_remove_failed": "Remove failed — the cloud copy is unchanged. Try again.",
+        "move_conflict": "The destination folder already has a file with this name.",
+        "move_shared": "This file has a live share link — moving it would break the link. Remove the share (or let it expire) and try again.",
+        "move_failed": "Could not move the file. Try again."
       },
       "page": {
         "totals_summary": "{{accounts}} accounts · {{keys}} keys · {{healthy}} healthy",

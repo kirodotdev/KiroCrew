@@ -4653,6 +4653,8 @@
         "drive_upload": "上传",
         "drive_uploading": "上传中…",
         "drive_bad_name": "该文件名包含硬盘无法存储的字符。请重命名后重试。",
+        "drive_bad_name_named": "“{{name}}”无法上传——文件名包含硬盘无法存储的字符。请重命名后重试。",
+        "drive_upload_failed": "“{{name}}”上传失败，请重试。",
         "section_files": "文件",
         "section_library": "产物库",
         "section_backup": "备份",
@@ -4738,7 +4740,10 @@
         "library_actions": "库项目操作",
         "library_remove_action": "移除副本",
         "library_removing": "正在移除…",
-        "library_remove_failed": "移除失败——云端副本未受影响。请重试。"
+        "library_remove_failed": "移除失败——云端副本未受影响。请重试。",
+        "move_conflict": "目标文件夹里已有同名文件。",
+        "move_shared": "该文件有仍在流通的分享链接——移动会使链接失效。请先移除分享（或等它过期）后重试。",
+        "move_failed": "文件移动失败，请重试。"
       },
       "page": {
         "totals_summary": "{{accounts}} 个账户 · {{keys}} 个密钥 · {{healthy}} 个正常",

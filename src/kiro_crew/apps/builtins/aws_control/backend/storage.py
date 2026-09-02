@@ -38,6 +38,7 @@ import os
 import re
 import secrets
 from typing import Any, Optional
+from urllib.parse import quote
 
 from kiro_crew.deploy import engine
 from kiro_crew.deploy.engine import AWSError, _checked, _harden_bucket
@@ -498,6 +499,53 @@ def get_file(
     )
 
 
+def copy_object(
+    profile: str,
+    region: str,
+    bucket: str,
+    section: str,
+    from_key: str,
+    to_key: str,
+    *,
+    account: str,
+    timeout: int = 600,
+) -> None:
+    """Server-side copy of ``section/from_key`` to ``section/to_key``.
+
+    ``s3api copy-object`` rather than ``s3 cp`` for the same reason as
+    :func:`put_file`: the high-level ``aws s3`` commands cannot carry the
+    bucket-owner pin. Both ends are pinned — ``--expected-bucket-owner`` for
+    the destination write and ``--expected-source-bucket-owner`` for the read
+    — so a renamed bucket in a stranger's account can serve neither side.
+
+    The copy source travels inside an HTTP header, so its key is URL-encoded
+    here (``/`` kept as the separator); the destination ``--key`` is a plain
+    request parameter and stays raw. Bytes never transit this host: S3 copies
+    within the bucket, which is what makes copy-then-delete a safe move — the
+    caller deletes the source only after this call returned without raising.
+    """
+    source = quote(f"{bucket}/{section_key(section, from_key)}", safe="/")
+    _checked(
+        [
+            "s3api",
+            "copy-object",
+            "--bucket",
+            bucket,
+            "--key",
+            section_key(section, to_key),
+            "--copy-source",
+            source,
+            "--expected-bucket-owner",
+            account,
+            "--expected-source-bucket-owner",
+            account,
+        ],
+        profile,
+        action="s3:PutObject",
+        timeout=timeout,
+    )
+
+
 def delete_key(
     profile: str, region: str, bucket: str, section: str, key: str, *, account: str
 ) -> None:
@@ -797,8 +845,15 @@ def object_exists(
     Presigning is LOCAL signing — S3 is never consulted — so without this
     check a typo'd key would mint a working-looking URL that 404s for the
     recipient AND leave a phantom entry in the share ledger.
+
+    Only a HEAD that S3 itself answered 404/NotFound reads as "absent".
+    Any other failure — a timeout, a throttle, a credential lapse, an
+    owner-pin 403 — RAISES instead of returning ``False``: the move handler
+    treats ``False`` on the destination as permission to copy over that key,
+    so folding a transient error into "absent" would turn one failed HEAD
+    into an overwrite plus a source delete.
     """
-    rc, _out, _err = engine.run_aws(
+    rc, _out, err = engine.run_aws(
         [
             "s3api",
             "head-object",
@@ -812,7 +867,17 @@ def object_exists(
         profile,
         timeout=30,
     )
-    return rc == 0
+    if rc == 0:
+        return True
+    # head-object reports a missing key as "(404)... Not Found" on stderr
+    # (HEAD carries no body, so there is no NoSuchKey code to parse).
+    text = err or ""
+    if "(404)" in text or "Not Found" in text:
+        return False
+    raise AWSError(
+        "head-object failed — cannot tell whether the key exists. "
+        f"({engine._trimmed_stderr(err)})"
+    )
 
 
 def presign(

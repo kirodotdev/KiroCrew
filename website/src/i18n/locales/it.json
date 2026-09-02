@@ -4809,6 +4809,8 @@
         "drive_upload": "Carica",
         "drive_uploading": "Caricamento…",
         "drive_bad_name": "Questo nome di file contiene caratteri che il drive non può archiviare. Rinominalo e riprova.",
+        "drive_bad_name_named": "Impossibile caricare “{{name}}”: il nome contiene caratteri che il drive non può archiviare. Rinominalo e riprova.",
+        "drive_upload_failed": "Impossibile caricare “{{name}}”. Riprova.",
         "section_files": "File",
         "section_library": "Libreria",
         "section_backup": "Backup",
@@ -4898,7 +4900,10 @@
         "library_actions": "Azioni sull'elemento della libreria",
         "library_remove_action": "Rimuovi la copia",
         "library_removing": "Rimozione in corso…",
-        "library_remove_failed": "Rimozione non riuscita: la copia cloud è invariata. Riprova."
+        "library_remove_failed": "Rimozione non riuscita: la copia cloud è invariata. Riprova.",
+        "move_conflict": "La cartella di destinazione contiene già un file con questo nome.",
+        "move_shared": "Questo file ha un link di condivisione attivo: spostarlo interromperebbe il link. Rimuovi la condivisione (o lascia che scada) e riprova.",
+        "move_failed": "Impossibile spostare il file. Riprova."
       },
       "page": {
         "totals_summary": "{{accounts}} account · {{keys}} chiavi · {{healthy}} integre",

@@ -4809,6 +4809,8 @@
         "drive_upload": "Enviar",
         "drive_uploading": "Enviando…",
         "drive_bad_name": "Esse nome de arquivo tem caracteres que o drive não consegue armazenar. Renomeie-o e tente novamente.",
+        "drive_bad_name_named": "Não é possível enviar “{{name}}” — o nome tem caracteres que o drive não consegue armazenar. Renomeie-o e tente novamente.",
+        "drive_upload_failed": "Não foi possível enviar “{{name}}”. Tente novamente.",
         "section_files": "Arquivos",
         "section_library": "Biblioteca",
         "section_backup": "Backup",
@@ -4898,7 +4900,10 @@
         "library_actions": "Ações do item da biblioteca",
         "library_remove_action": "Remover a cópia",
         "library_removing": "A remover…",
-        "library_remove_failed": "Falha ao remover — a cópia na nuvem está inalterada. Tente novamente."
+        "library_remove_failed": "Falha ao remover — a cópia na nuvem está inalterada. Tente novamente.",
+        "move_conflict": "A pasta de destino já tem um arquivo com este nome.",
+        "move_shared": "Este arquivo tem um link de compartilhamento ativo — movê-lo quebraria o link. Remova o compartilhamento (ou deixe-o expirar) e tente novamente.",
+        "move_failed": "Não foi possível mover o arquivo. Tente novamente."
       },
       "page": {
         "totals_summary": "{{accounts}} contas · {{keys}} chaves · {{healthy}} íntegras",

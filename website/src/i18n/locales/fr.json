@@ -4809,6 +4809,8 @@
         "drive_upload": "Téléverser",
         "drive_uploading": "Téléversement…",
         "drive_bad_name": "Ce nom de fichier contient des caractères que le disque ne peut pas stocker. Renommez-le et réessayez.",
+        "drive_bad_name_named": "Impossible d’importer « {{name}} » : le nom contient des caractères que le disque ne peut pas stocker. Renommez-le et réessayez.",
+        "drive_upload_failed": "« {{name}} » n’a pas pu être importé. Réessayez.",
         "section_files": "Fichiers",
         "section_library": "Bibliothèque",
         "section_backup": "Sauvegarde",
@@ -4898,7 +4900,10 @@
         "library_actions": "Actions sur l'élément de bibliothèque",
         "library_remove_action": "Retirer la copie",
         "library_removing": "Retrait…",
-        "library_remove_failed": "Échec du retrait — la copie cloud est intacte. Réessayez."
+        "library_remove_failed": "Échec du retrait — la copie cloud est intacte. Réessayez.",
+        "move_conflict": "Le dossier de destination contient déjà un fichier portant ce nom.",
+        "move_shared": "Ce fichier a un lien de partage actif : le déplacer casserait le lien. Supprimez le partage (ou laissez-le expirer), puis réessayez.",
+        "move_failed": "Impossible de déplacer le fichier. Réessayez."
       },
       "page": {
         "totals_summary": "{{accounts}} comptes · {{keys}} clés · {{healthy}} en bon état",

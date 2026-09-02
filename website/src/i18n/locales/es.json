@@ -4809,6 +4809,8 @@
         "drive_upload": "Subir",
         "drive_uploading": "Subiendo…",
         "drive_bad_name": "Ese nombre de archivo tiene caracteres que la unidad no puede almacenar. Cámbialo e inténtalo de nuevo.",
+        "drive_bad_name_named": "No se puede subir «{{name}}»: el nombre tiene caracteres que la unidad no puede almacenar. Cámbialo e inténtalo de nuevo.",
+        "drive_upload_failed": "No se pudo subir «{{name}}». Inténtalo de nuevo.",
         "section_files": "Archivos",
         "section_library": "Biblioteca",
         "section_backup": "Copia de seguridad",
@@ -4898,7 +4900,10 @@
         "library_actions": "Acciones del elemento de la biblioteca",
         "library_remove_action": "Quitar la copia",
         "library_removing": "Quitando…",
-        "library_remove_failed": "No se pudo quitar: la copia en la nube no ha cambiado. Inténtalo de nuevo."
+        "library_remove_failed": "No se pudo quitar: la copia en la nube no ha cambiado. Inténtalo de nuevo.",
+        "move_conflict": "La carpeta de destino ya tiene un archivo con este nombre.",
+        "move_shared": "Este archivo tiene un enlace de uso compartido activo: moverlo rompería el enlace. Elimina el enlace (o deja que caduque) e inténtalo de nuevo.",
+        "move_failed": "No se pudo mover el archivo. Inténtalo de nuevo."
       },
       "page": {
         "totals_summary": "{{accounts}} cuentas · {{keys}} claves · {{healthy}} en buen estado",

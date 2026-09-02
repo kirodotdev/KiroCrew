@@ -4731,6 +4731,8 @@
         "drive_upload": "Hochladen",
         "drive_uploading": "Wird hochgeladen…",
         "drive_bad_name": "Dieser Dateiname enthält Zeichen, die das Laufwerk nicht speichern kann. Benennen Sie die Datei um und versuchen Sie es erneut.",
+        "drive_bad_name_named": "„{{name}}“ kann nicht hochgeladen werden — der Name enthält Zeichen, die das Laufwerk nicht speichern kann. Benennen Sie die Datei um und versuchen Sie es erneut.",
+        "drive_upload_failed": "„{{name}}“ konnte nicht hochgeladen werden. Versuchen Sie es erneut.",
         "section_files": "Dateien",
         "section_library": "Bibliothek",
         "section_backup": "Sicherung",
@@ -4818,7 +4820,10 @@
         "library_actions": "Aktionen für Bibliothekselement",
         "library_remove_action": "Kopie entfernen",
         "library_removing": "Wird entfernt…",
-        "library_remove_failed": "Entfernen fehlgeschlagen — die Cloud-Kopie ist unverändert. Erneut versuchen."
+        "library_remove_failed": "Entfernen fehlgeschlagen — die Cloud-Kopie ist unverändert. Erneut versuchen.",
+        "move_conflict": "Der Zielordner enthält bereits eine Datei mit diesem Namen.",
+        "move_shared": "Diese Datei hat einen aktiven Freigabelink — beim Verschieben würde der Link ungültig. Entfernen Sie die Freigabe (oder lassen Sie sie ablaufen) und versuchen Sie es erneut.",
+        "move_failed": "Die Datei konnte nicht verschoben werden. Versuche es erneut."
       },
       "page": {
         "totals_summary": "{{accounts}} Konten · {{keys}} Schlüssel · {{healthy}} fehlerfrei",

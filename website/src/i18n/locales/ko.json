@@ -4653,6 +4653,8 @@
         "drive_upload": "업로드",
         "drive_uploading": "업로드 중…",
         "drive_bad_name": "이 파일 이름에는 드라이브가 저장할 수 없는 문자가 있습니다. 이름을 바꾼 뒤 다시 시도하세요.",
+        "drive_bad_name_named": "‘{{name}}’을(를) 업로드할 수 없습니다. 이름에 드라이브가 저장할 수 없는 문자가 있습니다. 이름을 바꾼 뒤 다시 시도하세요.",
+        "drive_upload_failed": "‘{{name}}’ 업로드에 실패했습니다. 다시 시도하세요.",
         "section_files": "파일",
         "section_library": "라이브러리",
         "section_backup": "백업",
@@ -4738,7 +4740,10 @@
         "library_actions": "라이브러리 항목 작업",
         "library_remove_action": "사본 제거",
         "library_removing": "제거 중…",
-        "library_remove_failed": "제거하지 못했습니다. 클라우드 사본은 그대로입니다. 다시 시도하세요."
+        "library_remove_failed": "제거하지 못했습니다. 클라우드 사본은 그대로입니다. 다시 시도하세요.",
+        "move_conflict": "대상 폴더에 같은 이름의 파일이 이미 있습니다.",
+        "move_shared": "이 파일에는 유효한 공유 링크가 있습니다. 이동하면 링크가 끓어집니다. 공유를 제거하거나 만료될 때까지 기다린 뒤 다시 시도하세요.",
+        "move_failed": "파일을 이동하지 못했습니다. 다시 시도하세요."
       },
       "page": {
         "totals_summary": "계정 {{accounts}}개 · 키 {{keys}}개 · 정상 {{healthy}}개",

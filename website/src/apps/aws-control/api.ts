@@ -132,6 +132,13 @@ export const awsControlApi = {
     return request<DriveDownload>(`/drive/${enc(account)}/download?${q.toString()}`)
   },
 
+  /** Move one stored object inside the files section (server-side copy, then
+   *  delete — the delete only happens after the copy succeeded; the backend
+   *  refuses to overwrite an existing destination with a 409). */
+  driveMove(account: string, section: DriveSection, fromKey: string, toKey: string): Promise<{ moved: true }> {
+    return postJson<{ moved: true }>(`/drive/${enc(account)}/move`, { section, fromKey, toKey })
+  },
+
   /** Upload a file's raw bytes to `key` within a section. */
   driveUpload(
     account: string,

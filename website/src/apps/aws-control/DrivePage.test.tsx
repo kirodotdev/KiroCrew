@@ -22,6 +22,7 @@ vi.mock('./api', async () => {
       driveBootstrapConfirm: vi.fn(),
       driveList: vi.fn(),
       driveDownload: vi.fn(),
+      driveMove: vi.fn(),
       driveUpload: vi.fn(),
       driveDelete: vi.fn(),
       driveFolderCreate: vi.fn(),
@@ -51,7 +52,7 @@ vi.mock('../../api/client', () => ({
   },
 }))
 
-import { awsControlApi } from './api'
+import { awsControlApi, AwsControlError } from './api'
 import { api } from '../../api/client'
 import {
   DriveSectionView, LibrarySection, BackupSection, AccessSection, StorageMeter,
@@ -2344,5 +2345,175 @@ describe('StorageMeter', () => {
     expect(screen.getByTestId('drive-meter-legend-drive')).toBeTruthy()
     expect(screen.getByTestId('drive-meter-legend-library')).toBeTruthy()
     expect(screen.getByTestId('drive-meter-legend-backup')).toBeTruthy()
+  })
+})
+
+describe('DrivePage sections: drag and drop', () => {
+  const listing = { files: [{ key: 'report.pdf', size: 10, modified: '2026-09-01T00:00:00Z' }], folders: ['docs'] }
+  const dt = (over: Partial<DataTransfer>): DataTransfer => ({
+    types: [], files: [] as unknown as FileList, getData: () => '', setData: () => {},
+    effectAllowed: 'none', ...over,
+  }) as unknown as DataTransfer
+
+  it('dragging a file onto a folder row moves it into that folder', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveMove).mockResolvedValue({ moved: true })
+    await renderDrive('drive')
+
+    // A real gesture: OUR row's dragStart records the key, the folder row's
+    // drop reads the recorded key (never the attacker-writable payload).
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    await waitFor(() =>
+      expect(awsControlApi.driveMove).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'report.pdf', 'docs/report.pdf'),
+    )
+  })
+
+  it('a drop carrying the move MIME without OUR dragStart is inert', async () => {
+    // Drag data is attacker-writable: any external page can start a drag
+    // whose DataTransfer carries our MIME and a REAL key. Landing it on a
+    // folder here must not run an authenticated move — only a key recorded
+    // by this component's own dragStart is trusted.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    await renderDrive('drive')
+
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    await waitFor(() => expect(screen.queryByTestId('drive-move-error')).toBeNull())
+    expect(awsControlApi.driveMove).not.toHaveBeenCalled()
+  })
+
+  it('a drop onto the folder the file already lives in is a no-op', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'docs/inner.pdf', size: 10, modified: '2026-09-01T00:00:00Z' }], folders: ['docs'],
+    })
+    await renderDrive('drive')
+
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'docs/inner.pdf',
+      }),
+    })
+    // Same directory: no mutation, no error strip.
+    await waitFor(() => expect(screen.queryByTestId('drive-move-error')).toBeNull())
+    expect(awsControlApi.driveMove).not.toHaveBeenCalled()
+  })
+
+  it('a 409 destination conflict surfaces its own sentence', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveMove).mockRejectedValue(new AwsControlError('destination_exists', 409))
+    await renderDrive('drive')
+
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    expect(await screen.findByTestId('drive-move-error')).toBeTruthy()
+  })
+
+  it('moving a file with a live share link surfaces the share-specific refusal', async () => {
+    // The backend refuses (409 share_active) because the presigned URL is
+    // bound to the source key. The generic "same name at destination" text
+    // would send the user hunting for a duplicate that does not exist.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveMove).mockRejectedValue(new AwsControlError('share_active', 409))
+    await renderDrive('drive')
+
+    fireEvent.dragStart(await screen.findByTestId('drive-file'), {
+      dataTransfer: dt({ setData: () => {} }),
+    })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({
+        types: ['application/x-drive-object-key'],
+        getData: () => 'report.pdf',
+      }),
+    })
+    const strip = await screen.findByTestId('drive-move-error')
+    expect(strip).toHaveTextContent(i18nT('apps.awsControl.console.move_shared'))
+    expect(strip).not.toHaveTextContent(i18nT('apps.awsControl.console.move_conflict'))
+  })
+
+  it('OS files dropped on a folder row upload into that folder', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockResolvedValue({ uploaded: true } as never)
+    await renderDrive('drive')
+
+    const file = new File(['x'], 'notes.md', { type: 'text/markdown' })
+    fireEvent.drop(await screen.findByTestId('drive-folder'), {
+      dataTransfer: dt({ types: ['Files'], files: [file] as unknown as FileList }),
+    })
+    await waitFor(() =>
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'docs/notes.md', file),
+    )
+  })
+
+  it('OS files dropped on the listing upload into the open folder', async () => {
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockResolvedValue({ uploaded: true } as never)
+    await renderDrive('drive')
+
+    const file = new File(['x'], 'root.md', { type: 'text/markdown' })
+    fireEvent.drop(screen.getByTestId('drive-section'), {
+      dataTransfer: dt({ types: ['Files'], files: [file] as unknown as FileList }),
+    })
+    await waitFor(() =>
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'root.md', file),
+    )
+  })
+
+  it('a bad name in a multi-file drop is called out BY NAME, the rest still upload', async () => {
+    // The picker's anonymous "that file name" is useless after a 10-file
+    // drop: the user cannot tell which file was refused while the others
+    // uploaded. The drop path interpolates the offending name.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockResolvedValue({ uploaded: true } as never)
+    await renderDrive('drive')
+
+    const bad = new File(['x'], 'bad\u0000name.md', { type: 'text/markdown' })
+    const good = new File(['x'], 'good.md', { type: 'text/markdown' })
+    fireEvent.drop(screen.getByTestId('drive-section'), {
+      dataTransfer: dt({ types: ['Files'], files: [bad, good] as unknown as FileList }),
+    })
+    const strip = await screen.findByTestId('drive-upload-error')
+    expect(strip.textContent).toContain('bad\u0000name.md')
+    await waitFor(() =>
+      expect(awsControlApi.driveUpload).toHaveBeenCalledWith(ACCOUNT_ID, 'drive', 'good.md', good),
+    )
+    expect(awsControlApi.driveUpload).toHaveBeenCalledTimes(1)
+  })
+
+  it('a drop-upload that fails on the wire surfaces an error naming the file', async () => {
+    // Without this, a failed put shows nothing: the dropped file silently
+    // never appears and the user believes it uploaded.
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    vi.mocked(awsControlApi.driveUpload).mockRejectedValue(new AwsControlError('aws_failed', 502))
+    await renderDrive('drive')
+
+    const file = new File(['x'], 'doomed.md', { type: 'text/markdown' })
+    fireEvent.drop(screen.getByTestId('drive-section'), {
+      dataTransfer: dt({ types: ['Files'], files: [file] as unknown as FileList }),
+    })
+    const strip = await screen.findByTestId('drive-upload-error')
+    expect(strip.textContent).toContain('doomed.md')
   })
 })

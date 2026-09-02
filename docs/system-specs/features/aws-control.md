@@ -91,6 +91,24 @@ On the versioned drive, `storage.delete_key` writes an S3 delete marker rather
 than purging historical versions. This is the current recovery property; the
 app does not implement a version purge.
 
+`routes._handle_drive_move` moves one object as a server-side copy followed by
+a delete, both through `storage` (`storage.copy_object`, then
+`storage.delete_key`), with the source deleted only after the copy succeeded —
+a failed copy leaves the drive unchanged. Two invariants are load-bearing: a
+move never silently overwrites (an existing destination refuses with 409,
+pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_existing_destination_answers_409_and_deletes_nothing`),
+and the section is restricted to `drive` (the `library` and `backup` sections
+are managed surfaces whose objects carry ledger state a move would orphan;
+pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_rejects_a_non_drive_section`).
+Both keys pass `storage.validate_key` before any AWS call, the source must
+exist (404), and the copy-before-delete order is pinned by
+`test_aws_control_routes.py::TestDriveMove.test_move_copies_before_deleting`
+and `TestDriveMove.test_move_copy_failure_issues_no_delete`. The copy carries
+both `--expected-bucket-owner` and `--expected-source-bucket-owner`
+(`test_aws_control_storage.py::TestCopyObject.test_copy_object_is_owner_pinned_on_both_ends`).
+
 ## Publishing and sharing
 
 `routes._publish_gate` applies the shared fail-closed publish-governance decision
@@ -230,12 +248,12 @@ resources itself.
 `routes.register_routes` exposes owner-gated reads for accounts, available
 profiles, reconnect guidance, drive status/list/download, costs, library,
 backup status, share metadata, and rendered IAM policy. Its mutations are
-profile registration; drive bootstrap, upload, delete, folder create/delete,
-and share; share-ledger removal; library push and library removal; backup run,
-nightly toggle, and staged restore.
+profile registration; drive bootstrap, upload, delete, move, folder
+create/delete, and share; share-ledger removal; library push and library
+removal; backup run, nightly toggle, and staged restore.
 
-Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, profile
-registration, library push, library removal, share creation, and backup
+Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, move,
+profile registration, library push, library removal, share creation, and backup
 mutations have no separate confirmation request; the dashboard separately
 confirms object deletion, folder deletion, and library removal. Library removal
 is offered on the Library folder's own listing — one overflow menu per listed
