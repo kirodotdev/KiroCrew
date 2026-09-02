@@ -2892,3 +2892,94 @@ class TestLedgerReadFailureFailsClosed:
         assert 'issues/$PR/comments" --paginate 2>/dev/null' not in block
         assert "|| true" not in block
         assert "|| printf" not in block
+
+
+class TestProtectedCheckNameHasOnePublisherPerPrType:
+    """A required review status must never be satisfied by the OTHER lane's skip.
+
+    Each AI review is published by two workflows: the same-repo lane and the
+    privileged Stage-2 ``fork-*-review.yml``. GitHub resolves a required status
+    check to the NEWEST check-run of that name, and the same-repo lane's fork
+    guard reports ``skipped`` -- which branch protection treats as satisfied.
+    While the two lanes share a name, any ``pull_request`` event firing after
+    the fork lane posted its verdict (a reopen; an ``edited`` title/body on
+    codex-review) makes ``skipped`` the newest run and clears the gate on a
+    review that never ran. The same-repo lane therefore renames itself on a
+    fork PR, leaving exactly one publisher of the protected name per PR type.
+    """
+
+    # (same-repo workflow, protected check name, Stage-2 fork workflow)
+    PAIRS = (
+        ("codex-review.yml", "GPT 5.6 Review", "fork-gpt-review.yml"),
+        ("claude-review.yml", "Opus 4.8 Review", "fork-opus-review.yml"),
+        ("design-review.yml", "Design Review", "fork-design-review.yml"),
+        (
+            "first-principles-review.yml",
+            "First Principles Review",
+            "fork-first-principles-review.yml",
+        ),
+        ("ux-review.yml", "UX Review", "fork-ux-review.yml"),
+    )
+
+    GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
+
+    def _job(self, workflow: str) -> dict:
+        spec = yaml.safe_load(_workflow(workflow))
+        jobs = spec["jobs"]
+        assert len(jobs) == 1, f"{workflow}: expected a single review job"
+        return next(iter(jobs.values()))
+
+    @pytest.mark.parametrize("workflow,check,fork", PAIRS)
+    def test_same_repo_lane_keeps_the_protected_name_only_for_same_repo_prs(
+        self, workflow: str, check: str, fork: str
+    ) -> None:
+        job = self._job(workflow)
+        name = job["name"]
+
+        # The name is CONDITIONAL on the head repo, not a constant.
+        assert self.GUARD in name, workflow
+        # Same-repo PRs keep the exact protected name -- branch protection keys
+        # its required status check on this string, so it must not drift.
+        assert f"&& '{check}'" in name, workflow
+        # Fork PRs get a name branch protection does not require, so this
+        # lane's `skipped` run can never stand in for the real fork verdict.
+        alias = f"{check} (same-repo lane, not applicable to forks)"
+        assert f"|| '{alias}'" in name, workflow
+        assert alias != check
+
+        # The fork guard itself stays -- the rename is defence on top of it,
+        # not a replacement for keeping fork code out of this privileged lane.
+        assert self.GUARD in job["if"], workflow
+
+    @pytest.mark.parametrize("workflow,check,fork", PAIRS)
+    def test_fork_lane_still_publishes_the_protected_name(
+        self, workflow: str, check: str, fork: str
+    ) -> None:
+        # With the same-repo lane renamed on forks, the Stage-2 lane is the ONLY
+        # publisher of the protected name on a fork PR. If it stopped posting
+        # under that exact name, every fork PR would block on a status that is
+        # never reported.
+        assert f'-f name="{check}"' in _workflow(fork), fork
+
+    @pytest.mark.parametrize("workflow,check,fork", PAIRS)
+    def test_readiness_still_reads_the_protected_name_on_forks(
+        self, workflow: str, check: str, fork: str
+    ) -> None:
+        # Readiness reads fork verdicts from the head SHA's check-runs by name.
+        # It collapses every run of the name and treats "no completed run" as
+        # pending, so the rename removes a `skipped` row without making a
+        # missing review look green.
+        readiness = _workflow("pr-readiness.yml")
+        assert f'"checkrun:{check}|{check}"' in readiness, check
+        assert '[ "$total" -eq 0 ] || [ "$incomplete" -gt 0 ]' in readiness
+        assert 'pending+=("$label (not started)")' in readiness
+
+    def test_no_lane_claims_a_skipped_run_satisfies_the_gate(self) -> None:
+        # This was true before the Stage-2 fork lanes existed and is exactly the
+        # hazard now closed; leaving it recorded as fact invites a revert.
+        for workflow, _check, _fork in self.PAIRS:
+            flat = _flat(_workflow(workflow))
+            assert (
+                'check as "skipped", which branch protection treats as satisfied'
+                not in flat
+            ), workflow

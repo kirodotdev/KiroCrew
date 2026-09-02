@@ -26,7 +26,21 @@ concurrency:
 
 jobs:
   design-review:
-    name: Design Review
+    # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
+    # publish the protected check name "Design Review": this same-repo lane and
+    # the privileged Stage-2 fork-design-review.yml. GitHub resolves a required
+    # status check to the NEWEST check-run carrying that name, and the fork
+    # guard below reports
+    # `skipped`, which branch protection treats as satisfied. Any `pull_request`
+    # event that fires AFTER the fork lane published its verdict (a reopen, and
+    # for codex-review an `edited` title/body) would therefore make `skipped`
+    # the newest run under the protected name and satisfy the gate on a review
+    # that never ran. Naming this job differently on a fork PR leaves exactly
+    # ONE publisher of the protected name per PR type: this lane for same-repo
+    # PRs, the Stage-2 lane for forks. `pr-readiness.yml` is unaffected -- it
+    # already collapses every check-run of the name for forks and treats a name
+    # with no completed run as pending, never as passed.
+    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Design Review' || 'Design Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Same-repo PRs only (not forks): fork PRs have no OIDC/secrets access, and

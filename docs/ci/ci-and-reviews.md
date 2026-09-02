@@ -466,6 +466,16 @@ check on that pairing mis-fires whenever the model quotes prior text.
   **skips** on a fork rather than failing an unsatisfiable credential step. GitHub
   treats a skipped required check as satisfied, which is why fork coverage needs
   the separate `fork-*` pipeline below.
+- **The job name is conditional on the head repository**, so a fork PR gets
+  `<check> (same-repo lane, not applicable to forks)` instead of the protected
+  name. Same-repo PRs keep the exact protected name. Without this, both lanes
+  publish one name and GitHub resolves a required status check to the **newest**
+  check-run of that name: a `pull_request` event firing after the fork lane
+  posted its verdict (a reopen, or an `edited` title/body on `codex-review.yml`)
+  would make the same-repo lane's `skipped` run the newest one and satisfy the
+  gate on a review that never ran. `pr-readiness.yml` was never fooled by this
+  -- it collapses every check-run of the name and treats "no completed run" as
+  pending -- so the rename closes the branch-protection half of the gate.
 - `persist-credentials: false` on checkout, so `actions/checkout` never writes the
   token into `.git/config` where a reviewer reading untrusted PR content could find
   it.
@@ -696,7 +706,10 @@ privileged from the default branch (stage 2), gated on
 named exactly like its same-repo twin (`Opus 4.8 Review`, `GPT 5.6 Review`,
 `Design Review`, `UX Review`), so branch protection is satisfied on either path, and
 it opens that check-run as early as possible keyed to `head_sha` so a job that dies
-still leaves a fail-closed result.
+still leaves a fail-closed result. On a fork PR this lane is the **only** publisher
+of that name -- the same-repo twin renames itself (see the reviewer-job security
+posture above) -- so the protected status can only be reported by a review that
+actually ran.
 
 Nothing the fork controls can influence these reviews:
 

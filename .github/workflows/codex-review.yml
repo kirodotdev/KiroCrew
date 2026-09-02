@@ -41,7 +41,21 @@ concurrency:
 
 jobs:
   codex-review:
-    name: GPT 5.6 Review
+    # BRANCH-PROTECTION NAME COLLISION -- keep this conditional. Two workflows
+    # publish the protected check name "GPT 5.6 Review": this same-repo lane
+    # and the privileged Stage-2 fork-gpt-review.yml. GitHub resolves a
+    # required status check to the NEWEST check-run carrying that name, and the
+    # fork guard below reports
+    # `skipped`, which branch protection treats as satisfied. Any `pull_request`
+    # event that fires AFTER the fork lane published its verdict (a reopen, and
+    # for codex-review an `edited` title/body) would therefore make `skipped`
+    # the newest run under the protected name and satisfy the gate on a review
+    # that never ran. Naming this job differently on a fork PR leaves exactly
+    # ONE publisher of the protected name per PR type: this lane for same-repo
+    # PRs, the Stage-2 lane for forks. `pr-readiness.yml` is unaffected -- it
+    # already collapses every check-run of the name for forks and treats a name
+    # with no completed run as pending, never as passed.
+    name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'GPT 5.6 Review' || 'GPT 5.6 Review (same-repo lane, not applicable to forks)' }}"
     runs-on: ubuntu-latest
     # Runaway/hang backstop only, NOT a per-review budget: each pass carries its
     # own PASS_WALL and self-terminates first. This wall MUST therefore stay
