@@ -2181,6 +2181,18 @@ class KiroCrewConfig:
             # A publish failure must never make the config unloadable; the gate
             # keeps using the threshold it already had.
             logger.warning("Publishing autocompact threshold failed: %s", e)
+        # Same placement and same reason once more: cron resolves this on the
+        # event loop on every timer tick (see publish_config_timezone), and
+        # publishing on EVERY return path is what lets a settings change reach a
+        # gateway that is already running. Shares the autocompact ticket
+        # deliberately -- both describe the same read of the same files, so they
+        # must order identically against a concurrent load.
+        try:
+            publish_config_timezone(cfg, _autocompact_ticket)
+        except Exception as e:  # pragma: no cover - defensive
+            # A publish failure must never make the config unloadable; cron
+            # keeps using the zone it already had.
+            logger.warning("Publishing config timezone failed: %s", e)
         return cfg
 
     @classmethod
@@ -4587,6 +4599,82 @@ def publish_autocompact_pct(config: "KiroCrewConfig", ticket: int | None = None)
 def published_autocompact_pct() -> float:
     """The published compaction threshold."""
     return _CONFIG_AUTOCOMPACT_PCT
+
+
+# Snapshot of the global default timezone, refreshed by every successful
+# :meth:`KiroCrewConfig.load`, for the same reason as the three snapshots above:
+# its read path runs on the event loop. ``kiro_crew.cron._job_tz`` is reached
+# from ``CronService._on_timer``'s due-scan for EVERY cron-expression job that
+# does not carry its own zone -- so a config stat/read/validate here was a
+# per-tick gateway stall (the ``no-blocking-call-on-event-loop`` rule), paid
+# again by ``get_local_tz`` on the prompt-assembly and dashboard-handler paths.
+#
+# Ordered by ticket, like the compaction threshold and unlike the alias table:
+# this value decides WHEN a job fires, so an out-of-order publish leaving an
+# obsolete zone in force would misfire every schedule depending on it until
+# something loaded again. The alias table tolerates that race because its
+# consequence is a display marker; a schedule does not.
+#
+# Defaults to "" -- the dataclass default for :attr:`KiroCrewConfig.timezone` --
+# so a read taken BEFORE the first load resolves exactly as a defaults-only load
+# would (empty falls through to UTC in both consumers) rather than inventing a
+# zone during the boot window.
+_CONFIG_TIMEZONE: str = ""
+_CONFIG_TIMEZONE_TICKET: int = 0
+
+#: Serializes the compare-and-set in :func:`publish_config_timezone`, for the
+#: reasons given on :data:`_CONFIG_AUTOCOMPACT_LOCK`: each publish is a read
+#: followed by a write, so without it two concurrent loads can both pass the
+#: comparison and let whichever assigns last win, rolling the published ticket
+#: backwards. A SEPARATE lock rather than reusing the autocompact one, which
+#: :func:`next_config_load_ticket` already holds -- drawing a ticket while
+#: holding this one is therefore safe, and the reverse nesting must not appear.
+#: The READ path (:func:`published_config_timezone`) never takes it, which is
+#: what keeps the event loop lock-free.
+_CONFIG_TIMEZONE_LOCK = threading.Lock()
+
+
+def publish_config_timezone(config: "KiroCrewConfig", ticket: int | None = None) -> None:
+    """Publish *config*'s default timezone for the filesystem-free read path.
+
+    Pure in-memory rebind -- safe from anywhere, including the event loop, and a
+    reader sees either the whole previous value or the whole new one. Called from
+    :meth:`KiroCrewConfig.load` so every successful load refreshes it, including
+    the degraded-defaults path, which must OVERWRITE a previous snapshot rather
+    than leave a zone the files no longer name.
+
+    *ticket* orders this publish against concurrent ones and carries the same
+    contract as :func:`publish_autocompact_pct`: it must come from
+    :func:`next_config_load_ticket`, drawn BEFORE the read that produced
+    *config*, and a ticket lower than the one already published is dropped.
+    Omitting it draws a fresh ticket, which therefore always wins -- correct for
+    a caller publishing a config it just built (tests), wrong for one replaying
+    an earlier read.
+    """
+    global _CONFIG_TIMEZONE, _CONFIG_TIMEZONE_TICKET
+    # Drawn OUTSIDE the lock below purely for symmetry with
+    # publish_autocompact_pct; next_config_load_ticket takes a DIFFERENT
+    # (autocompact) lock, so nesting here would not deadlock as it would there.
+    if ticket is None:
+        ticket = next_config_load_ticket()
+    # Compare and BOTH assignments under one lock: they are a single
+    # compare-and-set. See _CONFIG_TIMEZONE_LOCK.
+    with _CONFIG_TIMEZONE_LOCK:
+        if ticket < _CONFIG_TIMEZONE_TICKET:
+            return
+        _CONFIG_TIMEZONE_TICKET = ticket
+        _CONFIG_TIMEZONE = config.timezone
+
+
+def published_config_timezone() -> str:
+    """The published default timezone name, or ``""`` if none is configured.
+
+    ``""`` is not an error and not a "cold snapshot" signal -- it is what an
+    unset :attr:`KiroCrewConfig.timezone` says, and both consumers already
+    resolve it to UTC. Callers must NOT treat it as a reason to reach for
+    ``config.json`` themselves; that is the I/O this snapshot exists to remove.
+    """
+    return _CONFIG_TIMEZONE
 
 
 def resolve_effective_agent(agent_name: str | None, project_dir: str | None = None) -> str:

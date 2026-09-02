@@ -20,7 +20,7 @@ import re
 import threading
 import time as _time
 import uuid
-from collections.abc import Callable, Container, Iterator
+from collections.abc import Callable, Container, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -479,6 +479,73 @@ def append_off_loop(
             logger.warning("append_off_loop: offloaded append failed key=%s: %r", key, exc)
 
     loop.run_in_executor(None, _do).add_done_callback(_report)
+
+
+def append_rows_if_absent_off_loop(
+    conversation_log: "ConversationLog",
+    key: str,
+    rows: "Sequence[tuple[str, str, str, str | None]]",
+    *,
+    agent: str | None = None,
+) -> Any:
+    """Persist SEVERAL rows of one turn as one indivisible off-loop write.
+
+    :func:`append_if_absent_off_loop` dispatches each row as its own executor
+    task, so a caller writing a prompt+result PAIR hands two worker threads two
+    independent writes: they can land out of order, and one can fail while the
+    other succeeds. The transcript then replays a run whose rows are reversed or
+    half-present, and no timestamp ordering repairs it because each row's ``ts``
+    is correct on its own.
+
+    This routes the whole group through ONE task holding
+    :meth:`ConversationLog.atomic_appends`, whose contract names this hazard as
+    the companion a multi-append caller needs precisely BECAUSE it moved the
+    write off the loop. ``_locked`` is reentrant per key per thread, so the
+    per-row locks inside ``append_if_absent`` reuse the hold rather than
+    deadlocking on it.
+
+    *rows* is an ordered sequence of ``(role, content, cls, mid)``; they are
+    appended in that order. Each row keeps ``append_if_absent``'s idempotence,
+    so a row the periodic slot save already serialized is skipped individually
+    without dropping its siblings.
+
+    Returns the executor future, or None when the write already happened inline
+    (no running loop). Best-effort like its siblings: a lock timeout or I/O
+    error only skips the durable replay copy the slot already carries.
+    """
+
+    def _do() -> None:
+        with conversation_log.atomic_appends(key):
+            for role, content, cls, mid in rows:
+                conversation_log.append_if_absent(key, role, content, agent=agent, cls=cls, mid=mid)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is None:
+        try:
+            _do()
+        except Exception:  # noqa: BLE001 - best-effort durable copy
+            logger.warning(
+                "append_rows_if_absent_off_loop: inline append failed key=%s",
+                key,
+                exc_info=True,
+            )
+        return None
+
+    def _report(fut: "asyncio.Future[None]") -> None:
+        exc = fut.exception()
+        if exc is not None:
+            logger.warning(
+                "append_rows_if_absent_off_loop: offloaded append failed key=%s: %r",
+                key,
+                exc,
+            )
+
+    fut = loop.run_in_executor(None, _do)
+    fut.add_done_callback(_report)
+    return fut
 
 
 def append_if_absent_off_loop(

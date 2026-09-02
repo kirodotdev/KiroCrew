@@ -94,7 +94,14 @@ class TestApiCronToChat:
                 data = await resp.json()
                 assert data["ok"] is True
                 assert data["slot"] == "cron-abc123"
-                mock_inject.assert_called_once_with(state, job, "Hello world", history=ANY)
+                # include_prompt=False is the contract, not an incidental
+                # kwarg: /to-chat re-surfaces a STORED result, and the prompt
+                # behind it is not recoverable from job.message, which the user
+                # may have edited since. Pinning it here keeps a later
+                # refactor from silently pairing the two again.
+                mock_inject.assert_called_once_with(
+                    state, job, "Hello world", history=ANY, include_prompt=False
+                )
 
     @pytest.mark.asyncio
     async def test_deleted_job_with_history_creates_slot(self):

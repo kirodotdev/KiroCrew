@@ -41,11 +41,18 @@ def _provider(used: int, window: int, pct: float) -> AcpProvider:
     return provider
 
 
-def _make_job(job_id="abc123", name="test-cron"):
+def _make_job(job_id="abc123", name="test-cron", message="do the thing"):
+    # ``message`` and ``last_result_ts`` are real values, not Mock attributes:
+    # the injector now writes the run's prompt as a paired ``user`` row and
+    # stamps both rows from the result timestamp, so a MagicMock here would
+    # reach the redactors as a non-string.
     job = MagicMock()
     job.id = job_id
     job.name = name
+    job.message = message
+    job.last_result_ts = 0.0
     job.agent_id = ""
+    job.timezone = "UTC"
     return job
 
 

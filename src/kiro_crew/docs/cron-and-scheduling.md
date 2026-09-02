@@ -60,6 +60,25 @@ cron resume <id>
 
 The default per-wake execution budget is 30 minutes. Script and command subprocesses have separate defaults of 30 seconds and 300 seconds respectively.
 
+## The Chat Tab a Cron Writes Into
+
+A `persistent_session` job (the default) has ONE dashboard chat tab, `Cron: <name>`, for its whole life — every run appends to the same conversation rather than opening a new tab per run. Replying in that tab is a normal follow-up turn against the job's accumulated session.
+
+Each run appends a pair of rows so the runs stay distinguishable inside that one tab:
+
+| Row | Header | Content |
+|-----|--------|---------|
+| `user` | `# Cron Run: <name> \| <date time tz>` | the job's `message` — what this run was asked to do |
+| `assistant` | `# Cron Job Result: <name> \| <date time tz>` | what the run produced |
+
+The timestamp is the moment the run produced its result, to the second, rendered in the job's `timezone` (then the config timezone, then UTC). It is what lets a follow-up turn tell which run it is answering, so when you reply to a daily job, answer the newest pair. Rows written before this behaviour shipped carry no timestamp.
+
+The stamp is rendered ONCE, when the result is recorded, and stored with it — later edits to the job's `timezone` do not respell an existing row. That matters because a row is recognised as already-written by its exact text, so a re-render under changed settings would append a second copy of a run instead of recognising the first.
+
+Each row also ends with an invisible identity marker, `<!-- cron-run:<job-id>:<epoch> -->`, carrying the run's timestamp at full precision. It does not render, and it is what keeps two runs distinct: the visible stamp is written for a person to read, so its resolution must not decide whether two fast runs collapse into one row.
+
+Re-opening the last result from the Schedule page (`/to-chat`) reuses that stored stamp, so it never duplicates a run the executor already wrote. It shows the result row only: the prompt behind a stored result is not recoverable from the job's current `message`, which may have been edited since, so only the run that produced a result writes the `user` row.
+
 ## Per-Agent Cron
 
 Jobs can specify an agent — useful for running specialized agents on a schedule (e.g., a code-reviewer agent checking for open CRs).

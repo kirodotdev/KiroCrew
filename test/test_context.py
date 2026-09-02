@@ -1018,8 +1018,9 @@ class TestCurrentDateTimezone:
 
     def test_current_date_uses_configured_timezone(self, tmp_path):
         builder = self._make_builder(tmp_path)
-        with patch("kiro_crew.cron.KiroCrewConfig.load") as mock_load:
-            mock_load.return_value.timezone = "Asia/Tokyo"
+        # The PUBLISHED default, not a config load: get_local_tz reads the
+        # snapshot so prompt assembly does no config I/O on the event loop.
+        with patch("kiro_crew.cron.published_config_timezone", return_value="Asia/Tokyo"):
             ctx = builder.build_session_context()
         # Tokyo is JST/UTC+9; %Z renders "JST"
         assert "[CURRENT DATE]" in ctx
@@ -1028,8 +1029,7 @@ class TestCurrentDateTimezone:
 
     def test_current_date_falls_back_to_utc_when_config_empty(self, tmp_path):
         builder = self._make_builder(tmp_path)
-        with patch("kiro_crew.cron.KiroCrewConfig.load") as mock_load:
-            mock_load.return_value.timezone = ""
+        with patch("kiro_crew.cron.published_config_timezone", return_value=""):
             ctx = builder.build_session_context()
         date_line = [ln for ln in ctx.splitlines() if ln.startswith("[CURRENT DATE]")][0]
         assert "UTC" in date_line

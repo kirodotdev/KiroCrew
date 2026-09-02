@@ -20,6 +20,7 @@ Every test writes only under ``tmp_path``; no network, no subprocess.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -74,6 +75,57 @@ class TestOffLoopWrappers:
             H.append_off_loop(log, "k", "user", "hi", agent="a")
         assert "inline append failed" in caplog.text
         log.append.assert_called_once_with("k", "user", "hi", agent="a")
+
+    def test_append_rows_groups_the_pair_under_one_atomic_hold(self, tmp_path) -> None:
+        """A prompt+result pair must not be two independent off-loop writes.
+
+        Dispatched separately, two worker threads can land them out of order or
+        land one alone, leaving the replay with a reversed or half-written run
+        that no timestamp ordering repairs. The rows go through one
+        ``atomic_appends`` hold instead, which is that contract's stated
+        companion for a multi-append caller that offloads.
+        """
+        log = H.ConversationLog(base_dir=tmp_path)
+        holds: list[str] = []
+        real_atomic = log.atomic_appends
+
+        @contextlib.contextmanager
+        def _spy(key: str):
+            holds.append(key)
+            with real_atomic(key):
+                yield
+
+        with patch.object(log, "atomic_appends", _spy):
+            H.append_rows_if_absent_off_loop(
+                log,
+                "cron:abc",
+                [
+                    ("user", "the prompt", "msg msg-u", "m-1"),
+                    ("assistant", "the result", "msg msg-a", "m-2"),
+                ],
+            )
+        assert holds == ["cron:abc"], "the pair must share exactly one atomic hold"
+        rows = log.read_messages("cron:abc")
+        assert [r["role"] for r in rows] == ["user", "assistant"], "order must be preserved"
+        assert [r["meta"]["mid"] for r in rows] == ["m-1", "m-2"]
+
+    def test_append_rows_keeps_per_row_idempotence(self, tmp_path) -> None:
+        """A row the slot save already persisted is skipped without dropping its sibling."""
+        log = H.ConversationLog(base_dir=tmp_path)
+        log.append("cron:abc", "user", "the prompt", mid="m-1")
+        H.append_rows_if_absent_off_loop(
+            log,
+            "cron:abc",
+            [
+                ("user", "the prompt", "msg msg-u", "m-1"),
+                ("assistant", "the result", "msg msg-a", "m-2"),
+            ],
+        )
+        rows = log.read_messages("cron:abc")
+        assert [r["role"] for r in rows] == ["user", "assistant"], (
+            "the already-present prompt must not be duplicated, and must not "
+            "suppress the result"
+        )
 
     def test_append_if_absent_off_loop_inline_failure_is_logged(self, caplog) -> None:
         log = MagicMock()

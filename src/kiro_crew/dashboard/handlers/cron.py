@@ -632,7 +632,12 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             await asyncio.to_thread(state.conversation_log.read_messages, f"cron:{job.id}")
             if state.conversation_log else []
         )
-        inject_cron_result_to_dashboard(state, job, job.last_result or "", history=history)
+        # Re-surfacing a stored result, not delivering a fresh run: the prompt
+        # that produced it is not recoverable from live config -- see
+        # inject_cron_result_to_dashboard's ``include_prompt``.
+        inject_cron_result_to_dashboard(
+            state, job, job.last_result or "", history=history, include_prompt=False
+        )
     else:
         # Job deleted (one-shot with delete_after_run). Create slot from history or notification.
         session_key = f"cron:{job_id}"
