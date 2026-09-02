@@ -253,6 +253,7 @@ def test_no_coroutine_in_the_warm_module_touches_the_filesystem_directly():
         "warm_spec_providers",
         "_warm_activation_candidates",
         "_warm_candidate_scan",
+        "_current_warm_redrain_entry",
         "mintable_providers",
         "_warm_spec_plan",
         "_warm_spec_is_foreign",
@@ -1752,7 +1753,21 @@ _MUST_BE_PROTECTED = [
         "asyncio.shield(create)",
         warm._WarmMintRuntime._activate_locked,
     ),
-    ("_activate_locked", "handle.drain_init", warm._WarmMintRuntime._activate_locked),
+    (
+        "_activate_locked",
+        "_collect_oauth_requests",
+        warm._WarmMintRuntime._activate_locked,
+    ),
+    (
+        "_recover_redrained_requests",
+        "_dispose_displaced_rows",
+        warm._recover_redrained_requests,
+    ),
+    (
+        "_recover_redrained_requests",
+        "_absorb_warm_requests",
+        warm._recover_redrained_requests,
+    ),
     (
         "_abandon_session_creation_locked",
         "_destroy_session_quietly",
@@ -1919,6 +1934,9 @@ class _SessionHandle:
 
     def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
         return []
+
+    async def drain_init(self, **kwargs: Any) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -2246,6 +2264,37 @@ async def test_a_frame_arriving_after_the_create_drain_is_still_absorbed(
 
 
 @pytest.mark.asyncio
+async def test_each_new_frame_renews_the_quiet_budget_past_the_old_fixed_limit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    handle = _QueuedOauthHandle({"linear": 5, "vercel": 10})
+    monkeypatch.setattr(warm._warm_mint, "_runtime", _queued_runtime(handle))
+    monkeypatch.setattr(warm._warm_mint, "_generation", 3)
+    monkeypatch.setattr(warm._warm_mint, "_sessions", {})
+
+    _, requests = await warm._warm_mint._activate_locked("agent", frozenset({"linear", "vercel"}))
+
+    assert sorted(str(request["serverName"]) for request in requests) == ["linear", "vercel"]
+    assert handle.drains == 10
+
+
+@pytest.mark.asyncio
+async def test_progress_is_still_bounded_by_the_expected_roster(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    wanted = frozenset({"linear", "vercel", "missing"})
+    handle = _QueuedOauthHandle({"linear": 6, "vercel": 12})
+    monkeypatch.setattr(warm._warm_mint, "_runtime", _queued_runtime(handle))
+    monkeypatch.setattr(warm._warm_mint, "_generation", 3)
+    monkeypatch.setattr(warm._warm_mint, "_sessions", {})
+
+    _, requests = await warm._warm_mint._activate_locked("agent", wanted)
+
+    assert sorted(str(request["serverName"]) for request in requests) == ["linear", "vercel"]
+    assert handle.drains == len(wanted) * warm._WARM_OAUTH_SETTLE_ROUNDS
+
+
+@pytest.mark.asyncio
 async def test_the_settle_loop_stops_as_soon_as_every_wanted_frame_is_in(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -2276,8 +2325,8 @@ async def test_the_settle_loop_consumes_on_every_round_it_waits(
     await warm._warm_mint._activate_locked("agent", frozenset({"linear", "never"}))
 
     assert (
-        handle.drains == warm._WARM_OAUTH_SETTLE_ROUNDS - 1
-    ), "every round that waits must consume; the last round pops and does not wait"
+        handle.drains == warm._WARM_OAUTH_SETTLE_ROUNDS
+    ), "every quiet round must consume before the inactivity budget is exhausted"
 
 
 @pytest.mark.asyncio

@@ -99,19 +99,26 @@ attaches to the reaper in its own slice.
 - **A frame becomes readable only when something DRAINS the session queue.**
   `pop_pending_oauth_requests()` reads a list that only `drain_init` appends to, and
   `create_session` runs exactly one drain before it hands the handle over. The settle loop
-  originally slept between pops, which consumes nothing — so a provider whose `oauth_request`
+  originally slept between pops, which consumes nothing -- so a provider whose `oauth_request`
   landed after that create-time drain's idle exit was unreachable however many rounds elapsed.
-  The 3s budget was never the binding constraint; the loop had no mechanism to absorb a late
-  frame at all, and in a multi-provider activation the later providers are exactly the ones at
-  risk. Each waiting round is now a bounded `drain_init(duration=0.5, idle_exit=0.5,
+  Each wait is now a bounded `drain_init(duration=0.5, idle_exit=0.5,
   no_report_ceiling=0.0)`. The ceiling argument is load-bearing: it arms the idle shortcut at
   entry so the call cannot hold waiting for a "first report" this session already produced
-  during `create_session`'s own drain — which is precisely the idle-window semantics that made
-  an *unbounded* drain the wrong tool here. Bounded per round it is the right one, the total
-  wall-clock budget is unchanged, and an activation whose frames are already staged still
-  short-circuits on the first pop without opening a window. Beyond the budget the claim is
-  released and the cold path serves that provider, which is the correct fallback rather than a
-  defect.
+  during `create_session`'s own drain. Six consecutive quiet drains end collection, while each
+  newly collected provider renews that quiet budget. The absolute cap is six drain windows per
+  expected provider -- 3 seconds times the roster size -- because a handle accepts at most one
+  OAuth request per server. Progress can therefore carry a multi-provider activation beyond the
+  old fixed 3-second cutoff without making the wait unbounded.
+- **An adoption miss gets one last read from the process already paid for.** Each live warm
+  session retains its provider roster internally. When Connect finds no adoptable table row, it
+  first rebuilds the current candidate plan. The provider must still be visible and enabled,
+  have a definitive absent-grant verdict, remain compatible with the configured entry, and ask
+  for the same URL, scopes, and client ID the retained session activated. Only then does Connect
+  re-run the same bounded collector on that session, materialize every attributable late frame
+  through the ordinary claim, credential-screen, watcher, and settlement paths, and retry
+  adoption before reserving a dedicated cold row. Any failed revalidation uses the cold path
+  without reading the old handle. The roster and yielded-provider diagnostics stay internal;
+  customers still see only the existing card states.
 
 ## Specs are read once at spawn
 
@@ -203,8 +210,11 @@ quietly drop the filesystem work the guard's coverage rests on without failing i
 gone rather than on a cause, which is what covers a process that went away by a route no expiry
 path anticipated. PR #5899 is a different cause and a different table: it owns
 **Disconnect-driven grant revocation**, and the two meet only where a revoke should re-warm.
-**Proactive refresh** attaches to `_warm_mint_reaper`, which now exists; **a
-supervisor/watchdog** is absent, as are the accessors it would need.
+**Proactive refresh** attaches to `_warm_mint_reaper`, which now exists. The dependent
+resilience slice remains deliberately absent: a mid-visit supervisor must detect a shared
+session that dies after the page's initial warm and re-arm a replacement activation without a
+Connect click. This slice only re-drains a session that is still live; it neither supervises nor
+re-arms one.
 
 Three residuals the lifecycle slice was required to close, and did:
 

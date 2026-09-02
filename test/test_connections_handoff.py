@@ -538,6 +538,146 @@ async def test_connect_falls_back_to_a_cold_mint_when_nothing_is_adoptable(
 
 
 @pytest.mark.asyncio
+async def test_connect_does_not_redrain_a_stale_authorization_shape(
+    monkeypatch: pytest.MonkeyPatch, cold_mint: dict[str, int]
+):
+    class _StaleHandle:
+        def __init__(self) -> None:
+            self.pops = 0
+
+        def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
+            self.pops += 1
+            return [{"serverName": "notion", "oauthUrl": _URL}]
+
+    current = _provider()
+    current["recommended_scopes"] = ["write"]
+    activated = _provider()
+    activated["recommended_scopes"] = ["read"]
+    monkeypatch.setattr(connections, "get_provider", lambda slug: current)
+    monkeypatch.setattr(warm, "get_visible_providers", lambda: [current])
+    monkeypatch.setattr(warm, "list_servers", lambda: [])
+    monkeypatch.setattr(warm, "grant_present", lambda url: False)
+    monkeypatch.setattr(warm, "_read_agent_spec", lambda *args, **kwargs: {})
+    _warm_process(monkeypatch)
+    handle = _StaleHandle()
+    session = warm._WarmSession(
+        generation=1,
+        handle=handle,
+        expires_at=float("inf"),
+        settled=True,
+        providers=(activated,),
+    )
+    monkeypatch.setattr(warm._warm_mint, "_sessions", {1: session})
+    client = await _client()
+    try:
+        resp = await client.post("/api/connections/mint", json={"slug": "notion"})
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200
+    assert body["state"] == "minting"
+    assert body["token"] == "cold-token"
+    assert handle.pops == 0, "a stale session must not be read"
+    assert cold_mint["reserved"] == 1 and cold_mint["spawned"] == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_redrains_the_live_warm_session_before_spawning_cold(
+    monkeypatch: pytest.MonkeyPatch, cold_mint: dict[str, int]
+):
+    class _LateHandle:
+        def __init__(self) -> None:
+            self.drains = 0
+            self._pending: list[dict[str, str]] = []
+
+        def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
+            pending, self._pending = self._pending, []
+            return pending
+
+        async def drain_init(self, **kwargs: Any) -> None:
+            self.drains += 1
+            self._pending.append({"serverName": "notion", "oauthUrl": _URL})
+
+    provider = _provider()
+    monkeypatch.setattr(warm, "get_visible_providers", lambda: [provider])
+    monkeypatch.setattr(warm, "list_servers", lambda: [])
+    monkeypatch.setattr(warm, "grant_present", lambda url: False)
+    monkeypatch.setattr(warm, "_read_agent_spec", lambda *args, **kwargs: {})
+    _warm_process(monkeypatch)
+    handle = _LateHandle()
+    session = warm._WarmSession(
+        generation=1,
+        handle=handle,
+        expires_at=float("inf"),
+        settled=True,
+        providers=(provider,),
+    )
+    monkeypatch.setattr(warm._warm_mint, "_sessions", {1: session})
+    client = await _client()
+    try:
+        resp = await client.post("/api/connections/mint", json={"slug": "notion"})
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200
+    assert body["state"] == "waiting"
+    assert body["token"] == _mints["notion"]["token"]
+    assert handle.drains == 1
+    assert cold_mint == {"reserved": 0, "spawned": 0, "disposed": 0}
+    assert _mints["notion"]["oauth_url"] == _URL
+
+
+@pytest.mark.asyncio
+async def test_connect_redrain_does_not_publish_a_sibling_challenge(
+    monkeypatch: pytest.MonkeyPatch, cold_mint: dict[str, int]
+):
+    class _SiblingHandle:
+        def __init__(self) -> None:
+            self._pending: list[dict[str, str]] = []
+
+        def pop_pending_oauth_requests(self) -> list[dict[str, str]]:
+            pending, self._pending = self._pending, []
+            return pending
+
+        async def drain_init(self, **kwargs: Any) -> None:
+            self._pending.extend(
+                [
+                    {"serverName": "notion", "oauthUrl": _URL},
+                    {"serverName": "linear", "oauthUrl": "https://linear.test/authorize"},
+                ]
+            )
+
+    notion, linear = _provider("notion"), _provider("linear")
+    monkeypatch.setattr(warm, "get_visible_providers", lambda: [notion])
+    monkeypatch.setattr(warm, "list_servers", lambda: [])
+    monkeypatch.setattr(warm, "grant_present", lambda url: False)
+    monkeypatch.setattr(warm, "_read_agent_spec", lambda *args, **kwargs: {})
+    _warm_process(monkeypatch)
+    session = warm._WarmSession(
+        generation=1,
+        handle=_SiblingHandle(),
+        expires_at=float("inf"),
+        settled=True,
+        providers=(notion, linear),
+    )
+    monkeypatch.setattr(warm._warm_mint, "_sessions", {1: session})
+    client = await _client()
+    try:
+        response = await client.post("/api/connections/mint", json={"slug": "notion"})
+        body = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 200
+    assert body["state"] == "waiting"
+    assert _mints["notion"]["oauth_url"] == _URL
+    assert "linear" not in _mints, "a sibling challenge was not validated for this Connect"
+    assert cold_mint == {"reserved": 0, "spawned": 0, "disposed": 0}
+
+
+@pytest.mark.asyncio
 async def test_the_premint_then_connect_round_trip_serves_the_warm_url(
     monkeypatch: pytest.MonkeyPatch, cold_mint: dict[str, int]
 ):

@@ -105,8 +105,9 @@ Connections page fires once on mount. It scans the candidates and hands them ove
 it reports and the rows the engine claims come from one registry read. The consumer of what it
 warms is :func:`adopt_shared_mint`, which ``POST /api/connections/mint`` tries BEFORE reserving
 a row of its own -- without it that endpoint's ``reserve_mint_row`` popped the shared row and
-disposed the very URL the click had been warmed for. Proactive refresh attaches in
-:func:`_warm_mint_reaper` when slice N3 lands.
+disposed the very URL the click had been warmed for. A table miss re-drains the newest live
+shared session that activated the provider and retries adoption before the dedicated cold path.
+Proactive refresh attaches in :func:`_warm_mint_reaper` when its dependent slice lands.
 
 TWO AXES, and conflating them is what the handoff had to separate. ``shared`` is OWNERSHIP: an
 unclaimed premint any Connect may adopt, and the only mark a row still ``minting`` carries.
@@ -184,8 +185,9 @@ _WARM_SESSION_DESTROY_TIMEOUT_SECONDS = 10.0
 #: this only buys back a session already on its way; see ``_abandon_session_creation``.
 _WARM_SESSION_REAP_TIMEOUT_SECONDS = 10.0
 _WARM_KILL_TIMEOUT_SECONDS = 20.0
-#: The oauth_request frame lands a beat AFTER set_mode returns (~0.35s measured),
-#: beyond drain_init's idle window for a slow provider. Poll rather than race it.
+#: One bounded drain window. A run stops after this many consecutive quiet windows,
+#: while each newly observed provider renews that quiet budget. The absolute cap scales by
+#: the expected roster, so unique progress cannot extend collection without bound.
 _WARM_OAUTH_SETTLE_SECONDS = 0.5
 _WARM_OAUTH_SETTLE_ROUNDS = 6
 #: A tenth of the mint TTL: long enough that reopening the gallery reuses the
@@ -384,6 +386,21 @@ def _warm_candidate_scan() -> tuple[list[Provider], list[Provider]]:
     return universe, _warm_activation_candidates(universe)
 
 
+def _current_warm_redrain_entry(slug: str) -> dict[str, Any] | None:
+    """The current eligible authorization entry for a late-session re-drain.
+
+    Rebuild the same candidate plan activation uses rather than trusting the provider
+    snapshot retained by an older session. This rechecks visibility, enabled state, the
+    tri-state grant verdict, configured-entry compatibility, and the registry auth shape.
+    The caller runs this off the event loop because those checks read user-owned files.
+    """
+    _universe, candidates = _warm_candidate_scan()
+    provider = next((item for item in candidates if item["slug"] == slug), None)
+    if provider is None:
+        return None
+    return _warm_spec_plan([provider]).entries.get(mcp_server_alias(slug))
+
+
 def mintable_providers() -> list[Provider]:
     """Providers an activation should warm right now, registry order."""
     return _warm_candidate_scan()[1]
@@ -392,6 +409,34 @@ def mintable_providers() -> list[Provider]:
 def _wanted_aliases(providers: list[Provider]) -> frozenset[str]:
     """The server aliases an activation must produce a challenge for."""
     return frozenset(mcp_server_alias(provider["slug"]) for provider in providers)
+
+
+async def _collect_oauth_requests(handle: Any, wanted: frozenset[str]) -> list[dict[str, str]]:
+    """Collect challenges until the queue stays quiet, bounded by the expected roster."""
+    collected: dict[str, dict[str, str]] = {}
+    quiet_drains = 0
+    drains = 0
+    hard_drain_limit = max(1, len(wanted)) * _WARM_OAUTH_SETTLE_ROUNDS
+    while True:
+        before = len(collected)
+        for request in handle.pop_pending_oauth_requests():
+            name = str(request.get("serverName") or "")
+            if name and request.get("oauthUrl"):
+                collected[name] = request
+        if len(collected) > before:
+            quiet_drains = 0
+        if wanted and wanted <= collected.keys():
+            break
+        if quiet_drains >= _WARM_OAUTH_SETTLE_ROUNDS or drains >= hard_drain_limit:
+            break
+        await handle.drain_init(
+            duration=_WARM_OAUTH_SETTLE_SECONDS,
+            idle_exit=_WARM_OAUTH_SETTLE_SECONDS,
+            no_report_ceiling=0.0,
+        )
+        drains += 1
+        quiet_drains += 1
+    return list(collected.values())
 
 
 def _auth_shape(entry: dict[str, Any]) -> tuple[str, tuple[str, ...], str]:
@@ -772,6 +817,7 @@ class _WarmSession:
     handle: Any
     expires_at: float
     settled: bool = False
+    providers: tuple[Provider, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -922,7 +968,9 @@ class _WarmMintRuntime:
                 return None
             generation = self._generation
             try:
-                activation, requests = await self._activate_locked(agent, _wanted_aliases(wanted))
+                activation, requests = await self._activate_locked(
+                    agent, _wanted_aliases(wanted), tuple(wanted)
+                )
             except Exception as exc:
                 if self.is_alive():
                     # One activation failed but the process still serves: its other verifiers
@@ -1117,7 +1165,10 @@ class _WarmMintRuntime:
                 self._sessions.pop(activation, None)
 
     async def _activate_locked(
-        self, agent: str, wanted: frozenset[str]
+        self,
+        agent: str,
+        wanted: frozenset[str],
+        providers: tuple[Provider, ...] = (),
     ) -> tuple[int, list[dict[str, str]]]:
         """Activate ``agent`` on the shared process and return its challenges."""
         runtime = self._runtime
@@ -1152,39 +1203,10 @@ class _WarmMintRuntime:
             generation=self._generation,
             handle=handle,
             expires_at=time.monotonic() + _MINT_TTL_SECONDS,
+            providers=providers,
         )
-        collected: dict[str, dict[str, str]] = {}
         try:
-            for round_index in range(_WARM_OAUTH_SETTLE_ROUNDS):
-                for request in handle.pop_pending_oauth_requests():
-                    name = str(request.get("serverName") or "")
-                    if name and request.get("oauthUrl"):
-                        collected[name] = request
-                if wanted and wanted <= collected.keys():
-                    break
-                if round_index + 1 < _WARM_OAUTH_SETTLE_ROUNDS:
-                    # CONSUME the queue rather than sleep past it. This is the whole
-                    # mechanism: ``pop_pending_oauth_requests`` reads a list that only
-                    # ``drain_init`` appends to, and ``create_session`` runs exactly one
-                    # drain before handing the handle over -- so a bare sleep here moved
-                    # nothing, and a frame arriving after that drain's idle exit was
-                    # unreachable however many rounds elapsed. The budget was never the
-                    # binding constraint; the loop had no way to absorb a late frame at all.
-                    #
-                    # ``no_report_ceiling=0.0`` is load-bearing: it arms the idle shortcut at
-                    # entry, so this call cannot hold waiting for a "first report" that this
-                    # session already produced during ``create_session``'s own drain. That is
-                    # precisely the idle-window semantics that made an unbounded drain the
-                    # wrong tool here -- bounded per round, it is the right one. Each round is
-                    # therefore a window of at most ``_WARM_OAUTH_SETTLE_SECONDS`` that
-                    # returns as soon as the queue goes quiet, so the total budget is
-                    # unchanged and a satisfied activation still short-circuits on the pop
-                    # above without opening a window at all.
-                    await handle.drain_init(
-                        duration=_WARM_OAUTH_SETTLE_SECONDS,
-                        idle_exit=_WARM_OAUTH_SETTLE_SECONDS,
-                        no_report_ceiling=0.0,
-                    )
+            requests = await _collect_oauth_requests(handle, wanted)
         except BaseException:
             # Nothing will ever be stamped with this activation, so the session it
             # registered would leak past the sweep's settled-only rule. Marked settled and
@@ -1199,7 +1221,40 @@ class _WarmMintRuntime:
             if await _destroy_session_quietly(handle):
                 self._sessions.pop(activation, None)
             raise
-        return activation, list(collected.values())
+        return activation, requests
+
+    async def redrain_for(self, slug: str) -> _WarmMintResult | None:
+        """Drain a current-compatible live session for ``slug`` without spawning another."""
+        current_entry = await asyncio.to_thread(_current_warm_redrain_entry, slug)
+        if current_entry is None:
+            return None
+        async with self._lock:
+            for activation, record in reversed(list(self._sessions.items())):
+                if not self.generation_is_live(record.generation):
+                    continue
+                activated_provider = next(
+                    (provider for provider in record.providers if provider["slug"] == slug),
+                    None,
+                )
+                if activated_provider is None:
+                    continue
+                activated_entry = _registry_server_entry(activated_provider)
+                if activated_entry is None or _auth_shape(activated_entry) != _auth_shape(
+                    current_entry
+                ):
+                    return None
+                requests = await _collect_oauth_requests(
+                    record.handle, frozenset({mcp_server_alias(slug)})
+                )
+                if not requests:
+                    return None
+                return _WarmMintResult(
+                    generation=record.generation,
+                    activation=activation,
+                    providers=[activated_provider],
+                    requests=requests,
+                )
+        return None
 
     async def shutdown(self) -> None:
         async with self._lock:
@@ -1573,15 +1628,15 @@ def _mint_is_adopted(entry: MintState | None) -> bool:
     )
 
 
-async def adopt_shared_mint(slug: str, mcp_url: str) -> str | None:
+async def _adopt_shared_row(slug: str, mcp_url: str) -> str | None:
     """Take ownership of ``slug``'s UNCLAIMED premint. Returns its new row token, or None.
 
     THE handoff, and the reason the premint has a consumer at all. Connect used to call
     ``reserve_mint_row`` unconditionally, which pops WHATEVER row is at the slug -- so
     ``start_oauth_mint`` disposed the very URL the warm table had minted for that click
     and the cold spawn it then paid was the only thing the user ever saw. ``None`` means
-    nothing was adoptable and the caller must fall back to that cold path, which is
-    still correct and still the only path for a provider warming never covered.
+    no row was adoptable at this instant; the public flow may recover a late frame from the
+    existing live session before it falls through to the dedicated cold path.
 
     FOUR refusals, each closing a different way to hand back a URL that cannot work: no
     row; a row that is not an unclaimed premint (``shared`` absent -- a cold flow's or
@@ -1633,6 +1688,20 @@ async def adopt_shared_mint(slug: str, mcp_url: str) -> str | None:
         # module pins every such hop with a drift guard.
         await asyncio.to_thread(_log_warm_event, "connections_warm_mint_adopt", f"provider:{slug}")
     return adopted
+
+
+async def adopt_shared_mint(slug: str, mcp_url: str) -> str | None:
+    """Adopt a warm row, recovering late frames from the live shared session once."""
+    adopted = await _adopt_shared_row(slug, mcp_url)
+    if adopted is not None:
+        return adopted
+    try:
+        redrained = await _warm_mint.redrain_for(slug)
+        if redrained is not None:
+            await _recover_redrained_requests(redrained)
+    except Exception:  # noqa: BLE001 -- a dedicated cold mint remains the fallback
+        logger.debug("warm mint adoption re-drain failed", exc_info=True)
+    return await _adopt_shared_row(slug, mcp_url)
 
 
 async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[MintState]]:
@@ -1788,6 +1857,44 @@ async def _absorb_warm_requests(result: _WarmMintResult, claims: dict[str, str])
         )
     if unfulfilled:
         await _release_shared_claims(unfulfilled)
+    return minted
+
+
+def _providers_with_requests(result: _WarmMintResult) -> list[Provider]:
+    names = {
+        str(request.get("serverName") or "")
+        for request in result.requests
+        if request.get("oauthUrl")
+    }
+    return [
+        provider
+        for provider in result.providers
+        if provider["slug"] in names or mcp_server_alias(provider["slug"]) in names
+    ]
+
+
+async def _recover_redrained_requests(result: _WarmMintResult) -> list[str]:
+    """Install attributable late frames through the ordinary warm-table fences."""
+    providers = _providers_with_requests(result)
+    if not providers:
+        return []
+    claims, displaced = await _claim_shared_mints([provider["slug"] for provider in providers])
+    if not claims:
+        return []
+    try:
+        await _dispose_displaced_rows(displaced)
+        narrowed = _WarmMintResult(
+            generation=result.generation,
+            activation=result.activation,
+            providers=providers,
+            requests=result.requests,
+        )
+        minted = await _absorb_warm_requests(narrowed, claims)
+    except BaseException:
+        await _release_shared_claims(claims)
+        raise
+    if minted:
+        logger.info("Shared mint re-drain recovered late row(s): %s", ", ".join(sorted(minted)))
     return minted
 
 
