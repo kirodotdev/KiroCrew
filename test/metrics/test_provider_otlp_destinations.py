@@ -201,6 +201,113 @@ class TestAttachment:
         assert seen["interval"] == 17_000.0
 
 
+class TestTemporalityIsACoreDecision:
+    """Both of a MeterProvider's destinations must encode the same instruments
+    the same way — unless the operator says otherwise.
+
+    These run WITHOUT the ``otlp`` extra (the exporter module is stubbed), which
+    is the point: the end-to-end tier in ``test_otlp_wire_e2e.py`` needs the
+    optional extra and is skipped wherever it is absent, so the divergence this
+    class pins could reach main unnoticed. What is asserted here is the ONE
+    decision the builder makes; the tier-2 tests assert the exporter honors it.
+    """
+
+    @staticmethod
+    def _captured_kwargs(monkeypatch):
+        """Build one reader against a stub exporter and return its kwargs."""
+        import sys
+        import types
+
+        from kiro_crew.metrics.provider import _build_otlp_reader
+
+        captured: dict = {}
+
+        class _StubExporter:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
+        mod.OTLPMetricExporter = _StubExporter  # type: ignore[attr-defined]
+        monkeypatch.setitem(
+            sys.modules,
+            "opentelemetry.exporter.otlp.proto.http.metric_exporter",
+            mod,
+        )
+        import kiro_crew.metrics.provider as provider_mod
+
+        class FakeReader:
+            def __init__(self, exporter, export_interval_millis=None):
+                pass
+
+        monkeypatch.setattr(provider_mod, "PeriodicExportingMetricReader", FakeReader)
+        _build_otlp_reader(
+            OtlpDestination("d", ENDPOINT, frozenset({"metrics"})),
+            TelemetryConfig(enabled=True),
+        )
+        return captured
+
+    def test_the_otlp_leg_gets_the_map_the_local_sink_uses(self, tmp_path, monkeypatch):
+        """The defect: the OTLP exporter was built with endpoint/session/interval
+        and nothing else, so it kept the SDK's CUMULATIVE default while the local
+        sink asked for DELTA. Compared against the local exporter's RESOLVED map
+        rather than against a literal, so a change to one sink cannot pass here
+        while leaving the other behind."""
+        from kiro_crew.metrics.local_exporter import JsonlMetricExporter
+        from kiro_crew.metrics.temporality import TEMPORALITY_ENV_VAR
+
+        monkeypatch.delenv(TEMPORALITY_ENV_VAR, raising=False)
+        captured = self._captured_kwargs(monkeypatch)
+
+        assert "preferred_temporality" in captured, (
+            "no temporality reached the OTLP exporter, so it falls back to "
+            "CUMULATIVE while the local sink uses DELTA"
+        )
+        local = JsonlMetricExporter(tmp_path)._preferred_temporality
+        for kind, temporality in captured["preferred_temporality"].items():
+            assert local[kind] == temporality, f"{kind.__name__} disagrees with the local sink"
+
+    def test_delta_is_what_both_sinks_prefer(self, monkeypatch):
+        """Named explicitly: DELTA is the direction, not merely "the same as the
+        other one". A cumulative histogram re-ships every bucket of every series
+        every cycle whether or not anything happened; an idle DELTA series sends
+        nothing."""
+        from opentelemetry.sdk.metrics import Counter, Histogram, UpDownCounter
+        from opentelemetry.sdk.metrics.export import AggregationTemporality
+
+        from kiro_crew.metrics.temporality import TEMPORALITY_ENV_VAR
+
+        monkeypatch.delenv(TEMPORALITY_ENV_VAR, raising=False)
+        preference = self._captured_kwargs(monkeypatch)["preferred_temporality"]
+
+        assert preference == {
+            Counter: AggregationTemporality.DELTA,
+            UpDownCounter: AggregationTemporality.DELTA,
+            Histogram: AggregationTemporality.DELTA,
+        }
+
+    def test_an_operator_preference_is_left_to_the_exporter(self, monkeypatch):
+        """The escape hatch stays an escape hatch. The exporter applies a passed
+        dict ON TOP of whichever base the env var chose, so a builder that always
+        passes one would override exactly the operator who asked for CUMULATIVE.
+        Passing nothing is what hands every instrument kind back at once."""
+        from kiro_crew.metrics.temporality import TEMPORALITY_ENV_VAR
+
+        for preference in ("CUMULATIVE", "DELTA", "LOWMEMORY", "  delta  "):
+            monkeypatch.setenv(TEMPORALITY_ENV_VAR, preference)
+            captured = self._captured_kwargs(monkeypatch)
+            assert (
+                "preferred_temporality" not in captured
+            ), f"{TEMPORALITY_ENV_VAR}={preference!r} was overridden by our own map"
+
+    def test_a_blank_variable_is_not_a_preference(self, monkeypatch):
+        """An exported-but-empty variable is how a shell wrapper spells "unset".
+        Reading it as a decision would silently restore the CUMULATIVE default."""
+        from kiro_crew.metrics.temporality import TEMPORALITY_ENV_VAR
+
+        monkeypatch.setenv(TEMPORALITY_ENV_VAR, "   ")
+        assert "preferred_temporality" in self._captured_kwargs(monkeypatch)
+
+
 class TestDegradation:
     """Every way a provider can fail must leave local collection working."""
 

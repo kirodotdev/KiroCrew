@@ -25,11 +25,33 @@ name                                             kind        source
 ``kirocrew.process.open_fds``                    gauge       ``/proc/self/fd`` / ``/dev/fd``
 ``kirocrew.process.memory.rss_bytes``            gauge       ``platform_compat.proc_rss_bytes``
 ``kirocrew.process.memory.peak_rss_bytes``       gauge       ``platform_compat.proc_peak_rss_bytes``
-``kirocrew.process.cpu.seconds``                 counter     ``platform_compat.proc_cpu_seconds``
-``kirocrew.process.gc.collections``              counter     ``gc.get_stats()`` per generation
-``kirocrew.process.gc.collected``                counter     ``gc.get_stats()`` per generation
-``kirocrew.process.gc.uncollectable``            counter     ``gc.get_stats()`` per generation
+``kirocrew.process.cpu.seconds``                 gauge       ``platform_compat.proc_cpu_seconds``
+``kirocrew.process.gc.collections``              gauge       ``gc.get_stats()`` per generation
+``kirocrew.process.gc.collected``                gauge       ``gc.get_stats()`` per generation
+``kirocrew.process.gc.uncollectable``            gauge       ``gc.get_stats()`` per generation
 ===============================================  ==========  ====================
+
+The last four report a monotonic PROCESS-LIFETIME total and were observable
+COUNTERS until they were the only cumulative series Kiro Crew exported. One
+cumulative series is enough to force every consumer into stateful whole-hour
+aggregation — a cumulative counter's hourly increment is last-minus-first across
+the entire hour, per host and per process lifetime — while every other instrument
+here is additive (delta sums, histograms) or associative (gauge min/max/avg) and
+merges one datapoint at a time. Registering them as observable GAUGES keeps the
+data (the value is still the lifetime total; the per-interval increment is
+recovered by differencing consecutive samples) and removes the last cumulative
+series. The route NOT taken is observable counters with DELTA temporality: that
+was tried and reverted, because an observable callback reads an external
+lifetime total, so the first collection after a provider rebuild re-emits the
+whole total as one giant delta (see :mod:`kiro_crew.metrics.temporality`).
+
+Gauge is also the safer encoding for these four specifically. A retried export
+double-counts a delta, while min/max/avg are idempotent; and a gauge has no
+baseline, so a provider rebuild on a telemetry-consent change cannot manufacture
+a step. :data:`LIFETIME_TOTAL_METRICS` names them for the one consumer that must
+know the difference — the dashboard aggregator reduces them window-relative
+instead of reporting the newest lifetime total as a reading, which also keeps its
+series continuous across shards written before the switch.
 
 Current vs peak RSS are separate metrics because they answer different
 questions: a leak-vs-plateau diagnosis needs the current value (which falls
@@ -76,10 +98,10 @@ GAUGE_THREADS_OS = "kirocrew.process.threads.os"
 GAUGE_OPEN_FDS = "kirocrew.process.open_fds"
 GAUGE_RSS = "kirocrew.process.memory.rss_bytes"
 GAUGE_PEAK_RSS = "kirocrew.process.memory.peak_rss_bytes"
-COUNTER_CPU_SECONDS = "kirocrew.process.cpu.seconds"
-COUNTER_GC_COLLECTIONS = "kirocrew.process.gc.collections"
-COUNTER_GC_COLLECTED = "kirocrew.process.gc.collected"
-COUNTER_GC_UNCOLLECTABLE = "kirocrew.process.gc.uncollectable"
+GAUGE_CPU_SECONDS = "kirocrew.process.cpu.seconds"
+GAUGE_GC_COLLECTIONS = "kirocrew.process.gc.collections"
+GAUGE_GC_COLLECTED = "kirocrew.process.gc.collected"
+GAUGE_GC_UNCOLLECTABLE = "kirocrew.process.gc.uncollectable"
 
 ALL_METRIC_NAMES = (
     GAUGE_THREADS_PYTHON,
@@ -87,10 +109,25 @@ ALL_METRIC_NAMES = (
     GAUGE_OPEN_FDS,
     GAUGE_RSS,
     GAUGE_PEAK_RSS,
-    COUNTER_CPU_SECONDS,
-    COUNTER_GC_COLLECTIONS,
-    COUNTER_GC_COLLECTED,
-    COUNTER_GC_UNCOLLECTABLE,
+    GAUGE_CPU_SECONDS,
+    GAUGE_GC_COLLECTIONS,
+    GAUGE_GC_COLLECTED,
+    GAUGE_GC_UNCOLLECTABLE,
+)
+
+#: Gauges whose reading is a monotonic PROCESS-LIFETIME total rather than a
+#: point-in-time state. The metric NAME is the contract here, so a consumer can
+#: recognise them without knowing this module: the dashboard aggregator reads
+#: this tuple to reduce them window-relative (newest minus first-in-window)
+#: instead of reporting a lifetime total as a current reading, which is also
+#: what keeps its series continuous across the shards written while these four
+#: were still observable counters. Every other name above is a true gauge whose
+#: newest sample IS the answer.
+LIFETIME_TOTAL_METRICS = (
+    GAUGE_CPU_SECONDS,
+    GAUGE_GC_COLLECTIONS,
+    GAUGE_GC_COLLECTED,
+    GAUGE_GC_UNCOLLECTABLE,
 )
 
 
@@ -168,7 +205,7 @@ def _observations(
 def _gc_observations(
     key: str,
 ) -> "Callable[[CallbackOptions], Iterable[Observation]]":
-    """Observable-counter callback for one ``gc.get_stats()`` key, all gens."""
+    """Observable-gauge callback for one ``gc.get_stats()`` key, all gens."""
     from opentelemetry.metrics import Observation
 
     def _callback(options: "CallbackOptions") -> "Iterator[Observation]":
@@ -226,33 +263,33 @@ def register_process_gauges(meter: "Meter") -> None:
             unit="By",
             description="Peak resident set size (high-water mark)",
         )
-        meter.create_observable_counter(
-            COUNTER_CPU_SECONDS,
-            # proc_cpu_seconds returns 0.0 on probe failure; publishing that
-            # would look like a counter reset to the aggregator's cumulative
-            # reset-detection (banking the prior total = double count). Map
-            # the failure sentinel to None: gap, never a false reset.
+        meter.create_observable_gauge(
+            GAUGE_CPU_SECONDS,
+            # proc_cpu_seconds returns 0.0 on probe failure. Publishing that
+            # would read as the process having burned no CPU since it started —
+            # a false reading the window-relative reducer then takes as a new
+            # baseline. Map the failure sentinel to None: gap, never a fake zero.
             callbacks=[_observations(lambda: platform_compat.proc_cpu_seconds() or None)],
             unit="s",
-            description="Cumulative user+system CPU time",
+            description="Process-lifetime user+system CPU time",
         )
-        meter.create_observable_counter(
-            COUNTER_GC_COLLECTIONS,
+        meter.create_observable_gauge(
+            GAUGE_GC_COLLECTIONS,
             callbacks=[_gc_observations("collections")],
             unit="1",
-            description="Cumulative GC runs per generation",
+            description="Process-lifetime GC runs per generation",
         )
-        meter.create_observable_counter(
-            COUNTER_GC_COLLECTED,
+        meter.create_observable_gauge(
+            GAUGE_GC_COLLECTED,
             callbacks=[_gc_observations("collected")],
             unit="1",
-            description="Cumulative objects collected per generation",
+            description="Process-lifetime objects collected per generation",
         )
-        meter.create_observable_counter(
-            COUNTER_GC_UNCOLLECTABLE,
+        meter.create_observable_gauge(
+            GAUGE_GC_UNCOLLECTABLE,
             callbacks=[_gc_observations("uncollectable")],
             unit="1",
-            description="Cumulative uncollectable objects per generation",
+            description="Process-lifetime uncollectable objects per generation",
         )
     except Exception as exc:  # noqa: BLE001 — telemetry must never break boot
         logger.warning("process gauge registration failed: %s", exc)

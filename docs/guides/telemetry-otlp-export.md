@@ -96,15 +96,23 @@ disagree about which they want, and sending the wrong one is the most common
 reason metrics arrive but look wrong — a cumulative counter graphed as a rate, or
 a delta counter treated as a total that appears to reset constantly.
 
-Kiro Crew deliberately passes **no** temporality preference to the exporter. That
-is what leaves the OpenTelemetry standard environment variable in control, so you
-can match your backend without a code change:
+Kiro Crew exports **delta** by default, for counters, up-down counters and
+histograms alike. That is the same encoding its local JSONL sink uses, so both
+destinations describe the same instrument the same way; it is also the cheaper
+one, because a cumulative histogram re-sends every bucket of every series on
+every interval whether or not anything happened, while an idle delta series sends
+nothing at all.
+
+To match a backend that wants something else, set the standard OpenTelemetry
+variable. When it is set, Kiro Crew passes no preference of its own and the
+setting is in full control:
 
 ```bash
 # Cumulative — the OpenTelemetry default. CloudWatch, Prometheus-style backends.
 OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=CUMULATIVE
 
-# Delta — what Datadog and most product-analytics ingests expect.
+# Delta — what Datadog and most product-analytics ingests expect. Also the
+# default when the variable is unset, so setting it changes nothing.
 OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=DELTA
 
 # Delta for counters, cumulative for up-down counters.
@@ -117,10 +125,48 @@ Crew *encodes* what it sends.
 Two things are unaffected by this setting, and knowing that saves debugging time:
 
 - **Gauges have no temporality at all.** Every instrument reporting a
-  point-in-time reading (thread counts, memory, install inventory) is a gauge, so
-  the preference does not apply to them.
-- **The local JSONL sink is always cumulative** for counters. It is a separate
-  reader with its own encoding, and the dashboard aggregator depends on it.
+  point-in-time reading (thread counts, memory, CPU and GC totals, install
+  inventory, the probe-failure count) is a gauge, so the preference does not
+  apply to them. Nothing Kiro Crew exports is a cumulative sum, which is what
+  lets a consumer aggregate one datapoint at a time instead of holding
+  whole-hour state per host.
+- **The local JSONL sink always uses delta** for counters and histograms,
+  whatever this variable says. It is a separate reader with its own encoding, and
+  the dashboard aggregator depends on it.
+
+### If you already export these metrics
+
+Five instruments used to be exported as monotonic cumulative sums and are now
+gauges, under unchanged names:
+
+- `kirocrew.process.cpu.seconds`
+- `kirocrew.process.gc.collections`
+- `kirocrew.process.gc.collected`
+- `kirocrew.process.gc.uncollectable`
+- `kirocrew.inventory.probe.failures`
+
+The reading did not change — each is still the total since the exporting process
+started — but the wire type did, so a backend that was applying a counter
+function (`rate()`, `increase()`, delta-from-cumulative) to them will need
+re-pointing: take the difference between consecutive samples instead. A backend
+that rejects a type change on an existing series may also need the old series
+dropped before the new shape lands, and during a staged rollout one backend can
+receive both shapes from different hosts.
+
+Handle a restart the way you would for any gauge you difference: **clamp negative
+increments to zero**. `service.instance.id` identifies the INSTALL, not the
+process, so a restart does not automatically start a new series at your backend —
+and if the new process happens to reuse the old PID (the kernel wraps through
+`pid_max`), the resource labels are identical while the totals begin again near
+zero, so one consecutive-sample difference across that boundary comes out
+negative. That is one datapoint at a restart boundary, not a corrupted series, and
+a clamp is the standard treatment.
+
+Kiro Crew's own dashboard is not exposed to this: the local JSONL exporter stamps
+each record with the writing process's OS start-time token, and the aggregator
+keys each stream by (PID, that token), so a reused PID lands in a brand-new
+stream. The token is deliberately host-local and reboot-unique, so it never leaves
+the machine — which is why an OTLP consumer has to do the clamp instead.
 
 You can also convert temporality inside the collector with the
 `cumulativetodelta` processor, which is the better lever when one collector feeds

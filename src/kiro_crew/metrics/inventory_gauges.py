@@ -72,7 +72,7 @@ But absence has a second reading, and it is the one that would undermine this
 module: a series that is not there could equally mean the probe BROKE, or that the
 host stopped exporting altogether -- and telling a drifted host from a dark host
 is exactly the job these gauges exist to do. That is why a raising probe
-increments :data:`COUNTER_PROBE_FAILURES` instead of only logging. A broken probe
+increments :data:`GAUGE_PROBE_FAILURES` instead of only logging. A broken probe
 then presents as DATA -- the failure series is present and climbing, which a host
 that stopped exporting cannot produce -- and the first failure of each probe is
 logged at WARNING, which a default install actually collects, rather than at debug
@@ -180,7 +180,7 @@ GAUGE_KNOWLEDGE_DOCUMENTS = "kirocrew.inventory.knowledge.documents"
 GAUGE_LESSONS = "kirocrew.inventory.lessons"
 GAUGE_MCP_SERVERS = "kirocrew.inventory.mcp.servers"
 GAUGE_CONFIG_TOGGLE = "kirocrew.inventory.config.toggle"
-COUNTER_PROBE_FAILURES = "kirocrew.inventory.probe.failures"
+GAUGE_PROBE_FAILURES = "kirocrew.inventory.probe.failures"
 
 ALL_METRIC_NAMES = (
     GAUGE_CRONS_ACTIVE,
@@ -191,10 +191,24 @@ ALL_METRIC_NAMES = (
     GAUGE_LESSONS,
     GAUGE_MCP_SERVERS,
     GAUGE_CONFIG_TOGGLE,
-    COUNTER_PROBE_FAILURES,
+    GAUGE_PROBE_FAILURES,
 )
 
-#: Probe identities for the ``probe`` attribute on :data:`COUNTER_PROBE_FAILURES`.
+#: Gauges here whose reading is a monotonic PROCESS-LIFETIME total rather than a
+#: point-in-time state -- the same category as the process CPU/GC readings in
+#: :mod:`kiro_crew.metrics.process_gauges`, and declared the same way so the
+#: dashboard aggregator reduces them window-relative instead of reporting a
+#: running total as a current reading. ``probe.failures`` was an observable
+#: COUNTER, which made it the last CUMULATIVE series Kiro Crew exported: one is
+#: enough to force every consumer into stateful whole-hour aggregation, since a
+#: cumulative counter's hourly increment is last-minus-first across the whole
+#: hour per host and per process lifetime. The DELTA route is not the
+#: alternative -- an observable callback reads an external lifetime total, so the
+#: first collection after a provider rebuild would re-emit the whole total as one
+#: giant delta (see :mod:`kiro_crew.metrics.temporality`).
+LIFETIME_TOTAL_METRICS = (GAUGE_PROBE_FAILURES,)
+
+#: Probe identities for the ``probe`` attribute on :data:`GAUGE_PROBE_FAILURES`.
 #: A closed set, one per reader, so the attribute stays enum-like.
 PROBE_CRONS = "crons"
 PROBE_MONITOR_LOOPS = "monitor_loops"
@@ -270,7 +284,7 @@ _cache: dict[str, tuple[float, Any]] = {}
 _skills_loader: Any = None
 _lesson_store: Any = None
 
-# Per-probe failure counts, published as COUNTER_PROBE_FAILURES. This exists
+# Per-probe failure counts, published as GAUGE_PROBE_FAILURES. This exists
 # because a broken probe and a host that stopped exporting look IDENTICAL at a
 # backend -- both are a series that simply is not there -- and telling those apart
 # is the whole job these gauges were added to do. A failure count turns the first
@@ -297,7 +311,7 @@ def _note_probe_failure(probe: str) -> None:
             "inventory probe %r failed; its gauge will report no value until it "
             "recovers (see %s for the count)",
             probe,
-            COUNTER_PROBE_FAILURES,
+            GAUGE_PROBE_FAILURES,
             exc_info=True,
         )
     else:
@@ -779,8 +793,8 @@ def register_inventory_gauges(meter: "Meter") -> None:
             unit="1",
             description="Feature-switch state (0/1) per key, over a closed key set",
         )
-        meter.create_observable_counter(
-            COUNTER_PROBE_FAILURES,
+        meter.create_observable_gauge(
+            GAUGE_PROBE_FAILURES,
             callbacks=[_failure_observations()],
             unit="1",
             description=(

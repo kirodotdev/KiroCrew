@@ -869,7 +869,10 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
 
     The export CADENCE stays a core decision, read from
     ``telemetry.export_interval_seconds`` — a destination says where to send, not
-    how often to send.
+    how often to send. TEMPORALITY is a core decision for the same reason: both
+    of this provider's readers describe the same instruments, so they must encode
+    them the same way unless the operator says otherwise
+    (:func:`kiro_crew.metrics.temporality.otlp_preference`).
     """
     endpoint = dest.endpoint
     # Callable directly (not only via _build_recorder), so make sure the lazily
@@ -877,6 +880,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     if not _load_otel():
         logger.warning("opentelemetry not importable; OTLP egress disabled")
         return None
+    # After the gate: this module imports the OTel metrics SDK at module scope,
+    # and the whole point of _load_otel is that a default-off host never pays
+    # for it.
+    from kiro_crew.metrics import temporality
+
     try:
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
             OTLPMetricExporter,
@@ -893,6 +901,15 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         return None
     try:
         kwargs: dict = {"endpoint": endpoint}
+        # The same DELTA map the local sink uses, so one MeterProvider's two
+        # destinations cannot report the same instrument differently. Omitted
+        # entirely when the operator has set the OTel temporality variable: the
+        # exporter applies an explicit dict ON TOP of whichever base that
+        # variable chose, so passing it unconditionally would override an
+        # operator who asked for CUMULATIVE. See metrics.temporality.
+        preference = temporality.otlp_preference()
+        if preference is not None:
+            kwargs["preferred_temporality"] = preference
         # Passed only when supplied so the exporter keeps its own defaults (and
         # its env-var fallbacks) for everything an edition did not set.
         if dest.session is not None:
