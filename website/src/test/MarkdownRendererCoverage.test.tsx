@@ -12,6 +12,7 @@ import MarkdownRenderer, {
 } from '../components/MarkdownRenderer'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { resetExpandedDiffFences } from '../components/FoldableDiffBlock'
 import { api } from '../api/client'
 
 // ── pure helpers ───────────────────────────────────────────────────────────
@@ -299,25 +300,80 @@ describe('MarkdownRenderer structural elements', () => {
 describe('MarkdownRenderer block routing', () => {
   const diff = '```diff\n@@ -1 +1 @@\n-old line\n+new line\n```'
 
+  // A remembered expansion is module-level state that deliberately outlives a
+  // re-mount, so it also outlives a test. Clear it between cases or the first
+  // one that opens a fence leaves every later case rendering already-expanded.
+  beforeEach(() => { resetExpandedDiffFences() })
+
+  const chatProps = { collapseDiffs: true, messageTs: '1700000000.1', slotKey: 'slot-a' } as const
+
+  /** A prose diff fence renders collapsed (see FoldableDiffBlock); open it. */
+  const expandDiff = async (container: HTMLElement) => {
+    const chip = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('[data-testid="prose-diff-chip"]')
+      if (!el) throw new Error('no diff chip')
+      return el
+    })
+    fireEvent.click(chip)
+  }
+
+  it('collapses a prose diff to a chip until it is opened', async () => {
+    const { container } = render(<MarkdownRenderer {...chatProps} content={`Here is the change:\n\n${diff}`} />)
+    await waitFor(() => expect(container.querySelector('[data-testid="prose-diff-chip"]')).not.toBeNull())
+    // The patch body is absent, not merely hidden — nothing to scroll past.
+    expect(container.textContent).not.toContain('new line')
+    // The chip still states the size of the change, so a reader can decide.
+    expect(container.textContent).toContain('-1')
+    expect(container.textContent).toContain('+1')
+    await expandDiff(container)
+    await waitFor(() => expect(container.textContent).toContain('new line'))
+  })
+
+  it('leaves the patch expanded on a surface that does not opt in', async () => {
+    // Every non-transcript consumer (artifact, spec, knowledge doc, changelog,
+    // review report) renders the fence AS the content, so collapsing it would
+    // take the text out of the DOM for find-in-page, selection and printing.
+    const { container } = render(<MarkdownRenderer content={`Here is the change:\n\n${diff}`} />)
+    await waitFor(() => expect(container.textContent).toContain('new line'))
+    expect(container.querySelector('[data-testid="prose-diff-chip"]')).toBeNull()
+  })
+
+  it('scopes a remembered expansion to one slot, so a fork does not inherit it', async () => {
+    // A fork preserves the parent's message timestamps, so ts+line alone would
+    // collide across the two sessions.
+    const first = render(<MarkdownRenderer {...chatProps} content={`Here is the change:\n\n${diff}`} />)
+    await expandDiff(first.container)
+    await waitFor(() => expect(first.container.textContent).toContain('new line'))
+
+    const forked = render(
+      <MarkdownRenderer {...chatProps} slotKey="slot-b" content={`Here is the change:\n\n${diff}`} />,
+    )
+    await waitFor(() => expect(forked.container.querySelector('[data-testid="prose-diff-chip"]')).not.toBeNull())
+    expect(forked.container.textContent).not.toContain('new line')
+  })
+
   it('takes the diff path hint from the preceding chat text', async () => {
     const onFileOpen = vi.fn()
     const { container } = render(
-      <MarkdownRenderer content={`Updated \`/tmp/report.md\`:\n...\n\n${diff}`} onFileOpen={onFileOpen} />,
+      <MarkdownRenderer {...chatProps} content={`Updated \`/tmp/report.md\`:\n...\n\n${diff}`} onFileOpen={onFileOpen} />,
     )
+    await expandDiff(container)
     await waitFor(() => expect(container.textContent).toContain('new line'))
     expect(container.textContent).toContain('report.md')
   })
 
   it('leaves the diff header-less when the preceding text names no path', async () => {
-    const { container } = render(<MarkdownRenderer content={`Here is the change:\n\n${diff}`} />)
+    const { container } = render(<MarkdownRenderer {...chatProps} content={`Here is the change:\n\n${diff}`} />)
+    await expandDiff(container)
     await waitFor(() => expect(container.textContent).toContain('new line'))
     expect(container.textContent).not.toContain('/tmp/')
   })
 
   it('wraps a streaming diff in the smooth-resize shell', async () => {
     const { container } = render(
-      <MarkdownRenderer content={`Wrote /tmp/out.txt\n\n${diff}`} streaming smooth />,
+      <MarkdownRenderer {...chatProps} content={`Wrote /tmp/out.txt\n\n${diff}`} streaming smooth />,
     )
+    await expandDiff(container)
     await waitFor(() => expect(container.textContent).toContain('new line'))
   })
 
