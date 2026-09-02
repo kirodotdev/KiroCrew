@@ -11,6 +11,7 @@ import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
 import { isDiffToolMessage } from './toolDiff'
 import { OPTION_MARKER_RE } from '../../app-sdk/protocol/optionMarker'
+import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 
 // A workflow_run launch renders as its own always-visible inline card
@@ -102,6 +103,21 @@ const isHandBack = (it: TurnItem) =>
   it.kind === 'single' && isConclusion(it) && hasOptionsMarker(it.msg.content)
 
 /**
+ * A message the agent explicitly marked to survive the collapse: a substantive
+ * mid-turn deliverable (a report or synthesis followed by more tool calls or a
+ * short sign-off) carrying the invisible `<!-- keep-visible -->` marker (#7948).
+ * Without it, findConclusionIdx keeps only the LAST substantive message and a
+ * deliverable emitted before a terminal tool call folds into the collapse pane.
+ * Same design rule as isHandBack above: gate on an explicit intent marker, not
+ * on size — the collapse setting is a user preference, so only a direct signal
+ * of agent intent may exempt a message from it. The marker is an HTML comment,
+ * so the rendered message shows nothing extra (rehypeRaw emits a comment node,
+ * which the react renderer skips).
+ */
+const isKeepVisible = (it: TurnItem) =>
+  it.kind === 'single' && isConclusion(it) && hasKeepVisibleMarker(it.msg.content)
+
+/**
  * A crew-mode answer: a forwarded topic result, a meta render, or a question
  * back to the user. Crew Mode breaks this component's central assumption —
  * that the LAST assistant message of a turn is the conclusion and the earlier
@@ -119,13 +135,13 @@ const isCrewReply = (it: TurnItem) =>
   (it.msg.meta?.crew_reply === true || /(^|\s)crew-reply(\s|$)/.test(it.msg.cls || ''))
 
 /** A renderable assistant message (widget/image), a mid-turn hand-back
- *  ([OPTIONS:] marker), a crew-mode answer, a role that must surface inline
- *  (mcp_oauth, error), a workflow_run / spawn_run / workflow-completion /
- *  sub-agent-completion card, or an MCP App-bearing tool call (interactive
- *  iframe anchored to the row). All
+ *  ([OPTIONS:] marker), a keep-visible-marked deliverable (#7948), a crew-mode
+ *  answer, a role that must surface inline (mcp_oauth, error), a workflow_run /
+ *  spawn_run / workflow-completion / sub-agent-completion card, or an MCP
+ *  App-bearing tool call (interactive iframe anchored to the row). All
  *  bypass the collapse pane. */
 const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>) =>
-  isRenderable(it) || isHandBack(it) || isAlwaysVisible(it) || isCrewReply(it) ||
+  isRenderable(it) || isHandBack(it) || isKeepVisible(it) || isAlwaysVisible(it) || isCrewReply(it) ||
   isWorkflowRunItem(it) || isSpawnRunItem(it) ||
   isSubagentCompletionItem(it) ||
   isWorkflowCompletionItem(it) || isMcpAppItem(it, appToolCallIds) ||

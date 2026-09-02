@@ -111,6 +111,59 @@ describe('TurnBlock — file role visibility', () => {
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
 
+  it('keep-visible marked report mid-turn stays visible in collapseAll mode (#7948)', () => {
+    const report =
+      'Fleet synthesis: 44/44 runs banked, all routing gates PASS, medians in the artifact. '.repeat(3) +
+      '\n\n<!-- keep-visible -->'
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: report, ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: autonudge_stop', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Loop stopped. Campaign closed out; summaries and restores all verified done.', ts: '3' }, idx: 2 },
+    ]
+    const turn = makeTurn(items)
+    const { container } = render(
+      <TurnBlock
+        turn={turn}
+        renderItem={(it, i) => <div data-testid={`item-${i}`} data-role={it.kind === 'single' ? it.msg.role : 'group'}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+        collapseAll={true}
+      />
+    )
+    // The marked report (idx 0) must render in place, not inside a collapsed
+    // (overflow-hidden) section — same assertion shape as the file-row test.
+    const reportItem = container.querySelector('[data-testid="item-0"]')
+    expect(reportItem).not.toBeNull()
+    expect(reportItem?.closest('[style*="overflow"]')).toBeNull()
+    // Conclusion still visible
+    expect(container.querySelector('[data-testid="item-2"]')).not.toBeNull()
+  })
+
+  it('unmarked mid-turn report folds into the collapse pane (control for #7948)', () => {
+    const report =
+      'Fleet synthesis: 44/44 runs banked, all routing gates PASS, medians in the artifact. '.repeat(3)
+    const items: TurnItem[] = [
+      { kind: 'single', msg: { role: 'assistant', content: report, ts: '1' }, idx: 0 },
+      { kind: 'single', msg: { role: 'tool', content: '🔧 Running: autonudge_stop', ts: '2' }, idx: 1 },
+      { kind: 'single', msg: { role: 'assistant', content: 'Loop stopped. Campaign closed out; summaries and restores all verified done.', ts: '3' }, idx: 2 },
+    ]
+    const turn = makeTurn(items)
+    const { container } = render(
+      <TurnBlock
+        turn={turn}
+        renderItem={(it, i) => <div data-testid={`item-${i}`} data-role={it.kind === 'single' ? it.msg.role : 'group'}>{it.kind === 'single' ? it.msg.content : 'group'}</div>}
+        collapseAll={true}
+      />
+    )
+    // Without the marker the report is intermediate reasoning: it either does
+    // not render or sits inside a collapsed overflow section. This pins the
+    // user-preference contract the marker deliberately opts OUT of.
+    const reportItem = container.querySelector('[data-testid="item-0"]')
+    expect(reportItem === null || reportItem.closest('[style*="overflow"]') !== null).toBe(true)
+    // The conclusion is the visible survivor.
+    const conclusion = container.querySelector('[data-testid="item-2"]')
+    expect(conclusion).not.toBeNull()
+    expect(conclusion?.closest('[style*="overflow"]')).toBeNull()
+  })
+
   it('renders file in its original turn position (not hoisted to top)', () => {
     const items: TurnItem[] = [
       { kind: 'single', msg: { role: 'assistant', content: 'generating audio…', ts: '1' }, idx: 0 },

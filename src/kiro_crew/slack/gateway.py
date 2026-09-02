@@ -83,7 +83,7 @@ from kiro_crew.config.loader import (
     data_home,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY
+from kiro_crew.constants import DATA_WARNING, SUBAGENT_COMPLETION_META_KEY, strip_control_comments
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import (
@@ -2965,7 +2965,12 @@ class GatewayOrchestrator:
             # ``redact_via_context`` stays the redactor rather than the neutral
             # ``display_safe``: it is context-aware, and the shared sink's default
             # pair would silently drop that.
-            safe_text, _ = redact_for_display(text, redact_via_context)
+            #
+            # Trailing control-tag lines are stripped FIRST (#7948): this is the
+            # proactive egress chokepoint for cron results and subagent
+            # completions authored under dashboard rules, and Slack renders
+            # HTML comments literally. Strip-then-redact matches display_safe.
+            safe_text, _ = redact_for_display(strip_control_comments(text), redact_via_context)
             # ``chunk_for_transport``: the transport's OWN unit (bytes for a
             # byte-capped channel like Webex, chars otherwise) and fence-safe on
             # both paths. A blind slice through a code block leaves part two with

@@ -38,6 +38,59 @@ class TestStripMarkdownPreview:
     def test_inline_code_keeps_literal_text(self):
         assert strip_markdown_preview("run `npm ci` first") == "run npm ci first"
 
+    def test_keep_visible_marker_stripped(self):
+        # #7948: the collapse-exemption marker is emitted "as its final line"
+        # (prompt contract) — a trailing tag LINE is stripped from previews.
+        assert (
+            strip_markdown_preview("Fleet synthesis banked.\n<!-- keep-visible -->")
+            == "Fleet synthesis banked."
+        )
+
+    def test_html_comment_control_tags_stripped(self):
+        # Heartbeat delivery routing tags are HTML comments too — appended as
+        # trailing lines. Mid-body occurrences are rendered content (the
+        # tail-anchored grammar shared with the frontend recognizer): they
+        # are what makes tags quoted in ANY code dialect untouchable.
+        assert strip_markdown_preview("done\n<!-- deliver:dashboard -->") == "done"
+        assert "deliver" in strip_markdown_preview("before <!-- deliver:dashboard --> after")
+
+    def test_unterminated_control_tag_no_longer_swallows_text(self):
+        # The old generic strip treated an unclosed <!-- as a comment to EOF,
+        # which silently deleted everything after it — the data-loss shape
+        # the scoped strip exists to prevent. A truncated control tag now
+        # leaks literally (visible garbage beats silent loss).
+        assert (
+            strip_markdown_preview("visible tail <!-- keep-visible")
+            == "visible tail <!-- keep-visible"
+        )
+
+    def test_ordinary_html_comments_are_preserved(self):
+        # Only recognized control tags are stripped: an ordinary comment the
+        # assistant quotes is visible rendered content in inline code, and
+        # inline code is NOT fence-placeholdered — a generic strip deleted it.
+        assert (
+            strip_markdown_preview("use `<!-- ordinary -->` here") == "use <!-- ordinary --> here"
+        )
+
+    def test_html_comment_inside_code_fence_stays_placeholdered(self):
+        # Fences are placeholder-protected BEFORE the comment strip runs.
+        assert strip_markdown_preview("```html\n<!-- x -->\n```") == "(code)"
+
+    def test_recognized_tag_quoted_in_inline_code_is_preserved(self):
+        # A RECOGNIZED control tag quoted in inline code renders literally in
+        # the dashboard — visible content the preview must keep. Round-5
+        # review: the old anywhere-strip deleted it while search/copy kept
+        # it, a grammar divergence between the projections.
+        assert (
+            strip_markdown_preview("the `<!-- keep-visible -->` marker")
+            == "the <!-- keep-visible --> marker"
+        )
+
+    def test_plan_task_id_tag_is_stripped(self):
+        # Third control-tag family (task planner anchors) — same leak class
+        # as deliver: routing tags; covered by the shared constant.
+        assert strip_markdown_preview("plan ready\n<!-- plan_task_id:abc123 -->") == "plan ready"
+
     def test_link_keeps_label(self):
         assert strip_markdown_preview("see [the docs](https://x.y/z)") == "see the docs"
 

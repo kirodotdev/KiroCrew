@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../types'
 import { OPTION_MARKER_RE } from '../app-sdk/protocol/optionMarker'
+import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
 
 // `<mcwidget>...</mcwidget>` bodies render as a sandboxed iframe (WidgetFrame).
 // Their visible text lives in a separate document the in-chat highlighter's
@@ -21,7 +22,9 @@ const MCWIDGET_RE = /<mcwidget\b[^>]*>[\s\S]*?<\/mcwidget>/gi
  */
 export function searchableText(m: ChatMessage): string {
   if (m.role === 'assistant' || m.role === 'streaming') {
-    return m.content.replace(MCWIDGET_RE, '').replace(OPTION_MARKER_RE, '').trimEnd()
+    // stripKeepVisibleMarker: the marker is an HTML comment the renderer never
+    // shows (#7948), so a search hit inside it would be a phantom match.
+    return stripKeepVisibleMarker(m.content.replace(MCWIDGET_RE, '').replace(OPTION_MARKER_RE, '')).trimEnd()
   }
   return m.content
 }

@@ -50,6 +50,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.connections import get_visible_providers
+from kiro_crew.constants import strip_control_comments
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -3034,7 +3035,11 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     # whole on screen) reach the channel. ``redact_via_context`` stays the redactor
     # rather than the neutral ``display_safe``, because it is context-aware and the
     # shared sink's default pair would silently drop that.
-    text, _ = redact_for_display(assistant_text, redact_via_context)
+    #
+    # Strip trailing control-tag lines FIRST (#7948): this leg mirrors a
+    # dashboard turn — a marker-taught session — to a channel whose client
+    # renders HTML comments literally. Strip-then-redact matches display_safe.
+    text, _ = redact_for_display(strip_control_comments(assistant_text), redact_via_context)
     # Split on the channel's max message length so a long reply mirrors in full
     # rather than being hard-truncated by the transport (Telegram caps at 4096,
     # and its client slices at that width), matching the Slack leg's chunking.

@@ -58,6 +58,105 @@ class TestStripMarkdown:
     def test_preserves_plain_text(self) -> None:
         assert strip_markdown("hello world") == "hello world"
 
+    def test_removes_control_tag_comments(self) -> None:
+        # Trailing control-tag LINES are stripped — the tail-anchored grammar
+        # shared with the frontend recognizer (#7948). Stacked tags all go.
+        assert strip_markdown("report body\n<!-- keep-visible -->") == "report body"
+        assert strip_markdown("done\n<!-- deliver:dashboard -->") == "done"
+        assert (
+            strip_markdown("report\n<!-- keep-visible -->\n<!-- deliver:slack -->") == "report"
+        )
+
+    def test_mid_body_and_same_line_tags_are_rendered_content(self) -> None:
+        # Only tail LINES are control tags: producers emit "as its final
+        # line" (prompt contract; heartbeat/task-planner both append). A tag
+        # mid-body or trailing on a prose line is content, never stripped —
+        # this is what makes a tag quoted in ANY code dialect untouchable.
+        assert "deliver" in strip_markdown("done <!-- deliver:dashboard --> ok")
+        assert "keep-visible" in strip_markdown("prose tail <!-- keep-visible -->")
+
+    def test_ordinary_html_comments_are_preserved(self) -> None:
+        # Scoped to known control tags, never all comments: an ordinary
+        # comment quoted in inline code is visible content the user asked
+        # about — a generic strip deleted it from speech.
+        assert strip_markdown("use `<!-- ordinary -->` here") == "use <!-- ordinary --> here"
+
+    def test_recognized_tag_quoted_in_inline_code_is_preserved(self) -> None:
+        # A RECOGNIZED tag in inline code renders literally — quoted visible
+        # content, so speech keeps it (round-5 grammar unification).
+        assert strip_markdown("the `<!-- keep-visible -->` tag") == (
+            "the <!-- keep-visible --> tag"
+        )
+
+    def test_plan_task_id_tag_is_not_spoken(self) -> None:
+        # Third control-tag family; task_planner appends "\n<!-- plan_task_id:… -->",
+        # so the tag arrives as its own trailing line.
+        assert strip_markdown("plan ready\n<!-- plan_task_id:abc123 -->") == "plan ready"
+
+    def test_html_comment_inside_fence_is_already_placeholdered(self) -> None:
+        # Fences are replaced before the comment strip runs, so a comment
+        # inside code cannot swallow surrounding prose.
+        assert strip_markdown("a ```<!-- not a tag -->``` b") == "a (code block) b"
+
+    def test_unterminated_control_tag_no_longer_swallows_text(self) -> None:
+        # A truncated control tag leaks literally instead of silently eating
+        # the rest of the message (visible garbage beats silent data loss).
+        assert strip_markdown("safe part <!-- broken") == "safe part <!-- broken"
+
+    def test_credential_rejoined_by_comment_strip_is_redacted(self) -> None:
+        # A control tag interposed inside a key id splits it, so a redaction
+        # scan on the RAW text misses it; the strip rejoins the halves. The
+        # post-strip redaction pass must catch the reconstructed secret
+        # before it reaches TTS (#7960 GPT round-4 blocking).
+        out = strip_markdown("key AKIAIOSF<!-- keep-visible -->ODNN7EXAMPLE end")
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+    def test_credential_rejoined_by_emphasis_strip_is_redacted(self) -> None:
+        # Same class, different strip: `**` emphasis markers inside a key id
+        # are removed by the [*_~]+ pass. The invariant covers every strip,
+        # not just the control-tag one.
+        out = strip_markdown("key AKIAIOSF**ODNN7EXAMPLE** end")
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+    def test_contiguous_credential_still_redacted_after_strip(self) -> None:
+        # Idempotence: a credential the pre-strip scan would catch is also
+        # caught by the post-strip pass when strip_markdown is used alone
+        # (split_sentences path has no pre-strip redaction).
+        out = strip_markdown("key AKIAIOSFODNN7EXAMPLE end")
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+
+    def test_control_tag_regex_linear_on_adversarial_input(self) -> None:
+        # CodeQL py/polynomial-redos, two vectors: (a) "<!--deliver:" + many
+        # tabs (adjacent-quantifier ambiguity — fixed round 4); (b) the
+        # repeated prefix "<!--deliver:" * n, where an UNBOUNDED body meant
+        # each of n start positions rescanned an O(n) tail = quadratic
+        # (fixed round 6 by bounding every quantifier, so a failed attempt
+        # is constant work). Times the shared helper this PR ships —
+        # strip_markdown's pre-existing passes are not under test here.
+        # Polynomial time at this size hangs for minutes; linear completes
+        # in milliseconds. Generous bound for slow CI.
+        import time
+
+        from kiro_crew.constants import strip_control_comments
+
+        start = time.monotonic()
+        out_tabs = strip_control_comments("<!--deliver:" + "\t" * 50_000)
+        out_reps = strip_control_comments("<!--deliver:" * 20_000)
+        assert time.monotonic() - start < 5.0
+        # Unterminated tags are preserved (no swallow), not stripped.
+        assert out_tabs.startswith("<!--deliver:")
+        assert out_reps.startswith("<!--deliver:")
+
+    def test_unterminated_tag_preserved_through_full_strip(self) -> None:
+        # Same no-swallow contract through the full TTS pipeline.
+        assert strip_markdown("safe <!--deliver:oops").startswith("safe <!--deliver:oops")
+
+    def test_oversized_tag_body_is_not_treated_as_control_tag(self) -> None:
+        # The body bound (256) is what makes matching linear; a "tag" larger
+        # than any real emission is left visible rather than stripped.
+        big = "<!-- deliver:" + "x" * 300 + " -->"
+        assert strip_markdown(f"before {big} after").strip() != "before after"
+
     def test_collapses_whitespace(self) -> None:
         assert strip_markdown("a\n\n\n\nb") == "a\n\nb"
 

@@ -35,7 +35,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER
+from kiro_crew.constants import OPTIONS_RE_TRAILER, strip_control_comments
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
@@ -178,8 +178,13 @@ def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
     uncopyable. Its own renderer already avoids that (``webex_display_safe``); the
     neutral sinks read the declaration instead of importing a channel symbol,
     which is what keeps them neutral.
+
+    Control-tag comments are stripped first, same as :func:`display_safe` —
+    the deterministic backstop against a dashboard-authored control tag
+    reaching channel users as literal text (#7948).
     """
-    safe, _ = redact_for_display(text or "", _default_redactor)
+    text = strip_control_comments(text or "")
+    safe, _ = redact_for_display(text, _default_redactor)
     if not capabilities.mention_grammars:
         return safe
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
@@ -248,8 +253,16 @@ def display_safe(text: str) -> str:
     The defang covers both mention grammars because the callers are
     channel-neutral: ``@`` for Discord/Telegram users and ``@everyone``, ``<!``
     for Slack's ``<!channel>``.
+
+    Control-tag comments are stripped first (fence/inline-code aware): channel
+    formatters render HTML comments literally, so a dashboard-authored
+    ``<!-- keep-visible -->`` (#7948) or ``deliver:``/``plan_task_id:`` tag
+    delivered to a channel would otherwise reach end users as visible text.
+    The prompt rule only contains the emitter; this is the deterministic
+    backstop on the message itself.
     """
-    safe, _ = redact_for_display(text or "", _default_redactor)
+    text = strip_control_comments(text or "")
+    safe, _ = redact_for_display(text, _default_redactor)
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 

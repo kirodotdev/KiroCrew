@@ -151,6 +151,132 @@ OPTIONS_RE_TRAILER = re.compile(
     re.DOTALL,
 )
 
+# CONTROL-TAG HTML COMMENTS — canonical grammar (single source of truth).
+#
+# Agent control tags ride in HTML comments, which the dashboard's markdown
+# pipeline renders as nothing (rehype-raw emits comment nodes the react
+# renderer skips). Three families exist in ``src/``:
+#   * ``<!-- keep-visible -->``       — collapse-all exemption (#7948)
+#   * ``<!-- deliver:<route> -->``    — heartbeat routing
+#   * ``<!-- plan_task_id:<id> -->``  — task-planner Apply-to-Tasks anchor
+#
+# ONE GRAMMAR, TAIL-ANCHORED + FENCE-GUARDED, case-insensitive, both
+# recognizers (this regex and ``website/src/app-sdk/protocol/
+# keepVisibleMarker.ts``): only standalone tag lines at the message tail are
+# control tags, and a tail inside an UNTERMINATED fence is visible code (see
+# ``_in_open_fence``). Message-tail producers: the prompt rule ("as its
+# final line") and the task-planner appender (newline-prefixed). The
+# heartbeat's ``deliver:`` tags are HEARTBEAT.md FILE-format suffixes on
+# checklist lines, not message-tail emissions — echoed into a message body
+# they are mid-body content, which the dashboard renders as nothing and this
+# strip deliberately leaves alone. Position-independent stripping was tried
+# and retired: rounds 5–8 each surfaced another quoted-code dialect it
+# corrupted.
+#
+# Tag-line leading indent is ≤3 (CommonMark: 4+ spaces renders as an
+# indented code block — visible content, never a control tag).
+# ReDoS note: every quantifier is BOUNDED (whitespace ≤16, tag body ≤256 —
+# generous for real emissions like ``<!-- deliver:dashboard -->``), so a
+# failed match attempt does constant work and total matching stays linear
+# even on adversarial repetition input (CodeQL py/polynomial-redos: an
+# UNBOUNDED body with a failing ``-->`` suffix rescans per start position —
+# quadratic). An unterminated ``<!--`` is NOT matched: swallowing to
+# end-of-text on a missing ``-->`` silently deletes visible prose. A tag
+# body over the bound is not a real control tag and stays visible.
+_TRAILING_CONTROL_LINES_RE = re.compile(
+    r"(?:(?:^|\n)[ \t]{0,3}"
+    r"<!--(?:\s{0,16}keep-visible\s{0,16}|\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256})-->"
+    r"[ \t]{0,16})+\s{0,16}\Z",
+    re.IGNORECASE,
+)
+
+
+# Fence-delimiter lines (CommonMark: 3+ backticks or tildes, ≤3 leading
+# spaces). Used for the open-fence parity guard below.
+_FENCE_DELIM_LINE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
+
+# Over-approximate fence-open CANDIDATES the exact walker cannot classify:
+# a fence run preceded only by whitespace and CommonMark container-marker
+# characters — list bullets (``- ```` ``), ordered-list digits/punctuation
+# (``1. ```` ``), blockquote markers (``> ```` ``) — or by 4+ spaces (an
+# indented code block at top level, but a REAL fence inside a list
+# continuation). Classifying these correctly needs full CommonMark
+# container tracking (nesting, lazy continuation, per-container indent
+# budgets); each conformance round surfaced another sibling. Instead of
+# deciding, the walker VETOES: a candidate seen while outside any tracked
+# fence makes the message's fence structure ambiguous and the strip does
+# nothing. Over-matching is safe by construction — the failure modes are
+# asymmetric: wrongly stripping deletes visible fence-interior content,
+# wrongly not stripping leaves an HTML comment the renderer never shows —
+# so a false veto costs at most a feature-miss, never content.
+# Single bounded character class then a literal run: linear, no
+# backtracking (class and fence characters are disjoint).
+_AMBIGUOUS_FENCE_LINE_RE = re.compile(r"^[ \t>+*\-\d.)]{0,40}(`{3,}|~{3,})")
+
+
+def _in_open_fence(text: str, idx: int) -> bool:
+    """True when position *idx* falls inside an UNTERMINATED code fence —
+    or when the fence structure before *idx* is AMBIGUOUS.
+
+    Walks fence-delimiter lines before *idx* with CommonMark's close rule
+    (same character, run at least as long as the opener). Inside an open
+    fence the renderer shows every line as literal code — including a line
+    that lexes like a control tag — so the strip must not touch it.
+
+    STRIP ONLY WHEN PROVABLY OUTSIDE: a container-prefixed or over-indented
+    fence candidate (``_AMBIGUOUS_FENCE_LINE_RE``) encountered while the
+    walker believes it is outside any fence may be a real opener this
+    grammar cannot see, so the walk answers True — do nothing — rather
+    than risk deleting fence-interior content. Inside a tracked fence the
+    same line shape is literal code under every interpretation and does
+    not veto, so a closed plain fence quoting container-fence examples
+    still strips normally.
+    """
+    open_run: str | None = None
+    for line in text[:idx].split("\n"):
+        m = _FENCE_DELIM_LINE_RE.match(line)
+        if not m:
+            if open_run is None and _AMBIGUOUS_FENCE_LINE_RE.match(line):
+                return True
+            continue
+        run = m.group(1)
+        if open_run is None:
+            open_run = run
+        elif (
+            run[0] == open_run[0]
+            and len(run) >= len(open_run)
+            # CommonMark 4.5: a CLOSING fence may not carry an info string —
+            # only whitespace may follow the run. Inside an open fence a
+            # fence-lookalike WITH trailing text (``` python) is literal
+            # code content, not a closer, so the fence stays open.
+            and line[m.end() :].strip() == ""
+        ):
+            open_run = None
+    return open_run is not None
+
+
+def strip_control_comments(text: str) -> str:
+    """Remove trailing control-tag lines from *text* for a plain-text
+    projection (preview, TTS, channel delivery).
+
+    TAIL-ANCHORED with a FENCE-PARITY guard — the same grammar as the
+    frontend recognizer (``keepVisibleMarker.ts``), case-insensitive on
+    both sides: only standalone tag lines ENDING the message are control
+    tags, and a tail that sits inside an UNTERMINATED fence is visible
+    code, not a tag (the renderer shows it literally). Every producer
+    emits at the tail — the prompt rule says "as its final line" and the
+    task-planner appends a newline-prefixed tag — so nothing real is
+    missed, and a tag quoted anywhere in the body (prose, inline code, any
+    fence dialect) is structurally untouchable rather than guarded by a
+    code-span grammar this module would have to keep re-deriving (rounds
+    5–8 each found another dialect). Stacked trailing tags are all
+    removed. This is the ONE backend strip implementation.
+    """
+    m = _TRAILING_CONTROL_LINES_RE.search(text)
+    if m is None or _in_open_fence(text, m.start()):
+        return text
+    return text[: m.start()]
+
 
 def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     """Detach protocol trailers before a renderer length-splits ``text``.

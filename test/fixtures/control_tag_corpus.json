@@ -1,0 +1,191 @@
+{
+  "_comment": [
+    "Shared conformance corpus for the control-tag recognizer pair:",
+    "backend constants.strip_control_comments (Python) and frontend",
+    "website/src/app-sdk/protocol/keepVisibleMarker.ts (TypeScript).",
+    "Both test suites assert every case (test/test_display_safe_control_tags.py",
+    "and website/src/test/keepVisibleMarker.test.ts), so grammar drift on either",
+    "side goes red locally instead of shipping (Design Review, PR #7960 round 9).",
+    "",
+    "Fields per case:",
+    "  input            - the message text",
+    "  backend_stripped - expected strip_control_comments(input)",
+    "  frontend_stripped- expected stripKeepVisibleMarker(input)",
+    "  exempt           - expected hasKeepVisibleMarker(input)",
+    "The two strip scopes differ BY CONTRACT on one axis: the backend strips any",
+    "trailing recognized tag block, while the frontend strips only blocks LED by",
+    "the keep-visible marker (deliver:/plan_task_id: tails alone are backend-only",
+    "concerns; the dashboard renderer already shows comments as nothing). Cases",
+    "where the two outputs differ are deliberate and documented by their name."
+  ],
+  "cases": [
+    {
+      "name": "plain trailing marker: stripped both sides, exemption fires",
+      "input": "substantive report\n<!-- keep-visible -->",
+      "backend_stripped": "substantive report",
+      "frontend_stripped": "substantive report",
+      "exempt": true
+    },
+    {
+      "name": "uppercase marker: case-insensitive both sides",
+      "input": "report\n<!-- KEEP-VISIBLE -->",
+      "backend_stripped": "report",
+      "frontend_stripped": "report",
+      "exempt": true
+    },
+    {
+      "name": "stacked siblings after marker: whole block strips, exemption fires",
+      "input": "report\n<!-- keep-visible -->\n<!-- deliver:slack -->",
+      "backend_stripped": "report",
+      "frontend_stripped": "report",
+      "exempt": true
+    },
+    {
+      "name": "indent 16 spaces: over CommonMark's 3-space bound, content both sides",
+      "input": "report\n                <!-- keep-visible -->",
+      "backend_stripped": "report\n                <!-- keep-visible -->",
+      "frontend_stripped": "report\n                <!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "indent 17 spaces: over bound, content both sides",
+      "input": "report\n                 <!-- keep-visible -->",
+      "backend_stripped": "report\n                 <!-- keep-visible -->",
+      "frontend_stripped": "report\n                 <!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "mid-body marker: content both sides",
+      "input": "a <!-- keep-visible --> b",
+      "backend_stripped": "a <!-- keep-visible --> b",
+      "frontend_stripped": "a <!-- keep-visible --> b",
+      "exempt": false
+    },
+    {
+      "name": "same-line trailing tag after prose: content both sides",
+      "input": "prose tail <!-- keep-visible -->",
+      "backend_stripped": "prose tail <!-- keep-visible -->",
+      "frontend_stripped": "prose tail <!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "unterminated backtick fence swallows tail: visible code both sides",
+      "input": "```\n<!-- keep-visible -->",
+      "backend_stripped": "```\n<!-- keep-visible -->",
+      "frontend_stripped": "```\n<!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "unterminated tilde fence swallows tail: visible code both sides",
+      "input": "~~~html\n<!-- keep-visible -->",
+      "backend_stripped": "~~~html\n<!-- keep-visible -->",
+      "frontend_stripped": "~~~html\n<!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "closed fence then tail: stripped both sides, exemption fires",
+      "input": "```\ncode\n```\ndone\n<!-- keep-visible -->",
+      "backend_stripped": "```\ncode\n```\ndone",
+      "frontend_stripped": "```\ncode\n```\ndone",
+      "exempt": true
+    },
+    {
+      "name": "marker quoted inside closed fence: content, no exemption",
+      "input": "the marker looks like:\n```html\n<!-- keep-visible -->\n```\nend of message",
+      "backend_stripped": "the marker looks like:\n```html\n<!-- keep-visible -->\n```\nend of message",
+      "frontend_stripped": "the marker looks like:\n```html\n<!-- keep-visible -->\n```\nend of message",
+      "exempt": false
+    },
+    {
+      "name": "unterminated comment: never swallowed, content both sides",
+      "input": "report\n<!-- keep-visible",
+      "backend_stripped": "report\n<!-- keep-visible",
+      "frontend_stripped": "report\n<!-- keep-visible",
+      "exempt": false
+    },
+    {
+      "name": "tag body over 256 bound: content both sides",
+      "input": "report\n<!-- deliver:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX -->",
+      "backend_stripped": "report\n<!-- deliver:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX -->",
+      "frontend_stripped": "report\n<!-- deliver:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX -->",
+      "exempt": false
+    },
+    {
+      "name": "indent 3 spaces: within CommonMark bound, stripped both sides",
+      "input": "report\n   <!-- keep-visible -->",
+      "backend_stripped": "report",
+      "frontend_stripped": "report",
+      "exempt": true
+    },
+    {
+      "name": "indent 4 spaces: indented code block, content both sides",
+      "input": "report\n\n    <!-- keep-visible -->",
+      "backend_stripped": "report\n\n    <!-- keep-visible -->",
+      "frontend_stripped": "report\n\n    <!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "fence-lookalike closer with info string does not close: tail still swallowed",
+      "input": "```\n``` explanation\n<!-- keep-visible -->",
+      "backend_stripped": "```\n``` explanation\n<!-- keep-visible -->",
+      "frontend_stripped": "```\n``` explanation\n<!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "clean closer after info-string lookalike: fence closed, tail stripped",
+      "input": "```\n``` explanation\n```\n<!-- keep-visible -->",
+      "backend_stripped": "```\n``` explanation\n```",
+      "frontend_stripped": "```\n``` explanation\n```",
+      "exempt": true
+    },
+    {
+      "name": "deliver-only tail, no marker: backend strips, frontend keeps (contract asymmetry), no exemption",
+      "input": "done\n<!-- deliver:dashboard -->",
+      "backend_stripped": "done",
+      "frontend_stripped": "done\n<!-- deliver:dashboard -->",
+      "exempt": false
+    },
+    {
+      "name": "plan_task_id tail, no marker: backend strips, frontend keeps (contract asymmetry), no exemption",
+      "input": "plan ready\n<!-- plan_task_id:abc123 -->",
+      "backend_stripped": "plan ready",
+      "frontend_stripped": "plan ready\n<!-- plan_task_id:abc123 -->",
+      "exempt": false
+    },
+    {
+      "name": "list-contained unterminated fence: ambiguous, veto — content both sides",
+      "input": "- ```\n  code inside list fence\n<!-- keep-visible -->",
+      "backend_stripped": "- ```\n  code inside list fence\n<!-- keep-visible -->",
+      "frontend_stripped": "- ```\n  code inside list fence\n<!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "blockquote-contained unterminated fence: ambiguous, veto — content both sides",
+      "input": "> ```\n> quoted fence content\n<!-- keep-visible -->",
+      "backend_stripped": "> ```\n> quoted fence content\n<!-- keep-visible -->",
+      "frontend_stripped": "> ```\n> quoted fence content\n<!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "list-contained CLOSED fence: still vetoed — feature-miss by design, content both sides",
+      "input": "- ```\n  code\n- ```\n<!-- keep-visible -->",
+      "backend_stripped": "- ```\n  code\n- ```\n<!-- keep-visible -->",
+      "frontend_stripped": "- ```\n  code\n- ```\n<!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "over-indented fence line inside list continuation: ambiguous, veto — content both sides",
+      "input": "-   intro\n    ```\n    code\n<!-- keep-visible -->",
+      "backend_stripped": "-   intro\n    ```\n    code\n<!-- keep-visible -->",
+      "frontend_stripped": "-   intro\n    ```\n    code\n<!-- keep-visible -->",
+      "exempt": false
+    },
+    {
+      "name": "container-fence example quoted inside a CLOSED plain fence: no veto, tail stripped, exemption fires",
+      "input": "```\n- ```\n```\n<!-- keep-visible -->",
+      "backend_stripped": "```\n- ```\n```",
+      "frontend_stripped": "```\n- ```\n```",
+      "exempt": true
+    }
+  ]
+}

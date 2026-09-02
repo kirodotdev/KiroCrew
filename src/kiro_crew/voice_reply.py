@@ -29,6 +29,7 @@ import tempfile
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import aws_consent
+from kiro_crew.constants import strip_control_comments
 from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -184,6 +185,12 @@ def strip_markdown(text: str) -> str:
     t = re.sub(r"```[\s\S]*?```", _code_block, t)
     # Remove HTML/XML tags and their content for block-level elements
     t = re.sub(r"<mcwidget[^>]*>[\s\S]*?</mcwidget>", " (widget) ", t)
+    # Strip RECOGNIZED control-tag comments (keep-visible #7948, deliver
+    # routing, plan_task_id anchors) — never all comments, and never inside
+    # inline code, which renders literally and must survive to speech. The
+    # generic tag regex below deliberately excludes "<!". Shared
+    # implementation + grammar spec: constants.strip_control_comments.
+    t = strip_control_comments(t)
     # Replace markdown tables with spoken placeholder
 
     def _table(m):
@@ -229,6 +236,13 @@ def strip_markdown(text: str) -> str:
     # Collapse whitespace
     t = re.sub(r"\n{3,}", "\n\n", t)
     t = re.sub(r"  +", " ", t)
+    # Re-run redaction on the STRIPPED text. Every strip above can make two
+    # halves of a secret contiguous (a control comment, `**` emphasis, or an
+    # HTML tag interposed inside a key id), so a credential scan that ran on
+    # the raw text has not necessarily seen the string TTS will speak.
+    # Idempotent on clean text; placeholders survive re-scanning. (#7960)
+    t, _ = redact_exfiltration_urls(t)
+    t, _ = redact_credentials(t)
     return t.strip()
 
 

@@ -17,6 +17,8 @@ vi.mock('../hooks/useSmoothStream', () => ({
 }))
 vi.mock('../utils/shareUrl', () => ({ copySessionLink: vi.fn().mockResolvedValue(undefined) }))
 import { copySessionLink } from '../utils/shareUrl'
+vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
+import { copyToClipboard } from '../utils/clipboard'
 
 beforeEach(() => { vi.useFakeTimers() })
 afterEach(() => { act(() => { vi.runAllTimers() }); vi.useRealTimers() })
@@ -758,6 +760,17 @@ describe('parseOptions', () => {
     render(<AssistantMessage content="Hello" isStreaming={false} slotRunning={false} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" mode="orchestrator" />)
     fireEvent.click(screen.getByTitle('Copy link to message'))
     expect(copySessionLink).toHaveBeenCalledWith('chat-1', 'My Chat', '2025-05-13T14:00:00.000Z', 'orchestrator')
+  })
+
+  it('copy strips the keep-visible marker so pastes carry no literal control tag (#7948)', () => {
+    // The marker renders as nothing (HTML comment), so the copied text must
+    // not resurface it — copy is the primary action on the substantive
+    // deliverables this marker targets. Marker-specific strip (not a
+    // whole-comment strip): copy preserves message fidelity and has no
+    // fence-protection pass, so comments inside fenced code must survive.
+    render(<AssistantMessage content={'Substantive report body\n\n<!-- keep-visible -->'} isStreaming={false} slotRunning={false} />)
+    fireEvent.click(screen.getByTitle('Copy'))
+    expect(copyToClipboard).toHaveBeenCalledWith('Substantive report body')
   })
 
   it('does not show "Copy link to message" while streaming', () => {

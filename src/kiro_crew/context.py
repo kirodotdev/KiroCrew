@@ -1161,6 +1161,14 @@ _DIFF_RULE_DASHBOARD = (
     "`+++ new_path` headers and an `@@` hunk line; use /dev/null for new "
     "files / deletions — the headers let the dashboard's diff viewer link to "
     "the file), because no card is rendered for those.\n"
+    "When a substantive report, synthesis, or results table is NOT your turn's "
+    "final message (more tool calls or messages follow it), end that message "
+    "with <!-- keep-visible --> as its final line. The dashboard transcript's "
+    "collapse-all mode shows only the turn's last substantive message and folds "
+    "earlier ones into the collapsed steps pane; this marker exempts the "
+    "message so mid-turn deliverables stay visible. The marker is an HTML "
+    "comment and renders as nothing in the dashboard -- do not use it on "
+    "routine progress notes, only on content the user must see.\n"
 )
 _DIFF_RULE_CHANNEL = (
     "After ANY file change (create, edit, append, delete), you MUST show a "

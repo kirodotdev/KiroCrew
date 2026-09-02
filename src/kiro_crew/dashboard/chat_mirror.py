@@ -25,6 +25,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.constants import strip_control_comments
 from kiro_crew.dashboard.chat_backfill import (
     backfill_content,
     gap_summary,
@@ -381,7 +382,9 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         # without passing a renderer, so a markdown-collapse credential would be
         # reassembled whole by the client. Same floor and same context-aware
         # redactor as the live legs in ``chat_runner``.
-        text, _ = redact_for_display(backfill_content(row), redact_via_context)
+        text, _ = redact_for_display(
+            strip_control_comments(backfill_content(row)), redact_via_context
+        )
         return split_markdown_safe(f"{speaker}: {text}", max_chars)
 
     # Bound the INLINE delivery. Unlike the Slack drain this cannot be

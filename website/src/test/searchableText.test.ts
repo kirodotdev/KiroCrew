@@ -31,6 +31,17 @@ describe('searchableText', () => {
     expect(searchableText(msg('assistant', src))).toContain('const replication = 1')
   })
 
+  it('strips a trailing keep-visible marker (renders as nothing — a match would be phantom, #7948)', () => {
+    const t = searchableText(msg('assistant', 'substantive report\n\n<!-- keep-visible -->'))
+    expect(t).toBe('substantive report')
+    expect(t).not.toContain('keep-visible')
+  })
+
+  it('preserves a keep-visible marker quoted inside fenced code (visible content, tail-anchored regex, #7948)', () => {
+    const src = 'the marker looks like:\n```html\n<!-- keep-visible -->\n```\nend of message'
+    expect(searchableText(msg('assistant', src))).toContain('<!-- keep-visible -->')
+  })
+
   it('preserves prose and inline code', () => {
     const src = 'The `useMessageSearch` hook scans messages.'
     expect(searchableText(msg('assistant', src))).toBe(src)
