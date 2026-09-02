@@ -299,9 +299,12 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
                   <div className="flex items-center gap-1.5">
                     <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{a.name}</span>
                     {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">{i18nT('components.agentSelector.default')}</span>}
-                    {a.source && (
-                      <SourceBadge source={a.source} className="shrink-0">
-                        {a.source}
+                    {/* `source` is the AGENT's own origin, not the template's, and
+                        its only reader-meaningful value is a package install — so
+                        badge that one case rather than printing the raw field. */}
+                    {a.source === 'package' && (
+                      <SourceBadge source="package" className="shrink-0">
+                        {i18nT('pages.agentsPage.package')}
                       </SourceBadge>
                     )}
                   </div>

@@ -45,9 +45,9 @@ function AgentButton({ a, active, isDefault, activeRef, onSelect, filter }: {
           <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full text-[11px] font-semibold bg-warn-subtle text-warn" title={i18nT('components.agentDropdownList.new_sessions_start_with_this_agent')}>
             <Star className="lucide-inline" />{i18nT('components.agentDropdownList.default')}
           </span>
-        ) : (
-          <SourceBadge source={a.source}>{highlight(a.source)}</SourceBadge>
-        )}
+        ) : a.source === 'package' ? (
+          <SourceBadge source="package">{i18nT('pages.agentsPage.package')}</SourceBadge>
+        ) : null}
         {active && (
           <span className="text-accent text-[12px]" title={i18nT('components.agentDropdownList.active_in_this_session')}>
             <Check className="lucide-inline" />

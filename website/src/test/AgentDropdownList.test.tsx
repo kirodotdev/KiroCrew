@@ -97,6 +97,22 @@ describe('AgentDropdownList default-agent affordance', () => {
     expect(screen.getByText('Default')).toBeInTheDocument()
   })
 
+  it('labels a package agent and badges nothing for the other sources', () => {
+    // The badge used to print `source` verbatim — an internal identifier that never
+    // reached the i18n catalog, so it read the same in all twelve languages. A package
+    // install is the only value that means anything to a reader, so it is the one
+    // case badged. Own fixture: the shared one names an agent 'builtin', which would
+    // make an absence assertion match the NAME rather than the badge.
+    render(
+      <AgentDropdownList
+        agents={[{ name: 'alpha', source: 'package' }, { name: 'beta', source: 'builtin' }]}
+        activeAgent="" defaultAgent="" onSelect={() => {}}
+      />,
+    )
+    expect(screen.getByText('Package')).toBeInTheDocument()
+    expect(screen.queryByText('builtin')).not.toBeInTheDocument()
+  })
+
   it('puts no second control inside the option rows', () => {
     // A row's one job is picking the agent for this session. A nested control had to
     // stopPropagation to keep the two apart, and its scope ("for new sessions") could
