@@ -213,6 +213,16 @@ describe('TreeNode', () => {
     expect(select).toHaveBeenCalledWith(fileNode)
   })
 
+  it('lets a file context-menu event bubble to its Radix trigger', () => {
+    const onContextMenu = vi.fn()
+    renderWithQuery(
+      <TreeNode node={fileNode} depth={0} expanded={{}} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={new Map()} onContextMenu={onContextMenu} />,
+    )
+
+    expect(fireEvent.contextMenu(screen.getByText('app.py'))).toBe(true)
+    expect(onContextMenu).toHaveBeenCalledWith(expect.anything(), fileNode)
+  })
+
   it('shows children when expanded', () => {
     renderWithQuery(
       <TreeNode node={dirNode} depth={0} expanded={{ '/home/user/src': true }} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={new Map()} />,
