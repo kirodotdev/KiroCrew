@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         asyncio,
         compact_cost_log,
         consult_offloaded,
+        format_subagent_usage,
         has_dashboard_surface,
         list_orphans,
         logger,
@@ -187,12 +188,15 @@ class OrphanStallMonitor(ManagerComponent):
         task_preview = (state.get("task", "") or "")[:100]
         parent_session = state.get("parent_session", "")
         result_path = str(agent_dir_for_display(agent_id) / "result.txt")
+        usage = format_subagent_usage(state.get("credits"), state.get("elapsed"))
+        usage_line = f"Usage: {usage}\n" if usage else ""
 
         if has_result:
             msg = (
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ⚠️ orphaned by gateway restart\n"
                 f"Task: {task_preview}\n"
+                f"{usage_line}"
                 f"Result saved at: `{result_path}`\n"
                 f"Use the read tool to retrieve it."
             )
@@ -211,6 +215,7 @@ class OrphanStallMonitor(ManagerComponent):
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{agent_id}` ❌ lost to gateway restart\n"
                 f"Task: {task_preview}\n"
+                f"{usage_line}"
                 f"No result was captured before the restart."
             )
             row_meta = single_completion_meta(
