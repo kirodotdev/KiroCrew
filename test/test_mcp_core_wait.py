@@ -192,7 +192,7 @@ def test_spawn_run_resolves_machine_coded_coordinator_uncertainty() -> None:
 
 
 def test_pending_command_lookup_preserves_transport_uncertainty() -> None:
-    """A pending durable row must not close a batch member as completed."""
+    """A durable pending row may still execute and must not close its batch early."""
     pending = {
         "found": True,
         "id": "durable1",

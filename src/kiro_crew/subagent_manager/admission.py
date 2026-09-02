@@ -736,6 +736,9 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             except RuntimeError:
                 pass  # no running loop (sync/test context)
 
+        # These callbacks can fail before any task owns the registered record.
+        # Roll that provisional registration back so it cannot retain a slot or
+        # make the command authority mistake a phantom record for accepted work.
         try:
             parent_trusted = (
                 parent_session_key
@@ -992,6 +995,10 @@ class SpawnAdmissionCoordinator(ManagerComponent):
             and params.get("_coordinator_fence") is not None
         )
         if coordinator_rejection and drained is not None:
+            # The synchronous caller that received the original queued record
+            # no longer exists.  Bind the drained rejection back to its durable
+            # fence and report it through the coordinator instead of leaving an
+            # authority heartbeat renewing work that can never start.
             report_task = self._manager._tasks.pop(f"reject-{drained.id}", None)
             if report_task is not None:
                 report_task.cancel()

@@ -374,23 +374,9 @@ class MemoryRunCoordinator:
             if existing is not None:
                 event_id = self._outbox_by_run_type.get((request.run_id, request.event_type))
                 existing_event = self._outbox.get(event_id) if event_id else None
-                # Legacy files are evidence, not lifecycle authority. A crash
-                # can leave a durable coordinator row before result.txt is
-                # written, so retain that path for the fenced recovery which
-                # follows. Never copy terminal state, outcome, error, owner, or
-                # version from an agent-writable tombstone into an existing row.
-                if (
-                    existing.observed_state is not ObservedState.TERMINAL
-                    and not existing.result_path
-                    and request.result_path
-                ):
-                    existing = replace(existing, result_path=request.result_path)
-                    self._runs[request.run_id] = existing
-                    return self._result(
-                        CoordinatorDecision.APPLIED,
-                        CoordinatorReason.TRANSITIONED,
-                        LegacyImportReceipt(existing, existing_event, created=False),
-                    )
+                # Legacy files are agent-writable evidence, not lifecycle
+                # authority. Once the coordinator owns an identity, replay may
+                # observe it but cannot validate or mutate it from stale files.
                 return self._result(
                     CoordinatorDecision.UNCHANGED,
                     CoordinatorReason.IDEMPOTENT_REPLAY,
@@ -682,6 +668,37 @@ class MemoryRunCoordinator:
             )
             if command.status in (CommandStatus.APPLIED, CommandStatus.REJECTED):
                 if matching:
+                    result_fill = (
+                        command.status is CommandStatus.APPLIED
+                        and status is CommandStatus.APPLIED
+                        and not command.rejection_reason
+                        and not command.result_json
+                        and not rejection_reason
+                        and bool(result_json)
+                    )
+                    if result_fill and command.operation in _EXECUTION_COMMANDS:
+                        run = self._runs.get(command.run_id)
+                        if (
+                            run is None
+                            or run.owner_id != command.owner_id
+                            or run.lease_epoch != command.lease_epoch
+                        ):
+                            return self._result(
+                                CoordinatorDecision.REJECTED,
+                                CoordinatorReason.STALE_FENCE,
+                            )
+                    if result_fill:
+                        command = replace(
+                            command,
+                            result_json=result_json,
+                            updated_at=self._clock(),
+                        )
+                        self._commands[command.command_id] = command
+                        return self._result(
+                            CoordinatorDecision.APPLIED,
+                            CoordinatorReason.TRANSITIONED,
+                            command,
+                        )
                     if (
                         command.status is not status
                         or command.rejection_reason != rejection_reason
@@ -746,7 +763,12 @@ class MemoryRunCoordinator:
     ) -> CoordinatorResult[RunRecord]:
         async with self._lock:
             now = self._clock()
-            validated = self._validate_transition(command.run_id, fence, expected_version, now=now)
+            validated = self._validate_transition(
+                command.run_id,
+                fence,
+                expected_version,
+                now=now,
+            )
             if isinstance(validated, CoordinatorResult):
                 current = self._runs.get(command.run_id)
                 if not (
@@ -791,7 +813,12 @@ class MemoryRunCoordinator:
     ) -> CoordinatorResult[RunRecord]:
         async with self._lock:
             now = self._clock()
-            validated = self._validate_transition(run_id, fence, expected_version, now=now)
+            validated = self._validate_transition(
+                run_id,
+                fence,
+                expected_version,
+                now=now,
+            )
             if isinstance(validated, CoordinatorResult):
                 current = self._runs.get(run_id)
                 if not (
@@ -832,7 +859,12 @@ class MemoryRunCoordinator:
     ) -> CoordinatorResult[RunRecord]:
         async with self._lock:
             now = self._clock()
-            validated = self._validate_transition(run_id, fence, expected_version, now=now)
+            validated = self._validate_transition(
+                run_id,
+                fence,
+                expected_version,
+                now=now,
+            )
             if isinstance(validated, CoordinatorResult):
                 current = self._runs.get(run_id)
                 if not (
@@ -895,7 +927,12 @@ class MemoryRunCoordinator:
 
         async with self._lock:
             now = self._clock()
-            validated = self._validate_transition(run_id, fence, expected_version, now=now)
+            validated = self._validate_transition(
+                run_id,
+                fence,
+                expected_version,
+                now=now,
+            )
             if isinstance(validated, CoordinatorResult):
                 current = self._runs.get(run_id)
                 if not (
@@ -979,6 +1016,7 @@ class MemoryRunCoordinator:
             # Expiry makes a run eligible for takeover; the monotonic epoch is
             # the fence. Let the current epoch commit its terminal result when
             # no recovery owner won that race, including after host suspend.
+            now = self._clock()
             validated = self._validate_transition(
                 completion.run_id,
                 fence,
@@ -1020,14 +1058,16 @@ class MemoryRunCoordinator:
                 destination=completion.destination,
                 event_type=completion.event_type,
                 payload_json=completion.payload_json,
-                status=DeliveryState.PENDING,
+                status=completion.delivery_state,
                 attempts=0,
                 available_at=now,
                 claim_owner="",
                 claim_expires_at=0.0,
                 claim_epoch=0,
                 created_at=now,
-                delivered_at=None,
+                delivered_at=(
+                    now if completion.delivery_state is DeliveryState.DELIVERED else None
+                ),
             )
             self._outbox[event.event_id] = event
             self._outbox_by_run_type[key] = event.event_id

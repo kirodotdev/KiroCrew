@@ -175,6 +175,7 @@ class RunCompletion:
     destination: str
     payload_json: str
     terminal_at: float
+    delivery_state: DeliveryState = DeliveryState.PENDING
 
 
 @dataclass(frozen=True)

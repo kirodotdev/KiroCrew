@@ -966,7 +966,6 @@ test/test_prepare_pr_profiles.py
 test/test_prepare_pr_status.py
 test/test_previous_result_read_off_loop.py
 test/test_process_tree.py
-test/test_process_tree_kill.py
 test/test_project_alias.py
 test/test_project_git.py
 test/test_project_git_status_log.py
@@ -1107,7 +1106,6 @@ test/test_stt_endpointing.py
 test/test_stt_stream_cov80.py
 test/test_stub_bridge_liveness.py
 test/test_stuck_turn_watchdog.py
-test/test_subagent.py
 test/test_subagent_context_groups.py
 test/test_subagent_continuable.py
 test/test_subagent_cost.py

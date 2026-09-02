@@ -49,6 +49,22 @@ def test_subagent_manager_preserves_injected_coordinator_identity() -> None:
     assert manager.command_authority._manager is manager
 
 
+def test_subagent_manager_preserves_a_falsy_injected_coordinator() -> None:
+    class FalsyCoordinator(MemoryRunCoordinator):
+        def __bool__(self) -> bool:
+            return False
+
+    coordinator = FalsyCoordinator()
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        coordinator=coordinator,
+    )
+
+    assert manager._coordinator is coordinator
+    assert manager.command_authority._coordinator is coordinator
+
+
 @pytest.mark.asyncio
 async def test_execution_heartbeat_reacquires_an_expired_command_lease(monkeypatch) -> None:
     clock = [100.0]

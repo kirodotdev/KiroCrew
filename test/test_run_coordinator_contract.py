@@ -691,7 +691,95 @@ async def test_exact_execution_command_claim_and_finish_are_idempotent(
 
 
 @pytest.mark.asyncio
-async def test_execution_rejection_retains_fence_for_terminal_outbox_commit(
+async def test_execution_finish_can_fill_result_after_starting_wins_race(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(_request())
+    claim = await coordinator.claim_command(
+        "command-1",
+        OwnerLease("admission", clock.value + 10),
+    )
+    assert claim is not None
+    assert claim.fence is not None
+    assert claim.run is not None
+
+    started = await coordinator.mark_starting(
+        claim.command,
+        claim.fence,
+        claim.run.version,
+    )
+    filled = await coordinator.finish_command(
+        claim.command_fence,
+        CommandStatus.APPLIED,
+        result_json='{"id":"run-1","queued":false}',
+    )
+    queried = await coordinator.get_command_by_key("key-1")
+
+    assert started.decision is CoordinatorDecision.APPLIED
+    assert filled.decision is CoordinatorDecision.APPLIED
+    assert filled.value is not None
+    assert filled.value.result_json == '{"id":"run-1","queued":false}'
+    assert queried is not None
+    assert queried.command == filled.value
+
+
+@pytest.mark.asyncio
+async def test_execution_finish_cannot_fill_result_after_recovery_supersedes_lease(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    await coordinator.submit(_request())
+    claim = await coordinator.claim_command(
+        "command-1",
+        OwnerLease("admission", clock.value + 10),
+    )
+    assert claim is not None
+    assert claim.fence is not None
+    assert claim.run is not None
+    started = await coordinator.mark_starting(
+        claim.command,
+        claim.fence,
+        claim.run.version,
+    )
+    assert started.value is not None
+    clock.value += 11
+    recovery = await coordinator.claim_recovery(
+        OwnerLease("recovery", clock.value + 10),
+        1,
+    )
+    assert len(recovery) == 1
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id="run-1",
+            outcome=RunOutcome.INTERRUPTED,
+            result_path="",
+            error="interrupted by recovery",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json='{"error":"interrupted by recovery"}',
+            terminal_at=clock.value,
+        ),
+        recovery[0].fence,
+        recovery[0].run.version,
+    )
+    assert completed.decision is CoordinatorDecision.APPLIED
+
+    stale_fill = await coordinator.finish_command(
+        claim.command_fence,
+        CommandStatus.APPLIED,
+        result_json='{"id":"run-1","queued":false}',
+    )
+
+    assert stale_fill.decision is CoordinatorDecision.REJECTED
+    assert stale_fill.reason is CoordinatorReason.STALE_FENCE
+    queried = await coordinator.get_command_by_key("key-1")
+    assert queried is not None
+    assert queried.command.result_json == ""
+
+
+@pytest.mark.asyncio
+async def test_command_rejection_does_not_bypass_terminal_outbox_transition(
     coordinator: RunCoordinator,
     clock: FakeClock,
 ) -> None:
@@ -714,6 +802,7 @@ async def test_execution_rejection_retains_fence_for_terminal_outbox_commit(
     assert run.observed_state is ObservedState.ACCEPTED
     assert run.outcome is None
     assert run.error == ""
+    assert await coordinator.claim_outbox(OwnerLease("delivery", clock.value + 10), 1) == []
     assert await coordinator.claim_commands(OwnerLease("executor", clock.value + 10), limit=1) == []
 
 
@@ -1096,7 +1185,46 @@ async def test_completion_is_atomic_when_event_identity_generation_fails(
     with pytest.raises(RuntimeError, match="identity source unavailable"):
         await coordinator.complete(completion, claim.fence, running.version)
 
-    assert await coordinator.get_run("run-1") == running
+    run = await coordinator.get_run("run-1")
+    receipt = await coordinator.get_command_by_key("key-1")
+    assert run == running
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_synchronous_completion_commits_an_already_delivered_event(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    claim, running = await _claimed_running(coordinator, clock)
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id="run-1",
+            outcome=RunOutcome.FAILED,
+            result_path="",
+            error="rejected synchronously",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json='{"error":"rejected synchronously"}',
+            terminal_at=clock.value,
+            delivery_state=DeliveryState.DELIVERED,
+        ),
+        claim.fence,
+        expected_version=running.version,
+    )
+
+    assert completed.decision is CoordinatorDecision.APPLIED
+    assert completed.value is not None
+    assert completed.value.status is DeliveryState.DELIVERED
+    assert completed.value.delivered_at == clock.value
+    assert (
+        await coordinator.claim_outbox(
+            OwnerLease("delivery", clock.value + 10),
+            1,
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -1405,7 +1533,7 @@ async def test_terminal_run_lease_cannot_be_renewed(
 
 
 @pytest.mark.asyncio
-async def test_transition_uses_one_clock_sample_for_fence_and_timestamp() -> None:
+async def test_memory_transition_uses_one_clock_sample_for_fence_and_timestamp() -> None:
     ticks: list[float] = []
 
     def stepping_clock() -> float:
@@ -1418,6 +1546,7 @@ async def test_transition_uses_one_clock_sample_for_fence_and_timestamp() -> Non
             OwnerLease(owner_id="gateway-1", lease_expires_at=105.0), limit=1
         )
     )[0]
+    assert claim.run is not None
     ticks[:] = [104.0, 106.0]
 
     starting = await coordinator.mark_starting(
@@ -1734,6 +1863,42 @@ async def test_legacy_import_and_recovery_claim_are_idempotent_and_fenced(
 
 
 @pytest.mark.asyncio
+async def test_existing_legacy_import_replays_before_validating_stale_file_shape(
+    coordinator: RunCoordinator,
+) -> None:
+    request = LegacyRunImport(
+        run_id="legacy-replay",
+        parent_session="dashboard:parent",
+        agent="kirocrew",
+        task="old work",
+        conversation_key="",
+        observed_state=ObservedState.RUNNING,
+        outcome=None,
+        result_path="",
+        error="",
+        created_at=10.0,
+        updated_at=20.0,
+        terminal_at=None,
+        source_version="legacy-state-v1",
+    )
+    created = await coordinator.import_legacy(request)
+
+    replay = await coordinator.import_legacy(
+        replace(
+            request,
+            observed_state=ObservedState.TERMINAL,
+            outcome=None,
+            event_type="subagent_completion",
+            delivery_state=None,
+        )
+    )
+
+    assert created.decision is CoordinatorDecision.APPLIED
+    assert replay.decision is CoordinatorDecision.UNCHANGED
+    assert replay.reason is CoordinatorReason.IDEMPOTENT_REPLAY
+
+
+@pytest.mark.asyncio
 async def test_recovery_claims_terminal_run_with_owned_process_until_cleanup(
     coordinator: RunCoordinator,
     clock: FakeClock,
@@ -1875,7 +2040,7 @@ async def test_legacy_terminal_import_preserves_delivery_state(
 
 
 @pytest.mark.asyncio
-async def test_legacy_import_retains_result_evidence_without_terminalizing_existing_run(
+async def test_legacy_import_cannot_mutate_existing_run_from_result_evidence(
     coordinator: RunCoordinator,
 ) -> None:
     submitted = await coordinator.submit(_request(run_id="shadow-run"))
@@ -1903,10 +2068,56 @@ async def test_legacy_import_retains_result_evidence_without_terminalizing_exist
         )
     )
 
-    assert imported.decision is CoordinatorDecision.APPLIED
+    assert imported.decision is CoordinatorDecision.UNCHANGED
     assert imported.value is not None
     assert imported.value.run.observed_state is ObservedState.ACCEPTED
     assert imported.value.run.outcome is None
     assert imported.value.run.error == ""
-    assert imported.value.run.result_path == "/tmp/shadow-run/result.txt"
+    assert imported.value.run.result_path == ""
     assert imported.value.event is None
+
+
+@pytest.mark.asyncio
+async def test_terminal_legacy_import_cannot_override_claimed_authoritative_run(
+    coordinator: RunCoordinator,
+    clock: FakeClock,
+) -> None:
+    submitted = await coordinator.submit(_request(run_id="live-authoritative"))
+    assert submitted.value is not None
+    claim = await coordinator.claim_command(
+        submitted.value.command.command_id,
+        OwnerLease("executor", clock.value + 90.0),
+    )
+    assert claim is not None and claim.run is not None
+
+    imported = await coordinator.import_legacy(
+        LegacyRunImport(
+            run_id="live-authoritative",
+            parent_session="dashboard:parent",
+            agent="kirocrew",
+            task="old work",
+            conversation_key="",
+            observed_state=ObservedState.TERMINAL,
+            outcome=RunOutcome.INTERRUPTED,
+            result_path="/tmp/result.txt",
+            error="stale tombstone",
+            created_at=10.0,
+            updated_at=20.0,
+            terminal_at=20.0,
+            source_version="legacy-state-v1",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json='{"id":"live-authoritative"}',
+            delivery_state=DeliveryState.PENDING,
+        )
+    )
+
+    run = await coordinator.get_run("live-authoritative")
+    assert imported.decision is CoordinatorDecision.UNCHANGED
+    assert run is not None
+    assert run.observed_state is ObservedState.ACCEPTED
+    assert run.outcome is None
+    assert run.error == ""
+    assert run.owner_id == claim.run.owner_id
+    assert run.lease_epoch == claim.run.lease_epoch
+    assert run.version == claim.run.version

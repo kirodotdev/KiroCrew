@@ -369,7 +369,8 @@ class TestSessionSharingSpawn:
             patch("kiro_crew.subagent.sel"),
         ):
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
-            await _wait_until_done(info)
+            run_task = manager._tasks[info.id]
+            await run_task
 
         # Legacy path: get_or_create called, runtime NOT called
         sessions.get_or_create.assert_awaited()

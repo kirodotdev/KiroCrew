@@ -19,7 +19,9 @@ command ID and idempotency key before HTTP; spawn/continue also preassign the
 visible run ID. The gateway validates all-or-none identity fields by key presence,
 so an empty reserved field cannot select the identity-free compatibility path. It
 recomputes the canonical semantic SHA-256 hash and fails closed on key/payload
-conflicts. An
+conflicts. The hash is computed from the caller's canonical payload, but the
+durable command record stores only the redacted task and argument values; the
+manager receives the original values only through the live in-memory call. An
 exact replay returns the stored run/control response without repeating the
 manager effect. Before a stored execution response exists, an exact retry may
 claim and execute a command that is still `PENDING`, because no owner has
@@ -49,7 +51,11 @@ control results are redacted before both durable persistence and synchronous
 return. Every pending execution or control response carries an explicit error
 so callers cannot mistake uncertain acceptance for success. Lifecycle MCP tools
 render transport-uncertain results as unknown outcomes with an explicit
-do-not-retry instruction instead of an ordinary retryable error. The legacy lost-wave
+do-not-retry instruction instead of an ordinary retryable error. A stored manager rejection
+retains `counted: true` for wave accounting. When the lookup follows transport
+uncertainty,
+`command_pending` preserves that uncertainty and never enters lost-wave
+accounting because the gateway may still apply it. The legacy lost-wave
 endpoint remains for unkeyed compatibility callers. The authenticated DELETE
 endpoint accepts the same additive identity for idempotent cancellation, with
 its optional fixed-shape JSON body bounded by the shared request limit.
@@ -60,16 +66,21 @@ After the manager boundary, a control exception is rethrown only when its
 rejected command outcome commits. An execution exception is rejected only when
 the manager confirms that the run never registered; after that rejection commits,
 the authority returns a typed counted failure whose durable result is reused by
-exact retries and lookup. A registered run, or a registration lookup that itself
-fails, retains its claim and surfaces typed outcome uncertainty because the child
-may still be executing. Any failed or rejected settlement is likewise uncertain;
-an exact retry is not safe after a legacy side effect may have occurred.
+exact retries and lookup. An already-terminal registered rejection remains
+authoritative when the manager raises after registration and follows the same
+durable rejection path. A nonterminal registered run, or a registration lookup
+that itself fails, retains its claim and surfaces typed outcome uncertainty
+because the child may still be executing. Any failed or rejected settlement is
+likewise uncertain; an exact retry is not safe after a legacy side effect may
+have occurred.
 
 The command fence has its own expiry and monotonic claim epoch. Expiry makes a
 command eligible for takeover; it does not discard a completed side effect's
 matching result unless a newer claimant has actually advanced the epoch.
 Control commands therefore never acquire, renew, or invalidate the live
 executor's run lease.
+Ordinary controls use a short claim; cancellation alone uses a 22-minute claim
+because its manager effect includes the bounded 20-minute parent-delivery wait.
 Rejected legacy admission is durably reflected as a rejected command and failed
 terminal run. A claimed execution with an uncertain crash is not automatically
 replayed. Accepted keyed runs carry `_coordinator_admitted`, preventing `_run`
@@ -131,11 +142,16 @@ though the original HTTP caller has already returned. Later lifecycle work owns
 any execution-time renewal. Orderly shutdown removes the manager's queued entry
 before committing that rejection, so an already-scheduled drain cannot start work
 whose durable command is terminal. If orderly-shutdown settlement fails, authority
-shutdown stays pending and retries while retaining the command fence, facade,
-and lease heartbeat instead of abandoning accepted work in a claimed state. A
+shutdown retries while retaining the command fence, facade, and lease heartbeat.
+Settlement is bounded: if repeated attempts cannot prove a terminal command or a
+newer claimant, shutdown logs the durable debt, clears the local facade cache,
+and stops its lease heartbeat so another owner can take over after lease expiry
+rather than wedging gateway shutdown. A
 durable lookup releases that local shutdown debt when the command is already
 terminal or a newer claim owns it, so a legitimate takeover cannot wedge the
-retiring gateway.
+retiring gateway. An immediate manager rejection whose terminal commit fails is
+retained with the same command/run fence and retried through orderly shutdown;
+a durable terminal record or newer command claim releases that local debt.
 An active or queued legacy manager record with the requested run id rejects the
 keyed request before coordinator submission, so the rejected request cannot
 reserve the older run's durable identity. A synchronous manager reservation
@@ -160,23 +176,48 @@ the HTTP response is explicitly transport-uncertain and counted. The MCP caller
 resolves the stable idempotency key. A lookup distinguishes an unclaimed
 `PENDING` command from a `CLAIMED` command: the caller replays the exact keyed
 request once only for `PENDING`, while `CLAIMED` remains outcome-uncertain and is
-never recorded as a lost submission.
+never recorded as a lost submission. Ordinary executor `Exception` failures
+enter the durable rejection path, while process-level `BaseException` signals
+such as cancellation, `KeyboardInterrupt`, and `SystemExit` always propagate
+instead of being converted into a spawn result.
+
+The command result has one durable ownership rule. `_run` may mark an execution
+command applied with an empty result when it wins the child-start race; the same
+command fence may then fill that empty result exactly once while its run lease
+still has the same owner and epoch. Recovery takeover fences a late fill, and
+conflicting results remain rejected. If the synchronous manager facade rejects,
+or raises before registering a run, the authority retains the failed facade
+result until it commits the failed run and outbox event atomically, then stores
+the applied response. If the facade raises after registering non-terminal work,
+the authority reports outcome uncertainty and leaves the manager lifecycle
+intact instead of cancelling a possibly started child and leaking its scheduler
+slot. A retry resumes a failed terminal commit without invoking the manager
+again. If the response fill fails after the terminal commit, the counted
+response still returns and later replays derive the failure from the terminal
+run. A command-only rejection never terminalizes a run without an outbox event.
+After restart, a terminal failed, stopped, or interrupted run takes precedence
+over an empty command result, so an exact POST replay cannot report an already
+terminal execution as newly spawned.
 
 An exact execution claim also acquires the run lease. The authority passes its
 run fence, command, and optimistic version through the synchronous facade and
 queue payload. `_run` commits `starting` before child startup, `_run_inner`
 commits `running` after session creation and before the prompt, and a 30-second
-heartbeat renews the 90-second lease. A terminal failed, stopped, or interrupted
-run wins lookup reconstruction when its execution command has no stored facade
-result, so pre-start cancellation cannot replay as a successful spawn. Control
+heartbeat renews the 90-second lease. A queued or approval-gated keyed execution
+starts an authority-owned heartbeat as soon as the synchronous facade returns
+its waiting record, closing the pre-execution wait before `_run` explicitly
+takes over lifecycle renewal. Queue cancellation, queue-drain rejection, and
+approval denial stop that heartbeat by committing and delivering a terminal
+coordinator outcome. Orderly shutdown cancels both heartbeat owners. Control
 claims still never touch the execution lease.
 
 The port defines typed desired/observed state, terminal outcomes, idempotent
 commands, execution leases with fencing epochs, optimistic lifecycle versions,
 and delivery claims with an independent fencing epoch. The in-memory adapter is
 the executable contract oracle; it is not a restart store. Command records
-persist the canonical payload, hash, independent claim fence, and bounded
-response JSON. Controls may target runs created before the coordinator, so their
+persist a redacted canonical payload, the hash of the original canonical
+request, independent claim fence, and bounded response JSON. Controls may target
+runs created before the coordinator, so their
 command row does not require a matching canonical run row.
 The stored task and model fields are credential-redacted, UTF-8-safe, and
 bounded before hashing; the unredacted prompt remains only in the live executor.
@@ -298,11 +339,16 @@ both STARTING attempts fail, it leaves the command claimed for recovery and
 does not apply command settlement against an unknown lifecycle state.
 
 For a coordinator-admitted run, `complete()` verifies the execution fence and
-optimistic version, writes the terminal outcome, and inserts one pending outbox
+the exact optimistic version supplied by the original attempt, writes the
+terminal outcome, and inserts one pending outbox
 event in the same SQLite transaction. The payload contains bounded, redacted
 routing metadata, a 4,000-character result summary, and `result_path`; it never
 copies the full transcript. Replaying the completion returns the same
-`event_id`; a conflicting outcome is rejected. Lease expiry makes the run
+`event_id` only when the original fence, expected version, and completion
+payload match; stale-version and conflicting-outcome replays are rejected.
+Lease renewal is monotonic and never shortens either the run or command claim.
+Outbox release rejects non-finite retry deadlines instead of creating an event
+that can never become claimable. Lease expiry makes the run
 eligible for takeover but does not itself invalidate the monotonic fence, so
 the current epoch may still commit its terminal result after host suspend if no
 recovery owner has advanced the epoch first.
@@ -324,32 +370,55 @@ only when its execution command is already durably `REJECTED`; the run transitio
 and pending outbox insert remain one transaction. The stored run identity is
 authoritative when the transient rejection view omits parent or agent metadata.
 
-`OutboxDeliveryAdapter` claims one FIFO event immediately before each delivery,
-increments the delivery claim epoch, and invokes existing gateway routing. Its
-accepted path retains the stable event identity and retries transient
+A synchronous non-batch facade rejection returns the counted error in the HTTP
+response and commits its terminal event already delivered, so the same failure
+cannot arrive later as a duplicate parent turn. Batch rejections remain pending,
+preserve `batch_id` and `batch_total`, and settle their wave through the
+ordinary completion consumer. The
+live authority handoff registers that batch identity by run before the terminal
+transaction makes its event claimable, so an overlapping periodic drain builds
+the same live delivery context. Durable labels alone never reconstruct volatile
+digest state after restart. Exception-derived rejections also retain the
+caller's `silent` delivery policy in their durable payload.
+
+`OutboxDeliveryAdapter` drains a bounded FIFO batch by claiming each event only
+when its destination is about to run, or claims one exact event. Each claim
+increments the delivery epoch before invoking existing gateway routing. It
+retains the stable identity of an accepted event and retries transient
 durable-ack failures without invoking the destination again. If the original
 claim expires, it reclaims that identity for acknowledgement only, so a
-prolonged coordinator outage cannot redeliver an already accepted completion.
-Its 22-minute lease covers the bounded parent-injection and teardown budgets, so a
-valid slow callback cannot be claimed concurrently. It acknowledges only after
-that callback accepts the event. Exceptions and callback-reported routing failures
-release the matching claim with bounded, overflow-safe exponential backoff.
-Intentional dashboard-queue and digest holds retain the lease-length delay. A
-permanently rejected execution fence stops its
-reporter; periodic recovery owns the nonterminal run rather than an impossible
-retry loop or a duplicate legacy delivery. A queued or immediately dispatched
-dashboard turn and a wave-digest hold defer acknowledgement instead: the event
-remains unavailable to background drainers for one lease window, and the
-consumption/digest-settlement hooks retry transient coordinator errors before
-returning and acknowledge every terminal outcome only after the parent consumes
-it. An acknowledgement that waited for the claim lock rechecks the live fence
-before reclaiming, so it cannot miss a claim installed while it waited. A failed
-or rejected release retains the original delivery fence so an
-immediate consumer acknowledgement can still settle the claimed event. If that
-acknowledgement races a successful release of the original claim,
-it reclaims the stable event identity and settles the new fence. Legacy delivered
-tombstones remain limited to successful runs, while teardown gates retain their
-compatibility role.
+prolonged coordinator outage cannot redeliver an already accepted completion. It
+acknowledges only after that callback accepts the event. Exceptions and callback-reported
+routing failures release the matching claim with bounded, overflow-safe exponential
+backoff. The default 22-minute claim covers the 20-minute
+parent-injection cap plus teardown, and the adapter never holds its local claim
+lock while invoking routing, so routing may acknowledge the same event without
+deadlock. An acknowledgement that waited for the claim lock rechecks the live
+fence before reclaiming, so it cannot miss a claim installed while it waited. A
+dashboard queue or wave-digest hold defers instead: the event stays
+pending but is unavailable to ordinary drainers for one lease window;
+queue-consumption/digest-settlement hooks can claim it explicitly and
+acknowledge that exact stable identity immediately. If acknowledgement races
+the adapter's release of the original claim, it reclaims the stable event
+identity and settles the new fence. Deferred manager contexts survive retries,
+preventing repeated WebSocket, parent-callback, or wave-accounting effects.
+A failed or rejected release retains the original delivery fence so an
+immediate consumer acknowledgement can still settle the claimed event. Legacy
+delivered tombstones and teardown gates remain compatibility mirrors and
+retention guards.
+Pre-start queue cancellation, queue-drain rejection, and approval denial use
+the same digest-settlement path as ordinary terminal execution, so the event
+that closes a batch also acknowledges siblings already held by that digest.
+A permanently rejected execution fence stops its reporter; periodic recovery
+owns the nonterminal run rather than an impossible retry loop or a duplicate
+legacy delivery. Both queued and immediately dispatched dashboard turns defer
+acknowledgement until the model consumes the prompt. The consumption and digest
+settlement hooks retry transient coordinator errors before returning and
+acknowledge every terminal outcome. This includes failed and stopped durable
+events, which owe an outbox acknowledgement after consumption without receiving
+a legacy delivered tombstone. Legacy delivered tombstones remain limited to
+successful runs so failed and stopped artifacts keep their post-mortem retention
+window.
 
 Delivery retries retain their manager context. Lifecycle events, orchestration
 tracking, and wave accounting run once; every composed wave chunk keeps a
@@ -1048,11 +1117,13 @@ Startup converges both compatibility and coordinator state:
    be reaped before any completion delivery writes a tombstone that removes the
    folder from the compatibility scan. Its routing metadata never authorizes
    delivery. `LegacyRunImporter` then reads known fields from legacy folders and creates only
-   missing coordinator rows. For an existing nonterminal row it may retain a
-   previously empty `result.txt` path, but agent-writable state and tombstone
-   files never overwrite an existing coordinator row's lifecycle state,
-   outcome, error, ownership, or version; fenced recovery is the only terminal
-   authority for native rows. Legacy `pid`, `pid_start_id`, and
+   missing coordinator rows. An existing row is returned unchanged before
+   validating or applying agent-writable legacy content, so replay cannot mutate
+   even an empty result path or be blocked by a later malformed legacy file.
+   Agent-writable state and tombstone files never overwrite an existing
+   coordinator row's lifecycle state, outcome, error, ownership, or version;
+   fenced recovery is the only terminal authority for native rows. Legacy `pid`,
+   `pid_start_id`, and
    `process_owned` fields are never imported and never authorize a signal. The
    importer never rewrites or deletes `state.json`, `result.txt`, or
    `tombstone.json`. Each scan submits its parsed records as one coordinator
@@ -1085,8 +1156,8 @@ Startup converges both compatibility and coordinator state:
    uses the process creation FILETIME on Windows. Dedicated executions
    persist this opaque identity beside the PID before the child receives a
    prompt; a protected coordinator write failure aborts execution, while the
-   legacy `state.json` mirror remains best-effort. Shared
-   sessions persist the runtime PID for attribution but mark it non-owned and
+   legacy `state.json` mirror remains best-effort and runs off the event loop.
+   Shared sessions persist the runtime PID for attribution but mark it non-owned and
    never persist a kill-authorizing start identity, because that process also
    hosts the parent and other sessions. On Windows the compatibility layer
    keeps the verified process handle pinned across tree termination so PID
@@ -1109,10 +1180,13 @@ Startup converges both compatibility and coordinator state:
    path is retained. Outbox rehydration preserves that explicit fourth outcome
    even though the explanatory error is non-empty, and the parent announcement
    points at the retained partial result instead of rendering an ordinary
-   failure. Recovery never claims or replays its execution command. A terminal
-   cleanup claim never replaces the committed outcome or outbox payload; after
-   the child is absent or verified termination succeeds, it only clears the
-   protected process identity under the recovery fence.
+   failure. Recovery never claims or replays its execution command. When its
+   command has no stored facade result, keyed lookup derives an explicit
+   `run_interrupted` response from this terminal row instead of reporting the
+   command as pending or spawned. A terminal cleanup claim never replaces the
+   committed outcome or outbox payload; after the child is absent or verified
+   termination succeeds, it only clears the protected process identity under
+   the recovery fence.
 5. Coordinator-authenticated terminal pending outbox events drain through the
    same fenced delivery adapter after protected terminal-child cleanup. If a
    terminal child identity is unreadable, unverified, or cannot be terminated,
@@ -1123,10 +1197,14 @@ Startup converges both compatibility and coordinator state:
    That exclusion is per run: an unreapable terminal child does not prevent the
    same drain pass from delivering unrelated eligible completion events.
    Normal execution follows the same boundary: its terminal reporter waits for
-   dedicated-session teardown, clears the protected process identity with the
-   current execution fence only after reset succeeds, and then claims the event.
-   A failed teardown or rejected clear leaves the event pending for fenced
-   recovery instead of blocking the run task or delivering early.
+   dedicated-session teardown and rechecks the coordinator-pinned PID and process
+   start identity after every reset outcome, including timeout, exception, and
+   forced-kill fallback. The forced-kill path also awaits bounded child reaping so
+   a zombie cannot be mistaken for a surviving execution. Only confirmed child
+   absence or PID reuse clears the protected process identity with the current
+   execution fence before claiming the event. An unreadable identity, failed
+   teardown, or rejected clear leaves the event pending for fenced recovery
+   instead of blocking the run task or delivering early.
    Legacy tombstones create no outbox event and therefore cannot route a
    completion from their untrusted metadata.
 

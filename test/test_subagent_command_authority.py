@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -18,7 +19,10 @@ from kiro_crew.run_coordinator import (
     CoordinatorReason,
     CoordinatorResult,
     MemoryRunCoordinator,
+    ObservedState,
     OwnerLease,
+    RunCompletion,
+    RunOutcome,
     SubmitRun,
 )
 from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -118,6 +122,7 @@ class _Info:
     batch_id: str = ""
     batch_total: int = 0
     _coordinator_waiting: bool = False
+    silent: bool = False
 
 
 class _Manager:
@@ -129,7 +134,9 @@ class _Manager:
         self.followup_calls: list[tuple[str, str]] = []
         self.cancel_calls: list[str] = []
         self.release_calls: list[str] = []
-        self.announced: list[_Info] = []
+        self.delivered_events: list[str] = []
+        self.delivered_batches: list[tuple[str, int]] = []
+        self.prepared_batches: list[tuple[str, str, int]] = []
         self.infos: dict[str, _Info] = {}
         self._queue: list[dict[str, Any]] = []
         self.reserved_run_ids: set[str] = set()
@@ -202,6 +209,31 @@ class _Manager:
     async def announce_durable_rejection(self, info: _Info) -> None:
         self.announced.append(info)
 
+    async def deliver_coordinator_event(
+        self,
+        event_id: str,
+        *,
+        batch_id: str = "",
+        batch_total: int = 0,
+    ) -> None:
+        self.delivered_events.append(event_id)
+        self.delivered_batches.append((batch_id, batch_total))
+
+    def prepare_coordinator_rejection(
+        self,
+        run_id: str,
+        *,
+        batch_id: str = "",
+        batch_total: int = 0,
+    ) -> None:
+        self.prepared_batches.append((run_id, batch_id, batch_total))
+
+
+class _RegisteredThenRaisesManager(_Manager):
+    def spawn(self, task: str, **kwargs: Any) -> _Info:
+        super().spawn(task, **kwargs)
+        raise RuntimeError("post-registration audit failed")
+
 
 class _UnclaimableCoordinator(MemoryRunCoordinator):
     async def claim_command(self, command_id, owner):
@@ -229,6 +261,7 @@ class _RejectingManager(_Manager):
             error="spawn refused by governance",
             batch_id=str(kwargs.get("batch_id") or ""),
             batch_total=int(kwargs.get("batch_total") or 0),
+            silent=bool(kwargs.get("silent")),
         )
 
     def continue_conversation(self, conversation_id: str, task: str, **kwargs: Any) -> _Info:
@@ -248,12 +281,6 @@ class _SlowCancelManager(_Manager):
     async def cancel(self, run_id: str) -> bool:
         self._clock[0] += 31.0
         return await super().cancel(run_id)
-
-
-class _RegisteredThenRaisesManager(_Manager):
-    def spawn(self, task: str, **kwargs: Any) -> _Info:
-        super().spawn(task, **kwargs)
-        raise RuntimeError("post-registration audit failed")
 
 
 class _RaisesBeforeRegistrationManager(_Manager):
@@ -288,6 +315,71 @@ class _RejectFinishCoordinator(MemoryRunCoordinator):
             CoordinatorReason.VERSION_CONFLICT,
             None,
         )
+
+
+class _RaisingManager(_Manager):
+    def spawn(self, task: str, **kwargs: Any) -> _Info:
+        self.spawn_calls.append((task, kwargs))
+        raise RuntimeError("provider refused startup")
+
+
+class _FailFirstCompletionCoordinator(MemoryRunCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.completion_calls = 0
+
+    async def complete(self, completion, fence, expected_version):
+        self.completion_calls += 1
+        if self.completion_calls == 1:
+            return CoordinatorResult(
+                CoordinatorDecision.REJECTED,
+                CoordinatorReason.VERSION_CONFLICT,
+                None,
+            )
+        return await super().complete(completion, fence, expected_version)
+
+
+class _RejectEveryCompletionCoordinator(MemoryRunCoordinator):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.completion_calls = 0
+
+    async def complete(self, completion, fence, expected_version):
+        self.completion_calls += 1
+        return CoordinatorResult(
+            CoordinatorDecision.REJECTED,
+            CoordinatorReason.VERSION_CONFLICT,
+            None,
+        )
+
+
+class _RaiseAfterCompletionCoordinator(MemoryRunCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.completion_calls = 0
+
+    async def complete(self, completion, fence, expected_version):
+        self.completion_calls += 1
+        result = await super().complete(completion, fence, expected_version)
+        if self.completion_calls == 1:
+            raise OSError("coordinator response was lost")
+        return result
+
+
+class _FailFirstFinishCoordinator(MemoryRunCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.finish_calls = 0
+
+    async def finish_command(self, fence, status, rejection_reason="", result_json=""):
+        self.finish_calls += 1
+        if self.finish_calls == 1:
+            return CoordinatorResult(
+                CoordinatorDecision.REJECTED,
+                CoordinatorReason.VERSION_CONFLICT,
+                None,
+            )
+        return await super().finish_command(fence, status, rejection_reason, result_json)
 
 
 def _identity(suffix: str, *, key: str | None = None) -> CommandIdentity:
@@ -562,11 +654,21 @@ async def test_keyed_batch_rejection_announces_after_durable_settlement() -> Non
     observed_statuses: list[CommandStatus] = []
 
     class ObservingManager(_RejectingManager):
-        async def announce_durable_rejection(self, info: _Info) -> None:
+        async def deliver_coordinator_event(
+            self,
+            event_id: str,
+            *,
+            batch_id: str = "",
+            batch_total: int = 0,
+        ) -> None:
             receipt = await coordinator.get_command_by_key(identity.idempotency_key)
             assert receipt is not None
             observed_statuses.append(receipt.command.status)
-            await super().announce_durable_rejection(info)
+            await super().deliver_coordinator_event(
+                event_id,
+                batch_id=batch_id,
+                batch_total=batch_total,
+            )
 
     manager = ObservingManager()
     authority = SubagentCommandAuthority(coordinator, manager)
@@ -578,17 +680,17 @@ async def test_keyed_batch_rejection_announces_after_durable_settlement() -> Non
         batch_total=2,
     )
 
-    assert [info.id for info in manager.announced] == [result.id]
-    assert [info.error for info in manager.announced] == [result.error]
-    assert observed_statuses == [CommandStatus.REJECTED]
+    assert result.error == "spawn refused by governance"
+    assert len(manager.delivered_events) == 1
+    assert observed_statuses == [CommandStatus.APPLIED]
 
 
 @pytest.mark.asyncio
-async def test_keyed_batch_rejection_settlement_failure_is_announced() -> None:
+async def test_keyed_batch_rejection_completion_failure_is_not_delivered() -> None:
     manager = _RejectingManager()
-    authority = SubagentCommandAuthority(_FinishUnavailableCoordinator(), manager)
+    authority = SubagentCommandAuthority(_FailFirstCompletionCoordinator(), manager)
 
-    with pytest.raises(AuthorityOutcomeUncertain):
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
         await authority.spawn(
             _identity("batch-rejection-unsettled"),
             "reject this batch spawn",
@@ -596,8 +698,8 @@ async def test_keyed_batch_rejection_settlement_failure_is_announced() -> None:
             batch_total=2,
         )
 
-    assert len(manager.announced) == 1
-    assert manager.announced[0].error == "spawn refused by governance"
+    assert manager.delivered_events == []
+    assert manager.prepared_batches == []
 
 
 @pytest.mark.asyncio
@@ -655,9 +757,15 @@ async def test_keyed_queued_spawn_renews_lease_before_manager_registration() -> 
         run = await coordinator.get_run(identity.run_id)
         if run is not None and run.lease_expires_at > 180.0:
             break
-    run = await coordinator.get_run(identity.run_id)
-    assert run is not None
-    assert run.lease_expires_at > 200.0
+    clock[0] = 200.0
+
+    assert (
+        await coordinator.claim_recovery(
+            OwnerLease("recovery", clock[0] + 90.0),
+            1,
+        )
+        == []
+    )
     await authority.close()
 
 
@@ -684,23 +792,25 @@ async def test_post_effect_finish_failure_is_reported_as_transport_uncertainty()
 
 
 @pytest.mark.asyncio
-async def test_manager_exception_settlement_failure_is_outcome_uncertain() -> None:
+async def test_manager_exception_result_fill_failure_keeps_durable_failure() -> None:
     manager = _RaisesBeforeRegistrationManager()
-    authority = SubagentCommandAuthority(_FinishUnavailableCoordinator(), manager)
+    coordinator = _FinishUnavailableCoordinator()
+    authority = SubagentCommandAuthority(coordinator, manager)
     identity = _identity("exception-settlement-unavailable")
 
-    with pytest.raises(AuthorityOutcomeUncertain, match="failure was not durably finished"):
-        await authority.spawn(
-            identity,
-            "child may have started",
-            batch_id="exception-wave",
-            batch_total=2,
-        )
+    result = await authority.spawn(identity, "child may have started")
+    run = await coordinator.get_run(identity.run_id)
+    lookup = await authority.lookup_response(identity.idempotency_key)
 
     assert [task for task, _kwargs in manager.spawn_calls] == ["child may have started"]
-    assert len(manager.announced) == 1
-    assert manager.announced[0].batch_id == "exception-wave"
-    assert manager.announced[0].batch_total == 2
+    assert result.done is True
+    assert result.error == "pre-registration admission failed"
+    assert run is not None
+    assert run.observed_state is ObservedState.TERMINAL
+    assert run.outcome is RunOutcome.FAILED
+    assert lookup is not None
+    assert lookup["code"] == "run_failed"
+    assert lookup["counted"] is True
 
 
 @pytest.mark.asyncio
@@ -746,11 +856,21 @@ async def test_platform_failure_before_registration_closes_batch_member() -> Non
     assert result.error == "platform policy unavailable"
     assert result.batch_id == "batchplatform"
     assert result.batch_total == 2
-    assert len(manager.announced) == 1
-    assert manager.announced[0] == result
+    assert len(manager.delivered_events) == 1
+    events = await coordinator.claim_outbox(
+        OwnerLease("delivery", 10**12),
+        1,
+        event_id=manager.delivered_events[0],
+    )
+    assert len(events) == 1
+    payload = json.loads(events[0].payload_json)
+    assert payload["batch_id"] == "batchplatform"
+    assert payload["batch_total"] == 2
     receipt = await coordinator.get_command_by_key(identity.idempotency_key)
     assert receipt is not None
-    assert receipt.command.status is CommandStatus.REJECTED
+    assert receipt.command.status is CommandStatus.APPLIED
+    assert receipt.run is not None
+    assert receipt.run.outcome is RunOutcome.FAILED
 
 
 @pytest.mark.asyncio
@@ -760,7 +880,7 @@ async def test_manager_exception_after_registration_keeps_command_claimed() -> N
     authority = SubagentCommandAuthority(coordinator, manager)
     identity = _identity("registered-exception")
 
-    with pytest.raises(AuthorityOutcomeUncertain, match="after manager registration"):
+    with pytest.raises(AuthorityOutcomeUncertain, match="manager accepted execution"):
         await authority.spawn(identity, "registered child keeps running")
 
     receipt = await coordinator.get_command_by_key(identity.idempotency_key)
@@ -807,6 +927,293 @@ async def test_uncertain_control_exception_keeps_command_claimed() -> None:
     with pytest.raises(AuthorityOutcomeUncertain, match="control outcome"):
         await restarted.cancel(identity, "target-run")
     assert manager.cancel_calls == ["target-run"]
+
+
+@pytest.mark.asyncio
+async def test_post_registration_manager_failure_preserves_live_execution() -> None:
+    manager = _RegisteredThenRaisesManager()
+    coordinator = MemoryRunCoordinator()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("registered-then-raised")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="manager accepted"):
+        await authority.spawn(identity, "child may already be running")
+
+    run = await coordinator.get_run(identity.run_id)
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert run is not None
+    assert run.observed_state is not ObservedState.TERMINAL
+    assert run.outcome is None
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.CLAIMED
+    assert manager.prepared_batches == []
+
+
+@pytest.mark.asyncio
+async def test_post_registration_exception_preserves_terminal_manager_rejection() -> None:
+    class TerminalRegisteredThenRaisesManager(_Manager):
+        def spawn(self, task: str, **kwargs: Any) -> _Info:
+            info = super().spawn(task, **kwargs)
+            info.done = True
+            info.error = "spawn refused by governance"
+            raise RuntimeError("post-registration audit failed")
+
+    manager = TerminalRegisteredThenRaisesManager()
+    coordinator = MemoryRunCoordinator()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("terminal-registered-then-raised")
+
+    result = await authority.spawn(identity, "preserve the manager rejection")
+    replay = await authority.spawn(identity, "preserve the manager rejection")
+    lookup = await authority.lookup_response(identity.idempotency_key)
+
+    assert result.error == "spawn refused by governance"
+    assert replay.error == "spawn refused by governance"
+    assert lookup is not None
+    assert lookup["error"] == "spawn refused by governance"
+
+
+@pytest.mark.asyncio
+async def test_post_registration_rejection_uses_latest_run_version() -> None:
+    class AdvancingCoordinator(MemoryRunCoordinator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.claim = None
+            self.advance_on_lookup = False
+            self.advanced = False
+
+        async def claim_command(self, command_id, owner):
+            claim = await super().claim_command(command_id, owner)
+            self.claim = claim
+            return claim
+
+        async def get_run(self, run_id):
+            if self.advance_on_lookup and not self.advanced:
+                self.advanced = True
+                assert self.claim is not None
+                assert self.claim.run is not None
+                assert self.claim.fence is not None
+                started = await super().mark_starting(
+                    self.claim.command,
+                    self.claim.fence,
+                    self.claim.run.version,
+                )
+                assert started.value is not None
+            return await super().get_run(run_id)
+
+    coordinator = AdvancingCoordinator()
+
+    class TerminalRegisteredThenRaisesManager(_Manager):
+        def spawn(self, task: str, **kwargs: Any) -> _Info:
+            info = super().spawn(task, **kwargs)
+            info.done = True
+            info.error = "spawn refused after start"
+            coordinator.advance_on_lookup = True
+            raise RuntimeError("post-registration audit failed")
+
+    authority = SubagentCommandAuthority(coordinator, TerminalRegisteredThenRaisesManager())
+    identity = _identity("terminal-rejection-after-start")
+
+    result = await authority.spawn(identity, "use the latest lifecycle version")
+
+    run = await coordinator.get_run(identity.run_id)
+    assert coordinator.advanced is True
+    assert result.error == "spawn refused after start"
+    assert run is not None
+    assert run.observed_state is ObservedState.TERMINAL
+    assert run.outcome is RunOutcome.FAILED
+
+
+@pytest.mark.asyncio
+async def test_post_registration_exception_never_becomes_clean_success() -> None:
+    class CleanTerminalThenRaisesManager(_Manager):
+        def spawn(self, task: str, **kwargs: Any) -> _Info:
+            info = super().spawn(task, **kwargs)
+            info.done = True
+            raise RuntimeError("post-registration audit failed")
+
+    manager = CleanTerminalThenRaisesManager()
+    coordinator = MemoryRunCoordinator()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("clean-terminal-then-raised")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="manager accepted"):
+        await authority.spawn(identity, "do not report a clean result")
+
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.CLAIMED
+
+
+@pytest.mark.asyncio
+async def test_close_retries_terminal_manager_rejection_until_durable() -> None:
+    class TerminalRegisteredThenRaisesManager(_Manager):
+        def spawn(self, task: str, **kwargs: Any) -> _Info:
+            info = super().spawn(task, **kwargs)
+            info.done = True
+            info.error = "spawn refused by governance"
+            raise RuntimeError("post-registration audit failed")
+
+    coordinator = _FailFirstCompletionCoordinator()
+    authority = SubagentCommandAuthority(coordinator, TerminalRegisteredThenRaisesManager())
+    identity = _identity("shutdown-terminal-rejection")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await authority.spawn(identity, "preserve the manager rejection")
+
+    await authority.close()
+
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert coordinator.completion_calls == 2
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.APPLIED
+    assert receipt.run is not None
+    assert receipt.run.observed_state is ObservedState.TERMINAL
+    assert receipt.run.outcome is RunOutcome.FAILED
+    assert authority._pending_execution_failures == {}
+
+
+@pytest.mark.asyncio
+async def test_close_releases_rejection_after_lost_completion_response() -> None:
+    class TerminalRegisteredThenRaisesManager(_Manager):
+        def spawn(self, task: str, **kwargs: Any) -> _Info:
+            info = super().spawn(task, **kwargs)
+            info.done = True
+            info.error = "spawn refused by governance"
+            raise RuntimeError("post-registration audit failed")
+
+    coordinator = _RaiseAfterCompletionCoordinator()
+    authority = SubagentCommandAuthority(coordinator, TerminalRegisteredThenRaisesManager())
+    identity = _identity("shutdown-committed-rejection")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await authority.spawn(identity, "preserve the committed rejection")
+
+    await authority.close()
+
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert coordinator.completion_calls == 1
+    assert receipt is not None
+    assert receipt.run is not None
+    assert receipt.run.observed_state is ObservedState.TERMINAL
+    assert receipt.run.outcome is RunOutcome.FAILED
+    assert authority._pending_execution_failures == {}
+
+
+@pytest.mark.asyncio
+async def test_close_releases_rejection_after_command_terminalizes() -> None:
+    coordinator = _RejectEveryCompletionCoordinator()
+    authority = SubagentCommandAuthority(coordinator, _RejectingManager())
+    identity = _identity("shutdown-terminal-command")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await authority.spawn(identity, "preserve the command outcome")
+    pending = authority._pending_execution_failures[identity.command_id]
+    await coordinator.finish_command(pending.claim.command_fence, CommandStatus.APPLIED)
+
+    await authority.close()
+
+    assert coordinator.completion_calls == 1
+    assert authority._pending_execution_failures == {}
+
+
+@pytest.mark.asyncio
+async def test_close_releases_rejection_after_command_claim_takeover() -> None:
+    clock = [100.0]
+    coordinator = _RejectEveryCompletionCoordinator(clock=lambda: clock[0])
+    authority = SubagentCommandAuthority(
+        coordinator,
+        _RejectingManager(),
+        clock=lambda: clock[0],
+    )
+    identity = _identity("shutdown-newer-claim")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await authority.spawn(identity, "defer to the new owner")
+    clock[0] = 200.0
+    replacement = await coordinator.claim_command(
+        identity.command_id,
+        OwnerLease("replacement", 290.0),
+    )
+    assert replacement is not None
+
+    await authority.close()
+
+    assert coordinator.completion_calls == 1
+    assert authority._pending_execution_failures == {}
+
+
+@pytest.mark.asyncio
+async def test_close_bounds_pending_failure_settlement_during_coordinator_outage() -> None:
+    async def yielding_sleep(_delay: float) -> None:
+        await asyncio.sleep(0)
+
+    coordinator = _RejectEveryCompletionCoordinator()
+    authority = SubagentCommandAuthority(
+        coordinator,
+        _RejectingManager(),
+        sleep=yielding_sleep,
+    )
+    identity = _identity("shutdown-pending-outage")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await authority.spawn(identity, "bound shutdown retries")
+
+    await asyncio.wait_for(authority.close(), timeout=0.2)
+
+    assert coordinator.completion_calls == 1 + 3
+    assert authority._pending_execution_failures == {}
+    assert authority._lease_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_close_yields_while_superseded_failure_cache_changes() -> None:
+    """Shutdown settlement cannot monopolize the loop on a replaced cache entry."""
+    authority = SubagentCommandAuthority(MemoryRunCoordinator(), _Manager())
+    authority._pending_execution_failures["command-1"] = object()  # type: ignore[assignment]
+    marker_ran = False
+    observations: list[bool] = []
+
+    async def run_marker() -> None:
+        nonlocal marker_ran
+        await asyncio.sleep(0)
+        marker_ran = True
+
+    async def release_superseded(command_id: str, _pending: object) -> bool:
+        observations.append(marker_ran)
+        if len(observations) == 3:
+            authority._pending_execution_failures.pop(command_id, None)
+        return True
+
+    authority._release_superseded_execution_failure = release_superseded  # type: ignore[method-assign]
+    marker_task = asyncio.create_task(run_marker())
+
+    await authority.close()
+    await marker_task
+
+    assert any(observations)
+
+
+@pytest.mark.asyncio
+async def test_manager_base_exception_is_never_converted_to_spawn_failure() -> None:
+    class GatewayAbort(BaseException):
+        pass
+
+    class InterruptingManager(_Manager):
+        def spawn(self, task: str, **kwargs: Any) -> _Info:
+            self.spawn_calls.append((task, kwargs))
+            raise GatewayAbort("operator interrupted gateway")
+
+    coordinator = MemoryRunCoordinator()
+    authority = SubagentCommandAuthority(coordinator, InterruptingManager())
+    identity = _identity("keyboard-interrupt")
+
+    with pytest.raises(GatewayAbort, match="operator interrupted gateway"):
+        await authority.spawn(identity, "do not swallow interrupts")
+
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.CLAIMED
 
 
 @pytest.mark.asyncio
@@ -914,6 +1321,27 @@ async def test_close_rejects_waiting_execution_before_dropping_lease() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_bounds_waiting_settlement_when_coordinator_stays_unavailable() -> None:
+    async def yielding_sleep(_delay: float) -> None:
+        await asyncio.sleep(0)
+
+    manager = _Manager(register_spawn=False)
+    coordinator = _FinishUnavailableCoordinator()
+    authority = SubagentCommandAuthority(coordinator, manager, sleep=yielding_sleep)
+    identity = _identity("shutdown-persistent-outage")
+    await authority.spawn(identity, "wait durably")
+
+    await asyncio.wait_for(authority.close(), timeout=0.2)
+
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.CLAIMED
+    assert authority._waiting_executions == {}
+    assert authority._pending_execution_failures == {}
+    assert authority._lease_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_close_unqueues_waiting_execution_before_durable_rejection() -> None:
     manager = _QueuedManager(register_spawn=False)
     queue_present_at_finish: list[bool] = []
@@ -985,6 +1413,46 @@ async def test_close_releases_waiting_state_after_command_takeover() -> None:
     assert identity.run_id not in authority._waiting_executions
     assert identity.run_id not in authority._execution_results
     assert identity.run_id not in authority._lease_tasks
+
+
+@pytest.mark.asyncio
+async def test_keyed_approval_wait_renews_lease_until_manager_takes_over() -> None:
+    clock = [100.0]
+    heartbeat_ticks: asyncio.Queue[None] = asyncio.Queue()
+
+    async def controlled_sleep(_delay: float) -> None:
+        await heartbeat_ticks.get()
+
+    manager = _Manager()
+    coordinator = MemoryRunCoordinator(clock=lambda: clock[0])
+    authority = SubagentCommandAuthority(
+        coordinator,
+        manager,
+        clock=lambda: clock[0],
+        sleep=controlled_sleep,
+    )
+    identity = _identity("approval-heartbeat")
+    original_spawn = manager.spawn
+
+    def awaiting_approval(task: str, **kwargs: Any) -> _Info:
+        info = original_spawn(task, **kwargs)
+        info._coordinator_waiting = True
+        return info
+
+    manager.spawn = awaiting_approval  # type: ignore[method-assign]
+
+    await authority.spawn(identity, "wait for approval")
+    clock[0] = 180.0
+    heartbeat_ticks.put_nowait(None)
+    for _ in range(10):
+        await asyncio.sleep(0)
+        run = await coordinator.get_run(identity.run_id)
+        if run is not None and run.lease_expires_at > 180.0:
+            break
+    clock[0] = 200.0
+
+    assert await coordinator.claim_recovery(OwnerLease("recovery", 290.0), 1) == []
+    await authority.stop_execution_heartbeat(identity.run_id)
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1575,8 @@ async def test_exact_replay_reclaims_never_claimed_spawn() -> None:
 @pytest.mark.asyncio
 async def test_lookup_response_reconstructs_rejected_spawn() -> None:
     coordinator = MemoryRunCoordinator()
-    authority = SubagentCommandAuthority(coordinator, _RejectingManager())
+    manager = _RejectingManager()
+    authority = SubagentCommandAuthority(coordinator, manager)
     identity = _identity("rejected-spawn")
 
     await authority.spawn(identity, "denied")
@@ -1119,6 +1588,40 @@ async def test_lookup_response_reconstructs_rejected_spawn() -> None:
         "code": "spawn_rejected",
         "counted": True,
     }
+    run = await coordinator.get_run(identity.run_id)
+    assert run is not None
+    assert run.observed_state.value == "terminal"
+    assert run.outcome is RunOutcome.FAILED
+    events = await coordinator.claim_outbox(OwnerLease("delivery", 10**12), 1)
+    assert events == []
+    assert manager.delivered_events == []
+
+
+@pytest.mark.asyncio
+async def test_non_batch_rejection_is_already_delivered() -> None:
+    class DeliveryFailingManager(_RejectingManager):
+        async def deliver_coordinator_event(
+            self,
+            event_id: str,
+            *,
+            batch_id: str = "",
+            batch_total: int = 0,
+        ) -> None:
+            raise OSError("parent delivery unavailable")
+
+    coordinator = MemoryRunCoordinator()
+    manager = DeliveryFailingManager()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("non-batch-delivery-failure")
+
+    result = await authority.spawn(identity, "denied")
+    replay = await authority.spawn(identity, "denied")
+    events = await coordinator.claim_outbox(OwnerLease("redrive", 10**12), 1)
+
+    assert result.error == "spawn refused by governance"
+    assert replay.error == result.error
+    assert len(manager.spawn_calls) == 1
+    assert events == []
 
 
 @pytest.mark.asyncio
@@ -1136,6 +1639,314 @@ async def test_lookup_response_reconstructs_rejected_continuation() -> None:
         "code": "conversation_busy",
         "counted": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_batch_rejection_preserves_wave_metadata_and_routes_one_event() -> None:
+    coordinator = MemoryRunCoordinator()
+    manager = _RejectingManager()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("batch-rejection")
+    agent_secret = "AKIAIOSFODNN7EXAMPLE"
+    complete = coordinator.complete
+
+    async def complete_after_batch_registration(*args, **kwargs):
+        assert manager.prepared_batches == []
+        return await complete(*args, **kwargs)
+
+    coordinator.complete = complete_after_batch_registration  # type: ignore[method-assign]
+
+    result = await authority.spawn(
+        identity,
+        "denied",
+        batch_id="batchone",
+        batch_total=3,
+        silent=True,
+        agent=agent_secret,
+    )
+
+    assert result.done is True
+    assert result.error == "spawn refused by governance"
+    assert len(manager.delivered_events) == 1
+    assert manager.prepared_batches == [(identity.run_id, "batchone", 3)]
+    event_id = manager.delivered_events[0]
+    events = await coordinator.claim_outbox(
+        OwnerLease("delivery", 10**12),
+        1,
+        event_id=event_id,
+    )
+    assert len(events) == 1
+    assert '"batch_id":"batchone"' in events[0].payload_json
+    assert '"batch_total":3' in events[0].payload_json
+    assert '"silent":true' in events[0].payload_json
+    assert agent_secret not in json.loads(events[0].payload_json)["agent"]
+
+
+@pytest.mark.asyncio
+async def test_continuation_rejection_preserves_conversation_and_model_identity() -> None:
+    coordinator = MemoryRunCoordinator()
+    manager = _RejectingManager()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("continuation-rejection-identity")
+
+    await authority.continue_conversation(
+        identity,
+        "conversation-one",
+        "denied",
+        batch_id="batch-continuation",
+        batch_total=2,
+        model="review-model",
+    )
+
+    events = await coordinator.claim_outbox(
+        OwnerLease("delivery", 10**12),
+        1,
+        event_id=manager.delivered_events[0],
+    )
+    assert len(events) == 1
+    payload = json.loads(events[0].payload_json)
+    assert payload["conversation_key"] == "subagent:conversation-one"
+    assert payload["requested_model"] == "review-model"
+    assert payload["resolved_model"] == ""
+
+
+@pytest.mark.asyncio
+async def test_manager_exception_returns_counted_batch_failure_without_rethrow() -> None:
+    coordinator = MemoryRunCoordinator()
+    manager = _RaisingManager()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("batch-exception")
+
+    result = await authority.spawn(
+        identity,
+        "start",
+        batch_id="batchtwo",
+        batch_total=2,
+        silent=True,
+    )
+
+    assert result.done is True
+    assert result.error == "provider refused startup"
+    assert result.batch_id == "batchtwo"
+    assert result.batch_total == 2
+    assert len(manager.spawn_calls) == 1
+    assert len(manager.delivered_events) == 1
+    events = await coordinator.claim_outbox(
+        OwnerLease("delivery", 10**12),
+        1,
+        event_id=manager.delivered_events[0],
+    )
+    assert len(events) == 1
+    assert json.loads(events[0].payload_json)["silent"] is True
+
+
+@pytest.mark.asyncio
+async def test_transient_completion_failure_resumes_without_reinvoking_manager() -> None:
+    coordinator = _FailFirstCompletionCoordinator()
+    manager = _RejectingManager()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("retry-rejection")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await authority.spawn(identity, "denied")
+    result = await authority.spawn(identity, "denied")
+
+    assert result.done is True
+    assert result.error == "spawn refused by governance"
+    assert coordinator.completion_calls == 2
+    assert len(manager.spawn_calls) == 1
+    assert manager.delivered_events == []
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.APPLIED
+    assert receipt.command.result_json
+    assert receipt.run is not None
+    assert receipt.run.outcome is RunOutcome.FAILED
+    events = await coordinator.claim_outbox(OwnerLease("delivery", 10**12), 1)
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_post_commit_completion_failure_stays_counted_and_replays_without_manager() -> None:
+    coordinator = _RaiseAfterCompletionCoordinator()
+    manager = _RejectingManager()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("lost-completion-response")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await authority.spawn(identity, "denied", batch_id="batchlost", batch_total=2)
+    result = await authority.spawn(
+        identity,
+        "denied",
+        batch_id="batchlost",
+        batch_total=2,
+    )
+
+    assert result.done is True
+    assert result.error == "spawn refused by governance"
+    assert len(manager.spawn_calls) == 1
+    assert coordinator.completion_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_replay_preserves_batch_metadata_and_redacts_task() -> None:
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    coordinator = _RaiseAfterCompletionCoordinator()
+    manager = _RejectingManager()
+    identity = _identity("terminal-replay-metadata")
+
+    with pytest.raises(AuthorityOutcomeUncertain, match="not durably completed"):
+        await SubagentCommandAuthority(coordinator, manager).spawn(
+            identity,
+            f"inspect credential {secret}",
+            batch_id="batch-replay",
+            batch_total=4,
+            silent=True,
+        )
+    replay = await SubagentCommandAuthority(coordinator, _Manager()).spawn(
+        identity,
+        f"inspect credential {secret}",
+        batch_id="batch-replay",
+        batch_total=4,
+        silent=True,
+    )
+
+    assert secret not in replay.task
+    assert replay.batch_id == "batch-replay"
+    assert replay.batch_total == 4
+    assert replay.silent is True
+
+
+@pytest.mark.asyncio
+async def test_execution_admission_never_persists_raw_task_or_arguments() -> None:
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    coordinator = MemoryRunCoordinator()
+    manager = _Manager()
+    authority = SubagentCommandAuthority(coordinator, manager)
+    identity = _identity("redacted-admission")
+
+    await authority.spawn(
+        identity,
+        f"inspect credential {secret}",
+        model=f"served-{secret}",
+    )
+
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert receipt is not None
+    assert receipt.run is not None
+    assert secret not in receipt.run.task
+    assert secret not in receipt.command.payload_json
+    assert secret in manager.spawn_calls[0][0]
+    assert secret in manager.spawn_calls[0][1]["model"]
+
+
+@pytest.mark.asyncio
+async def test_restart_reconstructs_failure_after_completion_before_result_fill() -> None:
+    coordinator = _FailFirstFinishCoordinator()
+    first_manager = _RejectingManager()
+    identity = _identity("restart-failure")
+
+    first = await SubagentCommandAuthority(coordinator, first_manager).spawn(identity, "denied")
+    assert first.done is True
+    assert first.error == "spawn refused by governance"
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.APPLIED
+    assert receipt.command.result_json == ""
+    assert receipt.run is not None
+    assert receipt.run.outcome is RunOutcome.FAILED
+
+    replay_manager = _Manager()
+    replay = await SubagentCommandAuthority(coordinator, replay_manager).spawn(
+        identity,
+        "denied",
+    )
+
+    assert replay.done is True
+    assert replay.error == "spawn refused by governance"
+    assert replay_manager.spawn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_batch_failure_remains_counted_when_result_fill_fails() -> None:
+    coordinator = _FailFirstFinishCoordinator()
+    manager = _RejectingManager()
+    identity = _identity("batch-fill-failure")
+
+    result = await SubagentCommandAuthority(coordinator, manager).spawn(
+        identity,
+        "denied",
+        batch_id="batchthree",
+        batch_total=2,
+    )
+
+    assert result.done is True
+    assert result.error == "spawn refused by governance"
+    assert len(manager.delivered_events) == 1
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+    assert receipt is not None
+    assert receipt.command.result_json == ""
+    assert receipt.run is not None
+    assert receipt.run.outcome is RunOutcome.FAILED
+
+
+@pytest.mark.asyncio
+async def test_exact_spawn_replay_claims_a_submission_left_pending() -> None:
+    coordinator = _FirstClaimUnavailableCoordinator()
+    identity = _identity("preclaim-recovery")
+    with pytest.raises(AuthorityUnavailable, match="still pending"):
+        await SubagentCommandAuthority(coordinator, _Manager()).spawn(
+            identity,
+            "wait durably",
+        )
+    replay_manager = _Manager()
+
+    replay = await SubagentCommandAuthority(coordinator, replay_manager).spawn(
+        identity,
+        "wait durably",
+    )
+
+    assert replay.done is False
+    assert replay.error == ""
+    assert len(replay_manager.spawn_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_spawn_replay_preserves_stored_acceptance_after_later_failure() -> None:
+    coordinator = MemoryRunCoordinator()
+    first_manager = _Manager()
+    identity = _identity("accepted-then-failed")
+    first = await SubagentCommandAuthority(coordinator, first_manager).spawn(
+        identity,
+        "start normally",
+    )
+    call_kwargs = first_manager.spawn_calls[0][1]
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id=identity.run_id,
+            outcome=RunOutcome.FAILED,
+            result_path="",
+            error="runtime failed later",
+            event_type="subagent_completion",
+            destination="",
+            payload_json="{}",
+            terminal_at=10**6,
+        ),
+        call_kwargs["_coordinator_fence"],
+        call_kwargs["_coordinator_version"],
+    )
+    assert completed.decision is CoordinatorDecision.APPLIED
+    replay_manager = _Manager()
+
+    replay = await SubagentCommandAuthority(coordinator, replay_manager).spawn(
+        identity,
+        "start normally",
+    )
+
+    assert replay.done is False
+    assert replay.error == ""
+    assert replay.id == first.id
+    assert replay_manager.spawn_calls == []
 
 
 @pytest.mark.asyncio
@@ -1293,3 +2104,92 @@ async def test_control_finish_failure_is_uncertain_and_never_replays_side_effect
         await restarted.steer(identity, "target-run", "course correct")
 
     assert manager.steer_calls == [("target-run", "course correct")]
+
+
+@pytest.mark.asyncio
+async def test_cancel_claim_covers_the_bounded_parent_delivery_wait() -> None:
+    now = [100.0]
+    manager = _Manager()
+
+    async def slow_cancel(run_id: str) -> bool:
+        manager.cancel_calls.append(run_id)
+        now[0] += 60.0
+        return True
+
+    manager.cancel = slow_cancel  # type: ignore[method-assign]
+    coordinator = await _coordinator_with_target("target-run", clock=lambda: now[0])
+    authority = SubagentCommandAuthority(
+        coordinator,
+        manager,
+        clock=lambda: now[0],
+    )
+    identity = _identity("slow-cancel")
+
+    assert await authority.cancel(identity, "target-run") is True
+    receipt = await coordinator.get_command_by_key(identity.idempotency_key)
+
+    assert receipt is not None
+    assert receipt.command.status is CommandStatus.APPLIED
+    assert manager.cancel_calls == ["target-run"]
+
+
+@pytest.mark.asyncio
+async def test_lookup_reports_recovered_claimed_execution_as_interrupted() -> None:
+    now = [100.0]
+    coordinator = MemoryRunCoordinator(clock=lambda: now[0])
+    identity = _identity("recovered-claimed")
+    submitted = await coordinator.submit(
+        SubmitRun(
+            run_id=identity.run_id,
+            command_id=identity.command_id,
+            idempotency_key=identity.idempotency_key,
+            payload_hash="hash",
+            payload_json=(
+                '{"arguments":{},"operation":"spawn","run_id":"'
+                + identity.run_id
+                + '","task":"inspect"}'
+            ),
+            parent_session="dashboard:parent",
+            agent="reviewer",
+            task="inspect",
+            conversation_key="",
+            operation=CommandOperation.SPAWN,
+        )
+    )
+    assert submitted.value is not None
+    claim = await coordinator.claim_command(
+        identity.command_id,
+        OwnerLease("dead-gateway", 110.0),
+    )
+    assert claim is not None
+    now[0] = 111.0
+    recovery_claims = await coordinator.claim_recovery(
+        OwnerLease("recovery", 200.0),
+        1,
+    )
+    assert len(recovery_claims) == 1
+    recovery_claim = recovery_claims[0]
+    completed = await coordinator.complete(
+        RunCompletion(
+            run_id=identity.run_id,
+            outcome=RunOutcome.INTERRUPTED,
+            result_path="",
+            error="interrupted by gateway restart",
+            event_type="subagent_completion",
+            destination="dashboard:parent",
+            payload_json="{}",
+            terminal_at=now[0],
+        ),
+        recovery_claim.fence,
+        recovery_claim.run.version,
+    )
+    assert completed.value is not None
+    authority = SubagentCommandAuthority(coordinator, _Manager())
+
+    assert await authority.lookup_response(identity.idempotency_key) == {
+        "found": True,
+        "id": identity.run_id,
+        "error": "interrupted by gateway restart",
+        "code": "run_interrupted",
+        "counted": True,
+    }

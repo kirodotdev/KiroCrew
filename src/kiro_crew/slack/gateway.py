@@ -7402,13 +7402,6 @@ class GatewayOrchestrator:
                         _injection_slot.task = _task
                         self.dashboard_state._background_tasks.add(_task)
                         _task.add_done_callback(self.dashboard_state._background_tasks.discard)
-                        _arm_queued_delivery_settlement(
-                            self.dashboard_state,
-                            _injection_slot,
-                            _task,
-                            [announce],
-                            _consumed,
-                        )
 
                         def _on_inject_done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
                             if _injection_slot.task is t:

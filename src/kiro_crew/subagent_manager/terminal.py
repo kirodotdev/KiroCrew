@@ -11,14 +11,15 @@ if TYPE_CHECKING:
         _ON_DONE_TIMEOUT,
         _OUTBOX_RESULT_SUMMARY_LEN,
         _RESET_TIMEOUT,
+        _SIGKILL_REAP_TIMEOUT,
         _TERMINAL_RETRY_SECONDS,
         EXECUTION_LEASE_SECONDS,
         OUTCOME_INTERRUPTED,
         SUBAGENT_COMPLETION_PREFIX,
         AuthorityOutcomeUncertain,
         CoordinatorDecision,
-        OwnerLease,
         OutboxEvent,
+        OwnerLease,
         RunCompletion,
         RunOutcome,
         Stats,
@@ -107,6 +108,28 @@ class TerminalCoordinator(ManagerComponent):
         info._coordinator_version = result.value.version
         info._coordinator_process_protected = False
         return True
+
+    async def _protected_process_stopped_impl(self, info: SubagentInfo) -> bool:
+        """Prove that the coordinator-pinned child no longer owns its PID."""
+
+        run = await self._manager._coordinator.get_run(info.id)
+        if run is None or not run.process_owned or run.process_id <= 1 or not run.process_start_id:
+            return True
+        liveness = await asyncio.to_thread(platform_compat.pid_liveness, run.process_id)
+        if liveness == platform_compat.PID_DEAD:
+            return True
+        current_start_id = await asyncio.to_thread(
+            platform_compat.process_identity_token,
+            run.process_id,
+        )
+        if current_start_id is None:
+            return False
+        durable_pair = platform_compat.is_durable_process_identity_token(
+            run.process_start_id
+        ) and platform_compat.is_durable_process_identity_token(current_start_id)
+        if durable_pair or platform_compat.IS_WINDOWS:
+            return current_start_id != run.process_start_id
+        return False
 
     async def _record_process_identity_impl(self, info: SubagentInfo, session_key: str) -> None:
         """Persist protected process identity before any child prompt can run."""
@@ -381,12 +404,15 @@ class TerminalCoordinator(ManagerComponent):
                     settle_digest=True,
                     teardown_done=None,
                 )
+            else:
+                self._manager._outbox_live_run_batches.pop(event.run_id, None)
             self._manager._outbox_contexts[event.event_id] = context
         info = context.info
         info._delivery_event_id = event.event_id
         # A deferred destination already accepted this stable event into its
-        # own queue or digest. Background retries keep its durable identity
-        # pending for acknowledgement without repeating routing or accounting.
+        # own queue or digest. Exact claims remain available to the eventual
+        # consumer for acknowledgement, but a background drain must not replay
+        # lifecycle callbacks or count the same wave member twice.
         if info._digest_held or info._delivery_queued:
             return False
         info._delivery_failed = False
@@ -901,6 +927,12 @@ class TerminalCoordinator(ManagerComponent):
         if recovery_task and not recovery_task.done():
             recovery_task.cancel()
 
+        # A protected coordinator row keeps its terminal event unclaimable until
+        # teardown is proven.  Preserve that proof across the terminal commit;
+        # otherwise the reaper waits forever while its own process guard blocks
+        # the immediate outbox drain.
+        process_stopped = asyncio.Event() if info._coordinator_process_protected else None
+
         if info._session_sharing:
             # Session-sharing subagent: NEVER SIGKILL the shared runtime —
             # the parent session owns it and other co-tenants may be active.
@@ -947,6 +979,19 @@ class TerminalCoordinator(ManagerComponent):
                 await self._manager._sigkill_session(session_key)
             except Exception:
                 logger.exception("Reaper: reset failed for %s", agent_id)
+            if process_stopped is not None:
+                try:
+                    if await self._protected_process_stopped_impl(info):
+                        process_stopped.set()
+                except Exception:
+                    # A registry reset or kill attempt is not proof that the
+                    # coordinator-pinned child exited. Recovery retains the PID
+                    # fence whenever the process identity cannot be checked.
+                    logger.warning(
+                        "Reaper: protected process check failed for %s",
+                        agent_id,
+                        exc_info=True,
+                    )
 
         # Snapshot "parked on a never-answered spawn approval" BEFORE the
         # intentional cancel below, because the flag's owner clears it in a
@@ -1047,6 +1092,7 @@ class TerminalCoordinator(ManagerComponent):
                     f"delivery timed out after {int(_ON_DONE_TIMEOUT)}s (reaper)"
                 ),
                 mark_delivered_on_success=False,
+                process_stopped=process_stopped,
                 # This member's own result is NOT marked delivered (it was
                 # reaped, not completed) — but if it was the wave member whose
                 # `_on_done` flushed the batch digest, its SIBLINGS' successful
@@ -1143,6 +1189,19 @@ class TerminalCoordinator(ManagerComponent):
                     pass
             # Sweep children that escaped to different PGIDs
             await loop.run_in_executor(subprocess_executor(), _kill_escaped_children, child_pids)
+            process = getattr(client, "_process", None)
+            if process is not None and getattr(process, "pid", None) == pid:
+                try:
+                    await asyncio.wait_for(
+                        process.wait(),
+                        timeout=_SIGKILL_REAP_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Reaper: PID %d did not exit after SIGKILL for %s",
+                        pid,
+                        session_key,
+                    )
         except Exception:
             logger.exception("Reaper: SIGKILL failed for %s", session_key)
 

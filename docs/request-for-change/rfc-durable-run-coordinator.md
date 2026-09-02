@@ -407,12 +407,21 @@ One transaction:
 
 1. verifies the fence and legal transition;
 2. writes `observed_state=terminal` and the outcome;
-3. inserts a stable pending outbox event; and
+3. inserts a stable outbox event (pending for asynchronous delivery, or already
+   delivered when the synchronous response is the delivery); and
 4. marks the execution command applied.
 
 Repeating the same completion returns the existing event. A conflicting second
 outcome is rejected and recorded as a diagnostic; first durable terminal
 outcome wins, matching the current terminal-record guard.
+
+The execution command's same-fence empty-result fill also verifies the current
+run owner and lease epoch. Recovery takeover therefore fences an old executor
+even when its command claim record still carries the earlier matching epoch.
+Synchronous non-batch admission rejection commits an already-delivered event so
+the counted HTTP error is not followed by a duplicate parent turn. Batch
+rejections keep a pending event with their wave metadata and route through the
+normal completion consumer.
 
 #### Delivery
 

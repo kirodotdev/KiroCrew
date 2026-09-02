@@ -3,6 +3,7 @@
 Covers the killpg + escaped child sweep logic added to fix orphaned
 kiro-cli sessions.
 """
+
 from __future__ import annotations
 
 import signal
@@ -180,7 +181,10 @@ class TestSigkillSessionProcessTree:
     """Tests for SubagentManager._sigkill_session() process tree cleanup."""
 
     def _make_manager(
-        self, pid: int, child_pids: dict[int, int | None] | None = None, start_time: int | None = 100
+        self,
+        pid: int,
+        child_pids: dict[int, int | None] | None = None,
+        start_time: int | None = 100,
     ):
         provider = _make_provider(pid, child_pids, start_time=start_time)
         sessions = _mock_sessions_with_provider(provider)
@@ -219,6 +223,27 @@ class TestSigkillSessionProcessTree:
 
         mock_killpg.assert_called_once_with(54321, signal.SIGKILL)
         mock_sweep.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sigkill_waits_for_owned_process_to_be_reaped(self):
+        """A delivered SIGKILL is not success until the child has been reaped."""
+        mgr = self._make_manager(pid=54321)
+        process = MagicMock()
+        process.pid = 54321
+        process.wait = AsyncMock(return_value=-signal.SIGKILL)
+        mgr._sessions._sessions["subagent:test1"].provider._client._process = process
+
+        with (
+            patch("kiro_crew.subagent.os.killpg"),
+            patch("kiro_crew.subagent.os.getpgid", return_value=54321),
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+            patch("kiro_crew.acp.client._get_start_time", return_value=100),
+            patch("kiro_crew.acp.client._is_our_child", return_value=True),
+        ):
+            await mgr._sigkill_session("subagent:test1")
+
+        process.wait.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_sigkill_fallback_on_killpg_failure(self):

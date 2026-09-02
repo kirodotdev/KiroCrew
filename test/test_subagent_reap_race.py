@@ -37,7 +37,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew.run_coordinator import MemoryRunCoordinator
+from kiro_crew.run_coordinator import (
+    CommandOperation,
+    MemoryRunCoordinator,
+    OwnerLease,
+    SubmitRun,
+)
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 
 
@@ -214,6 +219,204 @@ async def test_uncontested_reap_reports_once():
     assert mgr._on_done.await_count == 1
     assert info.done is True and info.reaped is True
     mgr._write_tombstone.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("process_alive", [False, True])
+async def test_force_reap_checks_protected_process_before_outbox_delivery(
+    monkeypatch,
+    process_alive,
+):
+    """Session removal alone must not clear a protected process identity."""
+    monkeypatch.setattr("kiro_crew.subagent._TERMINAL_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(
+        "kiro_crew.subagent.platform_compat.pid_liveness",
+        lambda _pid: ("alive" if process_alive else "dead"),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.subagent.platform_compat.process_identity_token",
+        lambda _pid: "start-1",
+    )
+    coordinator = MemoryRunCoordinator(id_factory=lambda: "event-1")
+    submitted = await coordinator.submit(
+        SubmitRun(
+            run_id="a1b2c3d4",
+            command_id="command-1",
+            idempotency_key="key-1",
+            payload_hash="hash-1",
+            payload_json="{}",
+            parent_session="dashboard:parent",
+            agent="reviewer",
+            task="inspect",
+            conversation_key="",
+            operation=CommandOperation.SPAWN,
+        )
+    )
+    assert submitted.value is not None
+    claim = await coordinator.claim_command(
+        "command-1",
+        OwnerLease("executor", 10**12),
+    )
+    assert claim is not None and claim.run is not None and claim.fence is not None
+
+    mgr = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        coordinator=coordinator,
+        on_done=AsyncMock(),
+    )
+    mgr._fire_event = AsyncMock()
+    mgr._write_tombstone = MagicMock()
+    mgr._record_cost = MagicMock()
+    mgr._sessions.reset = AsyncMock(return_value=True)
+    info = _info(parent_session_key="dashboard:parent")
+    info._coordinator_admitted = True
+    info._coordinator_command = claim.command
+    info._coordinator_fence = claim.fence
+    info._coordinator_version = claim.run.version
+    await mgr._coordinator_mark_starting(info)
+    await mgr._coordinator_mark_running(info)
+    await mgr._coordinator_record_process(info, 4321, "start-1", True)
+
+    await asyncio.wait_for(
+        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"),
+        timeout=0.2,
+    )
+
+    run = await coordinator.get_run(info.id)
+    assert run is not None
+    assert run.process_owned is process_alive
+    if process_alive:
+        mgr._on_done.assert_not_awaited()
+    else:
+        mgr._on_done.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_force_reap_rechecks_protected_process_after_reset_timeout(monkeypatch):
+    """A successful SIGKILL must unblock the fenced terminal delivery."""
+    monkeypatch.setattr("kiro_crew.subagent._TERMINAL_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(
+        "kiro_crew.subagent.platform_compat.pid_liveness",
+        lambda _pid: "dead",
+    )
+    coordinator = MemoryRunCoordinator(id_factory=lambda: "event-timeout")
+    submitted = await coordinator.submit(
+        SubmitRun(
+            run_id="a1b2c3d4",
+            command_id="command-timeout",
+            idempotency_key="key-timeout",
+            payload_hash="hash-timeout",
+            payload_json="{}",
+            parent_session="dashboard:parent",
+            agent="reviewer",
+            task="inspect",
+            conversation_key="",
+            operation=CommandOperation.SPAWN,
+        )
+    )
+    assert submitted.value is not None
+    claim = await coordinator.claim_command(
+        "command-timeout",
+        OwnerLease("executor", 10**12),
+    )
+    assert claim is not None and claim.run is not None and claim.fence is not None
+
+    mgr = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        coordinator=coordinator,
+        on_done=AsyncMock(),
+    )
+    mgr._fire_event = AsyncMock()
+    mgr._write_tombstone = MagicMock()
+    mgr._record_cost = MagicMock()
+    mgr._sessions.reset = AsyncMock(side_effect=asyncio.TimeoutError)
+    mgr._sigkill_session = AsyncMock()
+    info = _info(parent_session_key="dashboard:parent")
+    info._coordinator_admitted = True
+    info._coordinator_command = claim.command
+    info._coordinator_fence = claim.fence
+    info._coordinator_version = claim.run.version
+    await mgr._coordinator_mark_starting(info)
+    await mgr._coordinator_mark_running(info)
+    await mgr._coordinator_record_process(info, 4321, "start-1", True)
+
+    await asyncio.wait_for(
+        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"),
+        timeout=0.2,
+    )
+
+    run = await coordinator.get_run(info.id)
+    assert run is not None
+    assert run.process_owned is False
+    mgr._sigkill_session.assert_awaited_once_with("subagent:a1b2c3d4")
+    mgr._on_done.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_force_reap_treats_recycled_pid_as_original_process_stopped(monkeypatch):
+    """A live PID with another start identity cannot keep the old run fenced."""
+    monkeypatch.setattr("kiro_crew.subagent._TERMINAL_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr("kiro_crew.subagent.platform_compat.IS_LINUX", True)
+    monkeypatch.setattr(
+        "kiro_crew.subagent.platform_compat.pid_liveness",
+        lambda _pid: "alive",
+    )
+    monkeypatch.setattr(
+        "kiro_crew.subagent.platform_compat.process_identity_token",
+        lambda _pid: "v1:linux:replacement-start:boot",
+    )
+    coordinator = MemoryRunCoordinator(id_factory=lambda: "event-recycled")
+    submitted = await coordinator.submit(
+        SubmitRun(
+            run_id="a1b2c3d4",
+            command_id="command-recycled",
+            idempotency_key="key-recycled",
+            payload_hash="hash-recycled",
+            payload_json="{}",
+            parent_session="dashboard:parent",
+            agent="reviewer",
+            task="inspect",
+            conversation_key="",
+            operation=CommandOperation.SPAWN,
+        )
+    )
+    assert submitted.value is not None
+    claim = await coordinator.claim_command(
+        "command-recycled",
+        OwnerLease("executor", 10**12),
+    )
+    assert claim is not None and claim.run is not None and claim.fence is not None
+
+    mgr = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        coordinator=coordinator,
+        on_done=AsyncMock(),
+    )
+    mgr._fire_event = AsyncMock()
+    mgr._write_tombstone = MagicMock()
+    mgr._record_cost = MagicMock()
+    mgr._sessions.reset = AsyncMock(return_value=True)
+    info = _info(parent_session_key="dashboard:parent")
+    info._coordinator_admitted = True
+    info._coordinator_command = claim.command
+    info._coordinator_fence = claim.fence
+    info._coordinator_version = claim.run.version
+    await mgr._coordinator_mark_starting(info)
+    await mgr._coordinator_mark_running(info)
+    await mgr._coordinator_record_process(info, 4321, "v1:linux:original-start:boot", True)
+
+    await asyncio.wait_for(
+        mgr._force_reap("a1b2c3d4", info, elapsed=1.0, reason="reaped"),
+        timeout=0.2,
+    )
+
+    run = await coordinator.get_run(info.id)
+    assert run is not None
+    assert run.process_owned is False
+    mgr._on_done.assert_awaited_once()
 
 
 # ── the shield: an interrupted claimer still delivers ────────────────

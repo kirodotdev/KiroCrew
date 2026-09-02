@@ -380,6 +380,28 @@ async def test_legacy_import_accepts_a_symlinked_trusted_data_home(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_macos_start_token_drift_does_not_clear_live_process_protection(monkeypatch):
+    from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+    clock = [100.0]
+    coordinator = MemoryRunCoordinator(clock=lambda: clock[0])
+    await _record_protected_process(coordinator, clock, "live-run", 4321, "recorded-token")
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        coordinator=coordinator,
+    )
+    info = SubagentInfo(id="live-run", task="work")
+    monkeypatch.setattr(platform_compat, "IS_LINUX", False)
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(platform_compat, "IS_MACOS", True)
+    monkeypatch.setattr(platform_compat, "pid_liveness", lambda _pid: platform_compat.PID_ALIVE)
+    monkeypatch.setattr(platform_compat, "process_identity_token", lambda _pid: "drifted-token")
+
+    assert await manager._protected_process_stopped(info) is False
+
+
+@pytest.mark.asyncio
 @requires_symlinks
 @requires_pinned_tree_walk
 async def test_legacy_import_rejects_linked_folder_before_directory_probe(tmp_path, monkeypatch):

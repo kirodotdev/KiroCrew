@@ -499,6 +499,7 @@ _STEER_STARTUP_POLL_SECS = 0.5
 # latency is irrelevant next to permanent wedging.
 _WAVE_STUCK_SECS = 1800
 _RESET_TIMEOUT = 30.0  # max seconds for session reset in finally block
+_SIGKILL_REAP_TIMEOUT = 1.0  # max seconds to reap the owned child after SIGKILL
 _RECOVERY_SLOT_WAIT_SECS = 60.0
 _REPORT_DRAIN_TIMEOUT = (
     30.0  # max seconds cancel_all() waits for shielded terminal reports to drain
@@ -1700,7 +1701,7 @@ class SubagentManager:
         # Keyed async callers durably admit commands before invoking the
         # compatibility executor. Legacy synchronous callers remain mirrored
         # at async run entry during migration.
-        self._coordinator = coordinator or SQLiteRunCoordinator()
+        self._coordinator = coordinator if coordinator is not None else SQLiteRunCoordinator()
         self._coordinator_owner_id = f"gateway:{uuid.uuid4().hex}"
         self.command_authority = SubagentCommandAuthority(
             self._coordinator,
@@ -2169,6 +2170,9 @@ class SubagentManager:
     async def _clear_terminal_process(self, info: SubagentInfo) -> bool:
         return await self._terminal._clear_terminal_process_impl(info)
 
+    async def _protected_process_stopped(self, info: SubagentInfo) -> bool:
+        return await self._terminal._protected_process_stopped_impl(info)
+
     def _info_from_outbox(self, event: OutboxEvent) -> SubagentInfo:
         return self._terminal._info_from_outbox_impl(event)
 
@@ -2369,6 +2373,27 @@ class SubagentManager:
 
     async def announce_durable_rejection(self, info: SubagentInfo | AdmittedExecution) -> None:
         return await self._admission.announce_durable_rejection_impl(info)
+
+    def prepare_coordinator_rejection(
+        self,
+        run_id: str,
+        *,
+        batch_id: str = "",
+        batch_total: int = 0,
+    ) -> None:
+        """Prepare live delivery before a rejection event becomes claimable."""
+
+        for task_key in (f"reject-{run_id}", run_id):
+            report_task = self._tasks.pop(task_key, None)
+            if report_task is not None:
+                report_task.cancel()
+        if batch_id:
+            self._outbox_live_run_batches[run_id] = (batch_id, batch_total)
+
+    async def deliver_coordinator_event(self, event_id: str) -> None:
+        """Route one already-durable completion through the fenced outbox."""
+
+        await self._outbox_delivery.drain_once(event_id=event_id)
 
     def _rollback_unstarted_registration(
         self,

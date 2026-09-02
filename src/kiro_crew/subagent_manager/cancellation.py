@@ -82,12 +82,7 @@ class CancellationCoordinator(ManagerComponent):
                             info.id,
                         )
                         raise RuntimeError("original task teardown timed out")
-                if (
-                    info.done
-                    or info.user_stopped
-                    or info._reap_started
-                    or info.reaped
-                ):
+                if info.done or info.user_stopped or info._reap_started or info.reaped:
                     info._recovering = False
                     return
                 if self._manager._shutting_down:
@@ -98,12 +93,7 @@ class CancellationCoordinator(ManagerComponent):
                 # never pushes the pool past max_concurrent.
                 deadline = time.time() + _RECOVERY_SLOT_WAIT_SECS
                 while True:
-                    if (
-                        info.done
-                        or info.user_stopped
-                        or info._reap_started
-                        or info.reaped
-                    ):
+                    if info.done or info.user_stopped or info._reap_started or info.reaped:
                         info._recovering = False
                         return
                     if self._manager._shutting_down:

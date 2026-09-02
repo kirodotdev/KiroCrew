@@ -678,6 +678,34 @@ async def test_startup_kills_surviving_child_before_delivering_its_completion(
 
 
 @pytest.mark.asyncio
+async def test_live_coordinator_delivery_retains_batch_context() -> None:
+    clock = _Clock()
+    coordinator = MemoryRunCoordinator(clock=clock, id_factory=lambda: "event-live-batch")
+    event = await _completed_event(coordinator, clock, "run-live-batch")
+    delivered: list[tuple[str, int, str]] = []
+
+    async def capture(info: SubagentInfo) -> None:
+        delivered.append((info.batch_id, info.batch_total, info._delivery_event_id))
+
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        on_done=capture,
+        coordinator=coordinator,
+    )
+
+    manager.prepare_coordinator_rejection(
+        event.run_id,
+        batch_id="wave-live",
+        batch_total=3,
+    )
+    await manager._outbox_delivery.drain_once(event_id=event.event_id)
+
+    assert delivered == [("wave-live", 3, event.event_id)]
+    assert coordinator._outbox[event.event_id].status is DeliveryState.DELIVERED
+
+
+@pytest.mark.asyncio
 async def test_startup_reconciliation_does_not_reprocess_deferred_outbox_as_orphan(
     monkeypatch,
 ) -> None:
@@ -1443,6 +1471,31 @@ async def test_digest_held_shadow_fallback_keeps_error_tombstone(monkeypatch, tm
     tombstone = json.loads((tmp_path / info.id / "tombstone.json").read_text(encoding="utf-8"))
     assert tombstone["cause"] == "error"
     assert tombstone["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_deferred_manager_event_does_not_repeat_parent_callbacks() -> None:
+    clock = _Clock()
+    coordinator = MemoryRunCoordinator(clock=clock, id_factory=lambda: "event-1")
+    event = await _completed_event(coordinator, clock, "run-1")
+    calls = 0
+
+    async def defer(info: SubagentInfo) -> None:
+        nonlocal calls
+        calls += 1
+        info._delivery_queued = True
+
+    manager = SubagentManager(
+        sessions=MagicMock(),
+        ctx_builder=MagicMock(),
+        on_done=defer,
+        coordinator=coordinator,
+    )
+
+    await manager._outbox_delivery.drain_once(event_id=event.event_id)
+    await manager._outbox_delivery.drain_once(event_id=event.event_id)
+
+    assert calls == 1
 
 
 @pytest.mark.asyncio
