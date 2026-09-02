@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from ..subagent import (
         _ON_DONE_TIMEOUT,
         _RESET_TIMEOUT,
+        _TERMINAL_USAGE_WRITE_TIMEOUT,
         SUBAGENT_COMPLETION_PREFIX,
         Stats,
         SubagentInfo,
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
         _timeout_context,
         _ws_result_path,
         asyncio,
+        format_subagent_usage,
         logger,
         mark_delivered,
         os,
@@ -114,11 +116,14 @@ class TerminalCoordinator(ManagerComponent):
         arguments rather than unified away. The WS payload is identical (both
         set ``info.elapsed`` before calling), so it is built from ``info`` here.
         """
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         await self._manager._fire_event(
             "subagent_done",
             info,
             {
                 "elapsed": info.elapsed,
+                "credits": info.credits,
                 "error": _redact(info.error) if info.error else None,
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,
@@ -141,6 +146,17 @@ class TerminalCoordinator(ManagerComponent):
                 "result": _done_result(info.result),
             },
         )
+        try:
+            await self._manager._write_state_off_loop(
+                info,
+                "terminal usage",
+                wait_timeout=_TERMINAL_USAGE_WRITE_TIMEOUT,
+                status=info.outcome,
+                elapsed=info.elapsed,
+                credits=info.credits,
+            )
+        except Exception:
+            logger.debug("Failed to persist terminal usage for %s", info.id, exc_info=True)
         if not self._manager._on_done:
             return
         try:
@@ -433,6 +449,11 @@ class TerminalCoordinator(ManagerComponent):
         # No live task to cancel above (already exited) — the reap still owns
         # teardown bookkeeping from here, so mark it now.
         info.reaped = True
+        # Cancellation can be draining a state writer rather than unwinding the
+        # consumer. Settle synchronously before either tombstone or WS snapshot;
+        # the consumer's eventual finally shares this once-only accounting.
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         # Guard 1 of 3 — the terminal RECORD (done/error/stat/tombstone/cost) is
         # first-arrival-wins on `info.done`, so it is never written twice.
         if not info.done:
@@ -649,6 +670,7 @@ class TerminalCoordinator(ManagerComponent):
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}` ❌ {reason}\n"
                 f"Task: {task_preview}\n"
+                f"Usage: {format_subagent_usage(info.credits, info.elapsed)}\n"
                 f"{_injection_notice_outcome(info)}{result_hint}"
             )
 

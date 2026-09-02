@@ -105,6 +105,8 @@ def _info(**kw: Any) -> Any:
         "result": "",
         "result_path": "",
         "started": 1_700_000_000.0,
+        "elapsed": 0.0,
+        "credits": 0.0,
         "turns": 2,
         "last_tool": "fs_read",
         "parent_session_key": "dashboard:chat-1",
@@ -605,12 +607,19 @@ class TestApiSpawnStatus:
         result_file.write_text("full transcript", encoding="utf-8")
         mgr = _mgr()
         mgr.get.return_value = _info(
-            done=True, result="truncated", result_path=str(result_file), error="oops"
+            done=True,
+            result="truncated",
+            result_path=str(result_file),
+            error="oops",
+            elapsed=28.5,
+            credits=0.75,
         )
         req = _Req(_state(subagents=mgr), None, match_info={"agent_id": "a1"})
         data = _payload(_run(mod.api_spawn_status, req))
         assert data["result"] == "full transcript"
         assert data["error"] == "oops"
+        assert data["elapsed"] == 28.5
+        assert data["credits"] == 0.75
 
     def test_done_agent_falls_back_to_in_memory_result_on_read_error(self, tmp_path: Path) -> None:
         mgr = _mgr()
@@ -632,18 +641,30 @@ class TestApiSpawnList:
         mgr = _mgr(
             all_agents=[
                 _info(id="run", done=False),
-                _info(id="fin", done=True, result="r", error="e", outcome="failed"),
+                _info(
+                    id="fin",
+                    done=True,
+                    result="r",
+                    error="e",
+                    outcome="failed",
+                    elapsed=42.5,
+                    credits=1.25,
+                ),
             ]
         )
         agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
         assert [a["id"] for a in agents] == ["run", "fin"]
         assert "turns" in agents[0] and "result" not in agents[0]
         assert agents[1]["outcome"] == "failed" and agents[1]["stopped"] is False
+        assert "elapsed" not in agents[1]
+        assert "credits" not in agents[1]
 
     def test_finished_agent_without_error_reports_empty_string(self) -> None:
         mgr = _mgr(all_agents=[_info(done=True, error="")])
         agents = _payload(_run(mod.api_spawn_list, _Req(_state(subagents=mgr))))["agents"]
         assert agents[0]["error"] == ""
+        assert "elapsed" not in agents[0]
+        assert "credits" not in agents[0]
 
 
 class TestApiSpawnRetry:

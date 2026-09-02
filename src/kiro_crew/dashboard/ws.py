@@ -948,6 +948,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                                                 "child_session": getattr(a, "conversation_key", "")
                                                 or f"subagent:{a.id}",
                                                 "elapsed": a.elapsed,
+                                                "credits": a.credits,
                                                 "error": _r(a.error) if a.error else None,
                                                 "stopped": a.user_stopped,
                                                 "outcome": a.outcome,

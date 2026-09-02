@@ -610,6 +610,12 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                     "done": True,
                     "started": disk_state.get("started"),
                 }
+                # Legacy persisted records do not carry terminal usage. Keep
+                # those fields absent rather than presenting invented zeros.
+                if "elapsed" in disk_state:
+                    disk_data["elapsed"] = disk_state["elapsed"]
+                if "credits" in disk_state:
+                    disk_data["credits"] = disk_state["credits"]
                 result_path = _agent_dir(agent_id) / "result.txt"
                 result = ""
                 if result_path.exists() and not is_sensitive_path(str(result_path)):
@@ -643,6 +649,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
     data["started"] = info.started
     if info.done:
+        data["elapsed"] = info.elapsed
+        data["credits"] = info.credits
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):

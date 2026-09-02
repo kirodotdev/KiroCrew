@@ -686,6 +686,20 @@ describe('sseSubagentDone — requestedModel threading (#5326)', () => {
     expect(row.requestedModel).toBe('claude-opus-4.8')
   })
 
+  it('stores finite non-negative terminal credits', () => {
+    const store = makeDoneStore()
+    store.dispatch(setActiveSlot('active'))
+    store.dispatch(sseSubagentDone({
+      slot: 'active', id: 'usage', elapsed: 12, credits: 1.25, outcome: 'completed',
+    }))
+    expect(store.getState().chat.subagents.usage.credits).toBe(1.25)
+
+    store.dispatch(sseSubagentDone({
+      slot: 'active', id: 'usage', elapsed: 13, credits: Number.NaN, outcome: 'failed',
+    }))
+    expect(store.getState().chat.subagents.usage.credits).toBe(1.25)
+  })
+
   it('does not clobber an existing requestedModel when the done frame omits it', () => {
     const store = makeDoneStore()
     store.dispatch(setActiveSlot('active'))
