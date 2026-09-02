@@ -297,6 +297,13 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # packs the user cannot get back -- the same data-loss class ``backup`` and
     # ``workflow_library`` are masked for.
     "appearance-library",
+    # The chat_tag authorization store (grant rows saying which tags an agent
+    # may self-apply). It governs what the AGENT is allowed to do, so it must
+    # not be writable by the population it governs — and ``trust/`` cannot
+    # host it, because that directory stays sandbox read-write for the SEL
+    # appends above. Written and read only by the GATEWAY (dashboard tag CRUD
+    # + the chat_tag applier); no in-sandbox code opens it.
+    "tag-grants",
     "agentcore-inbound",
     "routing",
     "webhooks",
@@ -827,6 +834,11 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # Private memory has the same late-creation hazard: an agent spawned before
     # the first member must never gain access when that member's database appears.
     "memory_stores",
+    # The chat_tag grants store writes by atomic rename of a sibling temp, so
+    # the whole directory must exist before the isdir-guarded mask loop runs —
+    # otherwise the first sandbox spawned before the first grant write sees an
+    # unmasked leaf appear later.
+    "tag-grants",
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each

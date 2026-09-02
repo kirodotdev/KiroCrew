@@ -436,6 +436,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Recovery is a re-import, but a prompt-injected agent corrupting user data
     # is the mainline threat these leaves exist for.
     "appearance-library",
+    # The chat_tag authorization store. Grant rows decide which tags an agent
+    # may self-apply, so agent file tools must neither read nor write them;
+    # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
+    # gateway opens the path.
+    "tag-grants",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
