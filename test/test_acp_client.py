@@ -8857,7 +8857,92 @@ class TestResolveKiroBinEnvOverride:
         )
         # No inherited snapshot descriptor: the installed binary is exec'd in
         # place, so there is nothing to hand down to the wrapper chain.
-        assert "pass_fds" not in spawn_call.kwargs
+        #
+        # macOS is the exception, and for a different fd:
+        # bind_voice_safe_agent_workspace opens the agent workspace as a
+        # directory descriptor there so the child enters it by fchdir instead of
+        # re-resolving a pathname a same-UID symlink retarget could aim
+        # elsewhere. _spawn hands that descriptor to create_subprocess_limited
+        # as chdir_fd, which folds exactly that one fd into pass_fds so the
+        # spawn shim inherits it. Off darwin the binding returns None, so
+        # chdir_fd is None and pass_fds stays absent. The binding is also gated
+        # on the harness owning an internal sandbox (ACP_BACKENDS_INTERNAL_SANDBOX,
+        # which the default Kiro backend built here belongs to), so a backend
+        # outside that set stays on the pathname cwd whatever the platform says.
+        if sys.platform == "darwin":
+            pass_fds = spawn_call.kwargs["pass_fds"]
+            # Exactly the bound workspace descriptor, nothing else: no snapshot
+            # fd is inherited here, so the only descriptor handed down is the
+            # one the fchdir binding produced. Which int it is, is pinned on
+            # every OS by the forced-darwin companion below.
+            assert isinstance(pass_fds, tuple)
+            assert len(pass_fds) == 1
+            assert isinstance(pass_fds[0], int) and pass_fds[0] >= 0
+        else:
+            assert "pass_fds" not in spawn_call.kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "the binding opens the workspace as a directory descriptor, which "
+            "needs O_DIRECTORY; Windows has no such flag and os.open on a "
+            "directory raises, so a forced-darwin binding refuses with "
+            "'cannot-verify' before any spawn is attempted"
+        ),
+    )
+    async def test_spawn_passes_exactly_the_bound_workspace_fd_on_darwin(
+        self, tmp_path, monkeypatch
+    ):
+        # The darwin half of the assertion above runs on no CI shard, because no
+        # macOS job collects this module. The binding gate is a runtime
+        # sys.platform read rather than an import-time constant, so forcing the
+        # platform runs the REAL binding on any POSIX host and pins the whole
+        # composition: _spawn -> bind_voice_safe_agent_workspace_async ->
+        # create_subprocess_limited(chdir_fd=...) -> a pass_fds holding exactly
+        # that descriptor. Spy-and-delegate rather than stub, so the fd compared
+        # against pass_fds is the one the real binding opened.
+        from kiro_crew.acp import client as client_module
+
+        fake = tmp_path / "kiro-cli"
+        fake.write_bytes(b"#!/bin/sh\n")
+        fake.chmod(0o755)
+        launch_path = str(fake)
+        mock_exec = AsyncMock(side_effect=RuntimeError("spawn failed"))
+        bound_fds: list[int | None] = []
+        real_bind = client_module.bind_voice_safe_agent_workspace_async
+
+        async def spy_bind(workspace):
+            spawn_dir, descriptor = await real_bind(workspace)
+            bound_fds.append(descriptor)
+            return spawn_dir, descriptor
+
+        with (
+            patch.object(client_module, "_resolve_kiro_bin", return_value=launch_path),
+            patch.object(
+                client_module,
+                "wrap_argv",
+                side_effect=lambda argv, mode, **kwargs: (list(argv), None),
+            ),
+            patch.object(client_module, "assert_voice_runtime_outside_agent_workspace"),
+            patch.object(client_module, "cgroup_scope_argv", side_effect=lambda argv: list(argv)),
+            patch.object(
+                client_module, "bind_voice_safe_agent_workspace_async", side_effect=spy_bind
+            ),
+            patch("asyncio.create_subprocess_exec", mock_exec),
+        ):
+            client = AcpClient(work_dir=tmp_path / "workspace")
+            monkeypatch.setattr(sys, "platform", "darwin")
+
+            with pytest.raises(RuntimeError, match="spawn failed"):
+                await client._spawn()
+
+        assert len(bound_fds) == 1
+        bound_fd = bound_fds[0]
+        assert isinstance(bound_fd, int)
+        # The spy reads the descriptor before _spawn's failure handler closes it,
+        # so the value survives even though the fd itself does not.
+        assert mock_exec.await_args.kwargs["pass_fds"] == (bound_fd,)
 
     def test_env_override_ignored_when_missing_file(self, tmp_path):
         # A configured-but-nonexistent path must not be returned; resolution
