@@ -1263,3 +1263,223 @@ class TestMentionResolution:
         await asyncio.sleep(0.05)
 
         assert seen == ["do the thing"]
+
+
+# ---------------------------------------------------------------------------
+# CardKit verbs (streaming card plumbing)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    """Minimal context-manager stand-in for urlopen's return value."""
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc: Any) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._payload.encode("utf-8")
+
+
+def _capture_urlopen(monkeypatch: Any, *payloads: str) -> list[Any]:
+    """Patch urlopen to answer with *payloads* in order; record the requests."""
+    import urllib.request
+
+    seen: list[Any] = []
+    queue = list(payloads)
+
+    def fake_urlopen(req: Any, timeout: float = 0) -> _FakeResponse:
+        seen.append(req)
+        return _FakeResponse(queue.pop(0) if queue else json.dumps({"code": 0}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return seen
+
+
+_TOKEN_OK = json.dumps({"code": 0, "tenant_access_token": "t-abc", "expire": 7200})
+
+
+class TestTenantToken:
+    def test_token_is_fetched_then_cached(self, monkeypatch: Any) -> None:
+        """The second call must not re-hit the network."""
+        from kiro_crew.feishu.client import LarkClient
+
+        seen = _capture_urlopen(monkeypatch, _TOKEN_OK)
+        client = LarkClient(app_id="a", app_secret="s")
+
+        assert client._sync_tenant_token() == "t-abc"
+        assert client._sync_tenant_token() == "t-abc"
+        assert len(seen) == 1
+
+    def test_an_expired_token_is_refetched(self, monkeypatch: Any) -> None:
+        """A lapsed cache entry must not be served."""
+        from kiro_crew.feishu.client import LarkClient
+
+        seen = _capture_urlopen(monkeypatch, _TOKEN_OK, _TOKEN_OK)
+        client = LarkClient(app_id="a", app_secret="s")
+
+        client._sync_tenant_token()
+        client._token = ("stale", 0.0)  # already expired
+        client._sync_tenant_token()
+
+        assert len(seen) == 2
+
+    def test_an_empty_token_raises_rather_than_caching_it(self, monkeypatch: Any) -> None:
+        """A blank token must fail loudly, not be cached and reused."""
+        from kiro_crew.feishu.client import CardApiError, LarkClient
+
+        _capture_urlopen(monkeypatch, json.dumps({"code": 0, "tenant_access_token": ""}))
+        client = LarkClient(app_id="a", app_secret="s")
+
+        with pytest.raises(CardApiError):
+            client._sync_tenant_token()
+        assert client._token is None
+
+
+class TestSyncHttp:
+    def test_a_zero_code_body_is_returned_whole(self, monkeypatch: Any) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        _capture_urlopen(monkeypatch, json.dumps({"code": 0, "data": {"card_id": "c1"}}))
+        client = LarkClient(app_id="a", app_secret="s")
+
+        out = client._sync_http("POST", "/open-apis/x", {"k": "v"}, token="t")
+
+        assert out["data"]["card_id"] == "c1"
+
+    def test_http_200_with_a_nonzero_body_code_raises(self, monkeypatch: Any) -> None:
+        """THE important one: Feishu reports business errors inside a 200 body.
+
+        An exception-only reading would treat this as success for a call that did
+        nothing, which is why the code is checked explicitly.
+        """
+        from kiro_crew.feishu.client import CardApiError, LarkClient
+
+        _capture_urlopen(monkeypatch, json.dumps({"code": 230020, "msg": "too fast"}))
+        client = LarkClient(app_id="a", app_secret="s")
+
+        with pytest.raises(CardApiError) as caught:
+            client._sync_http("PUT", "/open-apis/x", None, token="t")
+
+        assert caught.value.code == 230020
+        assert caught.value.msg == "too fast"
+
+    def test_an_http_error_carrying_a_body_code_uses_that_code(self, monkeypatch: Any) -> None:
+        import urllib.error
+        import urllib.request
+
+        from kiro_crew.feishu.client import CardApiError, LarkClient
+
+        class _Err(urllib.error.HTTPError):
+            def __init__(self) -> None:
+                super().__init__("u", 400, "bad", {}, None)  # type: ignore[arg-type]
+
+            def read(self) -> bytes:
+                return json.dumps({"code": 230011, "msg": "recalled"}).encode()
+
+        def boom(_req: Any, timeout: float = 0) -> None:
+            raise _Err()
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        client = LarkClient(app_id="a", app_secret="s")
+
+        with pytest.raises(CardApiError) as caught:
+            client._sync_http("PUT", "/open-apis/x", None, token="t")
+
+        assert caught.value.code == 230011
+
+    def test_an_http_error_with_an_unparseable_body_falls_back_to_the_status(
+        self, monkeypatch: Any
+    ) -> None:
+        import urllib.error
+        import urllib.request
+
+        from kiro_crew.feishu.client import CardApiError, LarkClient
+
+        class _Err(urllib.error.HTTPError):
+            def __init__(self) -> None:
+                super().__init__("u", 503, "nope", {}, None)  # type: ignore[arg-type]
+
+            def read(self) -> bytes:
+                return b"<html>gateway</html>"
+
+        def boom(_req: Any, timeout: float = 0) -> None:
+            raise _Err()
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        client = LarkClient(app_id="a", app_secret="s")
+
+        with pytest.raises(CardApiError) as caught:
+            client._sync_http("GET", "/open-apis/x", None, token="t")
+
+        assert caught.value.code == 503
+
+    def test_a_non_https_origin_is_refused_before_any_request(self, monkeypatch: Any) -> None:
+        """urllib honours file://, so a bad configured origin must not reach it."""
+        from kiro_crew.feishu.client import CardApiError, LarkClient
+
+        seen = _capture_urlopen(monkeypatch, json.dumps({"code": 0}))
+        client = LarkClient(app_id="a", app_secret="s")
+        client._open_base = "file:///etc"
+
+        with pytest.raises(CardApiError):
+            client._sync_http("GET", "/passwd", None, token="t")
+        assert seen == []
+
+    def test_a_token_is_sent_as_a_bearer_header(self, monkeypatch: Any) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        seen = _capture_urlopen(monkeypatch, json.dumps({"code": 0}))
+        client = LarkClient(app_id="a", app_secret="s")
+        client._sync_http("POST", "/open-apis/x", None, token="tok")
+
+        assert seen[0].headers.get("Authorization") == "Bearer tok"
+
+
+class TestCardApi:
+    @pytest.mark.asyncio
+    async def test_card_api_returns_only_the_data_envelope(self, monkeypatch: Any) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        _capture_urlopen(monkeypatch, _TOKEN_OK, json.dumps({"code": 0, "data": {"card_id": "c9"}}))
+        client = LarkClient(app_id="a", app_secret="s")
+
+        out = await client.card_api("POST", "/open-apis/cardkit/v1/cards", {"x": 1})
+
+        assert out == {"card_id": "c9"}
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_a_missing_data_key_yields_an_empty_dict(self, monkeypatch: Any) -> None:
+        from kiro_crew.feishu.client import LarkClient
+
+        _capture_urlopen(monkeypatch, _TOKEN_OK, json.dumps({"code": 0}))
+        client = LarkClient(app_id="a", app_secret="s")
+
+        assert await client.card_api("PUT", "/open-apis/cardkit/v1/cards/1") == {}
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_send_card_reply_posts_an_interactive_message(self, monkeypatch: Any) -> None:
+        """The message carries no text of its own -- only the card reference."""
+        from kiro_crew.feishu.client import LarkClient
+
+        seen = _capture_urlopen(monkeypatch, _TOKEN_OK, json.dumps({"code": 0}))
+        client = LarkClient(app_id="a", app_secret="s")
+
+        await client.send_card_reply("om_123", "card_abc")
+
+        reply = seen[-1]
+        assert reply.full_url.endswith("/open-apis/im/v1/messages/om_123/reply")
+        body = json.loads(reply.data.decode())
+        assert body["msg_type"] == "interactive"
+        assert json.loads(body["content"]) == {
+            "type": "card",
+            "data": {"card_id": "card_abc"},
+        }
+        await client.close()

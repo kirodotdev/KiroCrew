@@ -319,11 +319,23 @@ class LarkClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         data = json.dumps(body or {}, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self._open_base}{path}", data=data, headers=headers, method=method
-        )
+        url = f"{self._open_base}{path}"
+        # The origin is configurable (it follows the SDK's own domain constant so a
+        # Lark tenant is not sent to feishu.cn), and urllib honours ``file://`` and
+        # ``ftp://``. A non-https origin arriving from config would therefore turn
+        # this into an arbitrary-file read. Refuse anything else BEFORE the request
+        # exists, which is what makes the suppression below sound rather than a way
+        # of silencing the scanner. Every Open Platform host is https.
+        if not url.startswith("https://"):
+            raise CardApiError(-1, "refusing a non-https Open Platform origin", path)
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=_CARD_HTTP_TIMEOUT_S) as resp:
+            # The rule's concern is a dynamic URL reaching urllib, because urllib
+            # would honour a non-http scheme. Unreachable here: the https scheme is
+            # asserted immediately above and anything else raises before this line.
+            with urllib.request.urlopen(  # nosemgrep: dynamic-urllib-use-detected
+                req, timeout=_CARD_HTTP_TIMEOUT_S
+            ) as resp:  # noqa: S310
                 raw = resp.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", "replace")
