@@ -1061,3 +1061,61 @@ class TestLifecycleHookTimeout:
         )
         await asyncio.sleep(0)
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
+
+
+class TestGatewayShutdownStopsBackends:
+    """Regression: ``on_gateway_shutdown`` must stop app backend PROCESSES, not
+    only run shutdown hooks.
+
+    Before the fix it returned early when no lifecycle dispatcher was set and never
+    stopped backends on any path, so backends spawned by ``start_enabled_app_backends``
+    were orphaned (reparented to init, still bound to their ports) until the next
+    startup reap.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_backends_after_hooks(self) -> None:
+        """Hooks are dispatched first, then the backend processes are stopped."""
+        from unittest.mock import MagicMock, patch
+
+        import kiro_crew.apps.hooks_integration as hi
+
+        order: list[str] = []
+
+        async def _dispatch_shutdown(enabled: list[dict[str, Any]]) -> list[str]:
+            order.append("hooks")
+            return [a["name"] for a in enabled]
+
+        dispatcher = MagicMock()
+        dispatcher.dispatch_shutdown = _dispatch_shutdown
+
+        def _stop_all() -> list[str]:
+            order.append("stop")
+            return ["app-a"]
+
+        stop_all = MagicMock(side_effect=_stop_all)
+
+        with patch.object(hi, "_lifecycle_dispatcher", dispatcher), patch.object(
+            hi, "list_apps", return_value=[{"name": "app-a", "enabled": True}]
+        ), patch.object(hi, "stop_all_app_backends", stop_all):
+            await hi.on_gateway_shutdown()
+
+        assert order == ["hooks", "stop"], "hooks must run before backends are stopped"
+        stop_all.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stops_backends_without_lifecycle_dispatcher(self) -> None:
+        """The core regression: with no lifecycle dispatcher, backends are STILL
+        stopped. The old early ``return`` skipped process teardown entirely."""
+        from unittest.mock import MagicMock, patch
+
+        import kiro_crew.apps.hooks_integration as hi
+
+        stop_all = MagicMock(return_value=[])
+
+        with patch.object(hi, "_lifecycle_dispatcher", None), patch.object(
+            hi, "stop_all_app_backends", stop_all
+        ):
+            await hi.on_gateway_shutdown()
+
+        stop_all.assert_called_once_with()

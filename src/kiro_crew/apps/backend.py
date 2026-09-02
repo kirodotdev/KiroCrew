@@ -1475,6 +1475,33 @@ def stop_app_backend(app_name: str) -> bool:
     return True
 
 
+def stop_all_app_backends() -> list[str]:
+    """Stop every running app backend process. Best-effort: a failure stopping one
+    app is logged and never blocks the rest.
+
+    Called on gateway shutdown. Without it, backends spawned by
+    ``start_enabled_app_backends`` outlive the gateway — reparented to init and left
+    listening on their ports — until ``_reap_stale_app_backends`` clears them at the
+    NEXT startup. Returns the names whose live process was stopped.
+    """
+    # Snapshot the names under the lock, then release it before stopping: each
+    # ``stop_app_backend`` re-acquires ``_lock`` (and ``_health_reconcile_lock``), so
+    # calling it while holding ``_lock`` would deadlock (the lock is non-reentrant).
+    with _lock:
+        names = list(_processes.keys())
+
+    stopped: list[str] = []
+    for name in names:
+        try:
+            if stop_app_backend(name):
+                stopped.append(name)
+        except Exception:
+            logger.exception(
+                "Failed to stop app backend %r during gateway shutdown", name
+            )
+    return stopped
+
+
 def get_app_process(app_name: str) -> AppProcess | None:
     """Get the process info for a running app backend."""
     with _lock:

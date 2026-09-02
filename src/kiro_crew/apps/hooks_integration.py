@@ -18,6 +18,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps.backend import stop_all_app_backends
 from kiro_crew.apps.bridges import (
     disarm_app_crons_for_execution,
     register_app_crons_with_service,
@@ -34,6 +35,7 @@ from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -615,14 +617,31 @@ async def on_gateway_startup(
 
 
 async def on_gateway_shutdown() -> None:
-    """Called during gateway shutdown — invoke on_shutdown hooks for all enabled apps."""
-    if not _lifecycle_dispatcher:
-        return
+    """Called during gateway shutdown — invoke on_shutdown hooks for all enabled
+    apps, then stop their backend PROCESSES so none survive as orphans.
 
-    # list_apps() walks the apps dir (two file reads per app) — off the loop.
-    installed = await asyncio.to_thread(list_apps)
-    enabled = [a for a in installed if a.get("enabled")]
-    if enabled:
-        invoked = await _lifecycle_dispatcher.dispatch_shutdown(enabled)
-        if invoked:
-            logger.info("Shutdown hooks invoked for: %s", ", ".join(invoked))
+    Ordering mirrors ``teardown_app_runtime``: hooks first (each app shuts down
+    cleanly), then the process. The backend stop runs unconditionally — a missing
+    lifecycle dispatcher only skips the hooks, never the process teardown.
+    """
+    if _lifecycle_dispatcher:
+        # list_apps() walks the apps dir (two file reads per app) — off the loop.
+        installed = await asyncio.to_thread(list_apps)
+        enabled = [a for a in installed if a.get("enabled")]
+        if enabled:
+            invoked = await _lifecycle_dispatcher.dispatch_shutdown(enabled)
+            if invoked:
+                logger.info("Shutdown hooks invoked for: %s", ", ".join(invoked))
+
+    # Stop the backend processes. Previously on_gateway_shutdown only ran hooks, so
+    # backends spawned by start_enabled_app_backends() were left running (reparented
+    # to init, still bound to their ports) until the next startup reap. Offloaded to
+    # the subprocess executor — stop_app_backend blocks on SIGTERM + up to a 5s wait
+    # per app (matches teardown_app_runtime's offload).
+    loop = asyncio.get_running_loop()
+    try:
+        stopped = await loop.run_in_executor(subprocess_executor(), stop_all_app_backends)
+        if stopped:
+            logger.info("Stopped app backends on shutdown: %s", ", ".join(stopped))
+    except Exception:
+        logger.exception("Failed to stop app backends during gateway shutdown")
