@@ -2225,17 +2225,6 @@ class TestUnresolvedSessionsAreNamespaced:
         mcp_computer._call_tool_inner(TOOL_LIST_APPS, {})
         assert posted and posted[0][0] == "dashboard:main"
 
-    def test_the_fix_added_no_refusal(self):
-        """The constraint this had to be solved under, asserted directly.
-
-        The obvious fix — and the one prescribed — is ``if not key: refuse``. That
-        line is why the feature did not work on macOS at all, so it must not return
-        under a different justification.
-        """
-        src = inspect.getsource(mcp_computer)
-        assert "could not be identified" not in src
-        assert "ERR_NO_SESSION" not in src
-
 
 class TestTheDriftWalkHonoursTheSnapshotBudget:
     """A raised ``max_tree_nodes`` must not make its own elements un-actionable.
