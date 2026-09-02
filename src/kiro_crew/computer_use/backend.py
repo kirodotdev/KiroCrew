@@ -384,6 +384,8 @@ def run_launch(
     permit: "Callable[[LaunchIdentity], str | None] | None" = None,
     identity: "Callable[[str, str], LaunchIdentity] | None" = None,
     refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    window_timeout: float = LAUNCH_WINDOW_TIMEOUT_SECS,
+    window_poll_interval: float = LAUNCH_POLL_INTERVAL_SECS,
 ) -> DriverResult:
     """The whole ``launch_app`` flow, once, for every platform to reuse.
 
@@ -415,6 +417,9 @@ def run_launch(
     different argument: a real ``AppRef``, whose ``window_title`` is the only place a
     packaged app's name appears. See the comment at the call site for why that cannot be
     folded into the pre-spawn check.
+
+    *window_timeout* and *window_poll_interval* bound the post-spawn window wait; they
+    default to the production values and exist so tests can shrink the no-window wait.
     """
     try:
         target, name = resolve(query)
@@ -481,7 +486,9 @@ def run_launch(
             ok=False, text=ERR_LAUNCH_FAILED.format(app=name, detail=exc.strerror or exc)
         )
 
-    appeared, waited = await_launched_window(lambda: find(name))
+    appeared, waited = await_launched_window(
+        lambda: find(name), timeout=window_timeout, interval=window_poll_interval
+    )
     if appeared is None:
         # A SUCCESS with a caveat, not a failure. The process did start; reporting
         # failure is what makes a model launch again, and the second attempt is what
