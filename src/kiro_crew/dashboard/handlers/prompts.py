@@ -408,6 +408,21 @@ _DIR_FD_SUPPORTED = pinned_fs.supports_pinned_walk() and {os.unlink, os.mkdir}.i
     os.supports_dir_fd
 )
 
+#: True when this interpreter can build a file with NO NAME at all -- Linux's
+#: ``O_TMPFILE`` -- and hand it a name with ``linkat``. That is what lets create
+#: publish a finished prompt without the body ever being reachable under a name,
+#: and without the published inode passing through a two-link state.
+#:
+#: Deliberately only ATTRIBUTE lookups: this module is imported on the gateway
+#: boot path, where every statement is paid on every launch before the socket
+#: accepts requests. The remaining half of the capability -- whether
+#: ``/proc/self/fd`` is actually mounted, which ``linkat``'s unprivileged form
+#: needs -- is a filesystem question, so it is asked inside the write job in the
+#: executor rather than here. A mount that refuses ``O_TMPFILE`` (NFS, some
+#: overlayfs) cannot be probed at all: the capability is per-filesystem, so the
+#: open is attempted and its refusal handled where it happens.
+_UNNAMED_CREATE_SUPPORTED = bool(getattr(os, "O_TMPFILE", 0)) and os.link in os.supports_dir_fd
+
 
 def _pin_prompt_dir(d: Path, *, create: bool = False) -> int:
     """Return a descriptor pinning the prompt directory *d*, via ``pinned_fs``.
@@ -751,18 +766,143 @@ async def api_prompts_create(request: web.Request) -> web.Response:
             # path, so a permission denial is not misdiagnosed as a linked root.
             return "linked_prompt_root"
         try:
+            # This one write has to satisfy four things at once, and every
+            # obvious shape satisfies only three:
+            #
+            #   (1) never publish a partial body;
+            #   (2) never destroy a file another writer holds at the name;
+            #   (3) leave the published inode at ONE link, because the read path
+            #       a few hundred lines below goes through
+            #       safe_read_file_bytes_nolink and refuses st_nlink > 1 -- a
+            #       prompt with two links answers 403 forever, which is a worse
+            #       dead end than the 409 this fixes;
+            #   (4) leave nothing behind when the process dies mid-write.
+            #
+            # O_EXCL straight onto <stem>.md breaks (1): the name holds the body
+            # while it is being written, so a failure strands a partial prompt
+            # and every retry is refused 409 -- the reported defect. A cleanup
+            # cannot fully repair that, because POSIX has no unlink-by-inode:
+            # verify-then-unlink is two syscalls on one NAME, so an atomic save
+            # landing between them destroys the replacement, breaking (2).
+            # Writing a NAMED temp and linking it into place breaks (3) and (4):
+            # between the link and the temp's removal the inode carries two
+            # links, and a process death there leaves the prompt permanently
+            # unreadable. rename would clobber, and renameat2's RENAME_NOREPLACE
+            # is Linux-only and unexposed by CPython -- pinned_fs's
+            # put_back_no_clobber records that same dead end.
+            #
+            # An UNNAMED inode has none of these problems. O_TMPFILE builds the
+            # body with no name at all, so nothing can be observed half-written
+            # and there is nothing to clean up -- a crash drops an inode that was
+            # never linked. linkat then gives it its one and only name, and link
+            # is create-if-absent, so an occupied name is still a 409 and what is
+            # already there is never touched. The inode goes from zero links to
+            # one and is never at two.
+            fd = -1
+            if _UNNAMED_CREATE_SUPPORTED and os.path.isdir("/proc/self/fd"):
+                try:
+                    # Opened THROUGH the pinned descriptor, so the inode is born
+                    # on the filesystem holding the directory the walk
+                    # validated. Mode matches what open("x") would have produced
+                    # (0o666 & ~umask), because this inode is the one published.
+                    fd = os.open(".", os.O_TMPFILE | os.O_WRONLY, 0o666, dir_fd=dir_fd)
+                except OSError:
+                    # O_TMPFILE is a per-FILESYSTEM capability, not a per-OS one:
+                    # a mount without it answers EOPNOTSUPP here. Not a failure
+                    # -- the named fallback below keeps the pinned guarantee
+                    # there, at the cost of the residual it documents.
+                    fd = -1
+            if fd >= 0:
+                try:
+                    # Written on the raw descriptor rather than through
+                    # os.fdopen, so ownership is unambiguous. fdopen's failure
+                    # behaviour is split: an argument error raises BEFORE
+                    # wrapping and leaves the descriptor open, while a late
+                    # failure (a MemoryError building the buffer) runs io.open's
+                    # error path, which closes it. Both are reachable -- probed
+                    # on CPython 3.12 -- so a caller either leaks a descriptor or
+                    # double-closes one, and a double close in this thread pool
+                    # can shut a descriptor another worker just opened. Owning
+                    # the fd here makes the close exactly once. No newline
+                    # translation exists on this path at all: the descriptor is
+                    # binary and handed the encoded bytes, so the file holds
+                    # exactly what was posted.
+                    data = content.encode("utf-8")
+                    written = 0
+                    while written < len(data):
+                        written += os.write(fd, data[written:])
+                    # Flushed BEFORE the name exists. 201 is a promise the prompt
+                    # is on disk, and fsync is where a full or network-backed
+                    # filesystem reports the error it deferred -- the
+                    # reported-success-before-durable half of this bug. It also
+                    # leaves the close below nothing to report, which is why a
+                    # failing close here cannot strand anything.
+                    os.fsync(fd)
+                    try:
+                        # The publish, and the only syscall that touches the
+                        # user-visible name. linkat's AT_EMPTY_PATH form would
+                        # need CAP_DAC_READ_SEARCH; the /proc spelling is the
+                        # unprivileged equivalent, and follow_symlinks=True is
+                        # what makes that entry resolve to the inode instead of
+                        # being linked as a symlink.
+                        os.link(
+                            f"/proc/self/fd/{fd:d}",
+                            filename,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=True,
+                        )
+                    except FileExistsError:
+                        return "exists"
+                    # The link made the entry; this makes the ENTRY durable.
+                    # fsync on the file settles its CONTENT, and a directory is a
+                    # separate object -- so without this a power loss after a 201
+                    # can come back with the body intact and no name pointing at
+                    # it, which is the acknowledged-then-vanished case.
+                    #
+                    # It RAISES rather than being logged and swallowed. 201 is a
+                    # claim the prompt is on disk, and a create that cannot flush
+                    # the entry has not established that, so reporting success
+                    # would be the very failure this change exists to close.
+                    # Answering 500 costs little here: the body is already
+                    # written, flushed and linked, so the caller sees a complete
+                    # and readable prompt, and a retry gets a truthful 409 on a
+                    # prompt that really does exist and can still be edited
+                    # through the update path -- nothing like the truncated
+                    # leftover that made the original 409 a dead end.
+                    #
+                    # The entry is deliberately NOT withdrawn on this path. There
+                    # is nothing safe to withdraw it with: removing the leaf would
+                    # mean unlinking the prompt's own name, which is exactly the
+                    # verify-then-unlink hazard the unnamed publish exists to
+                    # avoid. The by-name branch below does withdraw, because it
+                    # already holds an identity-checked cleanup for its own leaf.
+                    os.fsync(dir_fd)
+                finally:
+                    # Swallowed: fsync already settled durability, so after a
+                    # successful publish a failing close must not turn a created
+                    # prompt into a 500. Before the publish the inode has no
+                    # name, so a failed close can leak nothing but the descriptor
+                    # itself, which this reclaims.
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                return None
+            # No O_TMPFILE on this filesystem. The body goes under its own name
+            # and the failure path removes it, bound to the inode this call
+            # created so the removal addresses an object rather than a name. The
+            # residual is the one pinned_fs's _unlink_verified documents as
+            # irreducible and ships: the verify and the unlink are two syscalls
+            # on one name, so a replacement landing between them is lost. It is
+            # accepted here for the reason it is accepted there -- POSIX offers
+            # nothing better -- and it is now confined to filesystems that cannot
+            # build an unnamed inode.
             # O_EXCL keeps create-if-absent atomic; O_NOFOLLOW refuses an
             # existing symlink at the name rather than writing through it. Both
-            # resolve relative to the pinned directory, so a swap after the
-            # check cannot redirect this write. Mode matches what open("x")
-            # would have produced (0o666 & ~umask).
-            # No newline translation exists on this path at all: the descriptor
-            # is opened binary (O_BINARY matters only on Windows, where os.open
-            # defaults to text mode and os.write would expand every \n to
-            # \r\n) and handed the encoded bytes, so the file holds exactly what
-            # was posted. Unreachable on Windows today — that platform has no
-            # openat and takes the by-name branch above — but the flag belongs
-            # on any os.open this code owns, not just the reachable ones.
+            # resolve relative to the pinned directory, so a swap after the check
+            # cannot redirect this write. O_BINARY matters only on Windows, which
+            # has no openat and takes the by-name branch above, but the flag
+            # belongs on any os.open this code owns.
             try:
                 fd = os.open(
                     filename,
@@ -776,35 +916,50 @@ async def api_prompts_create(request: web.Request) -> web.Response:
                 )
             except FileExistsError:
                 return "exists"
+            # Annotated once, in the no-openat branch above: mypy reads both
+            # branches as one scope, so re-annotating here is a [no-redef].
+            created_ident = None
             try:
-                # Written on the raw descriptor rather than through os.fdopen,
-                # so ownership is unambiguous. fdopen's failure behaviour is
-                # split: an argument error raises BEFORE wrapping and leaves the
-                # descriptor open, while a late failure (a MemoryError building
-                # the buffer) runs io.open's error path, which closes it. Both
-                # are reachable — probed on CPython 3.12 — so a caller either
-                # leaks a descriptor or double-closes one, and a double close in
-                # this thread pool can shut a descriptor another worker just
-                # opened. Owning the fd here makes the close exactly once.
+                # Identity of the inode THIS create made, read from the
+                # descriptor while it is provably ours, and unset until then so a
+                # failure before this point forgoes the cleanup rather than
+                # unlinking on a guess.
+                leaf_st = os.fstat(fd)
+                created_ident = (leaf_st.st_dev, leaf_st.st_ino)
                 data = content.encode("utf-8")
                 written = 0
                 while written < len(data):
                     written += os.write(fd, data[written:])
+                os.fsync(fd)
+                # Closed INSIDE the guarded region: close is the other place a
+                # deferred write error surfaces, so a close in a `finally` beside
+                # the cleanup arm would skip the removal below and strand the
+                # partial body. Clearing `fd` first keeps the arm's fallback
+                # close from double-closing; atomic_write uses the same two lines
+                # for the same reason.
+                fd, open_fd = -1, fd
+                os.close(open_fd)
+                # Same reason as the unnamed branch above: the O_EXCL open made
+                # the entry, and the entry needs its own flush before 201 can
+                # claim the prompt is on disk. It raises here too -- and on THIS
+                # path the failure also withdraws the publication, because the
+                # arm below already removes this call's own leaf under an identity
+                # check. A caller that gets the 500 can retry into a clean create.
+                os.fsync(dir_fd)
             except BaseException:
-                # Partial body written under an O_EXCL name: remove it, or every
-                # retry answers 409 forever. Caught broadly rather than on
-                # OSError, because the leftover is just as fatal to the retry
-                # when the write fails for a non-OS reason (a MemoryError, an
-                # interrupt): the file exists either way. Unlinked relative to
-                # the same descriptor, so the cleanup cannot reach a different
-                # file.
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
                 try:
-                    os.unlink(filename, dir_fd=dir_fd)
+                    if created_ident is not None:
+                        st_now = os.stat(filename, dir_fd=dir_fd, follow_symlinks=False)
+                        if (st_now.st_dev, st_now.st_ino) == created_ident:
+                            os.unlink(filename, dir_fd=dir_fd)
                 except OSError:
                     pass
                 raise
-            finally:
-                os.close(fd)
         finally:
             os.close(dir_fd)
         return None
