@@ -122,9 +122,7 @@ def _resolve_safe_pgid(proc: subprocess.Popen) -> int | None:
     except (ProcessLookupError, PermissionError, OSError):
         return None
     if pgid <= 1 or pgid == os.getpgid(0):
-        logger.error(
-            "kill guard: refusing broadcast/self pgid %d for pid %d", pgid, pid
-        )
+        logger.error("kill guard: refusing broadcast/self pgid %d for pid %d", pgid, pid)
         return None
     return pgid
 
@@ -221,7 +219,8 @@ def _drain_after_kill(proc: subprocess.Popen, job_id: str | None) -> None:
         logger.warning(
             "Post-kill drain timed out (5s) for cron %s (pid %s); the child "
             "outlived SIGKILL or another process holds the pipe — closing pipes",
-            job_id, proc.pid,
+            job_id,
+            proc.pid,
         )
     finally:
         for pipe in (proc.stdout, proc.stderr):
@@ -286,8 +285,7 @@ class ScriptContext:
         # fallback for a directly-constructed context and is 5476 on a --port auto
         # gateway, which is a SIBLING rather than this instance.
         self._port = int(
-            os.environ.pop("_KIROCREW_DIAL_PORT", "")
-            or os.environ.get("KIROCREW_PORT", "5476")
+            os.environ.pop("_KIROCREW_DIAL_PORT", "") or os.environ.get("KIROCREW_PORT", "5476")
         )
         # Secret injected via temp file (not inherited env) to prevent privilege escalation.
         # Pop env var and unlink file immediately so fn(ctx) cannot access the secret directly.
@@ -705,7 +703,7 @@ def _split_script_spec(script_path: str) -> tuple[str, str]:
     func_colon = script_path.rfind(":")
     if func_colon == -1 or (drive_colon and func_colon == 1):
         raise ValueError(f"Invalid script path '{script_path}': expected 'path.py:func'")
-    return script_path[:func_colon], script_path[func_colon + 1:]
+    return script_path[:func_colon], script_path[func_colon + 1 :]
 
 
 def resolve_script_path(script_path: str) -> tuple[str, str]:
@@ -884,8 +882,12 @@ def run_script_sandboxed(
 
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         proc = popen_limited(
-            sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=clean_env, start_new_session=True,
+            sandboxed_argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=clean_env,
+            start_new_session=True,
         )
         _register_proc(job_id, proc)
         try:
@@ -1028,9 +1030,7 @@ def _shell_is_posix_strict(shell: str) -> bool:
         return cached
     sandbox_cleanup: str | None = None
     try:
-        argv, sandbox_cleanup = wrap_argv(
-            [shell, "-c", "echo x.{a,a}"], mode="strict"
-        )
+        argv, sandbox_cleanup = wrap_argv([shell, "-c", "echo x.{a,a}"], mode="strict")
         # Same discipline as every other sandbox-routed spawn in this module
         # (test_every_routed_spawn_applies_resource_limits / _cgroup_scope): the
         # probe is a child process, so it observes the same fork-bomb / RSS
@@ -1099,8 +1099,12 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         clean_env = _clean_cron_env()
         proc = popen_limited(
-            sandboxed_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=clean_env, start_new_session=True,
+            sandboxed_argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=clean_env,
+            start_new_session=True,
         )
         if job_id:
             _register_proc(job_id, proc)
@@ -1111,12 +1115,20 @@ def run_command_sandboxed(command: str, timeout: int = 300, job_id: str | None =
             except subprocess.TimeoutExpired:
                 _kill_proc_group(proc)
                 _drain_after_kill(proc, job_id)
-                return {"status": "error", "output": f"❌ Command timed out after {timeout}s", "exit_code": -1}
+                return {
+                    "status": "error",
+                    "output": f"❌ Command timed out after {timeout}s",
+                    "exit_code": -1,
+                }
         finally:
             if job_id:
                 cancelled = _unregister_proc(job_id, proc)
         if cancelled:
-            return {"status": "cancelled", "output": "Cancelled by user", "exit_code": proc.returncode}
+            return {
+                "status": "cancelled",
+                "output": "Cancelled by user",
+                "exit_code": proc.returncode,
+            }
         if len(output) > _MAX_COMMAND_OUTPUT:
             output = output[:_MAX_COMMAND_OUTPUT] + "\n\n[truncated — output exceeded 64KB]"
         if proc.returncode != 0:

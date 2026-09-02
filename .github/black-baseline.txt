@@ -187,9 +187,7 @@ src/kiro_crew/connections/registry.py
 src/kiro_crew/connections/tool_aliases.py
 src/kiro_crew/context_management.py
 src/kiro_crew/crew_chat.py
-src/kiro_crew/cron.py
 src/kiro_crew/cron_history.py
-src/kiro_crew/cron_script.py
 src/kiro_crew/dashboard/cautious_boot.py
 src/kiro_crew/dashboard/channel_folders.py
 src/kiro_crew/dashboard/chat_auto_tag.py
@@ -202,7 +200,6 @@ src/kiro_crew/dashboard/crash_dump_store.py
 src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
-src/kiro_crew/dashboard/handlers/cron.py
 src/kiro_crew/dashboard/handlers/discover.py
 src/kiro_crew/dashboard/handlers/files.py
 src/kiro_crew/dashboard/handlers/hooks.py
@@ -290,7 +287,6 @@ src/kiro_crew/mcp_apps_render.py
 src/kiro_crew/mcp_caller.py
 src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_core.py
-src/kiro_crew/mcp_cron.py
 src/kiro_crew/mcp_discovery.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py

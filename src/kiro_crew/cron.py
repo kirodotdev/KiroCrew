@@ -1459,11 +1459,7 @@ class CronService:
                     max(min(job.timeout_secs, 86400), _JOB_TIMEOUT_SECS)
                     if job
                     else _JOB_TIMEOUT_SECS
-                ) + (
-                    _pool_queue_allowance(job)
-                    + _gate_budget_allowance(job)
-                    + _vet_allowance(job)
-                )
+                ) + (_pool_queue_allowance(job) + _gate_budget_allowance(job) + _vet_allowance(job))
                 jitter_allowance = self._job_jitter.get(job_id, 0.0)
                 if elapsed <= deadline + jitter_allowance:
                     continue
@@ -1908,9 +1904,7 @@ class CronService:
         a matching job already exists.
         """
         job = self._build_job(**kwargs)
-        persisted = await asyncio.to_thread(
-            self._persist_add_if_absent_locked, predicate, job
-        )
+        persisted = await asyncio.to_thread(self._persist_add_if_absent_locked, predicate, job)
         if not persisted:
             return None
         self._arm_timer()
@@ -2271,13 +2265,9 @@ class CronService:
                     try:
                         _tsecs = int(kwargs["timeout_secs"])
                     except (ValueError, TypeError) as e:
-                        raise ValueError(
-                            f"Invalid timeout_secs: {kwargs['timeout_secs']!r}"
-                        ) from e
+                        raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
                     if not 1 <= _tsecs <= 86400:
-                        raise ValueError(
-                            f"timeout_secs must be within 1..86400, got {_tsecs}"
-                        )
+                        raise ValueError(f"timeout_secs must be within 1..86400, got {_tsecs}")
                 # Script/command subprocess timeout. MCP cron_update passes this
                 # field, so a branch has to consume it here — otherwise the
                 # update is accepted and silently dropped.
@@ -2639,9 +2629,7 @@ class CronService:
         """
         requested = list(job_ids)
         removed, missing = await asyncio.to_thread(self._remove_jobs_locked, requested)
-        self._audit_requested_batch_removal(
-            requested, removed, missing, actor=actor, source=source
-        )
+        self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
         if removed:
             self._arm_timer()
         return removed, missing
@@ -2684,9 +2672,7 @@ class CronService:
         """
         requested = list(job_ids)
         removed, missing = self._remove_jobs_locked(requested)
-        self._audit_requested_batch_removal(
-            requested, removed, missing, actor=actor, source=source
-        )
+        self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
         if removed:
             self._arm_timer()
         return removed, missing
@@ -3370,14 +3356,10 @@ class CronService:
                         decision.reason,
                     )
                 else:
-                    logger.debug(
-                        "Cron: still deferring %d scheduled job(s)", len(deferred)
-                    )
+                    logger.debug("Cron: still deferring %d scheduled job(s)", len(deferred))
             elif self._admission_deferring:
                 self._admission_deferring = False
-                logger.info(
-                    "Cron: memory posture recovered — resuming scheduled firings"
-                )
+                logger.info("Cron: memory posture recovered — resuming scheduled firings")
 
             if not due:
                 return
@@ -3625,10 +3607,7 @@ class CronService:
         # one another.  Only command/script jobs go through the pool, so a
         # message job's budget is left exactly as set.
         deadline = (
-            timeout
-            + _pool_queue_allowance(job)
-            + _gate_budget_allowance(job)
-            + _vet_allowance(job)
+            timeout + _pool_queue_allowance(job) + _gate_budget_allowance(job) + _vet_allowance(job)
         )
         # Fresh run: no failure counted yet. The timeout handler below reads
         # this to avoid double-counting a run that already recorded its
