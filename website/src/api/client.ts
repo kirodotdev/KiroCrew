@@ -230,6 +230,15 @@ export interface ConnectionStatus {
   connectedSince?: string
 }
 
+/** Authenticated provider-tool verdict returned by POST /api/connections/test. */
+export interface ConnectionTestResult {
+  schema_version: number
+  slug: string
+  verdict: 'usable' | 'no_tools' | 'failed'
+  code: string
+  toolCount: number
+}
+
 /**
  * A single task-runner plan step as sent to the server. Known fields are
  * typed; the payload is forwarded verbatim, so extra fields are permitted via
@@ -2732,6 +2741,10 @@ export const api = {
   // the mint feed above; never mints.
   connectionsStatus: () =>
     fetch('/api/connections/status').then(j) as Promise<{ schema_version: number; connections: ConnectionStatus[] }>,
+  // Promptless authenticated enumeration through kiro-cli. The runtime owns
+  // bearer injection and provider tools/list; this receives only a verdict and count.
+  connectionsTest: (slug: string) =>
+    post('/api/connections/test', { slug }).then(j) as Promise<ConnectionTestResult>,
   // Dispose an in-flight mint (process, listener, spec). Does NOT touch the MCP
   // config entry — the card owns that. `token` fences a sibling tab's row.
   connectionsCancel: (slug: string, token?: string) =>

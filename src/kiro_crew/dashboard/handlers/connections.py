@@ -469,6 +469,32 @@ async def api_connections_status(request: web.Request) -> web.Response:
     return web.json_response({"schema_version": _STATUS_SCHEMA_VERSION, "connections": statuses})
 
 
+async def api_connections_test(request: web.Request) -> web.Response:
+    """POST /api/connections/test — enumerate this provider through kiro-cli.
+
+    The dedicated ACP session is promptless: kiro-cli authenticates the remote
+    server, performs its MCP ``tools/list``, and reports the final agent-exposed
+    tools through native structured commands. The endpoint never receives token
+    material and never invokes a provider tool.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    owner_denied = await require_owner_dashboard_request(request, "connections_test")
+    if owner_denied is not None:
+        return owner_denied
+    parsed = await _mint_request(request)
+    if isinstance(parsed, web.Response):
+        return parsed
+    _body, provider = parsed
+
+    # Function-local by design: the handlers package is imported at gateway
+    # boot, while this path imports the ACP client and should be paid only when
+    # the owner explicitly clicks Test.
+    from kiro_crew.connections.tool_test import test_connection_tools
+
+    return web.json_response(await test_connection_tools(provider))
+
+
 async def api_connections_cancel(request: web.Request) -> web.Response:
     """POST /api/connections/cancel — dispose a provider's in-flight mint.
 

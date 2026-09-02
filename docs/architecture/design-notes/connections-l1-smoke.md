@@ -81,16 +81,32 @@ synchronous presence helper and emits no SEL read audit, unlike mint's use of
 `grant_observed`: that covers a Connect flow acting for a remote caller, whereas
 this is an operator's own CLI, `l0_probe`'s class.
 
-## Known gap: proving a tool actually works
+## Authenticated enumeration belongs to the on-demand Test action
 
-Two boundaries keep this rung short of "a tool call succeeded", and both point
-the same way: kiro-cli holds the bearer, and the governed path owns dispatch
-(enterprise tool policy plus its audit record). Both are answered by having the
-runtime make the call, not by reading its token store or bypassing its gate.
-ACP exposes no tool-invocation surface outside a model turn today, so that
-lands with the ACP-side observation slice; until then `GRANT_HELD` is the
-ceiling for runtime-custody providers and `PASS` means "reachable,
-authenticated, and the pinned tool still advertised".
+The scheduled L1 sweep remains deliberately tokenless: it has no interactive
+agent session, so a runtime-custody provider still tops out at `GRANT_HELD` and
+stops before `tools/list`. That verdict continues to mean only that a grant
+artifact exists and the live endpoint still issues a valid challenge.
+
+The Connections card's owner-only `POST /api/connections/test` closes the
+listing gap through the runtime instead of widening this harness. It starts a
+promptless kiro-cli ACP session under the real `kirocrew` agent and executes two
+native commands, with no model turn:
+
+1. `/mcp` reads kiro-cli's MCP-manager status and per-server tool count. A
+   `running` row means kiro-cli authenticated the server and completed the
+   provider's `tools/list`; loading, failed, disabled, missing, or malformed
+   rows are failures rather than empty tool sets.
+2. `/tools` reads the final agent-exposed inventory. Only rows whose source is
+   `mcp:<provider alias>` count, so a server that advertises tools but is not
+   mounted by the agent is honestly reported as exposing none.
+
+The 200 response is always one of three verdicts, each with a stable `code` and
+`toolCount`: `usable` (`tools_available`, count > 0), `no_tools`
+(`no_tools_exposed`, count 0), or `failed` (a specific runtime/inventory code,
+count 0). The path returns no tool descriptions or credential material and,
+like L1, never issues `tools/call`; provider dispatch remains exclusively on the
+governed, audited agent path.
 
 ## Running it by hand
 

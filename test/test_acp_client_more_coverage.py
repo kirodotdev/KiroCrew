@@ -899,6 +899,29 @@ class TestCommandsAndSteer:
         }
 
     @pytest.mark.asyncio
+    async def test_command_result_preserves_structured_data(self, tmp_path):
+        client = _client(tmp_path)
+        client._session_id = "sid"
+        client.ensure_ready = AsyncMock()
+        client._send_request = AsyncMock(return_value=11)
+        expected = {
+            "message": "1 MCP server configured",
+            "data": {
+                "servers": [{"name": "linear", "status": "running", "toolCount": 2}],
+                "mode": "status",
+            },
+        }
+        client._wait_for_response = AsyncMock(return_value=expected)
+
+        assert await client.command_result("/mcp") == expected
+        method, payload = client._send_request.await_args[0]
+        assert method == METHOD_COMMANDS_EXECUTE
+        assert payload == {
+            "sessionId": "sid",
+            "command": {"command": "mcp", "args": {}},
+        }
+
+    @pytest.mark.asyncio
     async def test_send_command_redacts_credentials_in_output(self, tmp_path):
         client = _client(tmp_path)
         client._session_id = "sid"

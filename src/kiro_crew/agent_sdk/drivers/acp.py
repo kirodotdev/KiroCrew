@@ -25,12 +25,13 @@ incidental:
   location, and a returned path is a filesystem detail the SDK would then be
   tempted to interpret.
 
-Imports of ``kiro_crew.acp`` are FUNCTION-LOCAL throughout.
-``kiro_crew/acp/__init__.py`` pulls in the ACP client and the runtime, and this
-module is reached from a dashboard handler on the boot path, so a module-scope
-import would drag both into gateway start. It also keeps the lookup at CALL
-time, in the resolvers' own defining module -- which is what lets a test patch
-the spawn's resolver and have the probe actually see it.
+Imports that pull runtime machinery (``kiro_crew.acp`` and
+``kiro_crew.sandbox``) are FUNCTION-LOCAL throughout. The ACP package pulls in
+the client and runtime, while the sandbox package pulls in platform composition;
+this module is reached from a dashboard handler on the boot path, so importing
+either at module scope would charge gateway startup for a subsystem used only by
+an explicit action. Call-time lookup also lets tests patch the spawn resolver and
+sandbox posture at their defining modules.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ __all__ = [
     "claude_components_resolve",
     "derived_agent_permissions",
     "kiro_cli_resolves",
+    "run_kiro_native_commands",
 ]
 
 
@@ -145,3 +147,59 @@ def claude_adapter_install_command() -> str:
     from kiro_crew.acp.client import CLAUDE_ACP_NPM_PKG
 
     return f"npm i -g {CLAUDE_ACP_NPM_PKG}"
+
+
+def _native_command_client_factory():
+    """Resolve the direct ACP client at call time so gateway boot stays lazy."""
+    from kiro_crew.acp.client import AcpClient
+
+    return AcpClient
+
+
+async def run_kiro_native_commands(
+    commands: tuple[str, ...],
+    *,
+    work_dir: object,
+    agent: str,
+    session_key: str,
+    timeout_seconds: float,
+) -> tuple[str, list[dict]]:
+    """Run a structured native-command batch and return only plain data.
+
+    One timeout covers readiness and every command. No prompt is sent. ACP
+    exceptions are translated here so no backend type crosses the SDK boundary.
+    """
+    import asyncio
+    import contextlib
+
+    from kiro_crew.acp.client import AcpAuthRequired, AcpError, AcpTimeoutError
+    from kiro_crew.sandbox import configured_sandbox_mode
+
+    sandbox_mode = await asyncio.to_thread(configured_sandbox_mode)
+    client = _native_command_client_factory()(
+        work_dir=work_dir,
+        agent=agent,
+        sandbox_mode=sandbox_mode,
+        session_key=session_key,
+    )
+
+    async def _run() -> list[dict]:
+        await client.ensure_ready()
+        results: list[dict] = []
+        for command in commands:
+            results.append(await client.command_result(command))
+        return results
+
+    try:
+        return "ok", await asyncio.wait_for(_run(), timeout=timeout_seconds)
+    except AcpAuthRequired:
+        return "kiro_auth_required", []
+    except (asyncio.TimeoutError, AcpTimeoutError):
+        return "connection_test_timeout", []
+    except AcpError:
+        return "agent_unreachable", []
+    except Exception:
+        return "connection_test_failed", []
+    finally:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(client.shutdown(), timeout=10.0)

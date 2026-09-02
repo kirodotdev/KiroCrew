@@ -94,6 +94,7 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_mint_state,
     api_connections_premint,
     api_connections_status,
+    api_connections_test,
     api_mcp_oauth_relay,
 )
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401

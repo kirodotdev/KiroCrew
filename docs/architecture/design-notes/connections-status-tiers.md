@@ -34,11 +34,19 @@ is a statement about kiro-cli's local artifacts, and those artifacts outlive a
 revocation performed AT THE PROVIDER: the tokenless reachability probe answers
 `needs_auth` either way, so a remotely-revoked grant keeps its Connected badge
 until the runtime actually fails a call (or the artifacts are removed locally).
-This is the honest ceiling of local facts — falsifying it would require a
-token-bearing liveness call, which belongs to the warm-runtime seam this slice
-deliberately does not build (kiro-cli owns token custody; Kiro Crew never
-holds a credential to probe with). The inverse direction — a grant present but
-the badge stale-downgraded — self-heals within one 30-second poll.
+The inverse direction — a grant present but the badge stale-downgraded —
+self-heals within one 30-second poll.
+
+The explicit **Test** action is the opt-in liveness check and does not change the
+badge's polling contract. Owner-only `POST /api/connections/test` starts a
+promptless kiro-cli ACP session, so bearer injection stays inside kiro-cli. Its
+native `/mcp` result establishes whether the provider initialized and completed
+`tools/list`; native `/tools` then identifies which of that provider's tools the
+active agent actually exposes. It returns `usable`, `no_tools`, or `failed` with
+a stable `code` and `toolCount`, always as HTTP 200. Invalid request and owner
+denials retain their existing non-2xx machine-coded JSON contracts. The action
+never calls a provider tool, never reads grant bytes, and does not alter mint,
+warm-process, or OAuth-guard state.
 
 Status vocabulary, all judged from local facts:
 

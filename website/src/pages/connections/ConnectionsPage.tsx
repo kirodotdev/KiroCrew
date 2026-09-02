@@ -52,6 +52,7 @@ export type Feedback = {
   kind: 'success' | 'warning' | 'error'
   text: string
   revoke?: { href: string; provider: string }
+  help?: { href: string }
 }
 export type OAuthState = {
   completed: boolean
@@ -645,6 +646,14 @@ function ConnectionCard({
               </a>
             </>
           )}
+          {feedback.help && (
+            <>
+              {' '}
+              <a href={feedback.help.href} target="_blank" rel="noopener noreferrer" className="font-medium text-accent hover:text-accent-hover">
+                {t('pages.connectionsPage.documentation')} <ExternalLink className="lucide-inline" aria-hidden="true" />
+              </a>
+            </>
+          )}
         </div>
       )}
     </article>
@@ -1082,34 +1091,28 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   }
 
   const testConnection = async (provider: ConnectionProvider) => run(provider, 'test', async () => {
-    const probed = await api.mcpProbe() as McpServer[]
-    queryClient.setQueryData<McpServer[]>(['mcp-servers'], probed)
-    const tested = serverForConnection(provider, probed)
-    // The verdict is the CARD's fold, not a bare `status === 'ok'`. A healthy
-    // AUTHORIZED remote OAuth provider answers this tokenless probe with 401,
-    // which the gateway reports as `needs_auth` — so reading only `ok` as a pass
-    // told the user "test failed" beside a badge reading the same probe as
-    // Connected. Same predicate, same grant input as the badge, so the button and
-    // the badge cannot report two verdicts for one probe.
-    //
-    // The badge has one more input than the predicate: an OAuth flow completed
-    // in THIS session outranks the possibly-lagging grant feed (the grant was
-    // just watched being written). Without the same precedence here, the very
-    // first Test click after connecting fails beside a Connected badge — the
-    // original bug at the exact moment every new user hits it. A completed flow
-    // is grant EVIDENCE, not a verdict: a genuinely broken probe still fails,
-    // unlike the badge's blanket completed→connected short-circuit.
-    const oauth = effectiveOAuth(oauthByServer[provider.slug], locallyWaiting[provider.slug])
-    const grantEvidence = oauth?.completed && !oauth.failed
-      ? true
-      : confirmedGrantPresent(statusBySlug[provider.slug])
-    if (!tested || !probeIndicatesConnected(tested.status, grantEvidence)) {
-      throw new Error(t('pages.connectionsPage.test_failed'))
+    const result = await api.connectionsTest(provider.slug)
+    if (result.verdict === 'usable') {
+      setFeedback(current => ({
+        ...current,
+        [provider.slug]: { kind: 'success', text: t('pages.connectionsPage.connection_healthy') },
+      }))
+      return
     }
-    setFeedback(current => ({
-      ...current,
-      [provider.slug]: { kind: 'success', text: t('pages.connectionsPage.connection_healthy') },
-    }))
+    if (result.verdict === 'no_tools') {
+      setFeedback(current => ({
+        ...current,
+        [provider.slug]: {
+          kind: 'warning',
+          text: t('pages.mcpManagement.assessment.reason_no_tools_listed'),
+          // GitLab documents the provider-side Duo/group prerequisites. Link to
+          // that separately maintained source instead of copying volatile text.
+          help: provider.slug === 'gitlab' ? { href: provider.docs_url } : undefined,
+        },
+      }))
+      return
+    }
+    throw new Error(t('pages.connectionsPage.test_failed'))
   })
 
   const relayReturnAddress = async (provider: ConnectionProvider, returnAddress: string) => run(provider, 'relay', async () => {

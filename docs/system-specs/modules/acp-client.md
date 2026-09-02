@@ -307,10 +307,19 @@ the idle shortcut active from the start (the pre-ceiling behavior).
 | `stream_events(msg)` | Yields `AcpEvent` objects, caller handles permissions (dashboard) |
 | `approve_tool(id)` / `reject_tool(id)` | Tool permission responses |
 | `send_command(cmd)` | Slash commands (e.g. `/compact`), returns response text |
+| `command_result(cmd)` | Kiro-only native command result including structured `data`; internal callers must reduce it before external use |
 | `cancel_session()` | Cancel in-flight operation |
 | `wait_turn_done(timeout)` | Wait for the current prompt to finish; returns `stop_reason` or raises `asyncio.TimeoutError` |
 | `has_active_turn()` | Returns `True` while a prompt is in flight and not yet complete |
 | `shutdown()` | Kill kiro-cli process |
+
+The Connections authenticated Test action is the only application consumer of
+`command_result`. Its agent-SDK driver resolves the operator's configured
+`agent.sandbox` tier off the event loop, gives readiness plus the ordered command
+batch one total timeout, and calls `shutdown()` in a `finally` on success, failure,
+timeout, or caller cancellation. Only the bounded verdict and tool count leave
+the Connections layer; raw command data and tool descriptions do not reach the
+HTTP response.
 
 ### Extension Notifications
 

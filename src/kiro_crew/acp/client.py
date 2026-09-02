@@ -5396,6 +5396,27 @@ class AcpClient:
             )
             await self._send_response(request_id, {"outcome": {"outcome": OUTCOME_CANCELLED}})
 
+    async def command_result(
+        self, command: str, args: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Execute a native kiro command and return its structured result.
+
+        Internal callers use this when the command's ``data`` object is the
+        contract (for example ``/mcp`` and ``/tools`` inventories). The result
+        is backend output and must be reduced to a bounded, typed payload before
+        it reaches an external surface. The TuiCommand object form is required:
+        current kiro-cli can exit without a response for the legacy string form.
+        """
+        await self.ensure_ready()
+        cmd_name, cmd_args = parse_slash_command(command)
+        payload: dict[str, Any] = {
+            "sessionId": self._session_id,
+            "command": {"command": cmd_name, "args": args if args is not None else cmd_args},
+        }
+        req_id = await self._send_request(METHOD_COMMANDS_EXECUTE, payload)
+        result = await self._wait_for_response(req_id, timeout=60.0)
+        return result if isinstance(result, dict) else {}
+
     async def send_command(self, command: str, args: dict | None = None) -> str:
         """Execute a kiro slash command (e.g. '/compact', '/usage', '/effort').
 
