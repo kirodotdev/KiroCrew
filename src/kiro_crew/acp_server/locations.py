@@ -158,6 +158,26 @@ def _location(path: str, line: int | None) -> dict[str, Any]:
     return entry
 
 
+def _operations_locations(params: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Return file targets from dashboard Read ``operations``, when present.
+
+    The tool wrapper's top-level ``path`` identifies the workspace while each
+    file read carries its target and offset inside ``operations``. A directory
+    operation is not a valid ACP file location, so it is deliberately skipped.
+    """
+    operations = params.get("operations")
+    if not isinstance(operations, list):
+        return None
+    locations: list[dict[str, Any]] = []
+    for operation in operations:
+        if not isinstance(operation, dict) or operation.get("mode") not in {"Line", "Image"}:
+            continue
+        path = _first_path(operation)
+        if path:
+            locations.append(_location(path, _first_line(operation)))
+    return locations
+
+
 def extract_tool_locations(
     tool_name: str,
     raw_params: dict[str, Any] | None,
@@ -183,6 +203,10 @@ def extract_tool_locations(
     # the agent isn't editing.
     if tool_name in _SHELL_TOOLS:
         return []
+
+    operations_locations = _operations_locations(raw_params)
+    if operations_locations is not None:
+        return operations_locations
 
     path = _first_path(raw_params)
     if not path:

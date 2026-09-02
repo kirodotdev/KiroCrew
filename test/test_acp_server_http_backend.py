@@ -377,7 +377,9 @@ def _make_stub_app() -> web.Application:
                 if title_event in done:
                     await ws.send_json(title_event.result())
                 else:
-                    break
+                    # The adapter sends a subscription frame before waiting for
+                    # title events; keep the stub socket open for that handshake.
+                    continue
         except asyncio.CancelledError:
             raise
         return ws
@@ -442,6 +444,7 @@ class TestHttpGatewayBackend:
         try:
             await backend.open()
             backend.set_session_info_handler(on_title)
+            backend.register_session_info("acp-slot-1")
             await asyncio.wait_for(app["title_ws_connected"].wait(), timeout=2)
             await app["title_events"].put(
                 {"type": "slot_title", "data": {"key": "acp-slot-1", "title": "Fresh title"}}

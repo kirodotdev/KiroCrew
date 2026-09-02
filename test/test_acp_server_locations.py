@@ -24,6 +24,19 @@ class TestKiroCliFileTools:
         result = extract_tool_locations("fs_read", {"path": "/abs/main.py", "start_line": 42})
         assert result == [{"path": "/abs/main.py", "line": 42}]
 
+    def test_dashboard_read_operation_overrides_workspace_path(self) -> None:
+        result = extract_tool_locations(
+            "Read",
+            {
+                "path": "/workspace",
+                "operations": [
+                    {"mode": "Directory", "path": "/workspace"},
+                    {"mode": "Line", "path": "/workspace/AGENTS.md", "offset": 320},
+                ],
+            },
+        )
+        assert result == [{"path": "/workspace/AGENTS.md", "line": 320}]
+
     def test_str_replace_absent_file_stays_path_only(self, tmp_path: Any) -> None:
         # oldStr on a path that doesn't exist: the derivation gives up and we
         # emit path only, so the editor at least opens the file.

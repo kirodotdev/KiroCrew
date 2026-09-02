@@ -233,6 +233,8 @@ class HttpGatewayBackend:
         self._tool_id_map: dict[str, str] = {}
         self._session_info_handler: Callable[[str, str], Awaitable[None]] | None = None
         self._title_events_task: asyncio.Task[None] | None = None
+        self._title_ws: aiohttp.ClientWebSocketResponse | None = None
+        self._title_session_ids: set[str] = set()
         self._closing = False
 
     # ── lifecycle ──
@@ -301,10 +303,22 @@ class HttpGatewayBackend:
         self._session_info_handler = handler
         self._start_title_events()
 
+    def register_session_info(self, session_id: str) -> None:
+        """Allow title events only for a session registered by this ACP server."""
+        if not session_id:
+            return
+        self._title_session_ids.add(session_id)
+        self._start_title_events()
+        if self._title_ws is not None and not self._title_ws.closed:
+            # Reconnect with the expanded allowlist; the Gateway binds the
+            # subscription to the keys sent during the WebSocket handshake.
+            asyncio.create_task(self._title_ws.close())
+
     def _start_title_events(self) -> None:
         if (
             self._session is not None
             and self._session_info_handler is not None
+            and self._title_session_ids
             and self._title_events_task is None
             and not self._closing
         ):
@@ -324,13 +338,25 @@ class HttpGatewayBackend:
                 ws = await asyncio.wait_for(
                     self._session.ws_connect(
                         self._ws_url(),
-                        headers=self._headers({"Origin": self._base_url}),
+                        headers=self._headers(
+                            {
+                                "Origin": self._base_url,
+                                "X-ACP-Title-Subscription": "1",
+                            }
+                        ),
                         heartbeat=30,
                         timeout=aiohttp.ClientWSTimeout(
                             ws_receive=None, ws_close=_TITLE_WS_CLOSE_TIMEOUT_SECS
                         ),
                     ),
                     timeout=_PROBE_TIMEOUT,
+                )
+                self._title_ws = ws
+                await ws.send_json(
+                    {
+                        "type": "subscribe_acp_title",
+                        "keys": sorted(self._title_session_ids),
+                    }
                 )
                 try:
                     async for message in ws:
@@ -339,6 +365,8 @@ class HttpGatewayBackend:
                         elif message.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
                             break
                 finally:
+                    if self._title_ws is ws:
+                        self._title_ws = None
                     await ws.close()
             except asyncio.CancelledError:
                 raise

@@ -506,6 +506,8 @@ def _check_ws_origin(request: web.Request) -> None:
 async def api_ws(request: web.Request) -> web.WebSocketResponse:
     """GET /api/ws — single multiplexed WebSocket for all real-time events."""
     _check_ws_origin(request)
+    if request.get("internal_auth") and request.headers.get("X-ACP-Title-Subscription") != "1":
+        raise web.HTTPForbidden(text="internal WebSocket requires ACP title subscription")
 
     from kiro_crew.dashboard.handlers import _log_ring
 
@@ -586,6 +588,11 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     ws["_app"] = ws_app
     ws["_is_dashboard_user"] = request.get("is_dashboard_user", False)
     ws["_allowed_events"] = allowed_events
+    acp_title_subscription = bool(
+        request.get("internal_auth") and request.headers.get("X-ACP-Title-Subscription") == "1"
+    )
+    ws["_acp_title_subscription"] = acp_title_subscription
+    ws["_acp_title_sessions"] = set()
 
     # Push current slots immediately so sidebar populates without waiting.
     # App tokens get only the slots their manifest scope allows.
@@ -681,6 +688,9 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
     async def _push_status() -> None:
         try:
             while not ws.closed and not shutdown_event.is_set():
+                if ws.get("_acp_title_subscription", False):
+                    await asyncio.sleep(_WS_STATUS_INTERVAL)
+                    continue
                 # Gateway-wide cache: one store touch per TTL across ALL
                 # sockets; this call returns the shared cache immediately
                 # unless it is the one that refreshes it. Counts are None
@@ -791,7 +801,15 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
                 try:
                     data = json.loads(msg.data)
                     msg_type = data.get("type", "")
-                    if msg_type == "subscribe_logs":
+                    if msg_type == "subscribe_acp_title":
+                        if not ws.get("_acp_title_subscription", False):
+                            continue
+                        keys = data.get("keys")
+                        if isinstance(keys, list):
+                            ws["_acp_title_sessions"] = {
+                                key for key in keys if isinstance(key, str) and key
+                            }
+                    elif msg_type == "subscribe_logs":
                         # The gateway log stream is privileged. The broadcast
                         # chokepoint filters future ``log`` events, but the
                         # ring-buffer replay below bypasses it — gate at the

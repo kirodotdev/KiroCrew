@@ -591,8 +591,11 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Called by MCP (loopback + secret) AND browser polling
         # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
         "/api/spawn",
+        # ACP title subscriptions use the loopback internal secret, then the
+        # WebSocket event gate narrows delivery to registered slot keys.
+        "/api/ws",
         "/api/chat",
-        # ACP selector discovery uses the same loopback internal-secret path.
+        # ACP selector discovery authenticates through loopback internal-secret access.
         "/api/models",
         "/api/effort-levels",
         "/api/lessons",

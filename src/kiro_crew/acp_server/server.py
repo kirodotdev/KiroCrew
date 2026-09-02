@@ -461,6 +461,8 @@ class SessionBackend(Protocol):
       ``(session_id, title)`` callback for live backing-session metadata updates.
       The HTTP backend uses it to forward dashboard ``slot_title`` WebSocket
       events through standard ACP ``session_info_update`` notifications.
+    * ``register_session_info(session_id)`` — authorize title notifications for
+      one session owned by this ACP process.
     """
 
     supports_load: bool
@@ -532,6 +534,11 @@ class AcpAgentServer:
         session = self._sessions.get(session_id)
         if session is not None:
             await SessionSink(self._transport, session).send_session_info(title)
+
+    def _register_session_info(self, session_id: str) -> None:
+        register = getattr(self._backend, "register_session_info", None)
+        if callable(register):
+            register(session_id)
 
     # ── dispatch ──
 
@@ -736,6 +743,7 @@ class AcpAgentServer:
         else:
             session_id = f"{AGENT_NAME}-{uuid.uuid4().hex[:12]}"
         self._sessions[session_id] = _Session(session_id=session_id, cwd=cwd, mcp_servers=servers)
+        self._register_session_info(session_id)
         if not await self._host_session_mcp(session_id, servers, req_id):
             # session/new created the backing slot above; a failed MCP setup must
             # not leave it orphaned on the dashboard. load/resume never reach here
@@ -779,6 +787,7 @@ class AcpAgentServer:
             return
         session = _Session(session_id=session_id, cwd=cwd, mcp_servers=servers)
         self._sessions[session_id] = session
+        self._register_session_info(session_id)
         if not await self._host_session_mcp(session_id, servers, req_id):
             return
         sink = SessionSink(self._transport, session)
@@ -844,6 +853,7 @@ class AcpAgentServer:
             )
             return
         self._sessions[session_id] = _Session(session_id=session_id, cwd=cwd, mcp_servers=servers)
+        self._register_session_info(session_id)
         if not await self._host_session_mcp(session_id, servers, req_id):
             return
         fields = await self._selector_fields(session_id, self._sessions[session_id])
