@@ -13,8 +13,10 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
+from typing import Callable
 
 try:  # py3.9+ stdlib; kept in a try so older runtimes raise cleanly.
     from importlib.resources import files as _resource_files
@@ -27,6 +29,7 @@ except ImportError:  # pragma: no cover — KiroCrew targets py3.10.
 # would mean the KiroCrew install itself is broken — there's no scenario
 # where it's optional. ``_safe_audit`` still handles *runtime* SEL failures
 # (read-only ``$HOME``, HMAC-key write failure) via its broad except.
+from kiro_crew import pinned_fs
 from kiro_crew.config.paths import _default_home, _legacy_home
 from kiro_crew.sel import sel
 
@@ -94,6 +97,18 @@ def _fixtures_root() -> Path:
     return Path(str(_resource_files("kiro_crew") / _FIXTURES_PKG))
 
 
+FIXTURE_MANIFEST = "fixture.yaml"
+
+
+def available_fixtures() -> list[str]:
+    """Return every shipped fixture name in stable order."""
+    root = _fixtures_root()
+    try:
+        return sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+    except OSError:
+        return []
+
+
 def _resolve_fixture(name: str) -> Path:
     """Return the path to fixture ``name``, or raise ``SeedError``.
 
@@ -135,9 +150,7 @@ def _resolve_fixture(name: str) -> Path:
         # ``src/kiro_crew/tests_fixtures/`` or the PRD. Sorted for stable
         # test assertions and so ``empty`` / ``minimal`` / ``rich`` land
         # in the obvious order.
-        available = sorted(
-            p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
-        )
+        available = available_fixtures()
         available_str = ", ".join(available) if available else "(none)"
         raise SeedError(
             f"unknown fixture: {name!r}. Available fixtures: {available_str}.",
@@ -157,6 +170,100 @@ def _resolve_fixture(name: str) -> Path:
             guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
         ) from exc
     return candidate
+
+
+def copy_fixture_into_dir_fd(
+    fixture_name: str,
+    dst_fd: int,
+    *,
+    before_manifest: Callable[[int], None] | None = None,
+) -> None:
+    """Copy one shipped fixture into an already-pinned empty directory.
+
+    Both source and destination are traversed through directory descriptors;
+    no destination component is reopened by name. The manifest is copied LAST:
+    callers use it as the completion marker, so a failed partial copy cannot be
+    mistaken for a finished seed on the next boot. *before_manifest* lets the
+    caller finish descriptor-relative setup under the same held root before that
+    completion marker becomes visible.
+    """
+    src = _resolve_fixture(fixture_name)
+    manifest_seen = False
+
+    def _refuse_skip(reason: str, path: str) -> None:
+        raise SeedError(
+            f"fixture {fixture_name!r} contains an unsupported {reason}: {path}",
+            guardrail=SeedError.GUARDRAIL_ROOT_ESCAPE,
+        )
+
+    def _walk(src_fd: int, target_fd: int, display: Path) -> None:
+        nonlocal manifest_seen
+        names = sorted(
+            os.listdir(src_fd),
+            key=lambda value: (value == FIXTURE_MANIFEST, value),
+        )
+        for name in names:
+            if display == src and name == FIXTURE_MANIFEST:
+                if before_manifest is not None:
+                    before_manifest(target_fd)
+                manifest_seen = True
+            shown = display / name
+            st = os.stat(name, dir_fd=src_fd, follow_symlinks=False)
+            if stat.S_ISLNK(st.st_mode):
+                _refuse_skip(pinned_fs.SKIP_SYMLINK, str(shown))
+            if stat.S_ISDIR(st.st_mode):
+                try:
+                    os.mkdir(name, 0o700, dir_fd=target_fd)
+                except FileExistsError as exc:
+                    raise SeedError(
+                        f"seed destination name was occupied during copy: {shown}",
+                        guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                    ) from exc
+                child_src = os.open(name, pinned_fs.dir_flags(), dir_fd=src_fd)
+                child_dst = os.open(name, pinned_fs.dir_flags(), dir_fd=target_fd)
+                try:
+                    _walk(child_src, child_dst, shown)
+                finally:
+                    os.close(child_dst)
+                    os.close(child_src)
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                _refuse_skip(pinned_fs.SKIP_NOT_REGULAR, str(shown))
+            try:
+                copied = pinned_fs.copy_file_pinned(
+                    str(shown),
+                    dir_fd=src_fd,
+                    name=name,
+                    dst_dir_fd=target_fd,
+                    dst_name=name,
+                    force_mode=0o600,
+                    on_skip=_refuse_skip,
+                )
+            except FileExistsError as exc:
+                raise SeedError(
+                    f"seed destination name was occupied during copy: {shown}",
+                    guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                ) from exc
+            if not copied:  # pragma: no cover - the reporter above always raises
+                raise SeedError(
+                    f"fixture entry could not be copied: {shown}",
+                    guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+                )
+
+    src_fd = pinned_fs.open_dir_pinned(
+        src,
+        what=f"fixture {fixture_name!r}",
+        refusal=SeedError,
+    )
+    try:
+        _walk(src_fd, dst_fd, src)
+        if not manifest_seen:
+            raise SeedError(
+                f"fixture {fixture_name!r} has no {FIXTURE_MANIFEST} completion marker",
+                guardrail=SeedError.GUARDRAIL_RESOLVE_FAILED,
+            )
+    finally:
+        os.close(src_fd)
 
 
 def _protected_homes() -> set[Path]:
@@ -418,9 +525,7 @@ def seed_cmd(args) -> int:  # noqa: ANN001 — argparse.Namespace at call site
         # ``target_set`` records presence-only (captured pre-``seed()``) —
         # never the raw path, which would leak ``$HOME``-derived info.
         # ``replace`` records whether the rmtree path was taken.
-        resources=(
-            f"fixture={fixture!r} target_set={target_set} replace={replace}"
-        ),
+        resources=(f"fixture={fixture!r} target_set={target_set} replace={replace}"),
     )
     return EXIT_OK
 
@@ -462,6 +567,4 @@ def _safe_audit(*, outcome: str, resources: str) -> None:
             resources=resources,
         )
     except Exception:  # noqa: BLE001 — audit must never fail the tool.
-        logging.getLogger(__name__).warning(
-            "seed: SEL audit emit failed", exc_info=True
-        )
+        logging.getLogger(__name__).warning("seed: SEL audit emit failed", exc_info=True)

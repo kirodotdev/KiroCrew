@@ -1733,7 +1733,16 @@ Examples:
         help="Provision (venv + SPA dist) if needed before bringing the pod up",
     )
     pod_up.add_argument("--ttl", default="2h", help="Token TTL (default: 2h)")
-    pod_up.add_argument("--seed", default="", help="Seed config dir (tunnel is forced off)")
+    pod_up.add_argument(
+        "--seed",
+        default="",
+        help=(
+            "Pre-populate the isolated home. A bare NAME is a shipped seed scenario "
+            "and populates the whole home; unknown names are refused with the "
+            "available list. A PATH (a separator or leading ~ or .) contributes only "
+            "its sanitized config.json. Populated homes are never re-seeded."
+        ),
+    )
     pod_up.add_argument(
         "--approval",
         # Literal mirrors kiro_crew.pod.runtime.APPROVAL_MODES, which is the
@@ -1751,10 +1760,9 @@ Examples:
         "--crons",
         action="store_true",
         help=(
-            "Run the pod's cron scheduler. Pods boot with --no-crons by default. A "
-            "pod's HOME starts with no cron definitions (only a sanitized config is "
-            "seeded), so this enables an empty scheduler for testing cron behavior "
-            "inside the pod. Persisted per pod; applies at boot."
+            "Run the pod's cron scheduler. Pods boot with --no-crons by default. "
+            "Without --seed the HOME starts with no cron definitions; a named "
+            "scenario may provide them. Persisted per pod; applies at boot."
         ),
     )
     pod_down = pod_sub.add_parser("down", help="Evict a pod (zero residue)")

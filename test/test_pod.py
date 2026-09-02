@@ -1098,6 +1098,27 @@ class TestSeedSanitization:
         out = rt.sanitized_seed_config(seed)
         assert out is not None and out["tunnel"]["enabled"] is False
 
+    def test_forces_agent_sandbox_floor_and_preserves_other_agent_keys(
+        self, tmp_path: Path
+    ) -> None:
+        seed = self._write(
+            tmp_path / "s",
+            {
+                "agent": {
+                    "sandbox": "off",
+                    "sandbox_allow_unsandboxed_exec": True,
+                    "sandbox_allow_no_isolation": True,
+                    "bot_name": "keep",
+                }
+            },
+        )
+        out = rt.sanitized_seed_config(seed)
+        assert out is not None
+        assert out["agent"]["sandbox"] == "auto"
+        assert out["agent"]["sandbox_allow_unsandboxed_exec"] is False
+        assert out["agent"]["sandbox_allow_no_isolation"] is False
+        assert out["agent"]["bot_name"] == "keep"
+
     def test_bad_json_returns_none(self, tmp_path: Path) -> None:
         seed = tmp_path / "s"
         seed.mkdir()
@@ -3250,6 +3271,66 @@ class TestUpVerb:
         # _up must pin the resolved checkout for the systemd boot.
         assert rt.read_env_file(c, "demo").get("CHECKOUT", "").endswith("wts/demo")
 
+    def test_up_with_a_seed_runs_the_landing_verification(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        c = self._prep(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
+        monkeypatch.setattr(rt, "is_active", lambda cfg, n: False)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
+        monkeypatch.setattr(pod_cli, "_wait_healthy", lambda cfg, n, p: 403)
+        monkeypatch.setattr(rt, "mint_token", lambda cfg, n, ttl: "tok-9")
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        calls: list[tuple[str, str, bool]] = []
+        monkeypatch.setattr(
+            pod_cli,
+            "_verify_seed_landed",
+            lambda cfg, name, scenario, home_was_populated: calls.append(
+                (name, scenario, home_was_populated)
+            ),
+        )
+
+        pod_cli._up(
+            c,
+            argparse.Namespace(name="demo", json=True, seed="minimal", ttl="2h", provision=False),
+        )
+
+        assert calls == [("demo", "minimal", False)]
+
+    def test_populated_home_seed_mismatch_refuses_before_start(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed start cleans up the pod home, so verification after health is
+        too late for state that existed before this command. The mismatch must
+        refuse before `start_pod` gains any path that can call `stop_pod`."""
+        c = self._prep(tmp_path, monkeypatch)
+        home = c.home_dir("demo")
+        home.mkdir(parents=True)
+        (home / "sessions").mkdir()
+        starts: list[str] = []
+        monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
+        monkeypatch.setattr(rt, "is_active", lambda cfg, n: False)
+        monkeypatch.setattr(
+            rt,
+            "start_pod",
+            lambda cfg, name: (starts.append(name) or _cp(returncode=0)),
+        )
+        monkeypatch.setattr(pod_cli, "_wait_healthy", lambda cfg, n, p: 403)
+        monkeypatch.setattr(rt, "mint_token", lambda cfg, n, ttl: "tok-9")
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+
+        with pytest.raises(SystemExit) as excinfo:
+            pod_cli._up(
+                c,
+                argparse.Namespace(
+                    name="demo", json=True, seed="minimal", ttl="2h", provision=False
+                ),
+            )
+
+        assert excinfo.value.code == 1
+        assert starts == []
+        assert (home / "sessions").is_dir()
+
     def test_up_still_succeeds_when_ownership_cannot_be_proven(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
@@ -3993,6 +4074,10 @@ class TestUnitExecSelfHeal:
         steps: list[str] = []
         monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: False)
         monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: steps.append("reinstall"))
+        monkeypatch.setattr(
+            rt.unit_mod, "install_dropin", lambda c, n, co: steps.append("pin-checkout")
+        )
+        monkeypatch.setattr(rt, "read_env_file", lambda c, n: {"CHECKOUT": "/checkouts/demo"})
 
         def _systemctl(*args, **kwargs):
             steps.append(args[0])
@@ -4000,7 +4085,13 @@ class TestUnitExecSelfHeal:
 
         monkeypatch.setattr(rt, "systemctl", _systemctl)
         assert rt.start_pod(cfg, "demo").returncode == 0
-        assert steps == ["reinstall", "daemon-reload", "start"]
+        assert steps == [
+            "reinstall",
+            "daemon-reload",
+            "pin-checkout",
+            "daemon-reload",
+            "start",
+        ]
 
     def test_module_invocation_form_passes(self, tmp_path, monkeypatch):
         from kiro_crew.pod import unit as unit_mod

@@ -262,6 +262,14 @@ step with several paths; use whichever your environment supports:
    (`ls`, `status`, `logs`, `provision`, …). The worktree must be built first
    (venv + dist); `kirocrew pod up --provision` does the full on-ramp.
 
+   For behavior that needs existing data, seed a shipped fixture instead of
+   clicking state in by hand:
+   ```bash
+   kirocrew pod up <worktree-name> --seed minimal --json
+   ```
+   A bare name populates the whole isolated home; an unknown name is refused
+   with the available names. A path remains the sanitized config-only form.
+
 3. **No preview at all (also valid).** For many changes, the build gate + unit
    tests are enough confidence to cut the PR. Previewing live is optional.
 

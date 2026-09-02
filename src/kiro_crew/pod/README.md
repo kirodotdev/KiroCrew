@@ -20,6 +20,7 @@ kirocrew pod up   <wt> [--json]   # bring up an isolated pod → {base_url, toke
 kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
 kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
 kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
+kirocrew pod up   <wt> --seed minimal  # pre-populate its HOME from a named scenario
 kirocrew pod ls                   # what's running (≈ kubectl get pods) + orphaned HOMEs (with age)
 kirocrew pod prune [--all] [--dry-run]  # bulk-reclaim orphaned HOMEs (default: older than 3d; --all for every age)
 kirocrew pod status <wt>          # up/down + health
@@ -52,6 +53,33 @@ dist is missing — pointing you at the slow build — while `pod up <wt> --prov
 (or `pod provision <wt>`) runs the full chain: venv + `npm run build` in
 `website/` staged into the served `static/dist`.
 
+## Seed the isolated home
+
+```bash
+kirocrew pod up my-wt --seed minimal
+kirocrew pod up my-wt --seed ~/.kiro/crew
+```
+
+A bare name selects a fixture shipped under `kiro_crew/tests_fixtures/<name>/`
+and populates the whole isolated home. Anything with a path separator or a
+leading `~` or `.` stays the directory form, which contributes only a sanitized
+`config.json`. The split is syntactic, so an unknown bare name is refused with
+the available names instead of being mistaken for a directory and booting a
+blank pod. Spell a bare relative directory as a path, for example
+`--seed ./my-state`.
+
+Named fixtures are copied directly into the final home with both fixture and
+home traversals pinned by directory descriptors. Config sanitization and
+workspace setup run through the same held home descriptor, then the fixture
+manifest is copied last as the completion marker. A failed partial copy or
+setup therefore stays non-bootable even on systemd's automatic retry, and a
+path entry swapped during the operation cannot redirect writes into another
+pod. Seeded config forces tunnel/channel enablement off and restores the agent
+sandbox floor. A populated home is never overwritten or re-seeded; service
+restarts keep the sessions and logs already present. After health succeeds,
+`pod up` reads the fixture marker back and fails if the requested scenario did
+not land.
+
 ## A pod IS the worktree's gateway (control plane vs payload)
 
 - **Control plane** — the `kirocrew pod` verbs (resolution, port derivation, unit
@@ -67,8 +95,12 @@ dist is missing — pointing you at the slow build — while `pod up <wt> --prov
 
 `kirocrew pod install` writes a template unit `kirocrew-pod@.service` whose
 `ExecStart` re-enters `kirocrew pod _run <wt>` (boot logic lives in
-`kiro_crew.pod.runtime.boot`). `MemoryMax`/`CPUQuota` cap a runaway pod;
-`Restart=on-failure` self-heals.
+`kiro_crew.pod.runtime.boot`). Before each start, `pod up` writes a per-instance
+drop-in that replaces the template's `ExecStart` with the resolved checkout's
+own `.venv/bin/kirocrew`; it refuses to fall back to a global install that may
+not understand the requested seed. `pod down` removes that drop-in and reloads
+systemd as part of its zero-residue guarantee. `MemoryMax`/`CPUQuota` cap a
+runaway pod; `Restart=on-failure` self-heals.
 
 The unit has **no `ExecStopPost` teardown hook**, on purpose. systemd runs
 `ExecStopPost` *before* the final kill of the unit's cgroup, so a hook that

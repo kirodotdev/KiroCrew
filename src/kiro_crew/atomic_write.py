@@ -893,3 +893,50 @@ def atomic_write(
         except OSError:
             pass
         raise
+
+
+def atomic_write_at(
+    dir_fd: int,
+    name: str,
+    content: str | bytes,
+    *,
+    fsync: bool = False,
+    mode: int | None = None,
+    newline: str | None = None,
+) -> None:
+    """Atomically replace one leaf under an already-pinned directory descriptor.
+
+    The caller owns parent traversal and keeps *dir_fd* open for the whole
+    transaction. A private ``O_EXCL|O_NOFOLLOW`` temporary is written and renamed
+    to *name* relative to that SAME descriptor, so neither an ancestor swap nor a
+    planted final symlink can redirect content to another inode. POSIX-only by
+    design: the callers need descriptor-relative traversal, which Windows does
+    not expose and Kiro Crew's pod backend does not use there.
+    """
+    if not platform_compat.IS_POSIX:
+        raise NotImplementedError("descriptor-relative atomic writes require POSIX dir_fd support")
+    if not name or Path(name).name != name or name in (".", ".."):
+        raise ValueError(f"atomic_write_at needs one leaf name, got {name!r}")
+    binary = isinstance(content, bytes)
+    if binary and newline is not None:
+        raise TypeError("newline is a text-mode concept and cannot apply to bytes content")
+
+    tmp_name = f".{name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp_name, flags, 0o600, dir_fd=dir_fd)
+    try:
+        platform_compat.fchmod_safe(fd, mode if mode is not None else _get_default_mode())
+        _write_all(fd, _encode(content, newline=newline), Path(name))
+        if fsync:
+            os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp_name, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
