@@ -43,7 +43,10 @@ const NO_DOCUMENT_BOX_HEIGHT = 480
  * fires `load` like any other navigation, so without this the user is left with
  * a silent empty box and no affordance, while `failed` stays false because the
  * mint itself succeeded. Every document this surface builds carries the injected
- * height reporter, so silence past this window means the frame is showing
+ * height reporter, and the reporter re-posts unconditionally after its own
+ * window `load` (see HEIGHT_REPORTER_BODY) precisely so that a report racing
+ * ahead of the load event -- layout settles before images finish -- cannot be
+ * the last one; silence past this window therefore means the frame is showing
  * something that is not ours.
  *
  * Deliberately NOT an automatic re-mint: a second `load` also happens when a
