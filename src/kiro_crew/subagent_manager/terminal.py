@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _timeout_context,
         _ws_result_path,
         asyncio,
+        format_subagent_usage,
         logger,
         mark_delivered,
         os,
@@ -199,11 +200,14 @@ class TerminalCoordinator(ManagerComponent):
         # the paths that reach a terminal without the run loop.
         self._record_crew_log_terminal(info)
         info.done = True
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         await self._manager._fire_event(
             "subagent_done",
             info,
             {
                 "elapsed": info.elapsed,
+                "credits": info.credits,
                 "error": _redact(info.error) if info.error else None,
                 "stopped": info.user_stopped,
                 "outcome": info.outcome,
@@ -244,7 +248,7 @@ class TerminalCoordinator(ManagerComponent):
             # over. The run's own result file and tombstone are unaffected.
             # Releasing the hold is part of the same statement. A wave member parks
             # its siblings' announces on its own digest (``_digest_held_at``,
-            # ``_digest_settle_ids``), and the reaper's hold-expiry sweep arms a
+            # ``_digest_settle_deliveries``), and the reaper's hold-expiry sweep arms a
             # ``force_digest_flush`` for a batch whose hold has aged out. That flush
             # builds a SYNTHETIC record with a fresh id, so the gate above can never
             # match it: it would reach ``_on_done`` on its own and rebuild the retired
@@ -254,9 +258,9 @@ class TerminalCoordinator(ManagerComponent):
             # never reached a parent, so orphan reconciliation must still be able to
             # find them.
             info._digest_held_at = 0.0
-            held, info._digest_settle_ids = info._digest_settle_ids, []
+            held, info._digest_settle_deliveries = info._digest_settle_deliveries, []
             if held:
-                self._manager._teardown_cancelled_ids.update(held)
+                self._manager._teardown_cancelled_ids.update(delivery.agent_id for delivery in held)
             logger.info("Reaper: skipping parent delivery for %s — its parent ended", info.id)
             # The gate has now done its job for this run: the delivery it existed to stop
             # has been stopped, and ``_on_done`` was never called, so none of the gateway's
@@ -318,7 +322,7 @@ class TerminalCoordinator(ManagerComponent):
                 # "delivered" tombstone excludes it from orphan reconciliation;
                 # the reaper prunes it after agent.subagent_result_ttl_secs.
                 try:
-                    mark_delivered(info.id)
+                    mark_delivered(info.id, elapsed=info.elapsed, credits=info.credits)
                 except Exception:
                     logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
                 # Clean up workspace result file (agent-{id}.md in parent dir).
@@ -573,6 +577,11 @@ class TerminalCoordinator(ManagerComponent):
         # No live task to cancel above (already exited) — the reap still owns
         # teardown bookkeeping from here, so mark it now.
         info.reaped = True
+        # Cancellation can be draining a state writer rather than unwinding the
+        # consumer. Settle synchronously before either tombstone or WS snapshot;
+        # the consumer's eventual finally shares this once-only accounting.
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
         # Guard 1 of 3 — the terminal RECORD (done/error/stat/tombstone/cost) is
         # first-arrival-wins on `info.done`, so it is never written twice.
         if not info.done:
@@ -800,6 +809,7 @@ class TerminalCoordinator(ManagerComponent):
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}` ❌ {reason}\n"
                 f"Task: {task_preview}\n"
+                f"Usage: {format_subagent_usage(info.credits, info.elapsed)}\n"
                 f"{_injection_notice_outcome(info)}{result_hint}"
             )
 

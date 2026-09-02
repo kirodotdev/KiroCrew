@@ -9647,6 +9647,8 @@
         "changes": "পরিবর্তন",
         "clear": "সাফ করুন",
         "complete": "সম্পূর্ণ",
+        "credits_not_reported": "ক্রেডিট ব্যবহারের তথ্য পাওয়া যায়নি",
+        "credits_used": "{{credits}} ক্রেডিট ব্যবহার হয়েছে",
         "dismiss_done_count": "সম্পন্নগুলো বাদ দিন ({{count}})",
         "error": "ত্রুটি",
         "input": "ইনপুট",

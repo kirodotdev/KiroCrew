@@ -9647,6 +9647,8 @@
         "changes": "बदलाव",
         "clear": "साफ़ करें",
         "complete": "पूर्ण",
+        "credits_not_reported": "क्रेडिट उपयोग की रिपोर्ट नहीं मिली",
+        "credits_used": "{{credits}} क्रेडिट इस्तेमाल किए गए",
         "dismiss_done_count": "पूर्ण को खारिज करें ({{count}})",
         "error": "त्रुटि",
         "input": "इनपुट",

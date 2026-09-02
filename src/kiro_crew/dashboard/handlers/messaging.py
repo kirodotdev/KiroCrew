@@ -7,6 +7,7 @@ import functools
 import importlib.util
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -104,7 +105,7 @@ from kiro_crew.subagent import (
     effort_drop_reason,
     stage_boundary_owner_for_run,
 )
-from kiro_crew.subagent_persistence import _agent_dir, read_state
+from kiro_crew.subagent_persistence import _agent_dir, read_state, read_tombstone
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
     CHANNEL_ID_RE,
@@ -994,6 +995,19 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                     "done": True,
                     "started": disk_state.get("started"),
                 }
+                tombstone = await asyncio.to_thread(read_tombstone, agent_id) or {}
+                # Legacy persisted records do not carry terminal usage. Keep
+                # those fields absent rather than presenting invented zeros.
+                for field in ("elapsed", "credits"):
+                    if field in tombstone:
+                        value = tombstone[field]
+                        if (
+                            not isinstance(value, bool)
+                            and isinstance(value, (int, float))
+                            and math.isfinite(value)
+                            and value >= 0
+                        ):
+                            disk_data[field] = float(value)
                 result_path = _agent_dir(agent_id) / "result.txt"
                 result = ""
                 if result_path.exists() and not is_sensitive_path(str(result_path)):
@@ -1027,6 +1041,8 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
     data["started"] = info.started
     if info.done:
+        data["elapsed"] = info.elapsed
+        data["credits"] = info.credits
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):

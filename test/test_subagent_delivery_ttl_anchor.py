@@ -31,7 +31,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_COMPLETION_PREFIX,
     _ChatSlot,
 )
-from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent import SubagentDelivery, SubagentInfo, SubagentManager
 from kiro_crew.subagent_persistence import (
     create_agent_folder,
     prune_stale_tombstones,
@@ -83,6 +83,14 @@ def _key(content: str) -> str:
     return _delivery_key(content)
 
 
+def _delivery(agent_id: str, *, elapsed: float = 12.0, credits: float = 0.25):
+    return SubagentDelivery(agent_id, elapsed, credits)
+
+
+def _pending_ids(slot, content: str) -> list[str]:
+    return [delivery.agent_id for delivery in slot._subagent_delivery_pending[_key(content)]]
+
+
 @pytest.fixture()
 def agent_root(tmp_path, monkeypatch):
     """Point the sub-agent registry at a temp directory."""
@@ -110,14 +118,13 @@ async def _settled(predicate, timeout: float = 3.0) -> None:
 class TestPendingDeliveryLedger:
     def test_note_then_take_returns_ids_in_drain_order(self):
         slot = _ChatSlot("s1")
-        slot.note_pending_subagent_delivery(_ann("one"), ["a1", "a2"])
-        slot.note_pending_subagent_delivery(_ann("two"), ["a3"])
+        slot.note_pending_subagent_delivery(_ann("one"), [_delivery("a1"), _delivery("a2")])
+        slot.note_pending_subagent_delivery(_ann("two"), [_delivery("a3")])
 
-        assert slot.take_pending_subagent_deliveries([_ann("one"), _ann("two")]) == [
-            "a1",
-            "a2",
-            "a3",
-        ]
+        assert [
+            delivery.agent_id
+            for delivery in slot.take_pending_subagent_deliveries([_ann("one"), _ann("two")])
+        ] == ["a1", "a2", "a3"]
         # Claimed once: a second drain of the same row owes nothing.
         assert slot.take_pending_subagent_deliveries([_ann("one"), _ann("two")]) == []
 
@@ -134,19 +141,23 @@ class TestPendingDeliveryLedger:
         turn's settlement callback runs, so a sweep would delete the successor's
         debt and the next start would re-announce its consumed result."""
         slot = _ChatSlot("s1")
-        slot.note_pending_subagent_delivery(_ann("first"), ["a1"])
-        slot.note_pending_subagent_delivery(_ann("second"), ["a2"])
+        slot.note_pending_subagent_delivery(_ann("first"), [_delivery("a1")])
+        slot.note_pending_subagent_delivery(_ann("second"), [_delivery("a2")])
         slot._queue = []  # both rows drained; only the first turn has finished
 
-        assert slot.take_pending_subagent_deliveries([_ann("first")]) == ["a1"]
-        assert slot._subagent_delivery_pending == {_key(_ann("second")): ["a2"]}
+        assert [
+            delivery.agent_id for delivery in slot.take_pending_subagent_deliveries([_ann("first")])
+        ] == ["a1"]
+        assert [
+            delivery.agent_id for delivery in slot._subagent_delivery_pending[_key(_ann("second"))]
+        ] == ["a2"]
 
     def test_ledger_is_bounded(self):
         """Without a sweep, a row that vanishes unconsumed leaves its entry, so
         the ledger evicts oldest-first instead of growing forever."""
         slot = _ChatSlot("s1")
         for i in range(_MAX_PENDING_SUBAGENT_DELIVERIES + 5):
-            slot.note_pending_subagent_delivery(_ann(f"q{i}"), [f"a{i}"])
+            slot.note_pending_subagent_delivery(_ann(f"q{i}"), [_delivery(f"a{i}")])
 
         assert len(slot._subagent_delivery_pending) == _MAX_PENDING_SUBAGENT_DELIVERIES
         assert _key(_ann("q0")) not in slot._subagent_delivery_pending  # oldest evicted
@@ -191,7 +202,7 @@ class TestDeferQueuedDelivery:
 
         _defer(slot, info)
 
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
+        assert _pending_ids(slot, COMPLETION) == ["a1"]
         # The run loop reads this AFTER _on_done returns and skips its own
         # mark_delivered, which is what keeps result.txt alive while queued.
         assert info._delivery_queued is True
@@ -201,13 +212,13 @@ class TestDeferQueuedDelivery:
         settle list moves to the slot instead of firing at enqueue."""
         slot = _ChatSlot("s1")
         info = _member("flusher")
-        info._digest_settle_ids = ["h1", "h2"]
+        info._digest_settle_deliveries = [_delivery("h1"), _delivery("h2")]
 
         _defer(slot, info)
 
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["flusher", "h1", "h2"]}
+        assert _pending_ids(slot, COMPLETION) == ["flusher", "h1", "h2"]
         # Transferred, not copied: _settle_digest_holds must not double-write.
-        assert info._digest_settle_ids == []
+        assert info._digest_settle_deliveries == []
 
     def test_failed_member_owes_nothing(self):
         slot = _ChatSlot("s1")
@@ -237,11 +248,11 @@ class TestDeferQueuedDelivery:
         it is releasing are real folders."""
         slot = _ChatSlot("s1")
         info = _member("synthetic")
-        info._digest_settle_ids = ["h1"]
+        info._digest_settle_deliveries = [_delivery("h1")]
 
         _defer(slot, info, flush_only=True)
 
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["h1"]}
+        assert _pending_ids(slot, COMPLETION) == ["h1"]
 
     def test_slot_that_cannot_take_ids_keeps_the_old_behaviour(self):
         """Fail in the safe direction: if nothing can hold the debt, leave the
@@ -249,12 +260,12 @@ class TestDeferQueuedDelivery:
         slot = MagicMock()
         slot.note_pending_subagent_delivery.side_effect = RuntimeError("no ledger")
         info = _member()
-        info._digest_settle_ids = ["h1"]
+        info._digest_settle_deliveries = [_delivery("h1")]
 
         _defer(slot, info)
 
         assert info._delivery_queued is False
-        assert info._digest_settle_ids == ["h1"]
+        assert [d.agent_id for d in info._digest_settle_deliveries] == ["h1"]
 
 
 class TestRunLoopSkipsQueuedDelivery:
@@ -388,14 +399,14 @@ class TestConsumptionSignalIsPerTurn:
             return asyncio.get_event_loop().create_task(_turn())
 
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         with patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", _spawn):
             assert await _start_next_queued_turn(state, slot) is True
             # First turn is consumed: its own cell records it.
             spawned[0]["hook"]()
             # Its tail-drain starts the SECOND completion before it finishes.
             slot.queue_append(SECOND_COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-            slot.note_pending_subagent_delivery(SECOND_COMPLETION, ["a2"])
+            slot.note_pending_subagent_delivery(SECOND_COMPLETION, [_delivery("a2")])
             assert await _start_next_queued_turn(state, slot) is True
 
         first_done.set_result(None)
@@ -420,7 +431,7 @@ class TestTeardownGateOnQueuedSettlement:
         mgr._teardown_gates[info.id] = gate
         mgr._agents[info.id] = info
 
-        task = asyncio.create_task(mgr.settle_queued_delivery([info.id]))
+        task = asyncio.create_task(mgr.settle_queued_delivery([_delivery(info.id)]))
         await asyncio.sleep(0.05)
         assert not (agent_root / info.id / "tombstone.json").exists()
 
@@ -441,10 +452,15 @@ class TestTeardownGateOnQueuedSettlement:
         mgr._agents[info.id] = info
         _finished_run("evicted", agent_root)
 
-        await mgr.settle_queued_delivery([info.id, "evicted"])
+        await mgr.settle_queued_delivery(
+            [_delivery(info.id), _delivery("evicted", elapsed=42.0, credits=1.5)]
+        )
 
         assert (agent_root / info.id / "tombstone.json").exists()
         assert (agent_root / "evicted" / "tombstone.json").exists()
+        tombstone = json.loads((agent_root / "evicted" / "tombstone.json").read_text())
+        assert tombstone["elapsed"] == 42.0
+        assert tombstone["credits"] == 1.5
 
     @pytest.mark.asyncio
     async def test_an_evicted_run_still_waits_for_its_teardown(self, agent_root):
@@ -461,7 +477,7 @@ class TestTeardownGateOnQueuedSettlement:
         mgr._agents.pop(info.id, None)
         mgr._tasks.pop(info.id, None)
 
-        task = asyncio.create_task(mgr.settle_queued_delivery([info.id]))
+        task = asyncio.create_task(mgr.settle_queued_delivery([_delivery(info.id)]))
         await asyncio.sleep(0.05)
         assert not (agent_root / info.id / "tombstone.json").exists()
 
@@ -524,7 +540,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-settles")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         with patch(
@@ -535,7 +551,7 @@ class TestDrainSettlesDelivery:
 
         # Turn still running: the promise is intact and the clock has not started.
         assert not (agent_root / "a1" / "tombstone.json").exists()
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
+        assert _pending_ids(slot, COMPLETION) == ["a1"]
 
         done.set_result(None)
         await _settled(lambda: (agent_root / "a1" / "tombstone.json").exists())
@@ -552,7 +568,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-cancel")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         with patch(
@@ -565,7 +581,7 @@ class TestDrainSettlesDelivery:
         await asyncio.sleep(0.05)
 
         assert not (agent_root / "a1" / "tombstone.json").exists()
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
+        assert _pending_ids(slot, COMPLETION) == ["a1"]
 
     @pytest.mark.asyncio
     async def test_a_cancelled_turn_after_consumption_still_settles(self, agent_root, tmp_path):
@@ -579,7 +595,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-cancel-late")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         with patch(
@@ -600,7 +616,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-fail")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         with patch(
@@ -627,7 +643,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-auth")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         with patch(
@@ -641,7 +657,7 @@ class TestDrainSettlesDelivery:
         await asyncio.sleep(0.05)
 
         assert not (agent_root / "a1" / "tombstone.json").exists()
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
+        assert _pending_ids(slot, COMPLETION) == ["a1"]
 
     @pytest.mark.asyncio
     async def test_a_requeued_turn_settles_nothing(self, agent_root, tmp_path):
@@ -655,7 +671,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-requeue")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         with patch(
@@ -683,7 +699,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-empty")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
         hooks: list = []
 
@@ -718,7 +734,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-empty-first")
         _finished_run("a1", agent_root)
         slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
         hooks: list = []
 
@@ -740,7 +756,7 @@ class TestDrainSettlesDelivery:
         await asyncio.sleep(0.05)
 
         assert not (agent_root / "a1" / "tombstone.json").exists()
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
+        assert _pending_ids(slot, COMPLETION) == ["a1"]
 
     @pytest.mark.asyncio
     async def test_a_replayed_completion_can_still_claim_its_debt(self, agent_root, tmp_path):
@@ -754,7 +770,7 @@ class TestDrainSettlesDelivery:
         slot = state.get_or_create_slot("drain-replay")
         _finished_run("a1", agent_root)
         first_id = slot.queue_append(COMPLETION, kind=SUBAGENT_COMPLETION_KIND)
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         first_done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         # Attempt 1: dies before the model consumed the prompt.
@@ -797,7 +813,7 @@ class TestDrainSettlesDelivery:
             {"id": "u1", "content": COMPLETION, "kind": ""},
             {"id": "q1", "content": COMPLETION, "kind": SUBAGENT_COMPLETION_KIND},
         ]
-        slot.note_pending_subagent_delivery(COMPLETION, ["a1"])
+        slot.note_pending_subagent_delivery(COMPLETION, [_delivery("a1")])
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
         with patch(
@@ -811,7 +827,7 @@ class TestDrainSettlesDelivery:
         # The spoof drained first and settled nothing; the debt is still owed to
         # the genuine row, which has not run yet.
         assert not (agent_root / "a1" / "tombstone.json").exists()
-        assert slot._subagent_delivery_pending == {_key(COMPLETION): ["a1"]}
+        assert _pending_ids(slot, COMPLETION) == ["a1"]
 
     @pytest.mark.asyncio
     async def test_drained_user_message_settles_nothing(self, agent_root, tmp_path):
@@ -823,7 +839,7 @@ class TestDrainSettlesDelivery:
         state.subagents = _manager()
         slot = state.get_or_create_slot("drain-user")
         _finished_run("a1", agent_root)
-        slot.note_pending_subagent_delivery(_ann("other"), ["a1"])
+        slot.note_pending_subagent_delivery(_ann("other"), [_delivery("a1")])
         slot._queue = [{"id": "u1", "content": "carry on", "kind": ""}]
         done: asyncio.Future = asyncio.get_event_loop().create_future()
 
@@ -852,6 +868,8 @@ class TestReaperDoesNotPruneAQueuedPromise:
         ttl = 3600
         slot = _ChatSlot("s1")
         info = _member()
+        info.elapsed = 12.5
+        info.credits = 0.75
         _finished_run(info.id, agent_root)
 
         # 1. Routed into a busy slot: queued, not delivered.
@@ -876,10 +894,16 @@ class TestReaperDoesNotPruneAQueuedPromise:
 
         # 4. The row finally drains and its turn runs: the promise is still
         #    honourable, and the retention window opens from there.
-        await _manager().settle_queued_delivery(slot.take_pending_subagent_deliveries([COMPLETION]))
+        settle_manager = _manager()
+        settle_manager._agents[info.id] = info
+        await settle_manager.settle_queued_delivery(
+            slot.take_pending_subagent_deliveries([COMPLETION])
+        )
         assert (agent_root / info.id / "result.txt").exists()
         ts = json.loads((agent_root / info.id / "tombstone.json").read_text(encoding="utf-8"))
         assert ts["cause"] == "delivered" and ts["died"] >= time.time() - 60
+        assert ts["elapsed"] == 12.5
+        assert ts["credits"] == 0.75
 
         # 5. And it still bounds disk growth: one TTL after consumption, gone.
         with patch("kiro_crew.subagent_persistence.time.time", return_value=time.time() + 2 * ttl):
@@ -921,7 +945,7 @@ class TestReaperDoesNotPruneAQueuedPromise:
             blocker.cancel()
 
         assert [q["kind"] for q in slot._queue] == [SUBAGENT_COMPLETION_KIND]
-        assert slot._subagent_delivery_pending == {_key(slot._queue[0]["content"]): [info.id]}
+        assert _pending_ids(slot, slot._queue[0]["content"]) == [info.id]
         assert info._delivery_queued is True
         assert not (agent_root / info.id / "tombstone.json").exists()
 

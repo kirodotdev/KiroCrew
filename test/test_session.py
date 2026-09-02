@@ -6326,7 +6326,7 @@ class TestParentEndCancelsItsChildren:
                 _reported_to_parent=False,
                 _digest_held=False,
                 _digest_held_at=0.0,
-                _digest_settle_ids=[],
+                _digest_settle_deliveries=[],
                 _delivery_queued=False,
                 _awaiting_approval=awaiting,
                 _exec_started=started,
@@ -6481,7 +6481,7 @@ class TestParentEndCancelsItsChildren:
         round of review found one more by hitting it: the report returning
         (``_reported_to_parent``), the wave hold (``_digest_held`` and its separate
         timestamp ``_digest_held_at``), the siblings held on this member
-        (``_digest_settle_ids``) and the announce parked in the parent's slot queue
+        (``_digest_settle_deliveries``) and the announce parked in the parent's slot queue
         (``_delivery_queued``). Discovering them one failure at a time is what made the
         teardown gate wrong four times.
 
@@ -6558,7 +6558,11 @@ class TestParentEndCancelsItsChildren:
             if rule == PARKS_WHEN_SET:
                 info = SubagentInfo(id=field_name, task="t", agent="a")
                 info._reported_to_parent = True
-                setattr(info, field_name, [777] if field_name.endswith("_ids") else 1.0)
+                setattr(
+                    info,
+                    field_name,
+                    [777] if field_name.endswith(("_ids", "_deliveries")) else 1.0,
+                )
                 assert delivery_is_parked(info) is True, f"{field_name} does not park"
                 exercised += 1
             elif rule == PARKS_WHEN_UNSET:
@@ -7101,7 +7105,7 @@ class TestParentEndCancelsItsChildren:
             _reported_to_parent=True,
             _digest_held=False,
             _digest_held_at=0.0,
-            _digest_settle_ids=[],
+            _digest_settle_deliveries=[],
             _delivery_queued=False,
             _awaiting_approval=False,
             _exec_started=None,
@@ -7171,7 +7175,7 @@ class TestParentEndCancelsItsChildren:
                         _reported_to_parent=False,
                         _digest_held=False,
                         _digest_held_at=0.0,
-                        _digest_settle_ids=[],
+                        _digest_settle_deliveries=[],
                         _delivery_queued=False,
                         _awaiting_approval=False,
                         _exec_started=1.0,

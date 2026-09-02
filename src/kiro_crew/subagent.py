@@ -86,12 +86,15 @@ from kiro_crew.llm_helpers import (
     FALLBACK_STORY_ATTR,
     TRANSIENT_RETRIES,
     FallbackState,
+    _billing_stats,
+    _sum_usage,
     acp_error_is_transient,
     advance_fallback_candidate,
     annotate_model_fallback,
     append_fallback_story,
     configured_fallback_chain,
     provider_fallback_active,
+    provider_last_turn_usage,
     transient_retry_delay,
 )
 from kiro_crew.mcp_gateway import STUB_MODULE
@@ -493,6 +496,93 @@ def _done_result(text: str) -> str:
 # ``constants`` because the MCP gateway's hard-wedge ceiling has to sit above
 # it (see ``mcp_gateway/backend.py``).
 _TIMEOUT_SECS = SUBAGENT_TIMEOUT_SECS
+
+
+def _finite_nonnegative_number(value: object) -> float | None:
+    """Return a safe numeric telemetry value, excluding booleans and NaN/inf."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number >= 0.0 else None
+
+
+def format_subagent_usage(credits: object, elapsed: object) -> str:
+    """Format the terminal usage line shared by all subagent delivery surfaces."""
+    credit_value = _finite_nonnegative_number(credits)
+    elapsed_value = _finite_nonnegative_number(elapsed)
+    if credit_value is None or elapsed_value is None:
+        return ""
+    # Match the dashboard's Math.round for non-negative elapsed telemetry;
+    # Python's round uses ties-to-even and would render 12.5 differently.
+    total_seconds = math.floor(elapsed_value + 0.5)
+    elapsed_text = (
+        f"{total_seconds // 60}m {total_seconds % 60}s"
+        if total_seconds >= 60
+        else f"{total_seconds}s"
+    )
+    # Zero also represents a provider that does not report credit billing.
+    if credit_value == 0:
+        return elapsed_text
+    digits = 1 if credit_value >= 10 else 2
+    return f"{credit_value:.{digits}f} credits · {elapsed_text}"
+
+
+@dataclass(frozen=True)
+class SubagentDelivery:
+    """Terminal usage captured when a completion acquires delivery debt."""
+
+    agent_id: str
+    elapsed: float
+    credits: float
+
+
+@dataclass
+class _RunCreditAccounting:
+    """Settle each attempted turn once, including consumer-side interruptions."""
+
+    info: SubagentInfo
+    provider: object | None = None
+    stats_before: object | None = None
+    pending: bool = False
+    total: Any = field(default_factory=lambda: provider_last_turn_usage(None))
+
+    def __post_init__(self) -> None:
+        self.total.credits = self._valid_credits(self.info.credits) or 0.0
+
+    @staticmethod
+    def _valid_credits(value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            credits = float(value or 0.0)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return credits if math.isfinite(credits) and credits >= 0.0 else None
+
+    def begin(self, provider: object) -> None:
+        self.provider = provider
+        self.stats_before = _billing_stats(provider)
+        self.pending = True
+
+    def settle(self, completion: object | None = None) -> None:
+        if not self.pending:
+            return
+        self.pending = False
+        event_usage = getattr(completion, "usage", None)
+        usage = event_usage
+        if usage is None or not hasattr(usage, "credits"):
+            usage = provider_last_turn_usage(self.provider, since=self.stats_before)
+        # Provider usage is an external boundary. Reject malformed credit values
+        # before accumulation so they cannot poison persisted or JSON telemetry.
+        if self._valid_credits(getattr(usage, "credits", None)) is None:
+            return
+        self.total = _sum_usage(self.total, usage)
+        self.info.credits = self._valid_credits(self.total.credits) or 0.0
+
+
 _TURN_LIMIT = DEFAULT_SUBAGENT_MAX_TURNS
 _REAPER_INTERVAL = 60  # seconds between reaper sweeps
 # Idle TTL for continuable conversations (keep=True): a conversation with no
@@ -1511,13 +1601,13 @@ class SubagentInfo:
     # SUCCESS). One flag cannot be both early and late; this one is the early
     # half — "do not respawn, a reap is in flight".
     _reap_started: bool = False
-    # Set by the gateway on the wave's FINAL member only: the held OK member
-    # ids whose delivery tombstones must be settled once the digest has been
+    # Set by the gateway on the wave's FINAL member only: terminal snapshots
+    # whose delivery tombstones must be settled once the digest has been
     # successfully handed off (i.e. after _on_done returns without raising —
     # the same contract as the per-agent mark_delivered). Settling these at
     # digest COMPOSITION would re-open the restart-loss window between
     # composing and routing.
-    _digest_settle_ids: list[str] = field(default_factory=list)
+    _digest_settle_deliveries: list[SubagentDelivery] = field(default_factory=list)
     # True when the gateway QUEUED this completion's injection because the
     # parent's slot was busy. Delivery is not consumption: the announce sits in
     # the slot queue until a turn drains it, and that wait is bounded only by the
@@ -1532,6 +1622,13 @@ class SubagentInfo:
     reaped: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
+    # Cumulative across every attempted turn, including transient retries that
+    # consumed credits before failing. Providers that do not bill in credits
+    # report zero through the shared TurnUsage contract.
+    credits: float = 0.0
+    # Shared with terminal reporters so a reap need not wait for a cancelled
+    # consumer's state-write drain before settling the active attempt.
+    _credit_accounting: _RunCreditAccounting | None = field(default=None, repr=False, compare=False)
     _raw_task: str = ""  # unredacted task for kiro-cli execution prompt
     # CC-specific overrides (ignored for ACP)
     model: str = ""
@@ -1851,8 +1948,10 @@ class _ReportFailureSnapshot:
     batch_total: int
     _digest_held: bool
     _digest_flush_only: bool
-    _digest_settle_ids: tuple[str, ...]
+    _digest_settle_deliveries: tuple[SubagentDelivery, ...]
     _delivery_queued: bool
+    credits: float
+    _credit_accounting: None = None
 
     @classmethod
     def capture(cls, info: SubagentInfo) -> "_ReportFailureSnapshot":
@@ -1884,8 +1983,9 @@ class _ReportFailureSnapshot:
             batch_total=int(info.batch_total),
             _digest_held=bool(info._digest_held),
             _digest_flush_only=bool(info._digest_flush_only),
-            _digest_settle_ids=tuple(str(agent_id) for agent_id in info._digest_settle_ids),
+            _digest_settle_deliveries=tuple(info._digest_settle_deliveries),
             _delivery_queued=bool(info._delivery_queued),
+            credits=float(info.credits),
         )
 
     @property
@@ -1908,7 +2008,7 @@ class _ReportFailureSnapshot:
             self.stop_reason,
             self.stop_class,
             self.batch_id,
-            *self._digest_settle_ids,
+            *(delivery.agent_id for delivery in self._digest_settle_deliveries),
         )
         return sum(len(value.encode("utf-8")) for value in text)
 
@@ -1931,9 +2031,10 @@ class _ReportFailureSnapshot:
             batch_total=self.batch_total,
             _digest_held=self._digest_held,
             _digest_flush_only=self._digest_flush_only,
-            _digest_settle_ids=list(self._digest_settle_ids),
+            _digest_settle_deliveries=list(self._digest_settle_deliveries),
             _delivery_queued=self._delivery_queued,
             elapsed=self.elapsed,
+            credits=self.credits,
             model=self.model,
             resolved_model=self.resolved_model,
             requested_model=self.requested_model,
@@ -2034,7 +2135,7 @@ DELIVERY_ROUTING_FIELDS: "dict[str, str]" = {
     "_digest_held_at": PARKS_WHEN_SET,
     # The held SIBLINGS whose delivery tombstones this member owes once its digest is
     # handed off. Non-empty means other runs' deliveries are parked ON this record.
-    "_digest_settle_ids": PARKS_WHEN_SET,
+    "_digest_settle_deliveries": PARKS_WHEN_SET,
     # The announce sits in the parent's slot queue because the slot was busy. Delivery is
     # not consumption: a turn has to drain it.
     "_delivery_queued": PARKS_WHEN_SET,
@@ -4145,8 +4246,8 @@ class SubagentManager:
     async def _announce_digest_flush(self, info: SubagentInfo) -> None:
         return await self._waves._announce_digest_flush_impl(info)
 
-    async def settle_queued_delivery(self, agent_ids: list[str]) -> None:
-        return await self._waves.settle_queued_delivery_impl(agent_ids)
+    async def settle_queued_delivery(self, deliveries: list[SubagentDelivery]) -> None:
+        return await self._waves.settle_queued_delivery_impl(deliveries)
 
     def _settle_digest_holds(self, info: SubagentInfo) -> None:
         return self._waves._settle_digest_holds_impl(info)
@@ -4212,6 +4313,8 @@ class SubagentManager:
                 turns=info.turns,
                 last_tool=info.last_tool,
                 outcome=info.outcome,
+                elapsed=(info.elapsed if info.elapsed > 0 else time.time() - info.started),
+                credits=info.credits,
                 # ``cause`` is a coarse bucket ("error", "timeout"), which is
                 # not enough to act on. ``info.error`` is in-memory only and
                 # dies with the gateway, so without this the specific reason is
@@ -4225,7 +4328,18 @@ class SubagentManager:
         return await self._run_events._write_state_off_loop_impl(info, what, **fields)
 
     async def _run_inner(self, info: SubagentInfo, session_key: str) -> None:
-        return await self._run_events._run_inner_impl(info, session_key)
+        usage = _RunCreditAccounting(info)
+        info._credit_accounting = usage
+        try:
+            return await self._run_events._run_inner_impl(info, session_key, usage)
+        finally:
+            # Cancellation may land in the event consumer, outside the stream
+            # generator's exception handlers. Settle before terminal reporting.
+            try:
+                usage.settle()
+            finally:
+                if info._credit_accounting is usage:
+                    info._credit_accounting = None
 
     # Facades for the completion / stop-reason handling and the lane-slot
     # waits that live in subagent_manager/run.py.
@@ -4571,6 +4685,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     evict_completed_agents,
     extract_options,
     fire_tool_hooks,
+    format_subagent_usage,
     hook_gate_kwargs,
     identity_grant_covers_child,
     has_dashboard_surface,
