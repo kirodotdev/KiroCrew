@@ -194,12 +194,14 @@ const ANCHOR_RESTORE_SETTLE_FRAMES = 3
 // Pure over its inputs so it can run both from the hook's callbacks (live
 // items) and from the slot-switch flush, which must resolve keys against the
 // OUTGOING session's items snapshot. Returns null when no mounted row
-// qualifies or the environment has no layout (jsdom).
+// qualifies or the environment has no layout (jsdom). `index` is the row's
+// index as the mounted node carries it — the PREVIOUS commit's, for a caller
+// resolving across a list change.
 function captureTopAnchorFrom(
   el: HTMLDivElement,
   entries: Iterable<[Element, number]>,
   keyAt: (index: number) => string | null,
-): { key: string; top: number } | null {
+): { key: string; top: number; index: number } | null {
   if (typeof el.getBoundingClientRect !== 'function') return null
   const srTop = el.getBoundingClientRect().top
   let bestIdx = Infinity
@@ -219,7 +221,7 @@ function captureTopAnchorFrom(
       bestKey = key
     }
   }
-  return bestKey !== null ? { key: bestKey, top: bestTop } : null
+  return bestKey !== null ? { key: bestKey, top: bestTop, index: bestIdx } : null
 }
 
 /** Screen offset of the mounted row whose key matches, relative to the
@@ -539,6 +541,9 @@ export function useVirtualChat<T>(
    */
   const shiftAnchorRef = useRef<{ key: string; top: number } | null>(null)
   const shiftStageRef = useRef<'awaiting-rebase' | 'rebased' | 'ready' | null>(null)
+  /** How far DOWN the anchored row moved in the list (new index minus old), set
+   *  by TRIGGER 1's capture and consumed by part 1. Equal to the net count growth
+   *  only for a pure front insert. */
   const prependCountRef = useRef(0)
   /**
    * TRIGGER 6's invalidation key for part 2, bumped in the render that captures a
@@ -600,24 +605,83 @@ export function useVirtualChat<T>(
     !stickRef.current
   ) {
     const prependEl = scrollerRef.current
+    const inserted = itemCount - prependPrev.count
+    // Current key -> current index. Membership says a key SURVIVED the change;
+    // the index says where its row went. That displacement — not the net count
+    // growth, which equals it only for a pure front insert — is what the re-base
+    // and the correction have to move by: a rebuild that also grows the TAIL
+    // (a reconnect catching up on missed rows) moves the reader by less than the
+    // count grew.
+    // Last-wins on a duplicate key; callers keep keys unique (ChatPage through
+    // uniqueRowKeys), and a duplicate would already misroute part 2's key lookup.
+    const newIndexByKey = new Map<string, number>()
+    for (let i = 0; i < items.length; i++) newIndexByKey.set(getKey(items[i], i), i)
     // A turn takes its LEAD item's key, so a prepended message joining the top turn
     // renames that row: skip keys the new set retired and anchor on the next survivor.
-    const survivingKeys = new Set<string>()
-    for (let i = 0; i < items.length; i++) survivingKeys.add(getKey(items[i], i))
-    const prependAnchor = prependEl
+    let prependAnchor = prependEl
       ? captureTopAnchorFrom(prependEl, elIndexRef.current.entries(), (idx) => {
           const it = prependPrev.items[idx]
           if (!it) return null
           // Previous items resolve through the getKey captured WITH them — see
           // prependPrevRef's doc for why the current closure misnames them.
           const k = prependPrev.getKey(it, idx)
-          return survivingKeys.has(k) ? k : null
+          return newIndexByKey.has(k) ? k : null
         })
       : null
+    let prependShift = 0
     if (prependAnchor) {
+      prependShift = newIndexByKey.get(prependAnchor.key)! - prependAnchor.index
+    } else if (prependEl) {
+      // No visible row kept its key. That is the shape of a wholesale transcript
+      // rebuild (the post-turn refresh re-identifying every row it streamed)
+      // landing together with the front growth, and standing down here leaves the
+      // window and scrollTop where they were — which, with rows now in front, is
+      // the START of the transcript rather than the rows being read. So the
+      // topmost visible row is re-identified by POSITION: it moved by as much as
+      // the NEAREST row (by old index) whose key did survive, and its new key is
+      // whatever now sits at old index + that displacement. Only when no key
+      // survives anywhere does the net count stand in — the reader then keeps
+      // their distance from the END, the one thing a full re-identification of a
+      // chat transcript preserves.
+      const survivors: Array<[oldIndex: number, shift: number]> = []
+      const prev = prependPrev.items
+      for (let i = 0; i < prev.length; i++) {
+        const ni = newIndexByKey.get(prependPrev.getKey(prev[i], i))
+        if (ni !== undefined) survivors.push([i, ni - i])
+      }
+      // `survivors` is in ascending old index, so the nearest is one of the two
+      // neighbours of the insertion point; ties go to the row ABOVE the reader.
+      const shiftAt = (idx: number): number => {
+        if (!survivors.length) return inserted
+        let lo = 0
+        let hi = survivors.length
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1
+          if (survivors[mid][0] < idx) lo = mid + 1
+          else hi = mid
+        }
+        const above = survivors[lo - 1]
+        const below = survivors[lo]
+        if (!above) return below[1]
+        if (!below) return above[1]
+        return below[0] - idx < idx - above[0] ? below[1] : above[1]
+      }
+      prependAnchor = captureTopAnchorFrom(prependEl, elIndexRef.current.entries(), (idx) => {
+        const j = idx + shiftAt(idx)
+        const it = items[j]
+        return it ? getKey(it, j) : null
+      })
+      if (prependAnchor) prependShift = shiftAt(prependAnchor.index)
+    }
+    // Part 1 re-bases by the reader's own displacement, in either direction —
+    // rows coalescing ABOVE the reader while the tail grows moves them UP even
+    // though the count grew — which is what keeps the anchored row mounted for
+    // part 2 to measure. A displacement of zero leaves nothing to re-base; a
+    // height change above an unmoved row is trigger 7's case, not this one.
+    if (prependAnchor && prependShift !== 0) {
       shiftAnchorRef.current = prependAnchor
       shiftStageRef.current = 'awaiting-rebase'
-      prependCountRef.current = itemCount - prependPrev.count
+      prependCountRef.current = prependShift
       anchorCapturedThisRender = true
     }
   }
@@ -820,7 +884,15 @@ export function useVirtualChat<T>(
   // against the range that is still on screen. Keyed on the range having
   // ACTUALLY moved up in committed state — not on a shift being scheduled —
   // which is what makes a no-op window commit incapable of stranding an anchor.
-  if (!anchorCapturedThisRender && windowRange.start < windowRangeRef.current.start && !stickRef.current) {
+  // A re-base in flight owns the slot: part 1 moving the range UP (a negative
+  // displacement) reads here exactly like a window shift, and capturing again
+  // would replace the prepend anchor with a row of the not-yet-corrected frame.
+  if (
+    !anchorCapturedThisRender &&
+    shiftStageRef.current !== 'rebased' &&
+    windowRange.start < windowRangeRef.current.start &&
+    !stickRef.current
+  ) {
     const shiftEl = scrollerRef.current
     const shiftAnchor = shiftEl
       ? captureTopAnchorFrom(shiftEl, elIndexRef.current.entries(), (idx) => {
@@ -950,7 +1022,9 @@ export function useVirtualChat<T>(
             const it = ctx.items[idx]
             return it ? ctx.getKey(it, idx) : null
           })
-          if (a) saveScrollAnchor(prevSession, a)
+          // The capture's `index` is the outgoing commit's and means nothing
+          // after a reload; persist the key/top pair only.
+          if (a) saveScrollAnchor(prevSession, { key: a.key, top: a.top })
         }
       }
     }
@@ -1822,26 +1896,28 @@ export function useVirtualChat<T>(
   }, [overscan, scrollerEl])
 
   /**
-   * Part 1 — TRIGGER 1 only: re-base the window by the inserted count so the
-   * rows being read stay mounted, including the anchor row that part 2 has to
-   * measure. Runs pre-paint, so the shifted-but-uncorrected frame is never
+   * Part 1 — TRIGGER 1 only: re-base the window by the anchored row's own
+   * displacement so the rows being read stay mounted, including the anchor row
+   * that part 2 has to measure. Runs pre-paint, so the shifted-but-uncorrected frame is never
    * shown. A window shift needs no equivalent: it IS a range change already.
    */
   useLayoutEffect(() => {
-    const inserted = prependCountRef.current
-    if (inserted <= 0) return
+    if (shiftStageRef.current !== 'awaiting-rebase') return
+    const shift = prependCountRef.current
     prependCountRef.current = 0
-    if (stickRef.current || !shiftAnchorRef.current) {
+    // Every exit from 'awaiting-rebase' clears the slot: an anchor left in that
+    // stage is one part 2 never consumes.
+    if (stickRef.current || !shiftAnchorRef.current || shift === 0) {
       shiftAnchorRef.current = null
       shiftStageRef.current = null
       return
     }
     shiftStageRef.current = 'rebased'
     rebaseScheduledRef.current = true
-    setWindowRange((r) => ({
-      start: Math.min(itemCount, r.start + inserted),
-      end: Math.min(itemCount, r.end + inserted),
-    }))
+    // Signed: the anchored row's displacement, so the re-based range contains it
+    // whichever way it moved. Clamped to the list on both ends.
+    const clamp = (i: number) => Math.max(0, Math.min(itemCount, i))
+    setWindowRange((r) => ({ start: clamp(r.start + shift), end: clamp(r.end + shift) }))
   }, [itemCount])
 
   /**
